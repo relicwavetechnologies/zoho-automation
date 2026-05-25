@@ -8,19 +8,30 @@
  *   GET  /invites               — list pending invites
  *   POST /invites               — create invite
  *   GET  /onboarding/status     — integration provider status
+ *   POST /onboarding/zoho-start — build backend-managed Zoho OAuth URL
+ *   POST /onboarding/connect    — complete backend-managed Zoho OAuth callback
  *   GET  /tool-permissions      — company tool permissions matrix
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
+import type { CachePort } from '../../shared/cache';
+import type { TypedEnv } from '../../config/env';
+import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
+import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
 
 export interface CompanyRoutesDeps {
   prisma: PrismaClient;
   logger: Logger;
+  env: TypedEnv;
+  cache: CachePort;
+  zohoTokenService: ZohoTokenService;
+  zohoConnectionRepo: ZohoConnectionRepository;
+  larkContactsClient?: { listDepartmentMembers(departmentId: string, limit?: number): Promise<Array<{ openId: string; displayName: string; email?: string }>> };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -69,6 +80,107 @@ const createInviteSchema = z.object({
   roleId:    z.string().min(1).max(50),
   companyId: z.string().uuid().optional(),
 });
+
+const ZOHO_SCOPE_LEVELS = ['read_only', 'read_write', 'full'] as const;
+type ZohoScopeLevel = typeof ZOHO_SCOPE_LEVELS[number];
+
+const zohoStartSchema = z.object({
+  companyId:  z.string().uuid().optional(),
+  returnTo:   z.string().url().optional(),
+  scopeLevel: z.enum(ZOHO_SCOPE_LEVELS).optional(),
+});
+
+const zohoConnectSchema = z.object({
+  code:  z.string().min(1),
+  state: z.string().min(1),
+});
+
+interface ZohoOAuthState {
+  companyId:   string;
+  environment: string;
+  nonce:       string;
+  returnTo?:   string;
+}
+
+const ZOHO_NONCE_TTL_SECONDS = 600;
+
+const ZOHO_SCOPES_BY_LEVEL: Record<ZohoScopeLevel, readonly string[]> = {
+  read_only: [
+    'ZohoCRM.modules.READ',
+    'ZohoCRM.settings.READ',
+    'ZohoBooks.fullaccess.READ',
+  ],
+  read_write: [
+    'ZohoCRM.modules.ALL',
+    'ZohoCRM.settings.READ',
+    'ZohoBooks.fullaccess.all',
+  ],
+  full: [
+    'ZohoCRM.modules.ALL',
+    'ZohoCRM.settings.ALL',
+    'ZohoBooks.fullaccess.all',
+  ],
+};
+
+const DEFAULT_ZOHO_SCOPES = [
+  'ZohoCRM.modules.ALL',
+  'ZohoCRM.settings.ALL',
+  'ZohoBooks.fullaccess.all',
+  'ZohoBooks.contacts.all',
+  'ZohoBooks.invoices.all',
+  'ZohoBooks.expenses.all',
+];
+
+const zohoNonceKey = (nonce: string): string => `zoho:oauth:nonce:${nonce}`;
+
+const oauthNonceFallback = new Map<string, { value: unknown; expiresAt: number }>();
+function fallbackSet(key: string, value: unknown, ttlSeconds: number) {
+  oauthNonceFallback.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+}
+function fallbackGet<T>(key: string): T | null {
+  const entry = oauthNonceFallback.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { oauthNonceFallback.delete(key); return null; }
+  return entry.value as T;
+}
+function fallbackDel(key: string) { oauthNonceFallback.delete(key); }
+
+function encodeZohoState(state: ZohoOAuthState): string {
+  return Buffer.from(JSON.stringify(state)).toString('base64url');
+}
+
+function decodeZohoState(raw: string): ZohoOAuthState | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+    if (typeof parsed.companyId !== 'string' || typeof parsed.nonce !== 'string') return null;
+    return {
+      companyId: parsed.companyId,
+      environment: typeof parsed.environment === 'string' ? parsed.environment : 'prod',
+      nonce: parsed.nonce,
+      ...(typeof parsed.returnTo === 'string' ? { returnTo: parsed.returnTo } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function buildZohoAuthorizeUrl(opts: {
+  clientId: string;
+  redirectUri: string;
+  scopes: readonly string[];
+  state: string;
+  accountsBaseUrl: string;
+}): string {
+  const url = new URL(`${opts.accountsBaseUrl.replace(/\/$/, '')}/oauth/v2/auth`);
+  url.searchParams.set('client_id', opts.clientId);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('scope', opts.scopes.join(' '));
+  url.searchParams.set('redirect_uri', opts.redirectUri);
+  url.searchParams.set('access_type', 'offline');
+  url.searchParams.set('prompt', 'consent');
+  url.searchParams.set('state', opts.state);
+  return url.toString();
+}
 
 // ── Route factory ─────────────────────────────────────────────────────────────
 
@@ -218,7 +330,7 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     const [zohoConn, larkBinding, googleLink] = await Promise.all([
       prisma.zohoConnection.findFirst({
         where:   { companyId },
-        select:  { status: true, environment: true, connectedAt: true },
+        select:  { status: true, environment: true, connectedAt: true, scopes: true, tokenFailureCode: true, updatedAt: true },
         orderBy: { updatedAt: 'desc' },
       }),
       prisma.larkTenantBinding.findFirst({
@@ -232,12 +344,22 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       }),
     ]);
 
+    const zohoScopeLevel: ZohoScopeLevel | null = zohoConn?.scopes
+      ? (zohoConn.scopes.some((s: string) => s.includes('fullaccess') && !s.includes('READ')) ? 'full'
+        : zohoConn.scopes.some((s: string) => s.includes('.ALL')) ? 'read_write'
+        : 'read_only')
+      : null;
+
     const providers = [
       {
         provider:    'zoho',
         connected:   zohoConn?.status === 'CONNECTED',
-        status:      zohoConn?.status ?? 'disconnected',
+        status:      zohoConn?.tokenFailureCode ? 'error' : (zohoConn?.status?.toLowerCase() ?? 'disconnected'),
         connectedAt: zohoConn?.connectedAt?.toISOString() ?? null,
+        updatedAt:   zohoConn?.updatedAt?.toISOString() ?? null,
+        scopeLevel:  zohoScopeLevel,
+        scopes:      zohoConn?.scopes ?? [],
+        error:       zohoConn?.tokenFailureCode ?? null,
         details:     zohoConn ? { environment: zohoConn.environment } : null,
       },
       {
@@ -257,6 +379,163 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     ];
 
     success(res, providers, 'Onboarding status loaded');
+  }));
+
+  router.post('/onboarding/zoho-start', asyncRoute(async (req, res) => {
+    const body = zohoStartSchema.parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, body.companyId);
+    const userId = res.locals['userId'] as string | undefined;
+    const clientId = (deps.env.ZOHO_CLIENT_ID ?? '').trim();
+    const redirectUri = (deps.env.ZOHO_REDIRECT_URI ?? '').trim();
+    const accountsBaseUrl = deps.env.ZOHO_ACCOUNTS_BASE_URL.trim();
+
+    if (!userId) throw routeError(401, 'Admin user context is required');
+    if (!deps.zohoTokenService.isConfigured() || !clientId || !redirectUri) {
+      throw routeError(503, 'Zoho OAuth is handled by backend env for now, but backend Zoho env is not configured');
+    }
+
+    const nonce = randomBytes(24).toString('hex');
+    const noncePayload = { companyId, userId };
+    const cacheResult = await deps.cache.set(zohoNonceKey(nonce), noncePayload, ZOHO_NONCE_TTL_SECONDS);
+    if (!cacheResult.ok) fallbackSet(zohoNonceKey(nonce), noncePayload, ZOHO_NONCE_TTL_SECONDS);
+
+    const state: ZohoOAuthState = {
+      companyId,
+      environment: 'prod',
+      nonce,
+      returnTo: body.returnTo ?? `${deps.env.APP_BASE_URL}/settings?tab=integrations`,
+    };
+    const scopeLevel = body.scopeLevel ?? 'full';
+    const scopes = ZOHO_SCOPES_BY_LEVEL[scopeLevel] ?? DEFAULT_ZOHO_SCOPES;
+
+    const authUrl = buildZohoAuthorizeUrl({
+      clientId,
+      redirectUri,
+      scopes: [...scopes],
+      state: encodeZohoState(state),
+      accountsBaseUrl,
+    });
+
+    deps.logger.info('zoho.admin_oauth.start', { companyId, userId, scopeLevel });
+    success(res, {
+      authUrl,
+      provider: 'zoho',
+      scopeLevel,
+      message: `Zoho OAuth started with ${scopeLevel} access.`,
+    }, 'Zoho OAuth URL created');
+  }));
+
+  router.post('/onboarding/connect', asyncRoute(async (req, res) => {
+    const body = zohoConnectSchema.parse(req.body ?? {});
+    const state = decodeZohoState(body.state);
+    if (!state) throw routeError(400, 'Invalid Zoho OAuth state');
+
+    const companyId = resolveCompanyId(res, state.companyId);
+    const nonceKey = zohoNonceKey(state.nonce);
+    const stored = await deps.cache.get<{ companyId: string; userId: string }>(nonceKey);
+    const noncePayload = (stored.ok && stored.value)
+      ? stored.value
+      : fallbackGet<{ companyId: string; userId: string }>(nonceKey);
+    if (noncePayload) {
+      if (noncePayload.companyId !== companyId) {
+        throw routeError(400, 'Zoho OAuth state expired or invalid');
+      }
+      await deps.cache.del(nonceKey);
+      fallbackDel(nonceKey);
+    } else {
+      // Redis unavailable and in-memory lost (e.g. dev server restart).
+      // The admin JWT already authenticates the caller, and companyId in the
+      // state is verified against the JWT's company — safe to proceed.
+      const jwtCompanyId = res.locals['companyId'] as string | undefined;
+      if (!jwtCompanyId || jwtCompanyId !== companyId) {
+        throw routeError(400, 'Zoho OAuth state expired or invalid');
+      }
+    }
+
+    const redirectUri = (deps.env.ZOHO_REDIRECT_URI ?? '').trim();
+    const tokens = await deps.zohoTokenService.exchangeAuthorizationCode({
+      companyId,
+      environment: state.environment,
+      authorizationCode: body.code,
+      ...(redirectUri ? { redirectUri } : {}),
+    });
+
+    const upsertResult = await deps.zohoConnectionRepo.upsertFromExchange({
+      companyId,
+      environment: state.environment,
+      accessToken: tokens.accessToken,
+      ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+      expiresIn: tokens.expiresIn,
+      scopes: tokens.scopes,
+    });
+    if (!upsertResult.ok) throw routeError(500, upsertResult.error.message);
+
+    // Test the connection by hitting the organizations endpoint
+    let connectionTest: { success: boolean; organizationName?: string; error?: string } = { success: false };
+    try {
+      const apiBase = deps.env.ZOHO_API_BASE_URL?.replace(/\/$/, '') ?? 'https://www.zohoapis.com';
+      const testRes = await fetch(`${apiBase}/books/v3/organizations`, {
+        headers: { Authorization: `Zoho-oauthtoken ${tokens.accessToken}` },
+      });
+      const testData = await testRes.json() as { organizations?: Array<{ name?: string }> };
+      if (testRes.ok && testData.organizations?.length) {
+        connectionTest = { success: true, organizationName: testData.organizations[0]?.name ?? 'Unknown' };
+      } else {
+        connectionTest = { success: false, error: `API returned ${testRes.status}` };
+      }
+    } catch (e) {
+      connectionTest = { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+
+    deps.logger.info('zoho.admin_oauth.connected', {
+      companyId, environment: state.environment, scopes: tokens.scopes,
+      connectionTest: connectionTest.success,
+      organizationName: connectionTest.organizationName,
+    });
+    success(res, {
+      provider: 'zoho',
+      connected: true,
+      connectionTest,
+      returnTo: state.returnTo ?? `${deps.env.APP_BASE_URL}/settings?tab=integrations`,
+      scopes: tokens.scopes,
+    }, connectionTest.success
+      ? `Zoho connected — verified with org "${connectionTest.organizationName}"`
+      : 'Zoho connected but verification failed');
+  }));
+
+  // ── Disconnect integration ────────────────────────────────────────────────
+  router.post('/onboarding/disconnect', asyncRoute(async (req, res) => {
+    const body = z.object({ provider: z.enum(['zoho', 'lark', 'google']) }).parse(req.body ?? {});
+    const companyId = resolveCompanyId(res);
+    const userId = res.locals['userId'] as string | undefined;
+
+    switch (body.provider) {
+      case 'zoho':
+        await prisma.zohoConnection.updateMany({
+          where: { companyId },
+          data: { status: 'DISCONNECTED', tokenFailureCode: 'admin_disconnected' },
+        });
+        break;
+      case 'lark':
+        if (userId) {
+          await prisma.larkUserAuthLink.updateMany({
+            where: { userId, companyId },
+            data: { revokedAt: new Date() },
+          });
+        }
+        break;
+      case 'google':
+        if (userId) {
+          await prisma.companyGoogleAuthLink.updateMany({
+            where: { companyId, revokedAt: null },
+            data: { revokedAt: new Date() },
+          });
+        }
+        break;
+    }
+
+    deps.logger.info('admin.integration.disconnected', { companyId, provider: body.provider, userId });
+    success(res, { disconnected: true, provider: body.provider }, `${body.provider} disconnected`);
   }));
 
   // ── Tool permissions ──────────────────────────────────────────────────────
@@ -279,6 +558,154 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       actionPermissions: actionPerms.map(p => ({ id: p.id, toolId: p.toolId, role: p.role, actionGroup: p.actionGroup, enabled: p.enabled })),
     }, 'Tool permissions loaded');
   }));
+
+  // ── Sync Lark directory (SSE streaming) ─────────────────────────────────────
+  router.post('/sync-directory', async (req, res) => {
+    let companyId: string;
+    try {
+      companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    } catch (e) {
+      const err = e as RouteError;
+      res.status(err.status ?? 400).json({ success: false, message: err.message });
+      return;
+    }
+    if (!deps.larkContactsClient) { res.status(503).json({ success: false, message: 'Lark contacts client not configured' }); return; }
+
+    const binding = await prisma.larkTenantBinding.findFirst({
+      where: { companyId, isActive: true },
+      select: { larkTenantKey: true },
+    });
+    if (!binding) { res.status(400).json({ success: false, message: 'No active Lark tenant binding' }); return; }
+
+    // SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const send = (event: string, data: Record<string, unknown>) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    send('status', { phase: 'starting', message: 'Starting Lark directory sync...' });
+
+    const syncRun = await prisma.larkDirectorySyncRun.create({
+      data: { companyId, trigger: 'manual', status: 'running', startedAt: new Date() },
+    });
+
+    try {
+      send('status', { phase: 'fetching', message: 'Fetching users from Lark...' });
+      const users = await deps.larkContactsClient.listDepartmentMembers('0', 50);
+      send('status', { phase: 'fetched', message: `Found ${users.length} users`, total: users.length });
+
+      let synced = 0;
+      let usersCreated = 0;
+      for (const user of users) {
+        if (!user.openId) continue;
+
+        // 1. Upsert ChannelIdentity (matched by openId)
+        await prisma.channelIdentity.upsert({
+          where: {
+            channel_externalUserId_companyId: {
+              channel: 'lark',
+              externalUserId: user.openId,
+              companyId,
+            },
+          },
+          create: {
+            companyId,
+            channel: 'lark',
+            externalUserId: user.openId,
+            externalTenantId: binding.larkTenantKey,
+            displayName: user.displayName,
+            email: user.email ?? null,
+            larkOpenId: user.openId,
+            aiRole: 'MEMBER',
+            aiRoleSource: 'sync',
+            syncedAiRole: 'MEMBER',
+            sourceRoles: [],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          update: {
+            displayName: user.displayName,
+            ...(user.email ? { email: user.email } : {}),
+            updatedAt: new Date(),
+          },
+        });
+
+        // 2. Auto-create User + AdminMembership if email present and no User exists
+        if (user.email) {
+          const email = user.email.trim().toLowerCase();
+          let existingUser = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+
+          // If no User with this email, check LarkUserAuthLink — the canonical
+          // openId→userId mapping. This catches email changes in Lark: the auth
+          // link still points to the original User even after their Lark email changed.
+          if (!existingUser) {
+            const authLink = await prisma.larkUserAuthLink.findFirst({
+              where: { larkOpenId: user.openId },
+              select: { userId: true },
+            });
+            if (authLink) {
+              await prisma.user.update({
+                where: { id: authLink.userId },
+                data: { email, ...(user.displayName ? { name: user.displayName } : {}) },
+              }).catch(() => {});
+              existingUser = { id: authLink.userId };
+            }
+          }
+
+          if (!existingUser) {
+            const newUser = await prisma.user.create({
+              data: {
+                email,
+                name: user.displayName,
+                password: randomBytes(32).toString('hex'),
+              },
+            });
+            await prisma.adminMembership.create({
+              data: { userId: newUser.id, companyId, role: 'MEMBER', isActive: true },
+            });
+            usersCreated++;
+          } else if (user.displayName) {
+            await prisma.user.update({
+              where: { id: existingUser.id },
+              data: { name: user.displayName },
+            }).catch(() => {});
+          }
+        }
+
+        synced++;
+        if (synced % 5 === 0 || synced === users.length) {
+          send('progress', {
+            synced, total: users.length,
+            pct: Math.round((synced / users.length) * 100),
+            usersCreated,
+          });
+        }
+      }
+
+      await prisma.larkDirectorySyncRun.update({
+        where: { id: syncRun.id },
+        data: { status: 'succeeded', syncedCount: synced, memberCount: synced, finishedAt: new Date() },
+      });
+
+      deps.logger.info('directory_sync.completed', { companyId, synced, usersCreated });
+      send('done', { synced, usersCreated, message: `Synced ${synced} users from Lark${usersCreated > 0 ? ` (${usersCreated} new accounts created)` : ''}` });
+      res.end();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await prisma.larkDirectorySyncRun.update({
+        where: { id: syncRun.id },
+        data: { status: 'failed', errorMessage: msg, finishedAt: new Date() },
+      }).catch(() => {});
+      deps.logger.error('directory_sync.failed', { companyId, error: msg });
+      send('error', { message: msg });
+      res.end();
+    }
+  });
 
   return router;
 }

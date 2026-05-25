@@ -50,8 +50,13 @@ import { createScheduleTaskTool } from '../tools/orchestration/schedule-task.too
 import { createListScheduledTasksTool } from '../tools/orchestration/list-scheduled-tasks.tool';
 import { createCancelScheduledTaskTool } from '../tools/orchestration/cancel-scheduled-task.tool';
 import { createRunScheduledNowTool } from '../tools/orchestration/run-scheduled-now.tool';
+import { createRememberFactTool } from '../tools/orchestration/remember-fact.tool';
 import { buildCapabilitiesForAgent } from '../agent-runners/dynamic/agent-as-tool';
-import { buildDynamicSupervisorGraph } from '../graphs/dynamic-supervisor.graph';
+import { buildDynamicSupervisorGraph, type DynamicSupervisorGraph } from '../graphs/dynamic-supervisor.graph';
+import type { Mem0Service } from '../../memory/mem0.service';
+import { buildToolFinishedPayload, isErrorOutput } from '../agent-runners/tool-trace';
+import { debugSupervisorEntry, debugGraphInvoke, debugGraphOutput } from '../../../shared/debug-run-log';
+import type { GroupContextContentPart } from '../../../domain/conversation/group-context';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -72,6 +77,10 @@ export interface SupervisorInput {
   permittedTools: ReadonlyArray<AppTool<unknown, unknown>>;
   tracer?:        OrchestrationTracer;
   approvalGate?:  ApprovalGateService;
+  memoryContext?: string;
+  groupContext?:  string;
+  groupContextParts?: readonly GroupContextContentPart[];
+  groupContextSystemHeader?: string;
   chatId?:        string;
 }
 
@@ -88,13 +97,31 @@ interface DynamicGraphRunInput {
   readonly runContext: RunContext;
   readonly permittedTools: ReadonlyArray<AppTool<unknown, unknown>>;
   readonly approvalGate?: ApprovalGateService;
+  readonly memoryContext?: string;
+  readonly groupContext?: string;
+  readonly groupContextParts?: readonly GroupContextContentPart[];
+  readonly groupContextSystemHeader?: string;
+  readonly mem0?: Mem0Service;
   readonly chatId?: string;
+  readonly tracer?: OrchestrationTracer;
+  readonly statusChannel?: StatusChannel;
+  readonly aggregator?: RunStatusAggregator;
 }
 
 // ─── Deps ────────────────────────────────────────────────────────────────────
 
 export interface SupervisorDeps {
   model:             LanguageModel;
+  defaultModel?:     {
+    provider: string;
+    modelId:  string;
+  };
+  resolveModel?:     (input: {
+    provider: string;
+    modelId: string;
+    companyId: string;
+    agentSlug?: string;
+  }) => Promise<LanguageModel> | LanguageModel;
   agentResolver:     AgentResolver;
   agentCatalogCache?: AgentCatalogCache;
   todoRepo:          SupervisorTodoRepository;
@@ -104,7 +131,12 @@ export interface SupervisorDeps {
   geminiApiKey?: string;
   dynamicGraphEnabled?: boolean;
   dynamicGraphShadow?: boolean;
+  dynamicSupervisorGraph?: DynamicSupervisorGraph;
   supervisorTimeoutMs?: number;
+  mem0?: Mem0Service;
+  unifiedAgentMode?: boolean;
+  skillRegistry?: import('../../skills/skill-registry').SkillRegistry;
+  toolRegistry?: import('../tools/tool-registry').ToolRegistry;
 }
 
 // ─── Supervisor ───────────────────────────────────────────────────────────────
@@ -112,15 +144,75 @@ export interface SupervisorDeps {
 export class SupervisorAgent {
   constructor(private readonly deps: SupervisorDeps) {}
 
+  getModel(): LanguageModel { return this.deps.model; }
+
   async run(input: SupervisorInput): Promise<Result<SupervisorOutput, OrchestrationError>> {
     const {
       userMessage, history, channelType, channelId,
       perm, runContext, statusChannel, aggregator, permittedTools, tracer,
-      approvalGate, chatId,
+      approvalGate, memoryContext, groupContext, groupContextParts, groupContextSystemHeader, chatId,
     } = input;
     const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
 
     const log = logger.child({ service: 'supervisor', userId: runContext.userId });
+
+    debugSupervisorEntry({
+      path: (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) ? 'dynamic_graph' : 'legacy',
+      dynamicGraphEnabled: !!this.deps.dynamicGraphEnabled,
+      hasAgentCatalogCache: !!this.deps.agentCatalogCache,
+      hasMem0: !!this.deps.mem0,
+      hasApprovalGate: !!approvalGate,
+      hasMemoryContext: !!memoryContext,
+      hasGroupContext: !!groupContext,
+      historyTurnCount: history.turns.length,
+      permittedToolCount: permittedTools.length,
+    });
+
+    if (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) {
+      const graphResult = await this.runDynamicGraph({
+        userMessage,
+        history,
+        perm,
+        runContext,
+        permittedTools,
+        chatId: chatId ?? String(channelId),
+        ...(approvalGate ? { approvalGate } : {}),
+        ...(memoryContext ? { memoryContext } : {}),
+        ...(groupContext ? { groupContext } : {}),
+        ...(groupContextParts ? { groupContextParts } : {}),
+        ...(groupContextSystemHeader ? { groupContextSystemHeader } : {}),
+        ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
+        ...(tracer ? { tracer } : {}),
+        statusChannel,
+        aggregator,
+      });
+
+      if (graphResult.ok) {
+        tracer?.emit({
+          phase: 'synthesis', eventType: 'synthesis_complete',
+          actorType: 'synthesis', title: 'Response synthesized',
+          status: 'success',
+          payload: {
+            replyLength: graphResult.value.finalText.length,
+            replyPreview: graphResult.value.finalText.slice(0, 500),
+          },
+        });
+
+        return ok({
+          finalReply: {
+            kind: 'final',
+            text: graphResult.value.finalText,
+            format: 'markdown',
+          },
+          toolsCalled: graphResult.value.toolsCalled,
+          toolResults: graphResult.value.toolResults,
+        });
+      }
+
+      log.warn('supervisor.dynamic_graph.failed_falling_back', {
+        error: graphResult.error.message,
+      });
+    }
 
     // ── 1. Resolve optional AgentDefinition for custom system prompt ──────────
     let agentDef: AgentDefinitionView | null = null;
@@ -138,6 +230,13 @@ export class SupervisorAgent {
       agentDef?.systemPrompt,
       perm.department?.systemPrompt,
     );
+    let fullSystemPrompt = systemPrompt;
+    if (memoryContext) {
+      fullSystemPrompt += `\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${memoryContext}`;
+    }
+    if (groupContext) {
+      fullSystemPrompt += `\n\n${groupContext}`;
+    }
 
     // ── 2. Build conversation messages ────────────────────────────────────────
     const messages = [
@@ -152,43 +251,18 @@ export class SupervisorAgent {
     const { geminiApiKey } = this.deps;
     const agentCtx = {
       model,
+      ...(this.deps.resolveModel ? { resolveModel: this.deps.resolveModel } : {}),
       allTools: permittedTools,
       perm,
       runContext,
       logger,
       clock,
+      ...(tracer ? { tracer } : {}),
       ...(approvalGate    ? { approvalGate }    : {}),
       ...(geminiApiKey    ? { geminiApiKey }    : {}),
+      ...(groupContext    ? { groupContext }    : {}),
       chatId: chatId ?? String(channelId),
     };
-
-    if (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) {
-      const graphResult = await this.runDynamicGraph({
-        userMessage,
-        history,
-        perm,
-        runContext,
-        permittedTools,
-        chatId: chatId ?? String(channelId),
-        ...(approvalGate ? { approvalGate } : {}),
-      });
-
-      if (graphResult.ok) {
-        return ok({
-          finalReply: {
-            kind: 'final',
-            text: graphResult.value.finalText,
-            format: 'markdown',
-          },
-          toolsCalled: graphResult.value.toolsCalled,
-          toolResults: [],
-        });
-      }
-
-      log.warn('supervisor.dynamic_graph.failed_falling_back', {
-        error: graphResult.error.message,
-      });
-    }
 
     // ── 4. Wire supervisor tools ──────────────────────────────────────────────
     // Each tool() call uses an explicit Zod schema declared inline. We cast the
@@ -244,6 +318,7 @@ export class SupervisorAgent {
       listScheduledTasks: createListScheduledTasksTool(prisma, runContext),
       cancelScheduledTask: createCancelScheduledTaskTool(prisma, runContext),
       runScheduledTaskNow: createRunScheduledNowTool(prisma, runContext),
+      ...(this.deps.mem0 ? { rememberFact: createRememberFactTool(this.deps.mem0, runContext) } : {}),
     } as unknown as ToolSet;
 
     let dynamicCapabilities = {} as ToolSet;
@@ -287,7 +362,7 @@ export class SupervisorAgent {
           const timeoutMs = this.deps.supervisorTimeoutMs ?? DEFAULT_SUPERVISOR_TIMEOUT_MS;
           const result = streamText({
             model,
-            system:  systemPrompt,
+            system:  fullSystemPrompt,
             messages,
             tools:   supervisorTools,
             stopWhen: [stepCountIs(MAX_SUPERVISOR_STEPS)],
@@ -297,6 +372,7 @@ export class SupervisorAgent {
 
           const innerCalled: string[] = [];
           const toolResults: Array<{ toolName: string; output: string }> = [];
+          const toolTimers = new Map<string, number>();
           let innerText = '';
           let stepCount = 0;
           let chunkCount = 0;
@@ -320,6 +396,7 @@ export class SupervisorAgent {
 
             if (chunk.type === 'tool-call') {
               aggregator.recordCall(chunk.toolName);
+              toolTimers.set(chunk.toolName, Date.now());
               currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
                 kind: 'status', terminal: false, timeline: aggregator.snapshot(),
               });
@@ -341,8 +418,14 @@ export class SupervisorAgent {
 
             if (chunk.type === 'tool-result') {
               const output = String(chunk.output);
+              const isError = isErrorOutput(output);
+              const startMs = toolTimers.get(chunk.toolName);
               toolResults.push({ toolName: chunk.toolName, output });
-              aggregator.recordResult(chunk.toolName, output);
+              if (isError) {
+                aggregator.recordFailure(chunk.toolName, output);
+              } else {
+                aggregator.recordResult(chunk.toolName, output);
+              }
               currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
                 kind: 'status', terminal: false, timeline: aggregator.snapshot(),
               });
@@ -356,9 +439,9 @@ export class SupervisorAgent {
               tracer?.emit({
                 phase: 'execute', eventType: 'tool_call_finished',
                 actorType: 'supervisor', actorKey: chunk.toolName,
-                title: `${chunk.toolName} completed`,
-                status: 'success',
-                payload: { toolName: chunk.toolName, resultLength: output.length },
+                title: `${chunk.toolName} ${isError ? 'failed' : 'completed'}`,
+                status: isError ? 'error' : 'success',
+                payload: buildToolFinishedPayload(chunk.toolName, output, startMs),
               });
             }
 
@@ -367,12 +450,15 @@ export class SupervisorAgent {
             }
 
             if (chunk.type === 'error') {
+              const errorMsg = String(chunk.error);
               log.error('supervisor.stream.error', {
-                error: String(chunk.error),
+                error: errorMsg,
                 step: stepCount,
                 toolsSoFar: innerCalled,
                 textSoFar: innerText.length,
               });
+              const lastTool = innerCalled[innerCalled.length - 1];
+              if (lastTool) aggregator.recordFailure(lastTool, errorMsg);
             }
           }
 
@@ -480,6 +566,8 @@ export class SupervisorAgent {
         permittedTools,
         chatId: chatId ?? String(channelId),
         ...(approvalGate ? { approvalGate } : {}),
+        ...(memoryContext ? { memoryContext } : {}),
+        ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
       }).then(graphResult => {
         if (!graphResult.ok) {
           log.warn('dynamic_graph.shadow_parity', {
@@ -507,16 +595,31 @@ export class SupervisorAgent {
     }
 
     tracer?.emit({
+      phase: 'synthesis', eventType: 'synthesis_complete',
+      actorType: 'synthesis', title: 'Response synthesized',
+      status: 'success',
+      payload: {
+        replyLength: finalText.length,
+        replyPreview: finalText.slice(0, 500),
+      },
+    });
+
+    tracer?.emit({
       phase: 'complete', eventType: 'supervisor_complete',
       actorType: 'supervisor', title: 'Supervisor complete',
       status: 'success',
-      payload: { toolsCalled, replyLength: finalText.length },
+      payload: {
+        toolsCalled,
+        replyLength: finalText.length,
+        replyPreview: finalText.slice(0, 500),
+        supervisorTextEmpty: finalText === 'Done.',
+      },
     });
 
     return ok({ finalReply, toolsCalled, toolResults });
   }
 
-  private async runDynamicGraph(input: DynamicGraphRunInput): Promise<Result<{ finalText: string; toolsCalled: string[] }, OrchestrationError>> {
+  private async runDynamicGraph(input: DynamicGraphRunInput): Promise<Result<{ finalText: string; toolsCalled: string[]; toolResults: Array<{ toolName: string; output: string }> }, OrchestrationError>> {
     if (!this.deps.agentCatalogCache) {
       return err(new OrchestrationError({
         stage: 'plan',
@@ -525,33 +628,80 @@ export class SupervisorAgent {
       }));
     }
 
-    const graph = buildDynamicSupervisorGraph({
+    const graph = this.deps.dynamicSupervisorGraph ?? buildDynamicSupervisorGraph({
       model: this.deps.model,
+      ...(this.deps.defaultModel ? { defaultModel: this.deps.defaultModel } : {}),
+      ...(this.deps.resolveModel ? { resolveModel: this.deps.resolveModel } : {}),
       agentCatalogCache: this.deps.agentCatalogCache,
       todoRepo: this.deps.todoRepo,
       prisma: this.deps.prisma,
       logger: this.deps.logger.child({ service: 'dynamic-supervisor-graph' }),
       clock: this.deps.clock,
       ...(this.deps.geminiApiKey ? { geminiApiKey: this.deps.geminiApiKey } : {}),
-      ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
+      ...(input.mem0 ? { mem0: input.mem0 } : {}),
+      ...(input.tracer ? { tracer: input.tracer } : {}),
+      ...(input.statusChannel ? { statusChannel: input.statusChannel } : {}),
+      ...(input.aggregator ? { aggregator: input.aggregator } : {}),
+      ...(this.deps.unifiedAgentMode ? { unifiedAgentMode: true } : {}),
+      ...(this.deps.skillRegistry ? { skillRegistry: this.deps.skillRegistry } : {}),
+      ...(this.deps.toolRegistry ? { toolRegistry: this.deps.toolRegistry } : {}),
+    });
+
+    const memoryContext = input.memoryContext ?? '';
+    const groupContext = input.groupContext ?? '';
+
+    input.tracer?.emit({
+      phase: 'plan', eventType: 'supervisor_started',
+      actorType: 'supervisor', title: 'Dynamic supervisor graph started',
+      status: 'info',
+      payload: { toolCount: input.permittedTools.length },
+    });
+
+    const graphConversationHistory = input.history.turns
+      .filter(turn => turn.role === 'user' || turn.role === 'assistant')
+      .map(turn => ({
+        role: turn.role as 'user' | 'assistant',
+        content: turn.content,
+      }));
+
+    debugGraphInvoke({
+      userMessage: input.userMessage,
+      conversationHistory: graphConversationHistory,
+      companyId: String(input.runContext.companyId),
+      memoryContext,
+      groupContext,
+      chatId: input.chatId ?? null,
+      permittedToolCount: input.permittedTools.length,
     });
 
     const output = await graph.invoke({
       userMessage: input.userMessage,
-      conversationHistory: input.history.turns
-        .filter(turn => turn.role === 'user' || turn.role === 'assistant')
-        .map(turn => ({
-        role: turn.role as 'user' | 'assistant',
-        content: turn.content,
-      })),
+      conversationHistory: graphConversationHistory,
       companyId: String(input.runContext.companyId),
       perm: input.perm,
       runContext: input.runContext,
       permittedTools: input.permittedTools,
       chatId: input.chatId ?? null,
+      memoryContext,
+      ...(input.groupContext ? { groupContext: input.groupContext } : {}),
+      ...(input.groupContextParts?.length ? { groupContextParts: input.groupContextParts } : {}),
+      ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
     } as any);
 
+    debugGraphOutput({
+      status: output.status,
+      supervisorResult: output.supervisorResult,
+      toolCallsMade: output.toolCallsMade ?? [],
+      error: output.error,
+    });
+
     if (output.status === 'error') {
+      input.tracer?.emit({
+        phase: 'error', eventType: 'run_failed',
+        actorType: 'supervisor', title: 'Dynamic supervisor graph failed',
+        status: 'error',
+        payload: { stage: 'plan', reason: output.error ?? 'unknown' },
+      });
       return err(new OrchestrationError({
         stage: 'plan',
         reason: 'llm_invalid_output',
@@ -559,9 +709,23 @@ export class SupervisorAgent {
       }));
     }
 
+    const finalText = (output.supervisorResult ?? 'Done.').trim() || 'Done.';
+    input.tracer?.emit({
+      phase: 'complete', eventType: 'supervisor_complete',
+      actorType: 'supervisor', title: 'Dynamic supervisor graph complete',
+      status: 'success',
+      payload: {
+        toolsCalled: output.toolCallsMade,
+        replyLength: finalText.length,
+        replyPreview: finalText.slice(0, 500),
+        supervisorTextEmpty: finalText === 'Done.',
+      },
+    });
+
     return ok({
-      finalText: (output.supervisorResult ?? 'Done.').trim() || 'Done.',
+      finalText,
       toolsCalled: output.toolCallsMade,
+      toolResults: output.toolResults ?? [],
     });
   }
 }

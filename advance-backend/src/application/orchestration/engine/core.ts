@@ -22,6 +22,36 @@ import type { ExecutionRepository } from '../../../infrastructure/persistence/ex
 import { OrchestrationTracer } from '../../observability/orchestration-tracer';
 import { resolveBranding } from '../department-branding';
 import { RunStatusAggregator } from '../run-status.aggregator';
+import type { Mem0Service } from '../../memory/mem0.service';
+import type { LanguageModel } from 'ai';
+import { classifyMessage, runFastPath } from './fast-path';
+import { buildExecutionSummary } from './execution-summary';
+import { assessReplyQuality, buildPresentationContext, cleanReplyText } from './reply-quality';
+import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
+import { formatGroupContextForPrompt, formatGroupContextMultimodal } from '../../chat-context/group-context-formatter';
+import type { GroupChatWindow } from '../../../domain/conversation/group-context';
+import {
+  debugRunStart, debugPermissions, debugHistory,
+  debugMemoryContext, debugGroupContext, debugFinalReply, debugRunEnd,
+} from '../../../shared/debug-run-log';
+import { generateText } from 'ai';
+
+const MEM0_SEARCH_TIMEOUT_MS = 500;
+
+function withoutCurrentIncomingMessage(window: GroupChatWindow, incomingText: string): GroupChatWindow {
+  const last = window.recentMessages.at(-1);
+  if (!last || last.role !== 'user' || last.content.trim() !== incomingText.trim()) {
+    return window;
+  }
+  if ((last.attachments?.length ?? 0) > 0 || (last.attachedFiles?.length ?? 0) > 0) {
+    return window;
+  }
+
+  return {
+    ...window,
+    recentMessages: window.recentMessages.slice(0, -1),
+  };
+}
 
 // ─── Public I/O types ──────────────────────────────────────────────────────
 
@@ -51,6 +81,11 @@ export interface OrchestrationEngineDeps {
   logger:       Logger;
   clock:        Clock;
   executionRepo?: ExecutionRepository;
+  mem0?: Mem0Service;
+  /** When provided, simple messages (greetings, chitchat) skip the full supervisor loop. */
+  fastPathModel?: LanguageModel;
+  /** When provided, group chat context is loaded and injected into the supervisor prompt. */
+  chatContext?: LarkChatContextService;
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────
@@ -70,6 +105,14 @@ export class OrchestrationEngine {
     });
 
     log.info('engine.run.start', { userMessage: incoming.text.slice(0, 100) });
+
+    debugRunStart({
+      chatId: String(incoming.chatId),
+      userId: String(runContext.userId),
+      companyId: String(runContext.companyId),
+      userMessage: incoming.text,
+      traceId: runContext.traceId ?? incoming.traceId,
+    });
 
     // ── 0. Create ExecutionRun trace record ────────────────────────────────
     let tracer: OrchestrationTracer | undefined;
@@ -110,9 +153,19 @@ export class OrchestrationEngine {
       ...(runContext.departmentId !== undefined ? { departmentId: runContext.departmentId } : {}),
     };
 
+    const permissionStartMs = this.deps.clock.nowMs();
     const permResult = await this.deps.permissions.resolve(permQuery);
+    const permissionDurationMs = this.deps.clock.nowMs() - permissionStartMs;
     if (!permResult.ok) {
-      log.warn('engine.permission.denied', { error: permResult.error.message });
+      log.warn('engine.permission.denied', {
+        error: permResult.error.message,
+        durationMs: permissionDurationMs,
+      });
+      tracer?.emit({
+        phase: 'permission', eventType: 'permission_denied', actorType: 'engine',
+        title: 'Permission denied', status: 'error',
+        payload: { reason: permResult.error.message },
+      });
       tracer?.fail('permission_denied', permResult.error.message);
       const deniedReply: FinalReply = {
         kind: 'final',
@@ -127,35 +180,28 @@ export class OrchestrationEngine {
     log.info('engine.permission.resolved', {
       allowedToolCount: perm.allowedToolIds.size,
       hasDept: !!perm.department,
+      durationMs: permissionDurationMs,
+    });
+
+    debugPermissions({
+      allowedToolCount: perm.allowedToolIds.size,
+      allowedToolIds: [...perm.allowedToolIds],
+      hasDepartment: !!perm.department,
+      departmentName: perm.department?.name,
+    });
+
+    tracer?.emit({
+      phase: 'permission', eventType: 'permission_resolved', actorType: 'engine',
+      title: 'Permissions resolved', status: 'success',
+      payload: { allowedToolCount: perm.allowedToolIds.size, hasDepartment: !!perm.department },
     });
 
     const branding   = resolveBranding(perm);
     const aggregator = new RunStatusAggregator();
 
-    // ── 2. Discover allowed tools ─────────────────────────────────────────
-    const availableTools = this.deps.toolRegistry.forRuntime(perm);
-    if (availableTools.length === 0) {
-      log.warn('engine.no_tools_available');
-      tracer?.fail('no_tools', 'No tools available for this role');
-      const noToolsReply: FinalReply = {
-        kind: 'final',
-        text: 'No tools are available for your current role. Please contact your administrator.',
-        format: 'text',
-      };
-      await channelAdapter.sendFinalReply(conversation, noToolsReply);
-      return ok({ finalReply: noToolsReply, toolsCalled: [] });
-    }
-
-    // ── 3. Load history with poison filter ────────────────────────────────
-    const historyResult = await this.deps.history.loadWindow(
-      incoming.chatId as unknown as ChatId,
-      { filterPoison: true, perm },
-    );
-    const history = historyResult.ok
-      ? historyResult.value
-      : { turns: [], truncated: false, tokenEstimate: 0 };
-
-    // ── 4. Build status channel wrapper ───────────────────────────────────
+    // ── 2. Build status channel wrapper & send initial card immediately ───
+    // Sending before history/tool-discovery so the user sees Divo respond
+    // as soon as permissions are resolved (~300ms after message received).
     let currentStatusHandle: StatusHandle | null = null;
     const statusChannel: StatusChannel = {
       async sendStatus(update) {
@@ -175,9 +221,7 @@ export class OrchestrationEngine {
       },
     };
 
-    // ── 4b. Pre-seed status bubble for resume flows ────────────────────────
-    // When resuming after approval, the adapter already knows the statusMessageId.
-    // Calling sendStatus here will edit the existing bubble instead of creating one.
+    // Pre-seed status bubble for resume flows (approval resume path).
     if (existingStatusMessageId && 'restoreStatusCoordinator' in channelAdapter) {
       (channelAdapter as any).restoreStatusCoordinator(
         String(conversation.correlationId),
@@ -186,12 +230,127 @@ export class OrchestrationEngine {
       );
     }
 
-    await statusChannel.sendStatus({ kind: 'status', terminal: false, branding, timeline: { liveLabel: 'Routing…' } });
+    const statusPromise = statusChannel.sendStatus({
+      kind: 'status', terminal: false, branding, timeline: { liveLabel: 'Routing…' },
+    });
+
+    // ── 3. Discover allowed tools ─────────────────────────────────────────
+    const availableTools = this.deps.toolRegistry.forRuntime(perm);
+    if (availableTools.length === 0) {
+      log.warn('engine.no_tools_available');
+      tracer?.fail('no_tools', 'No tools available for this role');
+      const noToolsReply: FinalReply = {
+        kind: 'final',
+        text: 'No tools are available for your current role. Please contact your administrator.',
+        format: 'text',
+      };
+      await statusPromise;
+      await channelAdapter.sendFinalReply(conversation, noToolsReply);
+      return ok({ finalReply: noToolsReply, toolsCalled: [] });
+    }
+
+    // ── 4. Load pre-supervisor context in parallel ────────────────────────
+    // Scheduled delivery runs must NOT load prior conversation history — the
+    // originChatId points to the user's real DM, so loading history would
+    // inject unrelated interactive turns that confuse the LLM.
+    const isScheduledDelivery = runContext.deliveryMode === 'current_chat_only';
+    const [historyResult, memoryContext, groupContextResult] = await Promise.all([
+      isScheduledDelivery
+        ? Promise.resolve({ ok: true as const, value: { turns: [], truncated: false, tokenEstimate: 0 } })
+        : this.deps.history.loadWindow(
+            incoming.chatId as unknown as ChatId,
+            { filterPoison: true, perm },
+          ),
+      isScheduledDelivery
+        ? Promise.resolve(undefined)
+        : this.searchMemoryContext({
+        query: incoming.text,
+        runContext,
+        log,
+      }),
+      incoming.chatType === 'group' && this.deps.chatContext
+        ? this.deps.chatContext.loadContext(String(runContext.companyId), String(incoming.chatId))
+        : Promise.resolve(null),
+      statusPromise,
+    ]);
+    const history = historyResult.ok
+      ? historyResult.value
+      : { turns: [], truncated: false, tokenEstimate: 0 };
+
+    debugHistory({
+      turnCount: history.turns.length,
+      truncated: history.truncated,
+      tokenEstimate: history.tokenEstimate,
+      turns: history.turns.map(t => ({ role: t.role, content: t.content })),
+    });
+
+    // ── 4b. Fast-path: skip supervisor for simple messages (greetings, chitchat) ──
+    if (this.deps.fastPathModel && classifyMessage(incoming.text) === 'SIMPLE') {
+      log.info('engine.fast_path.triggered', { messageLength: incoming.text.length });
+
+      const fastResult = await runFastPath({
+        userMessage: incoming.text,
+        history:     history.turns.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),
+        model:       this.deps.fastPathModel,
+        log,
+      });
+
+      const fastReply: FinalReply = {
+        kind: 'final', text: fastResult.text, format: 'text', branding,
+      };
+
+      // Sequential append — sequence ordering matters (user before assistant).
+      await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
+        role: 'user', content: incoming.text, timestamp: incoming.timestamp,
+      });
+      await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
+        role: 'assistant', content: fastResult.text,
+        timestamp: this.deps.clock.now().toISOString(),
+      });
+
+      await channelAdapter.sendFinalReply(conversation, fastReply);
+
+      const fpMs = this.deps.clock.nowMs() - runStartMs;
+      log.info('engine.fast_path.complete', { durationMs: fpMs });
+      tracer?.complete(fastResult.text.slice(0, 500));
+      return ok({ finalReply: fastReply, toolsCalled: [] });
+    }
+
+    // ── 4c. Loaded persistent memory context ─────────────────────────────
+    if (memoryContext) debugMemoryContext(memoryContext);
+
+    // ── 4d. Loaded group chat context (if applicable) ────────────────────
+    const isGroupWithContext = incoming.chatType === 'group'
+      && groupContextResult?.ok
+      && groupContextResult.value.recentMessages.length > 0;
+
+    const groupContextWindow = isGroupWithContext
+      ? withoutCurrentIncomingMessage(groupContextResult!.value, incoming.text)
+      : undefined;
+    const currentMsg = { senderName: 'User', content: incoming.text };
+
+    const groupContext = groupContextWindow
+      ? formatGroupContextForPrompt(groupContextWindow, currentMsg)
+      : undefined;
+
+    const multimodalCtx = groupContextWindow
+      ? formatGroupContextMultimodal(groupContextWindow, currentMsg)
+      : undefined;
+
+    debugGroupContext(groupContext);
+
+    // For group chats, limit conversation history to avoid "above" ambiguity.
+    // The unified group transcript (with the current message merged in) is the
+    // source of truth — only keep the last 2 Divo exchanges for style context.
+    const supervisorHistory = isGroupWithContext
+      ? { turns: history.turns.slice(-2), truncated: false, tokenEstimate: 0 }
+      : history;
 
     // ── 5. Run supervisor ─────────────────────────────────────────────────
+    log.info('engine.pre_supervisor.duration', { ms: this.deps.clock.nowMs() - runStartMs });
     const supervisorResult = await this.deps.supervisor.run({
       userMessage:    incoming.text,
-      history,
+      history:        supervisorHistory,
       channelType:    incoming.channel,
       channelId:      incoming.chatId,
       perm,
@@ -201,6 +360,9 @@ export class OrchestrationEngine {
       permittedTools: availableTools,
       ...(tracer !== undefined ? { tracer } : {}),
       ...(approvalGate !== undefined ? { approvalGate } : {}),
+      ...(memoryContext ? { memoryContext } : {}),
+      ...(groupContext ? { groupContext } : {}),
+      ...(multimodalCtx?.hasImages ? { groupContextParts: multimodalCtx.parts, groupContextSystemHeader: multimodalCtx.systemHeader } : {}),
       chatId:         String(conversation.chatId),
     });
 
@@ -217,10 +379,77 @@ export class OrchestrationEngine {
     }
 
     const { toolsCalled, toolResults } = supervisorResult.value;
-    const finalReply: FinalReply = { ...supervisorResult.value.finalReply, branding };
-    const actionLog = buildActionLog(toolResults);
-    const assistantHistoryContent = actionLog
-      ? `[Actions]\n${actionLog}\n\n[Reply]\n${finalReply.text}`
+
+    debugFinalReply({
+      finalText: supervisorResult.value.finalReply.text,
+      source: 'supervisor',
+      toolsCalled,
+      toolResultCount: toolResults?.length ?? 0,
+    });
+
+    // ── 5b. Post-pipeline safety net — if tools ran but reply is useless,
+    //    make one more LLM call to present the results properly.
+    const replyAssessment = assessReplyQuality({
+      userMessage: incoming.text,
+      replyText:   supervisorResult.value.finalReply.text,
+      toolsCalled,
+      toolResults,
+    });
+
+    let presentedReply = supervisorResult.value.finalReply;
+    if (replyAssessment.needsSynthesis) {
+      log.warn('engine.reply_useless.synthesis_needed', {
+        cleanReplyText: cleanReplyText(supervisorResult.value.finalReply.text),
+        reasons: replyAssessment.reasons,
+        createdTaskTitles: replyAssessment.createdTaskTitles,
+        toolsCalled,
+        toolResultCount: toolResults?.length ?? 0,
+      });
+      try {
+        const toolContext = buildPresentationContext({
+          userMessage: incoming.text,
+          replyText:   supervisorResult.value.finalReply.text,
+          toolsCalled,
+          toolResults,
+        });
+        const synthesized = await generateText({
+          model: this.deps.supervisor.getModel(),
+          system: `You are presenting the results of completed actions to the user. Rules:
+- Write the final user-facing outcome, not a process update.
+- Use completed/past-tense language for actions that already ran.
+- If Lark tasks were created, list the task titles and include owner/location when available.
+- If an internal Divo checklist was updated, do not call it a Lark Task.
+- If a previous attempt only updated an internal checklist, say that plainly before saying what was corrected.
+- Preserve important details: titles, counts, IDs, dates, amounts, links, errors, and partial failures.
+- Do not mention tool names or agent names. Mention the Divo checklist only when needed to correct a mistaken Lark-task claim.
+- Be direct — no filler phrases.
+- If no meaningful data was returned by tools, say so plainly.`,
+          messages: [
+            { role: 'user' as const, content: incoming.text },
+            { role: 'assistant' as const, content: `Actions completed. Results:\n\n${toolContext || '(no data returned)'}` },
+            { role: 'user' as const, content: 'Present these results to me.' },
+          ],
+          temperature: 0.3,
+          abortSignal: AbortSignal.timeout(30_000),
+        });
+        if (synthesized.text.trim()) {
+          presentedReply = { ...supervisorResult.value.finalReply, text: synthesized.text.trim() };
+          log.info('engine.reply_useless.synthesis_done', { textLength: synthesized.text.length });
+        }
+      } catch (e) {
+        log.warn('engine.reply_useless.synthesis_failed', { error: String(e) });
+      }
+    }
+
+    const executionTrace = isScheduledDelivery ? undefined : aggregator.getExecutionTrace();
+    const finalReply: FinalReply = {
+      ...presentedReply,
+      branding,
+      ...(executionTrace ? { executionTrace } : {}),
+    };
+    const executionLog = buildExecutionSummary(toolResults);
+    const assistantHistoryContent = executionLog
+      ? `${executionLog}\n\n[Reply]\n${finalReply.text}`
       : finalReply.text;
 
     // ── 6. Persist conversation turn ──────────────────────────────────────
@@ -236,7 +465,46 @@ export class OrchestrationEngine {
     });
 
     // ── 7. Send final reply ───────────────────────────────────────────────
+    debugRunEnd({
+      durationMs: this.deps.clock.nowMs() - runStartMs,
+      finalReply: finalReply.text,
+      toolsCalled,
+    });
     await channelAdapter.sendFinalReply(conversation, finalReply);
+
+    // ── 8. Background memory extraction ───────────────────────────────────
+    if (this.deps.mem0) {
+      const mem0 = this.deps.mem0;
+      const extractionContext = {
+        userId:         String(runContext.userId),
+        companyId:      String(runContext.companyId),
+        ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
+        userRole:       String(runContext.companyRole),
+        userMessage:    incoming.text,
+        assistantReply: finalReply.text,
+      };
+      setImmediate(() => {
+        mem0.extractAndStore(extractionContext)
+          .then(summary => {
+            tracer?.emit({
+              phase: 'complete',
+              eventType: 'memory_extracted',
+              actorType: 'mem0',
+              title: 'Memory extraction complete',
+              status: 'info',
+              payload: {
+                userId: runContext.userId,
+                attemptedScopes: summary.attemptedScopes,
+                storedMemories: summary.storedMemories,
+                scopes: summary.scopes,
+              },
+            });
+          })
+          .catch(error => {
+            log.warn('engine.mem0.extract_failed', { error: String(error) });
+          });
+      });
+    }
 
     const totalMs = this.deps.clock.nowMs() - runStartMs;
     log.info('engine.run.complete', {
@@ -260,28 +528,58 @@ export class OrchestrationEngine {
 
     return ok({ finalReply, toolsCalled });
   }
+
+  private async searchMemoryContext(input: {
+    readonly query: string;
+    readonly runContext: RunContext;
+    readonly log: Logger;
+  }): Promise<string> {
+    if (!this.deps.mem0) return '';
+
+    const startedAtMs = this.deps.clock.nowMs();
+    let timedOut = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+    const timeoutPromise = new Promise<string>(resolve => {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        input.log.warn('engine.mem0.search_timeout', {
+          timeoutMs: MEM0_SEARCH_TIMEOUT_MS,
+          durationMs: this.deps.clock.nowMs() - startedAtMs,
+        });
+        resolve('');
+      }, MEM0_SEARCH_TIMEOUT_MS);
+    });
+
+    try {
+      const searchPromise = this.deps.mem0.searchForContext({
+        query:     input.query,
+        userId:    String(input.runContext.userId),
+        companyId: String(input.runContext.companyId),
+        ...(input.runContext.departmentId ? { departmentId: String(input.runContext.departmentId) } : {}),
+      });
+
+      const memoryContext = await Promise.race([searchPromise, timeoutPromise]);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (!timedOut) {
+        input.log.info('engine.mem0.search_done', {
+          durationMs: this.deps.clock.nowMs() - startedAtMs,
+          hasMemoryContext: memoryContext.length > 0,
+        });
+      }
+      return memoryContext;
+    } catch (error) {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      input.log.warn('engine.mem0.search_failed', {
+        durationMs: this.deps.clock.nowMs() - startedAtMs,
+        error: String(error),
+      });
+      return '';
+    }
+  }
 }
 
 export interface SupervisorToolResultLogEntry {
   readonly toolName: string;
   readonly output: string;
-}
-
-export function buildActionLog(
-  toolResults: ReadonlyArray<SupervisorToolResultLogEntry>,
-): string | null {
-  const lines = toolResults
-    .filter(result => result.toolName !== 'manageTodos')
-    .map(result => {
-      const output = truncateForActionLog(result.output);
-      return output ? `- ${result.toolName}: ${output}` : `- ${result.toolName}:`;
-    });
-
-  return lines.length > 0 ? lines.join('\n') : null;
-}
-
-function truncateForActionLog(output: string): string {
-  const normalized = output.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= 200) return normalized;
-  return `${normalized.slice(0, 197)}...`;
 }

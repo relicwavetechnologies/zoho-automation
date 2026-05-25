@@ -22,12 +22,16 @@ import { DeptToolPermissionRepository } from './infrastructure/persistence/depar
 import { DeptUserOverrideRepository } from './infrastructure/persistence/department-user-override.repository';
 import { ConversationRepository } from './infrastructure/persistence/conversation.repository';
 import { ChannelIdentityRepository } from './infrastructure/persistence/channel-identity.repository';
+import { LarkChatContextRepository } from './infrastructure/persistence/lark-chat-context.repository';
+import { LarkChatContextService } from './application/chat-context/lark-chat-context.service';
 import { LarkChannelAdapter } from './infrastructure/channels/lark/lark.adapter';
 import { LarkPeopleResolver } from './infrastructure/channels/lark/lark-people.resolver';
 import { LarkTaskClient } from './infrastructure/channels/lark/clients/lark-task.client';
 import { LarkToolMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
+import { LarkContactsClient } from './infrastructure/channels/lark/clients/lark-contacts.client';
 import { LarkCalendarClient } from './infrastructure/channels/lark/clients/lark-calendar.client';
 import { LarkDocClient } from './infrastructure/channels/lark/clients/lark-doc.client';
+import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { LarkBaseClient } from './infrastructure/channels/lark/clients/lark-base.client';
 import { LarkApprovalClient } from './infrastructure/channels/lark/clients/lark-approval.client';
 import { createEmbeddingService } from './infrastructure/ai/embedding/embedding.service';
@@ -35,6 +39,8 @@ import { QdrantAdapter } from './infrastructure/ai/vector/qdrant.adapter';
 import { SerperClient } from './infrastructure/ai/search/serper.client';
 import { WebSearchService } from './infrastructure/ai/search/web-search.service';
 import { ContextSearchBroker } from './application/context-search/context-search.broker';
+import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
+import { LarkUserAuthLinkRepository } from './infrastructure/persistence/lark-user-auth-link.repository';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
 import { GoogleUserAuthLinkRepository } from './infrastructure/google/google-user-auth-link.repository';
 import { CompanyGoogleAuthLinkRepository } from './infrastructure/google/company-google-auth-link.repository';
@@ -91,10 +97,21 @@ import { DocumentRagTool } from './application/orchestration/tools/families/docu
 // Knowledge Share
 import { KnowledgeShareService } from './application/knowledge-share/knowledge-share.service';
 import { ShareResolverService } from './application/knowledge-share/share-resolver.service';
+import { Mem0Service } from './application/memory/mem0.service';
+import { AttachmentResolverService } from './application/email/attachment-resolver.service';
+import type { AttachmentSource, AttachmentSourceAdapter } from './application/email/attachment.types';
+import {
+  FileAssetAttachmentAdapter,
+  GoogleDriveAttachmentAdapter,
+  LarkAttachmentAdapter,
+  OutboundArtifactAttachmentAdapter,
+  CloudinaryExportAttachmentAdapter,
+} from './application/email/adapters';
 
 // Tools
 import { createLarkTaskTool } from './application/orchestration/tools/families/lark-task.tool';
 import { createLarkMessagingTool } from './application/orchestration/tools/families/lark-messaging.tool';
+import { createLarkContactsTool } from './application/orchestration/tools/families/lark-contacts.tool';
 import { createLarkCalendarTool } from './application/orchestration/tools/families/lark-calendar.tool';
 import { createLarkDocTool } from './application/orchestration/tools/families/lark-doc.tool';
 import { createLarkBaseTool } from './application/orchestration/tools/families/lark-base.tool';
@@ -106,12 +123,34 @@ import { createZohoCrmTool } from './application/orchestration/tools/families/zo
 import { createZohoBooksTool } from './application/orchestration/tools/families/zoho-books.tool';
 import { createContextSearchTool } from './application/orchestration/tools/families/context-search.tool';
 import { createWebSearchTool } from './application/orchestration/tools/families/web-search.tool';
+import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
 
 // AI model
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createDeepSeek } from '@ai-sdk/deepseek';
+import type { LanguageModel } from 'ai';
 import { withFallback } from './shared/model-fallback';
 import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
+import { decryptToken, TokenCryptoError } from './infrastructure/shared/token.crypto';
+import { redModelSelection } from './shared/model-selection-log';
+
+type ZohoBooksOrganizationPayload = {
+  organizations?: Array<{
+    organization_id?: string;
+    is_default?: boolean;
+    is_default_org?: boolean;
+  }>;
+};
+
+const GATEWAY_PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+type GatewayProviderCacheEntry = {
+  readonly apiKey: string;
+  readonly gatewayBaseUrl: string;
+  readonly chatModel: (modelId: string) => LanguageModel;
+  readonly expiresAtMs: number;
+};
 
 export interface Container {
   env: TypedEnv;
@@ -128,8 +167,12 @@ export interface Container {
   memoryCache: CachePort;
   /** Resolved Redis URL for the BullMQ queue — exposed so workers can share the same URL. */
   queueRedisUrl: string;
+  /** LLM model for lightweight tasks (summaries, classification). */
+  model: import('ai').LanguageModel;
   /** Per-chat message serializer — one engine.run() at a time per chatId. */
   chatSerializer: ChatMessageSerializer;
+  /** Scheduled workflow executor — polls for due tasks every N ms. */
+  scheduledWorkflowService: import('./application/scheduling/scheduled-workflow.service').ScheduledWorkflowService;
   // Admin surface
   permissions: PermissionService;
   toolPermRepo: ToolPermissionRepository;
@@ -139,6 +182,9 @@ export interface Container {
   agentAdminService:      AgentAdminService;
   agentCatalogCache:      AgentCatalogCache;
   departmentAdminService: DepartmentAdminService;
+  // Lark user OAuth
+  larkOAuthService:     LarkOAuthService;
+  larkUserAuthLinkRepo: LarkUserAuthLinkRepository;
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
   googleUserLinkRepo: GoogleUserAuthLinkRepository;
@@ -157,11 +203,19 @@ export interface Container {
   // Document RAG
   ingestionService: IngestionService;
   ingestionQueue: IngestionQueue;
+  cloudinaryAdapter: CloudinaryAdapter;
   fileAssetRepo: FileAssetRepository;
   fileAccessPolicyRepo: FileAccessPolicyRepository;
   // Knowledge Share
   knowledgeShareService: KnowledgeShareService;
   shareResolverService: ShareResolverService;
+  // Persistent memory
+  mem0Service: Mem0Service | null;
+  invalidateGatewayProviderCache: (companyId: string) => void;
+  // Group chat context
+  chatContextService: LarkChatContextService;
+  // Lark contacts (for directory sync)
+  larkContactsClient: LarkContactsClient;
 }
 
 export async function buildContainer(env: TypedEnv): Promise<Container> {
@@ -202,8 +256,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const deptRepo              = new DepartmentRepository(prisma);
   const deptToolPermRepo      = new DeptToolPermissionRepository(prisma);
   const deptUserOverrideRepo  = new DeptUserOverrideRepository(prisma);
-  const conversationRepo      = new ConversationRepository(prisma);
-  const channelIdentityRepo   = new ChannelIdentityRepository(prisma);
+  const conversationRepo      = new ConversationRepository(prisma, cache);
+  const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache);
+  const larkChatContextRepo   = new LarkChatContextRepository(prisma);
 
   // ── Permission service ─────────────────────────────────────────────────
   const permissions = new PermissionServiceImpl({
@@ -217,34 +272,182 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'permissions' }),
   });
 
-  // ── AI model (switch via MODEL_PROVIDER + MODEL_ID in .env) ─────────────
-  // Primary model follows MODEL_PROVIDER + MODEL_ID.
-  // Falls back silently to gpt-4o-mini on rate-limit / high-demand errors.
-  const openai = createOpenAI({ apiKey: env.OPENAI_API_KEY });
-  const fallbackModel = openai('gpt-4o-mini');
+  // ── AI model (DB config first, env fallback) ────────────────────────────
+  // Primary model follows AiModelTargetConfig(targetKey='default') when present,
+  // then falls back to MODEL_PROVIDER + MODEL_ID for backward compatibility.
+  // Falls back silently to configured fast model, or gpt-4o-mini (direct OpenAI) by default,
+  // on rate-limit / high-demand errors.
+  const defaultModelTarget = await prisma.aiModelTargetConfig.findUnique({
+    where: { targetKey: 'default' },
+  });
 
-  const primaryModel = (() => {
-    if (env.MODEL_PROVIDER === 'google') {
+  const createConfiguredModel = (provider: string, modelId: string) => {
+    if (provider === 'google') {
       const apiKey = env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY;
-      if (!apiKey) throw new Error('MODEL_PROVIDER=google but neither GOOGLE_GENERATIVE_AI_API_KEY nor GEMINI_API_KEY is set');
+      if (!apiKey) throw new Error('AI provider google selected but neither GOOGLE_GENERATIVE_AI_API_KEY nor GEMINI_API_KEY is set');
       // Layer 1: custom fetch fixes sig attribution in raw API responses
       // before @ai-sdk/google parses them. Layer 2 (withGeminiSignatures)
       // is defence-in-depth for the outgoing prompt direction.
       const google = createGoogleGenerativeAI({ apiKey, fetch: createGeminiFetch() });
-      return withGeminiSignatures(google(env.MODEL_ID));
+      return withGeminiSignatures(google(modelId));
     }
-    return openai(env.MODEL_ID);
-  })();
+    if (provider === 'openai') {
+      return openaiModel(modelId);
+    }
+    if (provider === 'deepseek') {
+      if (!env.DEEPSEEK_API_KEY) throw new Error('AI provider deepseek selected but DEEPSEEK_API_KEY is not set');
+      const ds = createDeepSeek({ apiKey: env.DEEPSEEK_API_KEY });
+      return ds(modelId);
+    }
+    throw new Error(`Unsupported AI model provider: ${provider}`);
+  };
 
+  const primaryProvider = defaultModelTarget?.provider ?? env.MODEL_PROVIDER;
+  const primaryModelId  = defaultModelTarget?.modelId ?? env.MODEL_ID;
+  const fastProvider    = defaultModelTarget?.fastProvider ?? 'openai';
+  const fastModelId     = defaultModelTarget?.fastModelId ?? 'gpt-4o-mini';
+  const needsOpenAi     = primaryProvider === 'openai' || fastProvider === 'openai';
+  const gatewayCompany  = needsOpenAi
+    ? await prisma.company.findFirst({
+      where:   { gatewayApiKey: { not: null } },
+      select:  { id: true, gatewayApiKey: true, gatewayUrl: true },
+      orderBy: { updatedAt: 'desc' },
+    })
+    : null;
+  const configuredGatewayBaseUrl = env.GATEWAY_BASE_URL.trim().replace(/\/+$/, '');
+  const gatewayBaseUrl = (configuredGatewayBaseUrl || gatewayCompany?.gatewayUrl || '').trim().replace(/\/+$/, '');
+  const gatewayOpenAi = (() => {
+    if (!gatewayCompany?.gatewayApiKey || !gatewayBaseUrl) return null;
+    try {
+      const apiKey = decryptToken(gatewayCompany.gatewayApiKey, env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '');
+      logger.info('ai.openai.gateway.enabled', { companyId: gatewayCompany.id, gatewayBaseUrl });
+      return createOpenAI({ apiKey, baseURL: `${gatewayBaseUrl}/v1` });
+    } catch (error) {
+      if (error instanceof TokenCryptoError) {
+        logger.warn('ai.openai.gateway.decrypt_failed', { companyId: gatewayCompany.id, error: error.message });
+        return null;
+      }
+      throw error;
+    }
+  })();
+  const directOpenAi    = createOpenAI({ apiKey: env.OPENAI_API_KEY });
+  const openaiModel     = (modelId: string) => gatewayOpenAi ? gatewayOpenAi.chat(modelId) : directOpenAi(modelId);
+  const directOpenAiModel = (modelId: string) => directOpenAi(modelId);
+  const gatewayProviderCache = new Map<string, GatewayProviderCacheEntry>();
+  const invalidateGatewayProviderCache = (companyId: string) => {
+    const deleted = gatewayProviderCache.delete(companyId);
+    logger.info('ai.openai.gateway.agent_model.cache_invalidated', { companyId, deleted });
+  };
+  const primaryModel    = createConfiguredModel(primaryProvider, primaryModelId);
+  const fallbackModel   = fastProvider === 'openai'
+    ? directOpenAiModel(fastModelId)
+    : createConfiguredModel(fastProvider, fastModelId);
   const model = withFallback(primaryModel, fallbackModel);
+
+  const chatContextService = new LarkChatContextService({
+    repo: larkChatContextRepo,
+    model: fallbackModel,
+    logger: logger.child({ service: 'chat-context' }),
+  });
+  logger.warn('ai.model.selected', {
+    provider: primaryProvider,
+    modelId: primaryModelId,
+    source: 'company_default_startup',
+    selection: redModelSelection({
+      provider: primaryProvider,
+      modelId: primaryModelId,
+      source: 'company_default_startup',
+    }),
+  });
+  logger.warn('ai.model.selected', {
+    provider: fastProvider,
+    modelId: fastModelId,
+    source: 'fallback_startup',
+    selection: redModelSelection({
+      provider: fastProvider,
+      modelId: fastModelId,
+      source: 'fallback_startup',
+    }),
+  });
+  const resolveModel = async (input: {
+    provider: string;
+    modelId: string;
+    companyId: string;
+    agentSlug?: string;
+  }): Promise<LanguageModel> => {
+    if (input.provider === 'google' || input.provider === 'deepseek') {
+      return createConfiguredModel(input.provider, input.modelId);
+    }
+    if (input.provider !== 'openai') {
+      throw new Error(`Unsupported AI model provider: ${input.provider}`);
+    }
+
+    const nowMs = Date.now();
+    const cached = gatewayProviderCache.get(input.companyId);
+    if (cached && cached.expiresAtMs > nowMs) {
+      logger.info('ai.openai.gateway.agent_model.cache_hit', {
+        companyId: input.companyId,
+        agentSlug: input.agentSlug,
+        gatewayBaseUrl: cached.gatewayBaseUrl,
+      });
+      return cached.chatModel(input.modelId);
+    }
+    if (cached) {
+      gatewayProviderCache.delete(input.companyId);
+    }
+
+    logger.info('ai.openai.gateway.agent_model.cache_miss', {
+      companyId: input.companyId,
+      agentSlug: input.agentSlug,
+    });
+
+    const company = await prisma.company.findUnique({
+      where:  { id: input.companyId },
+      select: { id: true, gatewayApiKey: true, gatewayUrl: true },
+    });
+    const companyGatewayBaseUrl = (configuredGatewayBaseUrl || company?.gatewayUrl || '').trim().replace(/\/+$/, '');
+    if (company?.gatewayApiKey && companyGatewayBaseUrl) {
+      try {
+        const apiKey = decryptToken(company.gatewayApiKey, env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '');
+        logger.info('ai.openai.gateway.agent_model.enabled', {
+          companyId: input.companyId,
+          agentSlug: input.agentSlug,
+          gatewayBaseUrl: companyGatewayBaseUrl,
+        });
+        const gatewayProvider = createOpenAI({ apiKey, baseURL: `${companyGatewayBaseUrl}/v1` });
+        gatewayProviderCache.set(input.companyId, {
+          apiKey,
+          gatewayBaseUrl: companyGatewayBaseUrl,
+          chatModel: (modelId: string) => gatewayProvider.chat(modelId),
+          expiresAtMs: nowMs + GATEWAY_PROVIDER_CACHE_TTL_MS,
+        });
+        return gatewayProvider.chat(input.modelId);
+      } catch (error) {
+        if (error instanceof TokenCryptoError) {
+          gatewayProviderCache.delete(input.companyId);
+          logger.warn('ai.openai.gateway.agent_model.decrypt_failed', {
+            companyId: input.companyId,
+            agentSlug: input.agentSlug,
+            error: error.message,
+          });
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return directOpenAi(input.modelId);
+  };
 
   // ── Lark tool clients ──────────────────────────────────────────────────
   const larkClientDeps = { appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET };
   const larkPeopleResolver = new LarkPeopleResolver(prisma);
   const larkTaskClient     = new LarkTaskClient(larkClientDeps);
   const larkMsgToolClient  = new LarkToolMessagingClient(larkClientDeps);
+  const larkContactsClient = new LarkContactsClient(larkClientDeps);
   const larkCalendarClient = new LarkCalendarClient(larkClientDeps);
   const larkDocClient      = new LarkDocClient(larkClientDeps);
+  const larkFileClient     = new LarkFileClient(env, logger);
   const larkBaseClient     = new LarkBaseClient(larkClientDeps);
   const larkApprovalClient = new LarkApprovalClient(larkClientDeps);
 
@@ -262,6 +465,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const webSearchService    = new WebSearchService(
     serperClient,
     logger.child({ service: 'web-search' }),
+  );
+
+  // ── Lark user OAuth ───────────────────────────────────────────────────────
+  const larkOAuthService = new LarkOAuthService(
+    env.LARK_APP_ID,
+    env.LARK_APP_SECRET,
+    env.LARK_OAUTH_REDIRECT_URI ?? `${env.BACKEND_PUBLIC_URL}/api/lark/auth/callback`,
+    env.LARK_API_BASE_URL,
+  );
+  const larkUserAuthLinkRepo = new LarkUserAuthLinkRepository(
+    prisma,
+    env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '',
   );
 
   // ── Google OAuth + repositories ──────────────────────────────────────────
@@ -325,24 +540,81 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   async function resolveZohoToken(companyId: string): Promise<string | null> {
-    if (!zohoTokenService.isConfigured()) return null;
+    if (!zohoTokenService.isConfigured()) {
+      logger.warn('zoho.token.not_configured', { companyId });
+      return null;
+    }
     try {
-      return await zohoTokenService.getValidToken(companyId);
-    } catch {
+      const token = await zohoTokenService.getValidToken(companyId);
+      logger.info('zoho.token.resolved', { companyId, hasToken: !!token });
+      return token;
+    } catch (e) {
+      logger.error('zoho.token.resolve_failed', { companyId, error: e instanceof Error ? e.message : String(e) });
+      return null;
+    }
+  }
+
+  const zohoBooksOrgCache = new Map<string, { organizationId: string; expiresAtMs: number }>();
+
+  async function resolveZohoBooksOrganizationId(companyId: string, token: string): Promise<string | null> {
+    const cached = zohoBooksOrgCache.get(companyId);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.organizationId;
+    }
+
+    try {
+      const apiRoot = env.ZOHO_API_BASE_URL.replace(/\/$/, '');
+      const res = await fetch(`${apiRoot}/books/v3/organizations`, {
+        headers: { Authorization: `Zoho-oauthtoken ${token}` },
+      });
+
+      const payload = (await res.json().catch(() => ({}))) as ZohoBooksOrganizationPayload & {
+        code?: number;
+        message?: string;
+      };
+
+      if (!res.ok) {
+        logger.warn('zoho.books.organization_lookup.failed', {
+          companyId,
+          status: res.status,
+          code: payload.code,
+          message: payload.message,
+        });
+        return null;
+      }
+
+      const orgs = Array.isArray(payload.organizations) ? payload.organizations : [];
+      const selected = orgs.find((org) => org.is_default_org === true || org.is_default === true) ?? orgs[0];
+      const organizationId = selected?.organization_id;
+      if (!organizationId) {
+        logger.warn('zoho.books.organization_lookup.empty', { companyId });
+        return null;
+      }
+
+      zohoBooksOrgCache.set(companyId, {
+        organizationId,
+        expiresAtMs: Date.now() + 10 * 60 * 1000,
+      });
+      return organizationId;
+    } catch (error) {
+      logger.warn('zoho.books.organization_lookup.error', {
+        companyId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }
 
   const getZohoCrmClient = async (companyId: string, _userId: string) => {
     const token = await resolveZohoToken(companyId);
-    return token ? new ZohoCrmClient(token) : null;
+    return token ? new ZohoCrmClient(token, env.ZOHO_API_BASE_URL) : null;
   };
 
   const getZohoBooksClient = async (companyId: string, _userId: string) => {
     const token = await resolveZohoToken(companyId);
     if (!token) return null;
-    // organizationId defaults to companyId in phase 1; override later when multi-org
-    return new ZohoBooksClient(token, companyId);
+    const organizationId = await resolveZohoBooksOrganizationId(companyId, token);
+    return organizationId ? new ZohoBooksClient(token, organizationId, env.ZOHO_API_BASE_URL) : null;
   };
 
   // ── Cloudinary adapter (graceful no-op when credentials absent) ──────────
@@ -364,6 +636,14 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const fileAssetRepo       = new FileAssetRepository(prisma);
   const vectorDocRepo       = new VectorDocumentRepository(prisma);
   const fileAccessPolicyRepo = new FileAccessPolicyRepository(prisma);
+  const attachmentAdapters = new Map<AttachmentSource, AttachmentSourceAdapter>([
+    ['file_asset', new FileAssetAttachmentAdapter(fileAssetRepo, cloudinaryAdapter)],
+    ['outbound_artifact', new OutboundArtifactAttachmentAdapter(prisma)],
+    ['google_drive', new GoogleDriveAttachmentAdapter(getDriveClient)],
+    ['lark', new LarkAttachmentAdapter(larkFileClient)],
+    ['cloudinary', new CloudinaryExportAttachmentAdapter(cloudinaryAdapter)],
+  ]);
+  const attachmentResolver = new AttachmentResolverService(attachmentAdapters);
 
   const ingestionService = new IngestionService(
     env,
@@ -395,7 +675,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   // ── Zoho Books paginated client + finance ops ────────────────────────────
-  const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService);
+  const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
 
   const zohoFinanceOps = new ZohoFinanceOps(
     zohoPaginatedBooksClient,
@@ -446,22 +726,76 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Tool registry ──────────────────────────────────────────────────────
   const toolRegistry = new ToolRegistry();
-  toolRegistry.register(createLarkTaskTool({ client: larkTaskClient, peopleResolver: larkPeopleResolver }));
-  toolRegistry.register(createLarkMessagingTool({ client: larkMsgToolClient }));
-  toolRegistry.register(createLarkCalendarTool({ client: larkCalendarClient }));
+  toolRegistry.register(createLarkTaskTool({
+    client: larkTaskClient,
+    peopleResolver: larkPeopleResolver,
+    userTokenResolver: {
+      async resolve(userId: string, companyId: string): Promise<string | null> {
+        const link = await larkUserAuthLinkRepo.findByUserId(userId, companyId);
+        if (!link.ok || !link.value) return null;
+        const { accessToken, refreshToken, accessTokenExpiresAt } = link.value;
+        const isExpired = accessTokenExpiresAt && new Date(accessTokenExpiresAt).getTime() < Date.now() + 60_000;
+        if (!isExpired && accessToken) return accessToken;
+        if (!refreshToken) return null;
+        try {
+          const refreshed = await larkOAuthService.refreshUserToken(refreshToken);
+          await larkUserAuthLinkRepo.upsert({
+            userId, companyId,
+            larkOpenId:    link.value.larkOpenId ?? '',
+            larkTenantKey: link.value.larkTenantKey,
+            larkEmail:     link.value.larkEmail,
+            accessToken:   refreshed.accessToken,
+            refreshToken:  refreshed.refreshToken ?? refreshToken,
+            tokenType:     refreshed.tokenType,
+            accessTokenExpiresAt:  new Date(Date.now() + refreshed.expiresIn * 1000),
+            refreshTokenExpiresAt: refreshed.refreshTokenExpiresIn
+              ? new Date(Date.now() + refreshed.refreshTokenExpiresIn * 1000)
+              : null,
+          });
+          return refreshed.accessToken;
+        } catch {
+          return null;
+        }
+      },
+    },
+    createUserClient: (userToken: string) =>
+      new LarkTaskClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, userToken }),
+  }));
+  toolRegistry.register(createLarkMessagingTool({ client: larkMsgToolClient, peopleResolver: larkPeopleResolver }));
+  toolRegistry.register(createLarkContactsTool({ peopleResolver: larkPeopleResolver, contactsClient: larkContactsClient }));
+  toolRegistry.register(createLarkCalendarTool({ client: larkCalendarClient, peopleResolver: larkPeopleResolver }));
   toolRegistry.register(createLarkDocTool({ client: larkDocClient }));
   toolRegistry.register(createLarkBaseTool({ client: larkBaseClient }));
   toolRegistry.register(createLarkApprovalTool({ client: larkApprovalClient }));
-  toolRegistry.register(createGoogleGmailTool({ getClient: getGmailClient }));
+  toolRegistry.register(createGoogleGmailTool({
+    getClient: getGmailClient,
+    resolveAttachments: (refs, ctx) => attachmentResolver.resolve(refs, ctx),
+  }));
   toolRegistry.register(createGoogleDriveTool({ getClient: getDriveClient }));
   toolRegistry.register(createGoogleCalendarTool({ getClient: getCalendarClient }));
   toolRegistry.register(createZohoCrmTool({ getClient: getZohoCrmClient }));
-  toolRegistry.register(createZohoBooksTool({ getClient: getZohoBooksClient, financeOps: zohoFinanceOps }));
+  toolRegistry.register(createZohoBooksTool({
+    getClient:       getZohoBooksClient,
+    booksClient:     zohoPaginatedBooksClient,
+    financeOps:      zohoFinanceOps,
+    cloudinary:      cloudinaryAdapter,
+    inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
+    csvLinkTtl:      env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+  }));
   toolRegistry.register(createContextSearchTool({ broker: contextSearchBroker }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(new DocumentRagTool(documentRagBroker));
+  toolRegistry.register(createDataProcessorTool({
+    cloudinary:  cloudinaryAdapter,
+    booksClient: zohoPaginatedBooksClient,
+    csvLinkTtl:  env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+  }));
 
   logger.info('tool.registry.built', { toolCount: toolRegistry.ids().length, tools: toolRegistry.ids() });
+
+  // ── Skill registry (unified agent mode) ───────────────────────────────
+  const { createDefaultSkillRegistry } = await import('./application/skills');
+  const skillRegistry = createDefaultSkillRegistry();
 
   // ── Engine primitives ──────────────────────────────────────────────────
   const history = new HistoryService({ conversationRepo, logger: logger.child({ service: 'history' }) });
@@ -488,8 +822,33 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   });
   const todoRepo      = new SupervisorTodoRepository(prisma);
 
+  logger.info('mem0.config', {
+    MEM0_ENABLED: env.MEM0_ENABLED,
+    MEM0_EXTRACTION_MODEL: env.MEM0_EXTRACTION_MODEL,
+    MEM0_QDRANT_COLLECTION: env.MEM0_QDRANT_COLLECTION,
+    QDRANT_URL: env.QDRANT_URL,
+    hasQdrantApiKey: !!env.QDRANT_API_KEY,
+    qdrantApiKeyLength: env.QDRANT_API_KEY?.length ?? 0,
+  });
+
+  const mem0Service = env.MEM0_ENABLED
+    ? new Mem0Service({
+      openaiApiKey:    env.OPENAI_API_KEY,
+      qdrantUrl:       env.QDRANT_URL,
+      ...(env.QDRANT_API_KEY ? { qdrantApiKey: env.QDRANT_API_KEY } : {}),
+      collectionName:  env.MEM0_QDRANT_COLLECTION,
+      extractionModel: env.MEM0_EXTRACTION_MODEL,
+      maxResults:      env.MEM0_MAX_RESULTS,
+      logger:          logger.child({ service: 'mem0' }),
+    })
+    : null;
+
+  logger.info('mem0.status', { enabled: !!mem0Service });
+
   const supervisor = new SupervisorAgent({
     model,
+    defaultModel: { provider: primaryProvider, modelId: primaryModelId },
+    resolveModel,
     agentResolver,
     agentCatalogCache,
     todoRepo,
@@ -499,14 +858,21 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     dynamicGraphEnabled: env.DYNAMIC_GRAPH_ENABLED,
     dynamicGraphShadow:  env.DYNAMIC_GRAPH_SHADOW,
     supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
+    unifiedAgentMode: env.UNIFIED_AGENT_MODE,
+    skillRegistry,
+    toolRegistry,
+    ...(mem0Service ? { mem0: mem0Service } : {}),
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
   });
 
   // Per-chat serializer: ensures only one engine.run() runs per chatId at a time.
-  // Timeout of 90 s — if an engine run hangs longer than this, the queue slot is
-  // released so the next queued message is not blocked indefinitely.
+  // Timeout must exceed the worst-case supervisor run (660s for dynamic graph with
+  // agent retry). Using 720s (12 min) to add buffer. The AbortSignal is threaded
+  // to the engine so timed-out runs are actually cancelled, not just abandoned.
+  // maxConcurrent caps total parallel engine runs to prevent resource exhaustion.
   const chatSerializer = new ChatMessageSerializer({
-    timeoutMs: 90_000,
+    timeoutMs: 720_000,
+    maxConcurrent: 10,
     onTimeout: (chatId) => {
       logger.warn('chat_serializer.timeout', { chatId });
     },
@@ -518,6 +884,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     supervisor,
     history,
     executionRepo,
+    ...(mem0Service ? { mem0: mem0Service } : {}),
+    fastPathModel: model,
+    chatContext: chatContextService,
     logger: logger.child({ service: 'engine' }),
     clock:  systemClock,
   });
@@ -592,6 +961,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     agentAdminService,
     agentCatalogCache,
     departmentAdminService,
+    // Lark user OAuth
+    larkOAuthService,
+    larkUserAuthLinkRepo,
     // OAuth surfaces
     googleOAuthService,
     googleUserLinkRepo,
@@ -610,12 +982,31 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Document RAG
     ingestionService,
     ingestionQueue,
+    cloudinaryAdapter,
     fileAssetRepo,
     fileAccessPolicyRepo,
     // Knowledge Share
     knowledgeShareService,
     shareResolverService,
+    mem0Service,
+    invalidateGatewayProviderCache,
     // Message serialization
     chatSerializer,
+    // Group chat context
+    chatContextService,
+    // Lark contacts (for directory sync)
+    larkContactsClient,
+    // LLM model
+    model,
+    // Scheduled workflow executor
+    scheduledWorkflowService: new (await import('./application/scheduling/scheduled-workflow.service')).ScheduledWorkflowService({
+      prisma,
+      engine,
+      channelAdapter: larkAdapter,
+      channelIdentityRepo,
+      logger: logger.child({ service: 'scheduled-workflow' }),
+      clock:  systemClock,
+      pollIntervalMs: env.SCHEDULED_WORKFLOW_POLL_INTERVAL_MS,
+    }),
   };
 }

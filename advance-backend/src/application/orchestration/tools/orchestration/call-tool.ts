@@ -1,0 +1,134 @@
+/**
+ * call_tool — universal meta-tool for the single-brain architecture.
+ *
+ * The LLM calls this ONE tool with a toolId + args, and the backend routes
+ * to the correct tool implementation from the ToolRegistry. Replicates the
+ * full security pipeline from ai-sdk-adapter: permission check, approval
+ * gate, then execution.
+ *
+ * All outputs (success and error) are returned as strings for the LLM.
+ */
+
+import { dynamicTool } from 'ai';
+import { z } from 'zod';
+import type { ToolRegistry } from '../tool-registry';
+import type { AdapterContext } from '../ai-sdk-adapter';
+import { buildArgsSummary } from '../ai-sdk-adapter';
+import type { ToolExecutionContext } from '../tool.contract';
+
+const inputSchema = z.object({
+  toolId: z.string().describe('The ID of the tool to execute (e.g. larkTask, googleGmail, zohoCrm)'),
+  args:   z.record(z.unknown()).describe('Arguments to pass to the tool, matching its expected schema'),
+});
+
+export function createCallToolTool(
+  registry: ToolRegistry,
+  adapterCtx: AdapterContext,
+) {
+  const availableIds = registry.ids().join(', ');
+
+  return dynamicTool({
+    description:
+      `Execute any tool by ID. Route your action through this single tool instead of calling tools directly.\n` +
+      `Available tools: ${availableIds}`,
+    inputSchema: inputSchema as never,
+    execute: async (input: unknown): Promise<string> => {
+      const parsed = inputSchema.safeParse(input);
+      if (!parsed.success) {
+        return `error: invalid call_tool input — ${parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ')}`;
+      }
+
+      const { toolId, args } = parsed.data;
+
+      adapterCtx.logger.info('call_tool.invoke', { toolId });
+
+      // ── Look up tool ─────────────────────────────────────────────────────
+      const tool = registry.byId(toolId as never);
+      if (!tool) {
+        adapterCtx.logger.warn('call_tool.unknown_tool', { toolId });
+        return `error: unknown toolId "${toolId}". Available tools: ${availableIds}`;
+      }
+
+      // ── Validate args against tool schema ────────────────────────────────
+      const argsParse = tool.argsSchema.safeParse(args);
+      if (!argsParse.success) {
+        const issues = argsParse.error.errors
+          .map(e => `${e.path.join('.') || '(root)'}: ${e.message}`)
+          .join('; ');
+        adapterCtx.logger.warn('call_tool.invalid_args', { toolId, issues });
+        return `error: invalid args for "${toolId}" — ${issues}`;
+      }
+
+      const validatedArgs = argsParse.data;
+
+      // ── Permission check ─────────────────────────────────────────────────
+      const permCheck = tool.permissionCheck(validatedArgs, adapterCtx.perm);
+      if (!permCheck.ok) {
+        adapterCtx.logger.warn('call_tool.permission_denied', {
+          toolId,
+          reason: permCheck.error.message,
+        });
+        return `permission_denied: ${permCheck.error.message}`;
+      }
+
+      const action = permCheck.value;
+
+      // ── Approval gate ────────────────────────────────────────────────────
+      if (adapterCtx.approvalGate && adapterCtx.chatId) {
+        const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
+        const decision = await adapterCtx.approvalGate.check({
+          toolId:      tool.id,
+          action,
+          args:        validatedArgs,
+          perm:        adapterCtx.perm,
+          runContext:  adapterCtx.runContext,
+          chatId:      adapterCtx.chatId,
+          argsSummary,
+        });
+
+        if (decision.kind === 'pending') {
+          adapterCtx.logger.info('call_tool.approval_pending', {
+            toolId,
+            action,
+            approvalId: decision.approvalId,
+          });
+          return `approval_pending: ${decision.message}`;
+        }
+
+        if (decision.kind === 'misconfigured') {
+          adapterCtx.logger.warn('call_tool.approval_misconfigured', {
+            toolId,
+            action,
+            reason: decision.message,
+          });
+          return `approval_misconfigured: ${decision.message}`;
+        }
+
+        // decision.kind === 'allowed' — fall through to execute
+      }
+
+      // ── Build execution context ──────────────────────────────────────────
+      const execCtx: ToolExecutionContext = {
+        runContext:    adapterCtx.runContext,
+        perm:         adapterCtx.perm,
+        correlationId: tool.id,
+        logger:       adapterCtx.logger.child({ toolId: tool.id }),
+        clock:        adapterCtx.clock,
+        ...(adapterCtx.onProgress ? { onProgress: adapterCtx.onProgress } : {}),
+      };
+
+      // ── Execute ──────────────────────────────────────────────────────────
+      const result = await tool.execute(validatedArgs, execCtx);
+      if (!result.ok) {
+        adapterCtx.logger.warn('call_tool.tool_error', {
+          toolId,
+          reason: result.error.message,
+        });
+        return `error: ${result.error.message}`;
+      }
+
+      const val = result.value;
+      return typeof val === 'string' ? val : JSON.stringify(val);
+    },
+  });
+}
