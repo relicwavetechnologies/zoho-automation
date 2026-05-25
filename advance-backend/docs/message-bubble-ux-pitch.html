@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Divo — Message Bubble UX Pitch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg-app: #0f0f10;
+      --bg-chat: #1a1a1c;
+      --bg-bubble: #2a2a2e;
+      --bg-bubble-alt: #252528;
+      --border: #3a3a40;
+      --text: #e8e8ea;
+      --text-muted: #9a9aa3;
+      --text-dim: #6b6b75;
+      --accent-blue: #4b8bf4;
+      --accent-green: #3d9a6a;
+      --accent-green-bg: rgba(61, 154, 106, 0.15);
+      --accent-yellow: #e8b84a;
+      --accent-red: #e05c5c;
+      --accent-purple: #9b7ede;
+      --accent-orange: #e89b4a;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--font);
+      background: var(--bg-app);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* ── Top nav ── */
+    .topbar {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(15,15,16,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      flex-wrap: wrap;
+    }
+    .topbar h1 { font-size: 15px; font-weight: 600; }
+    .topbar p { font-size: 12px; color: var(--text-muted); }
+    .progress-bar {
+      position: fixed; top: 0; left: 0; height: 2px;
+      background: var(--accent-blue); width: 0%; z-index: 200;
+      transition: width 0.1s;
+    }
+
+    /* ── Layout ── */
+    .page { max-width: 1100px; margin: 0 auto; padding: 32px 24px 80px; }
+    section { margin-bottom: 56px; }
+    section > h2 {
+      font-size: 22px; font-weight: 700; margin-bottom: 8px;
+      letter-spacing: -0.02em;
+    }
+    section > .lead {
+      color: var(--text-muted); font-size: 14px; max-width: 720px; margin-bottom: 24px;
+    }
+
+    /* ── Pitch cards ── */
+    .pitch-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px; margin-bottom: 32px;
+    }
+    .pitch-card {
+      background: var(--bg-bubble);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+    .pitch-card h3 { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    .pitch-card p { font-size: 12px; color: var(--text-muted); }
+
+    /* ── State picker ── */
+    .state-tabs {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px;
+    }
+    .state-tab {
+      font-size: 11px; font-weight: 500;
+      padding: 6px 12px; border-radius: 999px;
+      border: 1px solid var(--border);
+      background: transparent; color: var(--text-muted);
+      cursor: pointer; transition: all 0.15s;
+    }
+    .state-tab:hover { border-color: var(--accent-blue); color: var(--text); }
+    .state-tab.active {
+      background: var(--accent-blue); border-color: var(--accent-blue); color: #fff;
+    }
+
+    /* ── Lark chat mock ── */
+    .chat-frame {
+      background: var(--bg-chat);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      max-width: 520px;
+    }
+    .chat-header {
+      padding: 14px 16px;
+      display: flex; align-items: center; gap: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .avatar {
+      width: 36px; height: 36px; border-radius: 50%;
+      background: linear-gradient(135deg, #3a7bd5, #5b9ef5);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .chat-header .meta h3 { font-size: 14px; font-weight: 600; }
+    .chat-header .meta span { font-size: 11px; color: var(--text-dim); }
+    .bot-badge {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.04em;
+      background: var(--accent-yellow); color: #1a1a1c;
+      padding: 2px 5px; border-radius: 4px; margin-left: 6px;
+    }
+    .chat-body { padding: 16px; min-height: 320px; }
+
+    /* Compare row */
+    .compare {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .compare { grid-template-columns: 1fr; }
+    }
+    .compare-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--text-dim); margin-bottom: 10px;
+    }
+    .compare-label.proposed { color: var(--accent-green); }
+
+    /* ── Message bubbles ── */
+    .bubble {
+      background: var(--bg-bubble);
+      border-radius: var(--radius);
+      overflow: hidden;
+      font-size: 13px;
+      animation: fadeIn 0.35s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .bubble-header {
+      padding: 10px 14px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-bubble-alt);
+    }
+    .bubble-header .title { font-weight: 700; font-size: 14px; }
+    .dept-tag {
+      font-size: 10px; font-weight: 600; padding: 2px 8px;
+      border-radius: 4px; background: var(--accent-green-bg);
+      color: var(--accent-green);
+    }
+    .dept-tag.blue { background: rgba(75,139,244,0.15); color: var(--accent-blue); }
+    .dept-tag.purple { background: rgba(155,126,222,0.15); color: var(--accent-purple); }
+
+    .bubble-body { padding: 12px 14px 14px; }
+
+    /* Current (plain) style */
+    .bubble.current .section-title {
+      font-weight: 700; font-size: 13px; margin: 10px 0 6px;
+    }
+    .bubble.current .section-title:first-child { margin-top: 0; }
+    .bubble.current .log { color: var(--text-muted); font-size: 12px; margin: 2px 0; }
+    .bubble.current .live { color: var(--text); margin-top: 8px; font-size: 13px; }
+
+    /* Proposed structured */
+    .phase-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 12px; padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .phase-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent-blue);
+      animation: pulse 1.4s ease infinite;
+    }
+    .phase-dot.done { background: var(--accent-green); animation: none; }
+    .phase-dot.fail { background: var(--accent-red); animation: none; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+    .phase-label { font-size: 12px; font-weight: 600; flex: 1; }
+    .phase-meta { font-size: 11px; color: var(--text-dim); }
+
+    .progress-track {
+      height: 4px; background: var(--border); border-radius: 2px;
+      margin-bottom: 12px; overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; background: var(--accent-blue);
+      border-radius: 2px; transition: width 0.4s ease;
+    }
+
+    .step-list { list-style: none; }
+    .step-item {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 6px 0; font-size: 12px;
+      border-bottom: 1px solid rgba(58,58,64,0.5);
+    }
+    .step-item:last-child { border-bottom: none; }
+    .step-icon {
+      width: 18px; height: 18px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; flex-shrink: 0; margin-top: 1px;
+    }
+    .step-icon.pending { border: 1.5px solid var(--border); color: transparent; }
+    .step-icon.running {
+      border: 2px solid var(--accent-blue); color: var(--accent-blue);
+      animation: spin 1s linear infinite;
+    }
+    .step-icon.done { background: var(--accent-green); color: #fff; }
+    .step-icon.failed { background: var(--accent-red); color: #fff; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .step-content { flex: 1; min-width: 0; }
+    .step-title { font-weight: 500; }
+    .step-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .step-result {
+      margin-top: 4px; padding: 6px 8px;
+      background: rgba(0,0,0,0.25); border-radius: 6px;
+      font-size: 11px; color: var(--text-muted);
+      border-left: 2px solid var(--accent-green);
+    }
+    .step-result.error { border-left-color: var(--accent-red); }
+
+    .tool-badge {
+      display: inline-block; font-size: 9px; font-weight: 700;
+      letter-spacing: 0.03em; padding: 1px 5px; border-radius: 3px;
+      margin-right: 4px; vertical-align: middle;
+    }
+    .tool-badge.zoho { background: rgba(232,155,74,0.2); color: var(--accent-orange); }
+    .tool-badge.lark { background: rgba(75,139,244,0.2); color: var(--accent-blue); }
+    .tool-badge.google { background: rgba(155,126,222,0.2); color: var(--accent-purple); }
+
+    .live-strip {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 10px; padding: 8px 10px;
+      background: rgba(75,139,244,0.08);
+      border: 1px solid rgba(75,139,244,0.2);
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+    }
+    .live-strip .spinner {
+      width: 14px; height: 14px; border: 2px solid var(--border);
+      border-top-color: var(--accent-blue); border-radius: 50%;
+      animation: spin 0.8s linear infinite; flex-shrink: 0;
+    }
+
+    .recent-collapsed {
+      margin-top: 8px;
+    }
+    .recent-toggle {
+      font-size: 11px; color: var(--text-dim); cursor: pointer;
+      display: flex; align-items: center; gap: 4px;
+      background: none; border: none; color: var(--text-dim);
+      padding: 0; font-family: inherit;
+    }
+    .recent-toggle:hover { color: var(--text-muted); }
+    .recent-items { margin-top: 6px; font-size: 11px; color: var(--text-dim); }
+    .recent-items .done-line { color: var(--text-muted); padding: 2px 0; }
+
+    .hitl-actions {
+      display: flex; gap: 8px; margin-top: 12px; padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+    .btn {
+      font-size: 12px; font-weight: 500; padding: 6px 14px;
+      border-radius: 6px; border: 1px solid var(--border);
+      background: var(--bg-bubble-alt); color: var(--text);
+      cursor: pointer;
+    }
+    .btn.primary { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+    .btn.danger { border-color: var(--accent-red); color: var(--accent-red); }
+
+    /* Final reply bubble */
+    .bubble.final .bubble-body { font-size: 13px; }
+    .bubble.final h4 { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+    .bubble.final p { color: var(--text-muted); margin-bottom: 10px; font-size: 12px; }
+    .result-table {
+      width: 100%; font-size: 11px; border-collapse: collapse;
+      margin: 8px 0;
+    }
+    .result-table th, .result-table td {
+      text-align: left; padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .result-table th { color: var(--text-dim); font-weight: 500; }
+    .trace-footer {
+      margin-top: 12px; padding-top: 10px;
+      border-top: 1px solid var(--border);
+      font-size: 11px; color: var(--text-dim);
+    }
+
+    /* Flow diagram */
+    .flow-wrap {
+      background: var(--bg-bubble);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      overflow-x: auto;
+    }
+    .flow {
+      display: flex; align-items: center; gap: 0;
+      min-width: max-content; padding: 8px 0;
+    }
+    .flow-node {
+      text-align: center; min-width: 100px;
+    }
+    .flow-node .box {
+      padding: 10px 14px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg-bubble-alt);
+      font-size: 11px; font-weight: 600;
+    }
+    .flow-node .box.active { border-color: var(--accent-blue); box-shadow: 0 0 0 2px rgba(75,139,244,0.2); }
+    .flow-node .box.done { border-color: var(--accent-green); }
+    .flow-node .box.fail { border-color: var(--accent-red); }
+    .flow-node span { display: block; font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+    .flow-arrow {
+      width: 32px; height: 2px; background: var(--border);
+      position: relative; flex-shrink: 0;
+    }
+    .flow-arrow::after {
+      content: ''; position: absolute; right: 0; top: -4px;
+      border: 5px solid transparent; border-left-color: var(--border);
+    }
+
+    /* State panel visibility */
+    .state-panel { display: none; }
+    .state-panel.active { display: block; }
+
+    /* Implementation note */
+    .impl-note {
+      background: rgba(75,139,244,0.06);
+      border: 1px solid rgba(75,139,244,0.2);
+      border-radius: var(--radius);
+      padding: 14px 16px; font-size: 12px; color: var(--text-muted);
+      margin-top: 16px;
+    }
+    .impl-note strong { color: var(--text); }
+
+    .legend {
+      display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px;
+      font-size: 11px; color: var(--text-dim);
+    }
+    .legend span { display: flex; align-items: center; gap: 6px; }
+  </style>
+</head>
+<body>
+  <div class="progress-bar" id="progressBar"></div>
+
+  <header class="topbar">
+    <div>
+      <h1>Divo — Message Bubble UX Pitch</h1>
+      <p>Interactive mock · Lark dark theme · All run states</p>
+    </div>
+    <span style="font-size:11px;color:var(--text-dim)">No code changes — design proposal only</span>
+  </header>
+
+  <main class="page">
+
+    <!-- PITCH -->
+    <section id="pitch">
+      <h2>What we can build</h2>
+      <p class="lead">
+        Your backend already tracks phases, plan steps, tool activity, and result previews
+        (<code>progress-state.ts</code> → <code>buildStatusCard</code>). The gap is visual structure in Lark cards —
+        not data. This pitch turns the same timeline into scannable, state-aware bubbles users trust.
+      </p>
+      <div class="pitch-grid">
+        <div class="pitch-card">
+          <h3>Structured plan rail</h3>
+          <p>Checklist with running spinner, done summaries, and failed steps — not plain <code>[run]</code> lines.</p>
+        </div>
+        <div class="pitch-card">
+          <h3>Live activity strip</h3>
+          <p>One prominent “now doing” row with tool family badge (Zoho / Lark / Google) + elapsed time.</p>
+        </div>
+        <div class="pitch-card">
+          <h3>Result chips per step</h3>
+          <p>Inline preview when a tool finishes: “12 invoices · ₹4.2L total” instead of raw log text.</p>
+        </div>
+        <div class="pitch-card">
+          <h3>Collapsible trace</h3>
+          <p>Recent activity collapsed by default; expand for power users. Keeps the bubble short during long runs.</p>
+        </div>
+        <div class="pitch-card">
+          <h3>HITL &amp; actions</h3>
+          <p>Approval gates get primary/danger buttons in-card; scheduled runs show lock/wait state.</p>
+        </div>
+        <div class="pitch-card">
+          <h3>Final reply upgrade</h3>
+          <p>Answer first, optional mini-table for tabular tool output, collapsible execution trace at bottom.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FLOW -->
+    <section id="flow">
+      <h2>Message bubble lifecycle</h2>
+      <p class="lead">One ephemeral card updates in-place during the run, then is replaced (or morphs) into the final answer.</p>
+      <div class="flow-wrap">
+        <div class="flow" id="lifecycleFlow">
+          <div class="flow-node"><div class="box">User message</div><span>trigger</span></div>
+          <div class="flow-arrow"></div>
+          <div class="flow-node"><div class="box active" data-state="routing">Routing</div><span>~1s</span></div>
+          <div class="flow-arrow"></div>
+          <div class="flow-node"><div class="box" data-state="planning">Planning</div><span>todos</span></div>
+          <div class="flow-arrow"></div>
+          <div class="flow-node"><div class="box" data-state="executing">Executing</div><span>tools</span></div>
+          <div class="flow-arrow"></div>
+          <div class="flow-node"><div class="box" data-state="hitl">HITL?</div><span>optional</span></div>
+          <div class="flow-arrow"></div>
+          <div class="flow-node"><div class="box" data-state="synthesizing">Synthesizing</div><span>answer</span></div>
+          <div class="flow-arrow"></div>
+          <div class="flow-node"><div class="box done" data-state="final">Final card</div><span>terminal</span></div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><span class="phase-dot"></span> In progress</span>
+        <span><span class="phase-dot done"></span> Complete</span>
+        <span><span class="phase-dot fail"></span> Failed</span>
+      </div>
+    </section>
+
+    <!-- INTERACTIVE STATES -->
+    <section id="states">
+      <h2>Before → After (click a state)</h2>
+      <p class="lead">Left: today’s card (markdown stack). Right: proposed structure — implementable within Lark Card v2 (markdown + tags + buttons).</p>
+
+      <div class="state-tabs" id="stateTabs"></div>
+
+      <div class="compare">
+        <div>
+          <div class="compare-label">Today</div>
+          <div class="chat-frame">
+            <div class="chat-header">
+              <div class="avatar">🤖</div>
+              <div class="meta">
+                <h3>Divo <span class="bot-badge">BOT</span></h3>
+                <span>Zoho automation tool integrated into lark</span>
+              </div>
+            </div>
+            <div class="chat-body" id="currentBubble"></div>
+          </div>
+        </div>
+        <div>
+          <div class="compare-label proposed">Proposed</div>
+          <div class="chat-frame">
+            <div class="chat-header">
+              <div class="avatar">🤖</div>
+              <div class="meta">
+                <h3>Divo <span class="bot-badge">BOT</span></h3>
+                <span>Zoho automation tool integrated into lark</span>
+              </div>
+            </div>
+            <div class="chat-body" id="proposedBubble"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="impl-note" id="implNote"></div>
+    </section>
+
+    <!-- ALL STATES GALLERY -->
+    <section id="gallery">
+      <h2>Full state gallery (proposed only)</h2>
+      <p class="lead">Every bubble variant in one scroll — useful for design review and QA acceptance criteria.</p>
+      <div id="galleryGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;"></div>
+    </section>
+
+  </main>
+
+  <script>
+    const STATES = {
+      routing: {
+        label: '1 · Routing',
+        phase: 'Understanding request',
+        progress: 8,
+        steps: [],
+        live: 'Matching your request to the right workflow…',
+        recent: [],
+        note: 'Extend ChannelTimeline with phase + elapsedMs. Header subtitle shows phase instead of empty.',
+      },
+      planning: {
+        label: '2 · Planning',
+        phase: 'Building plan',
+        progress: 20,
+        steps: [
+          { s: 'running', title: 'Break down request', sub: 'manageTodos' },
+          { s: 'pending', title: 'Fetch Zoho Books invoices', sub: 'pending' },
+          { s: 'pending', title: 'Summarize for Lark reply', sub: 'pending' },
+        ],
+        live: 'Updating plan…',
+        recent: [],
+        note: 'Surface manageTodos output as plan steps before first tool runs — users see intent early.',
+      },
+      executing: {
+        label: '3 · Executing (tool live)',
+        phase: 'Running · 1/3',
+        progress: 45,
+        steps: [
+          { s: 'done', title: 'Break down request', sub: '3 steps in plan', result: 'Plan ready' },
+          { s: 'running', title: 'Reading Zoho Books', sub: 'list_invoices · page 1', tool: 'zoho' },
+          { s: 'pending', title: 'Summarize for Lark reply', sub: '' },
+        ],
+        live: 'Fetching invoices from Zoho Books…',
+        recent: ['✓ Plan — 3 steps'],
+        note: 'Maps to existing toolActivity + getToolLabels. Add Zoho/Lark/Google badge from agentSlug.',
+      },
+      tool_done: {
+        label: '4 · Step complete',
+        phase: 'Running · 2/3',
+        progress: 70,
+        steps: [
+          { s: 'done', title: 'Break down request', sub: '3 steps', result: 'Plan ready' },
+          { s: 'done', title: 'Reading Zoho Books', sub: 'list_invoices', result: '12 invoices · ₹4.2L outstanding', tool: 'zoho' },
+          { s: 'running', title: 'Drafting summary', sub: 'synthesizing', tool: 'lark' },
+          { s: 'pending', title: 'Post to thread', sub: '' },
+        ],
+        live: 'Drafting summary from invoice data…',
+        recent: ['✓ Zoho — 12 invoices', '✓ Plan — 3 steps'],
+        note: 'Use previewToolResult() output in step-result chip (already in ProgressStep.resultSummary).',
+      },
+      hitl: {
+        label: '5 · HITL approval',
+        phase: 'Waiting for you',
+        progress: 55,
+        steps: [
+          { s: 'done', title: 'Fetched invoice batch', result: '12 rows · 3 overdue', tool: 'zoho' },
+          { s: 'running', title: 'Send payment reminder emails', sub: 'needs approval', tool: 'google' },
+        ],
+        live: 'Approve to send 3 reminder emails',
+        recent: ['✓ Zoho — 12 invoices'],
+        hitl: true,
+        note: 'Wire approval gate actions to existing InteractiveAction buttons on status card.',
+      },
+      failed: {
+        label: '6 · Failed step',
+        phase: 'Blocked',
+        progress: 40,
+        steps: [
+          { s: 'done', title: 'Break down request', result: 'Plan ready' },
+          { s: 'failed', title: 'Reading Zoho Books', sub: 'OAuth token expired', tool: 'zoho' },
+        ],
+        live: 'Reconnect Zoho to continue',
+        recent: [],
+        failed: true,
+        note: 'Failed step shows error chip + optional Reconnect button (deep link to admin OAuth).',
+      },
+      synthesizing: {
+        label: '7 · Synthesizing',
+        phase: 'Almost done',
+        progress: 92,
+        steps: [
+          { s: 'done', title: 'Reading Zoho Books', result: '12 invoices', tool: 'zoho' },
+          { s: 'done', title: 'Drafting summary', result: 'Ready', tool: 'lark' },
+        ],
+        live: 'Writing your answer…',
+        recent: ['✓ Zoho — 12 invoices', '✓ Lark — draft ready'],
+        note: 'Phase synthesizing — collapse plan to last 3 steps; hide recent entirely.',
+      },
+      final: {
+        label: '8 · Final reply',
+        isFinal: true,
+        note: 'buildFinalCard: answer body + optional table + collapsible trace (renderExecutionTrace).',
+      },
+    };
+
+    function toolBadge(tool) {
+      if (!tool) return '';
+      const map = { zoho: ['zoho', 'ZOHO'], lark: ['lark', 'LARK'], google: ['google', 'GOOGLE'] };
+      const [cls, label] = map[tool] || ['', tool];
+      return `<span class="tool-badge ${cls}">${label}</span>`;
+    }
+
+    function stepIcon(status) {
+      if (status === 'done') return '<div class="step-icon done">✓</div>';
+      if (status === 'failed') return '<div class="step-icon failed">✕</div>';
+      if (status === 'running') return '<div class="step-icon running"></div>';
+      return '<div class="step-icon pending"></div>';
+    }
+
+    function renderProposed(state, compact) {
+      if (state.isFinal) {
+        return `
+          <div class="bubble final proposed">
+            <div class="bubble-header">
+              <span class="title">Invoice summary</span>
+              <span class="dept-tag">Finance</span>
+            </div>
+            <div class="bubble-body">
+              <h4>12 open invoices · ₹4.2L outstanding</h4>
+              <p>3 invoices are overdue by more than 30 days. Highest exposure: Acme Corp (₹1.1L).</p>
+              <table class="result-table">
+                <thead><tr><th>Customer</th><th>Due</th><th>Amount</th></tr></thead>
+                <tbody>
+                  <tr><td>Acme Corp</td><td>Overdue 45d</td><td>₹1.1L</td></tr>
+                  <tr><td>Beta Ltd</td><td>Due in 5d</td><td>₹82K</td></tr>
+                  <tr><td>… +10 more</td><td></td><td></td></tr>
+                </tbody>
+              </table>
+              <div class="trace-footer">Trace · 3 steps · 8.4s · <button class="recent-toggle" type="button">Show details</button></div>
+            </div>
+          </div>`;
+      }
+
+      const stepsHtml = (state.steps || []).map(st => `
+        <li class="step-item">
+          ${stepIcon(st.s)}
+          <div class="step-content">
+            <div class="step-title">${toolBadge(st.tool)}${st.title}</div>
+            ${st.sub ? `<div class="step-sub">${st.sub}</div>` : ''}
+            ${st.result ? `<div class="step-result${st.s === 'failed' ? ' error' : ''}">${st.result}</div>` : ''}
+          </div>
+        </li>
+      `).join('');
+
+      const recentHtml = state.recent?.length ? `
+        <div class="recent-collapsed">
+          <button class="recent-toggle" type="button">▸ ${state.recent.length} completed · expand</button>
+          <div class="recent-items" style="display:none">
+            ${state.recent.map(r => `<div class="done-line">${r}</div>`).join('')}
+          </div>
+        </div>
+      ` : '';
+
+      const hitlHtml = state.hitl ? `
+        <div class="hitl-actions">
+          <button class="btn primary" type="button">Approve send</button>
+          <button class="btn" type="button">Edit draft</button>
+          <button class="btn danger" type="button">Cancel</button>
+        </div>
+      ` : '';
+
+      return `
+        <div class="bubble proposed">
+          <div class="bubble-header">
+            <span class="title">Divo AI</span>
+            <span class="dept-tag">Finance</span>
+          </div>
+          <div class="bubble-body">
+            <div class="phase-row">
+              <div class="phase-dot ${state.failed ? 'fail' : ''}"></div>
+              <span class="phase-label">${state.phase}</span>
+              <span class="phase-meta">${state.progress}%</span>
+            </div>
+            <div class="progress-track"><div class="progress-fill" style="width:${state.progress}%"></div></div>
+            ${stepsHtml ? `<ul class="step-list">${stepsHtml}</ul>` : ''}
+            <div class="live-strip">
+              <div class="spinner"></div>
+              <span>${state.live}</span>
+            </div>
+            ${recentHtml}
+            ${hitlHtml}
+          </div>
+        </div>`;
+    }
+
+    function renderCurrent(state) {
+      if (state.isFinal) {
+        return `
+          <div class="bubble current">
+            <div class="bubble-header"><span class="title">Invoice summary</span><span class="dept-tag">Finance</span></div>
+            <div class="bubble-body">
+              <p style="margin-bottom:8px">Here are your 12 open invoices totaling ₹4.2L…</p>
+              <p style="font-size:11px;color:var(--text-dim)">---<br><b>Trace</b> (3 steps, 8.4s)<br>✓ Reading Zoho — 12 invoices<br>✓ Drafting summary — Ready</p>
+            </div>
+          </div>`;
+      }
+      const plan = (state.steps || []).map(st => {
+        const m = st.s === 'done' ? '✓' : st.s === 'running' ? '●' : st.s === 'failed' ? '✗' : '○';
+        return `<div class="log">${m}  ${st.title}${st.result ? ' — ' + st.result : ''}</div>`;
+      }).join('');
+      const recent = (state.recent || []).length
+        ? `<div class="section-title">Recent activity</div>${state.recent.map(r => `<div class="log">[done] ${r.replace('✓ ','')}</div>`).join('')}`
+        : state.steps?.length ? `<div class="section-title">Recent activity</div><div class="log">[run] ${state.steps.find(s=>s.s==='running')?.title || 'Reading Zoho'}</div>` : '';
+      return `
+        <div class="bubble current">
+          <div class="bubble-header"><span class="title">Divo AI</span><span class="dept-tag">Finance</span></div>
+          <div class="bubble-body">
+            ${plan}
+            ${recent}
+            <div class="live">${state.live || 'Working…'}  ${state.phase?.includes('/') ? state.phase.split('·')[1]?.trim() : ''}</div>
+          </div>
+        </div>`;
+    }
+
+    // Tabs + panels
+    const tabsEl = document.getElementById('stateTabs');
+    const currentEl = document.getElementById('currentBubble');
+    const proposedEl = document.getElementById('proposedBubble');
+    const implNote = document.getElementById('implNote');
+    let activeKey = 'executing';
+
+    Object.entries(STATES).forEach(([key, state]) => {
+      const btn = document.createElement('button');
+      btn.className = 'state-tab' + (key === activeKey ? ' active' : '');
+      btn.textContent = state.label;
+      btn.dataset.state = key;
+      btn.addEventListener('click', () => setState(key));
+      tabsEl.appendChild(btn);
+    });
+
+    function setState(key) {
+      activeKey = key;
+      const state = STATES[key];
+      document.querySelectorAll('.state-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.state === key);
+      });
+      document.querySelectorAll('.flow-node .box').forEach(b => {
+        b.classList.remove('active');
+        if (b.dataset.state === key) b.classList.add('active');
+      });
+      currentEl.innerHTML = renderCurrent(state);
+      proposedEl.innerHTML = renderProposed(state);
+      implNote.innerHTML = `<strong>Implementation:</strong> ${state.note}`;
+    }
+
+    setState('executing');
+
+    // Gallery
+    const gallery = document.getElementById('galleryGrid');
+    Object.entries(STATES).forEach(([key, state]) => {
+      const wrap = document.createElement('div');
+      wrap.innerHTML = `<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">${state.label}</div>${renderProposed(state, true)}`;
+      gallery.appendChild(wrap);
+    });
+
+    // Recent toggle
+    document.addEventListener('click', e => {
+      if (e.target.classList.contains('recent-toggle')) {
+        const items = e.target.parentElement.querySelector('.recent-items');
+        if (items) {
+          const open = items.style.display !== 'none';
+          items.style.display = open ? 'none' : 'block';
+          e.target.textContent = e.target.textContent.replace(open ? '▾' : '▸', open ? '▸' : '▾');
+        }
+      }
+    });
+
+    // Scroll progress
+    const bar = document.getElementById('progressBar');
+    window.addEventListener('scroll', () => {
+      const h = document.documentElement.scrollHeight - window.innerHeight;
+      bar.style.width = (window.scrollY / h * 100) + '%';
+    });
+  </script>
+</body>
+</html>

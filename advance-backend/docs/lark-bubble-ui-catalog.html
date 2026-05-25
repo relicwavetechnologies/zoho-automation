@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Divo — Lark Bubble UI Catalog</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f0f10; --chat: #1a1a1c; --bubble: #2a2a2e; --bubble-alt: #252528;
+      --border: #3a3a40; --text: #e8e8ea; --muted: #9a9aa3; --dim: #6b6b75;
+      --blue: #4b8bf4; --green: #3d9a6a; --green-bg: rgba(61,154,106,.15);
+      --yellow: #e8b84a; --red: #e05c5c; --purple: #9b7ede; --orange: #e89b4a;
+      --radius: 12px; --font: 'Inter', system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.5; }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 50;
+      background: rgba(15,15,16,.94); backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 20px; display: flex; flex-wrap: wrap; gap: 12px;
+      align-items: center; justify-content: space-between;
+    }
+    .topbar h1 { font-size: 15px; font-weight: 700; }
+    .topbar nav { display: flex; flex-wrap: wrap; gap: 6px; }
+    .topbar nav a {
+      font-size: 11px; color: var(--muted); text-decoration: none;
+      padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+    }
+    .topbar nav a:hover { color: var(--text); border-color: var(--blue); }
+
+    .page { max-width: 1180px; margin: 0 auto; padding: 28px 20px 80px; }
+    section { margin-bottom: 48px; scroll-margin-top: 72px; }
+    h2 { font-size: 20px; font-weight: 700; margin-bottom: 6px; letter-spacing: -.02em; }
+    .lead { color: var(--muted); font-size: 13px; max-width: 780px; margin-bottom: 20px; }
+
+    /* matrix */
+    .matrix { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .matrix th, .matrix td {
+      border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top;
+    }
+    .matrix th { background: var(--bubble-alt); color: var(--dim); font-weight: 600; }
+    .pill {
+      display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 7px;
+      border-radius: 4px; letter-spacing: .02em;
+    }
+    .pill.yes { background: var(--green-bg); color: var(--green); }
+    .pill.now { background: rgba(75,139,244,.15); color: var(--blue); }
+    .pill.later { background: rgba(232,155,74,.15); color: var(--orange); }
+    .pill.no { background: rgba(107,107,117,.2); color: var(--dim); }
+
+    /* component grid */
+    .comp-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;
+    }
+    .comp-card {
+      background: var(--bubble); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px;
+    }
+    .comp-card h3 { font-size: 13px; margin-bottom: 4px; }
+    .comp-card p { font-size: 11px; color: var(--muted); }
+    .comp-card code { font-size: 10px; color: var(--dim); }
+
+    /* constraints */
+    .constraints {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;
+    }
+    .constraint {
+      background: var(--bubble); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 12px; font-size: 12px;
+    }
+    .constraint strong { display: block; font-size: 11px; color: var(--dim); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .05em; }
+
+    /* state explorer */
+    .state-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+    .state-tab {
+      font-size: 11px; font-weight: 500; padding: 6px 12px; border-radius: 999px;
+      border: 1px solid var(--border); background: transparent; color: var(--muted);
+      cursor: pointer;
+    }
+    .state-tab:hover { border-color: var(--blue); color: var(--text); }
+    .state-tab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+    .explorer {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start;
+    }
+    @media (max-width: 960px) { .explorer { grid-template-columns: 1fr; } }
+
+    .meta-panel {
+      background: var(--bubble); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px; font-size: 12px;
+    }
+    .meta-panel h3 { font-size: 14px; margin-bottom: 10px; }
+    .meta-panel ul { margin: 0; padding-left: 18px; color: var(--muted); }
+    .meta-panel li { margin: 4px 0; }
+    .meta-panel .lark-tags { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 4px; }
+    .lark-tag {
+      font-size: 10px; font-family: ui-monospace, monospace;
+      background: rgba(0,0,0,.3); padding: 2px 6px; border-radius: 4px; color: var(--purple);
+    }
+
+    /* chat mock */
+    .chat-frame {
+      background: var(--chat); border: 1px solid var(--border);
+      border-radius: 16px; overflow: hidden; max-width: 480px;
+    }
+    .chat-hdr {
+      padding: 12px 14px; display: flex; gap: 10px; align-items: center;
+      border-bottom: 1px solid var(--border);
+    }
+    .avatar {
+      width: 34px; height: 34px; border-radius: 50%;
+      background: linear-gradient(135deg, #3a7bd5, #5b9ef5);
+      display: flex; align-items: center; justify-content: center; font-size: 16px;
+    }
+    .chat-hdr .name { font-size: 13px; font-weight: 600; }
+    .chat-hdr .sub { font-size: 10px; color: var(--dim); }
+    .bot { font-size: 8px; background: var(--yellow); color: #111; padding: 1px 4px; border-radius: 3px; margin-left: 4px; font-weight: 700; }
+    .chat-body { padding: 14px; min-height: 200px; }
+
+    .bubble { background: var(--bubble); border-radius: var(--radius); overflow: hidden; font-size: 13px; animation: in .3s ease; }
+    @keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .b-hdr {
+      padding: 10px 12px; display: flex; justify-content: space-between; align-items: center;
+      background: var(--bubble-alt); border-bottom: 1px solid var(--border);
+    }
+    .b-hdr .title { font-weight: 700; font-size: 14px; }
+    .dept { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; background: var(--green-bg); color: var(--green); }
+    .dept.blue { background: rgba(75,139,244,.15); color: var(--blue); }
+    .dept.orange { background: rgba(232,155,74,.15); color: var(--orange); }
+    .dept.red { background: rgba(224,92,92,.15); color: var(--red); }
+    .b-sub { font-size: 11px; color: var(--dim); padding: 0 12px 8px; margin-top: -4px; }
+    .b-body { padding: 10px 12px 12px; }
+
+    .live-row { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+    .ring {
+      width: 52px; height: 52px; border-radius: 50%; flex-shrink: 0;
+      background: conic-gradient(var(--blue) var(--pct), var(--border) 0);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 600;
+    }
+    .ring::after {
+      content: ''; width: 36px; height: 36px; border-radius: 50%; background: var(--bubble);
+      position: absolute;
+    }
+    .ring-wrap { position: relative; width: 52px; height: 52px; display: flex; align-items: center; justify-content: center; }
+    .ring-wrap span { position: relative; z-index: 1; font-size: 10px; font-weight: 600; }
+    .live-text strong { display: block; font-size: 12px; }
+    .live-text span { font-size: 11px; color: var(--muted); }
+
+    .hr { height: 1px; background: var(--border); margin: 8px 0; }
+    .collapse {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 11px; font-weight: 500; color: var(--muted);
+      padding: 6px 0; cursor: default;
+    }
+    .collapse .chev { color: var(--dim); font-size: 10px; }
+
+    .steps { font-size: 11px; color: var(--muted); line-height: 1.6; }
+    .steps .done { color: var(--text); }
+    .badge { font-size: 9px; font-weight: 700; color: var(--orange); margin-right: 4px; }
+
+    .result-chip {
+      margin: 4px 0 4px 16px; padding: 5px 8px; border-radius: 6px;
+      background: rgba(0,0,0,.25); border-left: 2px solid var(--green);
+      font-size: 10px; color: var(--muted);
+    }
+    .result-chip.err { border-left-color: var(--red); }
+
+    .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .btn {
+      font-size: 11px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--bubble-alt);
+    }
+    .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .btn.danger { border-color: var(--red); color: var(--red); }
+
+    .prose { font-size: 12px; color: var(--muted); line-height: 1.55; }
+    .prose h4 { color: var(--text); font-size: 13px; margin-bottom: 6px; }
+    .tbl { width: 100%; font-size: 10px; border-collapse: collapse; margin: 8px 0; }
+    .tbl th, .tbl td { border-bottom: 1px solid var(--border); padding: 5px 6px; text-align: left; }
+    .tbl th { color: var(--dim); font-weight: 500; }
+
+    .warn-box {
+      background: rgba(224,92,92,.08); border: 1px solid rgba(224,92,92,.3);
+      border-radius: 8px; padding: 8px 10px; font-size: 11px; margin-top: 8px;
+    }
+
+    .tier-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    @media (max-width: 800px) { .tier-grid { grid-template-columns: 1fr; } }
+    .tier {
+      background: var(--bubble); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px;
+    }
+    .tier h3 { font-size: 13px; margin-bottom: 8px; }
+    .tier ul { font-size: 11px; color: var(--muted); padding-left: 16px; }
+    .tier.t1 { border-color: rgba(61,154,106,.4); }
+    .tier.t2 { border-color: rgba(75,139,244,.4); }
+    .tier.t3 { border-color: var(--border); opacity: .85; }
+
+    .gallery {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px;
+    }
+    .gallery-item .label {
+      font-size: 10px; color: var(--dim); text-transform: uppercase;
+      letter-spacing: .06em; margin-bottom: 8px;
+    }
+
+    .state-panel { display: none; }
+    .state-panel.active { display: block; }
+
+    .note { font-size: 11px; color: var(--dim); margin-top: 12px; font-style: italic; }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <div>
+    <h1>Divo — Lark Bubble UI Catalog</h1>
+    <span style="font-size:11px;color:var(--dim)">What Lark actually supports · All run states · Revamp guide</span>
+  </div>
+  <nav>
+    <a href="#constraints">Limits</a>
+    <a href="#components">Components</a>
+    <a href="#matrix">Matrix</a>
+    <a href="#states">States</a>
+    <a href="#gallery">Gallery</a>
+    <a href="#tiers">Revamp tiers</a>
+  </nav>
+</header>
+
+<main class="page">
+
+  <section id="intro">
+    <h2>What this is</h2>
+    <p class="lead">
+      Lark <strong>interactive cards (JSON 2.0)</strong> are not “text only.” They are a component system with layout, charts, tables, and buttons —
+      but <strong>no custom CSS</strong>. This catalog maps every Divo message-bubble state to real Lark components:
+      what we ship today, what’s available, and what’s worth adding in a polished revamp (without over-building).
+    </p>
+    <p class="note">Requires Lark client ≥ 7.20. Cards update in-place via <code>update_multi: true</code> during runs.</p>
+  </section>
+
+  <section id="constraints">
+    <h2>Platform constraints (read first)</h2>
+    <p class="lead">These are hard limits — design inside them and the product feels native; fight them and cards break silently.</p>
+    <div class="constraints">
+      <div class="constraint"><strong>No custom CSS</strong>Only Lark tokens: colors, spacing presets, component styles.</div>
+      <div class="constraint"><strong>200 elements max</strong>Per card. Prefer collapsible sections for long plans/traces.</div>
+      <div class="constraint"><strong>5 tables / 5 charts</strong>Max per card. Status card uses 1 chart — leave headroom on final.</div>
+      <div class="constraint"><strong>Table placement</strong>Native <code>table</code> must be top-level in <code>body.elements</code> (not inside columns).</div>
+      <div class="constraint"><strong>In-place updates</strong>Same message ID morphs: status → final. Must drain pending flushes (fixed).</div>
+      <div class="constraint"><strong>Rate limits</strong>~1.5s between status PATCHes. Don’t animate every token — update on tool boundaries.</div>
+      <div class="constraint"><strong>Collapsible</strong><code>collapsible_panel</code> is JSON-only (no builder UI) but works in production.</div>
+      <div class="constraint"><strong>Header</strong><code>title</code>, <code>subtitle</code>, <code>text_tag</code> dept chip, template colors (v1 approval uses orange/green).</div>
+    </div>
+  </section>
+
+  <section id="components">
+    <h2>Lark Card 2.0 — component palette</h2>
+    <p class="lead">Official component families. “Divo today” = already in <code>lark-card.builder.ts</code>.</p>
+    <div class="comp-grid">
+      <div class="comp-card"><h3>markdown</h3><p>Rich text: bold, lists, links, images inline, horizontal rules.</p><code>tag: markdown</code> <span class="pill now">Today</span></div>
+      <div class="comp-card"><h3>header + text_tag</h3><p>Card title, subtitle, department chip (Finance, Sales…).</p><code>header.text_tag_list</code> <span class="pill now">Today</span></div>
+      <div class="comp-card"><h3>chart (circularProgress)</h3><p>Run progress ring. Updates with completion %.</p><code>tag: chart</code> <span class="pill now">Today</span></div>
+      <div class="comp-card"><h3>column_set</h3><p>Side-by-side layout: progress | status text, icon | label.</p><code>tag: column_set</code> <span class="pill now">Today</span></div>
+      <div class="comp-card"><h3>collapsible_panel</h3><p>Fold Plan, Recent, execution trace. Default collapsed = calm UI.</p><code>tag: collapsible_panel</code> <span class="pill now">Today</span></div>
+      <div class="comp-card"><h3>hr</h3><p>Section dividers between live strip and detail blocks.</p><code>tag: hr</code> <span class="pill now">Today</span></div>
+      <div class="comp-card"><h3>table</h3><p>Invoices, CRM rows, any tabular tool output. Paginated (1–10 rows/page).</p><code>tag: table</code> <span class="pill now">Today</span></div>
+      <div class="comp-card"><h3>button + action</h3><p>HITL approve/reject, open links, follow-up actions on final card.</p><code>tag: action</code> <span class="pill now">Today</span></div>
+
+      <div class="comp-card"><h3>chart (linearProgress)</h3><p>Horizontal bar for single-metric progress (alternative to ring).</p><code>type: linearProgress</code> <span class="pill later">Optional</span></div>
+      <div class="comp-card"><h3>div + icon</h3><p>Plain text row with standard_icon prefix (step icons without emoji).</p><code>tag: div</code> <span class="pill later">Optional</span></div>
+      <div class="comp-card"><h3>img</h3><p>Screenshot, chart export, Cloudinary attachment preview.</p><code>tag: img</code> <span class="pill later">Optional</span></div>
+      <div class="comp-card"><h3>note / callout</h3><p>Warnings, OAuth reconnect hints (via markdown blockquote if needed).</p><code>markdown</code> <span class="pill later">Optional</span></div>
+      <div class="comp-card"><h3>person_list</h3><p>Assignee on created Lark tasks, approval requester.</p><code>tag: person_list</code> <span class="pill later">Optional</span></div>
+      <div class="comp-card"><h3>interactive_container</h3><p>Clickable row → open Zoho record URL.</p><code>tag: interactive_container</code> <span class="pill later">Optional</span></div>
+
+      <div class="comp-card"><h3>form + inputs</h3><p>Multi-field collect in-card. Heavy; rarely needed for Divo.</p><code>tag: form</code> <span class="pill no">Skip</span></div>
+      <div class="comp-card"><h3>select / date_picker</h3><p>Dropdowns in card. Better in admin UI.</p><code>tag: select_static</code> <span class="pill no">Skip</span></div>
+      <div class="comp-card"><h3>pie / line charts</h3><p>Analytics dashboards. Overkill in chat bubble.</p><code>tag: chart</code> <span class="pill no">Skip</span></div>
+      <div class="comp-card"><h3>checker</h3><p>Task checkbox UI. We use plan steps instead.</p><code>tag: checker</code> <span class="pill no">Skip</span></div>
+    </div>
+  </section>
+
+  <section id="matrix">
+    <h2>State × component matrix</h2>
+    <p class="lead">Every Divo bubble state and which Lark pieces should appear. Green = ship in revamp; blue = live now; orange = consider; grey = skip.</p>
+    <table class="matrix">
+      <thead>
+        <tr>
+          <th>State</th>
+          <th>When</th>
+          <th>Header</th>
+          <th>Live strip</th>
+          <th>Plan</th>
+          <th>Recent</th>
+          <th>Buttons</th>
+          <th>Final body</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>1 · Routing</strong></td><td>Message received, permissions OK</td><td>subtitle: Routing</td><td><span class="pill now">chart ~8%</span></td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td><strong>2 · Planning</strong></td><td>manageTodos / plan built</td><td>Planning</td><td><span class="pill now">chart ~18%</span></td><td><span class="pill later">collapsed</span></td><td>—</td><td>—</td><td>—</td></tr>
+        <tr><td><strong>3 · Executing</strong></td><td>Tool running</td><td>Executing · n/m</td><td><span class="pill now">chart + live label</span></td><td><span class="pill now">collapsed</span></td><td><span class="pill now">collapsed</span></td><td>—</td><td>—</td></tr>
+        <tr><td><strong>4 · Step done</strong></td><td>Tool returned</td><td>Executing · n/m</td><td><span class="pill now">chart updates</span></td><td><span class="pill now">✓ + result subtitle</span></td><td><span class="pill now">collapsed</span></td><td>—</td><td>—</td></tr>
+        <tr><td><strong>5 · Synthesizing</strong></td><td>All tools done, LLM writing</td><td>Synthesizing · m/m</td><td><span class="pill now">chart ~92%</span></td><td><span class="pill now">collapsed</span></td><td><span class="pill now">collapsed</span></td><td>—</td><td>—</td></tr>
+        <tr><td><strong>6 · HITL</strong></td><td>Approval gate</td><td>Waiting for you</td><td><span class="pill now">chart paused</span></td><td><span class="pill now">1 running step</span></td><td>—</td><td><span class="pill yes">Approve / Reject</span></td><td>—</td></tr>
+        <tr><td><strong>7 · Failed</strong></td><td>Tool / OAuth error</td><td>Blocked</td><td><span class="pill now">chart red theme</span></td><td><span class="pill now">✗ + error chip</span></td><td>—</td><td><span class="pill later">Reconnect</span></td><td>—</td></tr>
+        <tr><td><strong>8 · Final answer</strong></td><td>Run complete (replaces status)</td><td>Answer title</td><td>—</td><td>—</td><td>—</td><td><span class="pill later">optional CTA</span></td><td><span class="pill now">markdown prose</span></td></tr>
+        <tr><td><strong>9 · Final + data</strong></td><td>Tabular tool result</td><td>Summary title</td><td>—</td><td>—</td><td>—</td><td>—</td><td><span class="pill now">native table</span></td></tr>
+        <tr><td><strong>10 · Final + trace</strong></td><td>Power users</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td><span class="pill now">collapsed trace</span></td></tr>
+        <tr><td><strong>11 · Approval card</strong></td><td>Manager DM (separate flow)</td><td><span class="pill later">orange template</span></td><td>—</td><td>—</td><td>—</td><td><span class="pill yes">Approve / Reject</span></td><td><span class="pill later">div fields</span></td></tr>
+        <tr><td><strong>12 · Error / timeout</strong></td><td>Engine failure</td><td>Something went wrong</td><td>—</td><td>—</td><td>—</td><td><span class="pill later">Retry</span></td><td><span class="pill now">short markdown</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="states">
+    <h2>Interactive state explorer</h2>
+    <p class="lead">Click a state. Left = Lark chat mock. Right = which JSON components power that bubble.</p>
+
+    <div class="state-tabs" id="tabs"></div>
+
+    <div id="explorer"></div>
+  </section>
+
+  <section id="gallery">
+    <h2>Full gallery (all states at a glance)</h2>
+    <p class="lead">Scroll for every bubble variant — use for design review and QA acceptance criteria.</p>
+    <div class="gallery" id="gallery"></div>
+  </section>
+
+  <section id="tiers">
+    <h2>Revamp tiers (polished, not overloaded)</h2>
+    <p class="lead">Recommended scope for the full revamp. Tier 1 = must match this catalog; Tier 2 = next sprint; Tier 3 = deliberately skip.</p>
+    <div class="tier-grid">
+      <div class="tier t1">
+        <h3>Tier 1 — Ship now</h3>
+        <ul>
+          <li>Status: header subtitle + progress chart + live column</li>
+          <li>Plan + Recent: collapsible, collapsed by default</li>
+          <li>Final: prose + native table when markdown has pipes</li>
+          <li>Trace: collapsible, collapsed</li>
+          <li>finalizeMessage (no overwrite race)</li>
+          <li>Synthesizing phase at 100% tools</li>
+        </ul>
+      </div>
+      <div class="tier t2">
+        <h3>Tier 2 — Polish</h3>
+        <ul>
+          <li>HITL: primary/danger buttons on status card</li>
+          <li>Failed: Reconnect Zoho / Google button</li>
+          <li>div + standard_icon for step rows (less emoji)</li>
+          <li>Header template tint (blue=run, green=done, red=fail)</li>
+          <li>person_list on “created task for @user”</li>
+        </ul>
+      </div>
+      <div class="tier t3">
+        <h3>Tier 3 — Skip</h3>
+        <ul>
+          <li>Forms, selects, date pickers in chat</li>
+          <li>Pie/line charts, word clouds</li>
+          <li>Multiple charts per status card</li>
+          <li>Custom CSS / HTML injection</li>
+          <li>Second message for final (breaks single-bubble UX)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Lifecycle (one bubble)</h2>
+    <p class="lead">Same <code>message_id</code> from first status PATCH until final PATCH replaces the card body.</p>
+    <div style="background:var(--bubble);border:1px solid var(--border);border-radius:12px;padding:20px;font-size:12px;color:var(--muted);overflow-x:auto">
+      <pre style="margin:0;font-family:ui-monospace,monospace;font-size:11px;line-height:1.6;color:var(--text)">User message
+    → [1 Routing]     sendMessage (new card)
+    → [2 Planning]    updateMessage
+    → [3–5 Executing] updateMessage (rate-limited, plan/recent collapsed)
+    → [6 HITL?]       updateMessage + action buttons
+    → [7 Synthesizing] updateMessage (~92%)
+    → [8–10 Final]    finalizeMessage (drain flushes → replace with answer/table/trace)
+</pre>
+    </div>
+  </section>
+
+</main>
+
+<script>
+const STATES = {
+  routing: {
+    label: '1 · Routing',
+    phase: 'Routing',
+    pct: 8,
+    live: 'Matching your request to the right workflow…',
+    dept: 'Finance',
+    plan: null,
+    recent: null,
+    btns: null,
+    lark: ['header', 'text_tag', 'column_set', 'chart circularProgress', 'markdown'],
+    note: 'First card sent immediately after permissions (~300ms). No plan yet.',
+  },
+  planning: {
+    label: '2 · Planning',
+    phase: 'Planning',
+    pct: 18,
+    live: 'Updating plan…',
+    dept: 'Finance',
+    plan: [
+      { s: 'running', t: 'Break down request', sub: 'manageTodos', fam: 'PLAN' },
+      { s: 'pending', t: 'Fetch Zoho invoices', fam: 'ZOHO' },
+      { s: 'pending', t: 'Summarize in Lark', fam: 'LARK' },
+    ],
+    recent: null,
+    btns: null,
+    lark: ['collapsible_panel (Plan)', 'chart'],
+    note: 'Plan panel appears when manageTodos runs; keep collapsed.',
+  },
+  executing: {
+    label: '3 · Executing',
+    phase: 'Executing · 2/5',
+    pct: 44,
+    live: 'Fetching invoices from Zoho Books…',
+    dept: 'Finance',
+    plan: [
+      { s: 'done', t: 'Break down request', sub: '3 steps', fam: 'PLAN' },
+      { s: 'running', t: 'Reading Zoho Books', sub: 'list_invoices · page 1', fam: 'ZOHO' },
+      { s: 'pending', t: 'Draft summary', fam: 'LARK' },
+    ],
+    recent: ['Plan — 3 steps'],
+    btns: null,
+    lark: ['column_set', 'chart', 'collapsible_panel ×2'],
+    note: 'Live label from toolActivity. Chart from progressPct.',
+  },
+  step_done: {
+    label: '4 · Step done',
+    phase: 'Executing · 3/5',
+    pct: 62,
+    live: 'Drafting summary from invoice data…',
+    dept: 'Finance',
+    plan: [
+      { s: 'done', t: 'Reading Zoho Books', sub: '12 invoices · ₹4.2L', fam: 'ZOHO', chip: true },
+      { s: 'running', t: 'Drafting summary', sub: 'synthesizing', fam: 'LARK' },
+    ],
+    recent: ['Zoho — 12 invoices', 'Plan — 3 steps'],
+    btns: null,
+    lark: ['plan step subtitles = result chips in markdown'],
+    note: 'resultSummary from previewToolResult() shown as subtitle under step.',
+  },
+  synthesizing: {
+    label: '5 · Synthesizing',
+    phase: 'Synthesizing · 5/5',
+    pct: 92,
+    live: 'Preparing response…',
+    dept: 'Finance',
+    plan: [
+      { s: 'done', t: 'Reading Zoho', sub: '12 invoices', fam: 'ZOHO' },
+      { s: 'done', t: 'Draft summary', sub: 'Ready', fam: 'LARK' },
+    ],
+    recent: null,
+    btns: null,
+    lark: ['phase set when all steps done', 'chart ~92%'],
+    note: 'Aggregator sets synthesizing when completedSteps === totalSteps.',
+  },
+  hitl: {
+    label: '6 · HITL',
+    phase: 'Waiting for you',
+    pct: 55,
+    live: 'Approve to send 3 reminder emails',
+    dept: 'Finance',
+    plan: [{ s: 'done', t: 'Fetched invoices', sub: '12 rows', fam: 'ZOHO' }, { s: 'running', t: 'Send emails', sub: 'needs approval', fam: 'GOOGLE' }],
+    recent: null,
+    btns: [{ l: 'Approve send', p: true }, { l: 'Edit draft' }, { l: 'Cancel', d: true }],
+    lark: ['action', 'button primary/danger'],
+    note: 'InteractiveAction on status card; webhook card.action.trigger resumes run.',
+  },
+  failed: {
+    label: '7 · Failed',
+    phase: 'Blocked',
+    pct: 35,
+    live: 'Reconnect Zoho to continue',
+    dept: 'Finance',
+    plan: [
+      { s: 'done', t: 'Break down request', fam: 'PLAN' },
+      { s: 'failed', t: 'Reading Zoho Books', sub: 'OAuth token expired', fam: 'ZOHO', err: true },
+    ],
+    recent: null,
+    btns: [{ l: 'Reconnect Zoho', p: true }],
+    lark: ['failed step subtitle', 'optional link button'],
+    note: 'Tier 2: Reconnect opens admin OAuth URL.',
+  },
+  final: {
+    label: '8 · Final answer',
+    phase: null,
+    title: 'Invoice summary',
+    final: true,
+    dept: 'Finance',
+    prose: '<h4>12 open invoices · ₹4.2L outstanding</h4><p>3 invoices overdue 30+ days. Highest: Acme Corp (₹1.1L).</p>',
+    trace: false,
+    lark: ['header title from # heading', 'markdown body', 'summary in config'],
+    note: 'buildFinalCard replaces entire status card via finalizeMessage.',
+  },
+  final_table: {
+    label: '9 · Final + table',
+    phase: null,
+    title: 'Overdue invoices',
+    final: true,
+    dept: 'Finance',
+    prose: '<p>Top 3 overdue accounts:</p>',
+    table: [['Customer', 'Due', 'Amount'], ['Acme Corp', '45d', '₹1.1L'], ['Beta Ltd', '12d', '₹82K']],
+    trace: true,
+    lark: ['tag: table', 'collapsible_panel exec_trace'],
+    note: 'Markdown pipe tables auto-convert to native table component.',
+  },
+  final_error: {
+    label: '12 · Error',
+    phase: null,
+    title: 'Something went wrong',
+    final: true,
+    dept: 'Divo',
+    prose: '<p>The request timed out. Some actions may have partially completed.</p>',
+    warn: true,
+    lark: ['markdown', 'plain header'],
+    note: 'Supervisor timeout / engine errReply — still one bubble.',
+  },
+  approval: {
+    label: '11 · Approval (DM)',
+    phase: null,
+    title: 'Action Approval Request',
+    approval: true,
+    dept: 'orange header',
+    fields: [['Requested by', 'Gunjan'], ['Department', 'Finance'], ['Tool', 'send_email'], ['Action', 'send 3 reminders']],
+    btns: [{ l: 'Approve', p: true }, { l: 'Reject', d: true }],
+    lark: ['Card 1.0 style', 'div fields', 'hr', 'action'],
+    note: 'Separate from status bubble — manager DM, not thread status.',
+  },
+};
+
+function stepLine(s) {
+  const m = s.s === 'done' ? '✓' : s.s === 'running' ? '●' : s.s === 'failed' ? '✗' : '○';
+  const fam = s.fam ? `<span class="badge">${s.fam}</span>` : '';
+  const chip = s.chip ? `<div class="result-chip">${s.sub}</div>` : s.err ? `<div class="result-chip err">${s.sub}</div>` : s.sub ? `<br><span style="margin-left:14px;font-size:10px;color:var(--dim)">${s.sub}</span>` : '';
+  return `<div class="${s.s === 'done' ? 'done' : ''}">${m} ${fam}${s.t}${chip}</div>`;
+}
+
+function renderBubble(state) {
+  if (state.approval) {
+    return `
+      <div class="bubble">
+        <div class="b-hdr" style="background:rgba(232,155,74,.15)">
+          <span class="title">${state.title}</span>
+        </div>
+        <div class="b-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;margin-bottom:8px">
+            ${state.fields.map(([k,v]) => `<div><span style="color:var(--dim)">${k}</span><br><strong>${v}</strong></div>`).join('')}
+          </div>
+          <div class="hr"></div>
+          <div class="btns">${state.btns.map(b => `<span class="btn ${b.p?'primary':''} ${b.d?'danger':''}">${b.l}</span>`).join('')}</div>
+        </div>
+      </div>`;
+  }
+
+  if (state.final) {
+    let body = `<div class="prose">${state.prose || ''}</div>`;
+    if (state.table) {
+      const [hdr, ...rows] = state.table;
+      body += `<table class="tbl"><thead><tr>${hdr.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    }
+    if (state.warn) body = `<div class="warn-box">⚠ Timeout</div>` + body;
+    if (state.trace) body += `<div class="hr"></div><div class="collapse">Execution trace <span class="chev">▸</span></div>`;
+    return `
+      <div class="bubble">
+        <div class="b-hdr"><span class="title">${state.title}</span><span class="dept">${state.dept === 'Divo' ? 'Divo' : state.dept}</span></div>
+        <div class="b-body">${body}</div>
+      </div>`;
+  }
+
+  const planHtml = state.plan ? `
+    <div class="hr"></div>
+    <div class="collapse">Plan (${state.plan.length}) <span class="chev">▸</span></div>
+    <div class="steps" style="display:none">${state.plan.map(stepLine).join('')}</div>
+  ` : '';
+  const recentHtml = state.recent ? `
+    <div class="collapse">Recent (${state.recent.length}) <span class="chev">▸</span></div>
+  ` : '';
+  const btnHtml = state.btns ? `<div class="btns">${state.btns.map(b => `<span class="btn ${b.p?'primary':''} ${b.d?'danger':''}">${b.l}</span>`).join('')}</div>` : '';
+
+  return `
+    <div class="bubble">
+      <div class="b-hdr">
+        <span class="title">Divo AI</span>
+        <span class="dept">${state.dept}</span>
+      </div>
+      ${state.phase ? `<div class="b-sub">${state.phase}</div>` : ''}
+      <div class="b-body">
+        <div class="live-row">
+          <div class="ring-wrap">
+            <div class="ring" style="background:conic-gradient(var(--blue) ${state.pct}%, var(--border) 0)"></div>
+            <span>${state.pct}%</span>
+          </div>
+          <div class="live-text"><strong>${state.phase || 'Working'}</strong><span>${state.live}</span></div>
+        </div>
+        ${planHtml}${recentHtml}${btnHtml}
+      </div>
+    </div>`;
+}
+
+function renderMeta(state) {
+  return `
+    <div class="meta-panel">
+      <h3>Lark components used</h3>
+      <ul>${(state.lark || []).map(l => `<li>${l}</li>`).join('')}</ul>
+      <p style="margin-top:10px;color:var(--muted)">${state.note || ''}</p>
+      <div class="lark-tags">${(state.lark || []).map(t => `<span class="lark-tag">${t}</span>`).join('')}</div>
+    </div>`;
+}
+
+function renderExplorer(key) {
+  const state = STATES[key];
+  return `
+    <div class="state-panel active" data-panel="${key}">
+      <div class="explorer">
+        <div>
+          <div class="chat-frame">
+            <div class="chat-hdr">
+              <div class="avatar">🤖</div>
+              <div><div class="name">Divo <span class="bot">BOT</span></div><div class="sub">Zoho automation tool integrated into lark</div></div>
+            </div>
+            <div class="chat-body">${renderBubble(state)}</div>
+          </div>
+        </div>
+        <div>${renderMeta(state)}</div>
+      </div>
+    </div>`;
+}
+
+const tabs = document.getElementById('tabs');
+const explorer = document.getElementById('explorer');
+const gallery = document.getElementById('gallery');
+let active = 'executing';
+
+Object.entries(STATES).forEach(([key, s]) => {
+  const btn = document.createElement('button');
+  btn.className = 'state-tab' + (key === active ? ' active' : '');
+  btn.textContent = s.label;
+  btn.onclick = () => {
+    active = key;
+    document.querySelectorAll('.state-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+    explorer.innerHTML = renderExplorer(key);
+  };
+  tabs.appendChild(btn);
+
+  const g = document.createElement('div');
+  g.className = 'gallery-item';
+  g.innerHTML = `<div class="label">${s.label}</div><div class="chat-frame"><div class="chat-body" style="padding:10px">${renderBubble(s)}</div></div>`;
+  gallery.appendChild(g);
+});
+
+explorer.innerHTML = renderExplorer(active);
+</script>
+</body>
+</html>

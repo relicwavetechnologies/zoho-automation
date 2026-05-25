@@ -13,6 +13,9 @@
  *   pnpm tsx scripts/run-engine-harness.ts --group "your prompt here"
  *   pnpm tsx scripts/run-engine-harness.ts --debug-sigs        # dump every transformParams call
  *
+ * UI / finance smoke test (status bubble + table final card):
+ *   pnpm tsx scripts/run-engine-harness.ts --group "Give me a complete financial overview as of today: top 5 overdue invoices from Zoho Books with customer name, due date, and amount in a table; total outstanding AR; and Q1 2026 expenses broken down by category. Summarize in plain language for Finance."
+ *
  * Group mode sends to the test group chat instead of P2P, including group
  * context (conversation array) in the engine run — mirrors real group behavior.
  */
