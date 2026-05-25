@@ -9,7 +9,9 @@ import { makeAllowedPerm, makeDeniedPerm, makeCtx } from './tool-test.helpers.ts
 import { createZohoCrmTool }   from '../../src/application/orchestration/tools/families/zoho-crm.tool.ts';
 import { createZohoBooksTool } from '../../src/application/orchestration/tools/families/zoho-books.tool.ts';
 import type { ZohoFinanceOps } from '../../src/application/zoho/zoho-finance-ops.ts';
+import type { ZohoCrmOps } from '../../src/application/zoho/zoho-crm-ops.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
+import type { ZohoCrmPaginatedClient } from '../../src/infrastructure/zoho/zoho-crm-paginated.client.ts';
 
 // ─── zoho-crm ─────────────────────────────────────────────────────────────────
 
@@ -22,48 +24,75 @@ describe('zohoCrm tool', () => {
     deleteRecord:  async () => {},
   };
 
+  const fakePaginatedCrmClient = {
+    listRecords:   async () => ({ items: [{ id: 'lead-1', Last_Name: 'Alice' }], hasMore: false, page: 1 }),
+    listAllRecords: async () => ({ items: [{ id: 'lead-1', Last_Name: 'Alice' }], truncated: false }),
+    searchRecords: async () => ({ items: [{ id: 'lead-1', Last_Name: 'Alice' }], hasMore: false, page: 1 }),
+    searchByText:  async () => ({ items: [{ id: 'lead-1', Last_Name: 'Alice' }], hasMore: false, page: 1 }),
+    getRecord:     async () => ({ id: 'lead-1', Last_Name: 'Alice' }),
+    createRecord:  async () => ({ id: 'lead-new', data: {} }),
+    updateRecord:  async () => {},
+    deleteRecord:  async () => {},
+  } as unknown as ZohoCrmPaginatedClient;
+
+  const fakeCrmOps = {
+    buildPipelineSummary: async () => ({ summary: '3 deals', totalDeals: 3, totalPipelineValue: 100000, currency: 'INR', stages: [], inlineDeals: [], sourceTruncated: false }),
+    buildLeadReport:      async () => ({ summary: '5 leads', totalLeads: 5, sources: [], statusBreakdown: {}, inlineLeads: [], sourceTruncated: false }),
+    buildDealForecast:    async () => ({ summary: '2 deals closing', totalDeals: 2, totalAmount: 50000, currency: 'INR', byStage: [], inlineDeals: [], sourceTruncated: false }),
+  } as unknown as ZohoCrmOps;
+
+  const fakeCloudinary = { isAvailable: false, uploadCsvBuffer: async () => null } as any;
+
   const noClient  = async () => null;
   const yesClient = async () => fakeCrmClient;
 
+  const makeCrmTool = (getClient = yesClient as typeof noClient | typeof yesClient) =>
+    createZohoCrmTool({
+      getClient,
+      crmClient:  fakePaginatedCrmClient,
+      crmOps:     fakeCrmOps,
+      cloudinary: fakeCloudinary,
+    });
+
   describe('permissionCheck', () => {
     it('denies when not in allowedActionsByTool', () => {
-      const tool = createZohoCrmTool({ getClient: noClient });
+      const tool = makeCrmTool();
       const r = tool.permissionCheck({ op: 'search' }, makeDeniedPerm());
       assert.equal(r.ok, false);
     });
 
     it('returns "read" for op=search', () => {
-      const tool = createZohoCrmTool({ getClient: noClient });
+      const tool = makeCrmTool();
       const r = tool.permissionCheck({ op: 'search' }, makeAllowedPerm('zohoCrm', ['read']));
       assert.equal((r as any).value, 'read');
     });
 
     it('returns "read" for op=get', () => {
-      const tool = createZohoCrmTool({ getClient: noClient });
+      const tool = makeCrmTool();
       const r = tool.permissionCheck({ op: 'get' }, makeAllowedPerm('zohoCrm', ['read']));
       assert.equal((r as any).value, 'read');
     });
 
     it('returns "create" for op=create', () => {
-      const tool = createZohoCrmTool({ getClient: noClient });
+      const tool = makeCrmTool();
       const r = tool.permissionCheck({ op: 'create' }, makeAllowedPerm('zohoCrm', ['create']));
       assert.equal((r as any).value, 'create');
     });
 
     it('returns "update" for op=update', () => {
-      const tool = createZohoCrmTool({ getClient: noClient });
+      const tool = makeCrmTool();
       const r = tool.permissionCheck({ op: 'update' }, makeAllowedPerm('zohoCrm', ['update']));
       assert.equal((r as any).value, 'update');
     });
 
     it('returns "delete" for op=delete', () => {
-      const tool = createZohoCrmTool({ getClient: noClient });
+      const tool = makeCrmTool();
       const r = tool.permissionCheck({ op: 'delete' }, makeAllowedPerm('zohoCrm', ['delete']));
       assert.equal((r as any).value, 'delete');
     });
 
     it('denies create when only read allowed', () => {
-      const tool = createZohoCrmTool({ getClient: noClient });
+      const tool = makeCrmTool();
       const r = tool.permissionCheck({ op: 'create' }, makeAllowedPerm('zohoCrm', ['read']));
       assert.equal(r.ok, false);
     });
@@ -72,75 +101,116 @@ describe('zohoCrm tool', () => {
   describe('execute', () => {
     const ctx = makeCtx('zohoCrm', ['read', 'create', 'update', 'delete']);
 
-    it('no client → unrecoverable', async () => {
-      const tool = createZohoCrmTool({ getClient: noClient });
-      const r = await tool.execute({ op: 'search' }, ctx);
+    it('list: bad_args when module missing', async () => {
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'list' }, ctx);
       assert.equal(r.ok, false);
-      assert.equal((r as any).error.payload.reason, 'unrecoverable');
+      assert.equal((r as any).error.payload.reason, 'bad_args');
     });
 
-    it('search: ok with records', async () => {
-      const tool = createZohoCrmTool({ getClient: yesClient });
-      const r = await tool.execute({ op: 'search', query: 'Alice', module: 'Leads' }, ctx);
+    it('list: ok with records', async () => {
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'list', module: 'Leads' }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('search: ok with criteria', async () => {
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'search', module: 'Leads', criteria: '(Last_Name:contains:Alice)' }, ctx);
+      assert.equal(r.ok, true);
+    });
+
+    it('search_text: ok with query', async () => {
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'search_text', module: 'Leads', query: 'Alice' }, ctx);
       assert.equal(r.ok, true);
     });
 
     it('get: bad_args when recordId missing', async () => {
-      const tool = createZohoCrmTool({ getClient: yesClient });
-      const r = await tool.execute({ op: 'get' }, ctx);
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'get', module: 'Leads' }, ctx);
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'bad_args');
     });
 
     it('get: ok with record', async () => {
-      const tool = createZohoCrmTool({ getClient: yesClient });
+      const tool = makeCrmTool();
       const r = await tool.execute({ op: 'get', recordId: 'lead-1', module: 'Leads' }, ctx);
       assert.equal(r.ok, true);
     });
 
     it('create: ok with recordId', async () => {
-      const tool = createZohoCrmTool({ getClient: yesClient });
+      const tool = makeCrmTool();
       const r = await tool.execute({ op: 'create', module: 'Leads', fields: { Last_Name: 'Smith' } }, ctx);
       assert.equal(r.ok, true);
       assert.equal((r as any).value.recordId, 'lead-new');
     });
 
     it('create: bad_args when fields missing', async () => {
-      const tool = createZohoCrmTool({ getClient: yesClient });
+      const tool = makeCrmTool();
       const r = await tool.execute({ op: 'create', module: 'Leads' }, ctx);
       assert.equal(r.ok, false);
     });
 
     it('update: bad_args when recordId missing', async () => {
-      const tool = createZohoCrmTool({ getClient: yesClient });
-      const r = await tool.execute({ op: 'update', fields: { Last_Name: 'Jones' } }, ctx);
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'update', module: 'Leads', fields: { Last_Name: 'Jones' } }, ctx);
       assert.equal(r.ok, false);
     });
 
     it('update: ok when recordId and fields present', async () => {
-      const tool = createZohoCrmTool({ getClient: yesClient });
+      const tool = makeCrmTool();
       const r = await tool.execute({ op: 'update', recordId: 'lead-1', module: 'Leads', fields: { Last_Name: 'Jones' } }, ctx);
       assert.equal(r.ok, true);
     });
 
     it('delete: bad_args when recordId missing', async () => {
-      const tool = createZohoCrmTool({ getClient: yesClient });
-      const r = await tool.execute({ op: 'delete' }, ctx);
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'delete', module: 'Leads' }, ctx);
       assert.equal(r.ok, false);
     });
 
     it('delete: ok when recordId present', async () => {
-      const tool = createZohoCrmTool({ getClient: yesClient });
+      const tool = makeCrmTool();
       const r = await tool.execute({ op: 'delete', recordId: 'lead-1', module: 'Leads' }, ctx);
       assert.equal(r.ok, true);
     });
 
     it('infra throws → upstream_failure', async () => {
-      const throwing = async () => ({ ...fakeCrmClient, searchRecords: async () => { throw new Error('err'); } });
-      const tool = createZohoCrmTool({ getClient: throwing });
-      const r = await tool.execute({ op: 'search', query: 'x' }, ctx);
+      const throwingPaginated = {
+        ...fakePaginatedCrmClient,
+        searchRecords: async () => { throw new Error('err'); },
+      } as unknown as ZohoCrmPaginatedClient;
+      const tool = createZohoCrmTool({
+        getClient: yesClient,
+        crmClient: throwingPaginated,
+        crmOps: fakeCrmOps,
+        cloudinary: fakeCloudinary,
+      });
+      const r = await tool.execute({ op: 'search', module: 'Leads', criteria: '(Last_Name:equals:x)' }, ctx);
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'upstream_failure');
+    });
+
+    it('build_pipeline_summary: ok', async () => {
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'build_pipeline_summary' }, ctx);
+      assert.equal(r.ok, true);
+      assert.ok((r as any).value.report);
+    });
+
+    it('build_lead_report: ok', async () => {
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'build_lead_report' }, ctx);
+      assert.equal(r.ok, true);
+      assert.ok((r as any).value.report);
+    });
+
+    it('build_deal_forecast: ok', async () => {
+      const tool = makeCrmTool();
+      const r = await tool.execute({ op: 'build_deal_forecast', closingFrom: 'this quarter' }, ctx);
+      assert.equal(r.ok, true);
+      assert.ok((r as any).value.report);
     });
   });
 });

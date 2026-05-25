@@ -3,7 +3,7 @@ import type { Skill } from './skill.types';
 export const zohoSkill: Skill = {
   id: 'zoho',
   name: 'Zoho Operations',
-  description: 'CRM (contacts, leads, deals), Books (invoices, bills, expenses, payments)',
+  description: 'CRM (contacts, leads, deals, accounts, tasks, pipeline, forecasts), Books (invoices, bills, expenses, payments)',
   toolIds: ['zohoCrm', 'zohoBooks'],
   instructions: `ZOHO BOOKS — OPERATIONS:
 - Invoice reads: list_invoices, get_invoice, build_overdue_report
@@ -15,39 +15,53 @@ export const zohoSkill: Skill = {
 - Search: search_transactions with searchQuery
 - Tax: get_tax_summary with taxYear or date filters
 
+ZOHO CRM — OPERATIONS:
+- List records: op=list, module=Leads|Contacts|Accounts|Deals|Tasks
+- Get single record: op=get, module, recordId
+- Search by criteria: op=search, module, criteria="(Field:operator:value)"
+  Operators: equals, starts_with, contains, not_equal, greater_than, less_than, between
+  Combine with and/or: "(Deal_Name:contains:Acme)and(Stage:equals:Qualification)"
+- Free-text search: op=search_text, module, query="search term"
+- Create: op=create, module, fields={...}
+- Update: op=update, module, recordId, fields={...}
+- Delete: op=delete, module, recordId
+
+CRM REPORTS:
+- Pipeline summary: op=build_pipeline_summary — deals grouped by stage with amounts
+- Lead funnel: op=build_lead_report — leads grouped by source and status
+- Deal forecast: op=build_deal_forecast, closingFrom, closingTo — deals closing in period
+
+CRM FIELD NAMES:
+- Leads: First_Name, Last_Name, Email, Company, Phone, Lead_Source, Lead_Status, Annual_Revenue
+- Contacts: First_Name, Last_Name, Email, Phone, Account_Name (lookup)
+- Accounts: Account_Name, Website, Phone, Industry, Annual_Revenue, Account_Type
+- Deals: Deal_Name, Amount, Stage, Closing_Date, Account_Name (lookup), Contact_Name (lookup), Probability
+- Tasks: Subject, Due_Date, Status, Priority, Who_Id (contact), What_Id (deal/account)
+- All modules have: Owner (lookup), Created_Time, Modified_Time
+
+CRM SCRIPT MODE:
+- Add script parameter to list op. Tool fetches ALL records and runs JS in sandbox.
+- Synthetic fields: _amount (primary amount), _date (primary date), _id, _status, _owner (resolved name)
+- Set exportCsv=true for CSV download of processed results.
+
 PDF / DOCUMENT AWARENESS:
-- Zoho Books extracts all data from uploaded PDFs into structured records. Every bill/invoice has full line items available via API.
+- Zoho Books extracts all data from uploaded PDFs into structured records.
 - "Check the PDFs" / "scan the bills" = check STRUCTURED DATA, not raw PDF files.
-- Never download or OCR PDFs. All information is in the bill/invoice records.
 
 LIST / EXPORT RULES:
 - If user says "all", "everything", "export", "CSV" → set exportAll=true.
 - Multi-currency totals must stay grouped by currency. Never merge currencies into one total.
-- When CSV link returned, present it plainly with count and expiry.
-
-SCRIPT MODE (analysis/aggregation):
-- For analysis, add a script parameter to any list operation. Tool fetches ALL records and runs JS in sandbox.
-- Synthetic fields: _amount/_total (full amount), _balance (unpaid/outstanding), _date, _id.
-- "Outstanding" = sum of _balance, NOT _amount. A bill with partial payment: use _balance.
-- formatAmount(value, currency) and formatDate(iso) are available in sandbox.
-- Set exportCsv=true for CSV download of processed results.
-- For simple lookups, do NOT add script.
 
 AUDIT / VERIFICATION HONESTY:
-- Always state WHAT you checked and the limitation. Text matching only catches explicit references.
-- Never present text-matching as a definitive audit. Frame as: "Based on available descriptions, I found X. However, [limitation]."
-- Suggest next steps: cross-check service delivery dates, review GL period reports.
-
-ZOHO CRM:
-- "customer in CRM", "deal details", "lead info" → readCRM. Search by exact name or email.
+- Always state WHAT you checked and the limitation.
+- Never present text-matching as a definitive audit.
 
 DATE RULES:
 - "this month" → first to last day of current calendar month, IST.
 - "this year" → calendar year unless user specifies fiscal year explicitly.
-- Prefer natural filter values: "today", "last month", "this quarter", "2026", or ISO 8601 (YYYY-MM-DD).
-- Default to CURRENT period for "latest", "recent", "current", "this".
+- Prefer natural filter values: "today", "last month", "this quarter", "2026", or ISO 8601.
 
-HINGLISH: Mixed-language requests map to the same English action. Language never changes tool/operation.
+HINGLISH: Mixed-language requests map to the same English action.
 
 NEVER: invent or estimate financial figures, round amounts, filter to "this year" unless asked, expose tool names/raw IDs.`,
 };

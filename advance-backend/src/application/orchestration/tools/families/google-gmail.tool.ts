@@ -7,6 +7,7 @@ import type { PermissionResult } from '../../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../../shared/ids';
 import type { DivoEmailTemplateData, DivoEmailTemplateVariant } from '../../../email/email.types';
+import { buildTemplateFromPlainText } from '../../../email/plain-text-to-template';
 import type { AttachmentPolicyViolation, AttachmentRef, ResolvedAttachment } from '../../../email/attachment.types';
 
 const GmailOpSchema = z.enum([
@@ -255,9 +256,9 @@ export const createGoogleGmailTool = (deps: {
 - bcc: BCC recipient email addresses
 - Recipient safety: every to/cc/bcc value must be a real resolved email. Placeholder/test domains are rejected; resolve named people through context/Lark contacts or ask the user.
 - subject: Email subject
-- body/bodyText: The email body as well-structured plain text. All emails are sent as plain text (HTML templates are disabled). Write clear paragraphs with double-newline breaks, greet by name, sign off professionally. body is a legacy alias.
-- bodyHtml: DISABLED — ignored. Do not use.
-- templateId/templateData: DISABLED — ignored. Do not use. Write the full email in bodyText instead.
+- body/bodyText: Well-structured plain text. Divo wraps it in the T1 HTML template (multipart plain+HTML) with sections parsed from ALL CAPS headings and bullet lines. Use clear paragraphs, greet by name, sign off professionally. body is a legacy alias.
+- bodyHtml: Optional raw HTML body; skips the Divo template when provided.
+- templateId/templateData: Optional structured template (divo-standard-v1, divo-finance-v1, divo-proposal-v1, divo-executive-v1, divo-follow-up-v1, divo-report-v1). When omitted, bodyText is auto-formatted into the HTML template.
 - attachments: Optional files to attach for send/draft/reply/forward. Sources: file_asset{fileAssetId}, outbound_artifact{artifactId}, google_drive{fileId, exportMimeType?}, lark{messageId,fileKey,fileName?}, cloudinary{publicId, fileName?, resourceType?}. When a previous tool call returns csvPublicId (from Zoho/data-processor exports), use source=cloudinary with that publicId to attach the CSV. Limits: 10 files, 10 MB each, 18 MB total; executable/script/macro file extensions are blocked.
 - query: Gmail search query string for search/thread_list/list
 - labelIds/labelNames: Labels for label apply/remove flows
@@ -563,12 +564,27 @@ function requireComposedEmail(
   });
 }
 
-function buildEmailPresentation(_args: GmailArgs, _fallbackText?: string): {
+function buildEmailPresentation(args: GmailArgs, fallbackText?: string): {
   readonly bodyHtml?: string;
   readonly template?: DivoEmailTemplateData;
 } {
-  // HTML templates disabled — all emails are plain text via bodyText.
-  // Template/HTML building skipped; re-enable when the HTML template is reworked.
+  const explicitHtml = args.bodyHtml?.trim();
+  if (explicitHtml) {
+    return { bodyHtml: explicitHtml };
+  }
+
+  if (args.templateId) {
+    const template = buildTemplate(args, fallbackText);
+    if (template) return { template };
+  }
+
+  const body = fallbackText?.trim();
+  if (body) {
+    return {
+      template: buildTemplateFromPlainText(args.subject ?? 'Divo message', body),
+    };
+  }
+
   return {};
 }
 
