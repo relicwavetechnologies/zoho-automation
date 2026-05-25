@@ -15,6 +15,8 @@ import {
   markStepFailed,
   setPhase,
   toTimeline,
+  computeProgressPct,
+  phaseShortLabel,
   renderExecutionTrace,
 } from './engine/progress-state';
 
@@ -53,6 +55,13 @@ export class RunStatusAggregator {
     }
 
     markStepDone(this.progress, toolName, output);
+    if (
+      this.progress.completedSteps === this.progress.totalSteps
+      && !this.progress.steps.some(s => s.status === 'running')
+    ) {
+      setPhase(this.progress, 'synthesizing');
+      this.liveLabel = 'Preparing response…';
+    }
   }
 
   recordFailure(toolName: string, error: string): void {
@@ -70,12 +79,16 @@ export class RunStatusAggregator {
   }
 
   snapshot(): ChannelTimeline {
-    if (this.callCount >= PLAN_STEP_THRESHOLD) {
-      return toTimeline(this.progress);
-    }
+    const base = this.callCount >= PLAN_STEP_THRESHOLD
+      ? toTimeline(this.progress)
+      : {
+          phase:       phaseShortLabel(this.progress.phase),
+          progressPct: computeProgressPct(this.progress),
+          liveLabel:   this.liveLabel,
+        };
     return {
+      ...base,
       ...(this.recent.length ? { recent: [...this.recent] as ReadonlyArray<string> } : {}),
-      liveLabel: this.liveLabel,
     };
   }
 

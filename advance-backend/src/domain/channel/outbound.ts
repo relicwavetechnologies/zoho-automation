@@ -9,13 +9,33 @@ export interface ChannelBranding {
   readonly departmentColor?: 'green' | 'blue' | 'purple' | 'orange' | 'red' | 'turquoise' | 'grey';
 }
 
+export type ChannelPlanStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+
+export type ChannelToolFamily =
+  | 'zoho'
+  | 'lark'
+  | 'google'
+  | 'context'
+  | 'orchestration'
+  | 'other';
+
+export interface ChannelPlanStep {
+  readonly status:     ChannelPlanStepStatus;
+  readonly title:      string;
+  readonly subtitle?:  string;
+  readonly toolFamily?: ChannelToolFamily;
+}
+
 export interface ChannelTimeline {
-  readonly plan?: ReadonlyArray<{
-    status: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
-    title:  string;
-  }>;
-  readonly recent?:    ReadonlyArray<string>;
-  readonly liveLabel?: string;
+  /** Header subtitle, e.g. "Executing · 2/5" */
+  readonly phase?:         string;
+  /** 0–100 for progress chart */
+  readonly progressPct?:   number;
+  readonly completedSteps?: number;
+  readonly totalSteps?:     number;
+  readonly plan?:           ReadonlyArray<ChannelPlanStep>;
+  readonly recent?:         ReadonlyArray<string>;
+  readonly liveLabel?:      string;
 }
 
 export interface StatusUpdate {

@@ -95,7 +95,9 @@ describe('ProgressState', () => {
     it('returns liveLabel only when no steps', () => {
       const state = createProgressState();
       const timeline = toTimeline(state);
-      assert.equal(timeline.liveLabel, 'Routing…');
+      assert.equal(timeline.liveLabel, 'Thinking…');
+      assert.equal(timeline.phase, 'Thinking');
+      assert.equal(timeline.progressPct, 8);
       assert.equal(timeline.plan, undefined);
     });
 
@@ -110,7 +112,9 @@ describe('ProgressState', () => {
       assert.equal(timeline.plan.length, 2);
       assert.equal(timeline.plan[0]!.status, 'done');
       assert.equal(timeline.plan[1]!.status, 'running');
-      assert.ok(timeline.liveLabel!.includes('1/2'));
+      assert.equal(timeline.phase, 'Executing · 1/2');
+      assert.equal(timeline.plan[0]!.toolFamily, 'zoho');
+      assert.equal(timeline.plan[0]!.subtitle, '5 results');
     });
 
     it('shows phase label in liveLabel', () => {
