@@ -95,9 +95,16 @@ export function SettingsPage() {
   const startZohoConnect = async () => {
     if (!token) return
     setBusy("zoho")
+    const popup = window.open("about:blank", "_blank")
     try {
       const result = await companyIntegrationsApi.startZoho(zohoScope, token)
-      window.open(result.authUrl, "_blank", "noopener,noreferrer")
+      if (popup && !popup.closed) {
+        popup.location.href = result.authUrl
+      } else {
+        window.location.href = result.authUrl
+      }
+    } catch {
+      popup?.close()
     } finally {
       setBusy(null)
     }
@@ -106,9 +113,16 @@ export function SettingsPage() {
   const startLarkConnect = async () => {
     if (!token) return
     setBusy("lark")
+    const popup = window.open("about:blank", "_blank")
     try {
       const result = await companyIntegrationsApi.startLark(token)
-      window.open(result.url, "_blank", "noopener,noreferrer")
+      if (popup && !popup.closed) {
+        popup.location.href = result.url
+      } else {
+        window.location.href = result.url
+      }
+    } catch {
+      popup?.close()
     } finally {
       setBusy(null)
     }
@@ -117,9 +131,16 @@ export function SettingsPage() {
   const startGoogleConnect = async () => {
     if (!token) return
     setBusy("google")
+    const popup = window.open("about:blank", "_blank")
     try {
       const result = await companyIntegrationsApi.startGoogle("company", token)
-      window.open(result.url, "_blank", "noopener,noreferrer")
+      if (popup && !popup.closed) {
+        popup.location.href = result.url
+      } else {
+        window.location.href = result.url
+      }
+    } catch {
+      popup?.close()
     } finally {
       setBusy(null)
     }

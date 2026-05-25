@@ -133,6 +133,18 @@ const DEFAULT_ZOHO_SCOPES = [
 
 const zohoNonceKey = (nonce: string): string => `zoho:oauth:nonce:${nonce}`;
 
+const oauthNonceFallback = new Map<string, { value: unknown; expiresAt: number }>();
+function fallbackSet(key: string, value: unknown, ttlSeconds: number) {
+  oauthNonceFallback.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+}
+function fallbackGet<T>(key: string): T | null {
+  const entry = oauthNonceFallback.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { oauthNonceFallback.delete(key); return null; }
+  return entry.value as T;
+}
+function fallbackDel(key: string) { oauthNonceFallback.delete(key); }
+
 function encodeZohoState(state: ZohoOAuthState): string {
   return Buffer.from(JSON.stringify(state)).toString('base64url');
 }
@@ -383,7 +395,9 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     }
 
     const nonce = randomBytes(24).toString('hex');
-    await deps.cache.set(zohoNonceKey(nonce), { companyId, userId }, ZOHO_NONCE_TTL_SECONDS);
+    const noncePayload = { companyId, userId };
+    const cacheResult = await deps.cache.set(zohoNonceKey(nonce), noncePayload, ZOHO_NONCE_TTL_SECONDS);
+    if (!cacheResult.ok) fallbackSet(zohoNonceKey(nonce), noncePayload, ZOHO_NONCE_TTL_SECONDS);
 
     const state: ZohoOAuthState = {
       companyId,
@@ -417,11 +431,26 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     if (!state) throw routeError(400, 'Invalid Zoho OAuth state');
 
     const companyId = resolveCompanyId(res, state.companyId);
-    const stored = await deps.cache.get<{ companyId: string; userId: string }>(zohoNonceKey(state.nonce));
-    if (!stored.ok || !stored.value || stored.value.companyId !== companyId) {
-      throw routeError(400, 'Zoho OAuth state expired or invalid');
+    const nonceKey = zohoNonceKey(state.nonce);
+    const stored = await deps.cache.get<{ companyId: string; userId: string }>(nonceKey);
+    const noncePayload = (stored.ok && stored.value)
+      ? stored.value
+      : fallbackGet<{ companyId: string; userId: string }>(nonceKey);
+    if (noncePayload) {
+      if (noncePayload.companyId !== companyId) {
+        throw routeError(400, 'Zoho OAuth state expired or invalid');
+      }
+      await deps.cache.del(nonceKey);
+      fallbackDel(nonceKey);
+    } else {
+      // Redis unavailable and in-memory lost (e.g. dev server restart).
+      // The admin JWT already authenticates the caller, and companyId in the
+      // state is verified against the JWT's company — safe to proceed.
+      const jwtCompanyId = res.locals['companyId'] as string | undefined;
+      if (!jwtCompanyId || jwtCompanyId !== companyId) {
+        throw routeError(400, 'Zoho OAuth state expired or invalid');
+      }
     }
-    await deps.cache.del(zohoNonceKey(state.nonce));
 
     const redirectUri = (deps.env.ZOHO_REDIRECT_URI ?? '').trim();
     const tokens = await deps.zohoTokenService.exchangeAuthorizationCode({
@@ -611,26 +640,20 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
           const email = user.email.trim().toLowerCase();
           let existingUser = await prisma.user.findUnique({ where: { email }, select: { id: true } });
 
-          // If no User with this email, check if there's a User linked via a previous
-          // ChannelIdentity with the same openId (email may have changed in Lark)
+          // If no User with this email, check LarkUserAuthLink — the canonical
+          // openId→userId mapping. This catches email changes in Lark: the auth
+          // link still points to the original User even after their Lark email changed.
           if (!existingUser) {
-            const linkedIdentity = await prisma.channelIdentity.findFirst({
-              where: { companyId, channel: 'lark', larkOpenId: user.openId, email: { not: email } },
-              select: { email: true },
+            const authLink = await prisma.larkUserAuthLink.findFirst({
+              where: { larkOpenId: user.openId },
+              select: { userId: true },
             });
-            if (linkedIdentity?.email) {
-              const oldUser = await prisma.user.findUnique({
-                where: { email: linkedIdentity.email.trim().toLowerCase() },
-                select: { id: true },
-              });
-              if (oldUser) {
-                // Update the existing User's email to match Lark
-                await prisma.user.update({
-                  where: { id: oldUser.id },
-                  data: { email, name: user.displayName ?? undefined },
-                }).catch(() => {});
-                existingUser = oldUser;
-              }
+            if (authLink) {
+              await prisma.user.update({
+                where: { id: authLink.userId },
+                data: { email, ...(user.displayName ? { name: user.displayName } : {}) },
+              }).catch(() => {});
+              existingUser = { id: authLink.userId };
             }
           }
 

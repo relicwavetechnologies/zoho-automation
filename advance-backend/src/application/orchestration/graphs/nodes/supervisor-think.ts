@@ -13,6 +13,12 @@ import { createListScheduledTasksTool } from '../../tools/orchestration/list-sch
 import { createCancelScheduledTaskTool } from '../../tools/orchestration/cancel-scheduled-task.tool';
 import { createRunScheduledNowTool } from '../../tools/orchestration/run-scheduled-now.tool';
 import { createRememberFactTool } from '../../tools/orchestration/remember-fact.tool';
+import { createCallToolTool } from '../../tools/orchestration/call-tool';
+import { createDiscoverSkillTool } from '../../tools/orchestration/discover-skill';
+import { buildBrainSystemPrompt } from '../../brain-prompt';
+import type { SkillRegistry } from '../../../skills/skill-registry';
+import type { ToolRegistry } from '../../tools/tool-registry';
+import type { AdapterContext } from '../../tools/ai-sdk-adapter';
 import type { SupervisorGraphStateValue } from '../dynamic-supervisor.state';
 import type { Mem0Service } from '../../../memory/mem0.service';
 import type { OrchestrationTracer } from '../../../observability/orchestration-tracer';
@@ -55,6 +61,9 @@ export interface SupervisorThinkDeps {
     readonly maxSteps: number;
     readonly temperature: number;
   }) => Promise<{ readonly text: string; readonly toolCalls: string[] }>;
+  readonly unifiedAgentMode?: boolean;
+  readonly skillRegistry?: SkillRegistry;
+  readonly toolRegistry?: ToolRegistry;
 }
 
 export async function supervisorThink(
@@ -82,6 +91,110 @@ export async function supervisorThink(
         }
       : undefined;
 
+    // ── Build messages (shared by both unified and multi-agent paths) ──────
+    const hasMultimodalContext = state.groupContextParts.length > 0
+      && state.groupContextParts.some(p => p.type === 'image');
+
+    const messages: ModelMessage[] = state.conversationHistory.map(m => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    if (hasMultimodalContext) {
+      const contentParts: UserContent = state.groupContextParts.map(p =>
+        p.type === 'text'
+          ? { type: 'text' as const, text: p.text }
+          : { type: 'image' as const, image: new URL(p.url) },
+      );
+      messages.push({ role: 'user' as const, content: contentParts });
+    }
+
+    messages.push({ role: 'user' as const, content: state.userMessage });
+
+    // ── Orchestration tools (shared by both paths) ────────────────────────
+    const orchestrationTools = {
+      manageTodos: createManageTodosTool(deps.todoRepo, state.runContext),
+      scheduleTask: createScheduleTaskTool(deps.prisma, state.runContext),
+      listScheduledTasks: createListScheduledTasksTool(deps.prisma, state.runContext),
+      cancelScheduledTask: createCancelScheduledTaskTool(deps.prisma, state.runContext),
+      runScheduledTaskNow: createRunScheduledNowTool(deps.prisma, state.runContext),
+      ...(deps.mem0 ? { rememberFact: createRememberFactTool(deps.mem0, state.runContext) } : {}),
+    } as unknown as ToolSet;
+
+    // ── Unified agent mode (single brain with discover_skill + call_tool) ─
+    if (deps.unifiedAgentMode && deps.skillRegistry && deps.toolRegistry) {
+      const adapterCtx: AdapterContext = {
+        runContext: state.runContext,
+        perm: state.perm,
+        logger: deps.logger,
+        clock: deps.clock,
+        ...(state.approvalGate ? { approvalGate: state.approvalGate } : {}),
+        ...(state.chatId ? { chatId: state.chatId } : {}),
+        ...(onProgress ? { onProgress } : {}),
+      };
+
+      const unifiedTools = {
+        discover_skill: createDiscoverSkillTool(deps.skillRegistry, deps.toolRegistry),
+        call_tool: createCallToolTool(deps.toolRegistry, adapterCtx),
+        ...orchestrationTools,
+      } as unknown as ToolSet;
+
+      // Override system prompt with brain prompt
+      const brainPrompt = buildBrainSystemPrompt({
+        skillCatalog: deps.skillRegistry.catalog(),
+        currentDateTime: deps.clock.now().toISOString(),
+      });
+
+      let brainSystemPrompt = brainPrompt;
+      if (hasMultimodalContext) {
+        brainSystemPrompt += '\n\nGROUP CHAT CONTEXT is provided in the preceding user message with interleaved images.';
+      } else if (state.groupContext) {
+        brainSystemPrompt += `\n\n${state.groupContext}`;
+      }
+      if (state.memoryContext) {
+        brainSystemPrompt += `\n\nMEMORY CONTEXT:\n${state.memoryContext}`;
+      }
+
+      deps.logger.info('dynamic_graph.think.unified_mode', {
+        toolNames: Object.keys(unifiedTools),
+        toolCount: Object.keys(unifiedTools).length,
+        skillCount: deps.skillRegistry.all().length,
+      });
+
+      // Use the same rootModel resolution as below
+      const rootModel = rootAgent.provider && rootAgent.modelId && deps.resolveModel
+        ? await deps.resolveModel({
+          provider: rootAgent.provider,
+          modelId: rootAgent.modelId,
+          companyId: rootAgent.companyId,
+          agentSlug: rootAgent.slug,
+        })
+        : deps.model;
+
+      const outcome = await runSupervisorStream({
+        model: rootModel,
+        system: brainSystemPrompt,
+        messages,
+        tools: unifiedTools,
+        maxSteps: rootAgent.maxSteps,
+        temperature: rootAgent.temperature,
+        logger: deps.logger,
+        ...(deps.tracer ? { tracer: deps.tracer } : {}),
+        ...(deps.statusChannel ? { statusChannel: deps.statusChannel } : {}),
+        ...(deps.aggregator ? { aggregator: deps.aggregator } : {}),
+      });
+
+      return {
+        supervisorResult: outcome.text.trim() || 'Done.',
+        toolCallsMade: outcome.toolCalls,
+        toolResults: outcome.toolResults,
+        agentDelegations: [],
+        status: 'done',
+        error: null,
+      };
+    }
+
+    // ── Multi-agent path (existing behavior) ──────────────────────────────
     const agentCtx = {
       model: deps.model,
       ...(deps.defaultModel ? { defaultModel: deps.defaultModel } : {}),
@@ -118,46 +231,15 @@ export async function supervisorThink(
       capabilityCount: Object.keys(dynamicCapabilities).length,
     });
 
-    const orchestrationTools = {
-      manageTodos: createManageTodosTool(deps.todoRepo, state.runContext),
-      scheduleTask: createScheduleTaskTool(deps.prisma, state.runContext),
-      listScheduledTasks: createListScheduledTasksTool(deps.prisma, state.runContext),
-      cancelScheduledTask: createCancelScheduledTaskTool(deps.prisma, state.runContext),
-      runScheduledTaskNow: createRunScheduledNowTool(deps.prisma, state.runContext),
-      ...(deps.mem0 ? { rememberFact: createRememberFactTool(deps.mem0, state.runContext) } : {}),
-    } as unknown as ToolSet;
-
     const tools = {
       ...dynamicCapabilities,
       ...orchestrationTools,
     } as unknown as ToolSet;
 
-    // ── Build messages with optional multimodal group context ──────────────
-    const hasMultimodalContext = state.groupContextParts.length > 0
-      && state.groupContextParts.some(p => p.type === 'image');
-
-    const messages: ModelMessage[] = state.conversationHistory.map(m => ({
-      role: m.role,
-      content: m.content,
-    }));
-
-    if (hasMultimodalContext) {
-      const contentParts: UserContent = state.groupContextParts.map(p =>
-        p.type === 'text'
-          ? { type: 'text' as const, text: p.text }
-          : { type: 'image' as const, image: new URL(p.url) },
-      );
-      messages.push({ role: 'user' as const, content: contentParts });
-    }
-
-    messages.push({ role: 'user' as const, content: state.userMessage });
-
     let systemPrompt = rootAgent.systemPrompt;
     if (hasMultimodalContext) {
-      // Compact instruction header — the transcript is in the user message
       systemPrompt += '\n\nGROUP CHAT CONTEXT is provided in the preceding user message with interleaved images. Resolve "this image/file" to the nearest preceding attachment in that transcript.';
     } else if (state.groupContext) {
-      // Text-only fallback: append full transcript to system prompt (existing behavior)
       systemPrompt += `\n\n${state.groupContext}`;
     }
     if (state.memoryContext) {

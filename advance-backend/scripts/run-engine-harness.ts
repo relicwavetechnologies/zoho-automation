@@ -28,12 +28,14 @@ import type { ConversationHandle } from '../src/application/channels/channel.ada
 
 const DEFAULT_PROMPT = "make a task 'hrm8 deployment' and assign it to anish";
 const ABHISHEK_OPEN_ID = 'ou_48b958c283635491b756c0ef23f47159';
+const ANISH_OPEN_ID    = 'ou_a1c4b19abc483d674dde1955142e6b7d';
 const P2P_CHAT_ID      = 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50';
 const GROUP_CHAT_ID    = 'oc_b9169aab0765f46b2fe9147068e3c79f';
 
 const args = process.argv.slice(2);
 const debugSigs = args.includes('--debug-sigs');
 const groupMode = args.includes('--group');
+const asAnish   = args.includes('--as-anish');
 const prompt    = args.filter(a => !a.startsWith('--'))[0] ?? DEFAULT_PROMPT;
 
 // Optional: install global hook so we can trace what hits Gemini.
@@ -64,9 +66,11 @@ if (debugSigs) {
 async function main() {
   const chatId = groupMode ? GROUP_CHAT_ID : P2P_CHAT_ID;
   const chatType = groupMode ? 'group' : 'p2p';
+  const userOpenId = asAnish ? ANISH_OPEN_ID : ABHISHEK_OPEN_ID;
 
   console.log('\n=== run-engine-harness ===');
   console.log(`mode:   ${chatType}`);
+  console.log(`user:   ${asAnish ? 'Anish Suman' : 'Abhishek Verma'} (${userOpenId})`);
   console.log(`chatId: ${chatId}`);
   console.log(`prompt: ${JSON.stringify(prompt)}`);
   console.log(`debug-sigs: ${debugSigs}\n`);
@@ -76,9 +80,9 @@ async function main() {
   const { engine, larkAdapter, channelIdentityRepo, prisma, approvalGate } = container;
 
   // ── 1. Resolve identity (mirrors webhook) ─────────────────────────────────
-  const identityResult = await channelIdentityRepo.resolveByLarkOpenId(ABHISHEK_OPEN_ID);
+  const identityResult = await channelIdentityRepo.resolveByLarkOpenId(userOpenId);
   if (!identityResult.ok || !identityResult.value) {
-    console.error(`Identity not found for openId=${ABHISHEK_OPEN_ID}`);
+    console.error(`Identity not found for openId=${userOpenId}`);
     process.exit(1);
   }
   const identity = identityResult.value;
@@ -94,7 +98,7 @@ async function main() {
     messageId:      asMessageId(messageId),
     chatId:         asChatId(chatId),
     chatType,
-    userExternalId: ABHISHEK_OPEN_ID,
+    userExternalId: userOpenId,
     text:           prompt,
     attachments:    [],
     timestamp:      now.toISOString(),
@@ -111,7 +115,7 @@ async function main() {
     channel:        'lark',
     traceId:        String(traceId),
     requestId:      messageId,
-    userExternalId: ABHISHEK_OPEN_ID,
+    userExternalId: userOpenId,
     chatId,
     ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
   };
@@ -154,7 +158,7 @@ async function main() {
       chatId,
       chatType: 'group',
       messageId,
-      senderOpenId: ABHISHEK_OPEN_ID,
+      senderOpenId: userOpenId,
       senderName: identity.displayName || identity.email || identity.userId,
       role: 'user',
       content: prompt,

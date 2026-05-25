@@ -134,6 +134,9 @@ export interface SupervisorDeps {
   dynamicSupervisorGraph?: DynamicSupervisorGraph;
   supervisorTimeoutMs?: number;
   mem0?: Mem0Service;
+  unifiedAgentMode?: boolean;
+  skillRegistry?: import('../../skills/skill-registry').SkillRegistry;
+  toolRegistry?: import('../tools/tool-registry').ToolRegistry;
 }
 
 // ─── Supervisor ───────────────────────────────────────────────────────────────
@@ -639,6 +642,9 @@ export class SupervisorAgent {
       ...(input.tracer ? { tracer: input.tracer } : {}),
       ...(input.statusChannel ? { statusChannel: input.statusChannel } : {}),
       ...(input.aggregator ? { aggregator: input.aggregator } : {}),
+      ...(this.deps.unifiedAgentMode ? { unifiedAgentMode: true } : {}),
+      ...(this.deps.skillRegistry ? { skillRegistry: this.deps.skillRegistry } : {}),
+      ...(this.deps.toolRegistry ? { toolRegistry: this.deps.toolRegistry } : {}),
     });
 
     const memoryContext = input.memoryContext ?? '';

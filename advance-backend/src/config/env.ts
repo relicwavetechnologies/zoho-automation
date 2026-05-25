@@ -44,7 +44,7 @@ const EnvSchema = z.object({
   // Switch the entire engine by changing these two vars. No code changes needed.
   //   MODEL_PROVIDER=google  MODEL_ID=gemini-3.1-flash-lite-preview
   //   MODEL_PROVIDER=openai  MODEL_ID=gpt-4o
-  MODEL_PROVIDER: z.enum(['google', 'openai']).default('google'),
+  MODEL_PROVIDER: z.enum(['google', 'openai', 'deepseek']).default('google'),
   MODEL_ID:       z.string().default('gemini-3.1-flash-lite-preview'),
 
   // ── OpenAI ────────────────────────────────────────────────────────────────
@@ -56,6 +56,9 @@ const EnvSchema = z.object({
   OPENAI_SYNTHESIS_MODEL: z.string().default('gpt-4o-mini'),
   OPENAI_SUPERVISOR_MODEL: z.string().default('gpt-4o'),
   OPENAI_TEMPERATURE:    positiveNum(0.1),
+
+  // ── DeepSeek ──────────────────────────────────────────────────────────────
+  DEEPSEEK_API_KEY:  z.string().optional(),
 
   // ── Groq (intent classification + reranking) ──────────────────────────────
   GROQ_API_KEY:      z.string().optional(),
@@ -171,6 +174,7 @@ const EnvSchema = z.object({
   // ── Dynamic agent graph cutover ───────────────────────────────────────────
   DYNAMIC_GRAPH_ENABLED: booleanStr.default('false'),
   DYNAMIC_GRAPH_SHADOW:  booleanStr.default('false'),
+  UNIFIED_AGENT_MODE:    booleanStr.default('false'),
 
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models)
   SUPERVISOR_TIMEOUT_MS: z.coerce.number().int().min(0).default(300_000),

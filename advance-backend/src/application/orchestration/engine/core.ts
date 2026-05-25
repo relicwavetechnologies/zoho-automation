@@ -250,12 +250,20 @@ export class OrchestrationEngine {
     }
 
     // ── 4. Load pre-supervisor context in parallel ────────────────────────
+    // Scheduled delivery runs must NOT load prior conversation history — the
+    // originChatId points to the user's real DM, so loading history would
+    // inject unrelated interactive turns that confuse the LLM.
+    const isScheduledDelivery = runContext.deliveryMode === 'current_chat_only';
     const [historyResult, memoryContext, groupContextResult] = await Promise.all([
-      this.deps.history.loadWindow(
-        incoming.chatId as unknown as ChatId,
-        { filterPoison: true, perm },
-      ),
-      this.searchMemoryContext({
+      isScheduledDelivery
+        ? Promise.resolve({ ok: true as const, value: { turns: [], truncated: false, tokenEstimate: 0 } })
+        : this.deps.history.loadWindow(
+            incoming.chatId as unknown as ChatId,
+            { filterPoison: true, perm },
+          ),
+      isScheduledDelivery
+        ? Promise.resolve(undefined)
+        : this.searchMemoryContext({
         query: incoming.text,
         runContext,
         log,
@@ -309,7 +317,7 @@ export class OrchestrationEngine {
     }
 
     // ── 4c. Loaded persistent memory context ─────────────────────────────
-    debugMemoryContext(memoryContext);
+    if (memoryContext) debugMemoryContext(memoryContext);
 
     // ── 4d. Loaded group chat context (if applicable) ────────────────────
     const isGroupWithContext = incoming.chatType === 'group'
@@ -433,7 +441,7 @@ export class OrchestrationEngine {
       }
     }
 
-    const executionTrace = aggregator.getExecutionTrace();
+    const executionTrace = isScheduledDelivery ? undefined : aggregator.getExecutionTrace();
     const finalReply: FinalReply = {
       ...presentedReply,
       branding,

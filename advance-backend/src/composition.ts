@@ -128,6 +128,7 @@ import { createDataProcessorTool } from './application/orchestration/tools/famil
 // AI model
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createDeepSeek } from '@ai-sdk/deepseek';
 import type { LanguageModel } from 'ai';
 import { withFallback } from './shared/model-fallback';
 import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
@@ -293,6 +294,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     if (provider === 'openai') {
       return openaiModel(modelId);
     }
+    if (provider === 'deepseek') {
+      if (!env.DEEPSEEK_API_KEY) throw new Error('AI provider deepseek selected but DEEPSEEK_API_KEY is not set');
+      const ds = createDeepSeek({ apiKey: env.DEEPSEEK_API_KEY });
+      return ds(modelId);
+    }
     throw new Error(`Unsupported AI model provider: ${provider}`);
   };
 
@@ -369,7 +375,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     companyId: string;
     agentSlug?: string;
   }): Promise<LanguageModel> => {
-    if (input.provider === 'google') {
+    if (input.provider === 'google' || input.provider === 'deepseek') {
       return createConfiguredModel(input.provider, input.modelId);
     }
     if (input.provider !== 'openai') {
@@ -787,6 +793,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   logger.info('tool.registry.built', { toolCount: toolRegistry.ids().length, tools: toolRegistry.ids() });
 
+  // ── Skill registry (unified agent mode) ───────────────────────────────
+  const { createDefaultSkillRegistry } = await import('./application/skills');
+  const skillRegistry = createDefaultSkillRegistry();
+
   // ── Engine primitives ──────────────────────────────────────────────────
   const history = new HistoryService({ conversationRepo, logger: logger.child({ service: 'history' }) });
 
@@ -848,6 +858,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     dynamicGraphEnabled: env.DYNAMIC_GRAPH_ENABLED,
     dynamicGraphShadow:  env.DYNAMIC_GRAPH_SHADOW,
     supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
+    unifiedAgentMode: env.UNIFIED_AGENT_MODE,
+    skillRegistry,
+    toolRegistry,
     ...(mem0Service ? { mem0: mem0Service } : {}),
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
   });
