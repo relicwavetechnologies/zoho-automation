@@ -104,6 +104,12 @@ export class OrchestrationEngine {
       companyId: runContext.companyId,
     });
 
+    const abortController = new AbortController();
+    if ('registerAbortController' in channelAdapter) {
+      const corrId = String(runContext.traceId ?? incoming.traceId);
+      (channelAdapter as any).registerAbortController(corrId, abortController);
+    }
+
     log.info('engine.run.start', { userMessage: incoming.text.slice(0, 100) });
 
     debugRunStart({
@@ -231,7 +237,8 @@ export class OrchestrationEngine {
     }
 
     const statusPromise = statusChannel.sendStatus({
-      kind: 'status', terminal: false, branding, timeline: { liveLabel: 'Routing…' },
+      kind: 'status', terminal: false, branding,
+      timeline: { progressPct: 8, liveLabel: 'Thinking…' },
     });
 
     // ── 3. Discover allowed tools ─────────────────────────────────────────
@@ -364,7 +371,21 @@ export class OrchestrationEngine {
       ...(groupContext ? { groupContext } : {}),
       ...(multimodalCtx?.hasImages ? { groupContextParts: multimodalCtx.parts, groupContextSystemHeader: multimodalCtx.systemHeader } : {}),
       chatId:         String(conversation.chatId),
+      abortSignal:    abortController.signal,
     });
+
+    if (abortController.signal.aborted) {
+      log.info('engine.run.interrupted', { durationMs: this.deps.clock.nowMs() - runStartMs });
+      tracer?.fail('interrupted', 'Run interrupted by user');
+      const interruptReply: FinalReply = {
+        kind: 'final', text: 'Run interrupted.', format: 'text', branding,
+      };
+      await channelAdapter.sendFinalReply(conversation, interruptReply);
+      if ('cleanupAbortController' in channelAdapter) {
+        (channelAdapter as any).cleanupAbortController(String(runContext.traceId ?? incoming.traceId));
+      }
+      return ok({ finalReply: interruptReply, toolsCalled: [] });
+    }
 
     if (!supervisorResult.ok) {
       log.error('engine.supervisor.failed', { error: supervisorResult.error.message });
@@ -525,6 +546,10 @@ export class OrchestrationEngine {
       },
     });
     tracer?.complete(finalReply.text.slice(0, 500));
+
+    if ('cleanupAbortController' in channelAdapter) {
+      (channelAdapter as any).cleanupAbortController(String(runContext.traceId ?? incoming.traceId));
+    }
 
     return ok({ finalReply, toolsCalled });
   }

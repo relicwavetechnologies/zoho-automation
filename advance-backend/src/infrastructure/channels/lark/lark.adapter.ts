@@ -21,6 +21,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
   // One coordinator per in-flight run, keyed by correlationId.
   // Manages single-bubble status updates with rate-limiting and dedup.
   private readonly coordinators = new Map<string, LarkStatusCoordinator>();
+  private readonly abortControllers = new Map<string, AbortController>();
 
   constructor(deps: { env: TypedEnv; logger: Logger }) {
     this.logger = deps.logger.child({ channel: 'lark' });
@@ -210,14 +211,8 @@ export class LarkChannelAdapter implements ChannelAdapter {
     conversation: ConversationHandle,
     reply: FinalReply,
   ): Promise<Result<ReplyHandle, ChannelError>> {
-    // Grab status message ID before closing so we can update it in-place.
     const corrId = String(conversation.correlationId);
     const coordinator = this.coordinators.get(corrId);
-    const statusMessageId = coordinator?.getStatusMessageId();
-    if (coordinator) {
-      await coordinator.close();
-      this.coordinators.delete(corrId);
-    }
 
     try {
       const content = buildFinalCard({
@@ -227,21 +222,36 @@ export class LarkChannelAdapter implements ChannelAdapter {
         ...(reply.executionTrace  ? { executionTrace: reply.executionTrace }  : {}),
       });
 
-      if (statusMessageId) {
-        // Update the existing "Working..." card in-place → single bubble.
-        await this.messagingClient.updateMessage(statusMessageId, content);
-        return ok({ channel: 'lark', messageId: asMessageId(statusMessageId) });
+      let messageId: string | undefined;
+      if (coordinator) {
+        try {
+          messageId = await coordinator.finalizeMessage(content);
+        } finally {
+          this.coordinators.delete(corrId);
+        }
+      } else {
+        const result = await this.messagingClient.sendMessage(
+          conversation.chatId,
+          content,
+          conversation.replyToMessageId,
+          conversation.replyInThread,
+        );
+        messageId = result.messageId;
       }
 
-      // No status bubble yet (very fast response) — send a new message.
-      const result = await this.messagingClient.sendMessage(
-        conversation.chatId,
-        content,
-        conversation.replyToMessageId,
-        conversation.replyInThread,
-      );
-      return ok({ channel: 'lark', messageId: asMessageId(result.messageId) });
+      if (!messageId) {
+        const result = await this.messagingClient.sendMessage(
+          conversation.chatId,
+          content,
+          conversation.replyToMessageId,
+          conversation.replyInThread,
+        );
+        messageId = result.messageId;
+      }
+
+      return ok({ channel: 'lark', messageId: asMessageId(messageId) });
     } catch (e) {
+      this.coordinators.delete(corrId);
       return err(new ChannelError({ channel: 'lark', stage: 'send_final', reason: 'upstream_5xx', cause: e }));
     }
   }
@@ -290,6 +300,33 @@ export class LarkChannelAdapter implements ChannelAdapter {
   /** Read the current status messageId for a run, if a coordinator exists. */
   getStatusMessageId(correlationId: string): string | undefined {
     return this.coordinators.get(correlationId)?.getStatusMessageId();
+  }
+
+  /** Register an AbortController for an active run so it can be interrupted. */
+  registerAbortController(correlationId: string, controller: AbortController): void {
+    this.abortControllers.set(correlationId, controller);
+  }
+
+  /** Interrupt a running agent by correlationId. Returns true if a run was found and aborted. */
+  interruptRun(correlationId: string): boolean {
+    const controller = this.abortControllers.get(correlationId);
+    if (!controller) return false;
+    controller.abort('User interrupted the run');
+    this.abortControllers.delete(correlationId);
+    return true;
+  }
+
+  /** Find the correlationId for a run by its status message ID. */
+  findCorrelationByStatusMessage(messageId: string): string | undefined {
+    for (const [corrId, coordinator] of this.coordinators) {
+      if (coordinator.getStatusMessageId() === messageId) return corrId;
+    }
+    return undefined;
+  }
+
+  /** Clean up abort controller after run completes. */
+  cleanupAbortController(correlationId: string): void {
+    this.abortControllers.delete(correlationId);
   }
 
   // ── reactToIncoming ──────────────────────────────────────────────────

@@ -142,6 +142,24 @@ export const createLarkWebhookRoutes = (deps: {
         return;
       }
 
+      // Handle interrupt button clicks on status cards
+      const actionValue = (cardEvent as any)?.action?.value;
+      const actionObj = typeof actionValue === 'string' ? (() => { try { return JSON.parse(actionValue); } catch { return null; } })() : actionValue;
+      if (actionObj?.action === 'interrupt_run') {
+        const messageId = (cardEvent as any)?.open_message_id
+          ?? (cardEvent as any)?.context?.open_message_id
+          ?? (cardEvent as any)?.message_id;
+        if (messageId) {
+          const corrId = deps.adapter.findCorrelationByStatusMessage(messageId);
+          if (corrId) {
+            const aborted = deps.adapter.interruptRun(corrId);
+            log.info('webhook.interrupt', { correlationId: corrId, aborted });
+          }
+        }
+        res.status(200).json({ ok: true });
+        return;
+      }
+
       if (deps.approvalCardHandler) {
         const handler = deps.approvalCardHandler;
         void (async () => {

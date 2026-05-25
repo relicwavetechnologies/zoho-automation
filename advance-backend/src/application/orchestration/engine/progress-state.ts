@@ -6,7 +6,11 @@
  * Also renders an execution trace markdown block for the final card.
  */
 
-import type { ChannelTimeline } from '../../../domain/channel/outbound';
+import type {
+  ChannelPlanStep,
+  ChannelTimeline,
+  ChannelToolFamily,
+} from '../../../domain/channel/outbound';
 import { getToolLabels } from '../agents/tool-labels';
 import { previewToolResult } from '../agents/tool-result-preview';
 
@@ -119,23 +123,68 @@ const STEP_MARKERS: Record<StepStatus, string> = {
   failed:  '✗',
 };
 
+export function inferToolFamily(agentSlug: string): ChannelToolFamily {
+  if (/zoho/i.test(agentSlug)) return 'zoho';
+  if (/lark/i.test(agentSlug)) return 'lark';
+  if (/google|gmail/i.test(agentSlug)) return 'google';
+  if (/context/i.test(agentSlug)) return 'context';
+  if (/manageTodos|scheduleTask|listScheduled|cancelScheduled|runScheduled/i.test(agentSlug)) {
+    return 'orchestration';
+  }
+  return 'other';
+}
+
+export function computeProgressPct(state: ProgressState): number {
+  switch (state.phase) {
+    case 'routing':      return 8;
+    case 'planning':     return 18;
+    case 'synthesizing': return 92;
+    case 'done':         return 100;
+    case 'failed':       return state.totalSteps > 0
+      ? Math.round((state.completedSteps / state.totalSteps) * 100)
+      : 12;
+    case 'executing': {
+      if (state.totalSteps === 0) return 25;
+      const running = state.steps.some(s => s.status === 'running') ? 8 : 0;
+      const base = 20 + Math.round((state.completedSteps / state.totalSteps) * 68);
+      return Math.min(88, base + running);
+    }
+    default: return 10;
+  }
+}
+
 export function toTimeline(state: ProgressState): ChannelTimeline {
+  const progressPct = computeProgressPct(state);
+  const phase = formatPhaseHeader(state);
+
   if (state.steps.length === 0) {
-    return { liveLabel: phaseLabel(state.phase) };
+    return {
+      phase,
+      progressPct,
+      liveLabel: phaseLabel(state.phase),
+    };
   }
 
-  const plan = state.steps.map(step => ({
-    status: step.status,
-    title: formatStepTitle(step),
-  }));
+  const plan: ChannelPlanStep[] = state.steps.map(step => {
+    const subtitle = formatStepSubtitle(step);
+    return {
+      status:     step.status,
+      title:      step.label,
+      toolFamily: inferToolFamily(step.agentSlug),
+      ...(subtitle ? { subtitle } : {}),
+    };
+  });
 
   const activeStep = state.steps.find(s => s.status === 'running');
-  const liveLabel = activeStep?.toolActivity
-    ?? phaseLabel(state.phase);
+  const liveLabel = activeStep?.toolActivity ?? phaseLabel(state.phase);
 
   return {
+    phase,
+    progressPct,
+    completedSteps: state.completedSteps,
+    totalSteps:     state.totalSteps,
     plan,
-    liveLabel: `${liveLabel}  ${state.completedSteps}/${state.totalSteps}`,
+    liveLabel,
   };
 }
 
@@ -175,17 +224,31 @@ function findLatestRunning(state: ProgressState, toolName: string): ProgressStep
   return undefined;
 }
 
-function formatStepTitle(step: ProgressStep): string {
-  if (step.status === 'done' && step.resultSummary) {
-    return `${step.label} — ${step.resultSummary}`;
+function formatStepSubtitle(step: ProgressStep): string | undefined {
+  if (step.status === 'done' && step.resultSummary) return step.resultSummary;
+  if (step.status === 'failed' && step.error) return step.error;
+  if (step.status === 'running' && step.toolActivity) return step.toolActivity;
+  return undefined;
+}
+
+function formatPhaseHeader(state: ProgressState): string {
+  const phaseName = phaseShortLabel(state.phase);
+  if (state.totalSteps > 0) {
+    return `${phaseName} · ${state.completedSteps}/${state.totalSteps}`;
   }
-  if (step.status === 'failed' && step.error) {
-    return `${step.label} — ${step.error}`;
+  return phaseName;
+}
+
+export function phaseShortLabel(phase: ProgressPhase): string {
+  switch (phase) {
+    case 'routing':      return 'Thinking';
+    case 'planning':     return 'Planning';
+    case 'executing':    return 'Executing';
+    case 'synthesizing': return 'Synthesizing';
+    case 'done':         return 'Done';
+    case 'failed':       return 'Blocked';
+    default:             return 'Working';
   }
-  if (step.status === 'running' && step.toolActivity) {
-    return `${step.label}: ${step.toolActivity}`;
-  }
-  return step.label;
 }
 
 function formatTraceLine(step: ProgressStep): string {
@@ -250,7 +313,7 @@ function cleanTodoTitle(summary: string): string {
 
 function phaseLabel(phase: ProgressPhase): string {
   switch (phase) {
-    case 'routing':      return 'Routing…';
+    case 'routing':      return 'Thinking…';
     case 'planning':     return 'Planning…';
     case 'executing':    return 'Working…';
     case 'synthesizing': return 'Preparing response…';

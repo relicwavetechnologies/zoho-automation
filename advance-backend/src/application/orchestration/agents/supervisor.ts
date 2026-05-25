@@ -15,6 +15,17 @@
 import { streamText, stepCountIs, dynamicTool } from 'ai';
 import { z } from 'zod';
 import type { LanguageModel, ToolSet } from 'ai';
+
+function mergeAbortSignals(a?: AbortSignal, b?: AbortSignal): AbortSignal {
+  if (!a) return b!;
+  if (!b) return a;
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(a.aborted ? a.reason : b.reason);
+  if (a.aborted || b.aborted) { onAbort(); return controller.signal; }
+  a.addEventListener('abort', onAbort, { once: true });
+  b.addEventListener('abort', onAbort, { once: true });
+  return controller.signal;
+}
 import {
   runWithCircuitBreaker,
   CircuitBreakerOpenError,
@@ -82,6 +93,7 @@ export interface SupervisorInput {
   groupContextParts?: readonly GroupContextContentPart[];
   groupContextSystemHeader?: string;
   chatId?:        string;
+  abortSignal?:   AbortSignal;
 }
 
 export interface SupervisorOutput {
@@ -367,7 +379,7 @@ export class SupervisorAgent {
             tools:   supervisorTools,
             stopWhen: [stepCountIs(MAX_SUPERVISOR_STEPS)],
             temperature: 0,
-            ...(timeoutMs > 0 ? { abortSignal: AbortSignal.timeout(timeoutMs) } : {}),
+            ...(timeoutMs > 0 || input.abortSignal ? { abortSignal: mergeAbortSignals(timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined, input.abortSignal) } : {}),
           });
 
           const innerCalled: string[] = [];

@@ -19,6 +19,8 @@ interface CoordinatorInput {
 
 const DEFAULT_MIN_INTERVAL_MS  = 1500;
 const DEFAULT_HEARTBEAT_MS     = 6000;
+const FINALIZE_DRAIN_MS        = 10_000;
+const FINALIZE_POLL_MS         = 25;
 
 /**
  * Manages ephemeral Lark status cards during a run.
@@ -43,6 +45,7 @@ export class LarkStatusCoordinator {
   private inFlight          = false;
   private terminalLocked    = false;
   private closed            = false;
+  private finalizing        = false;
 
   constructor(input: CoordinatorInput) {
     this.client             = input.client;
@@ -56,7 +59,7 @@ export class LarkStatusCoordinator {
   getStatusMessageId(): string | undefined { return this.statusMessageId; }
 
   async update(renderable: StatusCardInput, opts?: { force?: boolean; terminal?: boolean }): Promise<void> {
-    if (this.closed || (this.terminalLocked && !opts?.terminal)) return;
+    if (this.closed || this.finalizing || (this.terminalLocked && !opts?.terminal)) return;
 
     const previewText = this.renderBodyPreview(renderable);
     if (!previewText && !opts?.force) return;
@@ -78,15 +81,56 @@ export class LarkStatusCoordinator {
     }
   }
 
+  /**
+   * Replaces the status bubble with the final card. Drains any in-flight or
+   * scheduled status flush first so a delayed update cannot overwrite the answer.
+   */
+  async finalizeMessage(cardContent: string): Promise<string | undefined> {
+    this.finalizing = true;
+    this.terminalLocked = true;
+    this.clearTimers();
+    this.pending = undefined;
+
+    await this.drainInFlight();
+
+    this.closed = true;
+
+    try {
+      if (this.statusMessageId) {
+        await this.client.updateMessage(this.statusMessageId, cardContent);
+      } else {
+        const { messageId } = await this.client.sendMessage(
+          this.chatId, cardContent, this.replyToMessageId, this.replyInThread,
+        );
+        this.statusMessageId = messageId;
+      }
+      return this.statusMessageId;
+    } catch (e) {
+      this.logger.warn('lark.status.finalize.error', { error: String(e) });
+      throw e;
+    }
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     this.clearTimers();
+    this.pending = undefined;
+  }
+
+  private async drainInFlight(): Promise<void> {
+    const deadline = Date.now() + FINALIZE_DRAIN_MS;
+    while (this.inFlight && Date.now() < deadline) {
+      await new Promise<void>(resolve => setTimeout(resolve, FINALIZE_POLL_MS));
+    }
+    if (this.inFlight) {
+      this.logger.warn('lark.status.finalize.drain_timeout');
+    }
   }
 
   private startHeartbeat(): void {
-    if (this.heartbeatTimer || this.closed || this.terminalLocked) return;
+    if (this.heartbeatTimer || this.closed || this.terminalLocked || this.finalizing) return;
     this.heartbeatTimer = setInterval(() => {
-      if (this.closed || this.terminalLocked) {
+      if (this.closed || this.terminalLocked || this.finalizing) {
         this.clearTimers();
         return;
       }
@@ -97,10 +141,16 @@ export class LarkStatusCoordinator {
   }
 
   private renderBodyPreview(input: StatusCardInput): string {
-    const lines: string[] = [];
-    if (input.timeline?.recent?.length) lines.push(...input.timeline.recent);
-    lines.push(input.timeline?.liveLabel ?? 'Working…');
-    return lines.join('\n');
+    const t = input.timeline;
+    if (!t) return 'Working…';
+    const parts = [
+      t.phase,
+      String(t.progressPct ?? ''),
+      t.liveLabel,
+      t.plan?.map(p => `${p.status}:${p.title}:${p.subtitle ?? ''}`).join('|'),
+      t.recent?.join('|'),
+    ].filter(Boolean);
+    return parts.join('\n');
   }
 
   private clearTimers(): void {
@@ -109,7 +159,7 @@ export class LarkStatusCoordinator {
   }
 
   private async flush(heartbeat = false): Promise<void> {
-    if (this.inFlight || this.closed) return;
+    if (this.inFlight || this.finalizing) return;
     const toSend = heartbeat ? this.lastRenderable : this.pending;
     if (!toSend) return;
 
@@ -120,7 +170,11 @@ export class LarkStatusCoordinator {
 
     this.inFlight = true;
     try {
+      if (this.finalizing) return;
+
       const cardContent = buildStatusCard(toSend);
+      if (this.finalizing) return;
+
       if (this.statusMessageId) {
         await this.client.updateMessage(this.statusMessageId, cardContent);
       } else {
@@ -130,7 +184,7 @@ export class LarkStatusCoordinator {
         this.statusMessageId = messageId;
         this.startHeartbeat();
       }
-      if (!heartbeat) {
+      if (!heartbeat && !this.finalizing) {
         this.lastText       = this.renderBodyPreview(toSend);
         this.lastRenderable = toSend;
         this.lastSentAt     = Date.now();
