@@ -589,23 +589,20 @@ export function buildStatusCard(input: StatusCardInput): string {
     ));
   }
 
-  const allActions = [
-    ...(actions ?? []).map((a, i) => ({
-      tag:        'button',
-      element_id: `status_act_${i + 1}`,
-      text:       { tag: 'plain_text', content: a.label },
-      value:      { action: a.value },
-      type:       'default' as const,
-    })),
-    {
-      tag:        'button',
-      element_id: 'interrupt_run',
-      text:       { tag: 'plain_text', content: '⏹ Stop' },
-      value:      { action: 'interrupt_run' },
-      type:       'danger' as const,
-    },
-  ];
-  elements.push({ tag: 'action', actions: allActions });
+  if (actions?.length) {
+    for (const [i, a] of actions.entries()) {
+      elements.push({
+        tag: 'button', text: { tag: 'plain_text', content: a.label },
+        type: 'default', width: 'default',
+        behaviors: [{ type: 'callback', value: { action: a.value } }],
+      });
+    }
+  }
+  elements.push({
+    tag: 'button', text: { tag: 'plain_text', content: '⏹ Stop' },
+    type: 'danger_text', width: 'default', size: 'small',
+    behaviors: [{ type: 'callback', value: { action: 'interrupt_run' } }],
+  });
 
   const card = {
     schema: '2.0',
