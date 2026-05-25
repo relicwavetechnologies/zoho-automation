@@ -53,6 +53,7 @@ export class IngestionService {
 
     // 1. Upload to Cloudinary (non-fatal — large files may exceed plan limits)
     let cloudResult: { publicId: string; secureUrl: string } | null = null;
+    let cloudinaryFailed = false;
     try {
       cloudResult = await this.cloudinary.uploadBuffer({
         buffer,
@@ -63,6 +64,7 @@ export class IngestionService {
         assetId:   `${companyId}_${createHash('sha256').update(buffer).digest('hex').slice(0, 12)}`,
       });
     } catch (e) {
+      cloudinaryFailed = true;
       this.log.warn('ingestion.cloudinary_upload.failed', {
         fileName, companyId, sizeBytes: buffer.length,
         error: e instanceof Error ? e.message : String(e),
@@ -204,15 +206,23 @@ export class IngestionService {
         );
       }
 
-      await this.fileAssetRepo.setStatus(fileAsset.id, 'done');
+      await this.fileAssetRepo.setStatus(
+        fileAsset.id,
+        'done',
+        cloudinaryFailed ? 'Indexed but Cloudinary upload failed — file not downloadable via URL' : undefined,
+      );
 
-      this.log.info('ingestion.done', {
-        fileAssetId: fileAsset.id,
-        fileName,
-        chunkCount:    chunks.length,
-        documentClass: plan.documentClass,
-        strategy:      plan.strategy,
-      });
+      if (cloudinaryFailed) {
+        this.log.warn('ingestion.done_no_cdn', {
+          fileAssetId: fileAsset.id, fileName,
+          chunkCount: chunks.length, documentClass: plan.documentClass,
+        });
+      } else {
+        this.log.info('ingestion.done', {
+          fileAssetId: fileAsset.id, fileName,
+          chunkCount: chunks.length, documentClass: plan.documentClass, strategy: plan.strategy,
+        });
+      }
 
       return {
         fileAssetId: fileAsset.id,

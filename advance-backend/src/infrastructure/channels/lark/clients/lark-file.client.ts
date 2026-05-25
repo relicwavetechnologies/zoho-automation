@@ -38,7 +38,10 @@ export class LarkFileClient {
   private async downloadResource(messageId: string, key: string, type: 'file' | 'image'): Promise<Buffer> {
     const token = await this.getTenantToken();
     const url   = `${this.baseUrl}/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(key)}?type=${type}`;
-    const res   = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const res   = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal:  AbortSignal.timeout(30_000),
+    });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       throw new Error(`LarkFileClient.downloadResource failed: ${res.status} type=${type} url=${url} body=${body}`);
@@ -54,6 +57,7 @@ export class LarkFileClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
+      signal: AbortSignal.timeout(10_000),
     });
     const data = await res.json() as Record<string, unknown>;
     this.tenantToken = data['tenant_access_token'] as string;
