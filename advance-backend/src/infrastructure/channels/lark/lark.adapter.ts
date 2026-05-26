@@ -213,6 +213,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
   ): Promise<Result<ReplyHandle, ChannelError>> {
     const corrId = String(conversation.correlationId);
     const coordinator = this.coordinators.get(corrId);
+    const stuckCardId = coordinator?.getStatusMessageId();
 
     try {
       const content = buildFinalCard({
@@ -298,6 +299,20 @@ export class LarkChannelAdapter implements ChannelAdapter {
           }));
         }
         return ok({ channel: 'lark', messageId: asMessageId(messageId) });
+      }
+
+      // All 3 tries failed — clean up the stuck status card so it doesn't
+      // show "Preparing response..." forever.
+      if (stuckCardId) {
+        const failureCard = buildFinalCard({
+          markdown: 'Sorry, I couldn\'t deliver the response. Please try again.',
+          ...(reply.branding ? { branding: reply.branding } : {}),
+        });
+        this.messagingClient.updateMessage(stuckCardId, failureCard)
+          .catch(e => this.logger.warn('lark.adapter.stuck_card_cleanup_failed', {
+            error: e instanceof Error ? e.message : String(e),
+            correlationId: corrId,
+          }));
       }
 
       return err(new ChannelError({
