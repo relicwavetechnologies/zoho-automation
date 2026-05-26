@@ -223,33 +223,71 @@ export class LarkChannelAdapter implements ChannelAdapter {
       });
 
       let messageId: string | undefined;
+
+      // Try 1: Finalize via coordinator (edit status card → final card)
       if (coordinator) {
         try {
           messageId = await coordinator.finalizeMessage(content);
+        } catch (e) {
+          this.logger.warn('lark.adapter.finalize_failed', {
+            error: e instanceof Error ? e.message : String(e),
+            correlationId: corrId,
+          });
         } finally {
           this.coordinators.delete(corrId);
         }
-      } else {
-        const result = await this.messagingClient.sendMessage(
-          conversation.chatId,
-          content,
-          conversation.replyToMessageId,
-          conversation.replyInThread,
-        );
-        messageId = result.messageId;
       }
 
+      // Try 2: Send as new card message
       if (!messageId) {
-        const result = await this.messagingClient.sendMessage(
-          conversation.chatId,
-          content,
-          conversation.replyToMessageId,
-          conversation.replyInThread,
-        );
-        messageId = result.messageId;
+        try {
+          const result = await this.messagingClient.sendMessage(
+            conversation.chatId,
+            content,
+            conversation.replyToMessageId,
+            conversation.replyInThread,
+          );
+          messageId = result.messageId;
+        } catch (e) {
+          this.logger.warn('lark.adapter.send_card_failed', {
+            error: e instanceof Error ? e.message : String(e),
+            correlationId: corrId,
+          });
+        }
       }
 
-      return ok({ channel: 'lark', messageId: asMessageId(messageId) });
+      // Try 3: Last resort — send plain text (bypasses card rendering entirely)
+      if (!messageId) {
+        try {
+          const plainText = reply.text.slice(0, 4000);
+          const textContent = JSON.stringify({
+            msg_type: 'text',
+            content: JSON.stringify({ text: plainText }),
+          });
+          const result = await this.messagingClient.sendMessage(
+            conversation.chatId,
+            textContent,
+            conversation.replyToMessageId,
+            conversation.replyInThread,
+          );
+          messageId = result.messageId;
+          this.logger.info('lark.adapter.plain_text_fallback_sent', { correlationId: corrId });
+        } catch (e) {
+          this.logger.error('lark.adapter.all_delivery_failed', {
+            error: e instanceof Error ? e.message : String(e),
+            correlationId: corrId,
+          });
+        }
+      }
+
+      if (messageId) {
+        return ok({ channel: 'lark', messageId: asMessageId(messageId) });
+      }
+
+      return err(new ChannelError({
+        channel: 'lark', stage: 'send_final', reason: 'upstream_5xx',
+        message: 'All delivery attempts failed (finalize, card, plain text)',
+      }));
     } catch (e) {
       this.coordinators.delete(corrId);
       return err(new ChannelError({ channel: 'lark', stage: 'send_final', reason: 'upstream_5xx', cause: e }));

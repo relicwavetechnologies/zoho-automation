@@ -498,7 +498,19 @@ export class OrchestrationEngine {
       finalReply: finalReply.text,
       toolsCalled,
     });
-    await channelAdapter.sendFinalReply(conversation, finalReply);
+    const deliveryResult = await channelAdapter.sendFinalReply(conversation, finalReply);
+    if (!deliveryResult.ok) {
+      log.error('engine.delivery.failed', {
+        error: deliveryResult.error.message,
+        replyLength: finalReply.text.length,
+        correlationId: String(conversation.correlationId),
+      });
+      tracer?.emit({
+        phase: 'complete', eventType: 'delivery_failed', actorType: 'engine',
+        title: 'Final reply delivery failed', status: 'error',
+        payload: { error: deliveryResult.error.message, replyLength: finalReply.text.length },
+      });
+    }
 
     // ── 8. Background memory extraction ───────────────────────────────────
     if (this.deps.mem0) {

@@ -56,7 +56,8 @@ export type RunEventType =
   | 'tool_call_started'
   | 'tool_call_finished'
   | 'supervisor_complete'
-  | 'memory_extracted';
+  | 'memory_extracted'
+  | 'delivery_failed';
 
 // ─── Payload shapes (one per event type) ────────────────────────────────────
 
