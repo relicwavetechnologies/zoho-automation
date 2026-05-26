@@ -92,7 +92,12 @@ export class IngestionService {
     try {
       // 3. Extract text
       const extracted = await extractFromBuffer(
-        buffer, mimeType, this.env.GEMINI_API_KEY ?? this.env.GOOGLE_GENERATIVE_AI_API_KEY ?? '', this.env.DOC_EXTRACT_MAX_WORDS,
+        buffer,
+        mimeType,
+        this.env.GEMINI_API_KEY ?? this.env.GOOGLE_GENERATIVE_AI_API_KEY ?? '',
+        this.env.DOC_EXTRACT_MAX_WORDS,
+        fileName,
+        this.env.GEMINI_VISION_MODEL,
       );
 
       // 4. Choose chunking plan

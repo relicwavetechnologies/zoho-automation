@@ -2,7 +2,7 @@
  * Faithfulness grader — checks whether the generated answer's claims
  * are supported by the retrieved document context.
  *
- * Uses gemini-3.1-flash-lite-preview via Vercel AI SDK.
+ * Uses gemini-3.1-flash-lite (GA) via Vercel AI SDK.
  * Falls back to { grounded: true } on any error so a grader failure
  * never silently blocks a valid response.
  */
@@ -10,6 +10,7 @@
 import { generateText } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import type { Logger } from '../../shared/logger';
+import { GEMINI_FLASH_LITE_MODEL } from '../../shared/gemini-models.js';
 
 export interface GradeAnswerInput {
   answer:        string;
@@ -23,7 +24,7 @@ export interface GradeAnswerOutput {
   reason:   string;
 }
 
-const GRADER_MODEL   = 'gemini-3.1-flash-lite-preview';
+const GRADER_MODEL   = GEMINI_FLASH_LITE_MODEL;
 const GRADER_TIMEOUT = 8_000;
 
 export async function gradeAnswer(input: GradeAnswerInput, logger: Logger): Promise<GradeAnswerOutput> {

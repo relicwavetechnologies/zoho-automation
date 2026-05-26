@@ -42,10 +42,13 @@ const EnvSchema = z.object({
 
   // ── Orchestration model (planner + executor + synthesis) ─────────────────
   // Switch the entire engine by changing these two vars. No code changes needed.
-  //   MODEL_PROVIDER=google  MODEL_ID=gemini-3.1-flash-lite-preview
+  //   MODEL_PROVIDER=google  MODEL_ID=gemini-3.1-flash-lite
   //   MODEL_PROVIDER=openai  MODEL_ID=gpt-4o
   MODEL_PROVIDER: z.enum(['google', 'openai', 'deepseek']).default('google'),
-  MODEL_ID:       z.string().default('gemini-3.1-flash-lite-preview'),
+  MODEL_ID:       z.string().default('gemini-3.1-flash-lite'),
+
+  /** Image OCR + caption during file ingestion (defaults to GA flash-lite). */
+  GEMINI_VISION_MODEL: z.string().default('gemini-3.1-flash-lite'),
 
   // ── OpenAI ────────────────────────────────────────────────────────────────
   OPENAI_API_KEY:        z.string().min(1),

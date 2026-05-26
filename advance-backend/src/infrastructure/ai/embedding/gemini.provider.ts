@@ -32,9 +32,9 @@ const GENERATE_URL = (model: string, apiKey: string) =>
 
 // Fallback chain for media analysis (newest to most-available)
 const MEDIA_ANALYSIS_MODELS = [
+  'gemini-3.1-flash-lite',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
-  'gemini-1.5-flash',
 ] as const;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

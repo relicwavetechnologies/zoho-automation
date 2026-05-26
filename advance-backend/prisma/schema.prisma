@@ -148,7 +148,7 @@ model Company {
   gatewayUrl                String?                    @map("gateway_url")
   gatewayDedicatedAccountId String?                    @map("gateway_dedicated_account_id")
   defaultAiProvider         String                     @default("google") @map("default_ai_provider")
-  defaultAiModel            String                     @default("gemini-3.1-flash-lite-preview") @map("default_ai_model")
+  defaultAiModel            String                     @default("gemini-3.1-flash-lite") @map("default_ai_model")
   promptProfile             CompanyPromptProfile?
   departments               Department[]
   skills                    Skill[]

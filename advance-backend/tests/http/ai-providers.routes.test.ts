@@ -325,13 +325,13 @@ describe('PUT /settings (ai-providers)', () => {
       locals: COMPANY_ADMIN_LOCALS,
       body: {
         defaultAiProvider:  'google',
-        defaultAiModel:     'gemini-3.1-flash-lite-preview',
+        defaultAiModel:     'gemini-3.1-flash-lite',
       },
     });
 
     assert.equal(status, 200);
     assert.equal((body as any).data.defaultAiProvider, 'google');
-    assert.equal((body as any).data.defaultAiModel, 'gemini-3.1-flash-lite-preview');
+    assert.equal((body as any).data.defaultAiModel, 'gemini-3.1-flash-lite');
     assert.equal(capturedArgs.data.defaultAiProvider, 'google');
   });
 });
