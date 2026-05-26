@@ -236,6 +236,13 @@ export function toSchemaHint(
       _id:   'primary record ID',
     },
     ...(sampleRecord ? { sampleFieldNames: Object.keys(sampleRecord).slice(0, 20) } : {}),
-    note: 'Use _total for full amounts and _balance for outstanding/unpaid. For overdue/outstanding queries, always use _balance.',
+    currencyUtilities: {
+      toINR:         'toINR(amount, currencyCode) — convert to INR using live exchange rates',
+      fromINR:       'fromINR(amount, targetCode) — convert INR to target currency',
+      convert:       'convert(amount, from, to) — convert between any two currencies',
+      exchangeRates: 'exchangeRates.USD, exchangeRates.AED etc — INR per 1 unit of foreign currency',
+      formatAmount:  'formatAmount(value, "INR") — ₹ with Indian grouping; formatAmount(value, "USD") — $ with US grouping',
+    },
+    note: 'Use _total for full amounts and _balance for outstanding/unpaid. For overdue/outstanding queries, always use _balance. ALWAYS use toINR()/fromINR()/convert() for currency conversion — never hardcode rates.',
   };
 }

@@ -1,18 +1,15 @@
 const currencySymbols: Record<string, string> = {
-  USD: '$',
-  INR: '₹',
-  EUR: '€',
-  GBP: '£',
-  AUD: 'A$',
-  CAD: 'C$',
-  SGD: 'S$',
+  USD: '$', INR: '₹', EUR: '€', GBP: '£',
+  AUD: 'A$', CAD: 'C$', SGD: 'S$',
+  AED: 'AED ', JPY: '¥', CHF: 'CHF ',
 };
 
-export function formatAmount(value: number, currency = 'USD'): string {
-  const normalizedCurrency = currency.trim().toUpperCase() || 'USD';
+export function formatAmount(value: number, currency = 'INR'): string {
+  const normalizedCurrency = currency.trim().toUpperCase() || 'INR';
   const symbol = currencySymbols[normalizedCurrency] ?? `${normalizedCurrency} `;
   const sign = value < 0 ? '-' : '';
-  const formatted = Math.abs(value).toLocaleString('en-US', {
+  const locale = normalizedCurrency === 'INR' ? 'en-IN' : 'en-US';
+  const formatted = Math.abs(value).toLocaleString(locale, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });

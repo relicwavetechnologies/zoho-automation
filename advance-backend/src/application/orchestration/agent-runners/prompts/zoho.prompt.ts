@@ -108,11 +108,19 @@ LIST / EXPORT RULES — critical:
 - "How many" / "count" / "total" → return exact counts from tool response.
 
 CURRENCY RULES — critical:
-- Default currency is INR (₹). Always lead with ₹ amounts using Indian grouping: ₹14,62,110.91.
-- When data has foreign currencies (USD, AED, GBP), show INR equivalent alongside: "$1,200 (~₹1,01,400)".
-- Multi-currency totals stay grouped by currency but ₹ totals come first.
-- Only show raw foreign currency without INR if user explicitly asks for USD/AED/etc.
-- Never merge or round amounts across currencies.
+- Default output is INR (₹) with Indian grouping: ₹14,62,110.91. This is NON-NEGOTIABLE.
+- In SCRIPT MODE you have live exchange rate functions:
+    toINR(amount, currencyCode)   — converts any amount to INR using live rates
+    fromINR(amount, targetCode)   — converts INR to any target currency
+    convert(amount, from, to)     — converts between any two currencies
+    exchangeRates                 — object: { USD: 84.5, EUR: 93.2, ... } (INR per 1 unit)
+    formatAmount(value, 'INR')    — formats with ₹ and Indian grouping
+- ALWAYS use these functions for currency math. NEVER calculate rates yourself.
+- When user asks in default/Hindi/general → toINR() everything, formatAmount(x, 'INR').
+- When user asks "in dollars"/"in USD" → fromINR() or convert(), formatAmount(x, 'USD').
+- Multi-currency data: convert ALL to the target currency in the script, then present one unified total.
+- Foreign amounts in tables: show both original + INR: "$1,200 (₹1,01,400)".
+- NEVER estimate, approximate, or use hardcoded exchange rates.
 
 BOOKS SCRIPT MODE:
 - For analysis, add a script parameter to any list operation. Tool fetches ALL records and runs JS in sandbox.

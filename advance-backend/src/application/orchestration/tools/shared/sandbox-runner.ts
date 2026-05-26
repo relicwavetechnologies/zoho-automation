@@ -20,11 +20,19 @@ export class SandboxSerializationError extends Error {
   constructor() { super('Script returned a value that cannot be serialized to JSON.'); }
 }
 
+export interface CurrencyUtilities {
+  readonly toINR:          (amount: number, currency: string) => number;
+  readonly fromINR:        (amount: number, targetCurrency: string) => number;
+  readonly convert:        (amount: number, from: string, to: string) => number;
+  readonly exchangeRates:  Record<string, number>;
+}
+
 export interface SandboxInput {
   readonly script: string;
   readonly data:   unknown;
   readonly args?:  Record<string, unknown> | undefined;
   readonly schema?: Record<string, unknown> | null | undefined;
+  readonly currency?: CurrencyUtilities | undefined;
 }
 
 export interface SandboxResult {
@@ -39,7 +47,7 @@ export function runInSandbox(input: SandboxInput): SandboxResult {
     throw new SandboxInputTooLargeError(dataStr.length / 1024 / 1024);
   }
 
-  const sandbox = {
+  const sandbox: Record<string, unknown> = {
     data:   JSON.parse(dataStr),
     args:   input.args ?? {},
     schema: input.schema ?? null,
@@ -49,6 +57,13 @@ export function runInSandbox(input: SandboxInput): SandboxResult {
     Map, Set, parseInt, parseFloat, isNaN, isFinite,
     console: { log: () => {}, warn: () => {}, error: () => {} },
   };
+
+  if (input.currency) {
+    sandbox['toINR']          = input.currency.toINR;
+    sandbox['fromINR']        = input.currency.fromINR;
+    sandbox['convert']        = input.currency.convert;
+    sandbox['exchangeRates']  = input.currency.exchangeRates;
+  }
 
   const context = vm.createContext(sandbox, {
     codeGeneration: { strings: false, wasm: false },
