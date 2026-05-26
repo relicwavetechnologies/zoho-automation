@@ -875,7 +875,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger:        logger.child({ service: 'supervisor' }),
     clock:         systemClock,
     dynamicGraphEnabled: env.DYNAMIC_GRAPH_ENABLED,
-    dynamicGraphShadow:  env.DYNAMIC_GRAPH_SHADOW,
     supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
     unifiedAgentMode: env.UNIFIED_AGENT_MODE,
     skillRegistry,

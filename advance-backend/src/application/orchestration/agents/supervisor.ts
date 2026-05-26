@@ -145,7 +145,6 @@ export interface SupervisorDeps {
   clock:             Clock;
   geminiApiKey?: string;
   dynamicGraphEnabled?: boolean;
-  dynamicGraphShadow?: boolean;
   dynamicSupervisorGraph?: DynamicSupervisorGraph;
   supervisorTimeoutMs?: number;
   mem0?: Mem0Service;
@@ -463,6 +462,11 @@ export class SupervisorAgent {
 
             if (chunk.type === 'text-delta') {
               innerText += chunk.text;
+              if (aggregator.appendTextDelta(chunk.text)) {
+                currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
+                  kind: 'status', terminal: false, timeline: aggregator.snapshot(),
+                });
+              }
             }
 
             if (chunk.type === 'error') {
@@ -571,44 +575,6 @@ export class SupervisorAgent {
       toolsCalled,
       replyLength: finalText.length,
     });
-
-    if (this.deps.dynamicGraphShadow && !this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) {
-      const legacyText = finalText.trim();
-      void this.runDynamicGraph({
-        userMessage,
-        history,
-        perm,
-        runContext,
-        permittedTools,
-        chatId: chatId ?? String(channelId),
-        ...(approvalGate ? { approvalGate } : {}),
-        ...(memoryContext ? { memoryContext } : {}),
-        ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
-      }).then(graphResult => {
-        if (!graphResult.ok) {
-          log.warn('dynamic_graph.shadow_parity', {
-            companyId: String(runContext.companyId),
-            legacyToolCalls: toolsCalled,
-            graphError: graphResult.error.message,
-          });
-          return;
-        }
-        log.info('dynamic_graph.shadow_parity', {
-          companyId: String(runContext.companyId),
-          legacyToolCalls: toolsCalled,
-          graphToolCalls: graphResult.value.toolsCalled,
-          resultMatch: legacyText === graphResult.value.finalText,
-          legacyLength: legacyText.length,
-          graphLength: graphResult.value.finalText.length,
-        });
-      }).catch(error => {
-        log.warn('dynamic_graph.shadow_parity', {
-          companyId: String(runContext.companyId),
-          legacyToolCalls: toolsCalled,
-          graphError: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
 
     tracer?.emit({
       phase: 'synthesis', eventType: 'synthesis_complete',
