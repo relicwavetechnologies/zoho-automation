@@ -40,7 +40,7 @@ const EnvSchema = z.object({
   LOG_SUCCESS_SAMPLE_RATE: positiveNum(0.25),
   LOG_INCLUDE_STACK:      booleanStr.default('true'),
 
-  // ── Orchestration model (planner + executor + synthesis) ─────────────────
+  // ── Orchestration model ───────────────────────────────────────────────────
   // Switch the entire engine by changing these two vars. No code changes needed.
   //   MODEL_PROVIDER=google  MODEL_ID=gemini-3.1-flash-lite
   //   MODEL_PROVIDER=openai  MODEL_ID=gpt-4o
@@ -55,9 +55,6 @@ const EnvSchema = z.object({
   GATEWAY_BASE_URL:      z.string().default(''),
   GATEWAY_ADMIN_API_KEY: z.string().optional(),
   OPENAI_ROUTER_MODEL:   z.string().default('gpt-4o-mini'),
-  OPENAI_PLANNER_MODEL:  z.string().default('gpt-4o-mini'),
-  OPENAI_SYNTHESIS_MODEL: z.string().default('gpt-4o-mini'),
-  OPENAI_SUPERVISOR_MODEL: z.string().default('gpt-4o'),
   OPENAI_TEMPERATURE:    positiveNum(0.1),
 
   // ── DeepSeek ──────────────────────────────────────────────────────────────
@@ -176,7 +173,6 @@ const EnvSchema = z.object({
 
   // ── Dynamic agent graph cutover ───────────────────────────────────────────
   DYNAMIC_GRAPH_ENABLED: booleanStr.default('false'),
-  DYNAMIC_GRAPH_SHADOW:  booleanStr.default('false'),
   UNIFIED_AGENT_MODE:    booleanStr.default('false'),
 
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models)

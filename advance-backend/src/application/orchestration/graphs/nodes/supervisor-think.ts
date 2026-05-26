@@ -16,6 +16,7 @@ import { createRememberFactTool } from '../../tools/orchestration/remember-fact.
 import { createCallToolTool } from '../../tools/orchestration/call-tool';
 import { createDiscoverSkillTool } from '../../tools/orchestration/discover-skill';
 import { buildBrainSystemPrompt } from '../../brain-prompt';
+import { getISTDateTime } from '../../agents/supervisor.prompt';
 import type { SkillRegistry } from '../../../skills/skill-registry';
 import type { ToolRegistry } from '../../tools/tool-registry';
 import type { AdapterContext } from '../../tools/ai-sdk-adapter';
@@ -84,10 +85,10 @@ export async function supervisorThink(
     let statusHandle: Awaited<ReturnType<NonNullable<typeof deps.statusChannel>['sendStatus']>> = null;
     const onProgress = deps.aggregator && deps.statusChannel
       ? (message: string) => {
-          deps.aggregator!.updateActivity(message);
+          if (!deps.aggregator!.updateActivity(message)) return;
           void deps.statusChannel!.editStatus(statusHandle, {
             kind: 'status', terminal: false, timeline: deps.aggregator!.snapshot(),
-          }).then(h => { statusHandle = h; });
+          }).then(h => { if (h) statusHandle = h; });
         }
       : undefined;
 
@@ -156,7 +157,7 @@ export async function supervisorThink(
       // Override system prompt with brain prompt
       const brainPrompt = buildBrainSystemPrompt({
         skillCatalog: deps.skillRegistry.catalog(),
-        currentDateTime: deps.clock.now().toISOString(),
+        currentDateTime: getISTDateTime(deps.clock.now()),
       });
 
       let brainSystemPrompt = brainPrompt;
@@ -253,7 +254,10 @@ export async function supervisorThink(
       ...orchestrationTools,
     } as unknown as ToolSet;
 
-    let systemPrompt = rootAgent.systemPrompt;
+    let systemPrompt = [
+      `Current date/time: ${getISTDateTime(deps.clock.now())}`,
+      rootAgent.systemPrompt,
+    ].join('\n\n');
     if (hasMultimodalContext) {
       systemPrompt += '\n\nGROUP CHAT CONTEXT is provided in the preceding user message with interleaved images. Resolve "this image/file" to the nearest preceding attachment in that transcript.';
     } else if (state.groupContext) {
@@ -403,7 +407,21 @@ async function runSupervisorStream(input: {
         });
       }
     }
-    if (chunk.type === 'text-delta') text += chunk.text;
+    if (chunk.type === 'text-delta') {
+      text += chunk.text;
+      if (input.aggregator && toolCalls.length > 0) {
+        input.aggregator.setSynthesizing();
+      }
+      if (
+        input.aggregator
+        && input.statusChannel
+        && input.aggregator.appendTextDelta(chunk.text)
+      ) {
+        statusHandle = await input.statusChannel.editStatus(statusHandle, {
+          kind: 'status', terminal: false, timeline: input.aggregator.snapshot(),
+        });
+      }
+    }
   }
 
   const agentResults = toolResults

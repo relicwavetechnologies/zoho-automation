@@ -36,6 +36,10 @@ export interface ChannelTimeline {
   readonly plan?:           ReadonlyArray<ChannelPlanStep>;
   readonly recent?:         ReadonlyArray<string>;
   readonly liveLabel?:      string;
+  /** Rolling live sentences from model stream (max 3 committed). */
+  readonly narration?:      ReadonlyArray<string>;
+  /** In-progress sentence not yet committed to a line. */
+  readonly narrationActive?: string;
 }
 
 export interface StatusUpdate {

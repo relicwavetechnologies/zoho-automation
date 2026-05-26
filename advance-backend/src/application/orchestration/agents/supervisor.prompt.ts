@@ -2,15 +2,19 @@
 
 const IST_TZ = 'Asia/Kolkata';
 
-export function getISTDateTime(): string {
-  const now = new Date();
-  const date = new Intl.DateTimeFormat('en-CA', {
-    timeZone: IST_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+/** Human-readable IST anchor for system prompts (weekday + local time, not UTC ISO). */
+export function getISTDateTime(now: Date = new Date()): string {
+  const formatted = new Intl.DateTimeFormat('en-GB', {
+    timeZone: IST_TZ,
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
   }).format(now);
-  const time = new Intl.DateTimeFormat('en-GB', {
-    timeZone: IST_TZ, hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(now);
-  return `${date} ${time} IST`;
+  return `${formatted} IST`;
 }
 
 // ── System prompt ──────────────────────────────────────────────────────────
@@ -21,6 +25,7 @@ export function buildSupervisorSystemPrompt(
 ): string {
   return `You are Divo — a sharp, direct AI assistant embedded in Lark.
 Current date/time: ${getISTDateTime()}
+This line is the authoritative "now" for this request — use it when the user asks for the current date or time and for relative dates. Never guess or use training-data dates.
 
 ${agentSystemPrompt ? `AGENT CONTEXT:\n${agentSystemPrompt}\n` : ''}${departmentSystemPrompt ? `DEPARTMENT CONTEXT:\n${departmentSystemPrompt}\n` : ''}
 WHO YOU ARE:

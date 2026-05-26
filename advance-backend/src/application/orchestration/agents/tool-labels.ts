@@ -23,6 +23,8 @@ const LABELS: Record<string, ToolLabels> = {
   listScheduledTasks:  { verb: 'Loading schedules…',   called: 'Loading schedules',      done: 'Schedules'   },
   cancelScheduledTask: { verb: 'Cancelling schedule…', called: 'Cancelling schedule',    done: 'Cancelled'   },
   runScheduledTaskNow: { verb: 'Triggering schedule…', called: 'Triggering schedule',    done: 'Triggered'   },
+  discover_skill:    { verb: 'Finding capabilities…', called: 'Discovering skills',     done: 'Skills'      },
+  call_tool:         { verb: 'Running tool…',         called: 'Calling tool',           done: 'Tool'        },
 };
 
 const FALLBACK: ToolLabels = { verb: 'Working…', called: 'Working', done: 'Done' };
