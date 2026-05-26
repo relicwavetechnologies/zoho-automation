@@ -281,9 +281,9 @@ export class LarkChannelAdapter implements ChannelAdapter {
       }
 
       if (messageId) {
-        // For large responses, send full text as follow-up so nothing is lost
-        // (the card may have been truncated by the builder's size cap).
-        if (reply.text.length > 3000) {
+        // Only send follow-up text when the card was actually truncated by the
+        // size cap (the builder embeds this marker when it falls back).
+        if (content.includes('Full response sent as text below')) {
           const fullText = reply.text.slice(0, 4000);
           const textContent = JSON.stringify({
             msg_type: 'text',
