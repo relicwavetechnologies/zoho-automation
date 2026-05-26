@@ -17,6 +17,16 @@ export const AI_MODEL_CATALOG: AiModelEntry[] = [
   // ── Google ────────────────────────────────────────────────────────────────
   {
     provider:            'google',
+    modelId:             'gemini-3.1-flash-lite',
+    label:               'Gemini 3.1 Flash Lite',
+    description:         'GA fast model for OCR, routing, and high-volume tasks.',
+    speed:               'fast',
+    cost:                'low',
+    maxContextTokens:    1_000_000,
+    outputReserveTokens: 8_192,
+  },
+  {
+    provider:            'google',
     modelId:             'gemini-2.5-pro-preview-05-06',
     label:               'Gemini 2.5 Pro',
     description:         'Most capable Gemini model with deep reasoning and long context.',

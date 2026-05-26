@@ -48,12 +48,13 @@ export async function extractFromBuffer(
   geminiApiKey: string,
   maxWords = 100_000,
   fileName?: string,
+  visionModel?: string,
 ): Promise<ExtractedContent> {
   const mime = mimeType.toLowerCase().split(';')[0]?.trim() ?? '';
   const lowerName = (fileName ?? '').toLowerCase();
 
   if (IMAGE_MIMES.has(mime)) {
-    const { ocrText, caption } = await extractImageText(buf, mime, geminiApiKey);
+    const { ocrText, caption } = await extractImageText(buf, mime, geminiApiKey, visionModel);
     return {
       modality:    'image',
       text:        ocrText,

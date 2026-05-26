@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils"
 
 const modelCatalog = {
   openai: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"],
-  google: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.1-flash-lite-preview"],
+  google: ["gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"],
 } as const
 
 type ProviderKey = keyof typeof modelCatalog
@@ -93,7 +93,7 @@ export function AiProvidersPage() {
   const [targets, setTargets] = useState<AiModelTarget[]>([])
   const [targetsLoading, setTargetsLoading] = useState(true)
   const [provider, setProvider] = useState<ProviderKey>("google")
-  const [modelId, setModelId] = useState<string>("gemini-3.1-flash-lite-preview")
+  const [modelId, setModelId] = useState<string>("gemini-3.1-flash-lite")
 
   const openai = status.data?.providers.openai
   const google = status.data?.providers.google
