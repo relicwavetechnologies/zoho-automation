@@ -498,18 +498,50 @@ export class OrchestrationEngine {
       finalReply: finalReply.text,
       toolsCalled,
     });
-    const deliveryResult = await channelAdapter.sendFinalReply(conversation, finalReply);
+    let deliveryResult = await channelAdapter.sendFinalReply(conversation, finalReply);
+
+    // If delivery failed (card too large, Lark API error, etc.), condense
+    // with LLM and retry. The user should see a clean card — never raw dumps
+    // or error states.
     if (!deliveryResult.ok) {
-      log.error('engine.delivery.failed', {
-        error: deliveryResult.error.message,
-        replyLength: finalReply.text.length,
+      log.warn('engine.delivery.condensing', {
+        originalLength: finalReply.text.length,
         correlationId: String(conversation.correlationId),
       });
-      tracer?.emit({
-        phase: 'complete', eventType: 'delivery_failed', actorType: 'engine',
-        title: 'Final reply delivery failed', status: 'error',
-        payload: { error: deliveryResult.error.message, replyLength: finalReply.text.length },
-      });
+      try {
+        const condensed = await generateText({
+          model: this.deps.supervisor.getModel(),
+          system: 'You are reformatting a response that was too large to display. Condense it into clean markdown under 3000 characters. Keep key data, numbers, and structure. Use tables with max 10 rows. Do not mention truncation or condensation — write as if this is the original response.',
+          messages: [
+            { role: 'user' as const, content: incoming.text },
+            { role: 'assistant' as const, content: finalReply.text },
+            { role: 'user' as const, content: 'Rewrite this response more concisely.' },
+          ],
+          temperature: 0.3,
+          abortSignal: AbortSignal.timeout(30_000),
+        });
+        if (condensed.text.trim()) {
+          const condensedReply: FinalReply = { ...finalReply, text: condensed.text.trim() };
+          deliveryResult = await channelAdapter.sendFinalReply(conversation, condensedReply);
+          if (deliveryResult.ok) {
+            log.info('engine.delivery.condensed_ok', { condensedLength: condensed.text.length });
+          }
+        }
+      } catch (e) {
+        log.warn('engine.delivery.condense_failed', { error: String(e) });
+      }
+
+      if (!deliveryResult.ok) {
+        log.error('engine.delivery.failed', {
+          error: deliveryResult.error.message,
+          replyLength: finalReply.text.length,
+        });
+        tracer?.emit({
+          phase: 'complete', eventType: 'delivery_failed', actorType: 'engine',
+          title: 'Final reply delivery failed', status: 'error',
+          payload: { error: deliveryResult.error.message, replyLength: finalReply.text.length },
+        });
+      }
     }
 
     // ── 8. Background memory extraction ───────────────────────────────────
