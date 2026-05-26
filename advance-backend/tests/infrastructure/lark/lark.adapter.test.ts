@@ -1,7 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
+import { asChatId, asCorrelationId, asMessageId } from '../../../src/shared/ids.ts';
+import { planFinalCards } from '../../../src/infrastructure/channels/lark/lark-card.builder.ts';
 import type { Logger } from '../../../src/shared/logger.ts';
+import type { ConversationHandle } from '../../../src/application/channels/channel.adapter.ts';
+import type { FinalReply } from '../../../src/domain/channel/outbound.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +28,46 @@ const fakeEnv = {
 
 function makeAdapter(botName = 'Divo') {
   return new LarkChannelAdapter({ env: { ...fakeEnv, LARK_BOT_NAME: botName }, logger: noopLogger });
+}
+
+function parseCardPayload(payload: string): Record<string, unknown> {
+  const outer = JSON.parse(payload) as { card: string };
+  return JSON.parse(outer.card) as Record<string, unknown>;
+}
+
+function financeFixture(tableCount: number): string {
+  const sections = ['# Finance Update', 'Structured finance summary'];
+  for (let i = 1; i <= tableCount; i += 1) {
+    sections.push(
+      `## Table ${i}`,
+      [
+        '| Customer | Amount | Status |',
+        '|---|---:|---|',
+        `| Client ${i} | ₹${i * 1000} | Open |`,
+        `| Client ${i + 10} | ₹${i * 2000} | Aging |`,
+      ].join('\n'),
+    );
+  }
+  return sections.join('\n\n');
+}
+
+function makeConversation(correlationId = 'corr-1'): ConversationHandle {
+  return {
+    channel: 'lark',
+    chatId: asChatId('oc_chat'),
+    correlationId: asCorrelationId(correlationId),
+    replyToMessageId: asMessageId('om_parent'),
+    replyInThread: true,
+  };
+}
+
+function makeReply(text: string): FinalReply {
+  return {
+    kind: 'final',
+    format: 'markdown',
+    text,
+    branding: { departmentLabel: 'Finance', departmentColor: 'green' },
+  };
 }
 
 /** Build a minimal Lark text-message event envelope. */
@@ -411,5 +455,155 @@ describe('LarkChannelAdapter.parseIncoming', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.value.text, '');
+  });
+});
+
+describe('LarkChannelAdapter.sendFinalReply', () => {
+  it('finalizes a one-card reply in place when the status coordinator succeeds', async () => {
+    const adapter = makeAdapter();
+    const sendCalls: unknown[][] = [];
+    const updateCalls: unknown[][] = [];
+    let finalizedPayload = '';
+
+    (adapter as any).messagingClient = {
+      sendMessage: async (...args: unknown[]) => {
+        sendCalls.push(args);
+        return { messageId: 'om_new' };
+      },
+      updateMessage: async (...args: unknown[]) => {
+        updateCalls.push(args);
+      },
+      addReaction: async () => undefined,
+    };
+
+    (adapter as any).coordinators.set('corr-1', {
+      getStatusMessageId: () => 'om_status',
+      finalizeMessage: async (payload: string) => {
+        finalizedPayload = payload;
+        return 'om_status';
+      },
+    });
+
+    const result = await adapter.sendFinalReply(makeConversation(), makeReply('# Done\n\nAll good.'));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.messageId, 'om_status');
+    assert.equal(sendCalls.length, 0);
+    assert.equal(updateCalls.length, 0);
+
+    const card = parseCardPayload(finalizedPayload);
+    const subtitle = (card['header'] as { subtitle?: { content: string } }).subtitle?.content;
+    assert.equal(subtitle, 'Done');
+  });
+
+  it('splits a table-heavy reply and sends continuation cards after updating the original status card', async () => {
+    const adapter = makeAdapter();
+    const sendCalls: unknown[][] = [];
+    let finalizedPayload = '';
+    const reply = makeReply(financeFixture(4));
+    const expectedSegments = planFinalCards({
+      markdown: reply.text,
+      branding: reply.branding,
+    });
+
+    (adapter as any).messagingClient = {
+      sendMessage: async (...args: unknown[]) => {
+        sendCalls.push(args);
+        return { messageId: `om_followup_${sendCalls.length}` };
+      },
+      updateMessage: async () => undefined,
+      addReaction: async () => undefined,
+    };
+
+    (adapter as any).coordinators.set('corr-1', {
+      getStatusMessageId: () => 'om_status',
+      finalizeMessage: async (payload: string) => {
+        finalizedPayload = payload;
+        return 'om_status';
+      },
+    });
+
+    const result = await adapter.sendFinalReply(makeConversation(), reply);
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.messageId, 'om_status');
+    assert.equal(sendCalls.length, expectedSegments.length - 1);
+
+    const firstCard = parseCardPayload(finalizedPayload);
+    const secondCard = parseCardPayload(sendCalls[0]![1] as string);
+    const firstSubtitle = (firstCard['header'] as { subtitle?: { content: string } }).subtitle?.content ?? '';
+    const secondSubtitle = (secondCard['header'] as { subtitle?: { content: string } }).subtitle?.content ?? '';
+    assert.equal(firstSubtitle, 'Finance Update');
+    assert.equal(secondSubtitle, 'Finance Update');
+  });
+
+  it('updates the old status card to a redirect when finalize fails but sending a new card succeeds', async () => {
+    const adapter = makeAdapter();
+    const sendCalls: unknown[][] = [];
+    const updateCalls: unknown[][] = [];
+
+    (adapter as any).messagingClient = {
+      sendMessage: async (...args: unknown[]) => {
+        sendCalls.push(args);
+        return { messageId: 'om_followup' };
+      },
+      updateMessage: async (...args: unknown[]) => {
+        updateCalls.push(args);
+      },
+      addReaction: async () => undefined,
+    };
+
+    (adapter as any).coordinators.set('corr-1', {
+      getStatusMessageId: () => 'om_status',
+      finalizeMessage: async () => {
+        throw new Error('Lark update failed');
+      },
+    });
+
+    const result = await adapter.sendFinalReply(makeConversation(), makeReply('# Done\n\nAll good.'));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(sendCalls.length, 1);
+    assert.equal(updateCalls.length, 1);
+    assert.equal(updateCalls[0]?.[0], 'om_status');
+
+    const redirectCard = parseCardPayload(updateCalls[0]![1] as string);
+    const redirectBody = JSON.stringify(redirectCard['body']);
+    assert.match(redirectBody, /Response sent below due to card limits/i);
+  });
+
+  it('updates the old status card before plain-text fallback when interactive card delivery fails', async () => {
+    const adapter = makeAdapter();
+    const sendCalls: unknown[][] = [];
+    const updateCalls: unknown[][] = [];
+
+    (adapter as any).messagingClient = {
+      sendMessage: async (...args: unknown[]) => {
+        sendCalls.push(args);
+        const content = args[1] as string;
+        if (content.includes('"msg_type":"text"')) return { messageId: 'om_text' };
+        throw new Error('card table number over limit');
+      },
+      updateMessage: async (...args: unknown[]) => {
+        updateCalls.push(args);
+      },
+      addReaction: async () => undefined,
+    };
+
+    (adapter as any).coordinators.set('corr-1', {
+      getStatusMessageId: () => 'om_status',
+      finalizeMessage: async () => {
+        throw new Error('Lark update failed');
+      },
+    });
+
+    const result = await adapter.sendFinalReply(makeConversation(), makeReply(financeFixture(4)));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.messageId, 'om_text');
+    assert.ok(sendCalls.some(call => String(call[1]).includes('"msg_type":"text"')));
+    assert.equal(updateCalls.length, 1);
+    const redirectCard = parseCardPayload(updateCalls[0]![1] as string);
+    assert.match(JSON.stringify(redirectCard['body']), /Response sent below due to card limits/i);
   });
 });

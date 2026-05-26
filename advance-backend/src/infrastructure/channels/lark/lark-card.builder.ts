@@ -18,6 +18,7 @@ const MAX_ELEMENT_LEN  = 1200;
 const MAX_ELEMENTS     = 30;
 const MAX_TABLE_ROWS   = 15;
 const MAX_CARD_BYTES   = 18_000;
+const MAX_TABLES_PER_CARD = 3;
 const SUMMARY_CAP      = 160;
 
 // ── Department → chip color ─────────────────────────────────────────────────
@@ -349,6 +350,20 @@ interface ParsedMarkdownTable {
   rows:    Array<Record<string, string>>;
 }
 
+interface MarkdownBodyBlock {
+  kind: 'markdown';
+  markdown: string;
+}
+
+interface TableBodyBlock {
+  kind: 'table';
+  markdown: string;
+  parsed: ParsedMarkdownTable;
+  totalRows: number;
+}
+
+type FinalCardBodyBlock = MarkdownBodyBlock | TableBodyBlock;
+
 function slugColumnName(header: string, index: number): string {
   const slug = header.replace(/\s+/g, '_').toLowerCase().replace(/[^a-z0-9_]/g, '');
   return slug || `col_${index}`;
@@ -409,41 +424,62 @@ function ensureTableSeparation(text: string): string {
   );
 }
 
-function bodyBlocksToElements(body: string): Record<string, unknown>[] {
+function parseBodyBlocks(body: string): FinalCardBodyBlock[] {
   const normalized = normalizeMd(body);
-  if (!normalized) return [mdElement('No content available.')];
+  if (!normalized) return [{ kind: 'markdown', markdown: 'No content available.' }];
 
   const preprocessed = ensureTableSeparation(normalized);
   const blocks = preprocessed.split(/\n{2,}/).map(b => b.trim()).filter(Boolean);
-  const elements: Record<string, unknown>[] = [];
-  let tableIdx = 0;
+  const parsedBlocks: FinalCardBodyBlock[] = [];
 
   for (const block of blocks) {
     if (isTable(block)) {
       const parsed = parseMarkdownTable(block);
       if (parsed) {
-        const totalRows = parsed.rows.length;
-        const capped = totalRows > MAX_TABLE_ROWS
-          ? { columns: parsed.columns, rows: parsed.rows.slice(0, MAX_TABLE_ROWS) }
-          : parsed;
-        elements.push(tableElement(capped, `data_table_${++tableIdx}`));
-        if (totalRows > MAX_TABLE_ROWS) {
-          elements.push(mdElement(
-            `_Showing ${MAX_TABLE_ROWS} of ${totalRows} rows._`,
-            { margin: '4px 0 0 0' },
-          ));
-        }
+        parsedBlocks.push({
+          kind: 'table',
+          markdown: block,
+          parsed,
+          totalRows: parsed.rows.length,
+        });
         continue;
       }
     }
     const softened = softenHeadings(block);
     const chunks = softened.length <= MAX_ELEMENT_LEN ? [softened] : splitMarkdown(softened);
     for (const chunk of chunks) {
-      elements.push(mdElement(chunk, elements.length > 0 ? { margin: '8px 0 0 0' } : undefined));
+      parsedBlocks.push({ kind: 'markdown', markdown: chunk });
     }
   }
 
-  return elements.length > 0 ? elements : [mdElement('No content available.')];
+  return parsedBlocks.length > 0 ? parsedBlocks : [{ kind: 'markdown', markdown: 'No content available.' }];
+}
+
+function bodyBlocksToElements(blocks: readonly FinalCardBodyBlock[]): { elements: Record<string, unknown>[]; tableCount: number } {
+  const elements: Record<string, unknown>[] = [];
+  let tableIdx = 0;
+
+  for (const block of blocks) {
+    if (block.kind === 'table') {
+      const capped = block.totalRows > MAX_TABLE_ROWS
+        ? { columns: block.parsed.columns, rows: block.parsed.rows.slice(0, MAX_TABLE_ROWS) }
+        : block.parsed;
+      elements.push(tableElement(capped, `data_table_${++tableIdx}`));
+      if (block.totalRows > MAX_TABLE_ROWS) {
+        elements.push(mdElement(
+          `_Showing ${MAX_TABLE_ROWS} of ${block.totalRows} rows._`,
+          { margin: '4px 0 0 0' },
+        ));
+      }
+      continue;
+    }
+    elements.push(mdElement(block.markdown, elements.length > 0 ? { margin: '8px 0 0 0' } : undefined));
+  }
+
+  return {
+    elements: elements.length > 0 ? elements : [mdElement('No content available.')],
+    tableCount: tableIdx,
+  };
 }
 
 function traceToCollapsible(trace: string): Record<string, unknown> {
@@ -548,12 +584,112 @@ export interface FinalCardInput {
   executionTrace?: string;
 }
 
-export function buildFinalCard(input: FinalCardInput): string {
+export interface FinalCardSegment {
+  markdown: string;
+  payload: string;
+  partIndex: number;
+  partCount: number;
+  tableCount: number;
+  usedCondensedFallback: boolean;
+}
+
+interface BuildFinalCardResult {
+  payload: string;
+  tableCount: number;
+  usedCondensedFallback: boolean;
+}
+
+function blocksToMarkdown(blocks: readonly FinalCardBodyBlock[]): string {
+  return blocks.map(block => block.markdown).join('\n\n').trim();
+}
+
+function buildFinalSubtitle(title: string): string | undefined {
+  return title !== CARD_TITLE ? title : undefined;
+}
+
+function isRuleSeparator(line: string): boolean {
+  return /^-{3,}$/.test(line.trim());
+}
+
+function splitBodySections(body: string): string[] {
+  const normalized = normalizeMd(body);
+  if (!normalized) return ['No content available.'];
+
+  const sections: string[] = [];
+  let current: string[] = [];
+
+  for (const line of normalized.split('\n')) {
+    if (isRuleSeparator(line)) {
+      if (current.length > 0) {
+        sections.push(current.join('\n').trim());
+        current = [];
+      }
+      current.push(line.trim());
+      continue;
+    }
+    current.push(line);
+  }
+
+  if (current.length > 0) sections.push(current.join('\n').trim());
+  return sections.map(section => section.trim()).filter(Boolean);
+}
+
+function isHeadingLikeMarkdown(markdown: string): boolean {
+  const trimmed = markdown.trim();
+  return !trimmed.includes('\n') && /^\*\*[^*].+\*\*$/.test(trimmed);
+}
+
+function buildPlanningUnits(blocks: readonly FinalCardBodyBlock[]): FinalCardBodyBlock[][] {
+  const units: FinalCardBodyBlock[][] = [];
+
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index]!;
+    const nextBlock = blocks[index + 1];
+
+    if (block.kind === 'markdown' && isHeadingLikeMarkdown(block.markdown) && nextBlock?.kind === 'table') {
+      units.push([block, nextBlock]);
+      index += 1;
+      continue;
+    }
+
+    units.push([block]);
+  }
+
+  return units;
+}
+
+function flattenPlanningUnits(units: readonly FinalCardBodyBlock[][]): FinalCardBodyBlock[] {
+  return units.flatMap(unit => unit);
+}
+
+function serializeFinalCard(
+  elements: readonly Record<string, unknown>[],
+  summaryContent: string,
+  subtitle: string | undefined,
+  branding: ChannelBranding | undefined,
+): string {
+  const card = {
+    schema: '2.0',
+    config: { width_mode: 'fill', update_multi: true, enable_forward: true, summary: { content: summaryContent } },
+    header: buildHeader(subtitle, branding),
+    body: { vertical_spacing: '8px', padding: '12px 12px 12px 12px', elements },
+  };
+  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
+}
+
+function buildFinalCardResult(input: FinalCardInput & {
+  bodyTitle?: string;
+  bodyText?: string;
+  bodyBlocks?: readonly FinalCardBodyBlock[];
+  allowCondensedFallback?: boolean;
+}): BuildFinalCardResult {
   const { markdown, branding, actions, executionTrace } = input;
   const { title, body } = extractTitleAndBody(markdown);
-  const normalizedBody = normalizeMd(body);
-
-  const elements: Record<string, unknown>[] = bodyBlocksToElements(normalizedBody);
+  const normalizedBody = input.bodyText ?? normalizeMd(input.bodyText ?? body);
+  const bodyTitle = input.bodyTitle ?? title;
+  const bodyBlocks = input.bodyBlocks ?? parseBodyBlocks(normalizedBody);
+  const rendered = bodyBlocksToElements(bodyBlocks);
+  const elements = [...rendered.elements];
 
   if (executionTrace) {
     elements.push(hrElement('12px 0 0 0'));
@@ -574,21 +710,15 @@ export function buildFinalCard(input: FinalCardInput): string {
     });
   }
 
-  const headerObj = buildHeader(title !== CARD_TITLE ? title : undefined, branding);
-  const summaryContent = buildSummary(title, normalizedBody);
-
-  const serialize = (els: Record<string, unknown>[]) => {
-    const c = {
-      schema: '2.0',
-      config: { width_mode: 'fill', update_multi: true, enable_forward: true, summary: { content: summaryContent } },
-      header: headerObj,
-      body: { vertical_spacing: '8px', padding: '12px 12px 12px 12px', elements: els },
-    };
-    return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(c) });
-  };
-
-  const serialized = serialize(elements);
-  if (serialized.length <= MAX_CARD_BYTES) return serialized;
+  const summaryContent = buildSummary(bodyTitle, normalizedBody);
+  const subtitle = buildFinalSubtitle(bodyTitle);
+  const serialized = serializeFinalCard(elements, summaryContent, subtitle, branding);
+  if (serialized.length <= MAX_CARD_BYTES) {
+    return { payload: serialized, tableCount: rendered.tableCount, usedCondensedFallback: false };
+  }
+  if (input.allowCondensedFallback === false) {
+    return { payload: serialized, tableCount: rendered.tableCount, usedCondensedFallback: true };
+  }
 
   // Card too large — rebuild with text-only body (tables stripped, capped)
   const textOnly = normalizedBody
@@ -604,7 +734,120 @@ export function buildFinalCard(input: FinalCardInput): string {
     fallbackElements.push(hrElement('12px 0 0 0'));
     fallbackElements.push(traceToCollapsible(executionTrace));
   }
-  return serialize(fallbackElements);
+  return {
+    payload: serializeFinalCard(fallbackElements, summaryContent, subtitle, branding),
+    tableCount: rendered.tableCount,
+    usedCondensedFallback: true,
+  };
+}
+
+export function buildFinalCard(input: FinalCardInput): string {
+  return buildFinalCardResult(input).payload;
+}
+
+export function planFinalCards(
+  input: FinalCardInput,
+  opts?: { maxTablesPerCard?: number },
+): FinalCardSegment[] {
+  const { title, body } = extractTitleAndBody(input.markdown);
+  const normalizedBody = normalizeMd(body);
+  const blocks = parseBodyBlocks(normalizedBody);
+  const maxTables = opts?.maxTablesPerCard ?? MAX_TABLES_PER_CARD;
+
+  const fullCard = buildFinalCardResult({
+    ...input,
+    bodyTitle: title,
+    bodyText: normalizedBody,
+    bodyBlocks: blocks,
+    allowCondensedFallback: false,
+  });
+
+  if (fullCard.tableCount <= maxTables && !fullCard.usedCondensedFallback) {
+    return [{
+      markdown: input.markdown,
+      payload: buildFinalCardResult({
+        ...input,
+        bodyTitle: title,
+        bodyText: normalizedBody,
+        bodyBlocks: blocks,
+      }).payload,
+      partIndex: 1,
+      partCount: 1,
+      tableCount: fullCard.tableCount,
+      usedCondensedFallback: false,
+    }];
+  }
+
+  const planningUnits: FinalCardBodyBlock[][] = [];
+  for (const sectionText of splitBodySections(normalizedBody)) {
+    const sectionBlocks = parseBodyBlocks(sectionText);
+    const sectionBuild = buildFinalCardResult({
+      markdown: title !== CARD_TITLE ? `# ${title}\n\n${sectionText}` : sectionText,
+      ...(input.branding ? { branding: input.branding } : {}),
+      bodyTitle: title,
+      bodyText: sectionText,
+      bodyBlocks: sectionBlocks,
+      allowCondensedFallback: false,
+    });
+
+    if (sectionBuild.tableCount <= maxTables && !sectionBuild.usedCondensedFallback) {
+      planningUnits.push(sectionBlocks);
+      continue;
+    }
+
+    planningUnits.push(...buildPlanningUnits(sectionBlocks));
+  }
+
+  const tentativeSegments: FinalCardBodyBlock[][] = [];
+  let currentUnits: FinalCardBodyBlock[][] = [];
+
+  for (const unit of planningUnits) {
+    const candidateUnits = [...currentUnits, unit];
+    const candidateBlocks = flattenPlanningUnits(candidateUnits);
+    const candidateBody = blocksToMarkdown(candidateBlocks);
+    const candidateBuild = buildFinalCardResult({
+      markdown: title !== CARD_TITLE ? `# ${title}\n\n${candidateBody}` : candidateBody,
+      ...(input.branding ? { branding: input.branding } : {}),
+      bodyTitle: title,
+      bodyText: candidateBody,
+      bodyBlocks: candidateBlocks,
+      allowCondensedFallback: false,
+    });
+
+    if (currentUnits.length > 0 && (candidateBuild.tableCount > maxTables || candidateBuild.usedCondensedFallback)) {
+      tentativeSegments.push(flattenPlanningUnits(currentUnits));
+      currentUnits = [unit];
+      continue;
+    }
+
+    currentUnits = candidateUnits;
+  }
+
+  if (currentUnits.length > 0) tentativeSegments.push(flattenPlanningUnits(currentUnits));
+  const partCount = tentativeSegments.length;
+
+  return tentativeSegments.map((segmentBlocks, index) => {
+    const bodyText = blocksToMarkdown(segmentBlocks);
+    const segmentMarkdown = title !== CARD_TITLE ? `# ${title}\n\n${bodyText}` : bodyText;
+    const result = buildFinalCardResult({
+      markdown: segmentMarkdown,
+      ...(input.branding ? { branding: input.branding } : {}),
+      ...(index === partCount - 1 && input.actions ? { actions: input.actions } : {}),
+      bodyTitle: title,
+      bodyText,
+      bodyBlocks: segmentBlocks,
+      allowCondensedFallback: false,
+    });
+
+    return {
+      markdown: segmentMarkdown,
+      payload: result.payload,
+      partIndex: index + 1,
+      partCount,
+      tableCount: result.tableCount,
+      usedCondensedFallback: result.usedCondensedFallback,
+    };
+  });
 }
 
 // ── Status card (in-flight during a run) ─────────────────────────────────────
