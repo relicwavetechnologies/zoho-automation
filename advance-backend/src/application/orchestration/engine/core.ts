@@ -421,7 +421,10 @@ export class OrchestrationEngine {
       toolResults,
     });
 
-    let presentedReply = supervisorResult.value.finalReply;
+    let presentedReply = {
+      ...supervisorResult.value.finalReply,
+      text: cleanReplyText(supervisorResult.value.finalReply.text),
+    };
     if (replyAssessment.needsSynthesis) {
       log.warn('engine.reply_useless.synthesis_needed', {
         cleanReplyText: cleanReplyText(supervisorResult.value.finalReply.text),
