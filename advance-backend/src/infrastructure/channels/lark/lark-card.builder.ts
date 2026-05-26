@@ -593,7 +593,7 @@ export function buildFinalCard(input: FinalCardInput): string {
     .trim()
     .slice(0, 2000);
   const fallbackElements: Record<string, unknown>[] = [
-    mdElement(`${textOnly}\n\n_Full response sent as text below._`),
+    mdElement(`${textOnly}\n\n_Response condensed for card display._`),
   ];
   if (executionTrace) {
     fallbackElements.push(hrElement('12px 0 0 0'));

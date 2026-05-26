@@ -410,22 +410,16 @@ async function runSupervisorStream(input: {
     .filter(r => r.toolName.startsWith('agent_') && r.output && !r.output.startsWith('error:'))
     .map(r => r.output);
 
-  // Single agent delegation: use the agent's reply directly.
-  // The agent is the specialist — its output is always richer than
-  // the supervisor's summary. Supervisor only adds value when
-  // synthesizing across multiple agents.
-  if (agentResults.length === 1) {
+  // Single agent delegation: the supervisor's job is to synthesize.
+  // If it wrote text, that IS the user-facing answer. Only fall back
+  // to the raw agent output when the supervisor produced nothing.
+  if (agentResults.length === 1 && !text.trim()) {
     const agentReply = agentResults[0]!;
-    const supervisorText = text.trim();
-
-    if (!supervisorText || agentReply.length > supervisorText.length * 1.5) {
-      input.logger?.info('supervisor.stream.using_agent_reply', {
-        agentReplyLength: agentReply.length,
-        supervisorTextLength: supervisorText.length,
-        reason: !supervisorText ? 'empty_supervisor_text' : 'agent_reply_richer',
-      });
-      return { text: agentReply, toolCalls, toolResults };
-    }
+    input.logger?.info('supervisor.stream.using_agent_reply', {
+      agentReplyLength: agentReply.length,
+      reason: 'empty_supervisor_text',
+    });
+    return { text: agentReply, toolCalls, toolResults };
   }
 
   // Multiple agents or no agents: use supervisor text if available
