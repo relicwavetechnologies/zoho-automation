@@ -14,9 +14,10 @@ import type {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const CARD_TITLE     = 'Divo AI';
-const MAX_ELEMENT_LEN = 1200;
-const MAX_ELEMENTS    = 30;
-const SUMMARY_CAP     = 160;
+const MAX_ELEMENT_LEN  = 1200;
+const MAX_ELEMENTS     = 30;
+const MAX_TABLE_ROWS   = 50;
+const SUMMARY_CAP      = 160;
 
 // ── Department → chip color ─────────────────────────────────────────────────
 
@@ -407,7 +408,17 @@ function bodyBlocksToElements(body: string): Record<string, unknown>[] {
     if (isTable(block)) {
       const parsed = parseMarkdownTable(block);
       if (parsed) {
-        elements.push(tableElement(parsed, `data_table_${++tableIdx}`));
+        const totalRows = parsed.rows.length;
+        const capped = totalRows > MAX_TABLE_ROWS
+          ? { columns: parsed.columns, rows: parsed.rows.slice(0, MAX_TABLE_ROWS) }
+          : parsed;
+        elements.push(tableElement(capped, `data_table_${++tableIdx}`));
+        if (totalRows > MAX_TABLE_ROWS) {
+          elements.push(mdElement(
+            `_Showing ${MAX_TABLE_ROWS} of ${totalRows} rows._`,
+            { margin: '4px 0 0 0' },
+          ));
+        }
         continue;
       }
     }
