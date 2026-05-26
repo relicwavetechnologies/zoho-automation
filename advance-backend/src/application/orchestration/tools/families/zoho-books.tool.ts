@@ -375,6 +375,10 @@ async function executeScriptMode(
     recordsFetched: items.length, truncated: fetchResult.truncated,
   });
 
+  const { getExchangeRates, buildCurrencyUtilities } = await import('../../../zoho/exchange-rate.service');
+  const rates = await getExchangeRates();
+  const currencyUtils = buildCurrencyUtilities(rates);
+
   let sandboxResult;
   try {
     sandboxResult = runInSandbox({
@@ -382,6 +386,7 @@ async function executeScriptMode(
       data: items,
       args: args.scriptArgs,
       schema: schemaHint,
+      currency: currencyUtils,
     });
   } catch (e) {
     if (e instanceof SandboxTimeoutError || e instanceof SandboxScriptError ||
