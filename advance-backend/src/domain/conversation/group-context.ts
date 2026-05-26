@@ -15,6 +15,8 @@ export interface GroupChatAttachmentContext {
   readonly larkMessageId?: string;
   readonly fileAssetId?: string;
   readonly cloudinaryUrl?: string;
+  /** Base64 data URL fallback when Cloudinary upload fails. Capped at 1 MB buffer. */
+  readonly base64DataUrl?: string;
   readonly ingestionStatus?: GroupChatAttachmentStatus;
   /**
    * Internal prompt-only OCR / extracted file context. This is persisted in the

@@ -355,6 +355,9 @@ export class OrchestrationEngine {
 
     // ── 5. Run supervisor ─────────────────────────────────────────────────
     log.info('engine.pre_supervisor.duration', { ms: this.deps.clock.nowMs() - runStartMs });
+    // P2P inline images — pass as multimodal content parts (same path as group images)
+    const inlineImageUrls = incoming.imageUrls ?? [];
+
     const supervisorResult = await this.deps.supervisor.run({
       userMessage:    incoming.text,
       history:        supervisorHistory,
@@ -370,6 +373,7 @@ export class OrchestrationEngine {
       ...(memoryContext ? { memoryContext } : {}),
       ...(groupContext ? { groupContext } : {}),
       ...(multimodalCtx?.hasImages ? { groupContextParts: multimodalCtx.parts, groupContextSystemHeader: multimodalCtx.systemHeader } : {}),
+      ...(inlineImageUrls.length > 0 ? { inlineImageUrls } : {}),
       chatId:         String(conversation.chatId),
       abortSignal:    abortController.signal,
     });
