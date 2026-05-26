@@ -13,10 +13,11 @@ import type {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const CARD_TITLE     = 'Divo AI';
+const CARD_TITLE       = 'Divo AI';
 const MAX_ELEMENT_LEN  = 1200;
 const MAX_ELEMENTS     = 30;
-const MAX_TABLE_ROWS   = 50;
+const MAX_TABLE_ROWS   = 15;
+const MAX_CARD_BYTES   = 18_000;
 const SUMMARY_CAP      = 160;
 
 // ── Department → chip color ─────────────────────────────────────────────────
@@ -396,11 +397,19 @@ function softenHeadings(md: string): string {
   return md.replace(/^#{1,3}\s+(.+)$/gm, '**$1**');
 }
 
+function ensureTableSeparation(text: string): string {
+  return text.replace(
+    /^(\*\*.+\*\*|#{1,6}\s+.+)\n(\|.+\|)/gm,
+    '$1\n\n$2',
+  );
+}
+
 function bodyBlocksToElements(body: string): Record<string, unknown>[] {
   const normalized = normalizeMd(body);
   if (!normalized) return [mdElement('No content available.')];
 
-  const blocks = normalized.split(/\n{2,}/).map(b => b.trim()).filter(Boolean);
+  const preprocessed = ensureTableSeparation(normalized);
+  const blocks = preprocessed.split(/\n{2,}/).map(b => b.trim()).filter(Boolean);
   const elements: Record<string, unknown>[] = [];
   let tableIdx = 0;
 
@@ -560,19 +569,37 @@ export function buildFinalCard(input: FinalCardInput): string {
     });
   }
 
-  const card = {
-    schema: '2.0',
-    config: {
-      width_mode:     'fill',
-      update_multi:   true,
-      enable_forward: true,
-      summary:        { content: buildSummary(title, normalizedBody) },
-    },
-    header: buildHeader(title !== CARD_TITLE ? title : undefined, branding),
-    body:   { vertical_spacing: '8px', padding: '12px 12px 12px 12px', elements },
+  const headerObj = buildHeader(title !== CARD_TITLE ? title : undefined, branding);
+  const summaryContent = buildSummary(title, normalizedBody);
+
+  const serialize = (els: Record<string, unknown>[]) => {
+    const c = {
+      schema: '2.0',
+      config: { width_mode: 'fill', update_multi: true, enable_forward: true, summary: { content: summaryContent } },
+      header: headerObj,
+      body: { vertical_spacing: '8px', padding: '12px 12px 12px 12px', elements: els },
+    };
+    return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(c) });
   };
 
-  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
+  const serialized = serialize(elements);
+  if (serialized.length <= MAX_CARD_BYTES) return serialized;
+
+  // Card too large — rebuild with text-only body (tables stripped, capped)
+  const textOnly = normalizedBody
+    .replace(/\|[^\n]+\|/g, '')
+    .replace(/^[-:|\s]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, 2000);
+  const fallbackElements: Record<string, unknown>[] = [
+    mdElement(`${textOnly}\n\n_Full response sent as text below._`),
+  ];
+  if (executionTrace) {
+    fallbackElements.push(hrElement('12px 0 0 0'));
+    fallbackElements.push(traceToCollapsible(executionTrace));
+  }
+  return serialize(fallbackElements);
 }
 
 // ── Status card (in-flight during a run) ─────────────────────────────────────

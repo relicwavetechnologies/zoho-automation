@@ -281,6 +281,22 @@ export class LarkChannelAdapter implements ChannelAdapter {
       }
 
       if (messageId) {
+        // For large responses, send full text as follow-up so nothing is lost
+        // (the card may have been truncated by the builder's size cap).
+        if (reply.text.length > 3000) {
+          const fullText = reply.text.slice(0, 4000);
+          const textContent = JSON.stringify({
+            msg_type: 'text',
+            content: JSON.stringify({ text: fullText }),
+          });
+          this.messagingClient.sendMessage(
+            conversation.chatId,
+            textContent,
+          ).catch(e => this.logger.warn('lark.adapter.followup_text_failed', {
+            error: e instanceof Error ? e.message : String(e),
+            correlationId: corrId,
+          }));
+        }
         return ok({ channel: 'lark', messageId: asMessageId(messageId) });
       }
 
