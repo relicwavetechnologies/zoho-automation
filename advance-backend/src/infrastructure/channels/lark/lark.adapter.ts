@@ -213,6 +213,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
   ): Promise<Result<ReplyHandle, ChannelError>> {
     const corrId = String(conversation.correlationId);
     const coordinator = this.coordinators.get(corrId);
+    const stuckCardId = coordinator?.getStatusMessageId();
 
     try {
       const content = buildFinalCard({
@@ -281,9 +282,9 @@ export class LarkChannelAdapter implements ChannelAdapter {
       }
 
       if (messageId) {
-        // For large responses, send full text as follow-up so nothing is lost
-        // (the card may have been truncated by the builder's size cap).
-        if (reply.text.length > 3000) {
+        // Only send follow-up text when the card was actually truncated by the
+        // size cap (the builder embeds this marker when it falls back).
+        if (content.includes('Full response sent as text below')) {
           const fullText = reply.text.slice(0, 4000);
           const textContent = JSON.stringify({
             msg_type: 'text',
@@ -298,6 +299,20 @@ export class LarkChannelAdapter implements ChannelAdapter {
           }));
         }
         return ok({ channel: 'lark', messageId: asMessageId(messageId) });
+      }
+
+      // All 3 tries failed — clean up the stuck status card so it doesn't
+      // show "Preparing response..." forever.
+      if (stuckCardId) {
+        const failureCard = buildFinalCard({
+          markdown: 'Sorry, I couldn\'t deliver the response. Please try again.',
+          ...(reply.branding ? { branding: reply.branding } : {}),
+        });
+        this.messagingClient.updateMessage(stuckCardId, failureCard)
+          .catch(e => this.logger.warn('lark.adapter.stuck_card_cleanup_failed', {
+            error: e instanceof Error ? e.message : String(e),
+            correlationId: corrId,
+          }));
       }
 
       return err(new ChannelError({
