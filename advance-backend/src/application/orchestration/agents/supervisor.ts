@@ -92,6 +92,8 @@ export interface SupervisorInput {
   groupContext?:  string;
   groupContextParts?: readonly GroupContextContentPart[];
   groupContextSystemHeader?: string;
+  /** P2P inline image URLs for multimodal embedding (Cloudinary or base64). */
+  inlineImageUrls?: readonly string[];
   chatId?:        string;
   abortSignal?:   AbortSignal;
 }
@@ -113,6 +115,7 @@ interface DynamicGraphRunInput {
   readonly groupContext?: string;
   readonly groupContextParts?: readonly GroupContextContentPart[];
   readonly groupContextSystemHeader?: string;
+  readonly inlineImageUrls?: readonly string[];
   readonly mem0?: Mem0Service;
   readonly chatId?: string;
   readonly tracer?: OrchestrationTracer;
@@ -162,7 +165,7 @@ export class SupervisorAgent {
     const {
       userMessage, history, channelType, channelId,
       perm, runContext, statusChannel, aggregator, permittedTools, tracer,
-      approvalGate, memoryContext, groupContext, groupContextParts, groupContextSystemHeader, chatId,
+      approvalGate, memoryContext, groupContext, groupContextParts, groupContextSystemHeader, inlineImageUrls, chatId,
     } = input;
     const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
 
@@ -193,6 +196,7 @@ export class SupervisorAgent {
         ...(groupContext ? { groupContext } : {}),
         ...(groupContextParts ? { groupContextParts } : {}),
         ...(groupContextSystemHeader ? { groupContextSystemHeader } : {}),
+        ...(inlineImageUrls?.length ? { inlineImageUrls } : {}),
         ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
         ...(tracer ? { tracer } : {}),
         statusChannel,
@@ -697,6 +701,7 @@ export class SupervisorAgent {
       memoryContext,
       ...(input.groupContext ? { groupContext: input.groupContext } : {}),
       ...(input.groupContextParts?.length ? { groupContextParts: input.groupContextParts } : {}),
+      ...(input.inlineImageUrls?.length ? { inlineImageUrls: input.inlineImageUrls } : {}),
       ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
     } as any);
 

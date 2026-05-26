@@ -45,6 +45,10 @@ export const SupervisorGraphState = Annotation.Root({
     reducer: (_prev, next) => next,
     default: () => [],
   }),
+  inlineImageUrls: Annotation<readonly string[]>({
+    reducer: (_prev, next) => next,
+    default: () => [],
+  }),
   approvalGate: Annotation<ApprovalGateService | undefined>({
     reducer: (_prev, next) => next,
     default: () => undefined,

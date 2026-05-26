@@ -37,6 +37,8 @@ export interface IncomingMessage {
    */
   readonly text: string;
   readonly attachments: readonly AttachmentRef[];
+  /** Image URLs (Cloudinary or base64 data URLs) for multimodal LLM embedding in P2P. */
+  readonly imageUrls?: readonly string[];
   readonly timestamp: string;         // ISO 8601
   readonly replyToMessageId?: MessageId;
   readonly traceId: CorrelationId;

@@ -436,23 +436,7 @@ async function processInBackground(
       log,
     });
 
-    // ── File upload acknowledgment in group chat ────────────────────────────
-    // When someone shares a file/image in a group chat (without @Divo),
-    // send a friendly ack so the user knows Divo noticed it.
-    if (preparedAttachments.length > 0) {
-      const fileNames = preparedAttachments.map(p => p.attachment.fileName);
-      const hasUseful = preparedAttachments.some(hasUsefulInlineAttachmentContext);
-      const ackText = preparedAttachments.length === 1
-        ? `📎 Got it — I've received **${fileNames[0]}** and ${hasUseful ? "I'm reading through it now" : "it's being processed"}. Tag me when you'd like to discuss it!`
-        : `📎 Got it — I've received ${preparedAttachments.length} files (${fileNames.join(', ')}) and ${hasUseful ? "I'm reading through them now" : "they're being processed"}. Tag me when you'd like to discuss them!`;
-
-      await deps.adapter.sendFinalReply(conversation, {
-        kind: 'final',
-        text: ackText,
-        format: 'markdown',
-      }).catch(e => log.warn('webhook.group_upload_ack.failed', { error: String(e) }));
-    }
-
+    // OCR/indexing runs silently in the background. No user-facing ack.
     return;
   }
 
@@ -465,39 +449,33 @@ async function processInBackground(
       log,
     });
 
-    // Build a synthetic message that includes the file content so the engine
-    // can immediately reason about it in DMs. Group chats read the same context
-    // from the group snapshot so the upload stays in its original timeline slot.
-    const userText        = incoming.text?.trim() ?? '';
-    const contextBlock    = preparedAttachments
+    // Collect image URLs for multimodal LLM embedding (Cloudinary or base64 fallback).
+    // The LLM sees images natively — OCR text is bonus context, not the primary path.
+    const imageUrls = preparedAttachments
+      .filter(p => p.attachment.type === 'image')
+      .map(p => p.context.cloudinaryUrl ?? p.context.base64DataUrl)
+      .filter((url): url is string => !!url);
+
+    // OCR/text context for non-image files (PDFs, docs, etc.)
+    const userText     = incoming.text?.trim() ?? '';
+    const contextBlock = preparedAttachments
+      .filter(p => p.attachment.type !== 'image')
       .map(item => item.inlineContext?.context)
       .filter((part): part is string => !!part)
       .join('\n\n');
-    const hasContext      = preparedAttachments.some(hasUsefulInlineAttachmentContext);
 
-    if (!hasContext) {
-      // Nothing useful extracted — plain ack, no engine run
-      const n = attachments.length;
-      await deps.adapter.sendFinalReply(conversation, {
-        kind:   'final',
-        text:   n === 1
-          ? 'Got your file! Indexing it in the background — I\'ll let you know when it\'s ready.'
-          : `Got your ${n} files! Indexing them in the background — I'll let you know when they're ready.`,
-        format: 'text',
-      }).catch(() => { /* non-fatal */ });
-      return;
-    }
-
-    // Run the engine with the file contents injected into the message
-    const syntheticText = userText
-      ? `${contextBlock}\n\n${userText}`
-      : contextBlock;
+    // For images: the LLM will see them via imageUrls (multimodal) — no text injection needed.
+    // For docs: inject the text excerpt into the message so the engine can reason about it.
+    const syntheticText = incoming.chatType === 'group'
+      ? (userText || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`)
+      : contextBlock
+        ? (userText ? `${contextBlock}\n\n${userText}` : contextBlock)
+        : (userText || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`);
 
     const enrichedIncoming: typeof incoming = {
       ...incoming,
-      text: incoming.chatType === 'group'
-        ? (userText || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`)
-        : syntheticText,
+      text: syntheticText,
+      ...(imageUrls.length > 0 ? { imageUrls } : {}),
     };
 
     const result = await deps.engine.run({
@@ -1000,6 +978,14 @@ async function prepareLarkAttachmentContexts(input: {
       }
     }
 
+    // Base64 data URL fallback for images when Cloudinary fails (cap: 1 MB buffer)
+    const MAX_BASE64_BUFFER = 1_024 * 1_024;
+    let base64DataUrl: string | undefined;
+    if (att.type === 'image' && buffer && !cloudinaryUrl && buffer.length <= MAX_BASE64_BUFFER) {
+      base64DataUrl = `data:${att.mimeType};base64,${buffer.toString('base64')}`;
+      log.info('webhook.attachment.base64_fallback', { fileName: att.fileName, bytes: buffer.length });
+    }
+
     let queued = false;
     let enqueueError: string | undefined;
 
@@ -1054,6 +1040,7 @@ async function prepareLarkAttachmentContexts(input: {
       larkMessageId: att.messageId,
       ingestionStatus: queued ? 'processing' : enqueueError ? 'failed' : 'inline_only',
       ...(cloudinaryUrl ? { cloudinaryUrl } : {}),
+      ...(base64DataUrl ? { base64DataUrl } : {}),
       ...(inlineContext?.context ? { inlineContext: inlineContext.context } : {}),
       ...(inlineContext ? { isInlineComplete: inlineContext.isComplete } : {}),
       ...(inlineContext?.rawText ? { rawTextPreview: inlineContext.rawText.slice(0, 2000) } : {}),

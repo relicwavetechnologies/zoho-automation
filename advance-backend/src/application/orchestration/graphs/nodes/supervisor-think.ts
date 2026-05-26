@@ -95,6 +95,8 @@ export async function supervisorThink(
     const hasMultimodalContext = state.groupContextParts.length > 0
       && state.groupContextParts.some(p => p.type === 'image');
 
+    const hasInlineImages = state.inlineImageUrls.length > 0;
+
     const messages: ModelMessage[] = state.conversationHistory.map(m => ({
       role: m.role,
       content: m.content,
@@ -109,7 +111,19 @@ export async function supervisorThink(
       messages.push({ role: 'user' as const, content: contentParts });
     }
 
-    messages.push({ role: 'user' as const, content: state.userMessage });
+    // P2P inline images — embed directly in the user message so the LLM sees them natively
+    if (hasInlineImages && !hasMultimodalContext) {
+      const imageParts: UserContent = [
+        { type: 'text' as const, text: state.userMessage },
+        ...state.inlineImageUrls.map(url => ({
+          type: 'image' as const,
+          image: new URL(url),
+        })),
+      ];
+      messages.push({ role: 'user' as const, content: imageParts });
+    } else {
+      messages.push({ role: 'user' as const, content: state.userMessage });
+    }
 
     // ── Orchestration tools (shared by both paths) ────────────────────────
     const orchestrationTools = {
@@ -150,6 +164,9 @@ export async function supervisorThink(
         brainSystemPrompt += '\n\nGROUP CHAT CONTEXT is provided in the preceding user message with interleaved images.';
       } else if (state.groupContext) {
         brainSystemPrompt += `\n\n${state.groupContext}`;
+      }
+      if (hasInlineImages && !hasMultimodalContext) {
+        brainSystemPrompt += '\n\nThe user has attached image(s) to this message. They are embedded in the user message — you can see them directly. Describe, analyze, or answer questions about them without needing any tools.';
       }
       if (state.memoryContext) {
         brainSystemPrompt += `\n\nMEMORY CONTEXT:\n${state.memoryContext}`;

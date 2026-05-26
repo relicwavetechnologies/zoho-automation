@@ -198,14 +198,17 @@ const SYSTEM_HEADER_LINES = [
   'The user\'s current request is the LAST line (marked with ▶).',
 ];
 
+function imageUrl(att: GroupChatAttachmentContext): string | undefined {
+  return att.cloudinaryUrl ?? att.base64DataUrl;
+}
+
 function collectImageUrls(messages: readonly GroupChatMessage[]): string[] {
   const urls: string[] = [];
   for (const msg of messages) {
     if (!msg.attachments) continue;
     for (const att of msg.attachments) {
-      if (att.kind === 'image' && att.cloudinaryUrl) {
-        urls.push(att.cloudinaryUrl);
-      }
+      const url = att.kind === 'image' ? imageUrl(att) : undefined;
+      if (url) urls.push(url);
     }
   }
   return urls;
@@ -267,9 +270,8 @@ export function formatGroupContextMultimodal(
     const msg = selectedMessages[i];
     if (!msg?.attachments) continue;
     for (const att of msg.attachments) {
-      if (att.kind === 'image' && att.cloudinaryUrl) {
-        eligibleImageUrls.push(att.cloudinaryUrl);
-      }
+      const url = att.kind === 'image' ? imageUrl(att) : undefined;
+      if (url) eligibleImageUrls.push(url);
     }
   }
   const inlineImageSet = new Set(eligibleImageUrls.slice(0, MAX_INLINE_IMAGES));
@@ -290,10 +292,11 @@ export function formatGroupContextMultimodal(
 
     if (msg.attachments) {
       for (const att of msg.attachments) {
-        if (att.kind === 'image' && att.cloudinaryUrl && inlineImageSet.has(att.cloudinaryUrl)) {
+        const attImgUrl = att.kind === 'image' ? imageUrl(att) : undefined;
+        if (attImgUrl && inlineImageSet.has(attImgUrl)) {
           // Multimodal image part at exact message position
           parts.push({ type: 'text', text: `[${att.fileName} — image attached to this message]` });
-          parts.push({ type: 'image', url: att.cloudinaryUrl });
+          parts.push({ type: 'image', url: attImgUrl });
 
           // OCR supplement as searchable text
           const ocr = formatAttachmentOcrSupplement(att);
