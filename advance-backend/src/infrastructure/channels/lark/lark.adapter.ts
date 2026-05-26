@@ -10,7 +10,7 @@ import type { Logger } from '../../../shared/logger';
 import type { TypedEnv } from '../../../config/env';
 import { LarkMessagingClient } from './clients/lark-messaging.client';
 import { LarkStatusCoordinator } from './lark-status.coordinator';
-import { buildFinalCard } from './lark-card.builder';
+import { buildFinalCard, planFinalCards } from './lark-card.builder';
 
 export class LarkChannelAdapter implements ChannelAdapter {
   readonly key = 'lark' as const;
@@ -216,20 +216,31 @@ export class LarkChannelAdapter implements ChannelAdapter {
     const stuckCardId = coordinator?.getStatusMessageId();
 
     try {
-      const content = buildFinalCard({
+      const segments = planFinalCards({
         markdown: reply.text,
         ...(reply.branding        ? { branding:       reply.branding }        : {}),
         ...(reply.actions         ? { actions:        reply.actions  }        : {}),
         ...(reply.executionTrace  ? { executionTrace: reply.executionTrace }  : {}),
       });
+      const [primarySegment, ...continuationSegments] = segments;
+      if (!primarySegment) {
+        return err(new ChannelError({
+          channel: 'lark',
+          stage: 'send_final',
+          reason: 'malformed',
+          message: 'No final card segments were generated',
+        }));
+      }
 
       let messageId: string | undefined;
+      let statusFinalizeFailed = false;
 
       // Try 1: Finalize via coordinator (edit status card → final card)
       if (coordinator) {
         try {
-          messageId = await coordinator.finalizeMessage(content);
+          messageId = await coordinator.finalizeMessage(primarySegment.payload);
         } catch (e) {
+          statusFinalizeFailed = true;
           this.logger.warn('lark.adapter.finalize_failed', {
             error: e instanceof Error ? e.message : String(e),
             correlationId: corrId,
@@ -244,7 +255,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
         try {
           const result = await this.messagingClient.sendMessage(
             conversation.chatId,
-            content,
+            primarySegment.payload,
             conversation.replyToMessageId,
             conversation.replyInThread,
           );
@@ -257,28 +268,52 @@ export class LarkChannelAdapter implements ChannelAdapter {
         }
       }
 
+      if (messageId && continuationSegments.length > 0) {
+        const continuationResult = await this.sendContinuationCards(
+          conversation,
+          continuationSegments.map(segment => segment.payload),
+          corrId,
+        );
+        if (!continuationResult.ok) {
+          this.logger.warn('lark.adapter.continuation_send_failed', {
+            error: continuationResult.error.message,
+            correlationId: corrId,
+            continuationCount: continuationSegments.length,
+          });
+          await this.sendPlainTextFallback(
+            conversation,
+            continuationSegments.map(segment => segment.markdown),
+            corrId,
+          );
+        }
+      }
+
+      if (messageId && stuckCardId && statusFinalizeFailed) {
+        await this.updateStuckStatusCard(
+          stuckCardId,
+          reply.branding,
+          continuationSegments.length > 0
+            ? 'Response continued below due to card limits.'
+            : 'Response sent below due to card limits.',
+          corrId,
+        );
+      }
+
       // Try 3: Last resort — send plain text (bypasses card rendering entirely)
       if (!messageId) {
-        try {
-          const plainText = reply.text.slice(0, 4000);
-          const textContent = JSON.stringify({
-            msg_type: 'text',
-            content: JSON.stringify({ text: plainText }),
-          });
-          const result = await this.messagingClient.sendMessage(
-            conversation.chatId,
-            textContent,
-            conversation.replyToMessageId,
-            conversation.replyInThread,
+        if (stuckCardId) {
+          await this.updateStuckStatusCard(
+            stuckCardId,
+            reply.branding,
+            'Response sent below due to card limits.',
+            corrId,
           );
-          messageId = result.messageId;
-          this.logger.info('lark.adapter.plain_text_fallback_sent', { correlationId: corrId });
-        } catch (e) {
-          this.logger.error('lark.adapter.all_delivery_failed', {
-            error: e instanceof Error ? e.message : String(e),
-            correlationId: corrId,
-          });
         }
+        messageId = await this.sendPlainTextFallback(
+          conversation,
+          segments.map(segment => segment.markdown),
+          corrId,
+        );
       }
 
       if (messageId) {
@@ -405,6 +440,85 @@ export class LarkChannelAdapter implements ChannelAdapter {
     }
   }
 
+  private async sendContinuationCards(
+    conversation: ConversationHandle,
+    payloads: readonly string[],
+    correlationId: string,
+  ): Promise<Result<void, ChannelError>> {
+    try {
+      for (const payload of payloads) {
+        await this.messagingClient.sendMessage(
+          conversation.chatId,
+          payload,
+          conversation.replyToMessageId,
+          conversation.replyInThread,
+        );
+      }
+      return ok(undefined);
+    } catch (e) {
+      return err(new ChannelError({
+        channel: 'lark',
+        stage: 'send_final',
+        reason: 'upstream_5xx',
+        cause: e,
+        message: `Failed to send continuation card: ${e instanceof Error ? e.message : String(e)}`,
+      }));
+    }
+  }
+
+  private async sendPlainTextFallback(
+    conversation: ConversationHandle,
+    messages: readonly string[],
+    correlationId: string,
+  ): Promise<string | undefined> {
+    let firstMessageId: string | undefined;
+    try {
+      for (const chunk of splitPlainTextMessages(messages.join('\n\n'))) {
+        const textContent = JSON.stringify({
+          msg_type: 'text',
+          content: JSON.stringify({ text: chunk }),
+        });
+        const result = await this.messagingClient.sendMessage(
+          conversation.chatId,
+          textContent,
+          conversation.replyToMessageId,
+          conversation.replyInThread,
+        );
+        firstMessageId ??= result.messageId;
+      }
+      if (firstMessageId) {
+        this.logger.info('lark.adapter.plain_text_fallback_sent', { correlationId });
+      }
+      return firstMessageId;
+    } catch (e) {
+      this.logger.error('lark.adapter.all_delivery_failed', {
+        error: e instanceof Error ? e.message : String(e),
+        correlationId,
+      });
+      return undefined;
+    }
+  }
+
+  private async updateStuckStatusCard(
+    messageId: string,
+    branding: FinalReply['branding'],
+    text: string,
+    correlationId: string,
+  ): Promise<void> {
+    const redirectCard = buildFinalCard({
+      markdown: text,
+      ...(branding ? { branding } : {}),
+    });
+    try {
+      await this.messagingClient.updateMessage(messageId, redirectCard);
+    } catch (e) {
+      this.logger.warn('lark.adapter.stuck_card_cleanup_failed', {
+        error: e instanceof Error ? e.message : String(e),
+        correlationId,
+      });
+    }
+  }
+
 }
 
 // ── Module-level helpers ────────────────────────────────────────────────────
@@ -468,4 +582,33 @@ function extractPostText(
   }
 
   return lines.join('\n');
+}
+
+function splitPlainTextMessages(text: string, maxChars = 3500): string[] {
+  const normalized = text.trim();
+  if (normalized.length <= maxChars) return [normalized];
+
+  const paragraphs = normalized.split(/\n{2,}/).map(part => part.trim()).filter(Boolean);
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const paragraph of paragraphs) {
+    const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      continue;
+    }
+    if (current) chunks.push(current);
+    if (paragraph.length <= maxChars) {
+      current = paragraph;
+      continue;
+    }
+    for (let index = 0; index < paragraph.length; index += maxChars) {
+      chunks.push(paragraph.slice(index, index + maxChars));
+    }
+    current = '';
+  }
+
+  if (current) chunks.push(current);
+  return chunks.length > 0 ? chunks : [normalized.slice(0, maxChars)];
 }
