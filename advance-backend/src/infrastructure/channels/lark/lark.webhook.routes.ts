@@ -29,6 +29,7 @@ import type { LarkChatContextService } from '../../../application/chat-context/l
 import type { PrismaClient } from '../../../generated/prisma';
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
 import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
+import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
 
 export const createLarkWebhookRoutes = (deps: {
   adapter: LarkChannelAdapter;
@@ -299,6 +300,7 @@ async function processInBackground(
     larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
+    cloudinaryAdapter?: CloudinaryAdapter;
   },
   log: Logger,
   approvalGate?: ApprovalGateService,
@@ -411,16 +413,33 @@ async function processInBackground(
 
   const attachments = parseLarkAttachments(rawEvent);
   const shouldRespond = incoming.chatType !== 'group' || incoming.mentionsSelf;
-  const preparedAttachments = attachments.length > 0
-    ? await prepareLarkAttachmentContexts({
-        incoming,
-        attachments,
-        identity,
-        deps,
-        log,
-        shouldReact: shouldRespond,
-      })
-    : [];
+
+  // Fetch parent message (quote-reply context) in parallel with attachment prep.
+  const [preparedAttachments, parentRef] = await Promise.all([
+    attachments.length > 0
+      ? prepareLarkAttachmentContexts({
+          incoming,
+          attachments,
+          identity,
+          deps,
+          log,
+          shouldReact: shouldRespond,
+        })
+      : Promise.resolve([] as PreparedAttachmentContext[]),
+    incoming.replyToMessageId
+      ? fetchParentMessage({
+          parentMessageId: String(incoming.replyToMessageId),
+          env: deps.env,
+          logger: deps.logger,
+          ...(deps.cloudinaryAdapter ? { cloudinaryAdapter: deps.cloudinaryAdapter } : {}),
+          ...(deps.ingestionQueue ? { ingestionQueue: deps.ingestionQueue } : {}),
+          channelIdentityRepo: deps.channelIdentityRepo,
+          companyId: identity.companyId,
+          userId: identity.userId,
+          chatId: String(incoming.chatId),
+        })
+      : Promise.resolve(null),
+  ]);
 
   if (incoming.chatType === 'group' && !incoming.mentionsSelf) {
     log.debug('webhook.group_message.not_mentioned', {
@@ -456,8 +475,15 @@ async function processInBackground(
       .map(p => p.context.cloudinaryUrl ?? p.context.base64DataUrl)
       .filter((url): url is string => !!url);
 
+    // Merge parent message image URLs (quote-reply with images)
+    const allImageUrls = [...imageUrls, ...(parentRef?.imageUrls ?? [])];
+
     // OCR/text context for non-image files (PDFs, docs, etc.)
     const userText     = incoming.text?.trim() ?? '';
+    const parentPrefix = parentRef ? buildParentContextPrefix(parentRef) : '';
+    const textWithParent = parentPrefix
+      ? (userText ? `${parentPrefix}\n\n${userText}` : parentPrefix)
+      : userText;
     const contextBlock = preparedAttachments
       .filter(p => p.attachment.type !== 'image')
       .map(item => item.inlineContext?.context)
@@ -467,15 +493,15 @@ async function processInBackground(
     // For images: the LLM will see them via imageUrls (multimodal) — no text injection needed.
     // For docs: inject the text excerpt into the message so the engine can reason about it.
     const syntheticText = incoming.chatType === 'group'
-      ? (userText || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`)
+      ? (textWithParent || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`)
       : contextBlock
-        ? (userText ? `${contextBlock}\n\n${userText}` : contextBlock)
-        : (userText || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`);
+        ? (textWithParent ? `${contextBlock}\n\n${textWithParent}` : contextBlock)
+        : (textWithParent || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`);
 
     const enrichedIncoming: typeof incoming = {
       ...incoming,
       text: syntheticText,
-      ...(imageUrls.length > 0 ? { imageUrls } : {}),
+      ...(allImageUrls.length > 0 ? { imageUrls: allImageUrls } : {}),
     };
 
     const result = await deps.engine.run({
@@ -512,9 +538,24 @@ async function processInBackground(
 
   // Bare @Divo mention with no text — synthesize a contextual prompt so
   // the engine can respond to whatever was said above in the group chat.
-  const effectiveIncoming = (!text && incoming.mentionsSelf && incoming.chatType === 'group')
+  let effectiveIncoming: IncomingMessage = (!text && incoming.mentionsSelf && incoming.chatType === 'group')
     ? { ...incoming, text: 'Respond to the latest messages above in this group chat.' }
     : incoming;
+
+  // Inject parent message context for quote-replies (text + images from quoted message)
+  if (parentRef) {
+    const prefix = buildParentContextPrefix(parentRef);
+    const currentText = effectiveIncoming.text?.trim() ?? '';
+    const mergedImages = [
+      ...(effectiveIncoming.imageUrls ?? []),
+      ...parentRef.imageUrls,
+    ];
+    effectiveIncoming = {
+      ...effectiveIncoming,
+      ...(prefix ? { text: `${prefix}\n\n${currentText}` } : {}),
+      ...(mergedImages.length > 0 ? { imageUrls: mergedImages } : {}),
+    };
+  }
 
   if (!effectiveIncoming.text?.trim()) return;
 
