@@ -179,17 +179,17 @@ function normalizeLiveText(value: string): string {
   return value.replace(/…+$/u, '').trim().toLowerCase();
 }
 
-/** Compact todo rail from plan steps (● running, ○ next). */
+/** Compact todo rail from plan steps (✓ done, ● running, ○ next). */
 function planToSideRail(plan: readonly ChannelPlanStep[]): string | undefined {
-  const running = plan.find(s => s.status === 'running');
-  const pending = plan.filter(s => s.status === 'pending').slice(0, 2);
   const lines: string[] = [];
+  const done = plan.filter(s => s.status === 'done').slice(-2);
+  const running = plan.find(s => s.status === 'running');
+  const pending = plan.filter(s => s.status === 'pending').slice(0, 1);
+
+  for (const step of done) lines.push(`✓ ${shortStepLabel(step)}`);
   if (running) lines.push(`● ${shortStepLabel(running)}`);
   for (const step of pending) lines.push(`○ ${shortStepLabel(step)}`);
-  const done = plan.filter(s => s.status === 'done').slice(-1);
-  if (!running && done.length && lines.length < 3) {
-    lines.unshift(`✓ ${shortStepLabel(done[0]!)}`);
-  }
+
   return lines.length ? lines.join('\n') : undefined;
 }
 
@@ -244,6 +244,22 @@ function liveStripMarkdown(timeline: ChannelTimeline): string {
   return live;
 }
 
+/** Rolling sentences from streamed model text (Cursor-style narration). */
+function buildNarrationMarkdown(timeline: ChannelTimeline): string | undefined {
+  const done = timeline.narration ?? [];
+  const active = timeline.narrationActive?.trim();
+  if (!done.length && !active) return undefined;
+
+  const parts: string[] = [];
+  for (const line of done) {
+    parts.push(`✓ ${line}`);
+  }
+  if (active) {
+    parts.push(`● **${active}**`);
+  }
+  return parts.join('\n');
+}
+
 /** Optional second line: what's queued after the active step. */
 function liveStripSubline(timeline: ChannelTimeline): string | undefined {
   const plan = timeline.plan;
@@ -259,9 +275,6 @@ function liveStripSubline(timeline: ChannelTimeline): string | undefined {
 }
 
 function liveStatusColumnSet(timeline: ChannelTimeline): Record<string, unknown> {
-  const sideRail = buildSideRailMarkdown(timeline);
-  const mainWeight = sideRail ? 2 : 3;
-
   const columns: Record<string, unknown>[] = [
     {
       tag:             'column',
@@ -273,9 +286,17 @@ function liveStatusColumnSet(timeline: ChannelTimeline): Record<string, unknown>
     {
       tag:             'column',
       width:           'weighted',
-      weight:          mainWeight,
+      weight:          5,
       vertical_align:  'center',
       elements:        (() => {
+        const narration = buildNarrationMarkdown(timeline);
+        if (narration) {
+          return [{
+            tag:       'markdown',
+            content:   `**Working on your request**\n\n${narration}`,
+            text_size: 'normal',
+          }];
+        }
         const main = liveStripMarkdown(timeline);
         const sub  = liveStripSubline(timeline);
         const headline = main.replace(/…+$/u, '').trim() || main;
@@ -288,22 +309,6 @@ function liveStatusColumnSet(timeline: ChannelTimeline): Record<string, unknown>
       })(),
     },
   ];
-
-  if (sideRail) {
-    columns.push({
-      tag:             'column',
-      width:           'weighted',
-      weight:          2,
-      vertical_align:  'top',
-      horizontal_align: 'right',
-      elements:        [{
-        tag:       'markdown',
-        content:   sideRail,
-        text_size: 'notation',
-        text_align: 'right',
-      }],
-    });
-  }
 
   return {
     tag:                 'column_set',

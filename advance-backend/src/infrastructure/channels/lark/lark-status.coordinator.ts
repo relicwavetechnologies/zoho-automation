@@ -147,6 +147,8 @@ export class LarkStatusCoordinator {
       t.phase,
       String(t.progressPct ?? ''),
       t.liveLabel,
+      t.narration?.join('|'),
+      t.narrationActive,
       t.plan?.map(p => `${p.status}:${p.title}:${p.subtitle ?? ''}`).join('|'),
       t.recent?.join('|'),
     ].filter(Boolean);
