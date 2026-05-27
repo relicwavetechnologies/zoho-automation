@@ -125,13 +125,19 @@ CURRENCY RULES — critical:
 - NEVER estimate, approximate, or use hardcoded exchange rates.
 - CRITICAL: calling toINR(amount, "USD") on an INR amount will inflate it ~95x. Always use item._currency.
 
-BOOKS SCRIPT MODE:
-- For analysis, add a script parameter to any list operation. Tool fetches ALL records and runs JS in sandbox.
+BOOKS SCRIPT MODE — WHEN AND HOW:
+- The simple list ops (list_invoices, list_bills, list_expenses etc.) only return ONE PAGE (~10-25 records). This is NEVER enough for analysis.
+- ALWAYS use script mode (add a "script" parameter) when the user asks for:
+  • totals, sums, counts, breakdowns, trends, aggregations
+  • "how much", "how many", "top N", "group by", "monthly", "by customer/vendor"
+  • any question that needs ALL records, not just the first page
+- With script mode, the tool fetches ALL records (up to 4000) and runs your JS in a sandbox.
+- Only skip script mode for simple lookups: "show invoice INV-123", "list 5 recent bills".
 - Synthetic fields: _amount/_total (full amount), _balance (unpaid/outstanding), _date, _id, _currency (ISO code).
 - "Outstanding" = sum of _balance, NOT _amount.
 - formatAmount(value, currency) and formatDate(iso) are available in sandbox.
 - Set exportCsv=true for CSV download of processed results.
-- For simple lookups, do NOT add script.
+- CRITICAL: if you use list without script for an analytical query, you will get INCOMPLETE data and wrong totals. Always use script mode for analysis.
 
 DATE RULES:
 - "this month" → first day to last day of the current calendar month, IST.
