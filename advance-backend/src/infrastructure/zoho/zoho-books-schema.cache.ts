@@ -190,25 +190,85 @@ export function getModuleSchema(module: string): ZohoBooksModuleSchema {
  * Inject synthetic fields onto every record so LLM scripts use
  * consistent names regardless of module.
  */
+export interface CurrencyConverter {
+  readonly toINR: (amount: number, currency: string) => number;
+}
+
+/**
+ * Inject synthetic fields onto every record.
+ *
+ * When a `converter` is provided, also injects pre-converted INR fields
+ * (`_amount_inr`, `_balance_inr`, `_total_inr`) so LLM scripts never need
+ * to call toINR() themselves — the conversion is done deterministically here.
+ *
+ * Conversion priority for each amount:
+ *   1. If Zoho provides a `bcy_*` field (base currency) → use it directly
+ *   2. If the record has `exchange_rate` → multiply amount × exchange_rate
+ *   3. If `_currency === 'INR'` → amount is already INR
+ *   4. Fallback → use live rate via converter.toINR()
+ */
 export function injectSyntheticFields(
-  items:  Array<Record<string, unknown>>,
-  schema: ZohoBooksModuleSchema,
+  items:     Array<Record<string, unknown>>,
+  schema:    ZohoBooksModuleSchema,
+  converter?: CurrencyConverter,
 ): Array<Record<string, unknown>> {
   return items.map(item => {
     const raw = item['currency_code'] ?? item['currency'] ?? '';
     const currency = typeof raw === 'string' && raw.trim() ? raw.trim().toUpperCase() : 'INR';
-    return {
+
+    const amount  = Number(item[schema.primaryAmount] ?? 0);
+    const balance = schema.balanceField
+      ? Number(item[schema.balanceField] ?? 0)
+      : amount;
+
+    const result: Record<string, unknown> = {
       ...item,
-      _amount: Number(item[schema.primaryAmount] ?? 0),
-      _total:  Number(item[schema.primaryAmount] ?? 0),
-      _balance: schema.balanceField
-        ? Number(item[schema.balanceField] ?? 0)
-        : Number(item[schema.primaryAmount] ?? 0),
-      _date:     String(item[schema.primaryDate]   ?? ''),
-      _id:       String(item[schema.primaryId]     ?? ''),
+      _amount:   amount,
+      _total:    amount,
+      _balance:  balance,
+      _date:     String(item[schema.primaryDate] ?? ''),
+      _id:       String(item[schema.primaryId]   ?? ''),
       _currency: currency,
     };
+
+    if (converter) {
+      result._amount_inr  = toBaseINR(item, amount, currency, schema.primaryAmount, converter);
+      result._total_inr   = result._amount_inr;
+      result._balance_inr = schema.balanceField
+        ? toBaseINR(item, balance, currency, schema.balanceField, converter)
+        : result._amount_inr;
+    }
+
+    return result;
   });
+}
+
+/**
+ * Convert an amount to INR using the best available source:
+ *   1. bcy_ field from Zoho (exact, recorded at transaction time)
+ *   2. exchange_rate field × amount (Zoho's own rate)
+ *   3. Already INR → no conversion
+ *   4. Live rate via converter
+ */
+function toBaseINR(
+  item:       Record<string, unknown>,
+  amount:     number,
+  currency:   string,
+  fieldName:  string,
+  converter:  CurrencyConverter,
+): number {
+  if (amount === 0) return 0;
+
+  const bcyKey = `bcy_${fieldName}`;
+  const bcyVal = Number(item[bcyKey] ?? 0);
+  if (bcyVal > 0) return Math.round(bcyVal * 100) / 100;
+
+  if (currency === 'INR') return amount;
+
+  const exchangeRate = Number(item['exchange_rate'] ?? 0);
+  if (exchangeRate > 0) return Math.round(amount * exchangeRate * 100) / 100;
+
+  return converter.toINR(amount, currency);
 }
 
 /**
@@ -232,23 +292,29 @@ export function toSchemaHint(
     nameFields:      schema.nameFields,
     statusField:     schema.statusField,
     syntheticFields: {
-      _amount:   'full document amount (alias for _total)',
-      _total:    'full document amount (alias for _amount)',
-      _balance: schema.balanceField
-        ? 'unpaid/outstanding portion - use for outstanding, unpaid, overdue amount, or balance due'
+      _amount:      'full document amount in original currency',
+      _total:       'alias for _amount',
+      _balance:     schema.balanceField
+        ? 'unpaid/outstanding portion in original currency'
         : 'equals _amount (no separate balance for this module)',
-      _date:     'primary date field',
-      _id:       'primary record ID',
-      _currency: 'ISO currency code of this record (e.g. "INR", "USD"). Most records are in the company base currency (usually INR).',
+      _amount_inr:  'full document amount PRE-CONVERTED to INR — use this for all INR totals/sums',
+      _total_inr:   'alias for _amount_inr',
+      _balance_inr: schema.balanceField
+        ? 'unpaid/outstanding portion PRE-CONVERTED to INR — use this for overdue/outstanding INR totals'
+        : 'equals _amount_inr',
+      _date:        'primary date field',
+      _id:          'primary record ID',
+      _currency:    'ISO currency code of this record (e.g. "INR", "USD")',
     },
     ...(sampleRecord ? { sampleFieldNames: Object.keys(sampleRecord).slice(0, 20) } : {}),
     currencyUtilities: {
-      toINR:         'toINR(amount, item._currency) — convert to INR. ALWAYS pass item._currency, never hardcode "USD". If _currency is already "INR", returns amount unchanged.',
-      fromINR:       'fromINR(amount, targetCode) — convert INR to target currency',
+      note:          'PREFER using _amount_inr / _balance_inr / _total_inr for INR sums — they are pre-converted and guaranteed correct.',
+      toINR:         'toINR(amount, item._currency) — manual convert to INR. Only needed if computing a custom field not pre-converted.',
+      fromINR:       'fromINR(amount, targetCode) — convert INR to target currency (e.g. for "show in USD")',
       convert:       'convert(amount, from, to) — convert between any two currencies',
       exchangeRates: 'exchangeRates.USD, exchangeRates.AED etc — INR per 1 unit of foreign currency',
       formatAmount:  'formatAmount(value, "INR") — ₹ with Indian grouping; formatAmount(value, "USD") — $ with US grouping',
     },
-    note: 'IMPORTANT: All amounts (_amount, _balance, _total) are in the record\'s own currency (item._currency). Most records are INR. ALWAYS use item._currency — never assume USD. toINR(amount, item._currency) is safe: if _currency is "INR", it returns the amount unchanged. For overdue/outstanding queries, use _balance.',
+    note: 'IMPORTANT: Use _amount_inr/_balance_inr/_total_inr for all INR calculations — they are pre-converted using Zoho\'s own exchange rate recorded at transaction time. For overdue/outstanding queries, use _balance_inr. For "show in USD" use fromINR(_balance_inr, "USD"). NEVER manually call toINR() on _amount/_balance — use the _inr variants instead.',
   };
 }

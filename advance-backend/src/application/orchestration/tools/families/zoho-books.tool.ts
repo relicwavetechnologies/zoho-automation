@@ -360,12 +360,28 @@ async function executeScriptMode(
   } catch (e) {
     return err(new ToolError({
       toolId: 'zohoBooks', reason: 'upstream_failure',
-      message: `Failed to fetch ${moduleName}: ${e instanceof Error ? e.message : String(e)}`,
+      cause: e,
+      message: mapZohoError(e),
     }));
   }
 
+  const { getExchangeRates, buildCurrencyUtilities } = await import('../../../zoho/exchange-rate.service');
+  const rates = await getExchangeRates();
+  const currencyUtils = buildCurrencyUtilities(rates);
+
   const schema = getModuleSchema(moduleName);
-  const items = injectSyntheticFields(fetchResult.items, schema);
+  const enriched = injectSyntheticFields(fetchResult.items, schema, currencyUtils);
+
+  const items = enriched.map(item => {
+    const slim: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(item)) {
+      if (value === null || value === undefined || typeof value !== 'object') {
+        slim[key] = value;
+      }
+    }
+    return slim;
+  });
+
   const schemaHint = toSchemaHint(schema, items[0]);
 
   ctx.onProgress?.(`Processing ${items.length} ${moduleName}…`);
@@ -374,10 +390,6 @@ async function executeScriptMode(
     companyId, module: moduleName,
     recordsFetched: items.length, truncated: fetchResult.truncated,
   });
-
-  const { getExchangeRates, buildCurrencyUtilities } = await import('../../../zoho/exchange-rate.service');
-  const rates = await getExchangeRates();
-  const currencyUtils = buildCurrencyUtilities(rates);
 
   let sandboxResult;
   try {
@@ -433,6 +445,15 @@ async function executeScriptMode(
   if (fetchResult.truncated) {
     parts.push('DATA INCOMPLETE - pagination limit (4000 records) reached. Totals may be understated.');
   }
+  if (args.script === 'return data' && items.length > 0) {
+    const sumAmountInr = items.reduce((s, d) => s + Number(d._amount_inr ?? d._amount ?? 0), 0);
+    const sumBalanceInr = items.reduce((s, d) => s + Number(d._balance_inr ?? d._balance ?? 0), 0);
+    const aggParts = [`_amount_inr sum = ${formatAmount(sumAmountInr, 'INR')}`];
+    if (Math.abs(sumBalanceInr - sumAmountInr) > 0.01) {
+      aggParts.push(`_balance_inr sum = ${formatAmount(sumBalanceInr, 'INR')}`);
+    }
+    parts.push(`Aggregates (all ${items.length} records): ${aggParts.join(', ')}.`);
+  }
   if (resultArray) {
     parts.push(`Processed into ${resultArray.length} rows.`);
     if (resultArray.length > INLINE_SCRIPT_LIMIT) parts.push(`Showing first ${INLINE_SCRIPT_LIMIT} inline.`);
@@ -475,10 +496,10 @@ export const createZohoBooksTool = (deps: {
 
   description: [
     'Access Zoho Books: 19 operations for invoices, bills, expenses, payments, contacts, bank transactions, and reports.',
-    'For data analysis (grouping, aggregation, ranking), add a `script` parameter to any list operation.',
-    'The tool fetches ALL records (up to 4000) and runs your script in a sandbox.',
-    'Records include synthetic fields: _amount/_total (full amount), _balance (unpaid/outstanding), _date, _id.',
-    'Set exportCsv=true to get a downloadable CSV of the processed result.',
+    'All list operations fetch ALL records (up to 4000) with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
+    'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to any list op.',
+    'Use _amount_inr/_balance_inr for all INR calculations — pre-converted using Zoho exchange rates, guaranteed correct.',
+    'Set exportCsv=true or exportAll=true for downloadable CSV.',
   ].join(' '),
 
   parameterDocs: [
@@ -487,12 +508,13 @@ export const createZohoBooksTool = (deps: {
     'write params: invoiceId, email, fields',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     '',
-    'SCRIPT MODE (list ops only — for analysis/grouping/aggregation):',
-    'script: JS code. Receives `data` (array) and `args` (object). Must return a value.',
-    '  _amount/_total = full document amount. _balance = unpaid/outstanding portion.',
-    '  Use _balance for outstanding/overdue queries. Use _amount for total spend queries.',
+    'SCRIPT MODE (list ops only — for ANALYSIS/GROUPING/AGGREGATION):',
+    'script: JS code. Receives data (all records), args (extra params), schema (field hints). Must return a value.',
+    '  _amount_inr/_total_inr = full amount in INR (pre-converted). _balance_inr = outstanding in INR.',
+    '  _amount/_total = original currency. _balance = original outstanding. _currency = ISO code.',
+    '  For INR sums: use _balance_inr or _amount_inr directly. For "show in USD": fromINR(total, "USD").',
     '  formatAmount(value, currency) and formatDate(iso) are available in the sandbox.',
-    '  Example: "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,outstanding:0}; g[v].count++; g[v].outstanding+=b._balance||0;}); return Object.values(g).sort((a,b)=>b.outstanding-a.outstanding)"',
+    '  Example: "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,outstanding:0}; g[v].count++; g[v].outstanding+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.outstanding-a.outstanding)"',
     'scriptArgs: extra parameters available as `args` in the script',
     'exportCsv: true to upload script result as CSV with download link',
     'csvColumns: column order for CSV (auto-detected if omitted)',
@@ -560,6 +582,19 @@ export const createZohoBooksTool = (deps: {
         toolId: 'zohoBooks', reason: 'bad_args',
         message: `script is only supported on list operations (${Object.keys(listOpToModule).join(', ')}), not ${args.op}`,
       }));
+    }
+
+    if (listOpToModule[args.op]) {
+      return executeScriptMode(
+        { ...args, script: 'return data', exportCsv: args.exportAll || args.exportCsv },
+        ctx,
+        {
+          booksClient: deps.booksClient,
+          cloudinary:  deps.cloudinary,
+          csvLinkTtl:  deps.csvLinkTtl,
+          ...(isPersonalized ? { scopeFilter } : {}),
+        },
+      );
     }
 
     // ── CRUD operations (use simple client) ──────────────────────────────────
