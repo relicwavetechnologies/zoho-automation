@@ -218,7 +218,7 @@ const displayKey = (key: string): string =>
 
 const currencyFrom = (record: Record<string, unknown>): string => {
   const currency = record['currency_code'] ?? record['currencyCode'] ?? record['currency'];
-  return typeof currency === 'string' && currency.trim() ? currency : 'USD';
+  return typeof currency === 'string' && currency.trim() ? currency : 'INR';
 };
 
 const numericAmount = (value: unknown): number | null => {

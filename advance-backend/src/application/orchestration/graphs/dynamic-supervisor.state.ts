@@ -37,6 +37,10 @@ export const SupervisorGraphState = Annotation.Root({
     reducer: (_prev, next) => next,
     default: () => '',
   }),
+  conversationSummary: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => '',
+  }),
   groupContext: Annotation<string>({
     reducer: (_prev, next) => next,
     default: () => '',

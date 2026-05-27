@@ -13,4 +13,6 @@ export interface ConversationWindow {
   readonly turns: readonly Turn[];
   readonly truncated: boolean;
   readonly tokenEstimate: number;
+  /** Pre-built structured summary of older turns (from background summarization). */
+  readonly summary?: string;
 }

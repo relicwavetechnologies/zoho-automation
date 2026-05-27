@@ -109,22 +109,25 @@ LIST / EXPORT RULES — critical:
 
 CURRENCY RULES — critical:
 - Default output is INR (₹) with Indian grouping: ₹14,62,110.91. This is NON-NEGOTIABLE.
+- Every record has item._currency (ISO code like "INR", "USD", "AED"). Most records for Indian companies are ALREADY in INR.
+- NEVER assume amounts are in USD. ALWAYS check item._currency first.
 - In SCRIPT MODE you have live exchange rate functions:
-    toINR(amount, currencyCode)   — converts any amount to INR using live rates
-    fromINR(amount, targetCode)   — converts INR to any target currency
-    convert(amount, from, to)     — converts between any two currencies
-    exchangeRates                 — object: { USD: 84.5, EUR: 93.2, ... } (INR per 1 unit)
-    formatAmount(value, 'INR')    — formats with ₹ and Indian grouping
+    toINR(amount, item._currency)  — convert to INR. ALWAYS pass item._currency, NEVER hardcode "USD". If _currency is "INR", returns amount unchanged (safe no-op).
+    fromINR(amount, targetCode)    — convert INR to target currency
+    convert(amount, from, to)      — convert between any two currencies
+    exchangeRates                  — object: { USD: 84.5, EUR: 93.2, ... } (INR per 1 unit)
+    formatAmount(value, 'INR')     — formats with ₹ and Indian grouping
 - ALWAYS use these functions for currency math. NEVER calculate rates yourself.
-- When user asks in default/Hindi/general → toINR() everything, formatAmount(x, 'INR').
+- For default INR output: toINR(item._balance, item._currency) then formatAmount(result, 'INR'). This is safe even when _currency is already INR.
 - When user asks "in dollars"/"in USD" → fromINR() or convert(), formatAmount(x, 'USD').
-- Multi-currency data: convert ALL to the target currency in the script, then present one unified total.
+- Multi-currency data: convert ALL to the target currency in the script using item._currency, then present one unified total.
 - Foreign amounts in tables: show both original + INR: "$1,200 (₹1,01,400)".
 - NEVER estimate, approximate, or use hardcoded exchange rates.
+- CRITICAL: calling toINR(amount, "USD") on an INR amount will inflate it ~95x. Always use item._currency.
 
 BOOKS SCRIPT MODE:
 - For analysis, add a script parameter to any list operation. Tool fetches ALL records and runs JS in sandbox.
-- Synthetic fields: _amount/_total (full amount), _balance (unpaid/outstanding), _date, _id.
+- Synthetic fields: _amount/_total (full amount), _balance (unpaid/outstanding), _date, _id, _currency (ISO code).
 - "Outstanding" = sum of _balance, NOT _amount.
 - formatAmount(value, currency) and formatDate(iso) are available in sandbox.
 - Set exportCsv=true for CSV download of processed results.

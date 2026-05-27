@@ -6,6 +6,9 @@ import { HISTORY_POLICY, isPoisonedAssistantTurn } from '../../../domain/convers
 import type { PermissionResult } from '../../permissions/permission.types';
 import type { ConversationRepoPort } from '../../../infrastructure/persistence/conversation.repository';
 import type { ChatId } from '../../../shared/ids';
+import { maskToolResults } from './tool-result-mask';
+import type { ConversationSummary } from '../../../domain/conversation/conversation-summary';
+import { formatConversationSummary } from './conversation-summarizer';
 
 export type HistoryCompactionTier = 'full' | 'condensed' | 'minimal';
 
@@ -28,10 +31,36 @@ export class HistoryService {
     opts: {
       filterPoison: boolean;
       perm?: PermissionResult;
+      includeSummary?: boolean;
     },
   ): Promise<Result<ConversationWindow, never>> {
-    const historyResult = await this.deps.conversationRepo.getHistory(chatId, HISTORY_POLICY.MAX_TURNS * 2);
-    const raw = historyResult.ok ? historyResult.value : [];
+    let summary: string | undefined;
+    let raw: Turn[];
+
+    if (opts.includeSummary) {
+      const metaResult = await this.deps.conversationRepo.getConversationMeta(chatId);
+      const meta = metaResult.ok ? metaResult.value : null;
+
+      if (meta?.summaryJson && meta.lastSummarizedSequence > 0) {
+        const histResult = await this.deps.conversationRepo.getHistoryAfterSequence(
+          chatId, meta.lastSummarizedSequence, HISTORY_POLICY.MAX_TURNS * 2,
+        );
+        raw = histResult.ok ? histResult.value : [];
+        summary = formatConversationSummary(meta.summaryJson as ConversationSummary);
+        this.deps.logger.info('history.summary_loaded', {
+          chatId,
+          summarizedUpTo: meta.lastSummarizedSequence,
+          recentTurns: raw.length,
+          summaryLength: summary.length,
+        });
+      } else {
+        const historyResult = await this.deps.conversationRepo.getHistory(chatId, HISTORY_POLICY.MAX_TURNS * 2);
+        raw = historyResult.ok ? historyResult.value : [];
+      }
+    } else {
+      const historyResult = await this.deps.conversationRepo.getHistory(chatId, HISTORY_POLICY.MAX_TURNS * 2);
+      raw = historyResult.ok ? historyResult.value : [];
+    }
 
     let turns = raw;
 
@@ -68,6 +97,9 @@ export class HistoryService {
     // Cap by count
     turns = turns.slice(-HISTORY_POLICY.MAX_TURNS);
 
+    // Mask verbose tool results in older turns (zero LLM cost).
+    turns = maskToolResults(turns, HISTORY_POLICY.TOOL_RESULT_VERBATIM_TURNS);
+
     // Apply read-time compaction tiers before token budgeting.
     turns = turns.map((turn, index) => {
       const distanceFromEnd = turns.length - 1 - index;
@@ -95,6 +127,7 @@ export class HistoryService {
       turns: budgeted,
       truncated: budgeted.length < raw.length,
       tokenEstimate: tokenCount,
+      ...(summary ? { summary } : {}),
     });
   }
 

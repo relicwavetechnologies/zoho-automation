@@ -1405,6 +1405,9 @@ model RuntimeConversation {
   status                 String                       @default("active")
   refsJson               Json?
   lastMessageSequence    Int                          @default(0)
+  summaryJson            Json?
+  summaryUpdatedAt       DateTime?
+  lastSummarizedSequence Int                          @default(0)
   createdAt              DateTime                     @default(now())
   updatedAt              DateTime                     @updatedAt
   messages               RuntimeConversationMessage[]

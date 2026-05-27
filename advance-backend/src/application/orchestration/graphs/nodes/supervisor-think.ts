@@ -27,6 +27,7 @@ import type { StatusChannel } from '../../engine/status-channel';
 import type { RunStatusAggregator } from '../../run-status.aggregator';
 import { redModelSelection } from '../../../../shared/model-selection-log';
 import { buildToolFinishedPayload, isErrorOutput } from '../../agent-runners/tool-trace';
+import { enforceContextBudget } from '../../engine/context-budget-enforcer';
 
 // Must be longer than DYNAMIC_AGENT_TIMEOUT_MS (300s) + buffer for retries.
 // A failed agent + retry can take 300s+300s; supervisor must outlast that.
@@ -169,6 +170,9 @@ export async function supervisorThink(
       if (hasInlineImages && !hasMultimodalContext) {
         brainSystemPrompt += '\n\nThe user has attached image(s) to this message. They are embedded in the user message — you can see them directly. Describe, analyze, or answer questions about them without needing any tools.';
       }
+      if (state.conversationSummary) {
+        brainSystemPrompt += `\n\nCONVERSATION HISTORY SUMMARY (older exchanges, compressed):\n${state.conversationSummary}`;
+      }
       if (state.memoryContext) {
         brainSystemPrompt += `\n\nMEMORY CONTEXT:\n${state.memoryContext}`;
       }
@@ -189,10 +193,56 @@ export async function supervisorThink(
         })
         : deps.model;
 
+      const historyTurns = state.conversationHistory.map(m => ({
+        id: '', role: m.role as 'user' | 'assistant', content: m.content, timestamp: '',
+      }));
+      const budgetInput: Parameters<typeof enforceContextBudget>[0] = {
+        systemPrompt: brainSystemPrompt,
+        historyTurns,
+        currentMessage: state.userMessage,
+      };
+      if (state.conversationSummary) budgetInput.conversationSummary = state.conversationSummary;
+      if (state.memoryContext) budgetInput.memoryContext = state.memoryContext;
+      if (state.groupContext) budgetInput.groupContext = state.groupContext;
+      const budgeted = enforceContextBudget(budgetInput);
+
+      if (budgeted.allocation.trimActions.length > 0) {
+        deps.logger.info('context.budget.enforced', {
+          ...budgeted.allocation,
+        });
+      }
+
+      const budgetedMessages: ModelMessage[] = budgeted.historyTurns
+        .filter(t => t.role === 'user' || t.role === 'assistant')
+        .map(t => ({
+          role: t.role as 'user' | 'assistant',
+          content: t.content,
+        }));
+      if (hasMultimodalContext) {
+        const contentParts: UserContent = state.groupContextParts.map(p =>
+          p.type === 'text'
+            ? { type: 'text' as const, text: p.text }
+            : { type: 'image' as const, image: new URL(p.url) },
+        );
+        budgetedMessages.push({ role: 'user' as const, content: contentParts });
+      }
+      if (hasInlineImages && !hasMultimodalContext) {
+        const imageParts: UserContent = [
+          { type: 'text' as const, text: state.userMessage },
+          ...state.inlineImageUrls.map(url => ({
+            type: 'image' as const,
+            image: new URL(url),
+          })),
+        ];
+        budgetedMessages.push({ role: 'user' as const, content: imageParts });
+      } else {
+        budgetedMessages.push({ role: 'user' as const, content: state.userMessage });
+      }
+
       const outcome = await runSupervisorStream({
         model: rootModel,
-        system: brainSystemPrompt,
-        messages,
+        system: budgeted.systemPrompt,
+        messages: budgetedMessages,
         tools: unifiedTools,
         maxSteps: rootAgent.maxSteps,
         temperature: rootAgent.temperature,
@@ -262,6 +312,9 @@ export async function supervisorThink(
       systemPrompt += '\n\nGROUP CHAT CONTEXT is provided in the preceding user message with interleaved images. Resolve "this image/file" to the nearest preceding attachment in that transcript.';
     } else if (state.groupContext) {
       systemPrompt += `\n\n${state.groupContext}`;
+    }
+    if (state.conversationSummary) {
+      systemPrompt += `\n\nCONVERSATION HISTORY SUMMARY (older exchanges, compressed):\n${state.conversationSummary}`;
     }
     if (state.memoryContext) {
       systemPrompt += `\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user. IMPORTANT: memories about past failures or errors are informational only — if the user asks you to do something, ALWAYS attempt it regardless of what memory says about previous outcomes. Never refuse an action because a past attempt failed.\n${state.memoryContext}`;

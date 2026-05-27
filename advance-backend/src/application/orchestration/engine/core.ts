@@ -23,6 +23,7 @@ import { OrchestrationTracer } from '../../observability/orchestration-tracer';
 import { resolveBranding } from '../department-branding';
 import { RunStatusAggregator } from '../run-status.aggregator';
 import type { Mem0Service } from '../../memory/mem0.service';
+import type { ConversationSummarizer } from './conversation-summarizer';
 import type { LanguageModel } from 'ai';
 import { classifyMessage, runFastPath } from './fast-path';
 import { buildExecutionSummary } from './execution-summary';
@@ -86,6 +87,8 @@ export interface OrchestrationEngineDeps {
   fastPathModel?: LanguageModel;
   /** When provided, group chat context is loaded and injected into the supervisor prompt. */
   chatContext?: LarkChatContextService;
+  /** When provided, fires background conversation summarization after each turn (DMs only). */
+  conversationSummarizer?: ConversationSummarizer;
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────
@@ -266,7 +269,7 @@ export class OrchestrationEngine {
         ? Promise.resolve({ ok: true as const, value: { turns: [], truncated: false, tokenEstimate: 0 } })
         : this.deps.history.loadWindow(
             incoming.chatId as unknown as ChatId,
-            { filterPoison: true, perm },
+            { filterPoison: true, perm, includeSummary: true },
           ),
       isScheduledDelivery
         ? Promise.resolve(undefined)
@@ -314,6 +317,14 @@ export class OrchestrationEngine {
         role: 'assistant', content: fastResult.text,
         timestamp: this.deps.clock.now().toISOString(),
       });
+
+      if (incoming.chatType !== 'group' && this.deps.conversationSummarizer) {
+        const chatIdStr = String(incoming.chatId);
+        setImmediate(() => {
+          this.deps.conversationSummarizer!.maybeSummarize(chatIdStr)
+            .catch(e => log.warn('engine.summarization.failed', { error: String(e) }));
+        });
+      }
 
       await channelAdapter.sendFinalReply(conversation, fastReply);
 
@@ -371,6 +382,7 @@ export class OrchestrationEngine {
       ...(tracer !== undefined ? { tracer } : {}),
       ...(approvalGate !== undefined ? { approvalGate } : {}),
       ...(memoryContext ? { memoryContext } : {}),
+      ...('summary' in supervisorHistory && supervisorHistory.summary ? { conversationSummary: supervisorHistory.summary } : {}),
       ...(groupContext ? { groupContext } : {}),
       ...(multimodalCtx?.hasImages ? { groupContextParts: multimodalCtx.parts, groupContextSystemHeader: multimodalCtx.systemHeader } : {}),
       ...(inlineImageUrls.length > 0 ? { inlineImageUrls } : {}),
@@ -491,6 +503,19 @@ export class OrchestrationEngine {
       content:   assistantHistoryContent,
       timestamp: this.deps.clock.now().toISOString(),
     });
+
+    // ── 6b. Background conversation summarization (DMs only) ─────────────
+    if (
+      !isScheduledDelivery
+      && incoming.chatType !== 'group'
+      && this.deps.conversationSummarizer
+    ) {
+      const chatIdStr = String(incoming.chatId);
+      setImmediate(() => {
+        this.deps.conversationSummarizer!.maybeSummarize(chatIdStr)
+          .catch(e => log.warn('engine.summarization.failed', { error: String(e) }));
+      });
+    }
 
     // ── 7. Send final reply ───────────────────────────────────────────────
     debugRunEnd({
