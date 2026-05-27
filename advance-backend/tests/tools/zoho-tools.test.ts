@@ -298,9 +298,9 @@ describe('zohoBooks tool', () => {
   describe('execute', () => {
     const ctx = makeCtx('zohoBooks', ['read', 'create']);
 
-    it('list_invoices: no client → unrecoverable', async () => {
+    it('get_invoice: no client → unrecoverable', async () => {
       const tool = makeBooksTool(noClient);
-      const r = await tool.execute({ op: 'list_invoices' }, ctx);
+      const r = await tool.execute({ op: 'get_invoice', invoiceId: 'inv-1' }, ctx);
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'unrecoverable');
     });

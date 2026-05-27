@@ -109,31 +109,29 @@ describe('zohoBooks expanded permissions', () => {
 describe('zohoBooks expanded execution', () => {
   const ctx = makeCtx('zohoBooks', ['read', 'create', 'delete']);
 
-  it('normalizes date/status filters and formats amount/date fields for list_bills', async () => {
-    const captures: { listInput?: any } = {};
+  it('normalizes date/status filters for list_bills via full-fetch path', async () => {
+    const captures: { allInput?: any } = {};
     const tool = makeTool({ booksClient: makeBooksClient(captures) });
 
     const result = await tool.execute({
       op: 'list_bills',
       dateFrom: '2026',
       status: 'partially paid',
-      limit: 10,
     }, ctx);
 
     assert.equal(result.ok, true);
-    assert.equal(captures.listInput.moduleName, 'bills');
-    assert.equal(captures.listInput.filters.date_start, '2026-01-01');
-    assert.equal(captures.listInput.filters.date_end, '2026-12-31');
-    assert.equal(captures.listInput.filters.status, 'partially_paid');
-    assert.equal(captures.listInput.perPage, 25);
+    assert.equal(captures.allInput.moduleName, 'bills');
+    assert.equal(captures.allInput.filters.date_start, '2026-01-01');
+    assert.equal(captures.allInput.filters.date_end, '2026-12-31');
+    assert.equal(captures.allInput.filters.status, 'partially_paid');
 
-    const item = ((result as any).value.data.items as any[])[0];
-    assert.equal(item.totalFormatted, '\u20b9120.50');
-    assert.equal(item.dateFormatted, 'May 1, 2026');
+    const items = (result as any).value.data as any[];
+    assert.equal(items[0]._amount, 120.50);
+    assert.equal(items[0]._date, '2026-05-01');
   });
 
-  it('passes search text and date filters to search_transactions', async () => {
-    const captures: { endpointInput?: any } = {};
+  it('passes search text and date filters to search_transactions via full-fetch', async () => {
+    const captures: { allInput?: any } = {};
     const tool = makeTool({ booksClient: makeBooksClient(captures) });
 
     const result = await tool.execute({
@@ -143,15 +141,15 @@ describe('zohoBooks expanded execution', () => {
     }, ctx);
 
     assert.equal(result.ok, true);
-    assert.equal(captures.listInput.moduleName, 'banktransactions');
-    assert.equal(captures.listInput.query, 'Acme');
-    assert.equal(captures.listInput.filters.date_start, '2026-01-01');
-    assert.equal(captures.listInput.filters.date_end, '2026-03-31');
+    assert.equal(captures.allInput.moduleName, 'banktransactions');
+    assert.equal(captures.allInput.filters.search_text, 'Acme');
+    assert.equal(captures.allInput.filters.date_start, '2026-01-01');
+    assert.equal(captures.allInput.filters.date_end, '2026-03-31');
   });
 
   it('returns mapped Zoho error messages from upstream failures', async () => {
     const throwingBooksClient = {
-      listRecords: async () => { throw new Error('Zoho Books 400: {"code":4823}'); },
+      listAllRecords: async () => { throw new Error('Zoho Books 400: {"code":4823}'); },
     } as unknown as ZohoBooksPaginatedClient;
     const tool = makeTool({ booksClient: throwingBooksClient });
 

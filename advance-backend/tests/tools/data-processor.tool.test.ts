@@ -25,7 +25,7 @@ describe('Zoho Books schema synthetic fields', () => {
 
     const hint = toSchemaHint(schema, bill);
     assert.equal(hint.balanceField, 'balance -> item._balance (unpaid/outstanding)');
-    assert.deepEqual((hint.syntheticFields as Record<string, unknown>)._total, 'full document amount (alias for _amount)');
+    assert.deepEqual((hint.syntheticFields as Record<string, unknown>)._total, 'alias for _amount');
     assert.ok((hint.sampleFieldNames as string[]).includes('vendor_name'));
   });
 
