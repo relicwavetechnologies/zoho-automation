@@ -74,6 +74,7 @@ import { ChannelAdapterRegistry } from './application/channels/channel.adapter';
 import { ToolRegistry } from './application/orchestration/tools/tool-registry';
 import { HistoryService } from './application/orchestration/engine/history';
 import { OrchestrationEngine } from './application/orchestration/engine/core';
+import { ConversationSummarizer } from './application/orchestration/engine/conversation-summarizer';
 // Multi-agent layer
 import { AgentDefinitionRepository } from './infrastructure/persistence/agent-definition.repository';
 import { ChannelMappingRepository } from './infrastructure/persistence/channel-mapping.repository';
@@ -896,6 +897,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     },
   });
 
+  const conversationSummarizer = new ConversationSummarizer({
+    conversationRepo,
+    model,
+    cache,
+    logger: logger.child({ service: 'conversation-summarizer' }),
+  });
+
   const engine = new OrchestrationEngine({
     permissions,
     toolRegistry,
@@ -905,6 +913,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     ...(mem0Service ? { mem0: mem0Service } : {}),
     fastPathModel: model,
     chatContext: chatContextService,
+    conversationSummarizer,
     logger: logger.child({ service: 'engine' }),
     clock:  systemClock,
   });

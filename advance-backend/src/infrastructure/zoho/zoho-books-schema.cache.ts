@@ -194,16 +194,21 @@ export function injectSyntheticFields(
   items:  Array<Record<string, unknown>>,
   schema: ZohoBooksModuleSchema,
 ): Array<Record<string, unknown>> {
-  return items.map(item => ({
-    ...item,
-    _amount: Number(item[schema.primaryAmount] ?? 0),
-    _total:  Number(item[schema.primaryAmount] ?? 0),
-    _balance: schema.balanceField
-      ? Number(item[schema.balanceField] ?? 0)
-      : Number(item[schema.primaryAmount] ?? 0),
-    _date:   String(item[schema.primaryDate]   ?? ''),
-    _id:     String(item[schema.primaryId]     ?? ''),
-  }));
+  return items.map(item => {
+    const raw = item['currency_code'] ?? item['currency'] ?? '';
+    const currency = typeof raw === 'string' && raw.trim() ? raw.trim().toUpperCase() : 'INR';
+    return {
+      ...item,
+      _amount: Number(item[schema.primaryAmount] ?? 0),
+      _total:  Number(item[schema.primaryAmount] ?? 0),
+      _balance: schema.balanceField
+        ? Number(item[schema.balanceField] ?? 0)
+        : Number(item[schema.primaryAmount] ?? 0),
+      _date:     String(item[schema.primaryDate]   ?? ''),
+      _id:       String(item[schema.primaryId]     ?? ''),
+      _currency: currency,
+    };
+  });
 }
 
 /**
@@ -227,22 +232,23 @@ export function toSchemaHint(
     nameFields:      schema.nameFields,
     statusField:     schema.statusField,
     syntheticFields: {
-      _amount:  'full document amount (alias for _total)',
-      _total:   'full document amount (alias for _amount)',
+      _amount:   'full document amount (alias for _total)',
+      _total:    'full document amount (alias for _amount)',
       _balance: schema.balanceField
         ? 'unpaid/outstanding portion - use for outstanding, unpaid, overdue amount, or balance due'
         : 'equals _amount (no separate balance for this module)',
-      _date: 'primary date field',
-      _id:   'primary record ID',
+      _date:     'primary date field',
+      _id:       'primary record ID',
+      _currency: 'ISO currency code of this record (e.g. "INR", "USD"). Most records are in the company base currency (usually INR).',
     },
     ...(sampleRecord ? { sampleFieldNames: Object.keys(sampleRecord).slice(0, 20) } : {}),
     currencyUtilities: {
-      toINR:         'toINR(amount, currencyCode) — convert to INR using live exchange rates',
+      toINR:         'toINR(amount, item._currency) — convert to INR. ALWAYS pass item._currency, never hardcode "USD". If _currency is already "INR", returns amount unchanged.',
       fromINR:       'fromINR(amount, targetCode) — convert INR to target currency',
       convert:       'convert(amount, from, to) — convert between any two currencies',
       exchangeRates: 'exchangeRates.USD, exchangeRates.AED etc — INR per 1 unit of foreign currency',
       formatAmount:  'formatAmount(value, "INR") — ₹ with Indian grouping; formatAmount(value, "USD") — $ with US grouping',
     },
-    note: 'Use _total for full amounts and _balance for outstanding/unpaid. For overdue/outstanding queries, always use _balance. ALWAYS use toINR()/fromINR()/convert() for currency conversion — never hardcode rates.',
+    note: 'IMPORTANT: All amounts (_amount, _balance, _total) are in the record\'s own currency (item._currency). Most records are INR. ALWAYS use item._currency — never assume USD. toINR(amount, item._currency) is safe: if _currency is "INR", it returns the amount unchanged. For overdue/outstanding queries, use _balance.',
   };
 }

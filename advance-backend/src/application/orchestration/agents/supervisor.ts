@@ -89,6 +89,7 @@ export interface SupervisorInput {
   tracer?:        OrchestrationTracer;
   approvalGate?:  ApprovalGateService;
   memoryContext?: string;
+  conversationSummary?: string;
   groupContext?:  string;
   groupContextParts?: readonly GroupContextContentPart[];
   groupContextSystemHeader?: string;
@@ -112,6 +113,7 @@ interface DynamicGraphRunInput {
   readonly permittedTools: ReadonlyArray<AppTool<unknown, unknown>>;
   readonly approvalGate?: ApprovalGateService;
   readonly memoryContext?: string;
+  readonly conversationSummary?: string;
   readonly groupContext?: string;
   readonly groupContextParts?: readonly GroupContextContentPart[];
   readonly groupContextSystemHeader?: string;
@@ -164,7 +166,7 @@ export class SupervisorAgent {
     const {
       userMessage, history, channelType, channelId,
       perm, runContext, statusChannel, aggregator, permittedTools, tracer,
-      approvalGate, memoryContext, groupContext, groupContextParts, groupContextSystemHeader, inlineImageUrls, chatId,
+      approvalGate, memoryContext, conversationSummary, groupContext, groupContextParts, groupContextSystemHeader, inlineImageUrls, chatId,
     } = input;
     const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
 
@@ -665,6 +667,7 @@ export class SupervisorAgent {
       permittedTools: input.permittedTools,
       chatId: input.chatId ?? null,
       memoryContext,
+      ...(input.conversationSummary ? { conversationSummary: input.conversationSummary } : {}),
       ...(input.groupContext ? { groupContext: input.groupContext } : {}),
       ...(input.groupContextParts?.length ? { groupContextParts: input.groupContextParts } : {}),
       ...(input.inlineImageUrls?.length ? { inlineImageUrls: input.inlineImageUrls } : {}),

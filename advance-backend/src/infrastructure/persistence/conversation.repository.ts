@@ -1,4 +1,5 @@
 import type { PrismaClient } from '../../generated/prisma';
+import { Prisma } from '../../generated/prisma';
 import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
@@ -13,10 +14,24 @@ function latestTurns(turns: readonly Turn[], limit: number): Turn[] {
   return turns.slice(Math.max(0, turns.length - limit));
 }
 
+export interface ConversationMeta {
+  id: string;
+  summaryJson: unknown;
+  lastSummarizedSequence: number;
+  lastMessageSequence: number;
+}
+
 export interface ConversationRepoPort {
   getHistory(chatId: string, limit?: number): Promise<Result<Turn[], InfraError>>;
   appendTurn(chatId: string, turn: Omit<Turn, 'id'>, meta?: { companyId?: string; channel?: string }): Promise<Result<Turn, InfraError>>;
   clearHistory(chatId: string): Promise<Result<void, InfraError>>;
+  getConversationMeta(chatId: string): Promise<Result<ConversationMeta | null, InfraError>>;
+  updateSummary(conversationId: string, data: {
+    summaryJson: unknown;
+    summaryUpdatedAt: Date;
+    lastSummarizedSequence: number;
+  }): Promise<Result<void, InfraError>>;
+  getHistoryAfterSequence(chatId: string, afterSequence: number, limit?: number): Promise<Result<Turn[], InfraError>>;
 }
 
 export class ConversationRepository implements ConversationRepoPort {
@@ -159,6 +174,14 @@ export class ConversationRepository implements ConversationRepoPort {
       });
       if (conv) {
         await this.db.runtimeConversationMessage.deleteMany({ where: { conversationId: conv.id } });
+        await this.db.runtimeConversation.update({
+          where: { id: conv.id },
+          data: {
+            summaryJson: Prisma.JsonNull,
+            summaryUpdatedAt: null,
+            lastSummarizedSequence: 0,
+          },
+        });
       }
       if (this.cache) {
         void this.cache.del(historyCacheKey(chatId));
@@ -166,6 +189,78 @@ export class ConversationRepository implements ConversationRepoPort {
       return ok(undefined);
     } catch (e) {
       return err(wrapInfra('prisma', 'clearConversationHistory', e));
+    }
+  }
+
+  async getConversationMeta(chatId: string): Promise<Result<ConversationMeta | null, InfraError>> {
+    try {
+      const conv = await this.db.runtimeConversation.findFirst({
+        where: { channelConversationKey: chatId },
+        select: {
+          id: true,
+          summaryJson: true,
+          lastSummarizedSequence: true,
+          lastMessageSequence: true,
+        },
+      });
+      if (!conv) return ok(null);
+      return ok({
+        id: conv.id,
+        summaryJson: conv.summaryJson,
+        lastSummarizedSequence: conv.lastSummarizedSequence,
+        lastMessageSequence: conv.lastMessageSequence,
+      });
+    } catch (e) {
+      return err(wrapInfra('prisma', 'getConversationMeta', e));
+    }
+  }
+
+  async updateSummary(
+    conversationId: string,
+    data: { summaryJson: unknown; summaryUpdatedAt: Date; lastSummarizedSequence: number },
+  ): Promise<Result<void, InfraError>> {
+    try {
+      await this.db.runtimeConversation.update({
+        where: { id: conversationId },
+        data: {
+          summaryJson: data.summaryJson as object,
+          summaryUpdatedAt: data.summaryUpdatedAt,
+          lastSummarizedSequence: data.lastSummarizedSequence,
+        },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'updateConversationSummary', e));
+    }
+  }
+
+  async getHistoryAfterSequence(
+    chatId: string,
+    afterSequence: number,
+    limit = 60,
+  ): Promise<Result<Turn[], InfraError>> {
+    try {
+      const conv = await this.db.runtimeConversation.findFirst({
+        where: { channelConversationKey: chatId },
+        include: {
+          messages: {
+            where: { sequence: { gt: afterSequence } },
+            orderBy: { sequence: 'desc' },
+            take: limit,
+          },
+        },
+      });
+      if (!conv) return ok([]);
+      const messages = [...conv.messages].reverse();
+      const turns: Turn[] = messages.map(r => ({
+        id: r.id,
+        role: r.role as Turn['role'],
+        content: r.contentText ?? (r.contentJson !== null ? JSON.stringify(r.contentJson) : ''),
+        timestamp: r.createdAt.toISOString(),
+      }));
+      return ok(turns);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'getHistoryAfterSequence', e));
     }
   }
 }
