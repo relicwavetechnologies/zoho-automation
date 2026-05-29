@@ -324,4 +324,63 @@ describe('LarkToolMessagingClient', () => {
       await assert.rejects(() => client.getMessage('gone'), LarkApiError);
     });
   });
+
+  // ── sendDm ────────────────────────────────────────────────────────────────
+
+  describe('sendDm', () => {
+    it('keeps plain direct messages as text messages', async () => {
+      const { fetch, calls } = buildMockFetch([
+        TOKEN_HANDLER,
+        {
+          match: (url, m) => m === 'POST' && url.includes('/im/v1/messages'),
+          response: { code: 0, data: { message_id: 'om_dm_text' } },
+        },
+      ]);
+      globalThis.fetch = fetch;
+
+      const client = new LarkToolMessagingClient(DEPS);
+      const result = await client.sendDm('ou_user_1', 'Hello Shivam');
+
+      assert.equal(result.messageId, 'om_dm_text');
+      const apiCall = calls.find(c => c.method === 'POST' && c.url.includes('/im/v1/messages'));
+      assert.ok(apiCall?.url.includes('receive_id_type=open_id'), 'should send by open_id');
+      const body = apiCall?.body as Record<string, unknown>;
+      assert.equal(body['receive_id'], 'ou_user_1');
+      assert.equal(body['msg_type'], 'text');
+      assert.deepEqual(JSON.parse(body['content'] as string), { text: 'Hello Shivam' });
+    });
+
+    it('sends markdown-rich direct messages as interactive cards', async () => {
+      const { fetch, calls } = buildMockFetch([
+        TOKEN_HANDLER,
+        {
+          match: (url, m) => m === 'POST' && url.includes('/im/v1/messages'),
+          response: { code: 0, data: { message_id: 'om_dm_card' } },
+        },
+      ]);
+      globalThis.fetch = fetch;
+
+      const client = new LarkToolMessagingClient(DEPS);
+      const result = await client.sendDm(
+        'ou_user_1',
+        [
+          '📊 **Emiac Technologies — Live NSE Update**',
+          '',
+          '| Source | Price |',
+          '|---|---|',
+          '| NSE | ₹101.30 |',
+        ].join('\n'),
+      );
+
+      assert.equal(result.messageId, 'om_dm_card');
+      const apiCall = calls.find(c => c.method === 'POST' && c.url.includes('/im/v1/messages'));
+      const body = apiCall?.body as Record<string, unknown>;
+      assert.equal(body['receive_id'], 'ou_user_1');
+      assert.equal(body['msg_type'], 'interactive');
+      const card = JSON.parse(body['content'] as string) as Record<string, unknown>;
+      assert.equal(card['schema'], '2.0');
+      assert.match(JSON.stringify(card), /table/);
+      assert.match(JSON.stringify(card), /Emiac Technologies/);
+    });
+  });
 });
