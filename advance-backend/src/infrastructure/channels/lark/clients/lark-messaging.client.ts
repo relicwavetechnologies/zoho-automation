@@ -1,6 +1,7 @@
 import type { LarkMessagingClientPort } from '../../../../application/orchestration/tools/families/lark-messaging.tool';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 import type { Logger } from '../../../../shared/logger';
+import { planFinalCards } from '../lark-card.builder';
 
 interface LarkMessagingClientDeps {
   appId: string;
@@ -249,12 +250,31 @@ export class LarkToolMessagingClient implements LarkMessagingClientPort {
 
   async sendDm(openId: string, text: string): Promise<{ messageId: string }> {
     type SendResponse = { message_id?: string; message?: Record<string, unknown> };
+    if (shouldRenderDmAsCard(text)) {
+      let firstMessageId: string | undefined;
+      for (const segment of planFinalCards({ markdown: text })) {
+        const data = await this.http.request<SendResponse>(
+          'POST',
+          '/open-apis/im/v1/messages?receive_id_type=open_id',
+          {
+            body: {
+              receive_id: openId,
+              msg_type:   'interactive',
+              content:    unwrapInteractiveCardPayload(segment.payload),
+            },
+          },
+        );
+        firstMessageId ??= messageIdFromSendResponse(data);
+      }
+      return { messageId: firstMessageId ?? '' };
+    }
+
     const data = await this.http.request<SendResponse>(
       'POST',
       '/open-apis/im/v1/messages?receive_id_type=open_id',
       { body: { receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }) } },
     );
-    return { messageId: (data.message_id ?? (data.message as Record<string, unknown>)?.['message_id'] ?? '') as string };
+    return { messageId: messageIdFromSendResponse(data) };
   }
 
   async listChats(limit?: number): Promise<Array<{ chatId: string; name: string; type: string; memberCount?: number }>> {
@@ -303,4 +323,24 @@ export class LarkToolMessagingClient implements LarkMessagingClientPort {
       timestamp: m['create_time'] as string ?? '',
     }));
   }
+}
+
+function messageIdFromSendResponse(data: { message_id?: string; message?: Record<string, unknown> }): string {
+  return (data.message_id ?? data.message?.['message_id'] ?? '') as string;
+}
+
+function shouldRenderDmAsCard(text: string): boolean {
+  const value = text.trim();
+  if (!value) return false;
+  return /(^|\n)\s*\|[^|\n]+\|[^|\n]*\n\s*\|[-:\s|]+\|/m.test(value)
+    || /^#{1,6}\s+\S/m.test(value)
+    || /\*\*[^*\n][\s\S]*?\*\*/.test(value)
+    || /__[^_\n][\s\S]*?__/.test(value)
+    || /\[[^\]\n]+\]\([^)]+\)/.test(value);
+}
+
+function unwrapInteractiveCardPayload(payload: string): string {
+  const wrapper = JSON.parse(payload) as Record<string, unknown>;
+  const card = wrapper['card'];
+  return typeof card === 'string' ? card : JSON.stringify(card);
 }
