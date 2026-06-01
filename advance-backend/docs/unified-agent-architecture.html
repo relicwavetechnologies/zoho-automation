@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Divo — Unified Single-Agent Architecture with Skills</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; line-height: 1.7; padding: 40px; max-width: 1280px; margin: 0 auto; }
+  h1 { color: #58a6ff; font-size: 28px; margin-bottom: 4px; }
+  h2 { color: #79c0ff; font-size: 22px; margin: 48px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 8px; }
+  h3 { color: #d2a8ff; font-size: 17px; margin: 28px 0 12px; }
+  p, li { font-size: 14px; margin-bottom: 8px; }
+  ul { padding-left: 20px; }
+  code { background: #161b22; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #f0883e; }
+  .subtitle { color: #8b949e; font-size: 15px; margin-bottom: 32px; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; margin-right: 6px; }
+  .tag-new { background: #1f3f2a; color: #56d364; border: 1px solid #2ea04366; }
+  .tag-remove { background: #3f1f1f; color: #f85149; border: 1px solid #da363466; }
+  .tag-keep { background: #1f2d3f; color: #58a6ff; border: 1px solid #388bfd66; }
+
+  /* Diagram styles */
+  .diagram { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 32px; margin: 20px 0; overflow-x: auto; position: relative; }
+  .diagram-title { color: #8b949e; font-size: 12px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 16px; }
+  .flow-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; justify-content: center; }
+  .flow-box { display: inline-flex; align-items: center; justify-content: center; padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; text-align: center; min-width: 120px; flex-direction: column; gap: 2px; }
+  .flow-box small { font-weight: 400; font-size: 11px; opacity: 0.7; }
+  .flow-arrow { color: #484f58; font-size: 20px; }
+  .flow-arrow-down { display: block; text-align: center; color: #484f58; font-size: 20px; margin: 4px 0; }
+  .box-user { background: #1f3f3f; border: 2px solid #39d2c0; color: #56d4c0; }
+  .box-brain { background: #3f3f1f; border: 2px solid #e3b341; color: #e3b341; }
+  .box-skill { background: #2a1f3f; border: 2px solid #bc8cff; color: #d2a8ff; }
+  .box-tool { background: #1f3f2a; border: 2px solid #56d364; color: #7ee787; }
+  .box-infra { background: #3f2a1f; border: 2px solid #f0883e; color: #f0883e; }
+  .box-old { background: #1f1f1f; border: 2px dashed #484f58; color: #6e7681; }
+  .box-meta { background: #1f2a3f; border: 2px solid #58a6ff; color: #79c0ff; }
+
+  /* Comparison table */
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #30363d; padding: 10px 14px; text-align: left; font-size: 13px; }
+  th { background: #161b22; color: #79c0ff; font-weight: 600; }
+  tr:nth-child(even) { background: #161b2208; }
+  td.good { color: #56d364; }
+  td.bad { color: #f85149; }
+  td.neutral { color: #e3b341; }
+
+  /* Cost cards */
+  .cost-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin: 20px 0; }
+  .cost-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; text-align: center; }
+  .cost-card .label { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .cost-card .value { font-size: 32px; font-weight: 700; }
+  .cost-card .detail { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .cost-card.green .value { color: #56d364; }
+  .cost-card.red .value { color: #f85149; }
+  .cost-card.blue .value { color: #58a6ff; }
+  .cost-card.gold .value { color: #e3b341; }
+
+  .callout { background: #1f2a3f; border-left: 3px solid #58a6ff; border-radius: 0 8px 8px 0; padding: 16px 20px; margin: 20px 0; font-size: 14px; }
+  .callout-warn { background: #3f2a1f; border-left-color: #f0883e; }
+  .callout-green { background: #1f3f2a; border-left-color: #56d364; }
+  .strike { text-decoration: line-through; opacity: 0.5; }
+
+  .phase { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; margin: 16px 0; }
+  .phase-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .phase-num { background: #58a6ff; color: #0d1117; font-weight: 700; font-size: 14px; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .phase-title { font-size: 17px; font-weight: 600; color: #79c0ff; }
+  .phase-effort { font-size: 12px; color: #8b949e; margin-left: auto; }
+</style>
+</head>
+<body>
+
+<h1>Unified Single-Agent Architecture with Skills</h1>
+<p class="subtitle">How Divo moves from 5 LLM calls per request to 1 — powered by DeepSeek V4 Flash + progressive skill loading</p>
+
+<!-- ================================================================== -->
+<h2>Why Change Now?</h2>
+
+<div class="cost-grid">
+  <div class="cost-card red">
+    <div class="label">Current: Multi-Agent</div>
+    <div class="value">3-5</div>
+    <div class="detail">LLM calls per user request</div>
+  </div>
+  <div class="cost-card green">
+    <div class="label">Proposed: Single Agent</div>
+    <div class="value">1</div>
+    <div class="detail">LLM call per user request</div>
+  </div>
+  <div class="cost-card gold">
+    <div class="label">DeepSeek V4 Flash</div>
+    <div class="value">$0.14</div>
+    <div class="detail">per 1M input tokens (vs $3 Claude)</div>
+  </div>
+</div>
+
+<p>DeepSeek V4 Flash is 20x cheaper than Claude Sonnet and handles tool calling reliably. The multi-agent pattern was designed for weaker models that couldn't handle many tools. With a strong, cheap model, the delegation overhead (extra LLM calls, context rebuilding, lost conversation state) costs more than it saves.</p>
+
+<div class="callout">
+  <strong>The arbitrage:</strong> A single DeepSeek V4 Flash call with 16 tools costs ~$0.003. The current multi-agent flow makes 3-5 calls costing ~$0.004-0.008 total — but with 3-5x the latency and context-switching overhead. Switching to single-agent saves tokens AND time.
+</div>
+
+<!-- ================================================================== -->
+<h2>Current Architecture (Multi-Agent)</h2>
+
+<div class="diagram">
+  <div class="diagram-title">Current: Supervisor delegates to 4 specialized agents</div>
+
+  <div class="flow-row">
+    <div class="flow-box box-user">User Message<small>via Lark webhook</small></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box box-brain">Supervisor<small>LLM Call #1 · ~8K tokens</small></div>
+    <span class="flow-arrow">→</span>
+    <div style="display:flex; flex-direction:column; gap:6px;">
+      <div class="flow-box box-old" style="min-width:200px">agent_lark_ops<small>LLM Call #2 · ~4K tokens · 6 tools</small></div>
+      <div class="flow-box box-old" style="min-width:200px">agent_google_ops<small>LLM Call #3 · ~4K tokens · 3 tools</small></div>
+      <div class="flow-box box-old" style="min-width:200px">agent_zoho_ops<small>LLM Call #4 · ~4K tokens · 2 tools</small></div>
+      <div class="flow-box box-old" style="min-width:200px">agent_context_agent<small>LLM Call #5 · ~3K tokens · 3 tools</small></div>
+    </div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box box-tool">16 Tools<small>Lark · Google · Zoho · Web</small></div>
+  </div>
+</div>
+
+<h3>Problems with This</h3>
+<table>
+  <tr><th>Issue</th><th>Impact</th></tr>
+  <tr><td>3-5 LLM calls per request</td><td class="bad">3-5x latency, duplicated system prompts in each call</td></tr>
+  <tr><td>Context lost between agents</td><td class="bad">Each agent starts fresh — can't see what other agents found</td></tr>
+  <tr><td>Supervisor routing errors</td><td class="bad">Wrong agent selected → wasted call + retry</td></tr>
+  <tr><td>Token duplication</td><td class="bad">~8.6K tokens of system prompts loaded multiple times across agents</td></tr>
+  <tr><td>Complexity</td><td class="bad">5 agent definitions, 4 runner files, delegation wrappers, depth limits</td></tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>Proposed Architecture: Single Brain + Skills</h2>
+
+<div class="diagram">
+  <div class="diagram-title">Proposed: One agent, progressive skill + tool loading</div>
+
+  <div class="flow-row">
+    <div class="flow-box box-user">User Message<small>via Lark webhook</small></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-box box-brain" style="min-width:180px;">
+      Divo Brain<small>DeepSeek V4 Flash · Single LLM call</small>
+    </div>
+  </div>
+
+  <div class="flow-arrow-down">↓ always loaded (~500 tokens)</div>
+
+  <div class="flow-row">
+    <div class="flow-box box-meta">discover_skill<small>meta-tool · searches skill catalog</small></div>
+    <div class="flow-box box-meta">call_tool<small>meta-tool · executes any tool by ID</small></div>
+    <div class="flow-box box-meta" style="opacity:0.6">manageTodos<small>orchestration · always loaded</small></div>
+    <div class="flow-box box-meta" style="opacity:0.6">scheduleTask<small>orchestration · always loaded</small></div>
+  </div>
+
+  <div class="flow-arrow-down">↓ loaded on demand (~2K tokens per skill)</div>
+
+  <div class="flow-row">
+    <div class="flow-box box-skill">Lark Skill<small>domain expertise + 7 tool schemas</small></div>
+    <div class="flow-box box-skill">Google Skill<small>domain expertise + 3 tool schemas</small></div>
+    <div class="flow-box box-skill">Zoho Skill<small>domain expertise + 2 tool schemas</small></div>
+    <div class="flow-box box-skill">Research Skill<small>domain expertise + 3 tool schemas</small></div>
+    <div class="flow-box box-skill" style="border-style:dashed;opacity:0.6">Any New Domain<small>just add a skill file</small></div>
+  </div>
+
+  <div class="flow-arrow-down">↓ tool execution (backend, no LLM)</div>
+
+  <div class="flow-row">
+    <div class="flow-box box-tool">larkTask</div>
+    <div class="flow-box box-tool">googleGmail</div>
+    <div class="flow-box box-tool">zohoBooks</div>
+    <div class="flow-box box-tool">webSearch</div>
+    <div class="flow-box box-tool">+ 12 more</div>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<h2>How Skills Work (Progressive Context Loading)</h2>
+
+<p>This is the same pattern used by Claude Code, Microsoft Agent Framework, and Google ADK. Three levels:</p>
+
+<div class="diagram">
+  <div class="diagram-title">Skill Loading: 3-Level Progressive Disclosure</div>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px;">
+    <div style="text-align:center;">
+      <div class="flow-box box-meta" style="width:100%;">L1: Skill Catalog<small>always in context</small></div>
+      <p style="margin-top:12px; font-size:12px; color:#8b949e;">
+        ~100 tokens per skill<br>
+        Name + one-line description<br>
+        5 skills = <strong>500 tokens</strong>
+      </p>
+      <pre style="background:#0d1117; padding:12px; border-radius:8px; font-size:11px; text-align:left; color:#c9d1d9; margin-top:8px;">
+Available skills:
+• lark — Tasks, messaging, calendar,
+  docs, contacts, approvals
+• google — Gmail, Drive, Calendar
+• zoho — CRM contacts/deals, Books
+  invoices/expenses
+• research — Web search, knowledge
+  base, document RAG
+• data — CSV export, data processing</pre>
+    </div>
+
+    <div style="text-align:center;">
+      <div class="flow-box box-skill" style="width:100%;">L2: Skill Instructions<small>loaded when matched</small></div>
+      <p style="margin-top:12px; font-size:12px; color:#8b949e;">
+        ~500-2000 tokens per skill<br>
+        Domain expertise, patterns, rules<br>
+        Loaded via <code>discover_skill</code>
+      </p>
+      <pre style="background:#0d1117; padding:12px; border-radius:8px; font-size:11px; text-align:left; color:#c9d1d9; margin-top:8px;">
+[Zoho Skill loaded]
+• Use zohoBooks for invoices, bills,
+  payments, expenses
+• Always include currency_code
+• Date ranges: use IST (UTC+5:30)
+• Financial amounts: format with ₹/$
+• Available tools: zohoCrm, zohoBooks
+• Tool schemas: [loaded below]</pre>
+    </div>
+
+    <div style="text-align:center;">
+      <div class="flow-box box-tool" style="width:100%;">L3: Tool Schemas<small>loaded with skill</small></div>
+      <p style="margin-top:12px; font-size:12px; color:#8b949e;">
+        ~1000-2500 tokens per tool<br>
+        Full Zod/JSON Schema for args<br>
+        Loaded alongside L2
+      </p>
+      <pre style="background:#0d1117; padding:12px; border-radius:8px; font-size:11px; text-align:left; color:#c9d1d9; margin-top:8px;">
+zohoBooks({
+  op: "list_invoices" | "get_invoice"
+      | "list_bills" | ...
+  module: "invoices" | "bills" | ...
+  filters: { customer_name?,
+    date_start?, date_end?,
+    status?, ... }
+  page?: number
+  per_page?: number
+})</pre>
+    </div>
+  </div>
+</div>
+
+<div class="callout-green callout">
+  <strong>Why skills solve domain speciality:</strong> Each skill file contains the concentrated expertise that today lives in agent runner system prompts (lark.prompt.ts, zoho.prompt.ts, etc.). The brain doesn't need to know Zoho date formatting rules until it encounters a Zoho task. Skills load that expertise on demand — same quality, 80% fewer tokens on non-Zoho requests.
+</div>
+
+<!-- ================================================================== -->
+<h2>The Two Meta-Tools</h2>
+
+<h3>1. <code>discover_skill</code> — Intent → Skill Matching</h3>
+<div class="diagram">
+  <pre style="font-size:13px; color:#c9d1d9;">
+// Brain calls this when it needs domain expertise
+discover_skill({ query: "send email to shivam about Q2 report" })
+
+// Returns: skill instructions + tool schemas loaded into context
+→ {
+    skill: "google",
+    instructions: "Gmail composition rules: always include subject...",
+    tools: ["googleGmail", "googleDrive", "googleCalendar"],
+    schemas: { googleGmail: { op: "send", to: string, ... } }
+  }
+
+// Brain now has everything it needs to call the tool directly
+call_tool({ toolId: "googleGmail", args: { op: "send", to: "shivam@...", subject: "Q2 Report", body: "..." } })
+  </pre>
+</div>
+
+<h3>2. <code>call_tool</code> — Universal Tool Executor</h3>
+<div class="diagram">
+  <pre style="font-size:13px; color:#c9d1d9;">
+// ONE tool definition exposed to the LLM
+call_tool({
+  toolId: "googleGmail",      // which tool to invoke
+  args: {                     // validated against the tool's Zod schema
+    op: "send",
+    to: "shivam@emiactech.com",
+    subject: "Q2 Finance Report",
+    body: "Hi Shivam, ..."
+  }
+})
+
+// Backend flow:
+// 1. Look up tool by ID in ToolRegistry
+// 2. Validate args against tool.argsSchema (existing Zod schemas!)
+// 3. Run permission check (existing RBAC!)
+// 4. Run approval gate if needed (existing HITL!)
+// 5. Execute tool
+// 6. Return result to LLM
+  </pre>
+</div>
+
+<div class="callout">
+  <strong>Key insight:</strong> <code>call_tool</code> reuses 100% of existing infrastructure — ToolRegistry, Zod schemas, permission checks, approval gates, tool execution. The only new code is the thin dispatcher that maps <code>toolId</code> → tool object.
+</div>
+
+<!-- ================================================================== -->
+<h2>Token Cost Comparison</h2>
+
+<div class="cost-grid" style="grid-template-columns: 1fr 1fr;">
+  <div class="cost-card red">
+    <div class="label">Current: Multi-Agent (per request)</div>
+    <div class="value">~18K</div>
+    <div class="detail">
+      Supervisor: ~8.5K tokens<br>
+      + Lark agent: ~4K tokens<br>
+      + Google agent: ~4K tokens<br>
+      + Synthesis overhead: ~1.5K tokens<br>
+      <strong>3-5 LLM calls · ~75s latency</strong>
+    </div>
+  </div>
+  <div class="cost-card green">
+    <div class="label">Proposed: Single Agent + Skills (per request)</div>
+    <div class="value">~8K</div>
+    <div class="detail">
+      Brain system prompt: ~3K tokens<br>
+      + Skill catalog (L1): ~500 tokens<br>
+      + 1-2 loaded skills (L2+L3): ~4K tokens<br>
+      + Conversation: ~500 tokens<br>
+      <strong>1 LLM call · ~15-25s latency</strong>
+    </div>
+  </div>
+</div>
+
+<table>
+  <tr><th>Metric</th><th>Multi-Agent (Current)</th><th>Single Agent + Skills</th><th>Savings</th></tr>
+  <tr><td>LLM calls per request</td><td class="bad">3-5</td><td class="good">1</td><td class="good">70-80%</td></tr>
+  <tr><td>Input tokens per request</td><td>~15,000-18,000</td><td>~6,000-8,000</td><td class="good">55-60%</td></tr>
+  <tr><td>Latency (e2e)</td><td>60-90s</td><td>15-25s</td><td class="good">3-4x faster</td></tr>
+  <tr><td>System prompt duplication</td><td class="bad">Loaded 2-4 times</td><td class="good">Loaded once</td><td class="good">Eliminated</td></tr>
+  <tr><td>Context continuity</td><td class="bad">Lost between agents</td><td class="good">Full conversation in one call</td><td class="good">Better quality</td></tr>
+  <tr><td>Cost at 10K req/month (DeepSeek)</td><td>$2.52</td><td>$1.12</td><td class="good">$1.40/month</td></tr>
+  <tr><td>Cost at 100K req/month (DeepSeek)</td><td>$25.20</td><td>$11.20</td><td class="good">$14/month</td></tr>
+  <tr><td>Adding a new domain</td><td class="bad">New agent + runner + prompt + seed</td><td class="good">Drop a skill file</td><td class="good">5min vs 2hrs</td></tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>How This Handles Any Company Domain</h2>
+
+<div class="diagram">
+  <div class="diagram-title">Skills are portable — any company, any domain</div>
+  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px;">
+    <div style="background:#1f2a3f; border:1px solid #30363d; border-radius:8px; padding:16px;">
+      <div style="color:#58a6ff; font-weight:600; margin-bottom:8px;">Emiac Tech (current)</div>
+      <div style="font-size:12px; color:#8b949e;">
+        <div style="margin:4px 0;">✅ Lark Skill (tasks, messaging, calendar)</div>
+        <div style="margin:4px 0;">✅ Google Skill (Gmail, Drive)</div>
+        <div style="margin:4px 0;">✅ Zoho Skill (CRM, Books)</div>
+        <div style="margin:4px 0;">✅ Research Skill (web, RAG)</div>
+      </div>
+    </div>
+    <div style="background:#1f2a3f; border:1px solid #30363d; border-radius:8px; padding:16px;">
+      <div style="color:#58a6ff; font-weight:600; margin-bottom:8px;">Future: E-commerce Client</div>
+      <div style="font-size:12px; color:#8b949e;">
+        <div style="margin:4px 0;">✅ Lark Skill (reused)</div>
+        <div style="margin:4px 0;">✅ Shopify Skill <span class="tag tag-new">NEW</span></div>
+        <div style="margin:4px 0;">✅ Stripe Skill <span class="tag tag-new">NEW</span></div>
+        <div style="margin:4px 0;">✅ Zendesk Skill <span class="tag tag-new">NEW</span></div>
+      </div>
+    </div>
+    <div style="background:#1f2a3f; border:1px solid #30363d; border-radius:8px; padding:16px;">
+      <div style="color:#58a6ff; font-weight:600; margin-bottom:8px;">Future: Healthcare Client</div>
+      <div style="font-size:12px; color:#8b949e;">
+        <div style="margin:4px 0;">✅ Google Skill (reused)</div>
+        <div style="margin:4px 0;">✅ Epic FHIR Skill <span class="tag tag-new">NEW</span></div>
+        <div style="margin:4px 0;">✅ Compliance Skill <span class="tag tag-new">NEW</span></div>
+        <div style="margin:4px 0;">✅ Scheduling Skill <span class="tag tag-new">NEW</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p>Each company gets a <strong>skill set</strong> — a curated list of skills relevant to their domain. The brain is always the same. Skills are the specialization layer.</p>
+
+<div class="callout-green callout">
+  <strong>Skills vs Agents for domain expertise:</strong>
+  <ul style="margin-top:8px;">
+    <li><strong>Agent approach:</strong> Each domain = new agent file + runner + prompt + seed script + 2-4 extra LLM calls. Agents can't see each other's results.</li>
+    <li><strong>Skill approach:</strong> Each domain = one skill file with instructions + tool mappings. Brain loads it on demand. Brain sees ALL results in one context. Adding a new domain is a text file, not code.</li>
+  </ul>
+</div>
+
+<!-- ================================================================== -->
+<h2>What We Keep vs Remove vs Add</h2>
+
+<table>
+  <tr><th>Component</th><th>Action</th><th>Reason</th></tr>
+  <tr><td>16 tool families (lark, google, zoho...)</td><td><span class="tag tag-keep">KEEP</span></td><td>Tool execution is unchanged — skills just control which tools are visible</td></tr>
+  <tr><td>ToolRegistry + Zod schemas</td><td><span class="tag tag-keep">KEEP</span></td><td>Still validates args, still does permission checks</td></tr>
+  <tr><td>HITL approval gates</td><td><span class="tag tag-keep">KEEP</span></td><td>call_tool routes through existing approval gate</td></tr>
+  <tr><td>RBAC / permission system</td><td><span class="tag tag-keep">KEEP</span></td><td>call_tool checks permissions before executing</td></tr>
+  <tr><td>Orchestration tools (todos, schedule)</td><td><span class="tag tag-keep">KEEP</span></td><td>Always loaded, no change needed</td></tr>
+  <tr><td>ai-sdk-adapter.ts</td><td><span class="tag tag-keep">KEEP</span></td><td>call_tool uses the same adapter logic internally</td></tr>
+  <tr><td>Supervisor → agent delegation</td><td><span class="tag tag-remove">REMOVE</span></td><td>Replaced by direct tool calling via call_tool</td></tr>
+  <tr><td>4 agent runner files</td><td><span class="tag tag-remove">REMOVE</span></td><td>Domain expertise moves to skill files</td></tr>
+  <tr><td>agent-as-tool.ts wrappers</td><td><span class="tag tag-remove">REMOVE</span></td><td>No more delegation — brain calls tools directly</td></tr>
+  <tr><td>AgentDefinition DB seeding</td><td><span class="tag tag-remove">REMOVE</span></td><td>Skills replace agent definitions</td></tr>
+  <tr><td><code>discover_skill</code> meta-tool</td><td><span class="tag tag-new">NEW</span></td><td>Loads domain expertise + tool schemas on demand</td></tr>
+  <tr><td><code>call_tool</code> meta-tool</td><td><span class="tag tag-new">NEW</span></td><td>Universal tool executor — one schema, any tool</td></tr>
+  <tr><td>Skill files (lark.skill.md, etc.)</td><td><span class="tag tag-new">NEW</span></td><td>Domain expertise extracted from agent prompts</td></tr>
+  <tr><td>SkillRegistry</td><td><span class="tag tag-new">NEW</span></td><td>Indexes skills, handles discovery + loading</td></tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>Request Flow: Step by Step</h2>
+
+<div class="diagram">
+  <div class="diagram-title">Example: "Show me overdue invoices and create a Lark task for follow-up"</div>
+  <pre style="font-size:13px; color:#c9d1d9; line-height:2;">
+<span style="color:#56d4c0;">User:</span> "Show me overdue invoices and create a Lark task for follow-up"
+
+<span style="color:#e3b341;">Brain (step 1):</span> This needs Zoho + Lark domains.
+  → calls <span style="color:#79c0ff;">discover_skill({ query: "overdue invoices zoho" })</span>
+  → Zoho skill loaded: instructions + zohoBooks schema
+
+  → calls <span style="color:#79c0ff;">discover_skill({ query: "create lark task" })</span>
+  → Lark skill loaded: instructions + larkTask schema
+
+<span style="color:#e3b341;">Brain (step 2):</span> Now I have the schemas. Execute:
+  → calls <span style="color:#7ee787;">call_tool({ toolId: "zohoBooks", args: { op: "list_invoices", filters: { status: "overdue" } } })</span>
+  → Backend validates args → checks permissions → executes → returns 5 overdue invoices
+
+<span style="color:#e3b341;">Brain (step 3):</span> Got invoices. Now create the task:
+  → calls <span style="color:#7ee787;">call_tool({ toolId: "larkTask", args: { op: "create", title: "Follow up on 5 overdue invoices", ... } })</span>
+  → Backend validates → approval gate (if needed) → executes → task created
+
+<span style="color:#e3b341;">Brain (step 4):</span> Synthesize response:
+  → "Found 5 overdue invoices totaling ₹4,23,000. Created a follow-up task in Lark assigned to you."
+
+<span style="color:#8b949e;">Total: 1 LLM call with 4 tool invocations. No delegation. No context loss.</span>
+  </pre>
+</div>
+
+<!-- ================================================================== -->
+<h2>Implementation Plan</h2>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">1</div>
+    <div class="phase-title">Build SkillRegistry + skill files</div>
+    <div class="phase-effort">~4 hours</div>
+  </div>
+  <ul>
+    <li>Create <code>src/application/skills/</code> directory</li>
+    <li>Define Skill interface: <code>{ id, name, description, instructions, toolIds, schema? }</code></li>
+    <li>Build SkillRegistry that loads from <code>skills/*.skill.ts</code> files</li>
+    <li>Extract domain expertise from existing agent prompts into skill files:
+      <ul>
+        <li><code>lark.skill.ts</code> ← from lark.prompt.ts + tool schemas</li>
+        <li><code>google.skill.ts</code> ← from google.prompt.ts + tool schemas</li>
+        <li><code>zoho.skill.ts</code> ← from zoho.prompt.ts + tool schemas</li>
+        <li><code>research.skill.ts</code> ← from context.prompt.ts + tool schemas</li>
+      </ul>
+    </li>
+  </ul>
+</div>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">2</div>
+    <div class="phase-title">Build <code>discover_skill</code> + <code>call_tool</code> meta-tools</div>
+    <div class="phase-effort">~3 hours</div>
+  </div>
+  <ul>
+    <li><code>discover_skill</code>: Takes a query, returns matching skill instructions + tool schemas as a string injected into the conversation</li>
+    <li><code>call_tool</code>: Takes <code>{ toolId, args }</code>, looks up tool in ToolRegistry, validates with Zod schema, runs permission + approval checks, executes, returns result</li>
+    <li>Both are Vercel AI SDK <code>dynamicTool</code> instances — same adapter pattern as existing tools</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">3</div>
+    <div class="phase-title">Write the Brain system prompt</div>
+    <div class="phase-effort">~2 hours</div>
+  </div>
+  <ul>
+    <li>Single focused system prompt: identity, behavior rules, skill catalog</li>
+    <li>No domain-specific instructions in the base prompt — those come from skills</li>
+    <li>Include the L1 skill catalog (names + descriptions, ~500 tokens)</li>
+    <li>Clear instructions: "call discover_skill before using a domain you haven't loaded yet"</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">4</div>
+    <div class="phase-title">Wire into supervisor-think.ts (behind flag)</div>
+    <div class="phase-effort">~2 hours</div>
+  </div>
+  <ul>
+    <li>Add <code>UNIFIED_AGENT_MODE</code> env flag</li>
+    <li>When enabled, supervisor-think gives Brain: <code>discover_skill</code> + <code>call_tool</code> + orchestration tools</li>
+    <li>When disabled, falls back to existing multi-agent delegation</li>
+    <li>Both paths coexist — zero risk to production</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">5</div>
+    <div class="phase-title">Test with harness + compare quality</div>
+    <div class="phase-effort">~2 hours</div>
+  </div>
+  <ul>
+    <li>Run same prompts through both paths, compare: tokens, latency, answer quality</li>
+    <li>Test edge cases: multi-domain requests, Hinglish, scheduling, HITL flows</li>
+    <li>Measure DeepSeek's tool selection accuracy with 2+16 tools vs 4+5 tools</li>
+  </ul>
+</div>
+
+<div class="callout">
+  <strong>Total estimated effort: ~13 hours.</strong> Most is extraction (moving existing prompt content into skill files) and the thin meta-tool layer. Zero changes to tool implementations, RBAC, HITL, or infrastructure.
+</div>
+
+<!-- ================================================================== -->
+<h2>Research References</h2>
+<table>
+  <tr><th>Source</th><th>Key Finding</th></tr>
+  <tr><td>Anthropic — Agent Skills Architecture</td><td>3-level progressive disclosure (metadata → instructions → schemas). 85% token reduction in tool definitions.</td></tr>
+  <tr><td>Anthropic — Building Effective Agents</td><td>"Start with a single agent. Multi-agent uses 10-15x more tokens." Use multi-agent only for independent parallel subtasks.</td></tr>
+  <tr><td>LongFuncEval (arXiv, May 2025)</td><td>LLM accuracy drops 7-85% as tool catalog grows from 8K→120K tokens. Keep active tools under 15-20.</td></tr>
+  <tr><td>Amazon Prime Video — Progressive Tool Discovery</td><td>Expose only a discovery tool; load relevant tools per task. Reduced 100s of tools to 3-4 per request.</td></tr>
+  <tr><td>Microsoft Research — Meta-Tools (Jan 2026)</td><td>Composite tools reduce LLM calls by 11.9% and improve success rate by 4.2%.</td></tr>
+  <tr><td>Microsoft Agent Framework + Google ADK (2026)</td><td>Both adopted skills as first-class primitives. Same progressive loading pattern.</td></tr>
+  <tr><td>DeepSeek V4 Flash benchmarks</td><td>85-90% of GPT-5.5 quality at 1/20th cost. Strong tool calling, 1M context. No published degradation curve for high tool counts.</td></tr>
+</table>
+
+<p style="margin-top:48px; color:#484f58; font-size:12px; text-align:center;">
+  Generated for Divo architecture planning — May 2026
+</p>
+
+</body>
+</html>

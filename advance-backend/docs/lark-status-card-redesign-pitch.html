@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Divo — Lark status card redesign pitch</title>
+  <title>Divo UX pitch — Lark status + email</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
@@ -449,16 +449,331 @@
     }
 
     .rec-box p { color: var(--muted); font-size: 0.88rem; }
+
+    .part-divider {
+      margin: 3.5rem 0 2rem;
+      padding-top: 2.5rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .part-divider h2 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+    }
+
+    .audit-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.78rem;
+      margin: 1rem 0;
+    }
+
+    .audit-table th, .audit-table td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .audit-table th {
+      background: var(--surface-2);
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .audit-table code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+      color: var(--accent);
+    }
+
+    .card.approval-old {
+      border-color: rgba(251, 191, 36, 0.35);
+    }
+
+    .card.approval-old .card-header {
+      background: linear-gradient(90deg, #c2410c, #ea580c);
+      margin: -1px -1px 0;
+      border-radius: 9px 9px 0 0;
+      padding: 0.65rem 1rem;
+    }
+
+    .card.approval-old .card-header .title { color: #fff; font-size: 0.9rem; }
+
+    .email-preview {
+      background: #faf8f6;
+      color: #111827;
+      border-radius: 8px;
+      border: 1px solid #e7e2dd;
+      padding: 0.75rem 0.85rem;
+      font-size: 0.75rem;
+      line-height: 1.45;
+      margin-top: 0.5rem;
+    }
+
+    .email-preview .ep-row {
+      display: grid;
+      grid-template-columns: 4.5rem 1fr;
+      gap: 0.35rem;
+      margin-bottom: 0.35rem;
+    }
+
+    .email-preview .ep-label { color: #6b7280; font-weight: 600; }
+
+    .email-preview .ep-body {
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px dashed #e7e2dd;
+      white-space: pre-wrap;
+      max-height: 5.5rem;
+      overflow: hidden;
+    }
+
+    .attach-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-top: 0.45rem;
+    }
+
+    .attach-chip {
+      font-size: 0.65rem;
+      padding: 0.2rem 0.45rem;
+      border-radius: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .inbox-table {
+      width: 100%;
+      font-size: 0.72rem;
+      border-collapse: collapse;
+      margin-top: 0.35rem;
+    }
+
+    .inbox-table th {
+      text-align: left;
+      color: var(--muted);
+      font-weight: 600;
+      padding: 0.35rem 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .inbox-table td {
+      padding: 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .inbox-table tr:last-child td { border-bottom: none; }
+
+    .unread-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: inline-block;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.65rem;
+      flex-wrap: wrap;
+    }
+
+    .btn-mock {
+      font-size: 0.72rem;
+      padding: 0.35rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+    }
+
+    .btn-mock.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .btn-mock.danger {
+      color: var(--red);
+      border-color: rgba(248,113,113,0.4);
+    }
+
+    .gmail-light {
+      background: #fff;
+      color: #202124;
+      border-radius: 8px;
+      padding: 0.85rem;
+      font-size: 0.78rem;
+      border: 1px solid #dadce0;
+      margin-top: 0.5rem;
+    }
+
+    .gmail-light .g-subject { font-weight: 600; font-size: 0.95rem; margin-bottom: 0.5rem; }
+    .gmail-light .g-meta { color: #5f6368; font-size: 0.7rem; margin-bottom: 0.65rem; }
+    .gmail-light .g-body { line-height: 1.55; color: #3c4043; }
+
+    /* Outbound HTML template gallery */
+    .tmpl-gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1.25rem;
+      margin-top: 1rem;
+    }
+
+    .tmpl-option {
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--surface);
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .tmpl-option:hover { border-color: rgba(79, 140, 255, 0.45); }
+
+    .tmpl-option.selected {
+      border-color: var(--green);
+      box-shadow: 0 0 0 1px var(--green);
+    }
+
+    .tmpl-option-head {
+      padding: 0.55rem 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+    }
+
+    .tmpl-option-head strong { font-weight: 600; }
+
+    .tmpl-viewport {
+      background: #e8eaed;
+      padding: 12px 10px;
+      max-height: 420px;
+      overflow-y: auto;
+    }
+
+    .tmpl-viewport .email-mock {
+      max-width: 100%;
+      margin: 0 auto;
+      font-size: 11px;
+      line-height: 1.45;
+      transform-origin: top center;
+    }
+
+    .tmpl-notes {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.7rem;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+    }
+
+    /* —— Current v1 (code replica) —— */
+    .em-v1 { background: #f4f1ee; padding: 14px 8px; font-family: Aptos, 'Helvetica Neue', Arial, sans-serif; }
+    .em-v1 .card { background: #fff; border: 1px solid #e7e2dd; border-radius: 18px; overflow: hidden; box-shadow: 0 12px 32px rgba(17,24,39,.08); }
+    .em-v1 .hdr { background: #111827; color: #fff; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; }
+    .em-v1 .hdr b { font-size: 15px; }
+    .em-v1 .hdr span { font-size: 9px; border: 1px solid rgba(255,255,255,.2); border-radius: 999px; padding: 4px 8px; opacity: .9; }
+    .em-v1 .body { padding: 16px; }
+    .em-v1 .eyebrow { font-size: 9px; text-transform: uppercase; letter-spacing: .14em; color: #a91635; font-weight: 800; margin-bottom: 8px; }
+    .em-v1 h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.04em; color: #111827; line-height: 1.1; }
+    .em-v1 .intro { margin-top: 10px; color: #6b7280; font-size: 12px; line-height: 1.65; }
+    .em-v1 .pills { margin: 12px 0 4px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .em-v1 .pill { border: 1px solid #e7e2dd; background: #faf8f6; border-radius: 999px; padding: 5px 9px; font-size: 10px; color: #6b7280; }
+    .em-v1 .pill strong { color: #111827; }
+    .em-v1 .box { margin-top: 10px; background: #faf8f6; border: 1px solid #e7e2dd; border-radius: 12px; padding: 12px; }
+    .em-v1 .box h2 { margin: 0 0 6px; font-size: 12px; font-weight: 800; }
+    .em-v1 .cta { display: inline-block; margin-top: 12px; background: #a91635; color: #fff; text-decoration: none; border-radius: 999px; padding: 8px 14px; font-size: 11px; font-weight: 800; }
+    .em-v1 .sig { margin-top: 14px; padding-top: 12px; border-top: 1px solid #e7e2dd; font-size: 11px; }
+
+    /* —— T1 Editorial —— */
+    .em-t1 { background: #f3f4f6; padding: 14px 8px; font-family: 'DM Sans', system-ui, sans-serif; }
+    .em-t1 .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+    .em-t1 .accent { height: 3px; background: linear-gradient(90deg, #4f8cff, #6366f1); }
+    .em-t1 .body { padding: 18px 16px 16px; border-left: 3px solid #4f8cff; margin-left: 0; }
+    .em-t1 .brand { font-size: 10px; font-weight: 600; color: #6b7280; letter-spacing: .02em; margin-bottom: 12px; }
+    .em-t1 .brand span { color: #4f8cff; }
+    .em-t1 h1 { margin: 0; font-size: 18px; font-weight: 600; color: #111827; letter-spacing: -.02em; }
+    .em-t1 .intro { margin-top: 10px; color: #4b5563; font-size: 12px; line-height: 1.6; }
+    .em-t1 .meta { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .em-t1 .meta div { padding: 8px 0; border-bottom: 1px solid #f3f4f6; }
+    .em-t1 .meta label { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #9ca3af; margin-bottom: 2px; }
+    .em-t1 .meta .val { font-size: 13px; font-weight: 600; color: #111827; display: block; }
+    .em-t1 .sec { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb; }
+    .em-t1 .sec h2 { margin: 0 0 6px; font-size: 11px; font-weight: 600; color: #374151; }
+    .em-t1 ul { margin: 6px 0 0; padding-left: 16px; color: #4b5563; font-size: 11px; }
+    .em-t1 .cta { display: inline-block; margin-top: 14px; background: #4f8cff; color: #fff; text-decoration: none; border-radius: 6px; padding: 8px 16px; font-size: 11px; font-weight: 600; }
+    .em-t1 .sig { margin-top: 16px; font-size: 11px; color: #6b7280; }
+
+    /* —— T2 Finance ledger —— */
+    .em-t2 { background: #f0fdf4; padding: 14px 8px; font-family: 'DM Sans', system-ui, sans-serif; }
+    .em-t2 .card { background: #fff; border: 1px solid #d1fae5; border-radius: 6px; overflow: hidden; }
+    .em-t2 .hdr { background: #ecfdf5; border-bottom: 1px solid #a7f3d0; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; }
+    .em-t2 .hdr b { font-size: 12px; color: #065f46; }
+    .em-t2 .hdr span { font-size: 9px; background: #059669; color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 600; }
+    .em-t2 .body { padding: 14px; }
+    .em-t2 h1 { margin: 0; font-size: 17px; font-weight: 600; color: #111827; }
+    .em-t2 .intro { margin-top: 8px; font-size: 11px; color: #4b5563; line-height: 1.55; }
+    .em-t2 table.kpi { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 11px; }
+    .em-t2 table.kpi th { text-align: left; color: #6b7280; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; font-size: 9px; text-transform: uppercase; }
+    .em-t2 table.kpi td { padding: 8px; border-bottom: 1px solid #f3f4f6; }
+    .em-t2 table.kpi td.num { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: #059669; text-align: right; }
+    .em-t2 .cta { display: inline-block; margin-top: 12px; background: #059669; color: #fff; text-decoration: none; border-radius: 4px; padding: 7px 14px; font-size: 10px; font-weight: 600; }
+    .em-t2 .sig { margin-top: 12px; font-size: 10px; color: #6b7280; }
+
+    /* —— T3 Modern SaaS —— */
+    .em-t3 { background: #f8fafc; padding: 14px 8px; font-family: 'DM Sans', system-ui, sans-serif; }
+    .em-t3 .card { background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 24px rgba(15,23,42,.08); }
+    .em-t3 .body { padding: 20px 16px; }
+    .em-t3 .logo-row { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+    .em-t3 .logo { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #6366f1, #8b5cf6); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 800; }
+    .em-t3 .logo-t { font-size: 13px; font-weight: 700; color: #0f172a; }
+    .em-t3 h1 { margin: 0; font-size: 19px; font-weight: 700; color: #0f172a; letter-spacing: -.03em; }
+    .em-t3 .intro { margin-top: 10px; font-size: 12px; color: #64748b; line-height: 1.6; }
+    .em-t3 .highlight { margin-top: 14px; background: #f1f5f9; border-radius: 8px; padding: 12px; }
+    .em-t3 .highlight .row { display: flex; justify-content: space-between; font-size: 11px; padding: 4px 0; }
+    .em-t3 .highlight .row strong { color: #0f172a; }
+    .em-t3 .cta { display: block; text-align: center; margin-top: 16px; background: #6366f1; color: #fff; text-decoration: none; border-radius: 8px; padding: 10px; font-size: 12px; font-weight: 600; }
+    .em-t3 .sig { margin-top: 14px; font-size: 11px; color: #94a3b8; text-align: center; }
+
+    /* —— T4 Personal letter —— */
+    .em-t4 { background: #fff; padding: 16px 12px; font-family: Georgia, 'Times New Roman', serif; }
+    .em-t4 .card { max-width: 100%; }
+    .em-t4 .body { font-size: 12px; color: #1f2937; line-height: 1.65; }
+    .em-t4 p { margin: 0 0 10px; }
+    .em-t4 .subject { font-family: 'DM Sans', system-ui, sans-serif; font-size: 14px; font-weight: 600; color: #111827; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #e5e7eb; }
+    .em-t4 .nums { font-family: 'JetBrains Mono', monospace; background: #f9fafb; padding: 10px; border-radius: 4px; margin: 12px 0; font-size: 11px; }
+    .em-t4 .foot { margin-top: 16px; font-family: 'DM Sans', system-ui, sans-serif; font-size: 10px; color: #9ca3af; border-top: 1px solid #f3f4f6; padding-top: 10px; }
+    .em-t4 .foot b { color: #6b7280; font-size: 10px; }
+
+    /* —— T5 Compact ops —— */
+    .em-t5 { background: #fafafa; padding: 14px 8px; font-family: system-ui, sans-serif; }
+    .em-t5 .card { background: #fff; border: 1px solid #e5e5e5; border-radius: 4px; }
+    .em-t5 .top { padding: 8px 14px; border-bottom: 1px solid #eee; font-size: 10px; color: #737373; display: flex; justify-content: space-between; }
+    .em-t5 .top b { color: #171717; font-weight: 600; }
+    .em-t5 .body { padding: 14px; color: #262626; }
+    .em-t5 h1 { margin: 0; font-size: 15px; font-weight: 600; color: #171717; }
+    .em-t5 .intro { margin-top: 8px; font-size: 11px; line-height: 1.55; color: #525252; }
+    .em-t5 .inline-stat { margin: 10px 0; font-size: 11px; }
+    .em-t5 .inline-stat span { display: inline-block; margin-right: 12px; }
+    .em-t5 .inline-stat em { font-style: normal; font-weight: 600; color: #171717; }
+    .em-t5 .cta { color: #2563eb; text-decoration: underline; font-size: 11px; font-weight: 500; }
+    .em-t5 .sig { margin-top: 12px; font-size: 11px; color: #737373; }
   </style>
 </head>
 <body>
   <div class="page">
     <header class="page-head">
-      <h1>Lark status card — layout pitch</h1>
+      <h1>Divo UX pitch — Lark status + email</h1>
       <p>
-        Your screenshot shows the pain: <strong>Executing</strong> + <strong>Updating Lark…</strong> + a third
-        <strong>Updating Lark</strong> on the right, with a big dead zone. Below is what we ship today vs four
-        alternatives that use Lark Card 2.0 (ring, columns, collapsible, notation text).
+        Part 1: status bubble layout (shipped as <strong>A</strong>). Part 2: Gmail / approval / outbound email —
+        what the tools do today and how Lark-facing UX can improve.
       </p>
       <div class="pill-row">
         <span class="pill bad">Today: triple label</span>
@@ -468,12 +783,16 @@
     </header>
 
     <nav class="jump">
-      <a href="#current">Current</a>
-      <a href="#a">A — Compact rail</a>
-      <a href="#b">B — Step chips</a>
-      <a href="#c">C — Bar + one line</a>
-      <a href="#d">D — Open timeline</a>
-      <a href="#rec">Recommendation</a>
+      <a href="#current">Status: current</a>
+      <a href="#a">Status A ✓</a>
+      <a href="#email-audit">Email audit</a>
+      <a href="#email-current">Email: today</a>
+      <a href="#email-e">E — Approval preview</a>
+      <a href="#email-f">F — Inbox table</a>
+      <a href="#email-g">G — Draft card</a>
+      <a href="#tmpl-current">Template: current</a>
+      <a href="#tmpl-gallery">Template picks</a>
+      <a href="#email-rec">Email rec</a>
     </nav>
 
     <!-- CURRENT -->
@@ -670,15 +989,442 @@
     </section>
 
     <div class="rec-box" id="rec">
-      <h3>Recommendation: ship A, keep D as “verbose” dept setting</h3>
+      <h3>Status — shipped layout A</h3>
       <p>
-        <strong>A</strong> fixes your screenshot without a tall card: one primary label, todo rail fills the dead zone,
-        step count in header. Code change: stop emitting <code>**Executing**</code> when it duplicates live label;
-        always prefer plan rail over <code>twoWordActivitySummary</code> when <code>recent</code> has lines; map live label to
-        sentence case once. <strong>B</strong> if plan steps are always known upfront. <strong>C</strong> for lightweight mode.
-        <strong>D</strong> optional flag for power users / finance dept.
+        One live headline, todo rail, <code>Step N/M</code> header, Trace collapsible. Optional verbose timeline (D) per dept later.
+      </p>
+    </div>
+
+    <!-- ═══════════════════ EMAIL PART ═══════════════════ -->
+
+    <div class="part-divider" id="email-audit">
+      <h2>Part 2 — Email tools (googleGmail)</h2>
+      <p style="color:var(--muted);font-size:0.88rem;max-width:52rem">
+        Tool lives in <code>google-gmail.tool.ts</code>. Sends route through HITL → manager gets a Lark Card <strong>1.0</strong> DM.
+        Divo HTML templates exist in code but are <strong>disabled</strong> for the agent (<code>bodyHtml</code> / <code>templateId</code> ignored).
+      </p>
+
+      <table class="audit-table">
+        <thead>
+          <tr><th>Category</th><th>Operations</th><th>Approval?</th><th>Lark UX today</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Read</td>
+            <td><code>list</code> <code>get</code> <code>search</code> <code>thread_*</code> <code>draft_get</code> <code>label_list</code></td>
+            <td>No</td>
+            <td>Markdown blob in chat — no table, no thread cards</td>
+          </tr>
+          <tr>
+            <td>Send</td>
+            <td><code>send</code> <code>reply</code> <code>reply_all</code> <code>forward</code> <code>draft_send</code></td>
+            <td>Yes (manager)</td>
+            <td>Orange card: <code>googleGmail</code> + arg summary string</td>
+          </tr>
+          <tr>
+            <td>Draft</td>
+            <td><code>draft_create</code> <code>draft_update</code> <code>draft_delete</code></td>
+            <td>Create only</td>
+            <td>“Draft created” text — no preview card in thread</td>
+          </tr>
+          <tr>
+            <td>Organize</td>
+            <td><code>archive</code> <code>mark_*</code> <code>star</code> <code>trash</code> <code>label_*</code></td>
+            <td>Some update ops</td>
+            <td>One-line confirmation only</td>
+          </tr>
+          <tr>
+            <td>Attachments</td>
+            <td>file_asset, drive, lark file, cloudinary (Zoho CSV)</td>
+            <td>—</td>
+            <td>Count in approval summary — no filenames in card</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <section class="option" id="email-current">
+      <div class="option-label">
+        <h2>Email today — two weak surfaces</h2>
+        <span class="tag current">Production</span>
+      </div>
+      <div class="compare">
+        <div class="chat-frame">
+          <div class="bot-meta"><strong>Divo</strong> <span class="bot-badge">BOT</span></div>
+          <div class="card">
+            <div class="card-body" style="padding:0.85rem 1rem">
+              <div style="font-size:0.8rem;line-height:1.55;color:var(--muted)">
+                Found 3 emails:<br><br>
+                <strong style="color:var(--text)">Re: Q1 overdue report</strong> — finance@acme.com — "Please find attached…"<br>
+                <strong style="color:var(--text)">Invoice #1042 reminder</strong> — billing@vendor.io — "This is a friendly…"<br>
+                <strong style="color:var(--text)">FW: Board deck</strong> — ceo@company.com — "See below for…"
+              </div>
+            </div>
+          </div>
+          <p style="font-size:0.72rem;color:var(--muted);margin-top:0.5rem">Agent reply: unstructured markdown</p>
+        </div>
+        <div class="chat-frame">
+          <div class="card approval-old">
+            <div class="card-header">
+              <span class="title">🔐 Action Approval Request</span>
+            </div>
+            <div class="card-body" style="padding:0.75rem 1rem;font-size:0.78rem">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-bottom:0.5rem">
+                <div><span style="color:var(--muted)">Requested by</span><br><strong>Abhishek</strong></div>
+                <div><span style="color:var(--muted)">Department</span><br><strong>Finance</strong></div>
+                <div><span style="color:var(--muted)">Tool</span><br><strong style="font-family:monospace;font-size:0.7rem">googleGmail</strong></div>
+                <div><span style="color:var(--muted)">Action</span><br><strong>send</strong></div>
+              </div>
+              <div style="color:var(--muted);margin-bottom:0.5rem">What the agent wants to do:</div>
+              <div style="font-family:monospace;font-size:0.65rem;color:var(--text);line-height:1.4">
+                googleGmail.send to=client@acme.com subject=Proposal attachments=1 sources=cloudinary
+              </div>
+              <div class="btn-row">
+                <span class="btn-mock primary">✅ Approve</span>
+                <span class="btn-mock danger">❌ Reject</span>
+              </div>
+            </div>
+          </div>
+          <p style="font-size:0.72rem;color:var(--muted);margin-top:0.5rem">Manager DM: Card 1.0 — no readable email body</p>
+        </div>
+      </div>
+      <div class="notes" style="margin-top:1rem">
+        <strong>Gap</strong>
+        <ul>
+          <li>Manager cannot skim To / Subject / body before approving</li>
+          <li>Requester never sees a “pending send” card in their thread</li>
+          <li>Beautiful <code>DivoHtmlEmailTemplate</code> is built but agent path forces plain text only</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="option" id="email-e">
+      <div class="option-label">
+        <h2>E — Approval card v2 with email preview (recommended)</h2>
+        <span class="tag rec">Best fit</span>
+      </div>
+      <p class="option-desc">
+        Migrate approval to Card 2.0: human labels, embedded preview, attachment chips, Approve / Edit in Gmail / Reject.
+        Uses existing <code>buildArgsSummary</code> fields — no new tool ops.
+      </p>
+      <div class="chat-frame" style="max-width:420px">
+        <div class="card">
+          <div class="card-header">
+            <span class="title">Divo AI</span>
+            <span class="dept-chip" style="background:rgba(251,191,36,0.2);color:var(--orange)">Approval</span>
+          </div>
+          <div class="card-body">
+            <div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.35rem">
+              <strong style="color:var(--text)">Abhishek</strong> wants to send email · Finance
+            </div>
+            <div class="email-preview">
+              <div class="ep-row"><span class="ep-label">To</span><span>client@acme.com</span></div>
+              <div class="ep-row"><span class="ep-label">Cc</span><span>manager@company.com</span></div>
+              <div class="ep-row"><span class="ep-label">Subject</span><span>Q1 overdue invoices — summary &amp; CSV</span></div>
+              <div class="ep-body">Hi Priya,
+
+Please find the overdue summary below. Total outstanding AR is ₹12.4L across 5 invoices.
+
+Best regards,
+Abhishek</div>
+              <div class="attach-chips">
+                <span class="attach-chip">📎 overdue-q1.csv</span>
+                <span class="attach-chip">cloudinary</span>
+              </div>
+            </div>
+            <div class="btn-row">
+              <span class="btn-mock primary">Approve &amp; send</span>
+              <span class="btn-mock">Open in Gmail</span>
+              <span class="btn-mock danger">Reject</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="option" id="email-f">
+      <div class="option-label">
+        <h2>F — Inbox results as Lark table</h2>
+        <span class="tag alt">Alt</span>
+      </div>
+      <p class="option-desc">
+        When <code>list</code> / <code>search</code> returns, final (or interim) card uses native <code>table</code> — same pattern as finance replies.
+        Tap row → “Reply” / “Summarize” actions (phase 2).
+      </p>
+      <div class="chat-frame">
+        <div class="card">
+          <div class="card-header">
+            <span class="title">Divo AI</span>
+            <span class="dept-chip">Finance</span>
+          </div>
+          <div class="card-body">
+            <div class="phase-sub" style="margin-bottom:0.35rem">3 unread · searched "overdue Acme"</div>
+            <table class="inbox-table">
+              <thead><tr><th></th><th>From</th><th>Subject</th><th>When</th></tr></thead>
+              <tbody>
+                <tr><td><span class="unread-dot"></span></td><td>finance@acme.com</td><td>Re: Q1 overdue report</td><td>2h</td></tr>
+                <tr><td><span class="unread-dot"></span></td><td>billing@vendor.io</td><td>Invoice #1042 reminder</td><td>1d</td></tr>
+                <tr><td></td><td>ceo@company.com</td><td>FW: Board deck</td><td>3d</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="option" id="email-g">
+      <div class="option-label">
+        <h2>G — Draft-first composer card in user thread</h2>
+        <span class="tag alt">Alt</span>
+      </div>
+      <p class="option-desc">
+        On <code>draft_create</code>, post a Card 2.0 preview in the requester’s chat (not only manager on send).
+        Buttons: Send for approval · Edit wording · Discard. Pairs with E for managers.
+      </p>
+      <div class="compare">
+        <div class="chat-frame">
+          <div class="card">
+            <div class="card-header">
+              <span class="title">Divo AI</span>
+              <span class="dept-chip">Draft</span>
+            </div>
+            <div class="card-body">
+              <div class="email-preview">
+                <div class="ep-row"><span class="ep-label">To</span><span>client@acme.com</span></div>
+                <div class="ep-row"><span class="ep-label">Subject</span><span>Proposal follow-up</span></div>
+                <div class="ep-body">Hi — following up on our call…</div>
+              </div>
+              <div class="btn-row">
+                <span class="btn-mock primary">Send for approval</span>
+                <span class="btn-mock">Edit</span>
+                <span class="btn-mock danger">Discard</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <p class="option-desc" style="margin-bottom:0.5rem">Outbound HTML → see <a href="#tmpl-gallery" style="color:var(--accent)">Part 3 template gallery</a> below.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════ TEMPLATE REDESIGN ═══════════════════ -->
+
+    <div class="part-divider" id="tmpl-current">
+      <h2>Part 3 — Divo outbound HTML template</h2>
+      <p style="color:var(--muted);font-size:0.88rem;max-width:52rem">
+        Source: <code>divo-html-email-template.ts</code> — beige shell, navy header bar, wine-red pills &amp; CTAs, nested rounded boxes, 34px title.
+        Click a design below to mark your pick (saved in page only).
+      </p>
+      <div class="pill-row">
+        <span class="pill bad">Heavy header bar</span>
+        <span class="pill bad">Wine pill CTAs</span>
+        <span class="pill bad">Boxes inside boxes</span>
+      </div>
+    </div>
+
+    <section class="option" id="tmpl-gallery">
+      <div class="option-label">
+        <h2>Template options — same finance email content</h2>
+        <span class="tag rec">Click to select</span>
+      </div>
+      <p class="option-desc">
+        Sample: <em>Q1 overdue invoices</em> to Priya · ₹12.4L AR · CSV CTA. Finance variant should feel credible, not marketing-heavy.
+      </p>
+
+      <div class="tmpl-gallery">
+        <!-- V1 Current -->
+        <div class="tmpl-option" data-tmpl="v1" tabindex="0">
+          <div class="tmpl-option-head"><strong>Current (v1)</strong><span class="tag current">In code</span></div>
+          <div class="tmpl-viewport">
+            <div class="email-mock em-v1">
+              <div class="card">
+                <div class="hdr"><b>Divo</b><span>Finance</span></div>
+                <div class="body">
+                  <div class="eyebrow">Finance delivery</div>
+                  <h1>Q1 overdue invoices</h1>
+                  <div class="intro">Hi Priya,<br><br>Please find the overdue summary for Acme Corp. Totals below are from Zoho Books as of today.</div>
+                  <div class="pills">
+                    <span class="pill"><strong>Total AR:</strong> ₹12.4L</span>
+                    <span class="pill"><strong>Invoices:</strong> 5</span>
+                  </div>
+                  <div class="box">
+                    <h2>Top accounts</h2>
+                    Acme Industries — ₹4.2L · Beta Logistics — ₹3.1L · Gamma Retail — ₹2.8L
+                  </div>
+                  <a class="cta" href="#">Download CSV</a>
+                  <div class="sig">Best regards,<br><strong>Abhishek Verma</strong><br><span style="color:#6b7280">Finance · Divo</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="tmpl-notes">Beige + navy + wine. Feels like a newsletter, not a finance note.</div>
+        </div>
+
+        <!-- T1 -->
+        <div class="tmpl-option selected" data-tmpl="t1" tabindex="0">
+          <div class="tmpl-option-head"><strong>T1 — Editorial</strong><span class="tag rec">Pick</span></div>
+          <div class="tmpl-viewport">
+            <div class="email-mock em-t1">
+              <div class="card">
+                <div class="accent"></div>
+                <div class="body">
+                  <div class="brand"><span>Divo</span> · Finance</div>
+                  <h1>Q1 overdue invoices</h1>
+                  <div class="intro">Hi Priya,<br><br>Please find the overdue summary for Acme Corp. Totals are from Zoho Books as of today.</div>
+                  <div class="meta">
+                    <div><label>Total AR</label><span class="val">₹12.4L</span></div>
+                    <div><label>Invoices</label><span class="val">5</span></div>
+                  </div>
+                  <div class="sec">
+                    <h2>Top accounts</h2>
+                    <ul>
+                      <li>Acme Industries — ₹4.2L</li>
+                      <li>Beta Logistics — ₹3.1L</li>
+                      <li>Gamma Retail — ₹2.8L</li>
+                    </ul>
+                  </div>
+                  <a class="cta" href="#">Download CSV</a>
+                  <div class="sig">Best regards,<br><strong>Abhishek Verma</strong></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="tmpl-notes">Flat, readable, blue accent. Matches Lark status card tone.</div>
+        </div>
+
+        <!-- T2 -->
+        <div class="tmpl-option" data-tmpl="t2" tabindex="0">
+          <div class="tmpl-option-head"><strong>T2 — Finance ledger</strong><span class="tag alt">Alt</span></div>
+          <div class="tmpl-viewport">
+            <div class="email-mock em-t2">
+              <div class="card">
+                <div class="hdr"><b>Divo Books</b><span>Finance</span></div>
+                <div class="body">
+                  <h1>Q1 overdue invoices</h1>
+                  <div class="intro">Hi Priya — summary attached. Figures below are outstanding AR only (not paid portion).</div>
+                  <table class="kpi">
+                    <thead><tr><th>Metric</th><th style="text-align:right">Value</th></tr></thead>
+                    <tbody>
+                      <tr><td>Total outstanding AR</td><td class="num">₹12,40,000</td></tr>
+                      <tr><td>Overdue invoices</td><td class="num">5</td></tr>
+                      <tr><td>Currency</td><td class="num">INR</td></tr>
+                    </tbody>
+                  </table>
+                  <a class="cta" href="#">Download CSV</a>
+                  <div class="sig">Abhishek Verma · Finance</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="tmpl-notes">Best for <code>divo-finance-v1</code> — tables, monospace amounts, green trust.</div>
+        </div>
+
+        <!-- T3 -->
+        <div class="tmpl-option" data-tmpl="t3" tabindex="0">
+          <div class="tmpl-option-head"><strong>T3 — Modern SaaS</strong><span class="tag alt">Alt</span></div>
+          <div class="tmpl-viewport">
+            <div class="email-mock em-t3">
+              <div class="card">
+                <div class="body">
+                  <div class="logo-row"><div class="logo">D</div><span class="logo-t">Divo</span></div>
+                  <h1>Your Q1 overdue report</h1>
+                  <div class="intro">Hi Priya — here's the overdue summary you asked for in Lark.</div>
+                  <div class="highlight">
+                    <div class="row"><span>Total AR</span><strong>₹12.4L</strong></div>
+                    <div class="row"><span>Invoices</span><strong>5</strong></div>
+                    <div class="row"><span>Top account</span><strong>Acme Industries</strong></div>
+                  </div>
+                  <a class="cta" href="#">Download CSV report</a>
+                  <div class="sig">Sent via Divo · Abhishek Verma</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="tmpl-notes">Product-y, centered CTA. Good for proposals / follow-ups, less formal finance.</div>
+        </div>
+
+        <!-- T4 -->
+        <div class="tmpl-option" data-tmpl="t4" tabindex="0">
+          <div class="tmpl-option-head"><strong>T4 — Personal letter</strong><span class="tag alt">Alt</span></div>
+          <div class="tmpl-viewport">
+            <div class="email-mock em-t4">
+              <div class="card">
+                <div class="body">
+                  <div class="subject">Q1 overdue invoices</div>
+                  <p>Hi Priya,</p>
+                  <p>As requested, here is the overdue summary for Acme Corp (Zoho Books, pulled today).</p>
+                  <div class="nums">Total outstanding AR: ₹12.4L · 5 invoices · CSV attached</div>
+                  <p>Top lines: Acme Industries ₹4.2L; Beta Logistics ₹3.1L; Gamma Retail ₹2.8L.</p>
+                  <p>Best regards,<br>Abhishek</p>
+                  <div class="foot"><b>Divo</b> — agentic ops · <a href="#" style="color:#6b7280">Download CSV</a></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="tmpl-notes">Looks like a human wrote it. Minimal brand — best for exec / 1:1 clients.</div>
+        </div>
+
+        <!-- T5 -->
+        <div class="tmpl-option" data-tmpl="t5" tabindex="0">
+          <div class="tmpl-option-head"><strong>T5 — Compact ops</strong><span class="tag alt">Alt</span></div>
+          <div class="tmpl-viewport">
+            <div class="email-mock em-t5">
+              <div class="card">
+                <div class="top"><b>Divo</b><span>Finance · automated</span></div>
+                <div class="body">
+                  <h1>Q1 overdue invoices</h1>
+                  <div class="intro">Hi Priya — overdue summary from Zoho Books. Amounts are exact; multi-currency kept separate in the CSV.</div>
+                  <div class="inline-stat">
+                    <span>AR <em>₹12.4L</em></span>
+                    <span>Invoices <em>5</em></span>
+                  </div>
+                  <a class="cta" href="#">Download CSV</a>
+                  <div class="sig">— Abhishek Verma</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="tmpl-notes">Lightweight, Gmail-native feel. Text-link CTA, no pill buttons.</div>
+        </div>
+      </div>
+
+      <div class="notes" style="margin-top:1.25rem" id="tmpl-pick-display">
+        <strong>Your pick:</strong> <span id="tmpl-pick-label">T1 — Editorial</span> — update <code>divo-html-email-template.ts</code> + variant map (<code>divo-finance-v1</code> → T2, <code>divo-standard-v1</code> → T1, etc.)
+      </div>
+    </section>
+
+    <div class="rec-box" id="email-rec">
+      <h3>Email + template recommendation</h3>
+      <p>
+        <strong>Lark:</strong> E approval preview → F inbox table → G draft card.
+        <strong>HTML:</strong> <strong>T1 Editorial</strong> is implemented in <code>divo-html-email-template.ts</code> (all variants). Agent path still sends plain text until HTML is re-enabled per dept.
       </p>
     </div>
   </div>
+  <script>
+    (function () {
+      const label = document.getElementById('tmpl-pick-label');
+      const names = {
+        v1: 'Current v1 (keep only as reference)',
+        t1: 'T1 — Editorial (default)',
+        t2: 'T2 — Finance ledger (divo-finance-v1)',
+        t3: 'T3 — Modern SaaS (proposals)',
+        t4: 'T4 — Personal letter (executive)',
+        t5: 'T5 — Compact ops (minimal)',
+      };
+      document.querySelectorAll('.tmpl-option').forEach(function (el) {
+        function select() {
+          document.querySelectorAll('.tmpl-option').forEach(function (o) { o.classList.remove('selected'); });
+          el.classList.add('selected');
+          if (label) label.textContent = names[el.dataset.tmpl] || el.dataset.tmpl;
+        }
+        el.addEventListener('click', select);
+        el.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); }
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

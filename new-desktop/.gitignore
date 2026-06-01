@@ -1,0 +1,26 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+
+# Node
+node_modules
+dist
+dist-ssr
+*.local
+
+# Tauri build outputs
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Env
+.env
+.env.*
+!.env.example

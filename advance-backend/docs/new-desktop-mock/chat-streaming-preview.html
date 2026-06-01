@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Sticky user-message + activity stream preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { overflow: hidden; }
+    .preview { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+
+    /* ============ Control bar ============ */
+    .ctrl-bar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 22px;
+      background: var(--bg-elev-1);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-wrap: wrap;
+    }
+    .ctrl-bar h1 {
+      margin: 0; font-size: 12px; font-weight: 600;
+      color: var(--fg); text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .ctrl-bar .sep { flex: 1; }
+    .ctrl-bar button {
+      padding: 6px 14px; font-size: 12px; font-weight: 500;
+      border-radius: 6px; background: var(--bg-elev-3);
+      color: var(--fg); border: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .ctrl-bar button.primary { background: var(--fg); color: var(--bg); }
+    .ctrl-bar button:hover { background: var(--bg-hover); }
+    .ctrl-bar button.primary:hover { background: hsl(0 0% 86%); }
+    .ctrl-bar .speed { display: inline-flex; gap: 4px; align-items: center; font-size: 11px; color: var(--fg-muted); }
+    .ctrl-bar select {
+      background: var(--bg-elev-3); color: var(--fg);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 3px 6px; font-size: 11px;
+    }
+    .ctrl-bar .legend-tag {
+      font-size: 11px; color: var(--fg-muted);
+    }
+
+    /* ============ Chat shell ============ */
+    .chat-shell {
+      display: grid;
+      grid-template-rows: 1fr auto;
+      overflow: hidden;
+      background: var(--bg);
+      position: relative;
+    }
+    .chat-scroll {
+      overflow-y: auto;
+      overflow-x: hidden;
+      position: relative;
+      scroll-behavior: smooth;
+    }
+    .chat-inner {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 24px 24px 0;
+    }
+
+    /* ============ Turn = one user→assistant pair ============ */
+    .turn {
+      position: relative;
+      margin-bottom: 24px;
+    }
+    /* Sticky user bubble — pins to top of scroll container as you scroll past */
+    .user-bubble-wrap {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--bg);
+      padding-top: 14px;
+      padding-bottom: 14px;
+    }
+    .user-bubble {
+      background: hsl(0 0% 11%);
+      border: 1px solid hsl(0 0% 16%);
+      border-radius: 14px;
+      padding: 12px 16px 12px 16px;
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--fg);
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .user-bubble .text {
+      flex: 1; min-width: 0;
+    }
+    .user-bubble .reply-icon {
+      width: 14px; height: 14px;
+      color: var(--fg-dim);
+      flex-shrink: 0;
+      margin-top: 2px;
+      cursor: pointer;
+      transition: color 0.15s;
+    }
+    .user-bubble .reply-icon:hover { color: var(--fg); }
+
+    /* Assistant block sits below the sticky user bubble */
+    .assistant-block {
+      padding: 4px 4px 0;
+      min-height: 32px;
+    }
+
+    /* The LAST turn gets virtual extra height so the user message can sit pinned at
+       the very top of the viewport while the work / reply has full screen room below. */
+    .turn.last {
+      min-height: calc(100vh - 240px);
+    }
+
+    /* ============ Activity stream ============ */
+    .stream {
+      display: flex; flex-direction: column;
+      margin: 10px 0 6px;
+    }
+    .stream-header {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 0; font-size: 13.5px; color: var(--fg-muted);
+      cursor: pointer; user-select: none; align-self: flex-start;
+    }
+    .stream-header:hover { color: var(--fg); }
+    .stream-header .verb { color: var(--fg); font-weight: 500; }
+    .stream-header .chev {
+      transition: transform 0.15s; color: var(--fg-dim); font-size: 10px;
+    }
+    .stream-header[data-open="true"] .chev { transform: rotate(90deg); }
+    .stream-body-wrap {
+      display: grid;
+      transition: grid-template-rows 0.22s ease, opacity 0.18s ease;
+    }
+    .stream-body-wrap[data-open="true"]  { grid-template-rows: 1fr; opacity: 1; }
+    .stream-body-wrap[data-open="false"] { grid-template-rows: 0fr; opacity: 0; }
+    .stream-body-overflow { overflow: hidden; }
+
+    .stream-rolling {
+      position: relative;
+      max-height: 168px;
+      overflow: hidden;
+    }
+    .stream-rolling::before {
+      content: ''; position: absolute; inset-inline: 0; top: 0;
+      height: 28px;
+      background: linear-gradient(to bottom, var(--bg), transparent);
+      pointer-events: none; z-index: 1;
+    }
+    .stream-list {
+      display: flex; flex-direction: column;
+      overflow-y: hidden;
+    }
+    .stream-full .stream-list {
+      overflow-y: auto;
+      max-height: none;
+    }
+
+    .row {
+      padding: 3px 0;
+      display: flex; align-items: baseline; gap: 6px;
+      font-size: 13.5px; line-height: 1.55;
+    }
+    .row .handle {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px;
+      color: var(--fg-dim); font-size: 9px;
+      transition: transform 0.15s; cursor: pointer; flex-shrink: 0;
+    }
+    .row[data-expanded="true"] .handle { transform: rotate(90deg); }
+    .row.no-detail .handle { visibility: hidden; cursor: default; }
+    .row .verb { color: var(--fg); font-weight: 500; flex-shrink: 0; }
+    .row .arg  { color: var(--fg-muted); min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row .meta { color: var(--fg-dim); font-size: 11.5px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+    .row.error .verb { color: var(--danger); }
+
+    /* shimmer */
+    @keyframes shimmer-sweep {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    .shimmer {
+      background: linear-gradient(90deg,
+        hsl(0 0% 42%) 0%,
+        hsl(0 0% 42%) 30%,
+        hsl(0 0% 96%) 50%,
+        hsl(0 0% 42%) 70%,
+        hsl(0 0% 42%) 100%);
+      background-size: 200% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      animation: shimmer-sweep 2.2s linear infinite;
+      font-weight: 500;
+    }
+
+    .row-detail {
+      margin: 4px 0 6px 22px;
+      padding: 8px 12px;
+      background: var(--bg-elev-1);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11.5px;
+      color: var(--fg-muted);
+      white-space: pre-wrap;
+      max-height: 180px;
+      overflow: auto;
+    }
+
+    /* ============ Markdown reply ============ */
+    .md {
+      font-size: 14px; line-height: 1.72; color: var(--fg);
+      margin-top: 8px;
+    }
+    .md p { margin: 0 0 10px; }
+    .md strong { font-weight: 600; }
+    .md h2 {
+      font-size: 16.5px; font-weight: 600; margin: 18px 0 8px;
+      letter-spacing: -0.008em;
+    }
+    .md ul { margin: 8px 0; padding-left: 22px; }
+    .md li { margin: 3px 0; }
+    .md .typing {
+      display: inline-block; width: 6px; height: 12px;
+      background: var(--fg-muted); margin-left: 2px;
+      vertical-align: middle; animation: blink 0.9s steps(2) infinite;
+    }
+    @keyframes blink { 0%,50% { opacity: 1 } 50.01%,100% { opacity: 0 } }
+    .md code {
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--bg-elev-2); padding: 1px 5px;
+      border-radius: 4px; font-size: 12.5px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    /* ============ Composer (decorative) ============ */
+    .composer {
+      padding: 12px 24px 16px;
+      background: var(--bg);
+    }
+    .composer-inner {
+      max-width: 760px; margin: 0 auto;
+      background: var(--bg-elev-2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 12px 8px;
+      min-height: 54px;
+      display: flex; flex-direction: column;
+      gap: 8px;
+    }
+    .composer .placeholder {
+      color: var(--fg-dim); font-size: 13.5px;
+    }
+    .composer .composer-row {
+      display: flex; gap: 6px; align-items: center;
+      font-size: 11px; color: var(--fg-muted);
+    }
+    .composer .composer-row .grow { flex: 1; }
+    .composer .send-btn {
+      width: 24px; height: 24px; border-radius: 50%;
+      background: var(--fg); color: var(--bg);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="preview">
+    <div class="ctrl-bar">
+      <h1>Sticky user-bubbles + auto-scroll-room</h1>
+      <span class="legend-tag">scroll the chat → newer user msg pins; older swaps in as you go back</span>
+      <span class="sep"></span>
+      <span class="speed">
+        speed
+        <select id="speed">
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </span>
+      <button id="reset">Reset</button>
+      <button id="play" class="primary">▶ Replay "send"</button>
+    </div>
+
+    <div class="chat-shell">
+      <div class="chat-scroll" id="scroll">
+        <div class="chat-inner" id="inner"></div>
+      </div>
+      <div class="composer">
+        <div class="composer-inner">
+          <div class="placeholder">Send follow-up</div>
+          <div class="composer-row">
+            <span>Composer 2.5 ▾</span>
+            <span class="grow"></span>
+            <span class="send-btn">↑</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  /* ============================================================
+     Data — three prior turns + one new turn driven by Replay
+     ============================================================ */
+  const HISTORY = [
+    {
+      user: 'if you remember we have done that ability to move the status bar pill using shift cmd slash my senior feels same cmd to turn on then same cmd shift cmd slsh to fix it there is good not shift cmd f, same would be easy to remember',
+      reply: '<p>Restart the app for the Rust hotkey change to take effect. <code>⌥+drag</code> still works as a secondary way to move when placement mode is on.</p>',
+      thoughtFor: 7,
+    },
+    {
+      user: 'ok',
+      reply: '<p>Sounds good. After a restart, <code>⇧⌘/</code> toggles placement on and off. If anything feels off in practice, say what you’re seeing.</p>',
+      thoughtFor: 4.2,
+    },
+    {
+      user: 'explore the leanring architecture more please',
+      reply: `
+        <h2>Said Learning Architecture — Deep Dive</h2>
+        <p>Canonical long-form doc: <code>docs/learning-architecture.md</code> (plus interactive <code>docs/learning-architecture.html</code>).
+           Below is how it works in <strong>code today</strong> on this branch.</p>
+        <p><strong>The big idea.</strong> Learning is a pipeline of three stages: capture → label → promote. Each stage
+           emits a typed event into the bus; the next stage subscribes via a deterministic dispatcher.</p>
+        <ul>
+          <li><strong>Capture:</strong> STT-aligned spans, normalized into <code>SpanRecord</code></li>
+          <li><strong>Label:</strong> classifier on Tier 2 gate; promotion ledger</li>
+          <li><strong>Promote:</strong> writes to <code>status-bar-events</code> stream for UX</li>
+        </ul>
+        <p>Want me to walk through the dispatcher contract next, or jump into the promotion gates?</p>
+      `,
+      thoughtFor: 96,
+    },
+  ];
+
+  /* The NEW turn (this is the one Replay animates). */
+  const NEW_TURN = {
+    user: 'tell me how is tier 2 working',
+    script: [
+      { wait: 250,  type: 'add-row',    row: { id: 't1', kind: 'thought', verb: 'Thinking', arg: 'Read the dispatcher and gate handler to ground the explanation.', shimmer: true } },
+      { wait: 600,  type: 'add-row',    row: { id: 'r1', kind: 'tool', verb: 'Reading', arg: 'docs/learning-architecture.md', shimmer: true } },
+      { wait: 700,  type: 'commit-row', id: 't1', durationMs: 850 },
+      { wait: 0,    type: 'commit-row', id: 'r1', durationMs: 720, detail: '# Learning Architecture\n\n## Tier 2\n…(file content trimmed)' },
+      { wait: 50,   type: 'add-row',    row: { id: 'g1', kind: 'tool', verb: 'Searching', arg: 'src/learning/**/*.ts', shimmer: true } },
+      { wait: 1100, type: 'commit-row', id: 'g1', durationMs: 1080, detail: '12 files matched\nsrc/learning/dispatcher.ts\nsrc/learning/gate.ts\n…' },
+      { wait: 80,   type: 'add-row',    row: { id: 'g2', kind: 'tool', verb: 'Grepping', arg: 'tier2|promotion|gate', shimmer: true } },
+      { wait: 900,  type: 'commit-row', id: 'g2', durationMs: 870 },
+      { wait: 60,   type: 'add-row',    row: { id: 't2', kind: 'thought', verb: 'Planning', arg: 'next moves — distill 3 sections: gate, dispatcher, promotion', shimmer: true } },
+      { wait: 800,  type: 'commit-row', id: 't2', durationMs: 740 },
+      /* Stream the reply */
+      { wait: 200,  type: 'start-reply' },
+      { wait: 30,   type: 'reply-chunk', text: '<h2>Tier 2 in plain words</h2><p>' },
+      { wait: 40,   type: 'reply-chunk', text: 'It is a <strong>promotion gate</strong>: candidate ' },
+      { wait: 40,   type: 'reply-chunk', text: 'spans coming out of capture have to clear ' },
+      { wait: 40,   type: 'reply-chunk', text: 'two confidence floors and a classifier vote before ' },
+      { wait: 40,   type: 'reply-chunk', text: 'they enter the status-bar stream.' },
+      { wait: 80,   type: 'reply-chunk', text: '</p>' },
+      { wait: 50,   type: 'reply-chunk', text: '<p>The gate lives in <code>src/learning/gate.ts</code> and ' },
+      { wait: 50,   type: 'reply-chunk', text: 'is purely deterministic — given the same span + features, ' },
+      { wait: 50,   type: 'reply-chunk', text: 'it always returns the same decision.</p>' },
+      { wait: 60,   type: 'reply-chunk', text: '<ul><li>Floor 1: STT confidence ≥ 0.78</li>' },
+      { wait: 60,   type: 'reply-chunk', text: '<li>Floor 2: alignment IoU ≥ 0.6</li>' },
+      { wait: 60,   type: 'reply-chunk', text: '<li>Classifier vote ≥ 2/3</li></ul>' },
+      { wait: 50,   type: 'end-reply' },
+    ],
+  };
+
+  /* ============================================================
+     Renderer
+     ============================================================ */
+  const state = {
+    turns: [], // [{ id, user, replyHTML?, activity: [], replyStreaming, replyDone, isWorking, headerOpen, thoughtForS? }]
+  };
+
+  function reset() {
+    state.turns = HISTORY.map((t, i) => ({
+      id: `h${i}`,
+      user: t.user,
+      activity: [],
+      replyHTML: t.reply,
+      replyStreaming: false,
+      replyDone: true,
+      isWorking: false,
+      headerOpen: false,
+      thoughtForS: t.thoughtFor,
+    }));
+    render();
+    const scroller = document.getElementById('scroll');
+    scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  function render() {
+    const inner = document.getElementById('inner');
+    inner.innerHTML = '';
+
+    state.turns.forEach((turn, i) => {
+      const isLast = i === state.turns.length - 1;
+      const wrap = document.createElement('div');
+      wrap.className = 'turn' + (isLast ? ' last' : '');
+      wrap.dataset.turn = turn.id;
+
+      // User bubble (sticky)
+      const ub = document.createElement('div');
+      ub.className = 'user-bubble-wrap';
+      ub.innerHTML = `
+        <div class="user-bubble">
+          <div class="text">${escapeHtml(turn.user)}</div>
+          <svg class="reply-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
+        </div>
+      `;
+      wrap.appendChild(ub);
+
+      // Assistant block
+      const ab = document.createElement('div');
+      ab.className = 'assistant-block';
+
+      if (turn.activity.length > 0) {
+        ab.appendChild(buildStream(turn));
+      }
+      if (turn.replyHTML || turn.replyStreaming) {
+        const md = document.createElement('div');
+        md.className = 'md';
+        md.innerHTML = turn.replyHTML + (turn.replyStreaming && !turn.replyDone ? '<span class="typing"></span>' : '');
+        ab.appendChild(md);
+      }
+      wrap.appendChild(ab);
+      inner.appendChild(wrap);
+    });
+  }
+
+  function buildStream(turn) {
+    const stream = document.createElement('div');
+    stream.className = 'stream';
+
+    const header = document.createElement('div');
+    header.className = 'stream-header';
+    const summary = streamSummary(turn);
+    const open = turn.headerOpen ?? (turn.isWorking || !turn.replyStarted);
+    header.dataset.open = open ? 'true' : 'false';
+    header.innerHTML = `
+      <span class="chev">▶</span>
+      <span class="${summary.shimmer ? 'shimmer' : 'verb'}">${escapeHtml(summary.head)}</span>
+      ${summary.tail ? `<span class="${summary.shimmer ? 'shimmer' : ''}" style="color: var(--fg-muted)"> ${escapeHtml(summary.tail)}</span>` : ''}
+    `;
+    header.addEventListener('click', () => {
+      turn.headerOpen = !open;
+      render();
+    });
+    stream.appendChild(header);
+
+    const bodyWrap = document.createElement('div');
+    bodyWrap.className = 'stream-body-wrap';
+    bodyWrap.dataset.open = open ? 'true' : 'false';
+    const overflow = document.createElement('div');
+    overflow.className = 'stream-body-overflow';
+
+    const isRolling = turn.isWorking && !turn.headerOpen;
+    const container = document.createElement('div');
+    container.className = isRolling ? 'stream-rolling' : 'stream-full';
+    const list = document.createElement('div');
+    list.className = 'stream-list';
+    turn.activity.forEach((r) => list.appendChild(rowEl(r, () => render())));
+    container.appendChild(list);
+    overflow.appendChild(container);
+    bodyWrap.appendChild(overflow);
+    stream.appendChild(bodyWrap);
+
+    // After mount, auto-scroll the list to bottom when rolling
+    requestAnimationFrame(() => {
+      if (isRolling) list.scrollTop = list.scrollHeight;
+      if (isRolling) container.scrollTop = container.scrollHeight;
+    });
+
+    return stream;
+  }
+
+  function streamSummary(turn) {
+    const active = [...turn.activity].reverse().find((r) => r.shimmer);
+    if (turn.isWorking && active) {
+      return { head: active.verb, tail: active.arg || '', shimmer: true };
+    }
+    const total = turn.activity.reduce((s, r) => s + (r.durationMs || 0), 0);
+    const sec = total > 0 ? (total / 1000).toFixed(1) : (turn.thoughtForS || 0).toFixed(1);
+    return { head: `Worked for ${sec}s`, tail: '', shimmer: false };
+  }
+
+  function rowEl(r, rerender) {
+    const wrap = document.createElement('div');
+    wrap.className = 'row' + (r.detail ? '' : ' no-detail') + (r.status === 'error' ? ' error' : '');
+    wrap.dataset.expanded = r.expanded ? 'true' : 'false';
+    wrap.innerHTML = `
+      <span class="handle">▶</span>
+      <span class="${r.shimmer ? 'shimmer' : 'verb'}">${escapeHtml(r.verb)}</span>
+      ${r.arg ? `<span class="${r.shimmer ? 'shimmer arg' : 'arg'}">${escapeHtml(r.arg)}</span>` : '<span class="arg"></span>'}
+      ${r.durationMs && !r.shimmer ? `<span class="meta">${r.durationMs} ms</span>` : ''}
+    `;
+    if (r.detail) {
+      wrap.querySelector('.handle').addEventListener('click', () => {
+        r.expanded = !r.expanded;
+        rerender();
+      });
+    }
+    const out = document.createElement('div');
+    out.appendChild(wrap);
+    if (r.detail && r.expanded) {
+      const det = document.createElement('div');
+      det.className = 'row-detail';
+      det.textContent = r.detail;
+      out.appendChild(det);
+    }
+    return out;
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  /* ============================================================
+     Player — simulates "send"
+     ============================================================ */
+  let timer = null;
+  function playSend() {
+    // 1. Append a brand-new turn — empty assistant area.
+    const newTurn = {
+      id: `n${Date.now()}`,
+      user: NEW_TURN.user,
+      activity: [],
+      replyHTML: '',
+      replyStreaming: false,
+      replyDone: false,
+      isWorking: true,
+      headerOpen: false,
+      thoughtForS: 0,
+    };
+    state.turns = [...state.turns, newTurn];
+    render();
+
+    // 2. Auto-scroll so the new user bubble pins to the top of the viewport.
+    //    The .last turn's min-height guarantees the viewport has room below it.
+    requestAnimationFrame(() => {
+      const wrap = document.querySelector(`.turn[data-turn="${newTurn.id}"]`);
+      if (wrap) wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+
+    // 3. Run the script
+    const speedMul = parseFloat(document.getElementById('speed').value);
+    let cursor = 0;
+    function tick() {
+      if (cursor >= NEW_TURN.script.length) return;
+      const f = NEW_TURN.script[cursor++];
+      timer = setTimeout(() => {
+        applyFrame(newTurn, f);
+        render();
+        tick();
+      }, Math.max(20, f.wait / speedMul));
+    }
+    tick();
+  }
+
+  function applyFrame(turn, f) {
+    if (f.type === 'add-row') {
+      turn.activity.push({ ...f.row, status: 'running' });
+    } else if (f.type === 'commit-row') {
+      const r = turn.activity.find((x) => x.id === f.id);
+      if (r) {
+        r.shimmer = false;
+        r.status = 'done';
+        if (f.durationMs) r.durationMs = f.durationMs;
+        if (f.detail) r.detail = f.detail;
+      }
+    } else if (f.type === 'start-reply') {
+      turn.replyStreaming = true;
+      turn.replyStarted = true;
+      turn.isWorking = false;
+      turn.headerOpen = false;
+    } else if (f.type === 'reply-chunk') {
+      turn.replyHTML += f.text;
+    } else if (f.type === 'end-reply') {
+      turn.replyStreaming = false;
+      turn.replyDone = true;
+      const total = turn.activity.reduce((s, r) => s + (r.durationMs || 0), 0);
+      turn.thoughtForS = total / 1000;
+    }
+  }
+
+  document.getElementById('play').addEventListener('click', () => {
+    if (timer) clearTimeout(timer);
+    reset();
+    setTimeout(playSend, 400);
+  });
+  document.getElementById('reset').addEventListener('click', () => {
+    if (timer) clearTimeout(timer);
+    reset();
+  });
+
+  reset();
+  </script>
+</body>
+</html>

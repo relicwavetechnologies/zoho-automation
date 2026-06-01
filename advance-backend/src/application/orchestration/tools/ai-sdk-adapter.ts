@@ -69,7 +69,9 @@ export function toAISdkTool(
       const action = permCheck.value;
 
       // ── Approval gate ──────────────────────────────────────────────────
-      if (adapterCtx.approvalGate && adapterCtx.chatId) {
+      // runCommand self-gates per-command on the user's machine — skip the
+      // company/manager approval flow for it.
+      if (adapterCtx.approvalGate && adapterCtx.chatId && t.id !== 'runCommand') {
         const argsSummary = buildArgsSummary(t.id, action, args);
         const decision = await adapterCtx.approvalGate.check({
           toolId:      t.id,

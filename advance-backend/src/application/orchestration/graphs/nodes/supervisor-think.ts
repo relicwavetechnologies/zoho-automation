@@ -28,6 +28,7 @@ import type { RunStatusAggregator } from '../../run-status.aggregator';
 import { redModelSelection } from '../../../../shared/model-selection-log';
 import { buildToolFinishedPayload, isErrorOutput } from '../../agent-runners/tool-trace';
 import { enforceContextBudget } from '../../engine/context-budget-enforcer';
+import { getToolLabels } from '../../agents/tool-labels';
 
 // Must be longer than DYNAMIC_AGENT_TIMEOUT_MS (300s) + buffer for retries.
 // A failed agent + retry can take 300s+300s; supervisor must outlast that.
@@ -419,10 +420,18 @@ async function runSupervisorStream(input: {
   const toolTimers = new Map<string, number>();
   let text = '';
   let statusHandle: Awaited<ReturnType<StatusChannel['sendStatus']>> = null;
+  // Gating for streaming the user-facing reply text:
+  //   - text-deltas BEFORE any tool call are direct-reply (forward).
+  //   - text-deltas AFTER a tool-result are synthesis (forward).
+  //   - text-deltas BETWEEN tools (right after tool-call, before tool-result) are
+  //     reasoning toward the next tool; we capture them in the activity stream via
+  //     thinking events but must NOT echo them into message.content.
+  let lastNonTextChunkWasResult = false;
   for await (const chunk of result.fullStream) {
     if (chunk.type === 'tool-call') {
       toolCalls.push(chunk.toolName);
-      toolTimers.set(chunk.toolName, Date.now());
+      toolTimers.set(chunk.toolCallId, Date.now());
+      lastNonTextChunkWasResult = false;
       input.tracer?.emit({
         phase: 'execute', eventType: 'tool_call_started',
         actorType: 'supervisor', actorKey: chunk.toolName,
@@ -430,6 +439,16 @@ async function runSupervisorStream(input: {
         status: 'info',
         payload: { toolName: chunk.toolName, args: chunk.input },
       });
+      {
+        const labels = getToolLabels(chunk.toolName);
+        input.statusChannel?.emitToolStart?.({
+          callId: chunk.toolCallId,
+          name: chunk.toolName,
+          family: familyFromToolName(chunk.toolName),
+          args: chunk.input,
+          verb: labels.verb,
+        });
+      }
       if (input.aggregator && input.statusChannel) {
         input.aggregator.recordCall(chunk.toolName);
         statusHandle = await input.statusChannel.editStatus(statusHandle, {
@@ -438,9 +457,11 @@ async function runSupervisorStream(input: {
       }
     }
     if (chunk.type === 'tool-result') {
+      lastNonTextChunkWasResult = true;
       const output = String(chunk.output);
       const isError = isErrorOutput(output);
-      const startMs = toolTimers.get(chunk.toolName);
+      const startMs = toolTimers.get(chunk.toolCallId);
+      const durationMs = startMs ? Date.now() - startMs : 0;
       toolResults.push({ toolName: chunk.toolName, output });
       input.tracer?.emit({
         phase: 'execute', eventType: 'tool_call_finished',
@@ -449,6 +470,17 @@ async function runSupervisorStream(input: {
         status: isError ? 'error' : 'success',
         payload: buildToolFinishedPayload(chunk.toolName, output, startMs),
       });
+      {
+        const labels = getToolLabels(chunk.toolName);
+        input.statusChannel?.emitToolEnd?.({
+          callId: chunk.toolCallId,
+          name: chunk.toolName,
+          ok: !isError,
+          output,
+          durationMs,
+          past: labels.past,
+        });
+      }
       if (input.aggregator && input.statusChannel) {
         if (isError) {
           input.aggregator.recordFailure(chunk.toolName, output);
@@ -461,7 +493,11 @@ async function runSupervisorStream(input: {
       }
     }
     if (chunk.type === 'text-delta') {
-      text += chunk.text;
+      const isUserFacing = toolCalls.length === 0 || lastNonTextChunkWasResult;
+      if (isUserFacing) {
+        text += chunk.text;
+        input.statusChannel?.emitTextDelta?.(chunk.text);
+      }
       if (input.aggregator && toolCalls.length > 0) {
         input.aggregator.setSynthesizing();
       }
@@ -515,4 +551,15 @@ async function runSupervisorStream(input: {
   });
 
   return { text, toolCalls, toolResults };
+}
+
+function familyFromToolName(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.startsWith('lark')) return 'lark';
+  if (lower.startsWith('google') || lower.startsWith('gmail') || lower.startsWith('drive') || lower.startsWith('calendar')) return 'google';
+  if (lower.startsWith('zoho')) return 'zoho';
+  if (lower.startsWith('web') || lower.startsWith('search')) return 'web';
+  if (lower.startsWith('context') || lower.startsWith('document') || lower.startsWith('rag')) return 'context';
+  if (lower.startsWith('agent_') || lower.startsWith('manage') || lower.startsWith('schedule') || lower.startsWith('discover') || lower.startsWith('remember') || lower.startsWith('call')) return 'orchestration';
+  return 'other';
 }

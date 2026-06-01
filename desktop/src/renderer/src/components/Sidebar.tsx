@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Plus, Search, Trash2, PanelLeftClose, SquarePen, Settings, Workflow, MessageSquareText } from 'lucide-react'
+import { Plus, Search, Trash2, PanelLeftClose, SquarePen, Settings, MessageSquareText } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useChat } from '../context/ChatContext'
 import { useWorkspace } from '../context/WorkspaceContext'
@@ -10,15 +10,13 @@ export function Sidebar({
   onToggle,
   onSettingsClick,
   onChatClick,
-  onScheduleClick,
   currentView,
 }: {
   isOpen: boolean
   onToggle: () => void
   onSettingsClick?: () => void
   onChatClick?: () => void
-  onScheduleClick?: () => void
-  currentView?: 'chat' | 'schedule' | 'settings'
+  currentView?: 'chat' | 'settings'
 }): JSX.Element | null {
   const { threads, activeThread, loadThreads, selectThread, createThread, isStreaming } = useChat()
   const { currentWorkspace, selectWorkspace, getThreadWorkspace } = useWorkspace()
@@ -102,18 +100,6 @@ export function Sidebar({
             >
               <MessageSquareText size={13} />
               Chat
-            </button>
-            <button
-              onClick={onScheduleClick}
-              className={cn(
-                'flex items-center justify-center gap-2 rounded-lg border h-8 text-[11px] font-bold uppercase tracking-wider transition-all',
-                currentView === 'schedule'
-                  ? 'bg-secondary text-foreground border-border shadow-sm'
-                  : 'text-muted-foreground/60 hover:bg-secondary/50 hover:text-foreground border-transparent',
-              )}
-            >
-              <Workflow size={13} />
-              Workflows
             </button>
           </div>
 

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Q1 overdue invoices</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-window">
+    <div class="titlebar">
+      <div class="traffic-lights">
+        <span class="tl red"></span><span class="tl yellow"></span><span class="tl green"></span>
+      </div>
+      <div class="titlebar-title">lansing · Divo</div>
+    </div>
+
+    <div class="app-body">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sb-actions">
+          <button class="sb-icon-btn"><span data-i="sidebar"></span></button>
+          <button class="sb-icon-btn"><span data-i="edit"></span></button>
+        </div>
+        <nav class="sb-nav">
+          <a class="sb-nav-item" href="#"><span data-i="sparkle"></span><span>New Agent</span><span class="kbd">⌘N</span></a>
+          <a class="sb-nav-item" href="#"><span data-i="zap"></span><span>Automations</span></a>
+          <a class="sb-nav-item" href="#"><span data-i="store"></span><span>Marketplace</span></a>
+        </nav>
+        <div style="padding: 4px 12px 0;">
+          <div style="background: var(--bg-elev-2); border: 1px solid var(--border-subtle); border-radius: var(--r-md); padding: 8px 10px; display: flex; align-items: center; gap: 9px;">
+            <span data-i="folder" style="color: var(--fg-muted);"></span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 12px; color: var(--fg); font-weight: 500;">lansing</div>
+              <div style="font-size: 10.5px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">~/conductor/workspaces/divo/lansing</div>
+            </div>
+            <button class="sb-icon-btn" style="width: 22px; height: 22px;"><span data-i="chevd"></span></button>
+          </div>
+        </div>
+        <div style="padding: 12px 12px 4px;">
+          <div style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 5px 8px; font-size: 12px; color: var(--fg-dim);">
+            <span data-i="search"></span>
+            <span style="flex: 1;">Search chats…</span>
+            <span class="kbd">⌘K</span>
+          </div>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding-top: 8px;">
+          <div class="sb-section"><span class="chev" data-i="chevd"></span><span>Repositories</span></div>
+          <div class="sb-list-group">
+            <div class="sb-section" style="padding-left: 8px; padding-top: 4px;">
+              <span class="chev" data-i="chevd" style="color: var(--fg-muted);"></span>
+              <span style="color: var(--fg-muted); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500;">lansing</span>
+            </div>
+            <div class="sb-list">
+              <a class="sb-list-row active" href="#">
+                <span class="row-label">Q1 overdue invoices</span>
+                <span class="row-time">now</span>
+              </a>
+              <a class="sb-list-row" href="#">
+                <span class="row-label">Currency inflation fix</span>
+                <span class="row-time">2h</span>
+              </a>
+              <a class="sb-list-row" href="#">
+                <span class="row-label">Lark email scope debug</span>
+                <span class="row-time">1d</span>
+              </a>
+              <a class="sb-list-row" href="#">
+                <span class="row-label">Desktop migration plan</span>
+                <span class="row-time">2d</span>
+              </a>
+            </div>
+          </div>
+          <div class="sb-list-group">
+            <div class="sb-section" style="padding-left: 8px; padding-top: 4px;">
+              <span class="chev" data-i="chev" style="color: var(--fg-muted);"></span>
+              <span style="color: var(--fg-muted); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500;">zoho-automation</span>
+            </div>
+          </div>
+          <div class="sb-list-group">
+            <div class="sb-section" style="padding-left: 8px; padding-top: 4px;">
+              <span class="chev" data-i="chev" style="color: var(--fg-muted);"></span>
+              <span style="color: var(--fg-muted); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500;">hrm8</span>
+            </div>
+          </div>
+        </div>
+        <div class="sb-footer">
+          <div class="sb-avatar">A</div>
+          <div class="sb-user-info">
+            <div class="sb-user-name">Abhishek</div>
+            <div class="sb-user-plan">Senior Engineer</div>
+          </div>
+          <div class="sb-footer-actions">
+            <button class="sb-icon-btn"><span data-i="settings"></span></button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <main class="main">
+        <div class="header">
+          <div class="crumb">
+            <span data-i="folder"></span>
+            <span>~/conductor/workspaces/divo/lansing</span>
+            <span class="crumb-sep">·</span>
+            <span style="color: var(--fg); font-weight: 500;">Q1 overdue invoices</span>
+          </div>
+          <div class="header-right">
+            <button class="header-btn">
+              <span data-i="clock"></span>
+              History
+            </button>
+            <button class="header-btn">
+              <span data-i="panel"></span>
+              Editor
+              <span class="kbd" style="margin-left: 2px;">⌘E</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Chat scroll -->
+        <div class="chat-scroll" data-stream-root>
+          <!-- Day separator -->
+          <div class="chat-context-line">
+            <span class="dot"></span>
+            <span>Today · 4:21 PM</span>
+            <span class="dot"></span>
+            <span class="pill"><span data-i="folder"></span>lansing</span>
+          </div>
+
+          <!-- User message -->
+          <div class="msg-wrap">
+            <div class="msg-user">
+              <div class="msg-user-bubble">
+                I want a detailed analysis of the current overdue invoices from Zoho. Please get all of them.
+              </div>
+            </div>
+
+            <!-- Assistant -->
+            <div class="msg-assistant">
+              <!-- Tool 1: planning shimmer (finished) -->
+              <div class="tool-card">
+                <div class="tool-card-head">
+                  <span class="tool-ico"><span data-i="sparkle"></span></span>
+                  <span class="tool-label">Planned</span>
+                  <span class="tool-summary">· Fetch all overdue invoices · group by currency · convert to INR · summarize</span>
+                  <span class="tool-check"><span data-i="check"></span></span>
+                </div>
+              </div>
+
+              <!-- Tool 2: Zoho call (finished, with detail) -->
+              <div class="tool-card">
+                <div class="tool-card-head">
+                  <span class="tool-ico" style="background: hsl(220 80% 25% / 0.4); color: hsl(220 90% 70%);"><span data-i="db"></span></span>
+                  <span class="tool-label">Zoho Books</span>
+                  <span class="tool-summary">· <code style="color: var(--fg-muted);">listInvoices</code> · fetched 4,693 records across 14 pages</span>
+                  <span class="tool-check"><span data-i="check"></span></span>
+                </div>
+                <div class="tool-card-body" style="display: block;">
+                  <div class="line"><span class="tag">→</span> <span>op = listInvoices  ·  filter = status:overdue</span></div>
+                  <div class="line"><span class="tag">→</span> <span>auto-upgrade: list → executeScriptMode (full pagination)</span></div>
+                  <div class="line"><span class="tag">·</span> <span style="color: var(--fg-muted);">page 1/14 ·  300 records  ·  ₹2.31 Cr</span></div>
+                  <div class="line"><span class="tag">·</span> <span style="color: var(--fg-muted);">page 7/14 ·  300 records  ·  ₹4.92 Cr  (cumulative)</span></div>
+                  <div class="line"><span class="tag">·</span> <span style="color: var(--fg-muted);">page 14/14 · 193 records · ₹11.54 Cr (cumulative)</span></div>
+                  <div class="line"><span class="tag" style="color: var(--success);">✓</span> <span style="color: var(--fg);">aggregates pre-computed · USD $250 → ₹23,918.87 · AED 1,173 → ₹30,136.23</span></div>
+                  <div class="line"><span class="tag">↑</span> <span style="color: var(--fg-dim);">payload: 1,820 KB · 9.2s · cached for 30 min</span></div>
+                </div>
+              </div>
+
+              <!-- Tool 3: web search (finished) -->
+              <div class="tool-card">
+                <div class="tool-card-head">
+                  <span class="tool-ico" style="background: hsl(142 50% 22% / 0.4); color: hsl(142 70% 65%);"><span data-i="globe"></span></span>
+                  <span class="tool-label">Web search</span>
+                  <span class="tool-summary">· current FX rates · USD, AED, EUR → INR</span>
+                  <span class="tool-check"><span data-i="check"></span></span>
+                </div>
+              </div>
+
+              <!-- Currently streaming reply -->
+              <div style="display: flex; gap: 12px; align-items: flex-start;">
+                <div style="width: 22px; height: 22px; border-radius: 50%; background: linear-gradient(135deg, hsl(218 80% 50%), hsl(280 60% 50%)); display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px;">
+                  <svg viewBox="0 0 24 24" fill="none" width="13" height="13"><path d="M4 7l8-4 8 4-8 4-8-4z" stroke="white" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                </div>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 12px; color: var(--fg-muted); margin-bottom: 4px;">Composer 2.5</div>
+                  <div data-reply data-text="Pulled the full overdue book — 4,693 invoices totalling ₹11.54 Cr across 6 currencies. Indian rupees lead at ₹7.82 Cr (67.8%), then USD at ₹2.41 Cr (20.9%), AED ₹0.71 Cr (6.2%), EUR ₹0.38 Cr (3.3%), GBP ₹0.14 Cr (1.2%), and SGD ₹0.08 Cr (0.6%). The single largest line is invoice INV-04482 (Acme Corp, USD $48,920 → ₹46.83 L), now 92 days past due. Top aging bucket is 60–90 days (₹4.31 Cr, 37.4% of the total).&#10;&#10;Three notable concentrations: (a) Acme Corp alone owes ₹68.2 L across 4 invoices, (b) the 60–90 bucket is dominated by USD invoices that just crossed the threshold this week, (c) AED collections have been flat for 3 months.">Pulled the full overdue book…</div>
+                  <span class="status-shimmer" style="margin-top: 6px;">
+                    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+                    <span style="margin-left: 4px;">streaming…</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live status pill (active tool ribbon) -->
+        <div style="padding: 0 28px 8px;">
+          <div style="width: min(720px, 100%); margin: 0 auto; display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--bg-elev-1); border: 1px solid var(--border-subtle); border-radius: 999px; font-size: 12px; color: var(--fg-muted);">
+            <div style="width: 12px; height: 12px; border: 1.5px solid var(--fg-faint); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite;"></div>
+            <span class="shimmer-text">Synthesizing reply…</span>
+            <span style="margin-left: auto; display: inline-flex; align-items: center; gap: 6px;">
+              <span style="color: var(--fg-dim);">14.2s</span>
+              <button class="btn btn-sm btn-ghost" style="height: 22px; padding: 0 8px;">
+                <span data-i="pause"></span>
+                Stop
+              </button>
+            </span>
+          </div>
+        </div>
+
+        <!-- Composer -->
+        <div class="composer-wrap">
+          <div class="composer">
+            <textarea class="composer-textarea" placeholder="Send a follow-up…" rows="1"></textarea>
+            <div class="composer-row">
+              <button class="cmp-icon-btn"><span data-i="plus"></span></button>
+              <button class="cmp-pill"><span data-i="bot"></span> Composer 2.5 <span data-i="chevd"></span></button>
+              <button class="cmp-pill"><span data-i="at"></span> Context</button>
+              <span class="grow"></span>
+              <button class="cmp-icon-btn"><span data-i="mic"></span></button>
+              <button class="cmp-send" data-send><span data-i="arrowUp"></span></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="statusbar">
+          <span class="sb-item"><span data-i="branch"></span>Abhi-Verma2005/lansing-v7</span>
+          <span class="sb-item"><span data-i="monitor"></span>Local</span>
+          <span class="sb-item"><span class="sb-dot" style="background: var(--warning); box-shadow: 0 0 6px var(--warning);"></span>Running</span>
+          <span class="sb-spacer"></span>
+          <span class="sb-item">Tokens: 38.4K / 150K</span>
+          <span class="sb-item">3 tools · 14.2s</span>
+          <span class="sb-item">Composer 2.5</span>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="mock.js"></script>
+</body>
+</html>

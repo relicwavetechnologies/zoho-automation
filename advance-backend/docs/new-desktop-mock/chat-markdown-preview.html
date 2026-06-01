@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Markdown rendering preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { overflow: auto; }
+    .preview { background: var(--bg); min-height: 100vh; padding: 56px 28px 120px; }
+    .stage { max-width: 760px; margin: 0 auto; }
+
+    .msg {
+      display: flex; gap: 12px; margin-bottom: 22px;
+    }
+    .avatar {
+      width: 26px; height: 26px; border-radius: 8px;
+      background: var(--bg-elev-3);
+      border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: var(--fg);
+      flex-shrink: 0;
+    }
+    .body { flex: 1; min-width: 0; }
+    .name {
+      font-size: 12px; color: var(--fg-muted); font-weight: 500;
+      margin-bottom: 8px;
+    }
+
+    /* ============== Markdown typography (matches Markdown.tsx) ============== */
+    .md {
+      font-size: 14px;
+      line-height: 1.72;
+      color: var(--fg);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    .md > *:first-child { margin-top: 0 !important; }
+    .md > *:last-child  { margin-bottom: 0 !important; }
+    .md p { margin: 10px 0; }
+    .md strong { font-weight: 600; color: var(--fg); }
+    .md em { font-style: italic; }
+    .md ul { margin: 10px 0; padding-left: 22px; list-style: disc; }
+    .md ol { margin: 10px 0; padding-left: 22px; list-style: decimal; }
+    .md ul > li, .md ol > li { margin: 4px 0; padding-left: 4px; }
+    .md ul ul, .md ol ol, .md ul ol, .md ol ul { margin: 4px 0; }
+    .md ::marker { color: var(--fg-faint); }
+    .md ol::marker { color: var(--fg-muted); }
+
+    .md h1 {
+      font-size: 19px; font-weight: 600; line-height: 1.25;
+      margin: 22px 0 12px; padding-bottom: 6px;
+      border-bottom: 1px solid var(--border-subtle);
+      letter-spacing: -0.012em;
+    }
+    .md h2 {
+      font-size: 16.5px; font-weight: 600; line-height: 1.3;
+      margin: 22px 0 10px;
+      letter-spacing: -0.008em;
+    }
+    .md h3 { font-size: 14.5px; font-weight: 600; margin: 16px 0 8px; }
+    .md h4 { font-size: 13.5px; font-weight: 600; color: var(--fg-muted); margin: 12px 0 6px; }
+
+    .md hr { border: 0; border-top: 1px solid var(--border-subtle); margin: 22px 0; }
+
+    .md blockquote {
+      margin: 14px 0;
+      padding-left: 14px;
+      border-left: 2px solid var(--border-strong);
+      color: var(--fg-muted);
+      font-style: italic;
+    }
+
+    .md a {
+      color: var(--fg);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      text-decoration-color: var(--fg-faint);
+      transition: text-decoration-color 0.15s;
+    }
+    .md a:hover { text-decoration-color: var(--fg); }
+
+    .md :not(pre) > code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      padding: 1px 5px;
+      background: var(--bg-elev-2);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+    }
+
+    /* Code blocks (mimicking Shiki output) */
+    .codeblock {
+      margin: 14px 0;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+      background: hsl(0 0% 5%);
+    }
+    .codeblock-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 12px;
+      background: var(--bg-elev-1);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .codeblock-head .lang {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10.5px;
+      color: var(--fg-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .codeblock-head .copy {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 10.5px;
+      color: var(--fg-muted);
+      padding: 3px 7px; border-radius: 4px;
+      cursor: pointer;
+    }
+    .codeblock-head .copy:hover { background: var(--bg-elev-2); color: var(--fg); }
+    .codeblock pre {
+      margin: 0;
+      padding: 14px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px;
+      line-height: 1.65;
+      color: hsl(40 28% 80%);
+    }
+    .codeblock .kw  { color: hsl(208 60% 76%); }
+    .codeblock .fn  { color: hsl(34 80% 76%); }
+    .codeblock .str { color: hsl(112 30% 65%); font-style: italic; }
+    .codeblock .num { color: hsl(28 70% 70%); }
+    .codeblock .com { color: hsl(0 0% 45%); font-style: italic; }
+    .codeblock .punct { color: hsl(0 0% 60%); }
+
+    /* Tables */
+    .md .table-wrap {
+      margin: 14px 0;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .md thead { background: var(--bg-elev-1); color: var(--fg-muted); }
+    .md th {
+      padding: 8px 12px;
+      text-align: left;
+      font-size: 11.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 500;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .md tbody tr:nth-child(even) { background: hsl(0 0% 5.5%); }
+    .md td {
+      padding: 8px 12px;
+      vertical-align: top;
+      color: var(--fg);
+      border-bottom: 1px solid hsl(0 0% 10%);
+    }
+    .md tbody tr:last-child td { border-bottom: 0; }
+
+    /* Task lists */
+    .md .task {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px;
+      border-radius: 3px;
+      border: 1px solid var(--border-strong);
+      vertical-align: -2px;
+      margin-right: 6px;
+      font-size: 10px;
+    }
+    .md .task.done {
+      background: var(--success); border-color: var(--success); color: var(--bg);
+    }
+
+    /* Section divider for the preview */
+    .section-rule {
+      margin: 36px 0 18px;
+      color: var(--fg-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+  </style>
+</head>
+<body>
+  <div class="preview">
+    <div class="stage">
+
+      <div class="section-rule">A. Rich answer (recurring meeting brief)</div>
+
+      <div class="msg">
+        <div class="avatar">D</div>
+        <div class="body">
+          <div class="name">Divo</div>
+          <div class="md">
+            <p>I <em>can</em> do this, but I shouldn't pretend I've already processed a 49-minute meeting instantly — that would give you a low-quality or made-up summary.</p>
+
+            <p>Here's the reality:</p>
+
+            <ul>
+              <li>Your video is ~49 minutes long</li>
+              <li>To give you a <strong>"whole meeting detailed breakdown"</strong>, I need to:
+                <ul>
+                  <li>Extract audio</li>
+                  <li>Transcribe it</li>
+                  <li>Segment topics</li>
+                  <li>Then structure it into a clean summary (like: agenda → discussion → decisions → action items)</li>
+                </ul>
+              </li>
+            </ul>
+
+            <p>That takes a bit of processing strategy — not just a quick glance.</p>
+
+            <hr />
+
+            <h2>🔧 Best way to do this (so you get real value)</h2>
+            <p>Tell me which format you want:</p>
+
+            <h3>Option 1 — Full professional meeting notes</h3>
+            <ul>
+              <li>Agenda</li>
+              <li>Who said what (approx)</li>
+              <li>Key discussion points</li>
+              <li>Decisions taken</li>
+              <li>Action items (with ownership if detectable)</li>
+            </ul>
+
+            <h3>Option 2 — Deep technical breakdown <em>(better for you)</em></h3>
+            <p>Since you're building systems / products:</p>
+            <ul>
+              <li>Architecture decisions made</li>
+              <li>Tradeoffs discussed</li>
+              <li>Open questions / things left undecided</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-rule">B. Code + tables + task list</div>
+
+      <div class="msg">
+        <div class="avatar">D</div>
+        <div class="body">
+          <div class="name">Divo</div>
+          <div class="md">
+            <h2>How to wire a streaming chat endpoint</h2>
+
+            <p>Below is a minimal <code>WebSocket</code> handler — drop it in <code>src/http/chat.ts</code> and you should see deltas flowing within ~120 ms of the first token.</p>
+
+            <div class="codeblock">
+              <div class="codeblock-head">
+                <span class="lang">typescript</span>
+                <span class="copy">⧉ Copy</span>
+              </div>
+<pre><span class="com">// src/http/chat.ts — append-only, hot-reloadable</span>
+<span class="kw">import</span> { <span class="fn">streamText</span> } <span class="kw">from</span> <span class="str">'ai'</span>;
+<span class="kw">import</span> { <span class="fn">createDeepSeek</span> } <span class="kw">from</span> <span class="str">'@ai-sdk/deepseek'</span>;
+
+<span class="kw">export async function</span> <span class="fn">handleChat</span>(ws<span class="punct">,</span> body) {
+  <span class="kw">const</span> stream = <span class="fn">streamText</span>({
+    model: <span class="fn">createDeepSeek</span>().<span class="fn">modelId</span>(<span class="str">'deepseek-chat'</span>)<span class="punct">,</span>
+    messages: body.messages<span class="punct">,</span>
+  });
+
+  <span class="kw">for await</span> (<span class="kw">const</span> chunk <span class="kw">of</span> stream.fullStream) {
+    <span class="kw">if</span> (chunk.type === <span class="str">'text-delta'</span>) {
+      ws.<span class="fn">send</span>(<span class="fn">JSON</span>.<span class="fn">stringify</span>({ type: <span class="str">'text'</span><span class="punct">,</span> data: chunk.text }));
+    }
+  }
+}</pre>
+            </div>
+
+            <h3>Performance baseline</h3>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Tier</th><th>Cold start</th><th>p50 delta</th><th>p99 delta</th><th>Tokens / req</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Local (DeepSeek)</td><td>120 ms</td><td>34 ms</td><td>112 ms</td><td>2 400</td></tr>
+                  <tr><td>Render (us-east)</td><td>380 ms</td><td>58 ms</td><td>240 ms</td><td>2 400</td></tr>
+                  <tr><td>Render (eu-west)</td><td>410 ms</td><td>62 ms</td><td>280 ms</td><td>2 400</td></tr>
+                  <tr><td>Tauri preview</td><td><strong>22 ms</strong></td><td>10 ms</td><td>34 ms</td><td>n/a</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>Checklist before merge</h3>
+            <ul style="list-style: none; padding-left: 4px;">
+              <li><span class="task done">✓</span>Backend forwards <code>tool.start</code> + <code>tool.end</code> on the WS</li>
+              <li><span class="task done">✓</span>Client renders Markdown via Shiki + remark-gfm</li>
+              <li><span class="task"></span>Activity stream collapses on first text delta</li>
+              <li><span class="task"></span>Past-tense labels (<code>Read</code>, <code>Searched</code>) on <code>tool-labels.ts</code></li>
+              <li><span class="task"></span><a href="https://example.com">Wire shell.open for external links</a></li>
+            </ul>
+
+            <blockquote>
+              "If the user sees raw JSON dumps, we have failed at design — preview is mandatory, raw is opt-in." — Anish, design review · May 28
+            </blockquote>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-rule">C. Streaming-safe (incomplete code fence)</div>
+
+      <div class="msg">
+        <div class="avatar">D</div>
+        <div class="body">
+          <div class="name">Divo</div>
+          <div class="md">
+            <p>Sure — here's the relevant snippet from <code>desktop.adapter.ts</code> as I'm still streaming it<strong>…</strong></p>
+
+            <div class="codeblock">
+              <div class="codeblock-head">
+                <span class="lang">typescript</span>
+                <span class="copy">⧉ Copy</span>
+              </div>
+<pre><span class="kw">emitToolStart</span>(event: { callId: <span class="kw">string</span>; name: <span class="kw">string</span>; family<span class="punct">…</span></pre>
+            </div>
+            <p style="color: var(--fg-muted); font-size: 12.5px; font-style: italic;">
+              (Renderer auto-closed an open fence so the block stays highlighted; will reflow as more tokens arrive.)
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

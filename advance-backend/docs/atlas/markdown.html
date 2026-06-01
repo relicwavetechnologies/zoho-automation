@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo Atlas — Markdown Rendering</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="atlas.css" />
+</head>
+<body>
+  <div class="atlas">
+    <aside class="atlas-nav" id="atlas-nav"></aside>
+    <main class="atlas-main">
+      <div class="atlas-topbar" id="atlas-topbar"></div>
+      <div class="atlas-content">
+        <div class="inner" data-atlas-page="markdown">
+
+          <div class="page-head">
+            <div class="eyebrow">Desktop experience · <span style="color:var(--shipped)">Shipped</span></div>
+            <h1>Markdown Rendering</h1>
+            <p class="lede">
+              Replies render through a chat-tuned markdown pipeline modelled on Cursor: warm inline code,
+              Shiki-highlighted code blocks with a copy button, clean GFM tables, and streaming-safe parsing
+              that never flashes broken layout mid-token.
+            </p>
+          </div>
+
+          <div class="section">
+            <h2>Reference render</h2>
+            <p class="section-sub">The full typography set, exactly as the desktop app renders it.</p>
+            <div class="device">
+              <div class="device-bar">
+                <span class="tl"></span><span class="tl"></span><span class="tl"></span>
+                <span class="dt">Divo — markdown preview</span>
+              </div>
+              <iframe src="../new-desktop-mock/chat-markdown-preview.html" style="height: 640px;" title="markdown preview"></iframe>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Design decisions</h2>
+            <div class="grid cols-2">
+              <div class="card">
+                <h3>Warm inline code</h3>
+                <p>Cursor-style peach: <code>bg hsl(28 50% 15%)</code> + <code>fg hsl(28 90% 72%)</code>. Reads as code without the heavy gray chip.</p>
+              </div>
+              <div class="card">
+                <h3>Shiki code blocks</h3>
+                <p><code>vitesse-dark</code> theme, 14 languages preloaded. Header shows the language + a copy button. Background neutralised to match our palette.</p>
+              </div>
+              <div class="card">
+                <h3>Minimal tables</h3>
+                <p>No zebra, no header fill — bold white header text, hairline borders, rounded wrapper. Matches Cursor's calm tables.</p>
+              </div>
+              <div class="card">
+                <h3>Streaming-safe</h3>
+                <p>Odd number of <code>```</code> fences? We append a synthetic close so a half-arrived code block stays highlighted instead of dumping raw text.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Envelope stripping</h2>
+            <p class="section-sub">
+              The supervisor wraps output in an <code>[Execution]</code> / <code>[Reply]</code> envelope.
+              The activity stream already shows tool calls, so the renderer keeps only the reply body.
+            </p>
+            <div class="code">
+              <div class="code-head"><span class="lang">typescript</span></div>
+<pre><span class="c">// Markdown.tsx — keep only what follows [Reply]</span>
+<span class="k">function</span> <span class="fn">stripProtocolEnvelope</span>(content: <span class="ty">string</span>): <span class="ty">string</span> {
+  <span class="k">const</span> m = content.<span class="fn">match</span>(<span class="s">/\[Reply\][:\s]*/i</span>);
+  <span class="k">if</span> (m) <span class="k">return</span> content.<span class="fn">slice</span>(m.index + m[0].length).<span class="fn">trimStart</span>();
+  <span class="k">if</span> (<span class="s">/\[Execution\]/i</span>.<span class="fn">test</span>(content)) <span class="k">return</span> <span class="s">''</span>; <span class="c">// stream not at reply yet</span>
+  <span class="k">return</span> content;
+}</pre>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Where it lives</h2>
+            <table class="spec">
+              <thead><tr><th>Concern</th><th>File</th></tr></thead>
+              <tbody>
+                <tr><td>Renderer + component overrides</td><td><code>new-desktop/src/components/chat/Markdown.tsx</code></td></tr>
+                <tr><td>Code block + copy button</td><td><code>components/chat/CodeBlock.tsx</code></td></tr>
+                <tr><td>Shiki singleton</td><td><code>lib/markdown/highlighter.ts</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="atlas-foot"><span>Divo Atlas · Markdown</span><span>Shipped</span></div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="atlas.js"></script>
+</body>
+</html>

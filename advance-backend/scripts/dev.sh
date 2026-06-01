@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# dev.sh — start Redis infrastructure for advance-backend.
+# dev.sh — start local infrastructure for advance-backend.
 #
 # Starts:
-#   1. Redis queue  (port 6380, no memory limit)
-#   2. Redis cache  (port 6381, 50 MB LRU)
+#   1. VM Postgres SSH tunnel (local 127.0.0.1:15432)
+#   2. Redis queue  (port 6380, no memory limit)
+#   3. Redis cache  (port 6381, 50 MB LRU)
 #
-# Redis keeps running until you explicitly kill it with stop.sh.
+# Infra keeps running until you explicitly kill it with stop.sh.
 # Restart the backend independently with: pnpm dev  (or scripts/server.sh)
 #
-# Ctrl+C exits this script but does NOT kill Redis so cache is preserved.
+# Ctrl+C exits this script but does NOT kill Redis/tunnel.
 
 set -uo pipefail
 
@@ -60,7 +61,8 @@ start_redis() {
   done
 }
 
-# ── Start Redis (daemonised — survives script exit) ───────────────────────────
+# ── Start DB tunnel + Redis (daemonised — survives script exit) ───────────────
+"$SCRIPT_DIR/db-tunnel.sh" start
 start_redis "queue" "$REDIS_QUEUE_PORT" ""      /tmp/divo-redis-queue.log
 start_redis "cache" "$REDIS_CACHE_PORT" "50mb"  /tmp/divo-redis-cache.log
 
@@ -70,12 +72,13 @@ pnpm prisma generate 2>&1 | grep -E "Generated|already up to date" || true
 
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${CYAN}  Redis infrastructure is up${NC}"
+echo -e "${CYAN}  Local infrastructure is up${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
+echo -e "  ${GREEN}Postgres${NC}     localhost:15432  (SSH tunnel to VM, daemonised)"
 echo -e "  ${GREEN}Redis queue${NC}  localhost:$REDIS_QUEUE_PORT  (no limit, daemonised)"
 echo -e "  ${GREEN}Redis cache${NC}  localhost:$REDIS_CACHE_PORT  (50 MB max, LRU, daemonised)"
 echo ""
 echo -e "  Start the backend:  ${CYAN}pnpm dev${NC}  (or  ${CYAN}scripts/server.sh${NC})"
-echo -e "  Stop everything:    ${CYAN}scripts/stop.sh${NC}"
+echo -e "  Stop everything:    ${CYAN}pnpm stop${NC}"
 echo ""

@@ -34,13 +34,13 @@ interface OAuthState {
   nonce:      string;
 }
 
-const NONCE_TTL_SECONDS = 600; // 10 min
+export const LARK_OAUTH_NONCE_TTL_SECONDS = 600; // 10 min
 
-function nonceKey(nonce: string): string {
+export function larkOAuthNonceKey(nonce: string): string {
   return `lark:oauth:nonce:${nonce}`;
 }
 
-function encodeState(s: OAuthState): string {
+export function encodeLarkOAuthState(s: OAuthState): string {
   return Buffer.from(JSON.stringify(s)).toString('base64url');
 }
 
@@ -160,9 +160,9 @@ export function createLarkAuthRoutes(deps: {
     }
 
     const nonce = deps.larkOAuthService.generateNonce();
-    await deps.cache.set(nonceKey(nonce), { companyId, userId, larkOpenId }, NONCE_TTL_SECONDS);
+    await deps.cache.set(larkOAuthNonceKey(nonce), { companyId, userId, larkOpenId }, LARK_OAUTH_NONCE_TTL_SECONDS);
 
-    const state = encodeState({ companyId, userId, larkOpenId, nonce });
+    const state = encodeLarkOAuthState({ companyId, userId, larkOpenId, nonce });
     const url   = deps.larkOAuthService.getAuthorizeUrl(state);
 
     log.info('lark.auth.connect.initiated', { companyId, userId, larkOpenId });
@@ -200,14 +200,14 @@ export function createLarkAuthRoutes(deps: {
 
     // Validate CSRF nonce
     const stored = await deps.cache.get<{ companyId: string; userId: string; larkOpenId: string }>(
-      nonceKey(state.nonce),
+      larkOAuthNonceKey(state.nonce),
     );
     if (!stored.ok || !stored.value || stored.value.companyId !== state.companyId) {
       log.warn('lark.auth.callback.nonce_mismatch', { companyId: state.companyId });
       sendError('Session expired or invalid — please run /login again.');
       return;
     }
-    await deps.cache.del(nonceKey(state.nonce));
+    await deps.cache.del(larkOAuthNonceKey(state.nonce));
 
     try {
       const tokens = await deps.larkOAuthService.exchangeCode(code);

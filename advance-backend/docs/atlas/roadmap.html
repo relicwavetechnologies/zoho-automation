@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo Atlas — Roadmap &amp; Status</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="atlas.css" />
+  <style>
+    .board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    @media (max-width: 880px){ .board { grid-template-columns: 1fr; } }
+    .col { background: var(--bg-elev-1); border: 1px solid var(--border-subtle); border-radius: var(--r-lg); padding: 14px; }
+    .col-head { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; margin-bottom:12px; padding: 0 4px; }
+    .col-head .count { margin-left:auto; font-size:11px; color:var(--fg-dim); background:var(--bg-elev-3); padding:1px 8px; border-radius:999px; }
+    .ticket { background: var(--bg-elev-2); border:1px solid var(--border-subtle); border-radius: var(--r-md); padding: 11px 13px; margin-bottom: 10px; }
+    .ticket:last-child { margin-bottom: 0; }
+    .ticket .t-title { font-size: 13.5px; font-weight: 500; }
+    .ticket .t-sub { font-size: 12px; color: var(--fg-muted); margin-top: 3px; }
+    .col-head .hd { width:8px; height:8px; border-radius:50%; }
+  </style>
+</head>
+<body>
+  <div class="atlas">
+    <aside class="atlas-nav" id="atlas-nav"></aside>
+    <main class="atlas-main">
+      <div class="atlas-topbar" id="atlas-topbar"></div>
+      <div class="atlas-content">
+        <div class="inner" data-atlas-page="roadmap">
+
+          <div class="page-head">
+            <div class="eyebrow">Roadmap &amp; Status</div>
+            <h1>The running board</h1>
+            <p class="lede">
+              Everything in the desktop app's near-term arc. This is the source of truth for "is X done yet" —
+              kept in lockstep with the build, edited the moment something moves columns.
+            </p>
+          </div>
+
+          <div class="board">
+            <!-- Shipped -->
+            <div class="col">
+              <div class="col-head"><span class="hd" style="background:var(--shipped)"></span> Shipped <span class="count">8</span></div>
+              <div class="ticket"><div class="t-title">Streaming pipeline → desktop WS</div><div class="t-sub">tool.start/end, thinking, text deltas forwarded from supervisor.</div></div>
+              <div class="ticket"><div class="t-title">Activity stream + shimmer</div><div class="t-sub">Rolling window, past-tense labels, collapse to "Thought for Ns".</div></div>
+              <div class="ticket"><div class="t-title">Reasoning-leak gate</div><div class="t-sub">Inter-tool reasoning stays in the stream, never echoes into the reply.</div></div>
+              <div class="ticket"><div class="t-title">Sticky full-width turns</div><div class="t-sub">Pinned user bubbles, auto scroll-room, full-width occluding backdrop.</div></div>
+              <div class="ticket"><div class="t-title">Cursor-grade markdown</div><div class="t-sub">Shiki, warm inline code, clean tables, streaming-safe, envelope strip.</div></div>
+              <div class="ticket"><div class="t-title">App icon + native chrome</div><div class="t-sub">Procedural squircle icns/ico/png, frameless macOS window.</div></div>
+              <div class="ticket"><div class="t-title">Multi-repository sidebar</div><div class="t-sub">Workspace groups, threads, new-chat flow.</div></div>
+              <div class="ticket"><div class="t-title">Lark OAuth onboarding</div><div class="t-sub">Deep-link + polling, JWT, workspace pick.</div></div>
+            </div>
+
+            <!-- In progress -->
+            <div class="col">
+              <div class="col-head"><span class="hd" style="background:var(--progress)"></span> In progress <span class="count">3</span></div>
+              <div class="ticket"><div class="t-title">Divo Atlas (this site)</div><div class="t-sub">Living product map. Grows with every integration.</div></div>
+              <div class="ticket"><div class="t-title">Context &amp; memory architecture</div><div class="t-sub">Memory-governed desktop cache, DB-backed scrollback, backend compaction. <a href="context-memory.html" style="color:var(--progress)">Plan →</a></div></div>
+              <div class="ticket"><div class="t-title">Markdown / UX polish loop</div><div class="t-sub">Ongoing fixes from real-usage screenshots.</div></div>
+            </div>
+
+            <!-- Planned -->
+            <div class="col">
+              <div class="col-head"><span class="hd" style="background:var(--planned)"></span> Planned <span class="count">5</span></div>
+              <div class="ticket"><div class="t-title">Terminal execution · Phase 1</div><div class="t-sub">runCommand tool, host spawn, live terminal panel. <a href="terminal.html" style="color:var(--planned)">Plan →</a></div></div>
+              <div class="ticket"><div class="t-title">Docker sandbox · Phase 2</div><div class="t-sub">Per-run container, denylist, approval gating.</div></div>
+              <div class="ticket"><div class="t-title">Internet flag + Codex tools · Phase 3</div><div class="t-sub">withInternetAccess, applyPatch/editFile + diff preview.</div></div>
+              <div class="ticket"><div class="t-title">DeepSeek reasoning tokens</div><div class="t-sub">Real &lt;think&gt; content in the stream when SDK exposes it.</div></div>
+              <div class="ticket"><div class="t-title">Tool-call grouping</div><div class="t-sub">Cursor's "Explored 2 searches" collapse for repeated calls.</div></div>
+            </div>
+          </div>
+
+          <div class="section" style="margin-top:44px;">
+            <h2>How to keep this honest</h2>
+            <div class="callout">
+              When a subsystem moves, edit its ticket here and flip the <code>status</code> in
+              <code>atlas.js</code>'s <code>NAV</code> manifest (the sidebar dot follows). New feature?
+              Add a page, add a NAV entry, drop a ticket in the right column.
+            </div>
+          </div>
+
+          <div class="atlas-foot"><span>Divo Atlas · Roadmap</span><span>Edit alongside every merge</span></div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="atlas.js"></script>
+</body>
+</html>

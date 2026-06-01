@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — New chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-window">
+    <!-- Titlebar -->
+    <div class="titlebar">
+      <div class="traffic-lights">
+        <span class="tl red"></span><span class="tl yellow"></span><span class="tl green"></span>
+      </div>
+      <div class="titlebar-title">lansing · Divo</div>
+    </div>
+
+    <!-- Body -->
+    <div class="app-body">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sb-actions">
+          <button class="sb-icon-btn" title="Toggle sidebar"><span data-i="sidebar"></span></button>
+          <button class="sb-icon-btn" title="New chat"><span data-i="edit"></span></button>
+        </div>
+
+        <nav class="sb-nav">
+          <a class="sb-nav-item active" href="#">
+            <span data-i="sparkle"></span>
+            <span>New Agent</span>
+            <span class="kbd">⌘N</span>
+          </a>
+          <a class="sb-nav-item" href="#">
+            <span data-i="zap"></span>
+            <span>Automations</span>
+          </a>
+          <a class="sb-nav-item" href="#">
+            <span data-i="store"></span>
+            <span>Marketplace</span>
+          </a>
+        </nav>
+
+        <!-- Workspace pill -->
+        <div style="padding: 4px 12px 0;">
+          <div style="background: var(--bg-elev-2); border: 1px solid var(--border-subtle); border-radius: var(--r-md); padding: 8px 10px; display: flex; align-items: center; gap: 9px;">
+            <span data-i="folder" style="color: var(--fg-muted);"></span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 12px; color: var(--fg); font-weight: 500;">lansing</div>
+              <div style="font-size: 10.5px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">~/conductor/workspaces/divo/lansing</div>
+            </div>
+            <button class="sb-icon-btn" style="width: 22px; height: 22px;" title="Switch workspace">
+              <span data-i="chevd"></span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Search -->
+        <div style="padding: 12px 12px 4px;">
+          <div style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 5px 8px; font-size: 12px; color: var(--fg-dim);">
+            <span data-i="search"></span>
+            <span style="flex: 1;">Search chats…</span>
+            <span class="kbd">⌘K</span>
+          </div>
+        </div>
+
+        <!-- Repository groups -->
+        <div style="flex: 1; overflow-y: auto; padding-top: 8px;">
+          <div class="sb-section">
+            <span class="chev" data-i="chevd"></span>
+            <span>Repositories</span>
+          </div>
+
+          <!-- lansing -->
+          <div class="sb-list-group">
+            <div class="sb-section" style="padding-left: 8px; padding-top: 4px;">
+              <span class="chev" data-i="chevd" style="color: var(--fg-muted);"></span>
+              <span style="color: var(--fg-muted); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500;">lansing</span>
+            </div>
+            <div class="sb-list">
+              <a class="sb-list-row" href="#">
+                <span class="row-label">Currency inflation fix</span>
+                <span class="row-time">2h</span>
+              </a>
+              <a class="sb-list-row" href="#">
+                <span class="row-label">Lark email scope debug</span>
+                <span class="row-time">1d</span>
+              </a>
+              <a class="sb-list-row" href="#">
+                <span class="row-label">Desktop migration plan</span>
+                <span class="row-time">2d</span>
+              </a>
+            </div>
+          </div>
+
+          <!-- zoho-automation -->
+          <div class="sb-list-group">
+            <div class="sb-section" style="padding-left: 8px; padding-top: 4px;">
+              <span class="chev" data-i="chevd" style="color: var(--fg-muted);"></span>
+              <span style="color: var(--fg-muted); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500;">zoho-automation</span>
+            </div>
+            <div class="sb-list">
+              <a class="sb-list-row" href="#">
+                <span class="row-label">Q1 overdue invoices analysis</span>
+                <span class="row-time">3d</span>
+              </a>
+              <a class="sb-list-row" href="#">
+                <span class="row-label">INR conversion verification</span>
+                <span class="row-time">5d</span>
+              </a>
+            </div>
+          </div>
+
+          <!-- hrm8 -->
+          <div class="sb-list-group">
+            <div class="sb-section" style="padding-left: 8px; padding-top: 4px;">
+              <span class="chev" data-i="chev" style="color: var(--fg-muted);"></span>
+              <span style="color: var(--fg-muted); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500;">hrm8</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="sb-footer">
+          <div class="sb-avatar">A</div>
+          <div class="sb-user-info">
+            <div class="sb-user-name">Abhishek</div>
+            <div class="sb-user-plan">Senior Engineer</div>
+          </div>
+          <div class="sb-footer-actions">
+            <button class="sb-icon-btn" title="Settings"><span data-i="settings"></span></button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <main class="main">
+        <!-- Header -->
+        <div class="header">
+          <div class="crumb">
+            <span data-i="folder"></span>
+            <span>~/conductor/workspaces/divo/lansing</span>
+            <span class="crumb-sep">·</span>
+            <span style="color: var(--fg); font-weight: 500;">New chat</span>
+          </div>
+          <div class="header-right">
+            <button class="header-btn">
+              <span data-i="clock"></span>
+              History
+            </button>
+            <button class="header-btn">
+              <span data-i="panel"></span>
+              Editor
+              <span class="kbd" style="margin-left: 2px;">⌘E</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Empty stage with composer -->
+        <div class="empty-stage">
+          <div style="display: flex; align-items: center; justify-content: center; width: 52px; height: 52px; border-radius: 14px; background: linear-gradient(135deg, hsl(218 80% 50%), hsl(280 60% 50%)); margin: 0 auto 18px; box-shadow: 0 8px 28px hsl(218 80% 50% / 0.25);">
+            <svg viewBox="0 0 24 24" fill="none" width="26" height="26"><path d="M4 7l8-4 8 4-8 4-8-4z" stroke="white" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 12l8 4 8-4" stroke="white" stroke-width="1.6" stroke-linejoin="round" opacity="0.7"/><path d="M4 17l8 4 8-4" stroke="white" stroke-width="1.6" stroke-linejoin="round" opacity="0.4"/></svg>
+          </div>
+          <h1 class="empty-headline">What should we build today?</h1>
+          <p class="empty-sub">Use <span style="color: var(--fg); background: var(--bg-elev-2); padding: 1px 6px; border-radius: 3px; font-family: 'SF Mono', Menlo, monospace; font-size: 11.5px;">@</span> for context, <span style="color: var(--fg); background: var(--bg-elev-2); padding: 1px 6px; border-radius: 3px; font-family: 'SF Mono', Menlo, monospace; font-size: 11.5px;">/</span> for commands</p>
+
+          <!-- Composer -->
+          <div class="composer-wrap">
+            <div class="composer">
+              <textarea class="composer-textarea" placeholder="Plan, build, ask anything…&#10;Use @ for files, / for commands" rows="2"></textarea>
+              <div class="composer-row">
+                <button class="cmp-icon-btn" title="Attach"><span data-i="plus"></span></button>
+                <button class="cmp-pill" title="Select model">
+                  <span data-i="bot"></span>
+                  Composer 2.5
+                  <span data-i="chevd"></span>
+                </button>
+                <button class="cmp-pill" title="Add context">
+                  <span data-i="at"></span>
+                  Context
+                </button>
+                <span class="grow"></span>
+                <button class="cmp-icon-btn" title="Voice"><span data-i="mic"></span></button>
+                <button class="cmp-send" title="Send" data-send><span data-i="arrowUp"></span></button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Suggestion chips -->
+          <div class="suggest-row">
+            <button class="suggest-chip">
+              <span data-i="db" style="color: var(--info);"></span>
+              List Q1 overdue invoices
+            </button>
+            <button class="suggest-chip">
+              <span data-i="globe" style="color: var(--success);"></span>
+              Research deep dive on competitor X
+            </button>
+            <button class="suggest-chip">
+              <span data-i="file" style="color: var(--warning);"></span>
+              Summarize today's commits
+            </button>
+            <button class="suggest-chip">
+              <span data-i="zap" style="color: hsl(280 70% 70%);"></span>
+              Schedule a weekly report
+            </button>
+          </div>
+        </div>
+
+        <!-- Status bar -->
+        <div class="statusbar">
+          <span class="sb-item">
+            <span data-i="branch"></span>
+            Abhi-Verma2005/lansing-v7
+          </span>
+          <span class="sb-item">
+            <span data-i="monitor"></span>
+            Local
+          </span>
+          <span class="sb-item">
+            <span class="sb-dot"></span>
+            Engine connected
+          </span>
+          <span class="sb-spacer"></span>
+          <span class="sb-item">Tokens: 0 / 150K</span>
+          <span class="sb-item">Composer 2.5</span>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="mock.js"></script>
+</body>
+</html>

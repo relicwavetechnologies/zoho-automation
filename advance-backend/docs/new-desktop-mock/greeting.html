@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Hi Abhishek</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-window">
+    <div class="titlebar">
+      <div class="traffic-lights">
+        <span class="tl red"></span><span class="tl yellow"></span><span class="tl green"></span>
+      </div>
+      <div style="display: inline-flex; align-items: center; gap: 8px; margin-left: 12px; font-size: 12px; color: var(--fg-muted);">
+        <svg viewBox="0 0 24 24" fill="none" width="14" height="14"><path d="M4 7l8-4 8 4-8 4-8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span style="font-weight: 500; color: var(--fg);">Divo</span>
+      </div>
+    </div>
+
+    <div class="app-body no-sidebar">
+      <div class="main" style="flex-direction: row;">
+        <div class="onboard-split">
+          <!-- Left brand panel -->
+          <div class="onboard-left">
+            <div class="onboard-left-brand">
+              <div class="onboard-left-logo">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M4 7l8-4 8 4-8 4-8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 12l8 4 8-4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" opacity="0.7"/><path d="M4 17l8 4 8-4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" opacity="0.4"/></svg>
+              </div>
+              <h1 class="onboard-left-title">Divo</h1>
+              <p class="onboard-left-tagline">Same brain in Lark, on desktop, and on the web. Your tools, your identity, your team — already connected.</p>
+            </div>
+            <div class="onboard-left-foot">
+              <div class="onboard-left-foot-eyebrow">Signed in via Lark</div>
+              <div class="onboard-left-foot-line">"Welcome back, Abhishek."</div>
+            </div>
+          </div>
+
+          <!-- Right form panel -->
+          <div class="onboard-right">
+            <div class="onboard-step-counter">2 of 3</div>
+            <div class="onboard-right-inner">
+              <div class="onboard-eyebrow">You</div>
+              <h2 class="onboard-h">Hi, Abhishek.</h2>
+              <p class="onboard-body">You're signed in as <code style="color: var(--fg); background: var(--bg-elev-2); padding: 1px 6px; border-radius: 3px; font-size: 12px;">abhishek@emiactech.com</code> · Senior Engineer · Finance dept. Here's what's already wired up:</p>
+
+              <!-- Connection checklist -->
+              <div class="onboard-check">
+                <div class="ico"><span data-i="check"></span></div>
+                <div>
+                  <div style="color: var(--fg);">Lark identity</div>
+                  <div style="color: var(--fg-muted); font-size: 11.5px;">EMIAC Technologies tenant</div>
+                </div>
+                <span class="meta">verified</span>
+              </div>
+              <div class="onboard-check">
+                <div class="ico"><span data-i="check"></span></div>
+                <div>
+                  <div style="color: var(--fg);">Zoho Books</div>
+                  <div style="color: var(--fg-muted); font-size: 11.5px;">Finance ledger access</div>
+                </div>
+                <span class="meta">connected</span>
+              </div>
+              <div class="onboard-check">
+                <div class="ico"><span data-i="check"></span></div>
+                <div>
+                  <div style="color: var(--fg);">Google Workspace</div>
+                  <div style="color: var(--fg-muted); font-size: 11.5px;">Gmail · Calendar · Drive</div>
+                </div>
+                <span class="meta">connected</span>
+              </div>
+              <div class="onboard-check">
+                <div class="ico ico-pending"><span data-i="plus"></span></div>
+                <div>
+                  <div style="color: var(--fg-muted);">3 chats restored</div>
+                  <div style="color: var(--fg-dim); font-size: 11.5px;">from your last Lark session</div>
+                </div>
+                <span class="meta">ready</span>
+              </div>
+
+              <button class="onboard-cta" style="margin-top: 20px;">
+                Continue
+                <span data-i="arrowUp" style="transform: rotate(90deg); display: inline-flex;"></span>
+              </button>
+            </div>
+            <div class="onboard-right-foot">
+              <a href="#">Wrong account?</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="mock.js"></script>
+</body>
+</html>

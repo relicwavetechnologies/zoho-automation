@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Sign in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-window">
+    <div class="titlebar">
+      <div class="traffic-lights">
+        <span class="tl red"></span><span class="tl yellow"></span><span class="tl green"></span>
+      </div>
+      <div style="display: inline-flex; align-items: center; gap: 8px; margin-left: 12px; font-size: 12px; color: var(--fg-muted);">
+        <svg viewBox="0 0 24 24" fill="none" width="14" height="14"><path d="M4 7l8-4 8 4-8 4-8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span style="font-weight: 500; color: var(--fg);">Divo</span>
+      </div>
+    </div>
+
+    <div class="app-body no-sidebar">
+      <div class="main" style="flex-direction: row;">
+        <div class="onboard-split">
+          <!-- Left brand panel -->
+          <div class="onboard-left">
+            <div class="onboard-left-brand">
+              <div class="onboard-left-logo">
+                <svg viewBox="0 0 24 24" fill="none"><path d="M4 7l8-4 8 4-8 4-8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 12l8 4 8-4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" opacity="0.7"/><path d="M4 17l8 4 8-4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" opacity="0.4"/></svg>
+              </div>
+              <h1 class="onboard-left-title">Divo</h1>
+              <p class="onboard-left-tagline">Your AI operations co-worker. Runs in Lark, on your desktop, against your tools — same brain everywhere.</p>
+            </div>
+            <div class="onboard-left-foot">
+              <div class="onboard-left-foot-eyebrow">Sign in with Lark</div>
+              <div class="onboard-left-foot-line">"One identity. Every device. No second login."</div>
+            </div>
+          </div>
+
+          <!-- Right form panel -->
+          <div class="onboard-right">
+            <div class="onboard-step-counter">1 of 3</div>
+            <div class="onboard-right-inner">
+              <div class="onboard-eyebrow">Welcome</div>
+              <h2 class="onboard-h">Sign in to Divo.</h2>
+              <p class="onboard-body">Use your Lark workspace to sign in. We'll match you to your team, restore your past chats, and pick up where you left off.</p>
+
+              <button class="onboard-cta">
+                <span style="width: 18px; height: 18px; border-radius: 4px; background: hsl(220 90% 50%); display: inline-flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 11px;">L</span>
+                Continue with Lark
+              </button>
+
+              <div class="onboard-divider">or</div>
+
+              <button class="onboard-cta onboard-cta-secondary">
+                <span data-i="globe"></span>
+                Custom server URL
+              </button>
+
+              <p style="font-size: 11px; color: var(--fg-dim); text-align: center; line-height: 1.6; margin: 24px 0 0;">
+                By continuing you agree to Divo's <a href="#" style="color: var(--fg-muted); text-decoration: none;">Terms</a> and <a href="#" style="color: var(--fg-muted); text-decoration: none;">Privacy Policy</a>.
+              </p>
+            </div>
+            <div class="onboard-right-foot">
+              <a href="#">Get help</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="mock.js"></script>
+</body>
+</html>

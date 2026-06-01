@@ -18,11 +18,15 @@ export const CANONICAL_TOOL_IDS = [
   'webSearch',
   'documentRag',
   'dataProcessor',
+  // NOTE: 'runCommand' is intentionally NOT here. The terminal tool runs on the
+  // user's own machine and is gated per-command by the user, so it is exempt
+  // from company/department RBAC. It lives in the tool registry + RegisteredTool
+  // catalog only. See run-command.tool.ts permissionCheck().
 ] as const;
 
 export type CanonicalToolId = typeof CANONICAL_TOOL_IDS[number];
 
-export type ToolFamily = 'lark' | 'google' | 'zoho' | 'context' | 'rag' | 'data';
+export type ToolFamily = 'lark' | 'google' | 'zoho' | 'context' | 'rag' | 'data' | 'execution';
 
 export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   larkMessaging:  'lark',

@@ -31,6 +31,7 @@ export interface LarkTokenResponse {
   larkEmail:              string | null;
   larkEnName:             string | null;
   tenantKey:              string | null;
+  scope:                  string | null;
 }
 
 export interface LarkUserInfo {
@@ -47,6 +48,13 @@ interface LarkAppAccessToken {
   token:       string;
   expiresAtMs: number;
 }
+
+export const LARK_USER_OAUTH_SCOPES = [
+  'contact:user.email:readonly',
+  'task:task:read',
+  'task:task:write',
+  'offline_access',
+] as const;
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -66,62 +74,64 @@ export class LarkOAuthService {
 
   // ── 1. Build authorize URL ─────────────────────────────────────────────────
 
-  getAuthorizeUrl(state: string): string {
+  getAuthorizeUrl(state: string, opts?: { redirectUri?: string; scopes?: readonly string[] }): string {
     const params = new URLSearchParams({
-      app_id:       this.appId,
-      redirect_uri: this.redirectUri,
+      client_id:    this.appId,
+      redirect_uri: opts?.redirectUri ?? this.redirectUri,
       state,
+      scope:        (opts?.scopes ?? LARK_USER_OAUTH_SCOPES).join(' '),
     });
-    return `${this.apiBase}/open-apis/authen/v1/index?${params}`;
+    return `${this.authBase()}/open-apis/authen/v1/authorize?${params}`;
   }
 
   // ── 2. Exchange authorization code ────────────────────────────────────────
 
-  async exchangeCode(code: string): Promise<LarkTokenResponse> {
-    const appAccessToken = await this.getAppAccessToken();
-    const res = await fetch(`${this.apiBase}/open-apis/authen/v1/oidc/access_token`, {
+  async exchangeCode(code: string, redirectUri: string = this.redirectUri): Promise<LarkTokenResponse> {
+    const res = await fetch(`${this.apiBase}/open-apis/authen/v2/oauth/token`, {
       method:  'POST',
       headers: {
-        'Authorization': `Bearer ${appAccessToken}`,
-        'Content-Type':  'application/json',
+        'Content-Type': 'application/json; charset=utf-8',
       },
       body: JSON.stringify({
-        grant_type: 'authorization_code',
+        grant_type:    'authorization_code',
+        client_id:     this.appId,
+        client_secret: this.appSecret,
         code,
+        redirect_uri:  redirectUri,
       }),
     });
 
     const raw = await res.json() as Record<string, unknown>;
-    if (!res.ok || raw['code'] !== 0) {
-      throw new Error(`Lark token exchange failed: ${raw['msg'] ?? raw['message'] ?? res.status}`);
+    if (!res.ok || !this.isSuccess(raw['code'])) {
+      throw new Error(`Lark token exchange failed: ${raw['error_description'] ?? raw['msg'] ?? raw['message'] ?? res.status}`);
     }
 
-    const data = raw['data'] as Record<string, unknown>;
+    const data = (raw['data'] ?? raw) as Record<string, unknown>;
     return this.enrichTokenResponse(data);
   }
 
   // ── 3. Refresh access token ────────────────────────────────────────────────
 
   async refreshUserToken(refreshToken: string): Promise<LarkTokenResponse> {
-    const appAccessToken = await this.getAppAccessToken();
-    const res = await fetch(`${this.apiBase}/open-apis/authen/v1/oidc/refresh_access_token`, {
+    const res = await fetch(`${this.apiBase}/open-apis/authen/v2/oauth/token`, {
       method:  'POST',
       headers: {
-        'Authorization': `Bearer ${appAccessToken}`,
-        'Content-Type':  'application/json',
+        'Content-Type': 'application/json; charset=utf-8',
       },
       body: JSON.stringify({
         grant_type:    'refresh_token',
+        client_id:     this.appId,
+        client_secret: this.appSecret,
         refresh_token: refreshToken,
       }),
     });
 
     const raw = await res.json() as Record<string, unknown>;
-    if (!res.ok || raw['code'] !== 0) {
-      throw new Error(`Lark token refresh failed: ${raw['msg'] ?? raw['message'] ?? res.status}`);
+    if (!res.ok || !this.isSuccess(raw['code'])) {
+      throw new Error(`Lark token refresh failed: ${raw['error_description'] ?? raw['msg'] ?? raw['message'] ?? res.status}`);
     }
 
-    const data = raw['data'] as Record<string, unknown>;
+    const data = (raw['data'] ?? raw) as Record<string, unknown>;
     return this.enrichTokenResponse(data);
   }
 
@@ -149,7 +159,18 @@ export class LarkOAuthService {
     };
   }
 
-  // ── Helper: generate a random nonce ───────────────────────────────────────
+  async fetchUserEmailByOpenId(openId: string): Promise<string | null> {
+    const appToken = await this.getAppAccessToken();
+    const res = await fetch(
+      `${this.apiBase}/open-apis/contact/v3/users/${openId}?user_id_type=open_id`,
+      { headers: { 'Authorization': `Bearer ${appToken}` } },
+    );
+    const raw = await res.json() as Record<string, unknown>;
+    if (!res.ok || raw['code'] !== 0) return null;
+    const data = raw['data'] as Record<string, unknown> | undefined;
+    const user = data?.['user'] as Record<string, unknown> | undefined;
+    return (user?.['enterprise_email'] as string) || (user?.['email'] as string) || null;
+  }
 
   generateNonce(): string {
     return randomBytes(24).toString('hex');
@@ -188,6 +209,16 @@ export class LarkOAuthService {
     return token;
   }
 
+  private authBase(): string {
+    if (this.apiBase.includes('open.feishu.cn')) return 'https://accounts.feishu.cn';
+    if (this.apiBase.includes('open.larksuite.com')) return 'https://accounts.larksuite.com';
+    return this.apiBase.replace(/\/$/, '');
+  }
+
+  private isSuccess(code: unknown): boolean {
+    return code === 0 || code === '0';
+  }
+
   private async enrichTokenResponse(data: Record<string, unknown>): Promise<LarkTokenResponse> {
     const parsed = this.parseTokenResponse(data);
     const userInfo = await this.getUserInfo(parsed.accessToken);
@@ -200,6 +231,7 @@ export class LarkOAuthService {
       larkEmail:  userInfo.larkEmail  ?? parsed.larkEmail,
       larkEnName: userInfo.larkEnName ?? parsed.larkEnName,
       tenantKey:  userInfo.tenantKey  ?? parsed.tenantKey,
+      scope:      parsed.scope,
     };
   }
 
@@ -217,6 +249,7 @@ export class LarkOAuthService {
       larkEmail:             ((data['enterprise_email'] ?? data['email']) as string) ?? null,
       larkEnName:            (data['en_name']   as string)       ?? null,
       tenantKey:             (data['tenant_key'] as string)      ?? null,
+      scope:                 (data['scope'] as string)           ?? null,
     };
   }
 }

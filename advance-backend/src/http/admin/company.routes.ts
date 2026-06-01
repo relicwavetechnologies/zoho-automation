@@ -9,6 +9,7 @@
  *   POST /invites               — create invite
  *   GET  /onboarding/status     — integration provider status
  *   POST /onboarding/zoho-start — build backend-managed Zoho OAuth URL
+ *   POST /onboarding/lark-start — build backend-managed Lark user OAuth URL
  *   POST /onboarding/connect    — complete backend-managed Zoho OAuth callback
  *   GET  /tool-permissions      — company tool permissions matrix
  */
@@ -21,14 +22,21 @@ import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import type { CachePort } from '../../shared/cache';
 import type { TypedEnv } from '../../config/env';
+import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
+import {
+  LARK_OAUTH_NONCE_TTL_SECONDS,
+  encodeLarkOAuthState,
+  larkOAuthNonceKey,
+} from '../lark/lark-auth.routes';
 
 export interface CompanyRoutesDeps {
   prisma: PrismaClient;
   logger: Logger;
   env: TypedEnv;
   cache: CachePort;
+  larkOAuthService?: LarkOAuthService;
   zohoTokenService: ZohoTokenService;
   zohoConnectionRepo: ZohoConnectionRepository;
   larkContactsClient?: { listDepartmentMembers(departmentId: string, limit?: number): Promise<Array<{ openId: string; displayName: string; email?: string }>> };
@@ -88,6 +96,11 @@ const zohoStartSchema = z.object({
   companyId:  z.string().uuid().optional(),
   returnTo:   z.string().url().optional(),
   scopeLevel: z.enum(ZOHO_SCOPE_LEVELS).optional(),
+});
+
+const larkStartSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  returnTo:  z.string().url().optional(),
 });
 
 const zohoConnectSchema = z.object({
@@ -423,6 +436,78 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       scopeLevel,
       message: `Zoho OAuth started with ${scopeLevel} access.`,
     }, 'Zoho OAuth URL created');
+  }));
+
+  router.post('/onboarding/lark-start', asyncRoute(async (req, res) => {
+    const body = larkStartSchema.parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, body.companyId);
+    const userId = res.locals['userId'] as string | undefined;
+
+    if (!userId) throw routeError(401, 'Admin user context is required');
+    if (!deps.larkOAuthService?.isConfigured()) {
+      throw routeError(503, 'Lark OAuth is not configured');
+    }
+
+    const [user, existingLink, binding] = await Promise.all([
+      prisma.user.findUnique({
+        where:  { id: userId },
+        select: { email: true },
+      }),
+      prisma.larkUserAuthLink.findUnique({
+        where:  { userId_companyId: { userId, companyId } },
+        select: { larkOpenId: true },
+      }),
+      prisma.larkTenantBinding.findFirst({
+        where:  { companyId, isActive: true },
+        select: { larkTenantKey: true },
+      }),
+    ]);
+
+    if (!binding) throw routeError(400, 'No active Lark tenant binding exists for this company');
+
+    const identityFilters = [
+      ...(user?.email ? [{ email: user.email }] : []),
+      ...(existingLink?.larkOpenId ? [
+        { larkOpenId: existingLink.larkOpenId },
+        { externalUserId: existingLink.larkOpenId },
+      ] : []),
+    ];
+
+    if (identityFilters.length === 0) {
+      throw routeError(400, 'No Lark identity is mapped for this admin user');
+    }
+
+    const identity = await prisma.channelIdentity.findFirst({
+      where: {
+        companyId,
+        channel: 'lark',
+        OR:      identityFilters,
+      },
+      select: {
+        externalUserId: true,
+        larkOpenId:     true,
+      },
+    });
+
+    const larkOpenId = identity?.larkOpenId ?? identity?.externalUserId ?? existingLink?.larkOpenId;
+    if (!larkOpenId) {
+      throw routeError(400, 'No Lark open_id is mapped for this admin user');
+    }
+
+    const nonce = deps.larkOAuthService.generateNonce();
+    const noncePayload = { companyId, userId, larkOpenId };
+    const cacheResult = await deps.cache.set(larkOAuthNonceKey(nonce), noncePayload, LARK_OAUTH_NONCE_TTL_SECONDS);
+    if (!cacheResult.ok) throw routeError(503, 'Unable to start Lark OAuth session');
+
+    const state = encodeLarkOAuthState({ companyId, userId, larkOpenId, nonce });
+    const url = deps.larkOAuthService.getAuthorizeUrl(state);
+
+    deps.logger.info('lark.admin_oauth.start', { companyId, userId, larkOpenId, tenantKey: binding.larkTenantKey });
+    success(res, {
+      provider: 'lark',
+      url,
+      returnTo: body.returnTo ?? `${deps.env.APP_BASE_URL}/settings?tab=integrations`,
+    }, 'Lark OAuth URL created');
   }));
 
   router.post('/onboarding/connect', asyncRoute(async (req, res) => {

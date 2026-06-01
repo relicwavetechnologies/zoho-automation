@@ -37,7 +37,7 @@ export type DepartmentToolCatalogEntry = {
   toolId: string
   name: string
   description: string
-  family: "zoho" | "lark" | "google" | "context" | "internal"
+  family: "zoho" | "lark" | "google" | "context" | "execution" | "internal"
   deprecated: boolean
 }
 
@@ -80,6 +80,7 @@ function mapFamily(domain: string | null, category: string | null): DepartmentTo
   if (value.includes("google") || value.includes("gmail")) return "google"
   if (value.includes("zoho")) return "zoho"
   if (value.includes("context") || value.includes("rag") || value.includes("search")) return "context"
+  if (value.includes("execution") || value.includes("terminal")) return "execution"
   return "internal"
 }
 

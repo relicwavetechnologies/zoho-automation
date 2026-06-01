@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo Atlas — Terminal Execution</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="atlas.css" />
+  <style>
+    /* terminal mock */
+    .term { background: hsl(0 0% 3%); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; margin: 0 0 10px; }
+    .term-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-elev-1); font-size: 12px; color: var(--fg-muted); }
+    .term-head .net { margin-left: auto; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+    .term-head .net.off { color: var(--fg-dim); }
+    .term-head .net.on { color: var(--danger); border-color: hsl(0 60% 45% / 0.4); background: var(--danger-dim); }
+    .term-body { padding: 12px 14px; min-height: 80px; max-height: 280px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; color: hsl(0 0% 80%); }
+    .term-body .cmd { color: hsl(0 0% 96%); }
+    .term-body .cmd::before { content: '$ '; color: var(--planned); }
+    .term-body .out { color: hsl(0 0% 66%); }
+    .term-body .err { color: hsl(0 70% 70%); }
+    .term-body .cursor { display:inline-block; width:7px; height:13px; background: var(--planned); vertical-align:middle; animation: tblink 1s steps(2) infinite; }
+    @keyframes tblink { 0%,50%{opacity:1} 50.01%,100%{opacity:0} }
+
+    .term-rolled { display:flex; align-items:center; gap:8px; padding: 9px 13px; margin-bottom:10px; font-size: 13px; color: var(--fg-muted); border: 1px solid var(--border-subtle); border-radius: var(--r-md); background: var(--bg-elev-1); }
+    .term-rolled .v { color: var(--fg); font-weight: 500; }
+
+    /* approval card */
+    .approval { border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg-elev-2); padding: 14px; margin-bottom: 10px; }
+    .approval .a-top { display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--fg-muted); margin-bottom:10px; }
+    .approval .a-top .ico { width:26px; height:26px; border-radius:7px; background:var(--bg-elev-3); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; }
+    .approval .a-top .ico svg { width:14px; height:14px; color:var(--fg-muted); }
+    .approval .a-top .net-flag { margin-left:auto; font-size:10.5px; padding:2px 8px; border-radius:999px; }
+    .approval .a-cmd { font-family:'JetBrains Mono', monospace; font-size:12.5px; background:hsl(0 0% 3%); border:1px solid var(--border-subtle); border-radius:6px; padding:9px 12px; color:hsl(0 0% 90%); margin-bottom:12px; white-space:pre-wrap; word-break:break-all; }
+    .approval .a-cmd::before { content:'$ '; color: var(--planned); }
+    .approval .a-actions { display:flex; align-items:center; gap:8px; }
+    .approval .a-btn { padding:7px 16px; font-size:12.5px; font-weight:600; border-radius:7px; border:1px solid var(--border); cursor:pointer; }
+    .approval .a-btn.run { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+    .approval .a-btn.decline { background:var(--bg-elev-3); color:var(--fg); }
+    .approval .a-btn:hover { filter: brightness(1.08); }
+    .approval .a-skip { margin-left:auto; font-size:11.5px; color:var(--fg-dim); display:flex; align-items:center; gap:6px; cursor:pointer; }
+    .approval.resolved { opacity:0.6; }
+    .approval.resolved .a-actions { display:none; }
+    .approval .a-verdict { font-size:12px; font-weight:600; }
+    .approval .a-verdict.ran { color:var(--shipped); }
+    .approval .a-verdict.declined { color:var(--danger); }
+
+    /* decline note injected into conversation */
+    .decline-note { display:flex; align-items:center; gap:9px; padding:10px 13px; margin-bottom:10px; border-radius:var(--r-md); background:var(--danger-dim); border:1px solid hsl(0 60% 45% / 0.3); font-size:13px; color:hsl(0 70% 78%); }
+    .decline-note .mono { font-family:'JetBrains Mono',monospace; font-size:11.5px; }
+    .agent-msg { font-size:14px; line-height:1.7; color:var(--fg); padding:4px 2px 10px; }
+    .agent-offer { display:flex; gap:8px; margin-top:6px; }
+    .agent-offer button { padding:6px 13px; font-size:12px; font-weight:500; border-radius:7px; border:1px solid var(--border); background:var(--bg-elev-3); color:var(--fg); cursor:pointer; }
+    .agent-offer button:hover { background:var(--bg-hover); }
+
+    .mode-seg { display:inline-flex; border:1px solid var(--border); border-radius:7px; overflow:hidden; }
+    .mode-seg button { padding:5px 12px; font-size:11.5px; background:var(--bg-elev-2); color:var(--fg-muted); border:0; cursor:pointer; }
+    .mode-seg button.active { background:var(--bg-elev-3); color:var(--fg); font-weight:600; }
+  </style>
+</head>
+<body>
+  <div class="atlas">
+    <aside class="atlas-nav" id="atlas-nav"></aside>
+    <main class="atlas-main">
+      <div class="atlas-topbar" id="atlas-topbar"></div>
+      <div class="atlas-content">
+        <div class="inner" data-atlas-page="terminal">
+
+          <div class="page-head">
+            <div class="eyebrow">In flight · <span style="color:var(--planned)">Planned</span></div>
+            <h1>Terminal Execution</h1>
+            <p class="lede">
+              Give Divo a real shell — but never silently. <strong>Every container run is gated by a
+              Run / Decline card in the chat.</strong> Approve and it spins up, streaming a live terminal.
+              Decline and the agent is told, in its own context, that you said no — then it stops and
+              offers you auto-mode if you'd rather not be asked again.
+            </p>
+          </div>
+
+          <!-- Interactive mock -->
+          <div class="section">
+            <h2>Try the gate</h2>
+            <p class="section-sub">Hit Replay. Divo proposes a command — <b>you</b> click Run or Decline. Flip to Auto-run to skip the gate entirely.</p>
+            <div class="mock-frame">
+              <div class="mock-ctrl">
+                <button class="btn" id="play">▶ Replay</button>
+                <span class="mode-seg" id="modeSeg">
+                  <button data-mode="ask" class="active">Ask every time</button>
+                  <button data-mode="auto">Auto-run</button>
+                </span>
+                <button class="btn ghost" id="netToggle">🌐 Net: off</button>
+                <span class="label" id="state" style="margin-left:auto;">idle</span>
+              </div>
+              <div style="padding: 16px;"><div id="stage"></div></div>
+            </div>
+          </div>
+
+          <!-- Approval gate & modes -->
+          <div class="section">
+            <h2>The run-gate &amp; its escape hatches</h2>
+            <p class="section-sub">A local, in-chat decision — fast, not the org manager-approval flow. Three modes:</p>
+            <div class="grid cols-3">
+              <div class="card">
+                <h3>Ask every time <span class="pill planned" style="margin-left:auto"><span class="pd"></span>Default</span></h3>
+                <p>Each command renders a Run / Decline card before the container starts. Nothing executes until you click.</p>
+              </div>
+              <div class="card">
+                <h3>Skip for this chat</h3>
+                <p>A checkbox on the card. Choosing it stops asking for the rest of this thread — handy mid-task once you trust the run. Resets next thread.</p>
+              </div>
+              <div class="card">
+                <h3>Auto-run mode</h3>
+                <p>Thread-level toggle (and a global default in settings). Divo runs without asking — Cursor's YOLO mode. Net access + destructive commands <b>still</b> gate even here.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Decline behaviour -->
+          <div class="section">
+            <h2>What "Decline" does</h2>
+            <p class="section-sub">Declining is not a silent no-op — the agent learns about it and adapts.</p>
+            <div class="flow" style="flex-wrap:wrap;">
+              <div class="flow-node"><span class="fn-label">You click Decline</span><span class="fn-sub">on the run-gate card</span></div>
+              <div class="flow-arrow">→</div>
+              <div class="flow-node accent"><span class="fn-label">Tool returns declined</span><span class="fn-sub">no process ever spawns</span></div>
+              <div class="flow-arrow">→</div>
+              <div class="flow-node"><span class="fn-label">Conversation gets a note</span><span class="fn-sub">"declined by user" — AI sees it</span></div>
+              <div class="flow-arrow">→</div>
+              <div class="flow-node"><span class="fn-label">Execution stops</span><span class="fn-sub">agent offers auto-run / skip</span></div>
+            </div>
+            <div class="callout" style="margin-top:16px;">
+              The decline is fed back as the <b>tool result</b> the model reads:
+              <code>declined: The user declined to run "npm test". Do not retry; ask what they'd prefer or offer auto-run.</code>
+              Because it lands in the conversation array, the agent's very next turn already knows it was
+              refused — it won't blindly retry, and it can explain what the command would have done instead.
+            </div>
+          </div>
+
+          <!-- Tool spec -->
+          <div class="section">
+            <h2>The <code>runCommand</code> tool</h2>
+            <p class="section-sub">Standard <code>Tool&lt;TArgs,TOut&gt;</code> contract; the gate lives in <code>execute()</code> before any spawn.</p>
+            <div class="code">
+              <div class="code-head"><span class="lang">typescript</span></div>
+<pre><span class="c">// tools/families/run-command.tool.ts</span>
+<span class="k">const</span> argsSchema = z.<span class="fn">object</span>({
+  command:            z.<span class="fn">string</span>(),
+  withInternetAccess: z.<span class="fn">boolean</span>().<span class="fn">optional</span>(),   <span class="c">// always gates, even in auto-run</span>
+  timeoutMs:          z.<span class="fn">number</span>().<span class="fn">max</span>(<span class="n">120000</span>).<span class="fn">optional</span>(),
+});
+
+<span class="k">const</span> resultSchema = z.<span class="fn">object</span>({
+  status:     z.<span class="fn">enum</span>([<span class="s">'completed'</span>, <span class="s">'declined'</span>]),
+  exitCode:   z.<span class="fn">number</span>().<span class="fn">optional</span>(),
+  stdout:     z.<span class="fn">string</span>().<span class="fn">optional</span>(),
+  stderr:     z.<span class="fn">string</span>().<span class="fn">optional</span>(),
+  durationMs: z.<span class="fn">number</span>().<span class="fn">optional</span>(),
+});
+
+<span class="k">async</span> <span class="fn">execute</span>(args, ctx) {
+  <span class="k">const</span> mode = <span class="k">await</span> <span class="fn">getRunMode</span>(ctx.runContext.chatId);   <span class="c">// 'ask' | 'auto'</span>
+  <span class="k">const</span> mustGate = mode === <span class="s">'ask'</span> || args.withInternetAccess || <span class="fn">isDestructive</span>(args.command);
+
+  <span class="k">if</span> (mustGate) {
+    <span class="k">const</span> decision = <span class="k">await</span> ctx.<span class="fn">requestRunApproval</span>({
+      command: args.command, cwd: workspacePath, net: !!args.withInternetAccess,
+    });
+    <span class="k">if</span> (decision.kind === <span class="s">'decline'</span>) {
+      <span class="k">return</span> <span class="fn">ok</span>({ status: <span class="s">'declined'</span> });          <span class="c">// → "declined by user" tool result</span>
+    }
+    <span class="k">if</span> (decision.remember === <span class="s">'chat'</span>) <span class="k">await</span> <span class="fn">setRunMode</span>(ctx.runContext.chatId, <span class="s">'auto'</span>);
+  }
+  <span class="c">// spawn in cwd, stream terminal.* events, return { status:'completed', exitCode, … }</span>
+}</pre>
+            </div>
+          </div>
+
+          <!-- WS schema with handshake -->
+          <div class="section">
+            <h2>WebSocket events — the approval handshake</h2>
+            <p class="section-sub">The gate is a request/response over the same socket, then the live stream.</p>
+            <div class="events">
+              <div class="event-row"><span class="ev-name">terminal.approval</span><span class="ev-desc">server → client. <span class="mono">{ callId, command, cwd, net }</span> — renders the Run / Decline card.</span></div>
+              <div class="event-row"><span class="ev-name">terminal.decision</span><span class="ev-desc">client → server. <span class="mono">{ callId, decision: 'run'|'decline', remember?: 'chat' }</span> — resolves the gate.</span></div>
+              <div class="event-row"><span class="ev-name">terminal.start</span><span class="ev-desc">server → client. <span class="mono">{ callId, command, cwd, net }</span> — only fires after a <b>run</b> decision.</span></div>
+              <div class="event-row"><span class="ev-name">terminal.output</span><span class="ev-desc"><span class="mono">{ callId, data, stream }</span> — live stdout/stderr, debounced.</span></div>
+              <div class="event-row"><span class="ev-name">terminal.end</span><span class="ev-desc"><span class="mono">{ callId, exitCode, durationMs }</span> — panel rolls into an activity row.</span></div>
+              <div class="event-row"><span class="ev-name">terminal.declined</span><span class="ev-desc"><span class="mono">{ callId }</span> — confirms the decline so the client renders the note + auto-run offer.</span></div>
+            </div>
+          </div>
+
+          <!-- Sandbox tiers -->
+          <div class="section">
+            <h2>Sandbox tiers</h2>
+            <table class="spec">
+              <thead><tr><th style="width:150px;">Tier</th><th>Isolation</th><th>Network</th><th>Phase</th></tr></thead>
+              <tbody>
+                <tr><td><b>Host spawn</b></td><td><code>child_process.spawn</code>, cwd = workspace, env-scrubbed, timeout + output cap.</td><td>Host network</td><td>Phase 1</td></tr>
+                <tr><td><b>Container</b></td><td>Per-run Docker container, read-only base + mounted workspace, dropped caps.</td><td><b>Off by default</b></td><td>Phase 2</td></tr>
+                <tr><td><b>Container + net</b></td><td>Network namespace enabled behind the gated <code>withInternetAccess</code> flag.</td><td>On — always gates</td><td>Phase 3</td></tr>
+              </tbody>
+            </table>
+            <div class="callout danger" style="margin-top:16px;">
+              <b>Net access always gates, even in auto-run.</b> Auto-mode covers ordinary local commands;
+              internet access and destructive patterns (<code>rm -rf</code>, <code>git push</code>, <code>curl | sh</code>)
+              re-arm the Run / Decline card no matter what.
+            </div>
+          </div>
+
+          <!-- Guardrails -->
+          <div class="section">
+            <h2>Guardrails</h2>
+            <div class="prose">
+              <ul>
+                <li><strong>Nothing runs un-gated</strong> — Phase 1 ships the Run / Decline card on; auto-run is opt-in per thread.</li>
+                <li><strong>Decline is legible to the agent</strong> — returned as the tool result, so the next turn already knows and won't retry.</li>
+                <li><strong>Workspace-pinned cwd</strong> — cwd re-asserted per call; the model can't <code>cd</code> out.</li>
+                <li><strong>Timeout + output cap</strong> — hard kill ≤120s, output truncated with a flag.</li>
+                <li><strong>Env scrub + denylist</strong> — secrets stripped; fork bombs / disk wipes short-circuit before spawn.</li>
+                <li><strong>Full audit</strong> — command, decision, who decided, exit code, net flag → orchestration tracer.</li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- Phasing -->
+          <div class="section">
+            <h2>Delivery phases</h2>
+            <div class="phases">
+              <div class="phase done">
+                <div class="ph-marker">✓</div>
+                <div class="ph-body">
+                  <div class="ph-title">Run-gate + host spawn + live terminal <span class="pill progress"><span class="pd"></span>Wired — verifying</span></div>
+                  <div class="ph-desc"><code>runCommand</code> tool with the <b>Run / Decline gate on by default</b>, decline→conversation note, auto-run + skip-for-chat toggles, host <code>spawn</code> in workspace cwd, live terminal panel that rolls to an activity row. Built end-to-end: tool + bridge registry + adapter + gateway + client TerminalCard.</div>
+                </div>
+              </div>
+              <div class="phase">
+                <div class="ph-marker">2</div>
+                <div class="ph-body">
+                  <div class="ph-title">Docker sandbox + manager approval</div>
+                  <div class="ph-desc">Per-run container, dropped caps, mounted workspace only. Org-level manager approval (Lark card) layered on top of the local gate for destructive commands.</div>
+                </div>
+              </div>
+              <div class="phase">
+                <div class="ph-marker">3</div>
+                <div class="ph-body">
+                  <div class="ph-title">Internet flag + Codex tools</div>
+                  <div class="ph-desc"><code>withInternetAccess</code> (always gated). Add <code>applyPatch</code> / <code>editFile</code> with diff preview in the editor pane — Codex parity.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- File plan -->
+          <div class="section">
+            <h2>Where it will live</h2>
+            <table class="spec">
+              <thead><tr><th>Piece</th><th>File (new unless noted)</th></tr></thead>
+              <tbody>
+                <tr><td>Tool + gate logic</td><td><code>tools/families/run-command.tool.ts</code></td></tr>
+                <tr><td>Sandbox executor</td><td><code>tools/shared/command-executor.ts</code></td></tr>
+                <tr><td>Run-mode store (ask/auto per chat)</td><td><code>application/orchestration/run-mode.ts</code></td></tr>
+                <tr><td>Approval handshake + terminal events</td><td><code>channels/desktop/desktop.adapter.ts</code> (extend)</td></tr>
+                <tr><td>StatusChannel terminal/approval hooks</td><td><code>engine/status-channel.ts</code> (extend)</td></tr>
+                <tr><td>Client parse + decision send</td><td><code>new-desktop/src/lib/ws.ts</code> (extend)</td></tr>
+                <tr><td>Run-gate card + terminal panel</td><td><code>new-desktop/src/components/chat/TerminalPanel.tsx</code></td></tr>
+                <tr><td>Auto-run toggle</td><td><code>new-desktop/src/components/chat/Composer.tsx</code> (extend)</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="atlas-foot"><span>Divo Atlas · Terminal Execution</span><span>Planned · Phase 1 next</span></div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="atlas.js"></script>
+  <script>
+  (function () {
+    let net = false;
+    let mode = 'ask';
+    let skipThisChat = false;
+    let timer = null;
+
+    const stage = document.getElementById('stage');
+    const stateEl = document.getElementById('state');
+    const netBtn = document.getElementById('netToggle');
+    const modeSeg = document.getElementById('modeSeg');
+
+    netBtn.addEventListener('click', () => {
+      net = !net;
+      netBtn.textContent = `🌐 Net: ${net ? 'on' : 'off'}`;
+      netBtn.style.color = net ? 'var(--danger)' : '';
+    });
+    modeSeg.querySelectorAll('button').forEach((b) => {
+      b.addEventListener('click', () => {
+        mode = b.dataset.mode;
+        modeSeg.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+      });
+    });
+
+    // Scenario: propose npm test → (fails) → propose fix → re-run → green
+    const PLAN = [
+      { command: 'npm test', cwd: '~/lahore',
+        out: '\n> divo@1.0.0 test\n> node --test\n\nTAP version 13\nok 1 - engine boots\nok 2 - registry loads\n',
+        err: 'not ok 3 - markdown renders\n  Error: Cannot find module \'./highlighter\'\n',
+        exitCode: 1, durationMs: 2100 },
+      { think: 'Test 3 fails on a stale import path — patch the relative import in Markdown.tsx.' },
+      { command: 'sed -i "" "s#./highlighter#@/lib/markdown/highlighter#" src/components/chat/Markdown.tsx',
+        cwd: '~/lahore', out: '', exitCode: 0, durationMs: 120 },
+      { command: 'npm test', cwd: '~/lahore',
+        out: '\nTAP version 13\nok 1 - engine boots\nok 2 - registry loads\nok 3 - markdown renders\n\n# pass 3\n# fail 0\n',
+        exitCode: 0, durationMs: 1980 },
+      { reply: 'Green — 3/3. Test 3 was importing <code>./highlighter</code> on a path that broke after the move; switched it to the <code>@/lib</code> alias.' },
+    ];
+
+    let convo = [];   // rendered items
+    let idx = 0;
+
+    function reset() { convo = []; idx = 0; skipThisChat = false; stateEl.textContent = 'idle'; render(); }
+
+    function render() {
+      let html = '';
+      for (const item of convo) {
+        if (item.kind === 'think') {
+          html += `<div class="term-rolled"><span class="v">Thinking</span><span style="color:var(--fg-muted)">${item.text}</span></div>`;
+        } else if (item.kind === 'approval') {
+          const resolved = item.verdict ? ' resolved' : '';
+          html += `<div class="approval${resolved}" data-aid="${item.id}">
+            <div class="a-top">
+              <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
+              <span>Divo wants to run a command in <b style="color:var(--fg)">${item.cwd}</b></span>
+              ${item.net ? '<span class="net-flag" style="color:var(--danger); background:var(--danger-dim);">🌐 internet access</span>' : ''}
+              ${item.verdict ? `<span class="a-verdict ${item.verdict}" style="margin-left:auto;">${item.verdict === 'ran' ? '✓ Ran' : '⊘ Declined'}</span>` : ''}
+            </div>
+            <div class="a-cmd">${escapeHtml(item.command)}</div>
+            <div class="a-actions">
+              <button class="a-btn run" data-act="run" data-aid="${item.id}">Run</button>
+              <button class="a-btn decline" data-act="decline" data-aid="${item.id}">Decline</button>
+              <label class="a-skip"><input type="checkbox" data-skip="${item.id}"> Don't ask again this chat</label>
+            </div>
+          </div>`;
+        } else if (item.kind === 'terminal') {
+          if (item.rolled) {
+            const okColor = item.exitCode === 0 ? 'var(--shipped)' : 'var(--danger)';
+            html += `<div class="term-rolled">
+              <span class="v">Ran</span>
+              <span style="font-family:'JetBrains Mono',monospace; color:var(--fg-muted)">${escapeShort(item.command)}</span>
+              <span style="margin-left:auto; color:var(--fg-dim)">exit <span style="color:${okColor}">${item.exitCode}</span> · ${(item.durationMs/1000).toFixed(1)}s</span>
+            </div>`;
+          } else {
+            html += `<div class="term">
+              <div class="term-head"><span>zsh — ${item.cwd}</span><span class="net ${net?'on':'off'}">${net?'● net on':'○ no net'}</span></div>
+              <div class="term-body"><span class="cmd">${escapeHtml(item.command)}</span>${item.output||''}${item.running?'<span class="cursor"></span>':''}</div>
+            </div>`;
+          }
+        } else if (item.kind === 'decline-note') {
+          html += `<div class="decline-note">⊘ <span>Declined by user — <span class="mono">runCommand("${escapeShort(item.command)}")</span> was not run. (This note is visible to Divo.)</span></div>`;
+        } else if (item.kind === 'agent') {
+          html += `<div class="agent-msg">${item.text}
+            ${item.offer ? `<div class="agent-offer">
+              <button data-offer="auto">Enable auto-run</button>
+              <button data-offer="retry">Run it now</button>
+              <button data-offer="explain">Just explain it</button>
+            </div>` : ''}
+          </div>`;
+        }
+      }
+      stage.innerHTML = html || '<div style="color:var(--fg-dim); font-size:13px; padding:20px 0;">Press Replay — Divo will propose a command and wait for your call.</div>';
+      const tb = stage.querySelector('.term-body:last-of-type');
+      if (tb) tb.scrollTop = tb.scrollHeight;
+      wire();
+    }
+
+    function wire() {
+      stage.querySelectorAll('[data-act]').forEach((b) => {
+        b.onclick = () => {
+          const aid = b.dataset.aid;
+          const skipBox = stage.querySelector(`[data-skip="${aid}"]`);
+          if (skipBox && skipBox.checked) skipThisChat = true;
+          const ap = convo.find((c) => c.kind === 'approval' && c.id === aid);
+          if (!ap || ap.verdict) return;
+          if (b.dataset.act === 'run') { ap.verdict = 'ran'; render(); runStep(ap.stepIndex); }
+          else { ap.verdict = 'declined'; declineStep(ap.stepIndex); }
+        };
+      });
+      stage.querySelectorAll('[data-offer]').forEach((b) => {
+        b.onclick = () => {
+          const o = b.dataset.offer;
+          if (o === 'auto') { mode = 'auto'; modeSeg.querySelectorAll('button').forEach((x)=>x.classList.toggle('active', x.dataset.mode==='auto')); proceed(); }
+          else if (o === 'retry') { skipThisChat = true; proceed(); }
+          else { convo.push({ kind:'agent', text:'It would have run the project test suite (<code>node --test</code>) and reported pass/fail. No changes to your files. Say the word and I\'ll run it.' }); stateEl.textContent='done'; render(); }
+        };
+      });
+    }
+
+    function escapeHtml(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+    function escapeShort(s){const e=escapeHtml(s);return e.length>40?e.slice(0,38)+'…':e;}
+
+    function proceed() {
+      if (idx >= PLAN.length) { stateEl.textContent = 'done'; return; }
+      const step = PLAN[idx];
+      if (step.think) { convo.push({ kind:'think', text: step.think }); idx++; render(); setTimeout(proceed, 600); return; }
+      if (step.reply) { convo.push({ kind:'agent', text: step.reply }); idx++; stateEl.textContent='done'; render(); return; }
+      // command step — gate?
+      const mustGate = (mode === 'ask' && !skipThisChat) || net || /rm -rf|git push|curl/.test(step.command);
+      if (mustGate) {
+        stateEl.textContent = 'awaiting your decision';
+        convo.push({ kind:'approval', id:'a'+idx, stepIndex:idx, command:step.command, cwd:step.cwd, net });
+        render();
+      } else {
+        runStep(idx);
+      }
+    }
+
+    function runStep(stepIndex) {
+      const step = PLAN[stepIndex];
+      stateEl.textContent = 'running';
+      const term = { kind:'terminal', command: step.command, cwd: step.cwd, output:'', running:true, rolled:false };
+      convo.push(term); render();
+      let t = 300;
+      if (step.out) { setTimeout(()=>{ term.output += `<span class="out">${escapeHtml(step.out)}</span>`; render(); }, t); t += 500; }
+      if (step.err) { setTimeout(()=>{ term.output += `<span class="err">${escapeHtml(step.err)}</span>`; render(); }, t); t += 500; }
+      setTimeout(()=>{ term.running=false; term.rolled=true; term.exitCode=step.exitCode; term.durationMs=step.durationMs; render(); idx = stepIndex+1; setTimeout(proceed, 400); }, t);
+    }
+
+    function declineStep(stepIndex) {
+      const step = PLAN[stepIndex];
+      stateEl.textContent = 'declined';
+      convo.push({ kind:'decline-note', command: step.command });
+      convo.push({ kind:'agent', text:'Understood — I won\'t run that. I\'ve stopped here.', offer:true });
+      render();
+    }
+
+    function play() { reset(); setTimeout(proceed, 300); }
+
+    document.getElementById('play').addEventListener('click', () => { if (timer) clearTimeout(timer); play(); });
+    reset();
+  })();
+  </script>
+</body>
+</html>

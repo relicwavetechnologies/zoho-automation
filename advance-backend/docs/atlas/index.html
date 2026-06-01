@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo Atlas — Overview</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="atlas.css" />
+</head>
+<body>
+  <div class="atlas">
+    <aside class="atlas-nav" id="atlas-nav"></aside>
+    <main class="atlas-main">
+      <div class="atlas-topbar" id="atlas-topbar"></div>
+      <div class="atlas-content">
+        <div class="inner" data-atlas-page="overview">
+
+          <div class="page-head">
+            <div class="eyebrow">Living product map</div>
+            <h1>Divo — one agent brain, every surface</h1>
+            <p class="lede">
+              Divo is an agentic operations co-worker. The same orchestration brain runs in Lark
+              and now on the desktop, planning multi-step work and executing it across Zoho, Google,
+              Lark and the web. This Atlas is the canonical, always-current picture of how the desktop
+              experience works today — and what's coming next.
+            </p>
+          </div>
+
+          <!-- KPI row -->
+          <div class="grid cols-3" style="margin-bottom: 44px;">
+            <div class="card stat">
+              <div class="num">3</div>
+              <div class="lbl">surfaces — Lark · Desktop · Admin</div>
+            </div>
+            <div class="card stat">
+              <div class="num">22</div>
+              <div class="lbl">tool families behind one brain</div>
+            </div>
+            <div class="card stat">
+              <div class="num">7</div>
+              <div class="lbl">desktop subsystems documented in Atlas</div>
+            </div>
+          </div>
+
+          <!-- Ecosystem map -->
+          <div class="section">
+            <h2>The ecosystem</h2>
+            <p class="section-sub">
+              Every box is a real subsystem. Colour = current status. Click through the sidebar for the
+              detail page on each.
+            </p>
+            <div class="grid cols-3">
+              <a class="card hover" href="chat-ux.html">
+                <div class="card-top">
+                  <div class="icon-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></div>
+                  <span class="pill shipped"><span class="pd"></span>Shipped</span>
+                </div>
+                <h3>Chat &amp; Turns</h3>
+                <p>Full-width user bubbles, sticky-pinned per turn, auto scroll-room on send.</p>
+              </a>
+
+              <a class="card hover" href="streaming.html">
+                <div class="card-top">
+                  <div class="icon-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+                  <span class="pill shipped"><span class="pd"></span>Shipped</span>
+                </div>
+                <h3>Activity Stream</h3>
+                <p>Live shimmer rows for thinking + tool calls, rolling window, collapses to "Thought for Ns".</p>
+              </a>
+
+              <a class="card hover" href="markdown.html">
+                <div class="card-top">
+                  <div class="icon-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5h16v2M9 5v14M7 19h4"/></svg></div>
+                  <span class="pill shipped"><span class="pd"></span>Shipped</span>
+                </div>
+                <h3>Markdown Rendering</h3>
+                <p>Shiki code blocks, GFM tables, Cursor-warm inline code, streaming-safe fences.</p>
+              </a>
+
+              <a class="card hover" href="architecture.html">
+                <div class="card-top">
+                  <div class="icon-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/></svg></div>
+                  <span class="pill shipped"><span class="pd"></span>Shipped</span>
+                </div>
+                <h3>Streaming Pipeline</h3>
+                <p>Supervisor → StatusChannel → desktop WS. tool.start/end, thinking, text deltas.</p>
+              </a>
+
+              <a class="card hover" href="terminal.html">
+                <div class="card-top">
+                  <div class="icon-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></div>
+                  <span class="pill planned"><span class="pd"></span>Planned</span>
+                </div>
+                <h3>Terminal Execution</h3>
+                <p>Divo runs sandboxed shell commands, streams a live terminal, optional net access.</p>
+              </a>
+
+              <a class="card hover" href="context-memory.html">
+                <div class="card-top">
+                  <div class="icon-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></div>
+                  <span class="pill progress"><span class="pd"></span>In progress</span>
+                </div>
+                <h3>Context &amp; Memory</h3>
+                <p>DB-backed history, backend compaction, and a bounded renderer cache for all-day desktop use.</p>
+              </a>
+
+              <a class="card hover" href="roadmap.html">
+                <div class="card-top">
+                  <div class="icon-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3 3 6v15l6-3 6 3 6-3V3l-6 3-6-3Z"/></svg></div>
+                  <span class="pill progress"><span class="pd"></span>In progress</span>
+                </div>
+                <h3>Roadmap &amp; Status</h3>
+                <p>The running board of what's shipped, in flight, and queued across the desktop app.</p>
+              </a>
+            </div>
+          </div>
+
+          <!-- What just shipped -->
+          <div class="section">
+            <h2>What shipped this sprint</h2>
+            <p class="section-sub">The desktop client went from a static shell to a live, Cursor-grade chat surface.</p>
+            <div class="card">
+              <div class="feature-row">
+                <span class="fr-status">${'' /* filled below via script-free static pill */}<span class="pill shipped"><span class="pd"></span>Done</span></span>
+                <div class="fr-body">
+                  <div class="fr-title">Streaming activity stream with shimmer</div>
+                  <div class="fr-desc">Thinking + tool rows animate while working, roll inside a fixed window, then collapse to a single "Thought for Ns" line that re-expands on click.</div>
+                </div>
+              </div>
+              <div class="feature-row">
+                <span class="fr-status"><span class="pill shipped"><span class="pd"></span>Done</span></span>
+                <div class="fr-body">
+                  <div class="fr-title">Sticky full-width user turns</div>
+                  <div class="fr-desc">Each user message pins to the top of its turn as you scroll; sending adds scroll-room so the work area gets a full viewport.</div>
+                </div>
+              </div>
+              <div class="feature-row">
+                <span class="fr-status"><span class="pill shipped"><span class="pd"></span>Done</span></span>
+                <div class="fr-body">
+                  <div class="fr-title">Cursor-grade markdown</div>
+                  <div class="fr-desc">Shiki syntax highlighting, warm inline code, clean GFM tables, external links via Tauri shell, protocol-envelope stripping.</div>
+                </div>
+              </div>
+              <div class="feature-row">
+                <span class="fr-status"><span class="pill shipped"><span class="pd"></span>Done</span></span>
+                <div class="fr-body">
+                  <div class="fr-title">Proper app icon + native window chrome</div>
+                  <div class="fr-desc">Procedural Divo squircle icon (icns/ico/png), frameless macOS window, traffic lights.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="atlas-foot">
+            <span>Divo Atlas · edit pages under <code class="mono">advance-backend/docs/atlas/</code></span>
+            <span>Updated continuously alongside the build</span>
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="atlas.js"></script>
+</body>
+</html>

@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — give it one hard ask</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="deck.css" />
+</head>
+<body>
+  <main class="page page-wide" data-page="day">
+
+    <div class="phead">
+      <div class="eyebrow">Watch the brain work · replayable</div>
+      <h1>One messy ask. <span class="accent">Five domains.</span> Divo runs it.</h1>
+      <p class="lede">
+        No menus, no per-tool workflow. Give Divo a cross-domain ask — it builds a plan, works each step with the right
+        permissions, and keeps <b>Lark</b> in the loop the whole time. Hit <b>Replay</b>.
+      </p>
+    </div>
+
+    <div class="section">
+      <div class="replay-bar">
+        <button class="btn-replay" id="play">▶ Replay</button>
+        <span class="scene-tabs" id="scenes">
+          <button data-scene="brief" class="active">Monday leadership brief</button>
+          <button data-scene="research">Finance deep-research</button>
+          <button data-scene="onboard">Onboard a client</button>
+        </span>
+        <span class="replay-state" id="state">idle</span>
+      </div>
+
+      <div class="stage">
+        <!-- DESKTOP -->
+        <div class="col-d">
+          <div class="stagecap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg> Divo Desktop</div>
+          <div class="divo">
+            <div class="divo-bar">
+              <span class="tl r"></span><span class="tl y"></span><span class="tl g"></span>
+              <span class="crumb"><span class="ws"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg> Emiac · Leadership</span></span>
+              <span class="rt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></span>
+            </div>
+            <div class="divo-body">
+              <aside class="divo-side" id="rail"></aside>
+              <div class="divo-main">
+                <div class="divo-thread" id="thread" style="max-height:520px;"></div>
+                <div class="divo-composer">
+                  <div class="divo-input">
+                    <div class="ph">Ask Divo anything across the company…</div>
+                    <div class="divo-toolbar">
+                      <span class="divo-plus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></span>
+                      <span class="divo-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2 3 6v6c0 5 3.5 8 9 10 5.5-2 9-5 9-10V6Z"/></svg> Owner · full access</span>
+                      <span class="sp"></span>
+                      <span class="divo-chip">High <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></span>
+                      <span class="divo-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- LARK -->
+        <div class="col-l">
+          <div class="stagecap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/></svg> Lark <span class="live"><span class="pill pill-live"><span class="pd"></span>live</span></span></div>
+          <div class="lkm"><div class="lkm-screen">
+            <div class="lkm-sb">
+              <span>9:41</span>
+              <span class="r">
+                <svg viewBox="0 0 22 14"><rect x="0" y="9" width="3" height="5" rx="1" fill="currentColor"/><rect x="5" y="6" width="3" height="8" rx="1" fill="currentColor"/><rect x="10" y="3" width="3" height="11" rx="1" fill="currentColor"/><rect x="15" y="0" width="3" height="14" rx="1" fill="currentColor"/></svg>
+                <svg viewBox="0 0 20 15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 5.5a12 12 0 0 1 16 0"/><path d="M4.5 8.5a8 8 0 0 1 11 0"/><path d="M7 11.5a4 4 0 0 1 6 0"/><circle cx="10" cy="13.5" r="0.5" fill="currentColor"/></svg>
+                <span class="lkm-bt"><span class="cell"><i></i></span></span>
+              </span>
+            </div>
+            <div class="lkm-ch">
+              <span class="bk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg></span>
+              <span class="lkm-av">D</span>
+              <div class="lkm-id"><div class="nm">Divo <span class="bot">BOT</span></div><div class="sub">unified AI brain · integrated into Lark</div></div>
+              <span class="ic">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h4l2 5-3 2a12 12 0 0 0 5 5l2-3 5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2Z"/></svg>
+                <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+              </span>
+            </div>
+            <div class="lkm-feed" id="larkbody"></div>
+            <div class="lkm-nav">
+              <div class="tab on"><span class="bdg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>Messenger</div>
+              <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L20 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Tasks</div>
+              <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>Meetings</div>
+              <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/></svg>Email</div>
+              <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.2"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(-25 12 12)"/></svg>Moments</div>
+              <div class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>More</div>
+            </div>
+          </div></div>
+        </div>
+      </div>
+
+      <p class="section-sub" style="margin-top:16px;">
+        Left: the real desktop activity stream — every step shimmers while it runs, settles to a check, folds into
+        <b>“Worked for Ns.”</b> The sidebar is Divo's live plan. Right: <b>Lark</b>, updating on its own — Divo DMs the
+        right owners and ticks tasks off as it goes.
+      </p>
+    </div>
+
+    <div class="section">
+      <div class="grid-4">
+        <div class="card"><h3>🧩 It plans</h3><p>One ask becomes a checklist across SEO, finance, people and books — visible in the sidebar.</p></div>
+        <div class="card"><h3>🔐 RBAC, live</h3><p>Every domain is permission-checked inline — finance data is gated, you see it because you're an Owner.</p></div>
+        <div class="card"><h3>💬 Lark, on its own</h3><p>Divo DMs each owner their slice and checks off Lark Tasks without being told to.</p></div>
+        <div class="card"><h3>🧠 Knows the company</h3><p>“airnote,” “Striker,” “Acme” — it already has the context, end to end.</p></div>
+      </div>
+    </div>
+
+    <div class="foot">
+      <span>Divo · the unified AI brain of Emiac Group</span>
+      <span>Real desktop activity stream · live RBAC · Lark in the loop</span>
+    </div>
+  </main>
+
+  <script src="deck.js"></script>
+  <script>
+  (function () {
+    // ── icons ───────────────────────────────────────────────────
+    const CHK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg>';
+    const CHKR = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>';
+    const RIGHT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>';
+    const LOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+    const SHIELD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 2 3 6v6c0 5 3.5 8 9 10 5.5-2 9-5 9-10V6Z"/><path d="m9 12 2 2 4-4"/></svg>';
+    const ARROW = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+    const TRACE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>';
+    const TASKICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L20 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>';
+    const THUMB = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 10v12M2 10h5v12H2zM22 10l-2 9a2 2 0 0 1-2 1H7V10l5-8a2 2 0 0 1 3 2Z"/></svg>';
+    const COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+
+    // ── scenes ──────────────────────────────────────────────────
+    const SCENES = {
+      brief: {
+        ask: "Put together my Monday leadership brief: where Acme's SEO stands this month, our airnote BSE position cross-checked across sources, who's blocking the Striker launch, and any overdue invoices — then DM each owner their part on Lark and add follow-ups to Tasks.",
+        todos: [
+          { id:'seo',  label:'Acme — SEO movement' },
+          { id:'fin',  label:'airnote — BSE position' },
+          { id:'strk', label:'Striker — launch blockers' },
+          { id:'inv',  label:'Overdue invoices' },
+          { id:'dm',   label:'DM each owner on Lark' },
+          { id:'task', label:'Add follow-ups to Tasks' },
+        ],
+        plan: [
+          { t:'think', text:'Reading the request and loading company context…' },
+          { t:'plan' },
+          { t:'rbac', kind:'ok', html:`Context loaded — signed in as <b>Owner</b>, full visibility across SEO · Finance · People.` },
+          { t:'lark', who:'divo', html:`On it — building your Monday brief now. I'll DM each owner their part. 👍` },
+          { t:'say', html:`Let me pull the numbers across each area, then route the parts on Lark.` },
+
+          { t:'todo', id:'seo' },
+          { t:'tool', verb:'Checking Acme rankings', arg:'ahrefs · rank tracker', dur:'1.4s' },
+          { t:'tool', verb:'Reading Search Console', arg:'gsc · last 28 days', dur:'0.9s' },
+          { t:'data', title:'Acme · this month', rows:[
+            ['Avg position','<span class="pos">▲ +4 → 11.2</span>'],
+            ['Organic clicks','12,430 <span class="mut">+9%</span>'],
+            ['New referring domains','<span class="pos">+38</span>'],
+          ], total:['Top mover','“crm for startups” #18→#6'] },
+          { t:'done', id:'seo' },
+          { t:'say', html:`SEO's healthy — now the airnote position, cross-checked across sources.` },
+
+          { t:'todo', id:'fin' },
+          { t:'rbac', kind:'gate', html:`<b>Finance domain</b> — airnote financials are manager-gated · you're allowed (Owner).` },
+          { t:'think', text:'Cross-checking airnote across BSE, Screener and INDmoney…' },
+          { t:'tool', verb:'Reading BSE official', arg:'web · bseindia.com', dur:'1.1s' },
+          { t:'tool', verb:'Cross-checking Screener', arg:'web · screener.in', dur:'1.0s' },
+          { t:'tool', verb:'Pulling volume', arg:'web · indmoney', dur:'0.8s' },
+          { t:'data', title:'airnote · cross-source', rows:[
+            ['BSE (official)','₹101.45 <span class="mut">stale (22 May)</span>'],
+            ['CNBC TV18 · Fri','<span class="neg">₹96.00 (−5.23%)</span>'],
+            ['Screener.in','₹93.70 <span class="mut">52w-low ₹90.60</span>'],
+            ['P/E · Mkt cap','31.7 · ₹115 Cr'],
+          ], total:['Read','rough Friday — watch Monday open'] },
+          { t:'done', id:'fin' },
+
+          { t:'todo', id:'strk' },
+          { t:'tool', verb:'Scanning Lark Tasks', arg:'lark · Striker list', dur:'0.7s' },
+          { t:'tool', verb:'Reading the launch doc', arg:'lark · docs', dur:'0.9s' },
+          { t:'data', title:'Striker · blockers', rows:[
+            ['QA sign-off','<span class="neg">blocked</span> · owner Anish'],
+            ['Design assets','<span class="mut">in review</span> · owner Priya'],
+          ], total:['Launch risk','2 days slip if QA stalls'] },
+          { t:'done', id:'strk' },
+
+          { t:'todo', id:'inv' },
+          { t:'rbac', kind:'gate', html:`<b>Books</b> — invoices are Finance-scoped · Owner override ✓` },
+          { t:'tool', verb:'Reading Zoho Books', arg:'zoho · overdue', dur:'1.2s' },
+          { t:'data', title:'Overdue', rows:[
+            ['Acme · #1043','₹84,000 <span class="neg">+5d</span>'],
+            ['Lumen · #1031','₹46,500 <span class="neg">+12d</span>'],
+          ], total:['Total overdue','₹1,30,500'] },
+          { t:'done', id:'inv' },
+
+          { t:'todo', id:'dm' },
+          { t:'think', text:'Drafting each owner their slice…' },
+          { t:'lark', who:'divo', html:`Brief's compiled. I need your ok to DM 3 people their parts.` },
+          { t:'approval', title:'Send 3 Lark DMs', tag:'Sends to people',
+            detail:[['Shivam','airnote finance position'],['Priya','Acme SEO + Striker assets'],['Anish','Striker QA blocker']],
+            okResult:'3 DMs sent — Shivam, Priya, Anish each have their part.',
+            declineSay:"Held the DMs — your call. Want to edit any before they go, or send only some?" },
+          { t:'larkdm', to:'Shivam Bhateja', av:'p2', tag:'finance', note:'airnote — rough Friday, ₹93.70, watch Mon open' },
+          { t:'larkdm', to:'Priya Nair', av:'p1', tag:'seo', note:'Acme +4 avg, “crm for startups” #6 · Striker assets due' },
+          { t:'larkdm', to:'Anish Suman', av:'p3', tag:'ops', note:'Striker QA is the blocker — need sign-off by Tue' },
+          { t:'done', id:'dm' },
+
+          { t:'todo', id:'task' },
+          { t:'tool', verb:'Creating follow-ups', arg:'lark · tasks', dur:'0.8s' },
+          { t:'larktask', action:'add', id:'t1', text:'Chase Acme invoice #1043 (₹84,000)', by:'Divo' },
+          { t:'larktask', action:'add', id:'t2', text:'Unblock Striker QA — ping Anish', by:'Divo' },
+          { t:'larktask', action:'done', id:'t0', text:'Pull Monday leadership brief', by:'Divo' },
+          { t:'done', id:'task' },
+
+          { t:'lark', who:'divo', tag:'ops', html:`✓ Monday brief done — 3 DMs sent, 2 follow-ups added, 1 task closed.`, trace:true, react:true },
+          { t:'reply', html:`<b>Monday brief is routed.</b> Acme's up (+4 avg, clicks +9%). airnote had a rough Friday — ₹93.70, near its 52-week low; I flagged it for Monday's open. Striker's real blocker is <b>QA sign-off (Anish)</b>. ₹1,30,500 sits overdue across two invoices.<div style="margin-top:7px;color:hsl(0 0% 60%)">Routed on Lark: 3 owner DMs · 2 follow-up tasks · brief task closed.</div>` },
+        ],
+      },
+
+      research: {
+        ask: "Do a deep dive on airnote's current market position — cross-verify across BSE, Screener, INDmoney and CNBC, then DM the summary to Shivam.",
+        todos: [
+          { id:'gather', label:'Gather sources' },
+          { id:'verify', label:'Cross-verify the numbers' },
+          { id:'send',   label:'DM the summary to Shivam' },
+        ],
+        plan: [
+          { t:'rbac', kind:'gate', html:`<b>Finance domain</b> · deep-research skill · Owner ✓` },
+          { t:'plan' },
+          { t:'lark', who:'divo', tag:'finance', html:`Let me fetch the latest data from BSE and cross-verify across multiple sources. 📊` },
+
+          { t:'todo', id:'gather' },
+          { t:'think', text:'Fetching from four independent sources in parallel…' },
+          { t:'tool', verb:'Reading BSE official', arg:'web · bseindia.com', dur:'1.2s' },
+          { t:'tool', verb:'Reading CNBC TV18', arg:'web · cnbctv18.com', dur:'0.9s' },
+          { t:'tool', verb:'Reading Screener', arg:'web · screener.in', dur:'1.0s' },
+          { t:'tool', verb:'Pulling INDmoney volume', arg:'web · indmoney.com', dur:'0.8s' },
+          { t:'done', id:'gather' },
+
+          { t:'todo', id:'verify' },
+          { t:'think', text:'Reconciling a stale official price against live feeds…' },
+          { t:'data', title:'airnote · cross-source deep dive', rows:[
+            ['BSE (official)','₹101.45 <span class="mut">not updated since 22 May</span>'],
+            ['CNBC · 29 May','<span class="neg">₹96.00 (−5.23%)</span>'],
+            ['Kotak day range','₹90.55–₹98.00 <span class="mut">open ₹90.60</span>'],
+            ['Screener.in','₹93.70 <span class="mut">52w-low ₹90.60</span>'],
+            ['P/E · Mkt cap','31.7 · ₹115 Cr'],
+          ], total:['Verdict','rough Friday — watch Monday open'] },
+          { t:'done', id:'verify' },
+
+          { t:'todo', id:'send' },
+          { t:'tool', verb:'Compiling the report', arg:'finance · summary', dur:'0.6s' },
+          { t:'larkdm', to:'Shivam Bhateja', av:'p2', tag:'finance', note:'airnote deep dive — full report' },
+          { t:'lark', who:'divo', tag:'finance', html:`<b>Key findings:</b><br/>• BSE official ₹101.45 is stale.<br/>• Friday dropped to ₹96.00 (−5.23%); Screener now ₹93.70, near 52w-low ₹90.60.<br/>• P/E down to 31.7, Mkt cap ₹115 Cr.<br/>Sent the full report to <span class="men">@Shivam</span> as a DM.`, trace:true, react:true },
+          { t:'done', id:'send' },
+          { t:'reply', html:`<b>Done.</b> airnote had a rough Friday — the official BSE price is stale at ₹101.45, but live feeds put it near <b>₹93.70</b>, almost touching its 52-week low. Full report DM'd to Shivam; worth watching Monday's open.` },
+        ],
+      },
+
+      onboard: {
+        ask: "We just signed Lumen Labs — onboard them: audit their site, find content gaps, draft 3 briefs, set up their CRM record and the recurring invoice.",
+        todos: [
+          { id:'crm',   label:'Create CRM record' },
+          { id:'audit', label:'Site audit + gaps' },
+          { id:'brief', label:'Draft 3 content briefs' },
+          { id:'bill',  label:'Set up recurring invoice' },
+        ],
+        plan: [
+          { t:'think', text:'Setting up Lumen Labs end to end…' },
+          { t:'plan' },
+          { t:'lark', who:'divo', tag:'sales', html:`Welcome aboard Lumen Labs 🎉 Spinning up their workspace now.` },
+
+          { t:'todo', id:'crm' },
+          { t:'tool', verb:'Creating CRM record', arg:'zoho · accounts', dur:'0.7s' },
+          { t:'rbac', kind:'ok', html:`Created under <b>Sales</b> · shared with the Lumen pod.` },
+          { t:'done', id:'crm' },
+
+          { t:'todo', id:'audit' },
+          { t:'tool', verb:'Auditing the site', arg:'ahrefs · site audit', dur:'2.1s' },
+          { t:'tool', verb:'Finding content gaps', arg:'ahrefs · content gap', dur:'1.3s' },
+          { t:'data', title:'Lumen Labs · opportunity', rows:[
+            ['Domain Rating','42 <span class="mut">+18 vs niche avg</span>'],
+            ['Quick-win keywords','23 <span class="mut">KD < 20</span>'],
+            ['Content gaps','31 terms competitors rank for'],
+          ], total:['First-90-days target','+12 quick wins'] },
+          { t:'done', id:'audit' },
+
+          { t:'todo', id:'brief' },
+          { t:'tool', verb:'Drafting briefs', arg:'gdrive · 3 docs', dur:'1.6s' },
+          { t:'approval', title:'Create 3 Google Docs', tag:'Creates docs',
+            detail:[['Folder','Lumen Labs / Briefs'],['Docs','3 · outline + gap terms'],['Assignee','Priya (writer)']],
+            okResult:'3 briefs created in the Lumen folder, assigned to Priya.',
+            declineSay:'Held the docs — want them as plain text here, or a different assignee?' },
+          { t:'larktask', action:'add', id:'o1', text:'Write Lumen brief 1 — “best analytics tools”', by:'Priya' },
+          { t:'done', id:'brief' },
+
+          { t:'todo', id:'bill' },
+          { t:'rbac', kind:'gate', html:`<b>Books</b> · recurring invoice · Owner ✓` },
+          { t:'tool', verb:'Setting up billing', arg:'zoho · recurring', dur:'0.9s' },
+          { t:'lark', who:'divo', tag:'finance', html:`Recurring invoice live for Lumen Labs — ₹6,500/placement, monthly on the 1st.`, trace:true },
+          { t:'done', id:'bill' },
+          { t:'reply', html:`<b>Lumen Labs is live.</b> CRM record created, site audited (DR 42, 23 quick-wins, 31 gaps), 3 briefs drafted and assigned to Priya, and recurring billing set up. They're ready to go.` },
+        ],
+      },
+    };
+
+    // ── elements + state ────────────────────────────────────────
+    const rail = document.getElementById('rail');
+    const thread = document.getElementById('thread');
+    const larkbody = document.getElementById('larkbody');
+    const stateEl = document.getElementById('state');
+    const scenesEl = document.getElementById('scenes');
+
+    const SEC = { brief:6.2, research:7.1, onboard:8.6 };  // "Worked for Ns" per scene
+    const SPEED = { brief:0.5 };  // playback rate per scene (brief plays 2× faster)
+    let scene='brief', items=[], todos=[], lark=[], header='Working', isRunning=false, pendingAp=null, idx=0, timers=[], collapsed=false, foldOpen=false, startTime=0, elapsedTimer=null, speedFactor=1;
+    const later=(fn,ms)=>{const id=setTimeout(fn, ms*speedFactor);timers.push(id);return id;};
+    const clearT=()=>{timers.forEach(clearTimeout);timers=[];};
+    const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    const setState=t=>{ stateEl.textContent=t; };
+    const settle=()=>{ items.forEach(it=>{ if(it.running) it.running=false; if(it.cursor) it.cursor=false; }); };
+    const elapsedStr=()=>' '+(startTime?((Date.now()-startTime)/1000).toFixed(1):'0.0')+'s';
+    function scenesActive(){ scenesEl.querySelectorAll('button').forEach(b=>b.classList.toggle('active', b.dataset.scene===scene)); }
+
+    function reset(){
+      clearT(); items=[]; lark=[]; pendingAp=null; idx=0; isRunning=false; header='Working'; collapsed=false; foldOpen=false; speedFactor=SPEED[scene]||1;
+      if(elapsedTimer){ clearInterval(elapsedTimer); elapsedTimer=null; } startTime=0;
+      todos = SCENES[scene].todos.map(t=>({ ...t, state:'pending' }));
+      setState('idle');
+      renderRail(); renderDesk(); renderLark();
+    }
+
+    // ── render: todo rail (desktop sidebar) ─────────────────────
+    function renderRail(){
+      if(!todos.length){ rail.innerHTML=''; return; }
+      const done=todos.filter(t=>t.state==='done').length;
+      let h=`<div class="todo-h">Active plan <span class="ct">${done}/${todos.length}</span></div>`;
+      for(const t of todos){
+        const tk = t.state==='done' ? `<span class="tk">${CHKR}</span>` : `<span class="tk"></span>`;
+        h+=`<div class="todo ${t.state}">${tk}<span class="tx">${esc(t.label)}</span></div>`;
+      }
+      rail.innerHTML=h;
+    }
+
+    // present → past, exactly like the real app's tool-label `past` field
+    const PAST = { Checking:'Checked', Reading:'Read', Pulling:'Pulled', Scanning:'Scanned', Creating:'Created',
+      Compiling:'Compiled', Setting:'Set', Auditing:'Audited', Finding:'Found', Drafting:'Drafted',
+      'Cross-checking':'Cross-checked', Verifying:'Verified', Looking:'Looked' };
+    function pastTense(v){ const m=v.match(/^(\S+)([\s\S]*)$/); return m ? (PAST[m[1]]||m[1])+m[2] : v; }
+
+    // one row of the activity stream — used live AND inside the folded "Worked for Ns"
+    function itemHTML(it){
+      if(it.t==='user') return `<div class="d-user">${esc(it.text)}</div>`;
+      if(it.t==='think'){
+        const sh=it.running?' shimmer-text':'';
+        return `<div class="tl-row think"><span class="tl-verb${sh}">Thinking</span><span class="tl-arg${sh}">${esc(it.text)}</span></div>`;
+      }
+      if(it.t==='tool'){
+        const box = it.running?`<span class="tl-box"><span class="tl-spin"></span></span>`:`<span class="tl-box done">${CHK}</span>`;
+        const sh=it.running?' shimmer-text':'';
+        const verb = it.running ? esc(it.verb) : esc(pastTense(it.verb));
+        const arg = it.arg?`<span class="tl-arg${sh}">${esc(it.arg)}</span>`:`<span class="tl-fill"></span>`;
+        const dur = (!it.running && it.dur)?`<span class="tl-dur">${esc(it.dur)}</span>`:'';
+        return `<div class="tl-row">${box}<span class="tl-verb${sh}">${verb}</span>${arg}${dur}</div>`;
+      }
+      if(it.t==='rbac'){
+        const ic = it.kind==='ok'?SHIELD:LOCK;
+        return `<div class="d-rbac ${it.kind}">${ic}<span>${it.html}</span></div>`;
+      }
+      if(it.t==='data'){
+        let r=it.rows.map(x=>`<tr><td>${x[0]}</td><td>${x[1]}</td></tr>`).join('');
+        r+=`<tr class="total"><td>${esc(it.total[0])}</td><td>${esc(it.total[1])}</td></tr>`;
+        return `<div class="d-data"><div class="dh">${esc(it.title)}</div><table>${r}</table></div>`;
+      }
+      if(it.t==='approve' || it.t==='approval'){
+        if(it.verdict){
+          const cls=it.verdict==='ok'?'ok':'no';
+          return `<div class="d-pending ${cls}">${it.verdict==='ok'?'✓':'⊘'} ${it.verdict==='ok'?'Approved':'Declined'} — ${esc(it.title)}</div>`;
+        }
+        const d=it.detail.map(x=>`<div class="r"><span class="k">${esc(x[0])}</span><span class="v">${esc(x[1])}</span></div>`).join('');
+        return `<div class="d-approve"><div class="ah"><span class="ai">${SHIELD}</span> <span>Permission gate — approve to <b>${esc(it.title.toLowerCase())}</b></span><span class="tg">${esc(it.tag)}</span></div><div class="ad">${d}</div><div class="aa"><button class="abtn ok" data-act="ok">Approve &amp; continue</button><button class="abtn no" data-act="no">Decline</button><span class="ahint">your call →</span></div></div>`;
+      }
+      if(it.t==='say'){
+        return `<div class="tl-say">${it.html}${it.cursor?'<span class="cur"></span>':''}</div>`;
+      }
+      if(it.t==='reply'){
+        return `<div class="d-amsg"><div class="head"><span class="dm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h7a6 7 0 0 1 0 14H4Z"/></svg></span> Divo</div>${it.html}</div>`;
+      }
+      return '';
+    }
+
+    // ── render: desktop thread (exact activity stream) ──────────
+    function renderDesk(){
+      if(!items.length && !isRunning){ thread.innerHTML='<div class="empty" style="margin:auto;color:hsl(0 0% 42%);font-size:13px;text-align:center;max-width:30ch">Press ▶ Replay — give Divo one hard, cross-domain ask.</div>'; return; }
+
+      // Done: fold the whole work log into "Worked for Ns", answer below — like the real chat.
+      if(collapsed){
+        let lastReply=-1; items.forEach((it,i)=>{ if(it.t==='reply') lastReply=i; });
+        const work=items.filter((_,i)=>i!==lastReply);
+        let h=`<button class="tl-worked" id="wfold" style="cursor:pointer"><span style="display:inline-flex;transition:transform .15s${foldOpen?';transform:rotate(90deg)':''}">${RIGHT}</span> Worked for <b>${(SEC[scene]||9).toFixed(1)}s</b></button>`;
+        h+=`<div id="workfold" style="margin-top:2px;${foldOpen?'':'display:none'}">${work.map(itemHTML).join('')}</div>`;
+        if(lastReply>=0) h+=itemHTML(items[lastReply]);
+        thread.innerHTML=h; thread.scrollTop=thread.scrollHeight;
+        const w=document.getElementById('wfold'); if(w) w.onclick=()=>{ foldOpen=!foldOpen; renderDesk(); };
+        return;
+      }
+
+      let h='';
+      if(isRunning) h+=`<div class="tl-head"><span class="hx shimmer-text">${esc(header)}</span></div>`;
+      h+=items.map(itemHTML).join('');
+      if(isRunning && !pendingAp) h+=`<div class="tl-ribbon"><span class="rs"></span> Synthesizing reply…<span class="re" id="rib-el">${elapsedStr()}</span> · <span class="rstop"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg> Stop</span></div>`;
+      thread.innerHTML=h; thread.scrollTop=thread.scrollHeight;
+      thread.querySelectorAll('[data-act]').forEach(b=>{ b.onclick=()=>{ if(!pendingAp||pendingAp.verdict) return; if(b.dataset.act==='ok'){ pendingAp.verdict='ok'; approve(); } else { pendingAp.verdict='no'; decline(); } }; });
+      // When an approval is waiting, pull its card into view so it never looks "stuck".
+      if(pendingAp && !pendingAp.verdict){ const card=thread.querySelector('.d-approve'); if(card) requestAnimationFrame(()=>card.scrollIntoView({block:'center', behavior:'smooth'})); }
+    }
+
+    // ── render: Lark mobile feed ────────────────────────────────
+    function renderLark(){
+      if(!lark.length){ larkbody.innerHTML='<div class="lkm-empty">Divo posts here as it works — DMs, updates, tasks.</div>'; return; }
+      let h='<div class="lkm-day">Today</div>';
+      for(const m of lark){
+        if(m.toast){ h+=`<div class="lkm-toast">${esc(m.toast)}</div>`; continue; }
+        if(m.dm){
+          h+=`<div class="lkm-m"><div class="a divo">D</div><div class="bd"><div class="nm"><b>Divo</b><span class="dtag ${m.dm.tag}">${m.dm.tag}</span></div><div class="lkm-dm"><span class="ar">${ARROW}</span><span>DM'd <b>${esc(m.dm.to)}</b> · ${esc(m.dm.note)}</span></div></div></div>`;
+          continue;
+        }
+        if(m.task){
+          const done = m.task.state==='done';
+          const ck = done?`<span class="ck">${CHKR}</span>`:`<span class="ck"></span>`;
+          h+=`<div class="lkm-task ${done?'done':''}"><div class="ti">${TASKICON}</div><div class="tb"><div class="tl">${done?'Task completed':'Task created'}</div><div class="tt">${ck}<span class="tx">${esc(m.task.text)}</span></div><div class="tm">${done?('Completed by '+esc(m.task.by)):('Added by Divo · assigned to '+esc(m.task.by))}</div></div></div>`;
+          continue;
+        }
+        const av = m.who==='divo'?'divo':m.who;
+        const initial = m.who==='divo'?'D':(m.name?m.name[0]:'•');
+        const tag = m.tag?`<span class="dtag ${m.tag}">${m.tag}</span>`:'';
+        const nm = m.who==='divo'?'Divo':esc(m.name||'');
+        const trace = m.trace?`<div class="lkm-trace">${TRACE} Execution trace</div>`:'';
+        const react = m.react?`<div class="lkm-react">${THUMB}${COPY}</div>`:'';
+        h+=`<div class="lkm-m"><div class="a ${av}">${initial}</div><div class="bd"><div class="nm"><b>${nm}</b>${tag}</div><div class="lkm-bub">${m.html}</div>${trace}${react}</div></div>`;
+      }
+      larkbody.innerHTML=h; larkbody.scrollTop=larkbody.scrollHeight;
+    }
+
+    // ── approval ────────────────────────────────────────────────
+    function approve(){
+      lark.push({ toast:'You approved · sending' }); renderDesk(); renderLark();
+      const ap=pendingAp; setState('sending');
+      later(()=>{ items.push({t:'reply',html:`<div style="color:hsl(142 55% 55%)">✓ ${esc(ap.okResult)}</div>`}); pendingAp=null; renderDesk(); idx++; later(proceed,600); }, 800);
+    }
+    function decline(){
+      lark.push({ toast:'You declined' }); renderDesk(); renderLark();
+      const ap=pendingAp; setState('your call');
+      later(()=>{ pendingAp=null; items.push({t:'reply',html:esc(ap.declineSay)}); renderDesk(); isRunning=false; if(elapsedTimer){clearInterval(elapsedTimer);elapsedTimer=null;} renderDesk(); setState('paused'); }, 700);
+    }
+
+    // ── engine ──────────────────────────────────────────────────
+    function proceed(){
+      const plan=SCENES[scene].plan;
+      if(idx>=plan.length){ settle(); isRunning=false; collapsed=true; if(elapsedTimer){clearInterval(elapsedTimer);elapsedTimer=null;} setState('done'); renderRail(); renderDesk(); return; }
+      const s=plan[idx];
+
+      if(s.t==='plan'){ setState('planning'); renderRail(); idx++; later(proceed,650); return; }
+      if(s.t==='todo'){ const t=todos.find(x=>x.id===s.id); if(t)t.state='running'; setState('working'); renderRail(); idx++; later(proceed,300); return; }
+      if(s.t==='done'){ const t=todos.find(x=>x.id===s.id); if(t)t.state='done'; renderRail(); idx++; later(proceed,360); return; }
+
+      if(s.t==='think'){ settle(); header='Thinking'; items.push({t:'think',text:s.text,running:true}); setState('thinking'); renderDesk(); idx++; later(proceed,950); return; }
+      if(s.t==='tool'){ settle(); header=s.verb; const it={t:'tool',verb:s.verb,arg:s.arg,dur:s.dur,running:true}; items.push(it); setState('working'); renderDesk(); later(()=>{ it.running=false; renderDesk(); idx++; later(proceed,340); }, 720); return; }
+      if(s.t==='rbac'){ settle(); items.push({t:'rbac',kind:s.kind,html:s.html}); setState('checking access'); renderDesk(); idx++; later(proceed,720); return; }
+      if(s.t==='data'){ settle(); items.push({t:'data',title:s.title,rows:s.rows,total:s.total}); setState('reading'); renderDesk(); idx++; later(proceed,1000); return; }
+      if(s.t==='say'){ settle(); header='Synthesizing'; items.push({t:'say',html:s.html,cursor:true}); setState('writing'); renderDesk(); idx++; later(proceed, Math.max(850, s.html.replace(/<[^>]+>/g,'').length*15)); return; }
+      if(s.t==='reply'){ settle(); isRunning=true; header='Writing the answer'; items.push({t:'reply',html:s.html}); setState('replying'); renderDesk(); const d=Math.min(2600,Math.max(1100,s.html.replace(/<[^>]+>/g,'').length*18)); idx++; later(proceed,d); return; }
+
+      if(s.t==='lark'){ lark.push({who:s.who,name:s.name,tag:s.tag,html:s.html,trace:s.trace,react:s.react}); renderLark(); idx++; later(proceed,700); return; }
+      if(s.t==='larkdm'){ lark.push({dm:{to:s.to,av:s.av,tag:s.tag,note:s.note}}); renderLark(); idx++; later(proceed,560); return; }
+      if(s.t==='larktask'){ lark.push({ task:{ text:s.text, by:s.by, state: s.action==='done'?'done':'created' } }); renderLark(); idx++; later(proceed,560); return; }
+      if(s.t==='approval'){ pendingAp={...s,verdict:null}; items.push(pendingAp); header='Waiting for your approval'; isRunning=true; setState('awaiting approval'); renderDesk(); lark.push({who:'divo',html:`I need your ok to <b>${esc(s.title.toLowerCase())}</b> — approve on the desktop.`}); renderLark(); return; }
+
+      idx++; later(proceed,300);
+    }
+
+    function play(){
+      reset(); isRunning=true; header='Reading the ask';
+      startTime=Date.now(); elapsedTimer=setInterval(()=>{ const el=document.getElementById('rib-el'); if(el) el.textContent=elapsedStr(); },100);
+      items.push({t:'user',text:SCENES[scene].ask}); renderDesk();
+      setState('reading the ask');
+      later(proceed,700);
+    }
+    document.getElementById('play').addEventListener('click', play);
+    scenesEl.querySelectorAll('button').forEach(b=>b.addEventListener('click', ()=>{ scene=b.dataset.scene; scenesActive(); reset(); }));
+    scenesActive(); reset();
+  })();
+  </script>
+</body>
+</html>

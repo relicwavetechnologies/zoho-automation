@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { loadAndValidateEnv } from './config/env';
 import { buildContainer } from './composition';
 import { createServer } from './server';
+import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { disconnectPrisma } from './infrastructure/persistence/prisma.client';
 import { disconnectAllRedis } from './infrastructure/cache/redis.client';
 
@@ -13,6 +14,16 @@ const main = async () => {
   const server = app.listen(env.PORT, () => {
     container.logger.info('server.started', { port: env.PORT, env: env.NODE_ENV });
   });
+
+  const wsGateway = createDesktopWsGateway({
+    prisma:          container.prisma,
+    memberJwtSecret: env.MEMBER_JWT_SECRET,
+    logger:          container.logger,
+    engine:          container.engine,
+    chatSerializer:  container.chatSerializer,
+    approvalGate:    container.approvalGate,
+  });
+  wsGateway.attach(server);
 
   const shutdown = async (signal: string) => {
     container.logger.info('server.shutdown', { signal });

@@ -127,6 +127,7 @@ import { createZohoBooksTool } from './application/orchestration/tools/families/
 import { createContextSearchTool } from './application/orchestration/tools/families/context-search.tool';
 import { createWebSearchTool } from './application/orchestration/tools/families/web-search.tool';
 import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
+import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
 
 // AI model
 import { createOpenAI } from '@ai-sdk/openai';
@@ -810,6 +811,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     booksClient: zohoPaginatedBooksClient,
     csvLinkTtl:  env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   }));
+  toolRegistry.register(createRunCommandTool());
 
   logger.info('tool.registry.built', { toolCount: toolRegistry.ids().length, tools: toolRegistry.ids() });
 

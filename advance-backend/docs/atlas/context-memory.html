@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo Atlas — Context &amp; Memory</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="atlas.css" />
+  <style>
+    .memory-hero {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-xl);
+      background:
+        radial-gradient(circle at 18% 20%, hsl(218 80% 60% / 0.18), transparent 26rem),
+        radial-gradient(circle at 82% 12%, hsl(142 60% 50% / 0.12), transparent 24rem),
+        linear-gradient(180deg, var(--bg-elev-2), var(--bg-elev-1));
+      padding: 26px;
+      margin-bottom: 28px;
+    }
+    .memory-hero h2 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      letter-spacing: -0.018em;
+    }
+    .memory-hero p {
+      max-width: 78ch;
+      margin: 0;
+      color: var(--fg-muted);
+      font-size: 14px;
+    }
+    .memory-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-top: 22px;
+    }
+    .memory-stat {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-md);
+      background: hsl(0 0% 0% / 0.16);
+      padding: 13px 14px;
+    }
+    .memory-stat .ms-num {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .memory-stat .ms-label {
+      margin-top: 3px;
+      color: var(--fg-dim);
+      font-size: 11.5px;
+    }
+    .arch-board {
+      position: relative;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-xl);
+      background: var(--bg-elev-1);
+      padding: 18px;
+      overflow: hidden;
+    }
+    .arch-lanes {
+      display: grid;
+      grid-template-columns: 1fr 1.15fr 1.1fr 1.1fr 1fr;
+      gap: 12px;
+      min-width: 860px;
+    }
+    .lane {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-lg);
+      background: var(--bg-elev-2);
+      padding: 12px;
+      min-height: 380px;
+    }
+    .lane-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-bottom: 10px;
+      margin-bottom: 10px;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--fg);
+    }
+    .lane-head small {
+      font-size: 10.5px;
+      color: var(--fg-dim);
+      font-weight: 500;
+    }
+    .arch-node {
+      position: relative;
+      display: block;
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--border);
+      border-radius: var(--r-md);
+      background: var(--bg-elev-1);
+      padding: 11px 12px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      color: var(--fg);
+      transition: border-color .14s, transform .14s, background .14s;
+    }
+    .arch-node:hover,
+    .arch-node.active {
+      transform: translateY(-1px);
+      border-color: hsl(218 80% 66% / 0.64);
+      background: hsl(218 70% 30% / 0.12);
+    }
+    .arch-node strong {
+      display: block;
+      font-size: 12.5px;
+      margin-bottom: 3px;
+    }
+    .arch-node span {
+      display: block;
+      color: var(--fg-muted);
+      font-size: 11.5px;
+      line-height: 1.45;
+    }
+    .arch-node.guard { border-color: hsl(142 60% 50% / 0.30); }
+    .arch-node.warn { border-color: hsl(38 92% 60% / 0.34); }
+    .arch-node.hot { border-color: hsl(218 80% 66% / 0.38); }
+    .flow-ribbon {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 14px 0 0;
+      padding: 10px 12px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-md);
+      background: hsl(0 0% 0% / 0.16);
+      color: var(--fg-muted);
+      font-size: 12px;
+      min-width: 860px;
+    }
+    .flow-ribbon b { color: var(--fg); }
+    .node-detail {
+      margin-top: 14px;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-lg);
+      background: hsl(218 70% 28% / 0.08);
+      padding: 16px;
+      min-height: 92px;
+    }
+    .node-detail h3 {
+      margin: 0 0 6px;
+      font-size: 14px;
+    }
+    .node-detail p {
+      margin: 0;
+      color: var(--fg-muted);
+      font-size: 13.5px;
+    }
+    .budget-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+    .budget-card {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-lg);
+      background: var(--bg-elev-1);
+      padding: 16px;
+    }
+    .budget-card .budget-k {
+      color: var(--fg-dim);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      font-weight: 600;
+    }
+    .budget-card .budget-v {
+      margin: 8px 0 5px;
+      color: var(--fg);
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .budget-card p {
+      margin: 0;
+      color: var(--fg-muted);
+      font-size: 13px;
+    }
+    .lifecycle {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(130px, 1fr));
+      gap: 10px;
+      overflow-x: auto;
+    }
+    .life-step {
+      position: relative;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-lg);
+      background: var(--bg-elev-1);
+      padding: 14px;
+      min-height: 138px;
+    }
+    .life-step .idx {
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--bg-elev-3);
+      border: 1px solid var(--border);
+      color: var(--fg-muted);
+      font-size: 11px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .life-step h3 {
+      margin: 0 0 6px;
+      font-size: 13.5px;
+    }
+    .life-step p {
+      margin: 0;
+      color: var(--fg-muted);
+      font-size: 12.5px;
+    }
+    .decision-stack {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 980px) {
+      .memory-stats, .budget-grid, .decision-stack { grid-template-columns: 1fr; }
+      .arch-board { overflow-x: auto; }
+      .lifecycle { grid-template-columns: repeat(5, 220px); }
+    }
+  </style>
+</head>
+<body>
+  <div class="atlas">
+    <aside class="atlas-nav" id="atlas-nav"></aside>
+    <main class="atlas-main">
+      <div class="atlas-topbar" id="atlas-topbar"></div>
+      <div class="atlas-content">
+        <div class="inner" data-atlas-page="context-memory">
+
+          <div class="page-head">
+            <div class="eyebrow">Desktop architecture</div>
+            <h1>Context &amp; memory that stays light all day</h1>
+            <p class="lede">
+              Desktop users may leave Divo open for weeks. The system must preserve full history,
+              keep scrolling smooth, and still guarantee the Mac app never grows without bound.
+              The answer is three separate planes: durable DB history, backend LLM compaction, and a
+              memory-governed renderer cache.
+            </p>
+          </div>
+
+          <div class="memory-hero">
+            <h2>The core rule</h2>
+            <p>
+              Postgres owns the conversation. The renderer owns only the current viewport, current
+              run state, and a small LRU of recently viewed message pages. LLM context is built on
+              the backend from <code>RuntimeConversation</code>, summaries, and retrieval — never
+              from whatever the UI happens to have loaded.
+            </p>
+            <div class="memory-stats">
+              <div class="memory-stat"><div class="ms-num">1 active</div><div class="ms-label">thread fully hydrated at a time</div></div>
+              <div class="memory-stat"><div class="ms-num">40-60</div><div class="ms-label">messages per loaded page</div></div>
+              <div class="memory-stat"><div class="ms-num">LRU</div><div class="ms-label">inactive pages evicted first</div></div>
+              <div class="memory-stat"><div class="ms-num">Rust</div><div class="ms-label">real memory snapshot authority</div></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Interactive architecture map</h2>
+            <p class="section-sub">
+              Click a box. The horizontal ribbon shows the two flows that must remain separate:
+              user-visible scrolling and model-context construction.
+            </p>
+            <div class="arch-board">
+              <div class="arch-lanes">
+                <div class="lane">
+                  <div class="lane-head">Mac runtime <small>Tauri/Rust</small></div>
+                  <button class="arch-node guard active" data-title="Resource snapshot" data-detail="Add a native get_resource_snapshot command in src-tauri. It should return total memory, available memory, process RSS, CPU pressure if available, platform, uptime, and timestamp. Browser memory APIs are too inconsistent on WebKit; Rust/sysinfo should be the source of truth.">
+                    <strong>Resource snapshot</strong>
+                    <span>available RAM, RSS, pressure</span>
+                  </button>
+                  <button class="arch-node warn" data-title="Terminal stream caps" data-detail="Terminal output is the fastest path to OOM. Keep only a visible tail in React, cap Rust accumulation, and persist full stdout/stderr as an artifact only when the user or agent needs it.">
+                    <strong>Terminal stream caps</strong>
+                    <span>tail only in UI, artifact for full output</span>
+                  </button>
+                </div>
+
+                <div class="lane">
+                  <div class="lane-head">Renderer memory <small>React/Zustand</small></div>
+                  <button class="arch-node hot" data-title="MemoryGovernor" data-detail="A renderer service converts native memory snapshots into budgets: app target RSS, chat-store bytes, active thread bytes, inactive LRU bytes, terminal tail bytes, and markdown-render pressure. It runs on interval, tab focus, thread switch, and stream bursts.">
+                    <strong>MemoryGovernor</strong>
+                    <span>turns machine memory into budgets</span>
+                  </button>
+                  <button class="arch-node hot" data-title="Thread summaries only" data-detail="Sidebar state should hold ThreadSummary rows, counts, workspace IDs, last message previews, and unread/active status. It must not hold full message arrays for every thread.">
+                    <strong>Thread summaries only</strong>
+                    <span>sidebar never owns full history</span>
+                  </button>
+                  <button class="arch-node hot" data-title="Message page LRU" data-detail="Store messages by threadId + page cursor. Active thread gets a sliding window around the viewport. Inactive threads retain only recent pages while under budget, then evict to summaries.">
+                    <strong>Message page LRU</strong>
+                    <span>active window + recent pages</span>
+                  </button>
+                  <button class="arch-node" data-title="Virtualized MessageList" data-detail="The DOM must be bounded too. Use virtualized rows and stable scroll anchors. When the user scrolls upward, fetch older pages; when far-away pages leave the budget, unload them but preserve scroll height estimates.">
+                    <strong>Virtualized MessageList</strong>
+                    <span>scroll forever without rendering forever</span>
+                  </button>
+                </div>
+
+                <div class="lane">
+                  <div class="lane-head">Desktop API <small>Express</small></div>
+                  <button class="arch-node" data-title="Cursor message windows" data-detail="Replace page/pageSize as the main UX primitive with cursor windows: latest, beforeMessageId, afterMessageId, and aroundMessageId. Default latest window should be 40-60 messages, with total count and approximate anchors.">
+                    <strong>Cursor message windows</strong>
+                    <span>latest, before, after, around</span>
+                  </button>
+                  <button class="arch-node" data-title="Per-thread serializer" data-detail="chatSerializer.run('desktop:${threadId}') already prevents concurrent mutation for one thread. Add a desktop session concurrency guard so several long runs cannot exhaust renderer memory at once.">
+                    <strong>Per-thread serializer</strong>
+                    <span>safe multi-thread execution</span>
+                  </button>
+                  <button class="arch-node guard" data-title="Eviction-safe DTOs" data-detail="Every event should be replayable from DB. The client can drop activity rows, old message pages, or terminal tails without corrupting final history because final messages and runtime turns are persisted server-side.">
+                    <strong>Eviction-safe DTOs</strong>
+                    <span>client can drop cache anytime</span>
+                  </button>
+                </div>
+
+                <div class="lane">
+                  <div class="lane-head">Durable state <small>Postgres</small></div>
+                  <button class="arch-node guard" data-title="DesktopThread / DesktopMessage" data-detail="This is the user-visible chat record. Keep full text here, add byte estimates and preview fields if needed, and serve it to the renderer in small windows.">
+                    <strong>DesktopThread</strong>
+                    <span>visible chat history</span>
+                  </button>
+                  <button class="arch-node guard" data-title="RuntimeConversation" data-detail="This remains the orchestration record used by HistoryService and ConversationSummarizer. It should store compactable turns, tool traces, summaries, and refsJson such as desktopWorkspace.">
+                    <strong>RuntimeConversation</strong>
+                    <span>LLM/runtime history</span>
+                  </button>
+                  <button class="arch-node" data-title="Artifacts for heavy payloads" data-detail="Large tool results, terminal output, generated files, screenshots, and raw JSON should move into FileAsset/Cloudinary/object storage with preview metadata in the message. This prevents both DB rows and renderer objects from becoming massive.">
+                    <strong>Heavy artifacts</strong>
+                    <span>store big payloads out of chat rows</span>
+                  </button>
+                </div>
+
+                <div class="lane">
+                  <div class="lane-head">LLM context <small>backend only</small></div>
+                  <button class="arch-node hot" data-title="HistoryService window" data-detail="Desktop should use the existing HistoryService path, but with a desktop-specific policy: recent turns verbatim, older turns compacted, tool outputs masked, and summary included once the thread gets long.">
+                    <strong>HistoryService window</strong>
+                    <span>recent full, old compacted</span>
+                  </button>
+                  <button class="arch-node hot" data-title="Conversation summary" data-detail="Lower desktop summarization thresholds compared to Lark DMs because desktop threads can be extremely long. Preserve user corrections, IDs, decisions, active work, and workspace facts.">
+                    <strong>Conversation summary</strong>
+                    <span>older turns compressed safely</span>
+                  </button>
+                  <button class="arch-node guard" data-title="Context budget enforcer" data-detail="The model call already has enforceContextBudget. Extend it with channel-specific budget profiles and log the allocation so we can see exactly what was trimmed for desktop runs.">
+                    <strong>Context budget enforcer</strong>
+                    <span>hard prompt-token bounds</span>
+                  </button>
+                </div>
+              </div>
+              <div class="flow-ribbon">
+                <span><b>UI scroll flow:</b> Postgres → cursor windows → page LRU → virtualized viewport</span>
+                <span><b>LLM context flow:</b> RuntimeConversation → summary + recent turns → budget enforcer → model</span>
+              </div>
+              <div class="node-detail" id="node-detail">
+                <h3>Resource snapshot</h3>
+                <p>Add a native get_resource_snapshot command in src-tauri. It should return total memory, available memory, process RSS, CPU pressure if available, platform, uptime, and timestamp. Browser memory APIs are too inconsistent on WebKit; Rust/sysinfo should be the source of truth.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Memory budget policy</h2>
+            <p class="section-sub">Default numbers should be conservative first; tune after telemetry from real teammate machines.</p>
+            <div class="budget-grid">
+              <div class="budget-card">
+                <div class="budget-k">App RSS target</div>
+                <div class="budget-v">350-600 MB</div>
+                <p>About 350 MB on 8 GB Macs, 600 MB on 16 GB+ machines. Emergency eviction starts above target.</p>
+              </div>
+              <div class="budget-card">
+                <div class="budget-k">Chat store</div>
+                <div class="budget-v">48-128 MB</div>
+                <p><code>min(128MB, max(48MB, available * 3%))</code>. The store never grows without accounting.</p>
+              </div>
+              <div class="budget-card">
+                <div class="budget-k">Active thread</div>
+                <div class="budget-v">8-12 MB</div>
+                <p>Keep the latest message window and current scroll-near pages. Drop far pages first.</p>
+              </div>
+              <div class="budget-card">
+                <div class="budget-k">Inactive threads</div>
+                <div class="budget-v">0 full arrays</div>
+                <p>Summaries only by default. Keep pages for last 2-3 viewed threads only while under budget.</p>
+              </div>
+              <div class="budget-card">
+                <div class="budget-k">Terminal output</div>
+                <div class="budget-v">32-60 KB tail</div>
+                <p>Live UI keeps tail output. Full stdout/stderr is an artifact, not a permanent React object.</p>
+              </div>
+              <div class="budget-card">
+                <div class="budget-k">Emergency mode</div>
+                <div class="budget-v">&lt; 1 GB free</div>
+                <p>Disable prefetch, evict inactive caches, compact activity rows, and pause heavy markdown rendering.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Conversation lifecycle</h2>
+            <p class="section-sub">The user can scroll forever because old data reloads from DB; the app stays light because only nearby data is alive.</p>
+            <div class="lifecycle">
+              <div class="life-step"><span class="idx">1</span><h3>Send</h3><p>User message enters the active thread and gets persisted before engine execution.</p></div>
+              <div class="life-step"><span class="idx">2</span><h3>Stream</h3><p>Only the active run holds live activity, terminal cards, and assistant deltas in memory.</p></div>
+              <div class="life-step"><span class="idx">3</span><h3>Finalize</h3><p>Final assistant message is saved. Activity rows collapse into compact visible metadata.</p></div>
+              <div class="life-step"><span class="idx">4</span><h3>Compact</h3><p>Runtime summary updates in background once unsummarized context crosses thresholds.</p></div>
+              <div class="life-step"><span class="idx">5</span><h3>Evict</h3><p>Renderer drops inactive pages; exact messages are fetched again if the user scrolls back.</p></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Implementation contract</h2>
+            <div class="decision-stack">
+              <div class="card">
+                <h3>Renderer contract</h3>
+                <div class="prose">
+                  <ul>
+                    <li>Never store full message arrays for every thread.</li>
+                    <li>Keep <code>ThreadSummary[]</code>, active message pages, live run state, and small LRU pages only.</li>
+                    <li>Every cached object needs an estimated byte cost and last-access timestamp.</li>
+                    <li>Switching threads can evict the previous thread after preserving scroll anchor and cursor state.</li>
+                  </ul>
+                </div>
+              </div>
+              <div class="card">
+                <h3>Backend contract</h3>
+                <div class="prose">
+                  <ul>
+                    <li>Postgres is the source of truth for visible history and runtime history.</li>
+                    <li>Desktop API serves cursor windows, not unbounded histories.</li>
+                    <li>LLM context is built from <code>RuntimeConversation</code>, not renderer state.</li>
+                    <li>Large payloads are artifacts with previews, never giant permanent chat rows.</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Phased build plan</h2>
+            <div class="phases">
+              <div class="phase active">
+                <div class="ph-marker">1</div>
+                <div class="ph-body">
+                  <div class="ph-title">Memory telemetry + governor</div>
+                  <div class="ph-desc">Add Tauri resource snapshot, renderer MemoryGovernor, cache byte estimates, and eviction tests.</div>
+                </div>
+              </div>
+              <div class="phase">
+                <div class="ph-marker">2</div>
+                <div class="ph-body">
+                  <div class="ph-title">Cursor windows + virtualized chat</div>
+                  <div class="ph-desc">Replace eager thread hydration with latest/before/after windows and virtualized MessageList anchors.</div>
+                </div>
+              </div>
+              <div class="phase">
+                <div class="ph-marker">3</div>
+                <div class="ph-body">
+                  <div class="ph-title">Desktop context profile</div>
+                  <div class="ph-desc">Create desktop-specific history and summarization thresholds without touching Lark behavior.</div>
+                </div>
+              </div>
+              <div class="phase">
+                <div class="ph-marker">4</div>
+                <div class="ph-body">
+                  <div class="ph-title">Heavy payload artifacting</div>
+                  <div class="ph-desc">Move huge terminal/tool outputs to artifacts and keep only previews in UI and prompt context.</div>
+                </div>
+              </div>
+              <div class="phase">
+                <div class="ph-marker">5</div>
+                <div class="ph-body">
+                  <div class="ph-title">Observability</div>
+                  <div class="ph-desc">Track cache bytes, evictions, loaded pages, memory pressure, prompt allocation, and emergency trims.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="callout warn">
+            <b>Important:</b> compaction solves model-context growth, but not renderer OOM by itself.
+            The Mac app needs a real memory governor even if every conversation is perfectly summarized.
+          </div>
+
+          <div class="atlas-foot">
+            <span>Divo Atlas · Context &amp; Memory</span>
+            <span>Rule: DB owns history, backend owns LLM context, renderer owns a bounded cache</span>
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="atlas.js"></script>
+  <script>
+    document.querySelectorAll('.arch-node').forEach((node) => {
+      node.addEventListener('click', () => {
+        document.querySelectorAll('.arch-node').forEach((item) => item.classList.remove('active'));
+        node.classList.add('active');
+        const detail = document.getElementById('node-detail');
+        if (!detail) return;
+        detail.innerHTML = `<h3>${node.dataset.title || ''}</h3><p>${node.dataset.detail || ''}</p>`;
+      });
+    });
+  </script>
+</body>
+</html>

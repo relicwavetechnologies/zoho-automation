@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Approval required</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-window">
+    <div class="titlebar">
+      <div class="traffic-lights">
+        <span class="tl red"></span><span class="tl yellow"></span><span class="tl green"></span>
+      </div>
+      <div class="titlebar-title">lansing · Divo</div>
+    </div>
+
+    <div class="app-body">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sb-actions">
+          <button class="sb-icon-btn"><span data-i="sidebar"></span></button>
+          <button class="sb-icon-btn"><span data-i="edit"></span></button>
+        </div>
+        <nav class="sb-nav">
+          <a class="sb-nav-item" href="#"><span data-i="sparkle"></span><span>New Agent</span><span class="kbd">⌘N</span></a>
+          <a class="sb-nav-item" href="#"><span data-i="zap"></span><span>Automations</span></a>
+          <a class="sb-nav-item" href="#"><span data-i="store"></span><span>Marketplace</span></a>
+        </nav>
+        <div style="padding: 4px 12px 0;">
+          <div style="background: var(--bg-elev-2); border: 1px solid var(--border-subtle); border-radius: var(--r-md); padding: 8px 10px; display: flex; align-items: center; gap: 9px;">
+            <span data-i="folder" style="color: var(--fg-muted);"></span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 12px; color: var(--fg); font-weight: 500;">lansing</div>
+              <div style="font-size: 10.5px; color: var(--fg-dim);">~/conductor/.../lansing</div>
+            </div>
+          </div>
+        </div>
+        <div style="padding: 12px 12px 4px;">
+          <div style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 5px 8px; font-size: 12px; color: var(--fg-dim);">
+            <span data-i="search"></span>
+            <span style="flex: 1;">Search chats…</span>
+            <span class="kbd">⌘K</span>
+          </div>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding-top: 8px;">
+          <div class="sb-section"><span class="chev" data-i="chevd"></span><span>Repositories</span></div>
+          <div class="sb-list-group">
+            <div class="sb-section" style="padding-left: 8px; padding-top: 4px;">
+              <span class="chev" data-i="chevd" style="color: var(--fg-muted);"></span>
+              <span style="color: var(--fg-muted); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500;">lansing</span>
+            </div>
+            <div class="sb-list">
+              <a class="sb-list-row active" href="#"><span class="row-label">Send Acme invoice reminder</span><span class="row-time">now</span></a>
+              <a class="sb-list-row" href="#"><span class="row-label">Q1 overdue invoices</span><span class="row-time">5m</span></a>
+              <a class="sb-list-row" href="#"><span class="row-label">Currency inflation fix</span><span class="row-time">2h</span></a>
+            </div>
+          </div>
+        </div>
+        <div class="sb-footer">
+          <div class="sb-avatar">A</div>
+          <div class="sb-user-info">
+            <div class="sb-user-name">Abhishek</div>
+            <div class="sb-user-plan">Senior Engineer</div>
+          </div>
+          <div class="sb-footer-actions">
+            <button class="sb-icon-btn"><span data-i="settings"></span></button>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="header">
+          <div class="crumb">
+            <span data-i="folder"></span>
+            <span>lansing</span>
+            <span class="crumb-sep">/</span>
+            <span style="color: var(--fg); font-weight: 500;">Send Acme invoice reminder</span>
+          </div>
+          <div class="header-right">
+            <button class="header-btn"><span data-i="clock"></span>History</button>
+            <button class="header-btn"><span data-i="panel"></span>Editor <span class="kbd" style="margin-left: 2px;">⌘E</span></button>
+          </div>
+        </div>
+
+        <div class="chat-scroll">
+          <div class="chat-context-line">
+            <span class="dot"></span><span>Today · 6:12 PM</span><span class="dot"></span>
+            <span class="pill"><span data-i="folder"></span>lansing</span>
+          </div>
+
+          <div class="msg-wrap">
+            <div class="msg-user">
+              <div class="msg-user-bubble">
+                Email Acme Corp about their 4 overdue invoices. Polite, firm, list amounts in INR.
+              </div>
+            </div>
+
+            <div class="msg-assistant">
+              <!-- Tool 1 -->
+              <div class="tool-card">
+                <div class="tool-card-head">
+                  <span class="tool-ico" style="background: hsl(220 80% 25% / 0.4); color: hsl(220 90% 70%);"><span data-i="db"></span></span>
+                  <span class="tool-label">Zoho Books</span>
+                  <span class="tool-summary">· Acme Corp · 4 invoices · ₹68.2 L outstanding</span>
+                  <span class="tool-check"><span data-i="check"></span></span>
+                </div>
+              </div>
+
+              <!-- Drafted email reasoning -->
+              <div>
+                <p>Drafted a polite reminder addressed to <strong>finance@acmecorp.com</strong> (their accounts contact on file). Cc'd <strong>rahul@emiactech.com</strong> per Finance dept policy. Outbound emails to external parties require your manager's approval — sent to <strong>Anish Suman</strong> for sign-off.</p>
+              </div>
+
+              <!-- Approval card (the star) -->
+              <div class="approval-card">
+                <div class="approval-head">
+                  <span data-i="shield" style="color: var(--warning);"></span>
+                  <span class="title">Manager approval required before sending</span>
+                  <span class="badge" style="margin-left: auto; color: var(--warning); background: var(--warning-dim);">Awaiting Anish</span>
+                </div>
+                <div class="approval-body">
+                  <dl>
+                    <dt>Action</dt>
+                    <dd>Send email via Gmail</dd>
+                    <dt>To</dt>
+                    <dd>finance@acmecorp.com</dd>
+                    <dt>Cc</dt>
+                    <dd>rahul@emiactech.com</dd>
+                    <dt>Subject</dt>
+                    <dd>Payment reminder · 4 invoices · ₹68.2 L outstanding</dd>
+                    <dt>Reason</dt>
+                    <dd>External party · finance dept policy: <code>managerApprovalJson.externalEmail = true</code></dd>
+                  </dl>
+
+                  <!-- Email body preview -->
+                  <div style="margin-top: 14px; padding: 12px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); font-size: 12px; color: var(--fg); line-height: 1.7;">
+                    <p style="margin: 0 0 8px;">Hi Acme finance team,</p>
+                    <p style="margin: 0 0 8px;">Hope you're well. I'm writing to gently flag four invoices that have moved past their due date and now total <strong>₹68,21,432</strong> across August–October:</p>
+                    <ul style="margin: 0 0 8px; padding-left: 18px; color: var(--fg-muted);">
+                      <li>INV-04482 · ₹46,83,200 · 92 days overdue</li>
+                      <li>INV-04519 · ₹12,14,800 · 47 days overdue</li>
+                      <li>INV-04601 · ₹6,38,212 · 28 days overdue</li>
+                      <li>INV-04634 · ₹2,85,220 · 14 days overdue</li>
+                    </ul>
+                    <p style="margin: 0 0 8px;">Could you confirm a payment date this week? Happy to jump on a quick call if there's anything blocking on your side. <span style="color: var(--fg-dim);">[truncated · 2 more paragraphs]</span></p>
+                  </div>
+                </div>
+                <div class="approval-actions">
+                  <button class="btn btn-secondary">View full draft</button>
+                  <span style="flex: 1;"></span>
+                  <button class="btn btn-danger">Reject</button>
+                  <button class="btn btn-success">Approve & send</button>
+                </div>
+              </div>
+
+              <!-- Lark mirror notice -->
+              <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: var(--r-md); font-size: 11.5px; color: var(--fg-muted);">
+                <span data-i="bell" style="color: var(--info);"></span>
+                <span>Anish has also received this card in Lark · either approval will resume the run</span>
+                <span style="margin-left: auto; color: var(--fg-dim);">queued 38s ago</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Composer (disabled feel — waiting) -->
+        <div class="composer-wrap">
+          <div class="composer" style="opacity: 0.7;">
+            <textarea class="composer-textarea" placeholder="Waiting on approval — your follow-up will queue after the email sends…" rows="1" disabled></textarea>
+            <div class="composer-row">
+              <button class="cmp-icon-btn" disabled><span data-i="plus"></span></button>
+              <button class="cmp-pill" disabled><span data-i="bot"></span> Composer 2.5 <span data-i="chevd"></span></button>
+              <span class="grow"></span>
+              <span class="status-shimmer">
+                <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+                <span style="margin-left: 4px;">Awaiting Anish Suman</span>
+              </span>
+              <button class="cmp-send" style="background: var(--bg-elev-3); color: var(--fg-dim);" disabled><span data-i="arrowUp"></span></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="statusbar">
+          <span class="sb-item"><span data-i="branch"></span>Abhi-Verma2005/lansing-v7</span>
+          <span class="sb-item"><span data-i="monitor"></span>Local</span>
+          <span class="sb-item"><span class="sb-dot" style="background: var(--warning); box-shadow: 0 0 6px var(--warning);"></span>Paused — HITL</span>
+          <span class="sb-spacer"></span>
+          <span class="sb-item">Tokens: 19.8K / 150K</span>
+          <span class="sb-item">Composer 2.5</span>
+        </div>
+      </main>
+    </div>
+  </div>
+  <script src="mock.js"></script>
+</body>
+</html>

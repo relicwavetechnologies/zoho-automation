@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Integration roadmap</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="deck.css" />
+  <style>
+    .tier { background:var(--surface-1); border:1px solid var(--border); border-radius:var(--r-lg); padding:22px 22px; margin-bottom:16px; }
+    .tier-head { display:flex; align-items:baseline; gap:12px; margin-bottom:4px; flex-wrap:wrap; }
+    .tier-head .tn { font-size:11px; font-weight:700; letter-spacing:0.1em; text-transform:uppercase; color:var(--accent); }
+    .tier-head h3 { font-size:18px; font-weight:600; letter-spacing:-0.015em; }
+    .tier-head .star { font-size:11px; color:var(--amber); }
+    .tier .tdesc { font-size:13.5px; color:var(--fg-muted); margin-bottom:16px; max-width:80ch; line-height:1.6; }
+    .tier .tdesc b { color:var(--fg); }
+    .ilist { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+    @media (max-width:760px){ .ilist { grid-template-columns:1fr; } }
+    .irow { display:flex; gap:11px; padding:12px 13px; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-md); }
+    .irow .ii { width:30px; height:30px; border-radius:8px; flex-shrink:0; display:grid; place-items:center; background:var(--surface-4); font-size:15px; }
+    .irow .ib { flex:1; min-width:0; }
+    .irow .it { font-size:13.5px; font-weight:600; display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+    .irow .id { font-size:12px; color:var(--fg-muted); margin-top:2px; line-height:1.5; }
+    .combo { display:flex; gap:13px; padding:16px 16px; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-md); margin-bottom:12px; }
+    .combo .cn { width:30px; height:30px; border-radius:8px; background:var(--accent-bg); color:var(--accent); font-weight:700; font-size:13px; display:grid; place-items:center; flex-shrink:0; }
+    .combo .ct { font-size:14px; font-weight:600; margin-bottom:3px; }
+    .combo .cf { font-size:12.5px; color:var(--fg-muted); line-height:1.55; }
+    .combo .cf code { background:var(--code-bg); color:var(--code-fg); padding:1px 5px; border-radius:4px; font-size:11.5px; }
+  </style>
+</head>
+<body>
+  <main class="page page-wide" data-page="integrations">
+
+    <div class="phead">
+      <div class="eyebrow">The roadmap · built for EMIAC</div>
+      <h1>The integrations that make Divo <span class="accent">daily-indispensable</span>.</h1>
+      <p class="lede">
+        EMIAC runs on content and links — 80+ writers, a 60k-publisher database, SEO at scale. These tiers are ranked by
+        two things: <b>how often someone would touch it each day</b>, and <b>whether it's only possible because Divo is
+        now a desktop app</b>. High on both = a killer.
+      </p>
+    </div>
+
+    <!-- tier 0 -->
+    <div class="section">
+      <div class="tier">
+        <div class="tier-head"><span class="tn">Tier 0 · the moat</span><h3>Native OS surface</h3><span class="pill pill-blue"><span class="pd"></span>desktop-unique</span></div>
+        <p class="tdesc">Integrations with the <b>operating system</b> — the whole reason to be a native app. These turn Divo from a destination into a reflex, and everything else rides on them.</p>
+        <div class="ilist">
+          <div class="irow"><span class="ii">⌨️</span><div class="ib"><div class="it">Local terminal <span class="pill pill-green"><span class="pd"></span>shipped</span></div><div class="id">Run scripts &amp; crawlers on the user's machine, approval-gated.</div></div></div>
+          <div class="irow"><span class="ii">⚡</span><div class="ib"><div class="it">Global hotkey palette <span class="pill pill-blue"><span class="pd"></span>planned</span></div><div class="id">Summon Divo from any app in &lt;1s — the stickiness primitive.</div></div></div>
+          <div class="irow"><span class="ii">📋</span><div class="ib"><div class="it">Clipboard + selection context <span class="pill pill-blue"><span class="pd"></span>planned</span></div><div class="id">Select a draft → "check it." No copy-paste tax.</div></div></div>
+          <div class="irow"><span class="ii">🖥️</span><div class="ib"><div class="it">Screen &amp; filesystem <span class="pill pill-blue"><span class="pd"></span>planned</span></div><div class="id">Read the active app / a folder of briefs, per-action approval.</div></div></div>
+        </div>
+      </div>
+
+      <!-- tier 1 -->
+      <div class="tier">
+        <div class="tier-head"><span class="tn">Tier 1 · the killer</span><h3>SEO data layer</h3><span class="star">★ highest leverage</span></div>
+        <p class="tdesc">The single highest-value missing integration. EMIAC's whole product is ranking content and authoritative links — and <b>Ahrefs is already connected</b>. This one feeds prospecting, briefs, <em>and</em> reporting at once.</p>
+        <div class="ilist">
+          <div class="irow"><span class="ii">📈</span><div class="ib"><div class="it">Ahrefs <span class="pill pill-blue"><span class="pd"></span>next</span></div><div class="id">Rank tracker, keywords, backlinks, site audit, content gap, SERP — domain qualification, briefs, link monitoring.</div></div></div>
+          <div class="irow"><span class="ii">🔎</span><div class="ib"><div class="it">Google Search Console</div><div class="id">Real client performance: clicks, queries, CTR, AI-Overview visibility.</div></div></div>
+          <div class="irow"><span class="ii">📊</span><div class="ib"><div class="it">Google Analytics 4</div><div class="id">Conversions &amp; attribution for the client report.</div></div></div>
+          <div class="irow"><span class="ii">🤖</span><div class="ib"><div class="it">AI-Overview citation tracking</div><div class="id">EMIAC explicitly sells AI-Overview citations — track which client URLs get cited.</div></div></div>
+        </div>
+      </div>
+
+      <!-- tier 2 -->
+      <div class="tier">
+        <div class="tier-head"><span class="tn">Tier 2 · the revenue engine</span><h3>Outreach &amp; link-building</h3></div>
+        <p class="tdesc">Guest posts and links at scale against the 60k-publisher database. Divo can replace a stack of specialist tools here.</p>
+        <div class="ilist">
+          <div class="irow"><span class="ii">🗃️</span><div class="ib"><div class="it">Outreach / publisher DB</div><div class="id">The 60k-publisher source of truth in <b>Airtable / AITable</b> (or Lark Base) — DR, niche, price, contact, history; <b>enriched live from the web</b>.</div></div></div>
+          <div class="irow"><span class="ii">📧</span><div class="ib"><div class="it">Outreach sequencing</div><div class="id">Mail-merge + follow-up cadences on Gmail (or a Pitchbox/Instantly bridge).</div></div></div>
+          <div class="irow"><span class="ii">🎯</span><div class="ib"><div class="it">Prospecting + enrichment</div><div class="id">Vibe Prospecting + Hunter — find sites, get editor emails.</div></div></div>
+          <div class="irow"><span class="ii">🔗</span><div class="ib"><div class="it">Live-link verification <span class="pill pill-blue"><span class="pd"></span>desktop crawl</span></div><div class="id">A watcher that crawls placed URLs and alerts on removal / nofollow.</div></div></div>
+        </div>
+      </div>
+
+      <!-- tier 3 -->
+      <div class="tier">
+        <div class="tier-head"><span class="tn">Tier 3 · the writers (80+)</span><h3>Content production</h3></div>
+        <p class="tdesc">Your largest user base. Tiny frictions removed here aggregate into enormous daily usage.</p>
+        <div class="ilist">
+          <div class="irow"><span class="ii">📝</span><div class="ib"><div class="it">Google Docs (deep)</div><div class="id">Briefs generated into a Doc; inline structure checks.</div></div></div>
+          <div class="irow"><span class="ii">🛡️</span><div class="ib"><div class="it">AI + plagiarism detection</div><div class="id">Originality / Copyscape — "select draft → check" via hotkey.</div></div></div>
+          <div class="irow"><span class="ii">📤</span><div class="ib"><div class="it">WordPress publishing</div><div class="id">Push approved drafts to client/publisher sites — closes the loop to a live link.</div></div></div>
+          <div class="irow"><span class="ii">🧱</span><div class="ib"><div class="it">Brief generation</div><div class="id">Ahrefs keywords + SERP + competitor outline → structured brief, one command.</div></div></div>
+        </div>
+      </div>
+
+      <!-- tier 4 -->
+      <div class="tier">
+        <div class="tier-head"><span class="tn">Tier 4 · finance</span><h3>Money &amp; publisher payouts</h3></div>
+        <p class="tdesc">Zoho Books is connected. The agency-specific gap is <b>publisher payouts</b> — EMIAC pays thousands of publishers per placement.</p>
+        <div class="ilist">
+          <div class="irow"><span class="ii">📒</span><div class="ib"><div class="it">Zoho Books <span class="pill pill-green"><span class="pd"></span>live</span></div><div class="id">Client invoicing, overdue tracking, aging reports.</div></div></div>
+          <div class="irow"><span class="ii">💳</span><div class="ib"><div class="it">Stripe / PayPal / Mercury</div><div class="id">Client payments in + publisher payouts out, reconciled across rails.</div></div></div>
+          <div class="irow"><span class="ii">🧮</span><div class="ib"><div class="it">Payout reconciliation</div><div class="id">"What do we owe publishers this week?" — placements × terms.</div></div></div>
+          <div class="irow"><span class="ii">⏰</span><div class="ib"><div class="it">Cashflow digest</div><div class="id">Overdue in + payouts due out, every morning.</div></div></div>
+        </div>
+      </div>
+
+      <!-- tier 5 + 6 + 7 condensed -->
+      <div class="grid-3" style="gap:16px;">
+        <div class="tier" style="margin-bottom:0;">
+          <div class="tier-head"><span class="tn">Tier 5</span><h3>Automation / MCP</h3></div>
+          <p class="tdesc" style="margin-bottom:10px;">The escape hatch for the infinite long tail.</p>
+          <div class="prose"><ul>
+            <li>Be an <b>MCP host</b> — consume external servers; expose Divo's tools as MCP.</li>
+            <li><b>Make / n8n</b> bridge — trigger what's already automated.</li>
+          </ul></div>
+        </div>
+        <div class="tier" style="margin-bottom:0;">
+          <div class="tier-head"><span class="tn">Tier 6</span><h3>Knowledge / RAG</h3></div>
+          <p class="tdesc" style="margin-bottom:10px;">Point Divo's existing RAG at EMIAC's real knowledge.</p>
+          <div class="prose"><ul>
+            <li><b>Lark Wiki</b> — SOPs, style guides, client briefs.</li>
+            <li><b>Drive + local files</b> — content libraries, per-client voice.</li>
+          </ul></div>
+        </div>
+        <div class="tier" style="margin-bottom:0;">
+          <div class="tier-head"><span class="tn">Tier 7</span><h3>Proactive layer</h3></div>
+          <p class="tdesc" style="margin-bottom:10px;">The daily open-reflex. Native notifications make it trustworthy.</p>
+          <div class="prose"><ul>
+            <li><b>Morning briefing</b> per role.</li>
+            <li><b>Watchers</b> — dead link, rank drop, overdue.</li>
+            <li><b>Agent Inbox</b> — Notify / Question / Review.</li>
+          </ul></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- prioritization -->
+    <div class="section">
+      <div class="section-label">Prioritization — impact × desktop-uniqueness × effort <span class="ln"></span></div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead><tr><th style="width:42px;">#</th><th>Integration</th><th>Daily reach</th><th>Desktop-unique</th><th>Effort</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><b>Ahrefs + GSC</b></td><td><span class="yes">Very high</span></td><td>Medium</td><td><span class="yes">Low</span> · connected</td></tr>
+            <tr><td>2</td><td><b>Global hotkey + selection context</b></td><td><span class="yes">Universal</span></td><td><span class="yes">High</span></td><td>Low–Med</td></tr>
+            <tr><td>3</td><td><b>Proactive briefing + Agent Inbox</b></td><td><span class="yes">Universal</span></td><td><span class="yes">High</span></td><td>Med</td></tr>
+            <tr><td>4</td><td><b>Live-link verification</b></td><td>High</td><td><span class="yes">High</span></td><td>Med</td></tr>
+            <tr><td>5</td><td>Publisher DB + outreach sequencing</td><td>High</td><td>Low</td><td>Med</td></tr>
+            <tr><td>6</td><td>Plagiarism/AI check + WP publishing</td><td><span class="yes">Very high</span></td><td>Med</td><td>Med</td></tr>
+            <tr><td>7</td><td>Local filesystem tool</td><td>High</td><td><span class="yes">High</span></td><td>Low</td></tr>
+            <tr><td>8</td><td>Stripe/PayPal/Mercury payouts</td><td>Med</td><td>Low</td><td>Med</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout accent" style="margin-top:16px;"><b>The first three moves:</b> Ahrefs+GSC as a native tool family (lowest effort, it's your core data) → the global-hotkey palette (the native moat that makes everything reflexive) → the proactive morning briefing + menu-bar Agent Inbox (the daily open-reflex). Those three turn Divo from "an app we built" into "the first thing 80 writers open every morning."</div>
+    </div>
+
+    <!-- killer combos -->
+    <div class="section">
+      <div class="section-label">Killer combos — the demos that drive adoption <span class="ln"></span></div>
+      <p class="section-sub">The "wow" isn't any single integration — it's Divo <b>chaining</b> them in one sentence.</p>
+      <div class="combo"><span class="cn">A</span><div><div class="ct">New-client onboarding</div><div class="cf">CRM client created → <code>ahrefs.site_audit</code> + content-gap → keyword set → <b>briefs auto-generated into Google Docs</b> → assigned to writers in Lark → scheduled.</div></div></div>
+      <div class="combo"><span class="cn">B</span><div><div class="ct">Monthly client report — one click</div><div class="cf">Ahrefs rankings/backlinks delta + GSC clicks + GA conversions → branded report → emailed &amp; posted to the client's Lark channel. Replaces hours.</div></div></div>
+      <div class="combo"><span class="cn">C</span><div><div class="ct">Link-placement pipeline — end to end</div><div class="cf">Prospect (Vibe + Ahrefs DR filter) → outreach sequence (Gmail) → reply triage → <b>live-link verification (local crawl)</b> → log to CRM → payout (Stripe) + invoice (Books).</div></div></div>
+      <div class="combo"><span class="cn">D</span><div><div class="ct">Writer fast-loop</div><div class="cf"><code>⌘+hotkey</code> on a selected draft → AI/plagiarism + readability + brief-compliance → fix → <b>publish to WordPress</b> → verify indexation.</div></div></div>
+      <div class="combo"><span class="cn">E</span><div><div class="ct">"While you slept"</div><div class="cf">Overnight: pull Ahrefs deltas, crawl all live placements, draft today's follow-ups, build the morning digest. You open the laptop to a triaged <b>Agent Inbox</b>.</div></div></div>
+    </div>
+
+    <div class="foot">
+      <span>Divo · integration roadmap for EMIAC Technologies</span>
+      <span>Tiered by daily reach × desktop-uniqueness × effort</span>
+    </div>
+  </main>
+  <script src="deck.js"></script>
+</body>
+</html>

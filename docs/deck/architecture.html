@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Architecture</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="deck.css" />
+  <style>
+    .fam { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+    @media (max-width:880px){ .fam { grid-template-columns:1fr; } }
+    .fam .f { padding:14px 15px; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-md); }
+    .fam .f .fh { font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+    .fam .f .fh .fi { width:24px; height:24px; border-radius:6px; background:var(--surface-4); display:grid; place-items:center; font-size:12px; }
+    .fam .f .ft { font-family:var(--mono); font-size:11px; color:var(--fg-muted); line-height:1.7; }
+    .fam .f .ft .rw { color:var(--green); } .fam .f .ft .ro { color:var(--accent); }
+  </style>
+</head>
+<body>
+  <main class="page page-wide" data-page="architecture">
+
+    <div class="phead">
+      <div class="eyebrow">Under the hood</div>
+      <h1>One brain. <span class="accent">Channel-agnostic.</span> Tool-pluggable.</h1>
+      <p class="lede">
+        Divo is a single orchestration engine fronted by interchangeable channels and backed by a registry of tools.
+        A LangGraph supervisor plans; a <code>call_tool</code> meta-tool dispatches; specialist agents execute; a status
+        channel streams every step back to whichever surface asked. Here's the real shape.
+      </p>
+    </div>
+
+    <!-- the diagram -->
+    <div class="section">
+      <div class="section-label">The request path <span class="ln"></span></div>
+      <div class="arch">
+        <div class="arch-row">
+          <div class="arch-box"><h5>Lark webhook</h5><p>messaging · group-aware</p></div>
+          <div class="arch-arrow">·</div>
+          <div class="arch-box accent"><h5 class="accent">Desktop WS</h5><p>/ws/desktop · streaming</p></div>
+          <div class="arch-arrow">·</div>
+          <div class="arch-box"><h5>Admin / HTTP</h5><p>governance</p></div>
+        </div>
+        <div class="arch-down"><span class="l">normalized input</span>↓</div>
+        <div class="arch-row"><div class="arch-box accent" style="min-width:280px;"><h5 class="accent">Orchestration Engine · core.ts</h5><p>history · context budget · run lifecycle</p></div></div>
+        <div class="arch-down"><span class="l">plan</span>↓</div>
+        <div class="arch-row"><div class="arch-box" style="min-width:280px;"><h5>LangGraph Supervisor</h5><p>supervisor-think → call_tool → synthesize</p></div></div>
+        <div class="arch-down"><span class="l">dispatch by toolId</span>↓</div>
+        <div class="arch-fan">
+          <div class="arch-box green"><h5>Zoho</h5><p>CRM · Books</p></div>
+          <div class="arch-box green"><h5>Google</h5><p>Gmail · Cal · Drive</p></div>
+          <div class="arch-box green"><h5>Lark</h5><p>msg · tasks · docs · base</p></div>
+          <div class="arch-box green"><h5>Web · RAG</h5><p>search · documents</p></div>
+          <div class="arch-box green"><h5>Terminal</h5><p>desktop-only</p></div>
+          <div class="arch-box"><h5>Orchestration</h5><p>schedule · memory</p></div>
+        </div>
+      </div>
+      <div class="callout accent" style="margin-top:16px;"><b>Unified brain.</b> The model never calls tools directly — it calls one meta-tool, <code>call_tool</code>, which looks up the registry, enforces permissions, runs the approval gate, and dispatches by <code>toolId</code>. Adding a tool (Ahrefs, WordPress) is registering it — not rewiring the graph.</div>
+    </div>
+
+    <!-- add a capability -->
+    <div class="section">
+      <div class="section-label">Add a new domain — in three steps <span class="ln"></span></div>
+      <p class="section-sub">Divo grows by <b>adding tools and skills</b>, never by re-architecting. Describe what a system can do, teach Divo when to reach for it, register it — and the brain can do that job.</p>
+      <div class="flow">
+        <div class="flow-step"><div class="flow-num">1</div><h4>Make a tool</h4><p>A typed interface over the API — <code>list · create · update</code>. Zod-validated in, structured out.</p></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step accent"><div class="flow-num">2</div><h4>Make a skill</h4><p>A short prompt that tells Divo what it's for, its verbs, and its guardrails — so it knows when to use it.</p></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-num">3</div><h4>Register it</h4><p>One line in the registry + RBAC defaults. <code>call_tool</code> discovers it automatically.</p></div>
+      </div>
+
+      <div class="grid-2" style="margin-top:18px; align-items:stretch;">
+        <div class="card" style="display:flex; gap:14px; align-items:center;">
+          <span style="width:48px;height:48px;border-radius:12px;background:hsl(220 16% 32% / 0.07);display:grid;place-items:center;flex-shrink:0">
+            <svg viewBox="0 0 200 170" width="27" height="23"><path fill="#FCB400" d="M90.039 12.368 24.079 39.661c-3.668 1.519-3.63 6.729.062 8.194l66.236 26.267c5.117 2.028 10.804 2.028 15.921 0l66.236-26.267c3.692-1.465 3.731-6.675.062-8.194L106.636 12.368c-5.136-2.126-11.461-2.126-16.597 0"/><path fill="#18BFFF" d="M101.302 84.759v65.562c0 3.121 3.155 5.259 6.055 4.115l73.659-29.114c1.683-.666 2.787-2.292 2.787-4.115V55.645c0-3.121-3.155-5.259-6.055-4.115l-73.659 29.114c-1.682.666-2.787 2.293-2.787 4.115"/><path fill="#F82B60" d="M84.076 90.289 62.214 100.847l-2.22 1.068-46.216 22.1c-2.931 1.407-6.623-.727-6.623-3.982V56.077c0-1.178.604-2.194 1.414-2.96.339-.331.719-.604 1.114-.82 1.099-.641 2.667-.794 3.995-.268l70.031 27.735c3.579 1.419 3.862 8.835.37 10.525"/></svg>
+          </span>
+          <div>
+            <h3 style="margin-bottom:4px">Worked example · Airtable <span class="pill pill-blue"><span class="pd"></span>new domain</span></h3>
+            <p>From nothing to <i>“Divo, sync this month's placements into the Airtable outreach base.”</i> One tool (<code>airtable.records.*</code>) + one skill (“Airtable Operations”), registered — and Divo now reads, writes and syncs bases on command, RBAC-scoped. Hours, not a rebuild.</p>
+          </div>
+        </div>
+        <div class="code" style="margin:0;">
+          <div class="code-head"><span class="lang">register the capability</span><span class="fname">composition.ts</span></div>
+          <pre><span class="k">const</span> airtable = <span class="fn">makeAirtableTool</span>(env)   <span class="c">// 1 · the tool</span>
+registry.<span class="fn">add</span>(<span class="s">'airtable'</span>, airtable)
+skills.<span class="fn">load</span>(<span class="s">'airtable-ops'</span>)            <span class="c">// 2 · when to use it</span>
+<span class="c">// 3 · done — call_tool can now run Airtable jobs</span></pre>
+        </div>
+      </div>
+      <div class="callout green" style="margin-top:16px;"><b>That's the whole loop.</b> A new domain — Airtable, WordPress, a payments rail — goes from idea to “Divo can do that job” in hours, because every tool plugs into the same brain through <code>call_tool</code>.</div>
+    </div>
+
+    <!-- streaming -->
+    <div class="section">
+      <div class="section-label">How a step reaches your screen <span class="ln"></span></div>
+      <p class="section-sub">The supervisor streams the model's <b>fullStream</b>; each chunk becomes a status event, forwarded over the desktop WebSocket and rendered as a timeline row — live, in order.</p>
+      <div class="flow">
+        <div class="flow-step"><div class="flow-num">1</div><h4>supervisor-think</h4><p>streamText fullStream — tool-call, tool-result, text-delta chunks.</p></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step accent"><div class="flow-num">2</div><h4>StatusChannel</h4><p>emitToolStart / emitToolEnd / emitTextDelta — one source for every surface.</p></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-num">3</div><h4>Desktop adapter</h4><p>wraps as chat.event over /ws/desktop.</p></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><div class="flow-num">4</div><h4>Renderer</h4><p>timeline rows, data cards, terminal, markdown — rAF-coalesced.</p></div>
+      </div>
+    </div>
+
+    <!-- tool families -->
+    <div class="section">
+      <div class="section-label">The tool families behind the brain <span class="ln"></span></div>
+      <p class="section-sub"><span style="color:var(--green)">●</span> read+write · <span style="color:var(--accent)">●</span> read-only · all behind one registry, each governed by RBAC (terminal is local-only and always-on).</p>
+      <div class="fam">
+        <div class="f"><div class="fh"><span class="fi">🗂️</span> Zoho</div><div class="ft"><span class="rw">zoho.crm</span> · <span class="rw">zoho.books</span><br/>deals · invoices · payments<br/>script-mode analysis · CSV export</div></div>
+        <div class="f"><div class="fh"><span class="fi">✉️</span> Google</div><div class="ft"><span class="rw">gmail</span> · <span class="rw">gcal</span> · <span class="rw">gdrive</span><br/>triage · send · schedule<br/>6 Divo email templates</div></div>
+        <div class="f"><div class="fh"><span class="fi">💬</span> Lark</div><div class="ft"><span class="rw">messaging · task · calendar</span><br/><span class="rw">doc · base · approval</span><br/><span class="ro">contacts</span></div></div>
+        <div class="f"><div class="fh"><span class="fi">🌐</span> Web &amp; RAG</div><div class="ft"><span class="ro">web.search</span><br/><span class="ro">document-rag</span> · Qdrant + rerank<br/><span class="ro">context-search</span></div></div>
+        <div class="f"><div class="fh"><span class="fi">⌨️</span> Execution</div><div class="ft"><span class="rw">run-command</span> · desktop-only<br/>local · approval-gated<br/>hard denylist</div></div>
+        <div class="f"><div class="fh"><span class="fi">⚙️</span> Orchestration</div><div class="ft">call_tool · schedule-task<br/>remember-fact · manage-todos<br/>discover-skill</div></div>
+      </div>
+    </div>
+
+    <!-- layering + memory -->
+    <div class="section">
+      <div class="grid-2">
+        <div class="card">
+          <h3>Clean layering · enforced</h3>
+          <div class="code" style="margin-top:10px;">
+            <div class="code-head"><span class="lang">dependency direction</span></div>
+            <pre>http  →  application  →  domain  ←  infrastructure</pre>
+          </div>
+          <div class="prose"><ul>
+            <li><b>domain/</b> is imported by all; depends on none.</li>
+            <li>Channel payloads never leak past <code>channels/</code>.</li>
+            <li>Integrations sit behind adapter interfaces.</li>
+            <li>Every LLM call goes through the Vercel AI SDK.</li>
+          </ul></div>
+        </div>
+        <div class="card">
+          <h3>Memory, context &amp; proactivity</h3>
+          <div class="prose" style="margin-top:8px;"><ul>
+            <li><b>3-layer context management</b> — tool-result masking, background summarization, a global token budget.</li>
+            <li><b>Mem0 + Qdrant</b> — user / department / company facts, recalled into context.</li>
+            <li><b>RAG ingestion</b> — PDF, Office, CSV, images (OCR) → vector store with per-file access control.</li>
+            <li><b>Scheduled workflows</b> — timezone-aware briefings that run the same engine on a timer.</li>
+            <li><b>HITL approval gates</b> — pause / resume on LangGraph checkpoints.</li>
+          </ul></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- stack -->
+    <div class="section">
+      <div class="section-label">Tech stack <span class="ln"></span></div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead><tr><th style="width:200px;">Layer</th><th>Technology</th></tr></thead>
+          <tbody>
+            <tr><td>Backend runtime</td><td>TypeScript · Express · tsx</td></tr>
+            <tr><td>Orchestration</td><td>LangGraph supervisor · Vercel AI SDK (<code>streamText</code> fullStream)</td></tr>
+            <tr><td>ORM / DB</td><td>Prisma 6 · PostgreSQL</td></tr>
+            <tr><td>Queue / cache</td><td>BullMQ · Redis (IORedis)</td></tr>
+            <tr><td>Memory / RAG</td><td>Mem0 · Qdrant vector store · LangChain</td></tr>
+            <tr><td>Desktop client</td><td>Tauri 2 (Rust shell + WKWebView) · React 18 · Vite · Zustand</td></tr>
+            <tr><td>Admin UI</td><td>React 18 · Vite · Tailwind · Radix</td></tr>
+            <tr><td>Streaming</td><td>WebSocket <code>/ws/desktop</code> · JWT · chat.event envelope</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="foot">
+      <span>Divo · architecture</span>
+      <span>One engine · channel-agnostic · tool-pluggable</span>
+    </div>
+  </main>
+  <script src="deck.js"></script>
+</body>
+</html>

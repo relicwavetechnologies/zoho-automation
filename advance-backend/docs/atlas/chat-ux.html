@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo Atlas — Chat &amp; Turns</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="atlas.css" />
+</head>
+<body>
+  <div class="atlas">
+    <aside class="atlas-nav" id="atlas-nav"></aside>
+    <main class="atlas-main">
+      <div class="atlas-topbar" id="atlas-topbar"></div>
+      <div class="atlas-content">
+        <div class="inner" data-atlas-page="chat-ux">
+
+          <div class="page-head">
+            <div class="eyebrow">Desktop experience · <span style="color:var(--shipped)">Shipped</span></div>
+            <h1>Chat &amp; Turns</h1>
+            <p class="lede">
+              Messages are grouped into <strong>turns</strong> — a user message plus everything Divo did
+              in response. Each user message is full-width and pins to the top of its turn as you scroll,
+              the way Cursor does it.
+            </p>
+          </div>
+
+          <div class="section">
+            <h2>Live preview</h2>
+            <p class="section-sub">Scroll up and down — watch the pinned user bubble swap between turns.</p>
+            <div class="device">
+              <div class="device-bar">
+                <span class="tl"></span><span class="tl"></span><span class="tl"></span>
+                <span class="dt">Divo — sticky turns</span>
+              </div>
+              <iframe src="../new-desktop-mock/chat-streaming-preview.html" style="height: 620px;" title="chat ux preview"></iframe>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>The three behaviours</h2>
+            <div class="grid cols-3">
+              <div class="card">
+                <h3>Full-width bubble</h3>
+                <p>User messages span the same 720px column as Divo's reply — elevated card surface, rounded, multi-line. Not a right-aligned chat bubble.</p>
+              </div>
+              <div class="card">
+                <h3>Sticky pinning</h3>
+                <p><code>position: sticky; top: 0</code> per turn with a solid full-width backdrop. Scrolled content is fully occluded — the next turn pushes the old pin out from the top.</p>
+              </div>
+              <div class="card">
+                <h3>Auto scroll-room</h3>
+                <p>On send, the new turn gets <code>min-height = viewport − bubble</code>, then <code>scrollIntoView</code> pins it to the top so the work area gets a full screen below.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Turn grouping</h2>
+            <p class="section-sub">Messages reduce into turns in the store; the list renders one <code>TurnSection</code> each.</p>
+            <div class="code">
+              <div class="code-head"><span class="lang">typescript</span></div>
+<pre><span class="c">// MessageList.tsx — group consecutive messages into turns</span>
+<span class="k">function</span> <span class="fn">groupTurns</span>(messages: ChatMessage[]): Turn[] {
+  <span class="k">const</span> turns: Turn[] = [];
+  <span class="k">let</span> current: Turn | <span class="ty">null</span> = <span class="ty">null</span>;
+  <span class="k">for</span> (<span class="k">const</span> m <span class="k">of</span> messages) {
+    <span class="k">if</span> (m.role === <span class="s">'user'</span>) {
+      <span class="k">if</span> (current) turns.<span class="fn">push</span>(current);
+      current = { user: m, responses: [] };
+    } <span class="k">else if</span> (current) {
+      current.responses.<span class="fn">push</span>(m);
+    }
+  }
+  <span class="k">if</span> (current) turns.<span class="fn">push</span>(current);
+  <span class="k">return</span> turns;
+}</pre>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Where it lives</h2>
+            <table class="spec">
+              <thead><tr><th>Concern</th><th>File</th></tr></thead>
+              <tbody>
+                <tr><td>Turn grouping + scroll-room + scrollIntoView</td><td><code>new-desktop/src/components/chat/MessageList.tsx</code></td></tr>
+                <tr><td>Sticky wrapper + min-height</td><td><code>components/chat/TurnSection.tsx</code></td></tr>
+                <tr><td>Full-width user bubble</td><td><code>components/chat/UserBubble.tsx</code></td></tr>
+                <tr><td>Assistant render (activity + markdown)</td><td><code>components/chat/MessageBubble.tsx</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="atlas-foot"><span>Divo Atlas · Chat &amp; Turns</span><span>Shipped</span></div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="atlas.js"></script>
+</body>
+</html>

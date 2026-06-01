@@ -1,0 +1,36 @@
+name: divo-postgres
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: divo-postgres
+    env_file:
+      - ${DIVO_ENV_FILE:-/opt/divo/.env.production.local}
+    environment:
+      POSTGRES_DB: ${DIVO_POSTGRES_DB:-divo}
+      POSTGRES_USER: ${DIVO_POSTGRES_USER:-divo_app}
+      POSTGRES_PASSWORD: ${DIVO_POSTGRES_PASSWORD:?DIVO_POSTGRES_PASSWORD is required}
+    ports:
+      - "${DIVO_POSTGRES_BIND:-127.0.0.1}:${DIVO_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - divo_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      divo-internal:
+        aliases:
+          - divo-postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  divo-internal:
+    name: divo_divo-internal
+    external: true
+
+volumes:
+  divo_postgres_data:
+    name: divo_divo_postgres_data
+    external: true

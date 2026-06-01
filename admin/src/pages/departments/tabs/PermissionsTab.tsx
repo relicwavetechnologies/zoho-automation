@@ -26,6 +26,7 @@ const familyClass: Record<DepartmentToolCatalogEntry["family"], string> = {
   lark: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
   google: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
   context: "bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
+  execution: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
   internal: "bg-secondary text-muted-foreground",
 }
 
@@ -84,6 +85,13 @@ export function PermissionsTab({
         ]),
       ),
     [userOverrides],
+  )
+
+  // Local, always-on capabilities (e.g. Terminal) — gated per-action on the
+  // user's own machine, so they are exempt from RBAC and shown read-only.
+  const alwaysOnTools = useMemo(
+    () => Object.values(toolCatalogById).filter((t) => t.family === "execution" && !t.deprecated),
+    [toolCatalogById],
   )
 
   return (
@@ -164,6 +172,37 @@ export function PermissionsTab({
           })}
         </div>
       </div>
+
+      {alwaysOnTools.length > 0 ? (
+        <div className="space-y-3">
+          <div>
+            <p className="text-[13px] font-semibold">Always-on local tools</p>
+            <p className="text-[11px] text-muted-foreground">
+              These run on the member&apos;s own machine via the desktop app and are gated per-command by
+              the user (Run / Decline). They are not governed by RBAC — always available, not toggleable.
+            </p>
+          </div>
+          {alwaysOnTools.map((tool) => (
+            <div key={tool.toolId} className="rounded-lg bg-card p-3 shadow-soft">
+              <div className="mb-1 flex flex-wrap items-center gap-2">
+                <p className="text-[13px] font-semibold">{tool.name}</p>
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${familyClass.execution}`}>
+                  {tool.family}
+                </span>
+                <span className="rounded-full bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  {tool.toolId}
+                </span>
+                <span className="ml-auto rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                  Always on · local · user-approved
+                </span>
+              </div>
+              {tool.description ? (
+                <p className="text-[11px] text-muted-foreground">{tool.description}</p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <div className="space-y-3">
         <div>

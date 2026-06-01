@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo Atlas — Architecture</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="atlas.css" />
+</head>
+<body>
+  <div class="atlas">
+    <aside class="atlas-nav" id="atlas-nav"></aside>
+    <main class="atlas-main">
+      <div class="atlas-topbar" id="atlas-topbar"></div>
+      <div class="atlas-content">
+        <div class="inner" data-atlas-page="architecture">
+
+          <div class="page-head">
+            <div class="eyebrow">Architecture</div>
+            <h1>One brain, two channels</h1>
+            <p class="lede">
+              The desktop app is a thin channel over the same orchestration engine that powers Lark.
+              Nothing about planning, tools, permissions or memory is desktop-specific — the desktop
+              adapter just translates the engine's events into a WebSocket stream the Tauri client renders.
+            </p>
+          </div>
+
+          <!-- High level flow -->
+          <div class="section">
+            <h2>Request → response, end to end</h2>
+            <p class="section-sub">A desktop message walks the exact same path a Lark message does, after the channel adapter normalises it.</p>
+            <div class="flow">
+              <div class="flow-node accent">
+                <span class="fn-label">Desktop client</span>
+                <span class="fn-sub">Tauri + React · /ws/desktop</span>
+              </div>
+              <div class="flow-arrow">→</div>
+              <div class="flow-node">
+                <span class="fn-label">WS gateway</span>
+                <span class="fn-sub">JWT auth · chat.start</span>
+              </div>
+              <div class="flow-arrow">→</div>
+              <div class="flow-node">
+                <span class="fn-label">Channel adapter</span>
+                <span class="fn-sub">normalise → IncomingMessage</span>
+              </div>
+              <div class="flow-arrow">→</div>
+              <div class="flow-node accent">
+                <span class="fn-label">Orchestration engine</span>
+                <span class="fn-sub">plan · delegate · synthesize</span>
+              </div>
+              <div class="flow-arrow">→</div>
+              <div class="flow-node">
+                <span class="fn-label">Tools</span>
+                <span class="fn-sub">Zoho · Lark · Google · web</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Layers -->
+          <div class="section">
+            <h2>Layered dependency direction</h2>
+            <p class="section-sub">Enforced, never broken: <code>http → application → domain ← infrastructure</code>.</p>
+            <table class="spec">
+              <thead><tr><th style="width: 160px;">Layer</th><th>Responsibility</th><th style="width: 200px;">Desktop touch-points</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><b>http/</b></td>
+                  <td>Express routes + the desktop WS gateway. Auth, payload parsing, per-thread serialisation.</td>
+                  <td><code>desktop-ws.gateway.ts</code></td>
+                </tr>
+                <tr>
+                  <td><b>application/</b></td>
+                  <td>Orchestration engine, supervisor graph, tool framework, approval gates, memory. Channel-agnostic.</td>
+                  <td><code>engine/core.ts</code> · <code>StatusChannel</code></td>
+                </tr>
+                <tr>
+                  <td><b>domain/</b></td>
+                  <td>Pure types — channel outbound events, conversation, permissions. Imported by all layers.</td>
+                  <td><code>channel/outbound.ts</code></td>
+                </tr>
+                <tr>
+                  <td><b>infrastructure/</b></td>
+                  <td>External integrations behind adapters. The desktop channel adapter lives here.</td>
+                  <td><code>channels/desktop/desktop.adapter.ts</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Streaming bridge -->
+          <div class="section">
+            <h2>The streaming bridge</h2>
+            <p class="section-sub">
+              How the engine's internal events become pixels. The supervisor never knows it's talking to a
+              desktop — it calls <code>StatusChannel</code> methods, and the desktop adapter forwards them as WS frames.
+            </p>
+            <div class="flow" style="flex-direction: column; gap: 14px;">
+              <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+                <div class="flow-node" style="flex:0 0 220px;">
+                  <span class="fn-label">supervisor-think.ts</span>
+                  <span class="fn-sub">streamText fullStream loop</span>
+                </div>
+                <div class="flow-arrow">emits</div>
+                <div class="flow-node" style="flex:0 0 220px;">
+                  <span class="fn-label">StatusChannel</span>
+                  <span class="fn-sub">emitToolStart / End / TextDelta</span>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node accent" style="flex:0 0 220px;">
+                  <span class="fn-label">DesktopChannelAdapter</span>
+                  <span class="fn-sub">JSON over /ws/desktop</span>
+                </div>
+              </div>
+            </div>
+            <div class="callout" style="margin-top:16px;">
+              <b>Gate:</b> intermediate reasoning text (between tool calls) feeds the activity stream's
+              "thinking" rows but is <b>not</b> echoed into the final reply — the adapter only forwards
+              user-facing text deltas (direct reply, or synthesis after a tool result).
+            </div>
+          </div>
+
+          <!-- Tech stack -->
+          <div class="section">
+            <h2>Stack at a glance</h2>
+            <div class="grid cols-2">
+              <div class="card">
+                <h3>Backend</h3>
+                <p style="margin-bottom:8px;">TypeScript · Express · tsx · LangGraph supervisor · Vercel AI SDK (DeepSeek/OpenAI/Google). Prisma 6 + Postgres, BullMQ + Redis, Qdrant for RAG.</p>
+              </div>
+              <div class="card">
+                <h3>Desktop client</h3>
+                <p style="margin-bottom:8px;">Tauri 2 (Rust shell + WKWebView) · React 18 · Vite 6 · Tailwind + shadcn · Zustand stores · Shiki for code · WebSocket streaming with JWT.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="atlas-foot">
+            <span>Divo Atlas · Architecture</span>
+            <span>Dependency rule is enforced in review — never inverted</span>
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="atlas.js"></script>
+</body>
+</html>

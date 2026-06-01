@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Roadmap</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="deck.css" />
+  <style>
+    .board { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+    @media (max-width:880px){ .board { grid-template-columns:1fr; } }
+    .col { background:var(--surface-1); border:1px solid var(--border); border-radius:var(--r-lg); padding:16px; }
+    .col-head { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:14px; }
+    .col-head .dot { width:8px; height:8px; border-radius:50%; }
+    .col-head .ct { color:var(--fg-muted); } .col-head .cn { margin-left:auto; font-size:12px; color:var(--fg-dim); font-weight:600; letter-spacing:0; }
+    .ci { padding:11px 12px; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-md); margin-bottom:9px; }
+    .ci .cit { font-size:13px; font-weight:600; }
+    .ci .cid { font-size:11.5px; color:var(--fg-muted); margin-top:2px; line-height:1.5; }
+  </style>
+</head>
+<body>
+  <main class="page page-wide" data-page="roadmap">
+
+    <div class="phead">
+      <div class="eyebrow">Where we are · where we're going</div>
+      <h1>Shipped, in flight, and <span class="accent">queued</span>.</h1>
+      <p class="lede">
+        The desktop client went from a static shell to a Cursor-grade chat surface with local execution. Next is the
+        integration layer that makes it daily-indispensable for EMIAC — starting with the SEO data layer and the native moat.
+      </p>
+    </div>
+
+    <!-- versions -->
+    <div class="section">
+      <div class="section-label">Version arc <span class="ln"></span></div>
+      <div class="phases">
+        <div class="phase done"><div class="pm">V0</div><div><div class="pt">Core orchestration <span class="pill pill-green"><span class="pd"></span>done</span></div><div class="pdesc">The brain: supervisor + queue + Redis, the Lark channel, the tool registry, HITL approvals, admin dashboard. Production on real company data.</div></div></div>
+        <div class="phase active"><div class="pm">V1</div><div><div class="pt">Desktop + hardening <span class="pill pill-amber"><span class="pd"></span>in progress</span></div><div class="pdesc">The Tauri desktop app — streaming timeline, markdown, local terminal — plus 3-layer context management, scheduled workflows, and production hardening.</div></div></div>
+        <div class="phase"><div class="pm">V2</div><div><div class="pt">The integration layer <span class="pill pill-blue"><span class="pd"></span>next</span></div><div class="pdesc">Ahrefs + GSC, the native moat (global hotkey, clipboard, screen), the proactive Agent Inbox, and the outreach / content / payout engines — the EMIAC-specific killers.</div></div></div>
+      </div>
+    </div>
+
+    <!-- status board -->
+    <div class="section">
+      <div class="section-label">The board <span class="ln"></span></div>
+      <div class="board">
+        <div class="col">
+          <div class="col-head"><span class="dot" style="background:var(--green)"></span><span class="ct">Shipped</span><span class="cn">desktop</span></div>
+          <div class="ci"><div class="cit">Streaming timeline</div><div class="cid">Live thinking + tool rows, "Worked for Ns" collapse.</div></div>
+          <div class="ci"><div class="cit">Cursor-grade markdown</div><div class="cid">Shiki, GFM tables, block-memoized streaming.</div></div>
+          <div class="ci"><div class="cit">Local terminal execution</div><div class="cid">Run/Decline gate, live output, kill, denylist.</div></div>
+          <div class="ci"><div class="cit">Sticky full-width turns</div><div class="cid">Pinned user bubbles + scroll-room on send.</div></div>
+          <div class="ci"><div class="cit">Native window + icon</div><div class="cid">Frameless macOS chrome, Divo squircle.</div></div>
+        </div>
+        <div class="col">
+          <div class="col-head"><span class="dot" style="background:var(--amber)"></span><span class="ct">In progress</span><span class="cn">backend</span></div>
+          <div class="ci"><div class="cit">3-layer context management</div><div class="cid">Tool-result masking · summarization · token budget.</div></div>
+          <div class="ci"><div class="cit">Streaming performance</div><div class="cid">rAF coalescing + memoization across the renderer.</div></div>
+          <div class="ci"><div class="cit">Scheduled workflows</div><div class="cid">Timezone-aware briefings on the same engine.</div></div>
+          <div class="ci"><div class="cit">Production hardening</div><div class="cid">Reconnect resilience, fallbacks, observability.</div></div>
+        </div>
+        <div class="col">
+          <div class="col-head"><span class="dot" style="background:var(--accent)"></span><span class="ct">Planned</span><span class="cn">V2 · EMIAC</span></div>
+          <div class="ci"><div class="cit">Ahrefs + GSC tool family</div><div class="cid">★ The killer — feeds prospecting, briefs, reports.</div></div>
+          <div class="ci"><div class="cit">Global hotkey + capture</div><div class="cid">Summon from any app; clipboard/selection context.</div></div>
+          <div class="ci"><div class="cit">Proactive Agent Inbox</div><div class="cid">Morning briefing + watchers + native alerts.</div></div>
+          <div class="ci"><div class="cit">Outreach + link verification</div><div class="cid">Prospect → sequence → crawl placements live.</div></div>
+          <div class="ci"><div class="cit">Writer tooling</div><div class="cid">Plagiarism/AI checks + WordPress publishing.</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- next three -->
+    <div class="section">
+      <div class="section-label">The next three moves <span class="ln"></span></div>
+      <div class="flow">
+        <div class="flow-step accent"><div class="flow-num">1</div><h4>Ahrefs + GSC</h4><p>Native tool family. Lowest effort (already connected), highest leverage — it's EMIAC's core data.</p></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step accent"><div class="flow-num">2</div><h4>Global hotkey palette</h4><p>The native moat that makes Ahrefs — and everything — a sub-2-second reflex.</p></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step accent"><div class="flow-num">3</div><h4>Proactive briefing</h4><p>Morning digest + menu-bar Agent Inbox — the daily open-reflex for 80+ people.</p></div>
+      </div>
+      <div class="callout accent" style="margin-top:16px;">Those three turn Divo from "an app we built" into <b>"the first thing the team opens every morning."</b></div>
+    </div>
+
+    <div class="foot">
+      <span>Divo · roadmap</span>
+      <span>V0 done · V1 in progress · V2 — the EMIAC integration layer</span>
+    </div>
+  </main>
+  <script src="deck.js"></script>
+</body>
+</html>

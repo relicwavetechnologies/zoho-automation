@@ -4,23 +4,53 @@ import { readRuntimeConfig } from "../../shared/runtime-config";
 
 const { backendUrl: BACKEND_URL, webAppUrl: WEB_APP_URL } = readRuntimeConfig();
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export function registerAuthHandlers(): void {
-  ipcMain.handle("desktop-auth:open-lark-login", async () => {
+  ipcMain.handle("desktop-auth:open-lark-login", async (event) => {
     const res = await net.fetch(
       `${BACKEND_URL}/api/desktop/auth/lark/authorize-url`,
     );
     const payload = (await res.json()) as {
       success?: boolean;
-      data?: { authorizeUrl?: string };
+      data?: { authorizeUrl?: string; nonce?: string };
       message?: string;
     };
     const authorizeUrl = payload?.data?.authorizeUrl;
+    const nonce = payload?.data?.nonce;
     if (!res.ok || !authorizeUrl) {
       throw new Error(
         payload?.message || "Could not start desktop Lark sign-in",
       );
     }
     await shell.openExternal(authorizeUrl);
+
+    if (nonce) {
+      for (let i = 0; i < 60; i++) {
+        await sleep(2000);
+        try {
+          const pollRes = await net.fetch(
+            `${BACKEND_URL}/api/desktop/auth/lark/poll?nonce=${nonce}`,
+          );
+          const pollData = (await pollRes.json()) as {
+            success?: boolean;
+            pending?: boolean;
+            data?: { code?: string; state?: string };
+          };
+          if (pollData.success && pollData.data?.code && pollData.data?.state) {
+            event.sender.send("desktop-auth:callback", {
+              code: pollData.data.code,
+              state: pollData.data.state,
+            });
+            return;
+          }
+        } catch {
+          // poll failed, retry
+        }
+      }
+    }
   });
 
   ipcMain.handle(

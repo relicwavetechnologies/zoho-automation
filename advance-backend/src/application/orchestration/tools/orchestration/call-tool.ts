@@ -74,7 +74,9 @@ export function createCallToolTool(
       const action = permCheck.value;
 
       // ── Approval gate ────────────────────────────────────────────────────
-      if (adapterCtx.approvalGate && adapterCtx.chatId) {
+      // runCommand self-gates per-command on the user's machine — skip the
+      // company/manager approval flow for it.
+      if (adapterCtx.approvalGate && adapterCtx.chatId && tool.id !== 'runCommand') {
         const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
         const decision = await adapterCtx.approvalGate.check({
           toolId:      tool.id,

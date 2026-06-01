@@ -25,6 +25,9 @@ import { createAiProvidersRoutes } from './http/admin/ai-providers.routes';
 import { createRuntimeRoutes } from './http/admin/runtime.routes';
 import { createAnalyticsRoutes } from './http/admin/analytics.routes';
 import { createTokenUsageRoutes } from './http/admin/token-usage.routes';
+import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
+import { createDesktopThreadsRoutes } from './http/desktop/desktop-threads.routes';
+import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
 
 export const createServer = (c: Container) => {
@@ -36,6 +39,12 @@ export const createServer = (c: Container) => {
       'http://127.0.0.1:5173',
       'http://localhost:4173',
       'http://127.0.0.1:4173',
+      // Divo Desktop (Tauri) — Vite dev server
+      'http://localhost:1420',
+      'http://127.0.0.1:1420',
+      // Divo Desktop (Tauri) — packaged WebView origins
+      'tauri://localhost',
+      'http://tauri.localhost',
     ].filter(Boolean),
   );
 
@@ -275,6 +284,32 @@ export const createServer = (c: Container) => {
     }),
   );
 
+  // Desktop auth (Lark OAuth, handoff, session management)
+  app.use(
+    '/api/desktop/auth',
+    createDesktopAuthRoutes({
+      prisma:                 c.prisma,
+      larkOAuthService:       c.larkOAuthService,
+      googleOAuthService:     c.googleOAuthService,
+      larkUserAuthLinkRepo:   c.larkUserAuthLinkRepo,
+      googleUserAuthLinkRepo: c.googleUserLinkRepo,
+      logger:                 c.logger,
+      memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
+      backendPublicUrl:       c.env.BACKEND_PUBLIC_URL,
+      sessionTtlMinutes:      480,
+    }),
+  );
+
+  // Desktop threads CRUD (member auth — applied inside router)
+  app.use(
+    '/api/desktop/threads',
+    createDesktopThreadsRoutes({
+      prisma:          c.prisma,
+      logger:          c.logger,
+      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+    }),
+  );
+
   // Agent definition + channel mapping CRUD (admin auth required)
   app.use(
     '/api',
@@ -307,6 +342,7 @@ export const createServer = (c: Container) => {
     logger: c.logger,
     env: c.env,
     cache: c.memoryCache,
+    larkOAuthService: c.larkOAuthService,
     zohoTokenService: c.zohoTokenService,
     zohoConnectionRepo: c.zohoConnectionRepo,
     larkContactsClient: c.larkContactsClient,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# stop.sh — kill Redis queue and cache instances started by dev.sh.
+# stop.sh — kill Redis queue/cache and the local DB tunnel started by dev.sh.
 
 set -uo pipefail
 
@@ -21,5 +21,8 @@ stop_redis() {
 
 stop_redis "queue" 6380
 stop_redis "cache" 6381
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/db-tunnel.sh" stop
 
 log "Done."

@@ -8,7 +8,6 @@ import { ChatLayout } from "./components/ChatLayout";
 import { WorkspaceGate } from "./components/WorkspaceGate";
 import { WorkspaceStudio } from "./components/WorkspaceStudio";
 import { ProfileLayout } from "./components/profile/ProfileLayout";
-import { ScheduleWorkView } from "./components/ScheduleWorkView";
 import { logFrontendDebug, logFrontendError } from "./lib/frontend-debug-log";
 
 import {
@@ -73,10 +72,7 @@ function AppShell(): JSX.Element {
   const { hasWorkspace } = useWorkspace();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [editorOpen, setEditorOpen] = useState(false);
-  const [currentView, setCurrentView] = useState<
-    "chat" | "schedule" | "settings"
-  >("chat");
-  const isScheduleView = currentView === "schedule";
+  const [currentView, setCurrentView] = useState<"chat" | "settings">("chat");
 
   useEffect(() => {
     logFrontendDebug("app.shell.ready", {
@@ -135,45 +131,36 @@ function AppShell(): JSX.Element {
         className="flex h-full overflow-hidden"
         style={{ background: "hsl(var(--background))" }}
       >
-        {!isScheduleView && (
-          <Sidebar
-            isOpen={sidebarOpen}
-            onToggle={() => setSidebarOpen(false)}
-            currentView={currentView}
-            onChatClick={() => setCurrentView("chat")}
-            onScheduleClick={() => setCurrentView("schedule")}
-            onSettingsClick={() =>
-              setCurrentView((prev) =>
-                prev === "settings" ? "chat" : "settings",
-              )
-            }
-          />
-        )}
+        <Sidebar
+          isOpen={sidebarOpen}
+          onToggle={() => setSidebarOpen(false)}
+          currentView={currentView}
+          onChatClick={() => setCurrentView("chat")}
+          onSettingsClick={() =>
+            setCurrentView((prev) =>
+              prev === "settings" ? "chat" : "settings",
+            )
+          }
+        />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {!isScheduleView && (
-            <Header
-              sidebarOpen={sidebarOpen}
-              toggleSidebar={() => setSidebarOpen(true)}
-              editorOpen={editorOpen}
-              toggleEditor={() => setEditorOpen((prev) => !prev)}
-            />
-          )}
+          <Header
+            sidebarOpen={sidebarOpen}
+            toggleSidebar={() => setSidebarOpen(true)}
+            editorOpen={editorOpen}
+            toggleEditor={() => setEditorOpen((prev) => !prev)}
+          />
           <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
               {currentView === "settings" ? (
                 <ProfileLayout onClose={() => setCurrentView("chat")} />
-              ) : currentView === "schedule" ? (
-                <ScheduleWorkView onExit={() => setCurrentView("chat")} />
               ) : (
                 <ChatLayout />
               )}
             </div>
-            {!isScheduleView && (
-              <WorkspaceStudio
-                isOpen={editorOpen}
-                onClose={() => setEditorOpen(false)}
-              />
-            )}
+            <WorkspaceStudio
+              isOpen={editorOpen}
+              onClose={() => setEditorOpen(false)}
+            />
           </div>
         </div>
       </div>

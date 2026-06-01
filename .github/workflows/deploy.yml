@@ -109,6 +109,7 @@ jobs:
         run: |
           install -m 700 -d .deploy
           cp docker-compose.yml .deploy/docker-compose.yml
+          cp docker-compose.postgres.yml .deploy/docker-compose.postgres.yml
           printf '%s' "${PRODUCTION_ENV_FILE}" > .deploy/.env.production.local
           chmod 600 .deploy/.env.production.local
 
@@ -128,6 +129,7 @@ jobs:
 
           sshpass -e scp -o StrictHostKeyChecking=accept-new \
             .deploy/docker-compose.yml \
+            .deploy/docker-compose.postgres.yml \
             .deploy/.env.production.local \
             "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${DEPLOY_DIR}/"
 
@@ -143,10 +145,22 @@ jobs:
 
           sshpass -e ssh -o StrictHostKeyChecking=accept-new "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
             "cd '${DEPLOY_DIR}' && \
+             mkdir -p /opt/divo-postgres && \
+             cp docker-compose.postgres.yml /opt/divo-postgres/docker-compose.yml && \
+             if ! docker network inspect divo_divo-internal >/dev/null 2>&1; then docker network create divo_divo-internal; fi && \
+             if ! docker volume inspect divo_divo_postgres_data >/dev/null 2>&1; then docker volume create divo_divo_postgres_data; fi && \
+             cd /opt/divo-postgres && \
+             DIVO_ENV_FILE='${DEPLOY_DIR}/.env.production.local' \
+             docker compose --env-file '${DEPLOY_DIR}/.env.production.local' up -d && \
+             cd '${DEPLOY_DIR}' && \
              DIVO_ENV_FILE=.env.production.local \
              DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
              docker compose --env-file .env.production.local pull divo-backend divo-admin && \
+             DIVO_ENV_FILE=.env.production.local \
+             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm prisma db push --skip-generate && \
              DIVO_ENV_FILE=.env.production.local \
              DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \

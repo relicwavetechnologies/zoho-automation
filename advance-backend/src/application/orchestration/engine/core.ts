@@ -212,6 +212,11 @@ export class OrchestrationEngine {
     // Sending before history/tool-discovery so the user sees Divo respond
     // as soon as permissions are resolved (~300ms after message received).
     let currentStatusHandle: StatusHandle | null = null;
+    const adapterAny = channelAdapter as unknown as {
+      emitToolStart?: (event: Parameters<NonNullable<StatusChannel['emitToolStart']>>[0]) => void;
+      emitToolEnd?: (event: Parameters<NonNullable<StatusChannel['emitToolEnd']>>[0]) => void;
+      emitTextDelta?: (delta: string) => void;
+    };
     const statusChannel: StatusChannel = {
       async sendStatus(update) {
         const result = await channelAdapter.sendStatus(conversation, {
@@ -228,6 +233,9 @@ export class OrchestrationEngine {
         if (result.ok) { currentStatusHandle = result.value; return result.value; }
         return handle;
       },
+      ...(adapterAny.emitToolStart ? { emitToolStart: (e) => adapterAny.emitToolStart!(e) } : {}),
+      ...(adapterAny.emitToolEnd ? { emitToolEnd: (e) => adapterAny.emitToolEnd!(e) } : {}),
+      ...(adapterAny.emitTextDelta ? { emitTextDelta: (d) => adapterAny.emitTextDelta!(d) } : {}),
     };
 
     // Pre-seed status bubble for resume flows (approval resume path).

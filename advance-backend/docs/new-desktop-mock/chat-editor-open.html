@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Currency inflation fix · editor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-window">
+    <div class="titlebar">
+      <div class="traffic-lights">
+        <span class="tl red"></span><span class="tl yellow"></span><span class="tl green"></span>
+      </div>
+      <div class="titlebar-title">lansing · Divo</div>
+    </div>
+
+    <div class="app-body with-editor">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sb-actions">
+          <button class="sb-icon-btn"><span data-i="sidebar"></span></button>
+          <button class="sb-icon-btn"><span data-i="edit"></span></button>
+        </div>
+        <nav class="sb-nav">
+          <a class="sb-nav-item" href="#"><span data-i="sparkle"></span><span>New Agent</span><span class="kbd">⌘N</span></a>
+          <a class="sb-nav-item" href="#"><span data-i="zap"></span><span>Automations</span></a>
+          <a class="sb-nav-item" href="#"><span data-i="store"></span><span>Marketplace</span></a>
+        </nav>
+        <div style="padding: 4px 12px 0;">
+          <div style="background: var(--bg-elev-2); border: 1px solid var(--border-subtle); border-radius: var(--r-md); padding: 8px 10px; display: flex; align-items: center; gap: 9px;">
+            <span data-i="folder" style="color: var(--fg-muted);"></span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 12px; color: var(--fg); font-weight: 500;">lansing</div>
+              <div style="font-size: 10.5px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">~/conductor/.../lansing</div>
+            </div>
+          </div>
+        </div>
+        <div style="padding: 12px 12px 4px;">
+          <div style="display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--border-subtle); border-radius: var(--r-sm); padding: 5px 8px; font-size: 12px; color: var(--fg-dim);">
+            <span data-i="search"></span>
+            <span style="flex: 1;">Search chats…</span>
+            <span class="kbd">⌘K</span>
+          </div>
+        </div>
+        <div style="flex: 1; overflow-y: auto; padding-top: 8px;">
+          <div class="sb-section"><span class="chev" data-i="chevd"></span><span>Repositories</span></div>
+          <div class="sb-list-group">
+            <div class="sb-section" style="padding-left: 8px; padding-top: 4px;">
+              <span class="chev" data-i="chevd" style="color: var(--fg-muted);"></span>
+              <span style="color: var(--fg-muted); text-transform: none; letter-spacing: 0; font-size: 12.5px; font-weight: 500;">lansing</span>
+            </div>
+            <div class="sb-list">
+              <a class="sb-list-row" href="#"><span class="row-label">Q1 overdue invoices</span><span class="row-time">2m</span></a>
+              <a class="sb-list-row active" href="#"><span class="row-label">Currency inflation fix</span><span class="row-time">now</span></a>
+              <a class="sb-list-row" href="#"><span class="row-label">Lark email scope debug</span><span class="row-time">1d</span></a>
+            </div>
+          </div>
+        </div>
+        <div class="sb-footer">
+          <div class="sb-avatar">A</div>
+          <div class="sb-user-info">
+            <div class="sb-user-name">Abhishek</div>
+            <div class="sb-user-plan">Senior Engineer</div>
+          </div>
+          <div class="sb-footer-actions">
+            <button class="sb-icon-btn"><span data-i="settings"></span></button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main chat (narrower because editor open) -->
+      <main class="main">
+        <div class="header">
+          <div class="crumb">
+            <span data-i="folder"></span>
+            <span>lansing</span>
+            <span class="crumb-sep">/</span>
+            <span style="color: var(--fg); font-weight: 500;">Currency inflation fix</span>
+          </div>
+          <div class="header-right">
+            <button class="header-btn"><span data-i="clock"></span>History</button>
+            <button class="header-btn" style="color: var(--fg); background: var(--bg-active);">
+              <span data-i="panel"></span>
+              Editor
+              <span class="kbd" style="margin-left: 2px;">⌘E</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="chat-scroll">
+          <div class="chat-context-line">
+            <span class="dot"></span>
+            <span>Today · 5:48 PM</span>
+            <span class="dot"></span>
+            <span class="pill"><span data-i="folder"></span>lansing</span>
+          </div>
+
+          <div class="msg-wrap">
+            <div class="msg-user">
+              <div class="msg-user-bubble">
+                Sum of <code>_amount_inr</code> looks 70× too high in the script-mode output. Find the bug.
+              </div>
+            </div>
+
+            <div class="msg-assistant">
+              <!-- Read files -->
+              <div class="tool-card">
+                <div class="tool-card-head">
+                  <span class="tool-ico"><span data-i="file"></span></span>
+                  <span class="tool-label">Explored</span>
+                  <span class="tool-summary">· read 6 files · searched 3 patterns</span>
+                  <span class="tool-check"><span data-i="check"></span></span>
+                </div>
+                <div class="tool-card-body" style="display: block;">
+                  <div class="line"><span class="tag">↑</span> zoho-books.tool.ts <span style="color: var(--fg-dim);">· lines 412–478</span></div>
+                  <div class="line"><span class="tag">↑</span> exchange-rate.service.ts <span style="color: var(--fg-dim);">· lines 1–80</span></div>
+                  <div class="line"><span class="tag">↑</span> sandbox-currency.ts <span style="color: var(--fg-dim);">· lines 22–96</span></div>
+                  <div class="line"><span class="tag">⌕</span> grep · <code style="color: var(--fg);">_amount_inr</code> across <code style="color: var(--fg);">src/</code> · 12 hits</div>
+                </div>
+              </div>
+
+              <!-- Reasoning text -->
+              <div>
+                <p>The synthetic field is computed inside <code>injectSyntheticFields()</code> but the existing CRM client was already converting <code>total</code> to INR before passing to the formatter, so we end up multiplying twice. Patch isolates the conversion to a single layer.</p>
+              </div>
+
+              <!-- Edit / diff card -->
+              <div class="tool-card">
+                <div class="tool-card-head">
+                  <span class="tool-ico" style="background: hsl(38 50% 22% / 0.4); color: var(--warning);"><span data-i="edit"></span></span>
+                  <span class="tool-label">Edited</span>
+                  <span class="tool-summary">· <code>zoho-books.tool.ts</code> · +12 −8</span>
+                  <span class="tool-check"><span data-i="check"></span></span>
+                </div>
+              </div>
+
+              <!-- Apply confirmation row -->
+              <div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-elev-1); border: 1px solid var(--border-subtle); border-radius: var(--r-md); font-size: 12.5px;">
+                <span style="color: var(--success); display: inline-flex;" data-i="check"></span>
+                <span style="color: var(--fg);">Applied 1 edit</span>
+                <span style="color: var(--fg-dim);">·</span>
+                <span style="color: var(--fg-muted);">Saved 0.4s ago</span>
+                <span style="margin-left: auto; display: flex; gap: 6px;">
+                  <button class="btn btn-sm btn-ghost">Undo</button>
+                  <button class="btn btn-sm btn-secondary">View diff →</button>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="composer">
+            <textarea class="composer-textarea" placeholder="Send a follow-up…" rows="1"></textarea>
+            <div class="composer-row">
+              <button class="cmp-icon-btn"><span data-i="plus"></span></button>
+              <button class="cmp-pill"><span data-i="bot"></span> Composer 2.5 <span data-i="chevd"></span></button>
+              <button class="cmp-pill"><span data-i="at"></span> Context</button>
+              <span class="grow"></span>
+              <button class="cmp-icon-btn"><span data-i="mic"></span></button>
+              <button class="cmp-send" data-send><span data-i="arrowUp"></span></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="statusbar">
+          <span class="sb-item"><span data-i="branch"></span>Abhi-Verma2005/lansing-v7</span>
+          <span class="sb-item"><span data-i="monitor"></span>Local</span>
+          <span class="sb-item"><span class="sb-dot"></span>Engine connected</span>
+          <span class="sb-spacer"></span>
+          <span class="sb-item">Tokens: 24.1K / 150K</span>
+          <span class="sb-item">Composer 2.5</span>
+        </div>
+      </main>
+
+      <!-- Editor pane -->
+      <aside class="editor-pane">
+        <div style="height: 36px; display: flex; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-elev-2); -webkit-app-region: drag;">
+          <span style="font-size: 12px; color: var(--fg-muted);">Editor</span>
+          <span style="margin: 0 8px; color: var(--fg-dim);">·</span>
+          <span style="font-size: 11.5px; color: var(--fg-dim);">3 files changed</span>
+          <span style="margin-left: auto; display: flex; gap: 4px; -webkit-app-region: no-drag;">
+            <button class="header-btn"><span data-i="search"></span></button>
+            <button class="header-btn"><span data-i="close"></span></button>
+          </span>
+        </div>
+
+        <div class="editor-tabs">
+          <div class="editor-tab active">
+            <span data-i="file" style="color: var(--warning);"></span>
+            zoho-books.tool.ts
+            <span class="close"><span data-i="close"></span></span>
+          </div>
+          <div class="editor-tab">
+            <span data-i="file"></span>
+            exchange-rate.service.ts
+            <span class="close"><span data-i="close"></span></span>
+          </div>
+        </div>
+
+        <div class="editor-body">
+          <!-- File tree -->
+          <div class="editor-tree">
+            <div class="tree-row"><span class="chev" data-i="chevd"></span><span data-i="folder" style="color: var(--info);"></span><span>src</span></div>
+            <div class="tree-row indent-1"><span class="chev" data-i="chevd"></span><span data-i="folder" style="color: var(--fg-dim);"></span><span>application</span></div>
+            <div class="tree-row indent-2"><span class="chev" data-i="chevd"></span><span data-i="folder" style="color: var(--fg-dim);"></span><span>orchestration</span></div>
+            <div class="tree-row indent-2" style="padding-left: 46px;"><span class="chev" data-i="chevd"></span><span data-i="folder" style="color: var(--fg-dim);"></span><span>tools</span></div>
+            <div class="tree-row indent-2 active" style="padding-left: 60px;"><span data-i="file" style="color: var(--warning);"></span><span>zoho-books.tool.ts</span><span class="badge badge-warning" style="margin-left: auto; padding: 0 6px;">M</span></div>
+            <div class="tree-row indent-2" style="padding-left: 60px;"><span data-i="file" style="color: var(--fg-dim);"></span><span>zoho-crm.tool.ts</span></div>
+            <div class="tree-row indent-1"><span class="chev" data-i="chev"></span><span data-i="folder" style="color: var(--fg-dim);"></span><span>infrastructure</span></div>
+            <div class="tree-row indent-1"><span class="chev" data-i="chev"></span><span data-i="folder" style="color: var(--fg-dim);"></span><span>shared</span></div>
+            <div class="tree-row"><span class="chev" data-i="chev"></span><span data-i="folder" style="color: var(--info);"></span><span>tests</span></div>
+          </div>
+
+          <!-- Code -->
+          <div class="editor-content">
+            <div class="code-line"><span class="ln">412</span><span class="lc"><span class="tok-kw">function</span> <span class="tok-fn">injectSyntheticFields</span>(items: Invoice[]) {</span></div>
+            <div class="code-line"><span class="ln">413</span><span class="lc">  <span class="tok-kw">return</span> items.<span class="tok-fn">map</span>((item) => {</span></div>
+            <div class="code-line removed"><span class="ln">414</span><span class="lc">    <span class="tok-com">// previously: convert from item.total in source currency</span></span></div>
+            <div class="code-line removed"><span class="ln">415</span><span class="lc">    <span class="tok-kw">const</span> rate = fxRates[item.currency_code] ?? <span class="tok-num">1</span>;</span></div>
+            <div class="code-line removed"><span class="ln">416</span><span class="lc">    <span class="tok-kw">const</span> _amount_inr = item.total * rate;</span></div>
+            <div class="code-line removed"><span class="ln">417</span><span class="lc">    <span class="tok-kw">const</span> _balance_inr = item.balance * rate;</span></div>
+            <div class="code-line added"><span class="ln">414</span><span class="lc">    <span class="tok-com">// Zoho already provides amount in base currency (INR) via .total</span></span></div>
+            <div class="code-line added"><span class="ln">415</span><span class="lc">    <span class="tok-com">// Only convert when the invoice is in a NON-base currency</span></span></div>
+            <div class="code-line added"><span class="ln">416</span><span class="lc">    <span class="tok-kw">const</span> isForeign = item.currency_code !== BASE_CURRENCY;</span></div>
+            <div class="code-line added"><span class="ln">417</span><span class="lc">    <span class="tok-kw">const</span> rate = isForeign ? (fxRates[item.currency_code] ?? <span class="tok-num">1</span>) : <span class="tok-num">1</span>;</span></div>
+            <div class="code-line added"><span class="ln">418</span><span class="lc">    <span class="tok-kw">const</span> _amount_inr = isForeign ? item.sub_total * rate : item.total;</span></div>
+            <div class="code-line added"><span class="ln">419</span><span class="lc">    <span class="tok-kw">const</span> _balance_inr = isForeign ? item.balance_sub_total * rate : item.balance;</span></div>
+            <div class="code-line"><span class="ln">420</span><span class="lc">    <span class="tok-kw">return</span> { ...item, _amount_inr, _balance_inr };</span></div>
+            <div class="code-line"><span class="ln">421</span><span class="lc">  });</span></div>
+            <div class="code-line"><span class="ln">422</span><span class="lc">}</span></div>
+            <div class="code-line"><span class="ln">423</span><span class="lc"></span></div>
+            <div class="code-line"><span class="ln">424</span><span class="lc"><span class="tok-com">// — exported, used by listInvoices, listBills, listExpenses —</span></span></div>
+          </div>
+        </div>
+
+        <!-- Footer of editor: apply controls -->
+        <div style="border-top: 1px solid var(--border-subtle); padding: 10px 12px; display: flex; align-items: center; gap: 10px; background: var(--bg-elev-1);">
+          <span class="badge badge-warning"><span data-i="edit"></span>1 file modified</span>
+          <span style="font-size: 11.5px; color: var(--fg-dim);">Diff staged · not yet written</span>
+          <span style="margin-left: auto; display: flex; gap: 8px;">
+            <button class="btn btn-sm btn-ghost">Reject</button>
+            <button class="btn btn-sm btn-success">Apply</button>
+          </span>
+        </div>
+      </aside>
+    </div>
+  </div>
+  <script src="mock.js"></script>
+</body>
+</html>

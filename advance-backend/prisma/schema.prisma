@@ -129,6 +129,7 @@ model User {
   departmentUserToolOverridesUpdated DepartmentUserToolOverride[] @relation("DepartmentUserToolOverrideUpdatedBy")
   memberSessions                     MemberSession[]
   desktopHandoffs                    DesktopAuthHandoff[]
+  desktopWorkspaces                  DesktopWorkspace[]
   desktopThreads                     DesktopThread[]
   scheduledWorkflowsCreated          ScheduledWorkflow[]          @relation("ScheduledWorkflowCreatedBy")
   executionRuns                      ExecutionRun[]
@@ -174,6 +175,7 @@ model Company {
   vectorShareRequests       VectorShareRequest[]
   memberSessions            MemberSession[]
   desktopHandoffs           DesktopAuthHandoff[]
+  desktopWorkspaces         DesktopWorkspace[]
   desktopThreads            DesktopThread[]
   larkChatContexts          LarkChatContext[]
   scheduledWorkflows        ScheduledWorkflow[]
@@ -1156,6 +1158,23 @@ model DesktopAuthHandoff {
   @@index([code, expiresAt])
 }
 
+model DesktopWorkspace {
+  id           String          @id @default(uuid())
+  userId       String
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId    String
+  company      Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  path         String
+  name         String
+  lastOpenedAt DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  threads      DesktopThread[]
+
+  @@unique([companyId, userId, path])
+  @@index([userId, companyId, updatedAt])
+}
+
 model DesktopThread {
   id                 String           @id @default(uuid())
   userId             String
@@ -1164,6 +1183,10 @@ model DesktopThread {
   company            Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   channel            String           @default("desktop")
   canonicalThreadKey String?
+  workspaceId        String?
+  workspace          DesktopWorkspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  workspacePath      String?
+  workspaceName      String?
   departmentId       String?
   department         Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   preferredEngine    String?
@@ -1179,6 +1202,7 @@ model DesktopThread {
 
   @@unique([companyId, userId, channel, canonicalThreadKey])
   @@index([userId, companyId, channel, updatedAt])
+  @@index([workspaceId, updatedAt])
   @@index([departmentId, channel, updatedAt])
 }
 

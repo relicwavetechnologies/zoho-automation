@@ -6,6 +6,7 @@
  *   GET  /invites           — list pending invites
  *   POST /invites           — create invite
  *   GET  /onboarding/status — integration provider status
+ *   POST /onboarding/lark-start — create Lark user OAuth URL
  *   GET  /tool-permissions  — company tool permissions matrix
  *
  * Verifies:
@@ -156,15 +157,22 @@ function makePrisma(overrides: {
   zohoConn?:          any;
   larkBinding?:       any;
   googleLink?:        any;
+  user?:              any;
+  larkUserAuthLink?:  any;
+  channelIdentity?:   any;
   toolPerms?:         any[];
   actionPerms?:       any[];
 } = {}) {
   return {
+    user: {
+      findUnique: async () => overrides.user ?? { email: 'alice@example.com' },
+    },
     adminMembership: {
       findMany: async () => overrides.memberships ?? [fakeMembership],
     },
     channelIdentity: {
       findMany: async () => overrides.identities ?? [],
+      findFirst: async () => overrides.channelIdentity ?? null,
     },
     companyInvite: {
       findMany: async () => overrides.invites ?? [fakeInvite],
@@ -175,6 +183,9 @@ function makePrisma(overrides: {
     },
     larkTenantBinding: {
       findFirst: async () => overrides.larkBinding ?? null,
+    },
+    larkUserAuthLink: {
+      findUnique: async () => overrides.larkUserAuthLink ?? null,
     },
     companyGoogleAuthLink: {
       findFirst: async () => overrides.googleLink ?? null,
@@ -199,6 +210,7 @@ const testEnv = {
 
 function makeRouteDeps(prisma: any, overrides: {
   cache?: any;
+  larkOAuthService?: any;
   zohoTokenService?: any;
   zohoConnectionRepo?: any;
 } = {}) {
@@ -211,6 +223,11 @@ function makeRouteDeps(prisma: any, overrides: {
       set: async () => ({ ok: true, value: undefined }),
       del: async () => ({ ok: true, value: undefined }),
       scanDel: async () => ({ ok: true, value: 0 }),
+    } as any,
+    larkOAuthService: overrides.larkOAuthService ?? {
+      isConfigured: () => true,
+      generateNonce: () => 'lark-nonce-1',
+      getAuthorizeUrl: (state: string) => `https://accounts.larksuite.com/open-apis/authen/v1/authorize?client_id=cli_test&state=${state}`,
     } as any,
     zohoTokenService: overrides.zohoTokenService ?? {
       isConfigured: () => true,
@@ -422,6 +439,70 @@ describe('POST /onboarding/zoho-start', () => {
 
   it('returns 401 when admin user context is missing', async () => {
     const { status } = await callRoute(makeRouter(), 'POST', '/onboarding/zoho-start', {
+      locals: { companyId: 'co-1', isSuperAdmin: false },
+    });
+    assert.equal(status, 401);
+  });
+});
+
+// ─── POST /onboarding/lark-start ─────────────────────────────────────────────
+
+describe('POST /onboarding/lark-start', () => {
+  it('returns a Lark authorization URL using the admin user mapped identity', async () => {
+    let cachedKey = '';
+    let cachedValue: unknown;
+    const router = createCompanyRoutes(makeRouteDeps(makePrisma({
+      larkBinding: { larkTenantKey: 'tk_abc', isActive: true, createdAt: new Date('2025-01-01') },
+      channelIdentity: {
+        externalUserId: 'ou_abc',
+        larkOpenId:     'ou_abc',
+      },
+    }), {
+      cache: {
+        get: async () => ({ ok: true, value: null }),
+        set: async (key: string, value: unknown) => { cachedKey = key; cachedValue = value; return { ok: true, value: undefined }; },
+        del: async () => ({ ok: true, value: undefined }),
+        scanDel: async () => ({ ok: true, value: 0 }),
+      },
+    }));
+
+    const { status, body } = await callRoute(router, 'POST', '/onboarding/lark-start');
+
+    assert.equal(status, 200);
+    const data = (body as any).data;
+    const url = new URL(data.url);
+    assert.equal(url.origin, 'https://accounts.larksuite.com');
+    assert.equal(url.searchParams.get('client_id'), 'cli_test');
+
+    const state = JSON.parse(Buffer.from(url.searchParams.get('state') ?? '', 'base64url').toString('utf8'));
+    assert.deepEqual(state, {
+      companyId:  'co-1',
+      userId:     'u-1',
+      larkOpenId: 'ou_abc',
+      nonce:      'lark-nonce-1',
+    });
+    assert.equal(cachedKey, 'lark:oauth:nonce:lark-nonce-1');
+    assert.deepEqual(cachedValue, { companyId: 'co-1', userId: 'u-1', larkOpenId: 'ou_abc' });
+  });
+
+  it('returns 400 when the company has no active Lark tenant binding', async () => {
+    const { status } = await callRoute(makeRouter(), 'POST', '/onboarding/lark-start');
+    assert.equal(status, 400);
+  });
+
+  it('returns 400 when the admin user is not mapped to a Lark identity', async () => {
+    const router = makeRouter({
+      larkBinding: { larkTenantKey: 'tk_abc', isActive: true, createdAt: new Date('2025-01-01') },
+    });
+    const { status } = await callRoute(router, 'POST', '/onboarding/lark-start');
+    assert.equal(status, 400);
+  });
+
+  it('returns 401 when admin user context is missing', async () => {
+    const { status } = await callRoute(makeRouter({
+      larkBinding: { larkTenantKey: 'tk_abc', isActive: true, createdAt: new Date('2025-01-01') },
+      channelIdentity: { externalUserId: 'ou_abc', larkOpenId: 'ou_abc' },
+    }), 'POST', '/onboarding/lark-start', {
       locals: { companyId: 'co-1', isSuperAdmin: false },
     });
     assert.equal(status, 401);

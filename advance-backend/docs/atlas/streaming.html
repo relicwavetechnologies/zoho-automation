@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo Atlas — Activity Stream</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="atlas.css" />
+</head>
+<body>
+  <div class="atlas">
+    <aside class="atlas-nav" id="atlas-nav"></aside>
+    <main class="atlas-main">
+      <div class="atlas-topbar" id="atlas-topbar"></div>
+      <div class="atlas-content">
+        <div class="inner" data-atlas-page="streaming">
+
+          <div class="page-head">
+            <div class="eyebrow">Desktop experience · <span style="color:var(--shipped)">Shipped</span></div>
+            <h1>Activity Stream</h1>
+            <p class="lede">
+              Everything Divo does between "you asked" and "here's the answer" shows as a single, rolling
+              stream of shimmering rows — thinking, then tool calls in past tense — that collapses to one
+              tidy "Thought for Ns" line the instant the reply begins.
+            </p>
+          </div>
+
+          <!-- Live mock embed -->
+          <div class="section">
+            <h2>Live preview</h2>
+            <p class="section-sub">The real interaction model. Hit Replay inside the frame; scroll to see sticky turns.</p>
+            <div class="device">
+              <div class="device-bar">
+                <span class="tl"></span><span class="tl"></span><span class="tl"></span>
+                <span class="dt">Divo — streaming preview</span>
+              </div>
+              <iframe src="../new-desktop-mock/chat-streaming-preview.html" style="height: 620px;" title="streaming preview"></iframe>
+            </div>
+          </div>
+
+          <!-- Lifecycle -->
+          <div class="section">
+            <h2>Row lifecycle</h2>
+            <table class="spec">
+              <thead><tr><th style="width:170px;">State</th><th>Behaviour</th></tr></thead>
+              <tbody>
+                <tr><td><b>running</b></td><td>Verb shimmers (gradient sweep). Only the newest active row shimmers at a time.</td></tr>
+                <tr><td><b>done</b></td><td>Verb swaps to past tense (<code>Reading</code> → <code>Read</code>), duration badge appears, expandable chevron if there's raw output.</td></tr>
+                <tr><td><b>error</b></td><td>Verb turns red, the arg shows the error message.</td></tr>
+                <tr><td><b>collapsed</b></td><td>On first reply token the whole stream folds to <code>Thought for Ns</code>. Click to re-expand and inspect every step + raw JSON.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Rolling window -->
+          <div class="section">
+            <h2>Rolling window</h2>
+            <p class="section-sub">Long runs used to grow unbounded down the page. Now they roll.</p>
+            <div class="grid cols-2">
+              <div class="card">
+                <h3>While working</h3>
+                <p>Rows render in a fixed 168px viewport with a top fade. New rows auto-scroll into view; old ones roll up behind the gradient. The page never jumps.</p>
+              </div>
+              <div class="card">
+                <h3>When done</h3>
+                <p>Collapses to a single pill. Expanding drops the height cap and shows the full history — every thinking line, every tool call, every raw payload.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- WS schema -->
+          <div class="section">
+            <h2>WebSocket event schema</h2>
+            <p class="section-sub">Every frame is <code>{ type: 'chat.event', requestId, event }</code>. The <code>event.type</code> values:</p>
+            <div class="events">
+              <div class="event-row"><span class="ev-name">thinking</span><span class="ev-desc"><span class="mono">{ text }</span> — model reasoning narration, drives a "Thinking" row (suppressed once reply streams).</span></div>
+              <div class="event-row"><span class="ev-name">tool.start</span><span class="ev-desc"><span class="mono">{ callId, name, family, args, verb }</span> — opens a shimmering tool row.</span></div>
+              <div class="event-row"><span class="ev-name">tool.end</span><span class="ev-desc"><span class="mono">{ callId, ok, output, durationMs, past }</span> — commits the row, swaps to past tense, attaches raw output.</span></div>
+              <div class="event-row"><span class="ev-name">text</span><span class="ev-desc"><span class="mono">{ data }</span> — user-facing reply delta. First one collapses the stream.</span></div>
+              <div class="event-row"><span class="ev-name">done</span><span class="ev-desc"><span class="mono">{ message }</span> — persisted assistant message; stream finalises.</span></div>
+              <div class="event-row"><span class="ev-name">error</span><span class="ev-desc"><span class="mono">{ data }</span> — run failed; surfaced as a system pill.</span></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <h2>Where it lives</h2>
+            <table class="spec">
+              <thead><tr><th>Concern</th><th>File</th></tr></thead>
+              <tbody>
+                <tr><td>Emit tool/text events</td><td><code>graphs/nodes/supervisor-think.ts</code></td></tr>
+                <tr><td>Forward to desktop WS</td><td><code>channels/desktop/desktop.adapter.ts</code></td></tr>
+                <tr><td>Past-tense labels</td><td><code>agents/tool-labels.ts</code></td></tr>
+                <tr><td>Parse frames → StatusEvent</td><td><code>new-desktop/src/lib/ws.ts</code></td></tr>
+                <tr><td>Reduce into activity rows</td><td><code>new-desktop/src/store/chat.ts</code></td></tr>
+                <tr><td>Render</td><td><code>new-desktop/src/components/chat/ActivityStream.tsx</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="atlas-foot"><span>Divo Atlas · Activity Stream</span><span>Shipped</span></div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+  <script src="atlas.js"></script>
+</body>
+</html>

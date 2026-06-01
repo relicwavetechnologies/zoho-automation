@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo — Ordering & de-dup fix</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { overflow: auto; }
+    .wrap { max-width: 1320px; margin: 0 auto; padding: 32px 28px 80px; }
+    h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+    .sub { color: var(--fg-muted); font-size: 14px; margin: 0 0 28px; }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+    @media (max-width: 1000px){ .cols { grid-template-columns: 1fr; } }
+    .col { border: 1px solid var(--border-subtle); border-radius: var(--r-lg); background: var(--bg-elev-1); padding: 16px; }
+    .col-h { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; margin-bottom:14px; }
+    .tag { font-size:10.5px; padding:2px 8px; border-radius:999px; font-weight:600; }
+    .tag.bad { background: var(--danger-dim); color: var(--danger); }
+    .tag.good { background: var(--success-dim); color: var(--success); }
+
+    .avatar { width:22px;height:22px;border-radius:7px;background:var(--bg-elev-3);border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--fg); }
+    .zone-label { font-size:10px; text-transform:uppercase; letter-spacing:0.07em; color:var(--fg-dim); margin:14px 0 6px; font-weight:600; }
+
+    /* shared row/card bits */
+    .row { display:flex; align-items:center; gap:8px; padding:7px 11px; font-size:12.5px; border:1px solid var(--border-subtle); border-radius:7px; background:var(--bg-elev-2); margin-bottom:6px; }
+    .row .v { color:var(--fg); font-weight:500; }
+    .row .a { color:var(--fg-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .row .m { margin-left:auto; color:var(--fg-dim); font-size:11px; flex-shrink:0; }
+    .json { font-family:'JetBrains Mono',monospace; color:hsl(28 70% 66%); }
+    .termcard { border:1px solid var(--border); border-radius:7px; background:hsl(0 0% 3%); margin-bottom:6px; overflow:hidden; }
+    .termcard .th { display:flex; align-items:center; gap:8px; padding:7px 11px; background:var(--bg-elev-1); border-bottom:1px solid var(--border-subtle); font-size:12px; }
+    .termcard .th .cmd { font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--fg); }
+    .termcard .th .m { margin-left:auto; color:var(--fg-dim); font-size:11px; }
+    .md { font-size:13.5px; line-height:1.6; color:var(--fg); margin:0; }
+    .md.muted { color:var(--fg-muted); }
+    .thought { display:flex; gap:8px; padding:5px 0; font-size:12.5px; color:var(--fg-muted); }
+    .thought .vv { color:var(--fg); font-weight:500; }
+    .shimmerhead { font-size:13px; font-weight:500; color:var(--fg); display:flex; align-items:center; gap:6px; margin-bottom:8px; }
+    .chev { color:var(--fg-dim); font-size:10px; }
+
+    .ann { border-left:3px solid var(--danger); background:var(--danger-dim); border-radius:0 6px 6px 0; padding:7px 10px; font-size:11.5px; color:var(--fg-muted); margin:6px 0 14px; }
+    .ann b { color:var(--danger); }
+    .ann.good { border-left-color:var(--success); background:var(--success-dim); }
+    .ann.good b { color:var(--success); }
+
+    .timeline { border-left:2px solid var(--border-subtle); padding-left:14px; margin-left:4px; }
+    .timeline > * { position:relative; }
+    .timeline > *::before { content:''; position:absolute; left:-21px; top:9px; width:7px; height:7px; border-radius:50%; background:var(--fg-faint); }
+    .timeline > .t-text::before { background:var(--info); }
+    .timeline > .t-term::before { background:hsl(28 80% 60%); }
+    .timeline > .t-thought::before { background:var(--fg-faint); }
+    .timeline-item { margin-bottom:12px; }
+
+    .how { margin-top:30px; border:1px dashed var(--border); border-radius:var(--r-lg); background:hsl(0 0% 3.5%); padding:18px 22px; }
+    .how h2 { font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color:var(--fg-muted); margin:0 0 12px; }
+    .how pre { font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--fg-muted); margin:0 0 12px; white-space:pre-wrap; line-height:1.6; }
+    .how .k { color: hsl(208 60% 74%); }
+    .how .s { color: hsl(112 30% 64%); }
+    .how .c { color: var(--fg-faint); }
+    .how ul { margin:6px 0; padding-left:20px; }
+    .how li { font-size:13px; color:var(--fg-muted); margin:5px 0; }
+    .how li b { color:var(--fg); }
+    code { background:var(--bg-elev-3); padding:1px 5px; border-radius:4px; font-family:'JetBrains Mono',monospace; font-size:11.5px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Streaming UX — ordering &amp; de-duplication</h1>
+    <p class="sub">User asked: “explore this wiki a bit.” Divo thinks, runs commands, narrates between them, then answers. Here's how it renders today vs. the fix.</p>
+
+    <div class="cols">
+
+      <!-- ============ BEFORE ============ -->
+      <div class="col">
+        <div class="col-h"><span class="avatar">D</span> Divo <span class="tag bad">Today · broken</span></div>
+
+        <div class="zone-label">Zone 1 — activity stream (raw tool rows)</div>
+        <div class="row"><span class="v">Ran</span> <span class="a json">{"status":"completed","exitCode":0,"stdout":"{\"ok\":true…</span><span class="m">4.0s</span></div>
+        <div class="row"><span class="v">Ran</span> <span class="a json">{"status":"completed","exitCode":1,"stdout":"Usage: lark…</span><span class="m">3.7s</span></div>
+        <div class="row"><span class="v">Ran</span> <span class="a json">{"status":"completed","exitCode":0,"stdout":"{\"ok\":true…</span><span class="m">2.6s</span></div>
+        <div class="ann"><b>Dupe #1:</b> raw <code>Ran {json}</code> rows — the same commands also render as cards below.</div>
+
+        <div class="zone-label">Zone 2 — terminal cards (same commands again)</div>
+        <div class="termcard"><div class="th"><span class="cmd">lark-cli wiki +space-list --as user</span><span class="m">exit 0 · 2.6s</span></div></div>
+        <div class="termcard"><div class="th"><span class="cmd">lark-cli wiki +node-get --token Glllwww5CieH…</span><span class="m">exit 1 · 0.1s</span></div></div>
+        <div class="termcard"><div class="th"><span class="cmd">lark-cli wiki +node-list --space-id 7635…</span><span class="m">exit 0 · 1.3s</span></div></div>
+        <div class="ann"><b>Dupe #2 + lost order:</b> all cards stacked together, detached from the prose that described them.</div>
+
+        <div class="zone-label">Zone 3 — one concatenated reply blob</div>
+        <p class="md muted">Two wiki spaces found. The URL you shared — let me check what token resolves to. The token is an obj_token — let me try the most likely type. None of the document types matched. Let me look at the nodes inside both spaces to find where this token lives. Found it! The URL points to the “02 — Internal Projects” page… <i>(every mid-run sentence fused into a single paragraph)</i></p>
+        <div class="ann"><b>Lost order:</b> the model's between-command narration is concatenated into one block — you can't tell which sentence went with which command.</div>
+      </div>
+
+      <!-- ============ AFTER ============ -->
+      <div class="col">
+        <div class="col-h"><span class="avatar">D</span> Divo <span class="tag good">Proposed · one ordered timeline</span></div>
+
+        <div class="shimmerhead"><span class="chev">▾</span> <span>Worked for 25s</span></div>
+
+        <div class="timeline">
+          <div class="timeline-item t-text">
+            <p class="md">I'll explore the wiki from the top: list spaces, resolve the token you shared, then drill into the right page.</p>
+          </div>
+
+          <div class="timeline-item t-term">
+            <div class="termcard"><div class="th"><span class="cmd">lark-cli wiki +space-list --as user</span><span class="m">exit 0 · 2.6s</span></div></div>
+          </div>
+
+          <div class="timeline-item t-text">
+            <p class="md">Two spaces found. The URL you shared has an <code>obj_token</code> — let me resolve what type it is.</p>
+          </div>
+
+          <div class="timeline-item t-term">
+            <div class="termcard"><div class="th"><span class="cmd">lark-cli wiki +node-get --token Glllwww5CieH…</span><span class="m">exit 1 · 0.1s</span></div></div>
+          </div>
+
+          <div class="timeline-item t-thought">
+            <div class="thought"><span class="vv">Thinking</span> none of the doc types matched — try listing nodes in both spaces</div>
+          </div>
+
+          <div class="timeline-item t-term">
+            <div class="termcard"><div class="th"><span class="cmd">lark-cli wiki +node-list --space-id 7635…</span><span class="m">exit 0 · 1.3s</span></div></div>
+          </div>
+
+          <div class="timeline-item t-text">
+            <p class="md">Found it — the token points to the <b>“02 — Internal Projects”</b> page in Tech Hub. Here's the structure:</p>
+          </div>
+        </div>
+
+        <div class="ann good"><b>One timeline:</b> text, thoughts, and command cards interleaved in the exact order they happened. Each command appears <b>once</b> (no raw JSON row). Mid-run prose sits next to the command it describes.</div>
+      </div>
+    </div>
+
+    <!-- ============ HOW ============ -->
+    <div class="how">
+      <h2>How — collapse 3 zones into 1 ordered timeline</h2>
+      <pre>// Replace { activity[], terminals[], content } on the assistant message with
+// ONE ordered list, appended in WS-event arrival order:
+<span class="k">type</span> TimelineItem =
+  | { kind: <span class="s">'text'</span>;    text: string }      <span class="c">// streamed markdown segment (prose / answer)</span>
+  | { kind: <span class="s">'thought'</span>; text: string }      <span class="c">// thinking narration segment</span>
+  | { kind: <span class="s">'terminal'</span>; block: TerminalBlock } <span class="c">// runCommand → rich card (shown ONCE)</span>
+  | { kind: <span class="s">'tool'</span>;    row: ToolRow }       <span class="c">// non-terminal tools (web search, etc.)</span></pre>
+      <ul>
+        <li><b>Append in order:</b> each event pushes or extends the <i>last</i> timeline item. Consecutive <code>text</code> deltas extend the open text segment; a <code>terminal</code>/<code>thought</code>/<code>tool</code> closes it and starts a fresh segment after — so prose stays where it was emitted.</li>
+        <li><b>De-dupe:</b> a <code>call_tool</code> / <code>tool.*</code> event whose tool is <code>runCommand</code> is <b>suppressed</b> — the <code>terminal.exec.request</code> already produces the card. No more raw <code>Ran {json}</code> rows.</li>
+        <li><b>Top shimmer:</b> “Working for Ns” while streaming → “Worked for Ns” when done; the whole timeline is collapsible under it (Cursor-style), final answer is just the last <code>text</code> segment.</li>
+        <li><b>Backend:</b> already emits the right events; this is purely a client store + render change (<code>store/chat.ts</code> reducer → <code>MessageBubble</code> renders <code>timeline</code> in order instead of 3 zones).</li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>

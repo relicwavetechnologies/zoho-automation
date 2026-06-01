@@ -714,16 +714,6 @@ async function handleSlashCommand(args: {
       return;
     }
 
-    // Check if already connected
-    if (deps.larkUserAuthLinkRepo) {
-      const existing = await deps.larkUserAuthLinkRepo.findByUserId(identity.userId, identity.companyId);
-      if (existing.ok && existing.value && !isTokenExpired(existing.value.accessTokenExpiresAt)) {
-        const name = existing.value.larkName ?? existing.value.larkEmail ?? 'your account';
-        await reply(`✅ Already connected as **${name}**.\nType /logout to disconnect or /status to check details.`);
-        return;
-      }
-    }
-
     const url = await createLarkLoginUrl({
       companyId:  identity.companyId,
       userId:     identity.userId,

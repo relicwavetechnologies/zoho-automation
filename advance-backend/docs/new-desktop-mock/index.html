@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo Desktop — Figma Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { overflow: auto; }
+    .toc {
+      position: sticky;
+      top: 16px;
+      z-index: 10;
+      max-width: 1280px;
+      margin: 0 auto 28px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 14px;
+      background: hsl(0 0% 8% / 0.7);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      box-shadow: var(--shadow-md);
+    }
+    .toc a {
+      padding: 5px 12px;
+      font-size: 12px;
+      color: var(--fg-muted);
+      text-decoration: none;
+      border-radius: 999px;
+      transition: background 80ms ease, color 80ms ease;
+    }
+    .toc a:hover { background: var(--bg-hover); color: var(--fg); }
+    .toc-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px 0 4px;
+      font-size: 13px;
+      color: var(--fg);
+      font-weight: 500;
+      border-right: 1px solid var(--border-subtle);
+      margin-right: 6px;
+    }
+    .toc-brand .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: linear-gradient(135deg, hsl(218 80% 60%), hsl(280 60% 60%));
+      box-shadow: 0 0 14px hsl(218 80% 60% / 0.6);
+    }
+    .toc .spacer { flex: 1; }
+    .toc .meta {
+      font-size: 11px;
+      color: var(--fg-dim);
+      padding: 0 8px;
+      font-family: 'SF Mono', Menlo, monospace;
+    }
+    .legend-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      max-width: 1280px;
+      margin: 0 auto 56px;
+    }
+    .legend-tile {
+      padding: 14px;
+      background: var(--bg-elev-1);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--r-md);
+    }
+    .legend-tile .k {
+      font-size: 10.5px; color: var(--fg-dim);
+      text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    }
+    .legend-tile .v {
+      font-size: 13px; color: var(--fg); margin-top: 4px;
+      font-weight: 500;
+    }
+    .legend-tile .sub {
+      font-size: 11px; color: var(--fg-muted); margin-top: 2px;
+    }
+    /* Make onboarding frames look correct in iframe — slightly different aspect */
+    .frame-onboard .frame-window iframe { transform: scale(0.27); }
+  </style>
+</head>
+<body>
+  <div class="artboard">
+    <div class="artboard-header">
+      <div class="artboard-eyebrow">Visual pitch · v0.2</div>
+      <h1 class="artboard-title">Divo Desktop — chat-focused rewrite</h1>
+      <p class="artboard-sub">7 frames: half-split onboarding × 3, chat experience × 4. Cursor-2.5 visual language baked on a shadcn baseline. Click any frame to open it full-screen with mock interactivity.</p>
+    </div>
+
+    <div class="toc">
+      <div class="toc-brand"><span class="dot"></span>Divo</div>
+      <a href="#onboarding">Onboarding</a>
+      <a href="#chat">Chat</a>
+      <div class="spacer"></div>
+      <div class="meta">7 frames · Tauri 2 · React 18 · shadcn</div>
+    </div>
+
+    <div class="legend-grid">
+      <div class="legend-tile">
+        <div class="k">Tech</div>
+        <div class="v">Tauri 2 · React 18 · Vite</div>
+        <div class="sub">Rust shell + Webview2 / WKWebView</div>
+      </div>
+      <div class="legend-tile">
+        <div class="k">UI</div>
+        <div class="v">shadcn + Tailwind + Inter</div>
+        <div class="sub">Dark only · Cursor density</div>
+      </div>
+      <div class="legend-tile">
+        <div class="k">Backend</div>
+        <div class="v">advance-backend · /desktop channel</div>
+        <div class="sub">Same OrchestrationEngine as Lark</div>
+      </div>
+      <div class="legend-tile">
+        <div class="k">Stream</div>
+        <div class="v">WebSocket · desktop-scoped events</div>
+        <div class="sub">Separate event vocab from Lark</div>
+      </div>
+    </div>
+
+    <!-- Onboarding -->
+    <section class="artboard-section" id="onboarding">
+      <div class="artboard-section-title">Onboarding · 3 frames · half-split</div>
+      <div class="frame-grid">
+        <a class="frame frame-onboard" href="login.html" target="_blank">
+          <div class="frame-window">
+            <iframe src="login.html" scrolling="no"></iframe>
+            <div class="frame-window-cover"></div>
+          </div>
+          <div class="frame-label">
+            <span class="name">Login</span>
+            <span class="id">01 · login.html</span>
+          </div>
+          <div class="frame-meta">Lark OAuth · brand left · 1 of 3</div>
+        </a>
+
+        <a class="frame frame-onboard" href="greeting.html" target="_blank">
+          <div class="frame-window">
+            <iframe src="greeting.html" scrolling="no"></iframe>
+            <div class="frame-window-cover"></div>
+          </div>
+          <div class="frame-label">
+            <span class="name">Greeting</span>
+            <span class="id">02 · greeting.html</span>
+          </div>
+          <div class="frame-meta">Hi &lt;name&gt; · connection checklist · 2 of 3</div>
+        </a>
+
+        <a class="frame frame-onboard" href="workspace-pick.html" target="_blank">
+          <div class="frame-window">
+            <iframe src="workspace-pick.html" scrolling="no"></iframe>
+            <div class="frame-window-cover"></div>
+          </div>
+          <div class="frame-label">
+            <span class="name">Workspace picker</span>
+            <span class="id">03 · workspace-pick.html</span>
+          </div>
+          <div class="frame-meta">Folder field + recent · 3 of 3</div>
+        </a>
+      </div>
+    </section>
+
+    <!-- Chat -->
+    <section class="artboard-section" id="chat">
+      <div class="artboard-section-title">Chat · 4 frames · the main experience</div>
+      <div class="frame-grid">
+        <a class="frame" href="chat-empty.html" target="_blank">
+          <div class="frame-window">
+            <iframe src="chat-empty.html" scrolling="no"></iframe>
+            <div class="frame-window-cover"></div>
+          </div>
+          <div class="frame-label">
+            <span class="name">New chat (empty)</span>
+            <span class="id">04 · chat-empty.html</span>
+          </div>
+          <div class="frame-meta">Suggestion chips · composer · workspace nav</div>
+        </a>
+
+        <a class="frame" href="chat-streaming.html" target="_blank">
+          <div class="frame-window">
+            <iframe src="chat-streaming.html" scrolling="no"></iframe>
+            <div class="frame-window-cover"></div>
+          </div>
+          <div class="frame-label">
+            <span class="name">Streaming + tool cards</span>
+            <span class="id">05 · chat-streaming.html</span>
+          </div>
+          <div class="frame-meta">Live shimmer · Zoho tool · stop button</div>
+        </a>
+
+        <a class="frame" href="chat-editor-open.html" target="_blank">
+          <div class="frame-window">
+            <iframe src="chat-editor-open.html" scrolling="no"></iframe>
+            <div class="frame-window-cover"></div>
+          </div>
+          <div class="frame-label">
+            <span class="name">Editor pane open</span>
+            <span class="id">06 · chat-editor-open.html</span>
+          </div>
+          <div class="frame-meta">Monaco · diff lines · apply/reject</div>
+        </a>
+
+        <a class="frame" href="chat-approval.html" target="_blank">
+          <div class="frame-window">
+            <iframe src="chat-approval.html" scrolling="no"></iframe>
+            <div class="frame-window-cover"></div>
+          </div>
+          <div class="frame-label">
+            <span class="name">HITL approval</span>
+            <span class="id">07 · chat-approval.html</span>
+          </div>
+          <div class="frame-meta">Manager approval · pause · Lark mirror</div>
+        </a>
+      </div>
+    </section>
+
+    <!-- Architecture / contract note -->
+    <section class="artboard-section">
+      <div class="artboard-section-title">How it plugs in</div>
+      <div style="background: var(--bg-elev-1); border: 1px solid var(--border-subtle); border-radius: var(--r-md); padding: 24px; font-size: 13px; color: var(--fg-muted); line-height: 1.7;">
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px;">
+          <div>
+            <div style="font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 8px;">Channel split</div>
+            <div style="color: var(--fg); font-weight: 500; margin-bottom: 6px;">One engine, two skins</div>
+            Every chat lands in the same <code style="color: var(--fg);">OrchestrationEngine</code>. The Lark webhook and the new <code style="color: var(--fg);">/desktop</code> route both call <code style="color: var(--fg);">engine.handle(incoming)</code>. <code style="color: var(--fg);">incoming.channel</code> is <code style="color: var(--fg);">'lark'</code> or <code style="color: var(--fg);">'desktop'</code>.
+          </div>
+          <div>
+            <div style="font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 8px;">Status events</div>
+            <div style="color: var(--fg); font-weight: 500; margin-bottom: 6px;">Different vocabulary per channel</div>
+            <code style="color: var(--fg);">StatusChannel.emit()</code> branches on <code style="color: var(--fg);">channel</code>. Lark gets card updates; desktop gets streaming JSON events (<code style="color: var(--fg);">tool.start</code>, <code style="color: var(--fg);">tool.progress</code>, <code style="color: var(--fg);">file.write</code>, <code style="color: var(--fg);">approval.required</code>).
+          </div>
+          <div>
+            <div style="font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; margin-bottom: 8px;">Transport</div>
+            <div style="color: var(--fg); font-weight: 500; margin-bottom: 6px;">WebSocket from frame 04 onward</div>
+            Tauri renderer opens a JWT-authenticated WS to the existing <code style="color: var(--fg);">desktop-ws.gateway.ts</code>. Tokens are issued by <code style="color: var(--fg);">desktop-auth.routes.ts</code> after Lark OAuth completes via the deep-link / polling fallback.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div style="text-align: center; color: var(--fg-dim); font-size: 11px; padding: 24px 0;">
+      Preview · open <code style="color: var(--fg-muted);">index.html</code> directly <span style="color: var(--fg-faint);">·</span> or <code style="color: var(--fg-muted);">http://localhost:7331</code>
+    </div>
+  </div>
+</body>
+</html>
