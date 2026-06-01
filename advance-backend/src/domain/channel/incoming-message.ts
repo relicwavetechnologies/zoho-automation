@@ -1,6 +1,6 @@
 import type { ChatId, CorrelationId, MessageId } from '../../shared/ids';
 
-export type ChannelKey = 'lark' | 'desktop';
+export type ChannelKey = 'lark' | 'desktop' | 'airnote';
 export type ChatType = 'p2p' | 'group';
 
 export interface AttachmentRef {

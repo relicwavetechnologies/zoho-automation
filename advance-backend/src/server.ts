@@ -28,6 +28,7 @@ import { createTokenUsageRoutes } from './http/admin/token-usage.routes';
 import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
 import { createDesktopThreadsRoutes } from './http/desktop/desktop-threads.routes';
 import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
+import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
 
 export const createServer = (c: Container) => {
@@ -307,6 +308,20 @@ export const createServer = (c: Container) => {
       prisma:          c.prisma,
       logger:          c.logger,
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+    }),
+  );
+
+  // AirNote channel (SSE chat + thread recovery)
+  app.use(
+    '/api/airnote',
+    createAirnoteRoutes({
+      prisma:              c.prisma,
+      logger:              c.logger,
+      engine:              c.engine,
+      chatSerializer:      c.chatSerializer,
+      larkOAuthService:    c.larkOAuthService,
+      channelIdentityRepo: c.channelIdentityRepo,
+      approvalGate:        c.approvalGate,
     }),
   );
 

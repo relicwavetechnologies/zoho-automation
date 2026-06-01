@@ -7,6 +7,9 @@
  *   res.locals.userId     (string)
  *   res.locals.aiRole     (string — e.g. "MEMBER", "COMPANY_ADMIN")
  *   res.locals.isAdmin    (boolean)
+ *   res.locals.larkOpenId (string | null)
+ *   res.locals.sessionId  (string)
+ *   res.locals.email      (string | null)
  */
 
 import type { Request, Response, NextFunction } from 'express';
@@ -69,6 +72,7 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
     try {
       const session = await deps.prisma.memberSession.findUnique({
         where: { sessionId: payload.sessionId },
+        include: { user: { select: { email: true } } },
       });
 
       if (!session || session.revokedAt || new Date() > session.expiresAt) {
@@ -76,10 +80,13 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
         return;
       }
 
-      res.locals['companyId'] = session.companyId;
-      res.locals['userId']    = session.userId;
-      res.locals['aiRole']    = session.role;
-      res.locals['isAdmin']   = session.role === 'COMPANY_ADMIN' || session.role === 'SUPER_ADMIN';
+      res.locals['companyId']  = session.companyId;
+      res.locals['userId']     = session.userId;
+      res.locals['aiRole']     = session.role;
+      res.locals['isAdmin']    = session.role === 'COMPANY_ADMIN' || session.role === 'SUPER_ADMIN';
+      res.locals['larkOpenId'] = session.larkOpenId ?? null;
+      res.locals['sessionId']  = session.sessionId;
+      res.locals['email']      = session.user?.email ?? null;
       next();
     } catch (e) {
       deps.logger.error('member-auth.middleware.error', { error: String(e) });
