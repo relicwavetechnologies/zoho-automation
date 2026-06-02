@@ -210,6 +210,74 @@ export function createAirnoteRoutes(deps: AirnoteRoutesDeps): Router {
     }
   });
 
+  // List this user's AirNote threads (most recent first). Scoped to the caller's
+  // own (userId, companyId) on the airnote channel — never another user's chats.
+  router.get('/threads', airnoteAuth, async (req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const page      = Math.max(1, Number(req.query['page']) || 1);
+      const pageSize  = Math.min(50, Math.max(1, Number(req.query['pageSize']) || 30));
+
+      const where = { userId, companyId, channel: 'airnote' };
+
+      const [rows, total] = await Promise.all([
+        deps.prisma.desktopThread.findMany({
+          where,
+          orderBy: [
+            { lastMessageAt: { sort: 'desc', nulls: 'last' } },
+            { createdAt:     'desc' },
+          ],
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+          select: {
+            id:            true,
+            title:         true,
+            createdAt:     true,
+            updatedAt:     true,
+            lastMessageAt: true,
+            // Latest message → a short preview line for the chat list.
+            messages: {
+              orderBy: { createdAt: 'desc' },
+              take:    1,
+              select:  { role: true, content: true },
+            },
+          },
+        }),
+        deps.prisma.desktopThread.count({ where }),
+      ]);
+
+      const threads = rows.map((t) => {
+        const last = t.messages[0];
+        const preview = last ? last.content.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+        return {
+          id:            t.id,
+          title:         t.title,
+          createdAt:     t.createdAt,
+          updatedAt:     t.updatedAt,
+          lastMessageAt: t.lastMessageAt,
+          preview,
+        };
+      });
+
+      res.json({
+        success: true,
+        data: {
+          threads,
+          pagination: {
+            page,
+            pageSize,
+            total,
+            totalPages: Math.ceil(total / pageSize),
+          },
+        },
+      });
+    } catch (e) {
+      log.error('airnote.threads.list.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
   router.get('/threads/:threadId', airnoteAuth, async (req: Request, res: Response) => {
     try {
       const userId   = res.locals['userId'] as string;
