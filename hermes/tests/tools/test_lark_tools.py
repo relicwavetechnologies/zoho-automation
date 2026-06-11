@@ -112,9 +112,15 @@ async def test_calendar_create_converts_time_and_list_normalizes():
 
     client2 = FakeLarkClient({"/events": {"items": [
         {"event_id": "ev2", "summary": "Standup", "start_time": {"timestamp": "1781000000"}, "end_time": {"timestamp": "1781003600"}}]}})
-    out2 = json.loads(registry.dispatch("lark_calendar", {"op": "list"}, client=client2))
+    out2 = json.loads(registry.dispatch("lark_calendar", {"op": "list", "limit": 3}, client=client2))
     assert out2["data"][0]["eventId"] == "ev2"
     assert out2["data"][0]["startTime"].startswith("2026")
+    # Lark's events endpoint rejects page_size < 50 and requires a time window:
+    # request the API minimum (50) + start/end, slice client-side. (Real-API
+    # constraint that a naive mock would miss — see live test 2026-06-12.)
+    _, _, params, _ = client2.calls[-1]
+    assert params["page_size"] == 50
+    assert "start_time" in params and "end_time" in params
 
 
 @pytest.mark.asyncio

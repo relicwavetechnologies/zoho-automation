@@ -404,8 +404,19 @@ async def _handle_lark_calendar(args: dict[str, Any], **kwargs: Any) -> str:
     try:
         if op == "list":
             limit = max(1, min(50, int(args.get("limit") or 50)))
-            data = await client.request("GET", f"{base}/events", params={"page_size": limit})
-            return tool_result({"success": True, "data": [_norm_event(e) for e in (data or {}).get("items", [])]})
+            # Lark's events endpoint requires a start_time/end_time window
+            # (Unix seconds) AND page_size >= 50. Request the API minimum and
+            # slice client-side to the caller's limit.
+            now = int(datetime.now(timezone.utc).timestamp())
+            start = _iso_to_epoch(str(args["dateFrom"])) if args.get("dateFrom") else now
+            end = _iso_to_epoch(str(args["dateTo"])) if args.get("dateTo") else now + 30 * 24 * 3600
+            data = await client.request(
+                "GET",
+                f"{base}/events",
+                params={"page_size": 50, "start_time": str(start), "end_time": str(end)},
+            )
+            events = [_norm_event(e) for e in (data or {}).get("items", [])]
+            return tool_result({"success": True, "data": events[:limit]})
         if op == "get":
             eid = str(args.get("eventId") or "").strip()
             if not eid:
