@@ -168,3 +168,19 @@ async def test_family_required_params():
     assert json.loads(registry.dispatch("lark_base", {"op": "get_record", "appToken": "a", "tableId": "t"}, client=client))["success"] is False
     assert json.loads(registry.dispatch("lark_task", {"op": "get"}, client=client))["success"] is False
     assert json.loads(registry.dispatch("lark_approval", {"op": "get", "approvalCode": "AC"}, client=client))["success"] is False
+
+
+def test_lark_tools_are_autodiscoverable():
+    """Regression guard: the built-in autoloader only imports a tool module when
+    an AST scan finds a TOP-LEVEL registry.register(...) call. Registering in a
+    for-loop made all Lark tools invisible to a real agent session (caught via
+    `are the tools registered beside legacy hermes tools?`). Keep registrations
+    as explicit top-level calls.
+    """
+    from pathlib import Path
+
+    from tools.registry import _module_registers_tools, discover_builtin_tools
+
+    lark_path = Path(__file__).resolve().parents[2] / "tools" / "lark_tools.py"
+    assert _module_registers_tools(lark_path), "lark_tools.py not detected by autoloader"
+    assert "tools.lark_tools" in discover_builtin_tools()

@@ -6,7 +6,7 @@ from typing import Any
 
 from tools.registry import registry, tool_error, tool_result
 from tools.zoho_approval import require_zoho_write_approval
-from tools.zoho_auth import check_zoho_requirements
+from tools.zoho_runtime import zoho_tool_available
 from tools.zoho_client import (
     DEFAULT_INLINE_THRESHOLD,
     ZohoClient,
@@ -479,7 +479,7 @@ registry.register(
     toolset="zoho",
     schema=ZOHO_BOOKS_SCHEMA,
     handler=_handle_zoho_books,
-    check_fn=check_zoho_requirements,
+    check_fn=zoho_tool_available,
     requires_env=["ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REFRESH_TOKEN"],
     is_async=True,
     emoji="📒",

@@ -787,23 +787,31 @@ async def _handle_lark_approval(args: dict[str, Any], **kwargs: Any) -> str:
 
 
 # ── Registration ─────────────────────────────────────────────────────────────
+# NOTE: these MUST be explicit top-level ``registry.register(...)`` calls — the
+# built-in autoloader (registry.discover_builtin_tools → _module_registers_tools)
+# only imports a tool module when an AST scan finds a top-level register call.
+# A for-loop over registrations is invisible to that scan, so the tools would
+# never load in a real agent session (only when something imports this module
+# directly, e.g. tests). Do not refactor these into a loop.
 
-for _name, _schema, _handler, _emoji in (
-    ("lark_messaging", LARK_MESSAGING_SCHEMA, _handle_lark_messaging, "💬"),
-    ("lark_doc", LARK_DOC_SCHEMA, _handle_lark_doc, "📄"),
-    ("lark_base", LARK_BASE_SCHEMA, _handle_lark_base, "🗃️"),
-    ("lark_calendar", LARK_CALENDAR_SCHEMA, _handle_lark_calendar, "📅"),
-    ("lark_contacts", LARK_CONTACTS_SCHEMA, _handle_lark_contacts, "👥"),
-    ("lark_task", LARK_TASK_SCHEMA, _handle_lark_task, "✅"),
-    ("lark_approval", LARK_APPROVAL_SCHEMA, _handle_lark_approval, "📝"),
-):
-    registry.register(
-        name=_name,
-        toolset="lark",
-        schema=_schema,
-        handler=_handler,
-        check_fn=_check,
-        is_async=True,
-        emoji=_emoji,
-        max_result_size_chars=100_000,
-    )
+registry.register(name="lark_messaging", toolset="lark", schema=LARK_MESSAGING_SCHEMA,
+                  handler=_handle_lark_messaging, check_fn=_check, is_async=True,
+                  emoji="💬", max_result_size_chars=100_000)
+registry.register(name="lark_doc", toolset="lark", schema=LARK_DOC_SCHEMA,
+                  handler=_handle_lark_doc, check_fn=_check, is_async=True,
+                  emoji="📄", max_result_size_chars=100_000)
+registry.register(name="lark_base", toolset="lark", schema=LARK_BASE_SCHEMA,
+                  handler=_handle_lark_base, check_fn=_check, is_async=True,
+                  emoji="🗃️", max_result_size_chars=100_000)
+registry.register(name="lark_calendar", toolset="lark", schema=LARK_CALENDAR_SCHEMA,
+                  handler=_handle_lark_calendar, check_fn=_check, is_async=True,
+                  emoji="📅", max_result_size_chars=100_000)
+registry.register(name="lark_contacts", toolset="lark", schema=LARK_CONTACTS_SCHEMA,
+                  handler=_handle_lark_contacts, check_fn=_check, is_async=True,
+                  emoji="👥", max_result_size_chars=100_000)
+registry.register(name="lark_task", toolset="lark", schema=LARK_TASK_SCHEMA,
+                  handler=_handle_lark_task, check_fn=_check, is_async=True,
+                  emoji="✅", max_result_size_chars=100_000)
+registry.register(name="lark_approval", toolset="lark", schema=LARK_APPROVAL_SCHEMA,
+                  handler=_handle_lark_approval, check_fn=_check, is_async=True,
+                  emoji="📝", max_result_size_chars=100_000)

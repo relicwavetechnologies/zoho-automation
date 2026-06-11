@@ -133,6 +133,27 @@ def resolve_zoho_client(
     return client
 
 
+def zoho_tool_available() -> bool:
+    """Whether the Zoho tools should be offered to the agent.
+
+    Available in enterprise mode (per-company vault creds resolved at call time)
+    OR when legacy ``ZOHO_*`` env credentials are configured (single-user/dev).
+    The env-only ``check_zoho_requirements`` hid Zoho in pure-enterprise
+    deployments (no env vars, creds in Postgres) — this restores it.
+    """
+    try:
+        if enterprise_enabled():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from tools.zoho_auth import check_zoho_requirements
+
+        return check_zoho_requirements()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def resolve_tool_client(kwargs: dict) -> ZohoClient:
     """Resolve the ZohoClient a tool handler should use.
 
