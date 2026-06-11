@@ -12,6 +12,7 @@ import {
 } from '@/store/boot'
 import { setGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { clearAllPrompts } from '@/store/prompts'
 import { $connection, setConnection, setGatewayState, setSessionsLoading } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -120,6 +121,11 @@ export function useGatewayBoot({
 
         reconnectAttempt = 0
         // Resync state that may have moved on the backend while we were asleep.
+        // Clear stale prompts first: a turn that ran before the drop may have
+        // timed out or completed; its approval overlay must not persist into
+        // the reconnected session. If the agent is still blocked on an approval,
+        // the gateway re-emits approval.request and the overlay reappears.
+        clearAllPrompts()
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
       } catch (err) {

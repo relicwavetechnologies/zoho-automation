@@ -12,6 +12,7 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { clearAllPrompts } from '@/store/prompts'
 import {
   $currentCwd,
   $messages,
@@ -44,7 +45,7 @@ import {
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
-import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
+import { DESKTOP_SETTINGS_ENABLED, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
 
 interface SessionActionsOptions {
@@ -286,6 +287,7 @@ export function useSessionActions({
       setBusy(false)
       setAwaitingResponse(false)
       clearNotifications()
+      clearAllPrompts()
       setIntroSeed(seed => seed + 1)
       navigate(NEW_CHAT_ROUTE, { replace: replaceRoute })
       setActiveSessionId(null)
@@ -399,7 +401,9 @@ export function useSessionActions({
   )
 
   const openSettings = useCallback(() => {
-    navigate(SETTINGS_ROUTE)
+    if (DESKTOP_SETTINGS_ENABLED) {
+      navigate(SETTINGS_ROUTE)
+    }
   }, [navigate])
 
   const closeSettings = useCallback(() => {
@@ -455,6 +459,7 @@ export function useSessionActions({
       setBusy(true)
       setAwaitingResponse(false)
       clearNotifications()
+      clearAllPrompts()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())

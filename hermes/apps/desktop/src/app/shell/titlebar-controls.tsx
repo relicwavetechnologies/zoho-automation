@@ -24,7 +24,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 
-import { appViewForPath, isOverlayView, PROFILES_ROUTE } from '../routes'
+import { appViewForPath, DESKTOP_SETTINGS_ENABLED, isOverlayView, PROFILES_ROUTE } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
@@ -123,6 +123,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       onSelect: toggleHaptics
     },
     {
+      hidden: !DESKTOP_SETTINGS_ENABLED,
       icon: <Codicon name="settings-gear" />,
       id: 'settings',
       label: 'Open settings',

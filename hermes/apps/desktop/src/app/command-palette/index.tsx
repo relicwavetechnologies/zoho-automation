@@ -42,6 +42,7 @@ import {
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
+  DESKTOP_SETTINGS_ENABLED,
   MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
@@ -189,7 +190,9 @@ export function CommandPalette() {
         heading: 'Go to',
         items: [
           { icon: Plus, id: 'nav-new', keywords: ['chat', 'create'], label: 'New session', run: go(NEW_CHAT_ROUTE) },
-          { icon: Settings, id: 'nav-settings', label: 'Settings', run: go(SETTINGS_ROUTE) },
+          ...(DESKTOP_SETTINGS_ENABLED
+            ? [{ icon: Settings, id: 'nav-settings', label: 'Settings', run: go(SETTINGS_ROUTE) }]
+            : []),
           {
             icon: Wrench,
             id: 'nav-skills',
@@ -252,25 +255,29 @@ export function CommandPalette() {
           }
         ]
       },
-      {
-        heading: 'Settings',
-        items: [
-          ...SECTIONS.map(section => ({
-            icon: section.icon,
-            id: `set-config-${section.id}`,
-            keywords: ['settings', section.label],
-            label: section.label,
-            run: go(settingsTab(`config:${section.id}`))
-          })),
-          ...NON_CONFIG_SETTINGS.map(entry => ({
-            icon: entry.icon,
-            id: `set-${entry.tab}`,
-            keywords: ['settings', ...(entry.keywords ?? [])],
-            label: entry.label,
-            run: go(settingsTab(entry.tab))
-          }))
-        ]
-      }
+      ...(DESKTOP_SETTINGS_ENABLED
+        ? [
+            {
+              heading: 'Settings',
+              items: [
+                ...SECTIONS.map(section => ({
+                  icon: section.icon,
+                  id: `set-config-${section.id}`,
+                  keywords: ['settings', section.label],
+                  label: section.label,
+                  run: go(settingsTab(`config:${section.id}`))
+                })),
+                ...NON_CONFIG_SETTINGS.map(entry => ({
+                  icon: entry.icon,
+                  id: `set-${entry.tab}`,
+                  keywords: ['settings', ...(entry.keywords ?? [])],
+                  label: entry.label,
+                  run: go(settingsTab(entry.tab))
+                }))
+              ]
+            }
+          ]
+        : [])
     ]
   }, [go])
 
@@ -297,19 +304,21 @@ export function CommandPalette() {
       })
     }
 
-    const fieldItems = SECTIONS.flatMap(section =>
-      section.keys.map(key => ({
-        icon: section.icon,
-        id: `field-${key}`,
-        keywords: ['settings', key, section.label],
-        label: `${section.label}: ${fieldLabel(key)}`,
-        run: go(`${SETTINGS_ROUTE}?tab=config:${section.id}&field=${encodeURIComponent(key)}`)
-      }))
-    )
+    if (DESKTOP_SETTINGS_ENABLED) {
+      const fieldItems = SECTIONS.flatMap(section =>
+        section.keys.map(key => ({
+          icon: section.icon,
+          id: `field-${key}`,
+          keywords: ['settings', key, section.label],
+          label: `${section.label}: ${fieldLabel(key)}`,
+          run: go(`${SETTINGS_ROUTE}?tab=config:${section.id}&field=${encodeURIComponent(key)}`)
+        }))
+      )
 
-    result.push({ heading: 'Settings fields', items: fieldItems })
+      result.push({ heading: 'Settings fields', items: fieldItems })
+    }
 
-    if (mcpServers.length > 0) {
+    if (DESKTOP_SETTINGS_ENABLED && mcpServers.length > 0) {
       result.push({
         heading: 'MCP servers',
         items: mcpServers.map(name => ({
@@ -322,7 +331,7 @@ export function CommandPalette() {
       })
     }
 
-    if (archivedSessions.length > 0) {
+    if (DESKTOP_SETTINGS_ENABLED && archivedSessions.length > 0) {
       result.push({
         heading: 'Archived chats',
         items: archivedSessions.map(session => ({

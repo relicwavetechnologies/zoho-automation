@@ -2,16 +2,15 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { AlertTriangle, FileText, Loader2, RefreshCw, Wrench } from '@/lib/icons'
+import { AlertTriangle, FileText, Loader2, RefreshCw, Settings } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { $desktopOnboarding } from '@/store/onboarding'
 
-type BusyAction = 'local' | 'repair' | 'retry' | null
+type BusyAction = 'configure' | 'retry' | null
 
-// Recovery surface for a hard boot failure (gateway never came up, backend
-// exited during startup, bootstrap latched, …). Without this the app shell
-// renders dead — "gateway offline", no composer, only a toast — with no way
-// to retry, repair the install, switch the gateway, or find the logs.
+// Recovery surface for a hard remote gateway connection failure. Without this
+// the app shell renders dead — "gateway offline", no composer, only a toast —
+// with no way to retry, configure the hosted gateway, or find the logs.
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
@@ -42,20 +41,32 @@ export function BootFailureOverlay() {
 
   const retry = async () => {
     setBusy('retry')
-    await window.hermesDesktop?.resetBootstrap().catch(() => undefined)
     window.location.reload()
   }
 
-  const repair = async () => {
-    setBusy('repair')
-    await window.hermesDesktop?.repairBootstrap().catch(() => undefined)
-    window.location.reload()
-  }
+  const configureGateway = async () => {
+    setBusy('configure')
+    const url = window.prompt('Hosted Hermes gateway URL', '')
 
-  const switchToLocalGateway = async () => {
-    setBusy('local')
+    if (!url) {
+      setBusy(null)
+
+      return
+    }
+
+    const token = window.prompt('Gateway token', '') || ''
+
+    if (!token) {
+      setBusy(null)
+
+      return
+    }
+
     // applyConnectionConfig reloads the window from the main process.
-    await window.hermesDesktop?.applyConnectionConfig({ mode: 'local' }).catch(() => undefined)
+    await window.hermesDesktop
+      ?.applyConnectionConfig({ mode: 'remote', remoteAuthMode: 'token', remoteToken: token, remoteUrl: url })
+      .catch(() => undefined)
+
     setBusy(null)
   }
 
@@ -71,8 +82,8 @@ export function BootFailureOverlay() {
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">Hermes couldn't start</h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              The background gateway didn't come up. Try one of the recovery steps below — nothing here deletes your
-              chats or settings.
+              The desktop could not reach the hosted Hermes gateway. Try one of the recovery steps below — nothing here
+              deletes your chats or settings.
             </p>
           </div>
         </div>
@@ -88,13 +99,9 @@ export function BootFailureOverlay() {
                 {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 Retry
               </Button>
-              <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
-                {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
-                Repair install
-              </Button>
-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
-                {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
-                Use local gateway
+              <Button disabled={Boolean(busy)} onClick={() => void configureGateway()} variant="outline">
+                {busy === 'configure' ? <Loader2 className="size-4 animate-spin" /> : <Settings className="size-4" />}
+                Configure gateway
               </Button>
               <Button onClick={openLogs} variant="ghost">
                 <FileText className="size-4" />
@@ -102,7 +109,7 @@ export function BootFailureOverlay() {
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              Repair re-runs the installer and can take a few minutes on a fresh machine.
+              Production desktop is remote-only. Run the Hermes backend separately and point this client at it.
             </p>
           </div>
 

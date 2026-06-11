@@ -88,4 +88,53 @@ describe('clearAllPrompts', () => {
     expect($sudoRequest.get()).toBeNull()
     expect($secretRequest.get()).toBeNull()
   })
+
+  it('is idempotent when nothing is pending (safe to call on session switch)', () => {
+    // Calling when already empty must not throw
+    clearAllPrompts()
+
+    expect($approvalRequest.get()).toBeNull()
+    expect($sudoRequest.get()).toBeNull()
+    expect($secretRequest.get()).toBeNull()
+  })
+})
+
+describe('session-switch prompt clearing (plan §3)', () => {
+  it('approval from old session does not survive a session switch', () => {
+    // Session A had a dangerous-command approval in-flight
+    setApprovalRequest({ command: 'rm -rf /data', description: 'risky', sessionId: 'session-A' })
+    expect($approvalRequest.get()?.sessionId).toBe('session-A')
+
+    // User opens a new chat — startFreshSessionDraft calls clearAllPrompts
+    clearAllPrompts()
+
+    // New session (session-B) starts clean
+    expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('new session can immediately receive its own approval without old session bleed', () => {
+    setApprovalRequest({ command: 'old cmd', description: 'old', sessionId: 'session-A' })
+    clearAllPrompts()
+
+    // Session B raises its own approval
+    setApprovalRequest({ command: 'new cmd', description: 'new', sessionId: 'session-B' })
+
+    const current = $approvalRequest.get()
+    expect(current?.sessionId).toBe('session-B')
+    expect(current?.command).toBe('new cmd')
+  })
+
+  it('clearAllPrompts on reconnect leaves no stale approval from dropped connection', () => {
+    // Simulates gateway drop: approval was pending before sleep/drop
+    setApprovalRequest({ command: 'danger', description: 'risky', sessionId: 'pre-drop-session' })
+    setSudoRequest({ requestId: 'sudo-pre-drop' })
+
+    // attemptReconnect fires clearAllPrompts before refreshing sessions
+    clearAllPrompts()
+
+    // Reconnected gateway re-emits events only for still-in-flight turns;
+    // timed-out / completed turns produce no re-emission — slate is clean
+    expect($approvalRequest.get()).toBeNull()
+    expect($sudoRequest.get()).toBeNull()
+  })
 })
