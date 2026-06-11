@@ -15,7 +15,9 @@ Import chain (circular-import safe):
 """
 
 import ast
+import functools
 import importlib
+import inspect
 import json
 import logging
 import threading
@@ -24,6 +26,59 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+
+# Enterprise identity propagation -------------------------------------------
+# Connector tools (Zoho, Lark, Google, …) execute natively against per-company
+# credentials, so every tool call must carry the resolved company/user context.
+# We inject it at the single dispatch chokepoint from the session ContextVars
+# rather than threading it through every call site. Mapping: ContextVar name ->
+# handler kwarg name.
+_IDENTITY_CONTEXT_KWARGS = {
+    "HERMES_COMPANY_ID": "company_id",
+    "HERMES_COMPANY_USER_ID": "company_user_id",
+    "HERMES_SESSION_ID": "session_id",
+    "HERMES_CHANNEL_IDENTITY_ID": "channel_identity_id",
+    "HERMES_COMPANY_ROLE": "company_role",
+    "HERMES_DEPARTMENT_ID": "department_id",
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _handler_accepts_var_keyword(handler: Callable) -> bool:
+    """True when *handler* declares ``**kwargs``.
+
+    Identity context is only injected into such handlers — engine tools with a
+    fixed signature (``def handler(args)``) are left untouched so they never see
+    an unexpected keyword argument. Connector handlers absorb identity via
+    ``**kwargs``. Result cached per handler object (signatures are static).
+    """
+    try:
+        sig = inspect.signature(handler)
+    except (ValueError, TypeError):
+        return False
+    return any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+
+
+def _enterprise_identity_kwargs() -> dict:
+    """Read enterprise identity from session ContextVars (empty values skipped).
+
+    Imported lazily so ``tools/registry.py`` keeps zero import-time dependency
+    on the gateway (preserves the circular-import-safe import chain). Any
+    failure resolves to no identity rather than blocking tool dispatch.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return {}
+    resolved: dict = {}
+    for ctx_name, kwarg in _IDENTITY_CONTEXT_KWARGS.items():
+        value = get_session_env(ctx_name, "")
+        if value:
+            resolved[kwarg] = value
+    return resolved
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -397,6 +452,12 @@ class ToolRegistry:
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+        # Inject enterprise identity (company/user/session) for handlers that
+        # accept **kwargs. setdefault so an explicit caller-supplied value (or a
+        # test override) always wins, and empty context is never injected.
+        if _handler_accepts_var_keyword(entry.handler):
+            for key, value in _enterprise_identity_kwargs().items():
+                kwargs.setdefault(key, value)
         try:
             if entry.is_async:
                 from model_tools import _run_async
