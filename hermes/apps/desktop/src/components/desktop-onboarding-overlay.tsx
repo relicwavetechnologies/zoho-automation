@@ -93,6 +93,14 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
     docsUrl: 'https://console.x.ai/'
   },
   {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    short: 'V3, R1, direct API',
+    envKey: 'DEEPSEEK_API_KEY',
+    description: 'Direct access to DeepSeek models. Use this for a DeepSeek API key.',
+    docsUrl: 'https://platform.deepseek.com/api_keys'
+  },
+  {
     id: 'local',
     name: 'Local / custom endpoint',
     short: 'self-hosted',
