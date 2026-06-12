@@ -778,7 +778,7 @@ export function DesktopController() {
           />
           <Route element={null} path="cron" />
           <Route element={null} path="profiles" />
-          <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="settings" />
+          <Route element={null} path="settings" />
           <Route element={null} path="command-center" />
           <Route element={null} path="agents" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
