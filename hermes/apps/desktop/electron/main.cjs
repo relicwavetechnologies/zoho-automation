@@ -1924,7 +1924,7 @@ function sendClosePreviewRequested() {
 }
 
 // Tell the renderer the machine just woke. Sleep can silently drop the
-// renderer's WebSocket to the hosted backend; the renderer reconnects on this
+// renderer's WebSocket to the configured backend; the renderer reconnects on this
 // signal so the chat composer doesn't stay stuck on "Starting Hermes...".
 function sendPowerResume() {
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -2299,7 +2299,7 @@ function installMediaPermissions() {
 // ---------------------------------------------------------------------------
 // OAuth remote-gateway auth.
 //
-// Hosted Hermes gateways gate the dashboard behind an OAuth provider (e.g.
+// Company-deployed Hermes gateways may gate the dashboard behind an OAuth provider (e.g.
 // Nous Research) instead of a static session token. The auth model is
 // fundamentally different from the token path:
 //
@@ -2665,11 +2665,11 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
   const persistToken = options.persistToken !== false
   const mode = input.mode === 'remote' ? 'remote' : 'local'
 
-  // Hermes is a remote-only client of a hosted gateway — there is no local
-  // gateway to run. Refuse to persist a 'local' mode config so the gateway
+  // Hermes desktop is a remote client of a separately run Hermes gateway.
+  // Refuse to persist a 'local' mode config so the gateway
   // settings UI / IPC can never latch the app into a (nonexistent) local boot.
   if (mode !== 'remote') {
-    throw new Error('Hermes connects to a hosted gateway; local gateway mode is not supported.')
+    throw new Error('Hermes desktop connects to a configured gateway; local autostart mode is not supported.')
   }
   const remoteUrl = String(input.remoteUrl ?? existing.remote?.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
@@ -2929,13 +2929,13 @@ async function startHermes() {
       }
     }
 
-    // Hermes is a remote-only client of a hosted gateway — it never spawns or
-    // installs a local Python backend. With no remote backend configured there
+    // Hermes desktop is a remote client of a separately run Hermes gateway.
+    // It never spawns or installs the main Python backend. With no gateway configured there
     // is nothing to connect to, so fail with an actionable message. Developers
     // run the Python gateway separately and point the desktop at it via
     // Settings → Gateway or HERMES_DESKTOP_REMOTE_URL / HERMES_DESKTOP_REMOTE_TOKEN.
     throw new Error(
-      'Hermes could not find a hosted gateway to connect to. ' +
+      'Hermes could not find a configured gateway to connect to. ' +
         'Configure the gateway URL in Settings → Gateway, or set ' +
         'HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN.'
     )

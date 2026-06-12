@@ -10,7 +10,7 @@ type BusyAction = 'configure' | 'retry' | null
 
 // Recovery surface for a hard remote gateway connection failure. Without this
 // the app shell renders dead — "gateway offline", no composer, only a toast —
-// with no way to retry, configure the hosted gateway, or find the logs.
+// with no way to retry, configure the Hermes gateway, or find the logs.
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
@@ -46,7 +46,7 @@ export function BootFailureOverlay() {
 
   const configureGateway = async () => {
     setBusy('configure')
-    const url = window.prompt('Hosted Hermes gateway URL', '')
+    const url = window.prompt('Hermes gateway URL', '')
 
     if (!url) {
       setBusy(null)
@@ -82,7 +82,7 @@ export function BootFailureOverlay() {
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">Hermes couldn't start</h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              The desktop could not reach the hosted Hermes gateway. Try one of the recovery steps below — nothing here
+              The desktop could not reach the Hermes gateway. Try one of the recovery steps below — nothing here
               deletes your chats or settings.
             </p>
           </div>

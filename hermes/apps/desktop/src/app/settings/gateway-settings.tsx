@@ -423,7 +423,7 @@ export function GatewaySettings() {
         />
         <ModeCard
           active={state.mode === 'remote'}
-          description="Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token."
+          description="Connect this desktop shell to a separately running Hermes backend. Company deployments may use OAuth or username/password; local dev may use a session token."
           disabled={state.envOverride}
           icon={Globe}
           onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
