@@ -25,11 +25,13 @@ const { fileURLToPath, pathToFileURL } = require('node:url')
 const { spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const {
+  DEFAULT_REMOTE_GATEWAY_URL,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
   normalizeRemoteBaseUrl,
+  resolveEnvAuthMode,
   resolveAuthMode,
   tokenPreview
 } = require('./connection-config.cjs')
@@ -2637,9 +2639,18 @@ function writeDesktopConnectionConfig(config) {
 }
 
 async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionConfig()) {
-  const remoteToken = decryptDesktopSecret(config.remote?.token)
-  const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
-  const remoteUrl = String(config.remote?.url || '')
+  const envRemoteUrl = String(process.env.HERMES_DESKTOP_REMOTE_URL || '').trim()
+  const envRemoteToken = String(process.env.HERMES_DESKTOP_REMOTE_TOKEN || '').trim()
+  const envAuthMode = envRemoteUrl
+    ? resolveEnvAuthMode(process.env.HERMES_DESKTOP_REMOTE_AUTH_MODE, Boolean(envRemoteToken))
+    : null
+  const remoteToken = envRemoteUrl
+    ? envAuthMode === 'oauth'
+      ? ''
+      : envRemoteToken
+    : decryptDesktopSecret(config.remote?.token)
+  const authMode = envRemoteUrl ? envAuthMode || 'token' : config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
+  const remoteUrl = envRemoteUrl || String(config.remote?.url || '')
 
   let remoteOauthConnected = false
   if (authMode === 'oauth' && remoteUrl) {
@@ -2651,7 +2662,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   }
 
   return {
-    mode: config.mode === 'remote' ? 'remote' : 'local',
+    mode: remoteUrl ? 'remote' : config.mode === 'remote' ? 'remote' : 'local',
     remoteAuthMode: authMode,
     remoteOauthConnected,
     remoteUrl,
@@ -2702,92 +2713,161 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
   return { mode, remote: nextRemote }
 }
 
-async function resolveRemoteBackend() {
+function resolveRemoteTargetPreference() {
   const rawEnvUrl = process.env.HERMES_DESKTOP_REMOTE_URL
+  const rawEnvAuthMode = process.env.HERMES_DESKTOP_REMOTE_AUTH_MODE
   const rawEnvToken = process.env.HERMES_DESKTOP_REMOTE_TOKEN
 
   if (rawEnvUrl) {
-    if (!rawEnvToken) {
+    const authMode = resolveEnvAuthMode(rawEnvAuthMode, Boolean(rawEnvToken))
+
+    if (!authMode) {
       throw new Error(
-        'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
-          'Both must be provided to connect to a remote Hermes backend.'
+        'HERMES_DESKTOP_REMOTE_URL is set but no auth mode could be resolved. ' +
+          'Set HERMES_DESKTOP_REMOTE_AUTH_MODE=oauth for company cookie auth, or provide HERMES_DESKTOP_REMOTE_TOKEN.'
       )
     }
 
-    const baseUrl = normalizeRemoteBaseUrl(rawEnvUrl)
-
     return {
-      baseUrl,
-      mode: 'remote',
+      authMode,
+      baseUrl: normalizeRemoteBaseUrl(rawEnvUrl),
       source: 'env',
-      authMode: 'token',
-      token: rawEnvToken,
-      wsUrl: buildGatewayWsUrl(baseUrl, rawEnvToken)
+      token: authMode === 'oauth' ? null : rawEnvToken
     }
   }
 
   const config = readDesktopConnectionConfig()
 
-  if (config.mode !== 'remote') {
+  if (config.mode === 'remote' && config.remote?.url) {
+    return {
+      authMode: config.remote.authMode === 'oauth' ? 'oauth' : 'token',
+      baseUrl: normalizeRemoteBaseUrl(config.remote.url),
+      source: 'settings',
+      token: decryptDesktopSecret(config.remote?.token)
+    }
+  }
+
+  if (DEFAULT_REMOTE_GATEWAY_URL) {
+    return {
+      authMode: 'oauth',
+      baseUrl: normalizeRemoteBaseUrl(DEFAULT_REMOTE_GATEWAY_URL),
+      source: 'default',
+      token: null
+    }
+  }
+
+  return null
+}
+
+async function getRemoteAuthStatus() {
+  const target = resolveRemoteTargetPreference()
+
+  if (!target) {
+    return {
+      authMode: 'none',
+      baseUrl: null,
+      connected: false,
+      needsLogin: false,
+      providers: [],
+      reachable: false,
+      source: 'none'
+    }
+  }
+
+  if (target.authMode !== 'oauth') {
+    return {
+      authMode: 'token',
+      baseUrl: target.baseUrl,
+      connected: false,
+      needsLogin: false,
+      providers: [],
+      reachable: false,
+      source: target.source
+    }
+  }
+
+  let connected = false
+  try {
+    connected = await hasOauthSessionCookie(target.baseUrl)
+  } catch {
+    connected = false
+  }
+
+  let probe = null
+  try {
+    probe = await probeRemoteAuthMode(target.baseUrl)
+  } catch {
+    probe = null
+  }
+
+  return {
+    authMode: 'oauth',
+    baseUrl: target.baseUrl,
+    connected,
+    needsLogin: !connected,
+    providers: Array.isArray(probe?.providers) ? probe.providers : [],
+    reachable: Boolean(probe?.reachable),
+    source: target.source
+  }
+}
+
+async function resolveRemoteBackend() {
+  const target = resolveRemoteTargetPreference()
+
+  // Resolve which gateway to connect to. An explicitly configured remote wins;
+  // otherwise fall back to the baked-in default company workspace in OAuth
+  // mode. Only when there is neither a configured remote nor a default do we
+  // give up.
+  if (!target) {
     return null
   }
 
-  const baseUrl = normalizeRemoteBaseUrl(config.remote?.url)
-  const authMode = config.remote?.authMode === 'oauth' ? 'oauth' : 'token'
-
-  if (authMode === 'oauth') {
+  if (target.authMode === 'oauth') {
     // OAuth gateway: auth comes from the session cookie in the OAuth partition.
     // Verify the cookie is present, then mint a single-use WS ticket (the
-    // gateway rejects ?token= in gated mode). A missing cookie / 401 means the
-    // user needs to (re-)log in via Settings → Gateway.
-    if (!(await hasOauthSessionCookie(baseUrl))) {
-      const err = new Error(
-        'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
-          'Open Settings → Gateway and click "Sign in", or switch back to Local.'
-      )
+    // gateway rejects ?token= in gated mode).
+    if (!(await hasOauthSessionCookie(target.baseUrl))) {
+      const err = new Error('Hermes sign-in is required before this desktop can connect to the company workspace.')
+      err.baseUrl = target.baseUrl
       err.needsOauthLogin = true
       throw err
     }
 
     let ticket
     try {
-      ticket = await mintGatewayWsTicket(baseUrl)
+      ticket = await mintGatewayWsTicket(target.baseUrl)
     } catch (error) {
-      const err = new Error(
-        'Your remote gateway session has expired. ' + 'Open Settings → Gateway and click "Sign in" again.'
-      )
+      const err = new Error('Your Hermes sign-in has expired. Sign in again to continue.')
+      err.baseUrl = target.baseUrl
       err.needsOauthLogin = true
       err.cause = error
       throw err
     }
 
     return {
-      baseUrl,
+      baseUrl: target.baseUrl,
       mode: 'remote',
-      source: 'settings',
+      source: target.source === 'default' ? 'settings' : target.source,
       authMode: 'oauth',
       // No static token in OAuth mode; REST is cookie-authed via the partition.
       token: null,
-      wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
+      wsUrl: buildGatewayWsUrlWithTicket(target.baseUrl, ticket)
     }
   }
 
-  const token = decryptDesktopSecret(config.remote?.token)
+  const token = target.token
 
   if (!token) {
-    throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
-        'Open Settings → Gateway and save a token, or switch back to Local.'
-    )
+    throw new Error('Remote Hermes gateway is selected, but no session token is saved.')
   }
 
   return {
-    baseUrl,
+    baseUrl: target.baseUrl,
     mode: 'remote',
-    source: 'settings',
+    source: target.source,
     authMode: 'token',
     token,
-    wsUrl: buildGatewayWsUrl(baseUrl, token)
+    wsUrl: buildGatewayWsUrl(target.baseUrl, token)
   }
 }
 
@@ -2937,7 +3017,7 @@ async function startHermes() {
     throw new Error(
       'Hermes could not find a configured gateway to connect to. ' +
         'Configure the gateway URL in Settings → Gateway, or set ' +
-        'HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN.'
+        'HERMES_DESKTOP_REMOTE_URL plus either HERMES_DESKTOP_REMOTE_AUTH_MODE=oauth or HERMES_DESKTOP_REMOTE_TOKEN.'
     )
   })().catch(error => {
     const message = error instanceof Error ? error.message : String(error)
@@ -3086,6 +3166,7 @@ function createWindow() {
 
 ipcMain.handle('hermes:connection', async () => startHermes())
 ipcMain.handle('hermes:gateway:ws-url', async () => freshGatewayWsUrl())
+ipcMain.handle('hermes:remote-auth-status', async () => getRemoteAuthStatus())
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:connection-config:get', async () => sanitizeDesktopConnectionConfig())
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))

@@ -57,17 +57,16 @@ export async function resolveGatewayWsUrl(
       // dead, so connecting with it cannot succeed. Surface a reauth error
       // rather than silently attempting a doomed connect.
       throw new GatewayReauthRequiredError(
-        'Your remote gateway session needs to be refreshed. Open Settings → Gateway and click "Sign in" again.'
+        'Your Hermes sign-in needs to be refreshed before the desktop can reconnect.'
       )
     }
 
     try {
       return await mint()
     } catch (error) {
-      throw new GatewayReauthRequiredError(
-        'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
-        { cause: error }
-      )
+      throw new GatewayReauthRequiredError('Your Hermes sign-in has expired. Sign in again to continue.', {
+        cause: error
+      })
     }
   }
 

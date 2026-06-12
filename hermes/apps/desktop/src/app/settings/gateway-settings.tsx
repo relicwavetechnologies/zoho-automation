@@ -405,7 +405,8 @@ export function GatewaySettings() {
           <div>
             <div className="font-medium">Environment variables are controlling this desktop session.</div>
             <div className="mt-1 leading-5">
-              Unset <code>HERMES_DESKTOP_REMOTE_URL</code> and <code>HERMES_DESKTOP_REMOTE_TOKEN</code> to use the saved
+              Unset <code>HERMES_DESKTOP_REMOTE_URL</code> and any related auth envs (
+              <code>HERMES_DESKTOP_REMOTE_AUTH_MODE</code>, <code>HERMES_DESKTOP_REMOTE_TOKEN</code>) to use the saved
               setting below.
             </div>
           </div>

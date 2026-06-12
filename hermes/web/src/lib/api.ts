@@ -272,6 +272,8 @@ export const api = {
     fetchJSON<AuthMeResponse>("/api/auth/me", undefined, {
       allowUnauthorized: true,
     }),
+  getCompanyTeamMembers: () =>
+    fetchJSON<CompanyTeamMembersResponse>("/api/company/team-members"),
   logout: () =>
     fetch(`${BASE}/auth/logout`, {
       method: "POST",
@@ -934,6 +936,23 @@ export interface AuthMeResponse {
   org_id: string;
   provider: string;
   expires_at: number;
+}
+
+export interface CompanyTeamMember {
+  id: string;
+  company_id: string;
+  email: string;
+  display_name: string;
+  role: string;
+  department_id: string;
+  status: string;
+  first_login_at: string | null;
+  last_login_at: string | null;
+}
+
+export interface CompanyTeamMembersResponse {
+  company_id: string;
+  members: CompanyTeamMember[];
 }
 
 export interface ActionResponse {

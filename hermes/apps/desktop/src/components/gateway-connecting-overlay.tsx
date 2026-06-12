@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
+import { $companyAuth } from '@/store/company-auth'
 import { $gatewayState } from '@/store/session'
 
 // Static, always-legible prefix; only TAIL ever scrambles. Splitting them at
@@ -46,6 +47,7 @@ function scrambledTail(resolvedCount: number): string {
 }
 
 export function GatewayConnectingOverlay() {
+  const companyAuth = useStore($companyAuth)
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const [previewing] = useState(forcedPreview)
@@ -139,7 +141,7 @@ export function GatewayConnectingOverlay() {
   }, [phase, previewing])
 
   // Boot failed — BootFailureOverlay owns the screen; don't linger behind it.
-  if (boot.error && !previewing) {
+  if ((boot.error || companyAuth.visible) && !previewing) {
     return null
   }
 

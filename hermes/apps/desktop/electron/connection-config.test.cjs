@@ -20,6 +20,7 @@ const {
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
   normalizeRemoteBaseUrl,
+  resolveEnvAuthMode,
   resolveAuthMode,
   tokenPreview
 } = require('./connection-config.cjs')
@@ -113,6 +114,26 @@ test('resolveAuthMode: defaults to token when nothing is set', () => {
 
 test('resolveAuthMode: ignores unknown values, defaults to token', () => {
   assert.equal(resolveAuthMode('bogus', 'also-bogus'), 'token')
+})
+
+// --- resolveEnvAuthMode ---
+
+test('resolveEnvAuthMode honors explicit oauth and token env values', () => {
+  assert.equal(resolveEnvAuthMode('oauth', false), 'oauth')
+  assert.equal(resolveEnvAuthMode('token', true), 'token')
+})
+
+test('resolveEnvAuthMode falls back to token when a token exists and auth mode is unset', () => {
+  assert.equal(resolveEnvAuthMode('', true), 'token')
+  assert.equal(resolveEnvAuthMode(undefined, true), 'token')
+})
+
+test('resolveEnvAuthMode returns null when auth mode is unset and no token exists', () => {
+  assert.equal(resolveEnvAuthMode('', false), null)
+})
+
+test('resolveEnvAuthMode rejects invalid env values', () => {
+  assert.throws(() => resolveEnvAuthMode('bearer', false), /REMOTE_AUTH_MODE/)
 })
 
 // --- cookiesHaveSession ---

@@ -2,12 +2,16 @@ from enterprise.identity_repository import EnterpriseIdentityRepository
 
 
 class FakeCursor:
-    def __init__(self, row=None):
+    def __init__(self, row=None, rows=None):
         self._row = row
+        self._rows = rows or []
         self.closed = False
 
     def fetchone(self):
         return self._row
+
+    def fetchall(self):
+        return self._rows
 
     def close(self):
         self.closed = True
@@ -16,9 +20,41 @@ class FakeCursor:
 class FakeConnection:
     def __init__(self):
         self.calls = []
+        self.company_users = {}
 
     def execute(self, sql, args):
         self.calls.append((sql, args))
+        if 'WHERE "companyId" = %s AND "email" = %s' in sql:
+            email = args[1]
+            for row in self.company_users.values():
+                if row.get("companyId") == args[0] and row.get("email") == email:
+                    return FakeCursor({"id": row["id"]})
+            return FakeCursor()
+        if 'INSERT INTO "CompanyUser"' in sql:
+            row = {
+                "id": args[0],
+                "companyId": args[1],
+                "email": args[2],
+                "displayName": args[3],
+                "role": args[4],
+                "departmentId": args[5],
+                "status": "active",
+            }
+            existing = self.company_users.get(row["id"], {})
+            existing.update({k: v for k, v in row.items() if v is not None})
+            self.company_users[row["id"]] = existing
+            return FakeCursor()
+        if 'UPDATE "CompanyUser"' in sql:
+            row = self.company_users.setdefault(args[1], {"id": args[1]})
+            row["status"] = args[0]
+            return FakeCursor()
+        if 'SELECT "id", "companyId", "email", "displayName", "role", "departmentId"' in sql:
+            if 'WHERE "id" = %s' in sql:
+                return FakeCursor(self.company_users.get(args[0]))
+            return FakeCursor(rows=[
+                row for row in self.company_users.values()
+                if row.get("companyId") == args[0]
+            ])
         if 'RETURNING "id", "companyUserId", "identityKey", "aiRole"' in sql:
             return FakeCursor(
                 {
@@ -80,3 +116,21 @@ def test_enterprise_identity_repository_supports_channel_only_identity(monkeypat
     channel_args = connection.calls[-1][1]
     assert channel_args[4] == "chat:local"
     assert channel_args[5] == "local"
+
+
+def test_enterprise_identity_repository_upserts_dashboard_member(monkeypatch):
+    monkeypatch.setenv("HERMES_COMPANY_ID", "company_alpha")
+    connection = FakeConnection()
+    repo = EnterpriseIdentityRepository(connection)
+
+    member = repo.upsert_dashboard_member(
+        provider="lark",
+        provider_user_id="ou_alice",
+        display_name="Alice Example",
+        email="alice@example.com",
+    )
+
+    assert member["companyId"] == "company_alpha"
+    assert member["email"] == "alice@example.com"
+    rows = repo.list_company_users(company_id="company_alpha")
+    assert [row["email"] for row in rows] == ["alice@example.com"]

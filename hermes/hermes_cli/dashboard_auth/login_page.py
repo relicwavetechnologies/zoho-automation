@@ -4,13 +4,11 @@ No React, no JavaScript dependency. Listed providers come from the
 registry; clicking a provider sends a GET to
 ``/auth/login?provider=<name>``.
 
-Visual styling mirrors the Nous Research design system (the
-``@nous-research/ui`` package the React dashboard uses): the same
-``Collapse`` / ``Rules Compressed`` typeface, amber-on-dark colour
-tokens (``#170d02`` / ``#ffac02`` / ``#fff``), uppercase + wide-tracking
-brand chrome, and the inset-bevel button shadow. Fonts are served
-out of the SPA's ``/fonts/`` directory which the dashboard-auth gate
-already allowlists pre-auth (see ``_GATE_PUBLIC_PREFIXES`` in
+Visual styling mirrors Hermes' existing dashboard chrome: the same
+bundled ``Collapse`` / ``Rules Compressed`` fonts, dark surfaces,
+compact uppercase labels, and the inset-bevel button shadow. Fonts are
+served out of the SPA's ``/fonts/`` directory which the dashboard-auth
+gate already allowlists pre-auth (see ``_GATE_PUBLIC_PREFIXES`` in
 ``middleware.py``), so the page renders without needing the React
 bundle loaded.
 
@@ -133,8 +131,7 @@ _LOGIN_HTML_TEMPLATE = """\
     main {{ animation: none; }}
   }}
 
-  /* Brand wordmark above the card — same uppercase + wide-tracking
-     idiom DS Buttons use. */
+  /* Product wordmark above the card. */
   .brand {{
     text-align: center;
     margin-bottom: 1.75rem;
@@ -153,6 +150,14 @@ _LOGIN_HTML_TEMPLATE = """\
     margin: 0 0.55em 0.18em;
     vertical-align: middle;
     border-radius: 1px;
+  }}
+  .brand-subtitle {{
+    margin-top: 0.45rem;
+    text-align: center;
+    color: color-mix(in srgb, var(--foreground) 55%, transparent);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
   }}
 
   .card {{
@@ -188,15 +193,34 @@ _LOGIN_HTML_TEMPLATE = """\
     display: grid;
     gap: 0.75rem;
   }}
+  .login-badge {{
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin-bottom: 1rem;
+    padding: 0.45rem 0.65rem;
+    border: 1px solid var(--hairline);
+    color: color-mix(in srgb, var(--foreground) 75%, transparent);
+    font-size: 0.68rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }}
+  .login-badge svg {{
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 auto;
+  }}
 
   /* Provider button — mirrors DS Button (default variant):
      amber surface, dark text, uppercase + wide tracking, inset bevel. */
   .provider-btn {{
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.8rem;
     width: 100%;
     box-sizing: border-box;
     padding: 0.95rem 1rem;
-    text-align: center;
     background: var(--midground);
     color: var(--background-base);
     font-family: 'Collapse', sans-serif;
@@ -223,6 +247,56 @@ _LOGIN_HTML_TEMPLATE = """\
   .provider-btn:focus-visible {{
     outline: 2px solid var(--midground);
     outline-offset: 3px;
+  }}
+  .provider-btn-copy {{
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.12rem;
+    min-width: 0;
+  }}
+  .provider-btn-eyebrow {{
+    color: color-mix(in srgb, currentColor 62%, transparent);
+    font-size: 0.62rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }}
+  .provider-btn-label {{
+    letter-spacing: 0.12em;
+  }}
+  .provider-btn-icon {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    flex: 0 0 auto;
+  }}
+  .provider-btn-icon svg {{
+    width: 100%;
+    height: 100%;
+  }}
+  .provider-btn--lark {{
+    justify-content: flex-start;
+    padding: 0.9rem 1rem;
+    background: #ffffff;
+    color: #111827;
+    letter-spacing: 0;
+    text-transform: none;
+    font-size: 0.92rem;
+  }}
+  .provider-btn--lark:hover {{
+    filter: brightness(1.02);
+  }}
+  .provider-btn--lark:active {{
+    filter: none;
+    transform: translateY(1px);
+  }}
+  .provider-btn--lark .provider-btn-eyebrow {{
+    color: #5b6472;
+  }}
+  .provider-btn--lark .provider-btn-label {{
+    font-weight: 700;
   }}
 
   /* Password provider form — same visual language as the OAuth buttons:
@@ -302,10 +376,12 @@ _LOGIN_HTML_TEMPLATE = """\
 </head>
 <body>
 <main>
-  <div class="brand">Nous<span class="dot"></span>Research</div>
+  <div class="brand">Hermes<span class="dot"></span>Company</div>
+  <div class="brand-subtitle">Employee access</div>
   <div class="card">
+    {login_badge}
     <h1>Sign in</h1>
-    <p class="subtitle">Choose a sign-in method to continue to the Hermes Agent dashboard.</p>
+    <p class="subtitle">{subtitle}</p>
     <div class="provider-list">
 {provider_buttons}
     </div>
@@ -479,6 +555,21 @@ def render_login_html(*, next_path: str = "") -> str:
     else:
         next_qs = ""
 
+    oauth_providers = [
+        p for p in providers if not getattr(p, "supports_password", False)
+    ]
+    lark_only = (
+        len(providers) == 1
+        and len(oauth_providers) == 1
+        and oauth_providers[0].name == "lark"
+    )
+    subtitle = (
+        "Use your company Lark account to continue to Hermes."
+        if lark_only
+        else "Choose a sign-in method to continue to the Hermes dashboard."
+    )
+    login_badge = _LARK_BADGE_HTML if lark_only else ""
+
     buttons = []
     needs_password_script = False
     for p in providers:
@@ -486,13 +577,11 @@ def render_login_html(*, next_path: str = "") -> str:
             needs_password_script = True
             buttons.append(_render_password_form(p, next_path))
         else:
-            buttons.append(
-                f'      <a class="provider-btn" '
-                f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
-                f'Sign in with {html.escape(p.display_name)}</a>'
-            )
+            buttons.append(_render_oauth_button(p, next_qs))
     script = _PASSWORD_FORM_SCRIPT if needs_password_script else ""
     return _LOGIN_HTML_TEMPLATE.format(
+        login_badge=login_badge,
+        subtitle=html.escape(subtitle),
         provider_buttons="\n".join(buttons),
         password_script=script,
     )
@@ -531,4 +620,46 @@ def _render_password_form(provider, next_path: str) -> str:
         f'        <div class="form-error" role="alert" hidden></div>\n'
         f'        <button class="provider-btn" type="submit">Sign in</button>\n'
         f'      </form>'
+    )
+
+
+_LARK_MARK = """\
+<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  <path d="M7.2 3 3 7.2v5.2h5.2L12.4 8.2V3H7.2Z" fill="#2563eb"></path>
+  <path d="M16.8 3h-5.2v5.2l4.2 4.2H21V7.2L16.8 3Z" fill="#0ea5e9"></path>
+  <path d="M12.4 15.8 8.2 11.6H3v5.2L7.2 21h5.2v-5.2Z" fill="#10b981"></path>
+  <path d="M21 11.6h-5.2l-4.2 4.2V21h5.2l4.2-4.2v-5.2Z" fill="#f59e0b"></path>
+</svg>
+"""
+
+_LARK_BADGE_HTML = (
+    '<div class="login-badge">'
+    f"{_LARK_MARK}"
+    "<span>Lark workspace</span>"
+    "</div>"
+)
+
+
+def _render_oauth_button(provider, next_qs: str) -> str:
+    href = (
+        f"/auth/login?provider={html.escape(provider.name, quote=True)}{next_qs}"
+    )
+    if provider.name == "lark":
+        return (
+            f'      <a class="provider-btn provider-btn--lark" href="{href}">'
+            f'        <span class="provider-btn-icon">{_LARK_MARK}</span>'
+            '        <span class="provider-btn-copy">'
+            '          <span class="provider-btn-eyebrow">Company login</span>'
+            '          <span class="provider-btn-label">Continue with Lark</span>'
+            "        </span>"
+            "      </a>"
+        )
+    return (
+        f'      <a class="provider-btn" href="{href}">'
+        '        <span class="provider-btn-copy" style="align-items:center;">'
+        '          <span class="provider-btn-label">'
+        f'Sign in with {html.escape(provider.display_name)}'
+        "          </span>"
+        "        </span>"
+        "      </a>"
     )

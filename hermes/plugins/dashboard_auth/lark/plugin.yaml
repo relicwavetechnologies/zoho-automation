@@ -1,0 +1,8 @@
+name: lark
+version: 1.0.0
+description: "Dashboard auth provider — Lark employee login (authorization-code + PKCE) for company Hermes deployments. Activates when Lark app credentials are configured via dashboard.oauth.lark.{app_id,app_secret} in config.yaml or the dashboard-specific HERMES_DASHBOARD_LARK_APP_ID/HERMES_DASHBOARD_LARK_APP_SECRET env vars. For compatibility it also accepts shared LARK_APP_ID/LARK_APP_SECRET env vars. Uses the gateway's existing /auth/callback route, mints local dashboard session cookies, and refreshes them with Lark refresh tokens."
+author: NousResearch
+kind: backend
+requires_env:
+  - HERMES_DASHBOARD_LARK_APP_ID
+  - HERMES_DASHBOARD_LARK_APP_SECRET

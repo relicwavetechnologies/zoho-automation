@@ -5,6 +5,7 @@ declare global {
     hermesDesktop: {
       getConnection: () => Promise<HermesConnection>
       getGatewayWsUrl: () => Promise<string>
+      getRemoteAuthStatus: () => Promise<DesktopRemoteAuthStatus>
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: () => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -191,6 +192,16 @@ export interface DesktopAuthProvider {
   // OAuth redirect. The session/cookie/ws-ticket machinery is identical;
   // only the login-page form and the desktop's button copy differ.
   supportsPassword?: boolean
+}
+
+export interface DesktopRemoteAuthStatus {
+  authMode: 'none' | 'oauth' | 'token'
+  baseUrl: null | string
+  connected: boolean
+  needsLogin: boolean
+  providers: DesktopAuthProvider[]
+  reachable: boolean
+  source: 'default' | 'env' | 'none' | 'settings'
 }
 
 export interface DesktopConnectionProbeResult {

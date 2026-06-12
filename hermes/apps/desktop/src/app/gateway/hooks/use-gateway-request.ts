@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { syncCompanyAuthGate } from '@/lib/company-auth'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { $gatewayState, setConnection } from '@/store/session'
 
@@ -64,6 +65,7 @@ export function useGatewayRequest() {
       } catch (error) {
         if (isGatewayReauthRequired(error)) {
           reauthErrorRef.current = error
+          await syncCompanyAuthGate(desktop, error).catch(() => undefined)
         }
 
         connectionRef.current = null

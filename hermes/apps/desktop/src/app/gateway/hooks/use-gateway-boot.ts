@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 
 import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
+import { syncCompanyAuthGate } from '@/lib/company-auth'
 import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@/lib/gateway-ws-url'
 import {
   $desktopBoot,
@@ -58,6 +59,18 @@ export function useGatewayBoot({
       setConnection(next)
     }
 
+    const blockOnCompanyAuth = async (fallbackError?: unknown) => {
+      const blocked = await syncCompanyAuthGate(desktop, fallbackError)
+      if (!blocked) {
+        return false
+      }
+
+      publish(null)
+      setGatewayState('idle')
+      setSessionsLoading(false)
+      return true
+    }
+
     if (!desktop) {
       failDesktopBoot('Desktop IPC bridge is unavailable.')
       setSessionsLoading(false)
@@ -96,8 +109,15 @@ export function useGatewayBoot({
       }
 
       reconnecting = true
+      let blockedByAuth = false
 
       try {
+        if (await blockOnCompanyAuth()) {
+          blockedByAuth = true
+          reconnectAttempt = 0
+          return
+        }
+
         const conn = await desktop.getConnection()
 
         if (cancelled) {
@@ -133,13 +153,19 @@ export function useGatewayBoot({
         // again" message once instead of silently looping the backoff against a
         // ticket that can never succeed. Transport failures fall through to the
         // backoff in the finally block below.
+        if (!cancelled && (await blockOnCompanyAuth(err))) {
+          blockedByAuth = true
+          reconnectAttempt = 0
+          return
+        }
+
         if (!cancelled && isGatewayReauthRequired(err)) {
           notifyError(err, 'Gateway sign-in required')
         }
       } finally {
         reconnecting = false
 
-        if (!cancelled && !gatewayOpen()) {
+        if (!cancelled && !blockedByAuth && !gatewayOpen()) {
           scheduleReconnect()
         }
       }
@@ -241,6 +267,10 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
+        if (await blockOnCompanyAuth()) {
+          return
+        }
+
         const conn = await desktop.getConnection()
 
         if (cancelled) {
@@ -282,9 +312,14 @@ export function useGatewayBoot({
           progress: 99
         })
         await callbacksRef.current.refreshSessions()
+        await syncCompanyAuthGate(desktop)
         completeDesktopBoot()
         bootCompleted = true
       } catch (err) {
+        if (!cancelled && (await blockOnCompanyAuth(err))) {
+          return
+        }
+
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)

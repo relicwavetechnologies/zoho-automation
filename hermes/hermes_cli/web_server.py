@@ -607,6 +607,24 @@ _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
 _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
+def _dashboard_auth_skip_reasons() -> list[str]:
+    """Collect bundled dashboard-auth plugin skip reasons for fail-closed logs."""
+    providers = ("nous", "self_hosted", "basic", "lark")
+    reasons: list[str] = []
+    for name in providers:
+        try:
+            module = __import__(
+                f"plugins.dashboard_auth.{name}",
+                fromlist=["LAST_SKIP_REASON"],
+            )
+        except Exception:
+            continue
+        reason = getattr(module, "LAST_SKIP_REASON", "")
+        if reason:
+            reasons.append(f"  • {name}: {reason}")
+    return reasons
+
+
 def _audio_extension_for_mime(mime_type: str) -> str:
     normalized = (mime_type or "").split(";", 1)[0].strip().lower()
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
@@ -838,6 +856,50 @@ async def get_status():
         "auth_required": auth_required,
         "auth_providers": auth_providers,
     }
+
+
+def _serialize_company_user_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    if hasattr(value, "isoformat"):
+        tzinfo = getattr(value, "tzinfo", None)
+        if tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    text = str(value).strip()
+    return text or None
+
+
+@app.get("/api/company/team-members")
+async def get_company_team_members():
+    """Employees who have authenticated against this Hermes company backend."""
+    from gateway.company_identity import get_identity_store, list_company_users
+
+    store = get_identity_store()
+    company_id = store.ensure_default_company()
+    rows = list_company_users(company_id=company_id, db=store)
+    members = []
+    for row in rows:
+        members.append(
+            {
+                "id": row.get("id", ""),
+                "company_id": row.get("company_id") or row.get("companyId") or company_id,
+                "email": row.get("email") or "",
+                "display_name": row.get("display_name") or row.get("displayName") or "",
+                "role": row.get("role") or "MEMBER",
+                "department_id": row.get("department_id") or row.get("departmentId") or "",
+                "status": row.get("status") or "active",
+                "first_login_at": _serialize_company_user_timestamp(
+                    row.get("created_at") or row.get("createdAt")
+                ),
+                "last_login_at": _serialize_company_user_timestamp(
+                    row.get("updated_at") or row.get("updatedAt")
+                ),
+            }
+        )
+    return {"company_id": company_id, "members": members}
 
 
 @app.get("/api/system/stats")
@@ -9115,22 +9177,7 @@ def start_server(
         # provider to be registered, else fail closed".
         from hermes_cli.dashboard_auth import list_providers
         if not list_providers():
-            # Surface the *specific* reason any bundled provider declined
-            # to register (e.g. missing HERMES_DASHBOARD_OAUTH_CLIENT_ID).
-            # Each provider plugin that ships with Hermes Agent exposes a
-            # module-level ``LAST_SKIP_REASON`` string for this purpose;
-            # without it the operator would only see "no providers" which
-            # is misleading when the provider IS installed but unconfigured.
-            skip_reasons: list[str] = []
-            try:
-                from plugins.dashboard_auth import nous as _nous_plugin
-
-                if _nous_plugin.LAST_SKIP_REASON:
-                    skip_reasons.append(
-                        f"  • nous: {_nous_plugin.LAST_SKIP_REASON}"
-                    )
-            except Exception:
-                pass
+            skip_reasons = _dashboard_auth_skip_reasons()
 
             if skip_reasons:
                 raise SystemExit(

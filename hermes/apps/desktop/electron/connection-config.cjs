@@ -18,6 +18,17 @@
  *     this via the public `/api/status` field `auth_required: true`.
  */
 
+// Baked-in default hosted gateway — the singleton Divo workspace. When the user
+// has NOT explicitly configured a remote gateway, the desktop connects here by
+// default in OAuth mode (employees sign in via Lark OAuth). This is what makes
+// the app work out of the box with no env var and no manual setup.
+//
+// TODO(divo): set this to the deployed hosted Hermes gateway URL once the
+// backend is live (e.g. 'https://hermes.emiactech.com'). While empty, the
+// desktop falls back to "configure a gateway" until a URL is provided via
+// Settings → Gateway or the HERMES_DESKTOP_REMOTE_URL env override.
+const DEFAULT_REMOTE_GATEWAY_URL = ''
+
 // Bare + prefixed variants of the access-token cookie the gateway may set,
 // depending on its deploy shape (HTTPS direct → __Host-, behind a path prefix
 // → __Secure-, loopback HTTP → bare). Mirrors
@@ -76,6 +87,29 @@ function tokenPreview(value) {
 }
 
 /**
+ * Resolve the environment-driven remote auth mode.
+ *
+ * - explicit 'oauth' or 'token' wins
+ * - empty/unset falls back to whether a token was provided
+ * - any other value is rejected so packaged/bootstrap config fails loudly
+ */
+function resolveEnvAuthMode(rawAuthMode, hasToken) {
+  const value = String(rawAuthMode || '')
+    .trim()
+    .toLowerCase()
+
+  if (!value) {
+    return hasToken ? 'token' : null
+  }
+
+  if (value === 'oauth' || value === 'token') {
+    return value
+  }
+
+  throw new Error(`HERMES_DESKTOP_REMOTE_AUTH_MODE must be 'oauth' or 'token', got ${rawAuthMode}`)
+}
+
+/**
  * Classify a gateway's auth mode from its public /api/status body.
  * `auth_required: true` → OAuth gate engaged; otherwise legacy token auth.
  * Returns 'oauth' | 'token'.
@@ -108,11 +142,13 @@ function cookiesHaveSession(cookies) {
 
 module.exports = {
   AT_COOKIE_VARIANTS,
+  DEFAULT_REMOTE_GATEWAY_URL,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
   normalizeRemoteBaseUrl,
+  resolveEnvAuthMode,
   resolveAuthMode,
   tokenPreview
 }

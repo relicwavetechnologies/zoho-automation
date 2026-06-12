@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron')
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: () => ipcRenderer.invoke('hermes:connection'),
   getGatewayWsUrl: () => ipcRenderer.invoke('hermes:gateway:ws-url'),
+  getRemoteAuthStatus: () => ipcRenderer.invoke('hermes:remote-auth-status'),
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
   getConnectionConfig: () => ipcRenderer.invoke('hermes:connection-config:get'),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),

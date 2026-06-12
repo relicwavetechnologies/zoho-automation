@@ -332,6 +332,8 @@ async def auth_callback(
         ip=_client_ip(request),
     )
 
+    _sync_company_member(session)
+
     expires_in = max(60, session.expires_at - int(time.time()))
     # Honour the ``next=`` value the gate's _unauth_response set in the
     # /login redirect URL and that /auth/login persisted into the PKCE
@@ -385,6 +387,31 @@ def _validate_post_login_target(raw: str) -> str:
     if decoded == "/api" or decoded.startswith("/api/"):
         return ""
     return decoded
+
+
+def _sync_company_member(session) -> None:
+    """Upsert the authenticated dashboard user into Hermes company state.
+
+    For Wave 5 this is only required for the Lark employee-login flow. Other
+    providers keep their existing behavior untouched.
+    """
+    if getattr(session, "provider", "") != "lark":
+        return
+
+    from gateway.company_identity import upsert_dashboard_member
+
+    try:
+        upsert_dashboard_member(
+            provider=session.provider,
+            provider_user_id=session.user_id,
+            display_name=session.display_name or None,
+            email=session.email or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to persist authenticated employee: {exc}",
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

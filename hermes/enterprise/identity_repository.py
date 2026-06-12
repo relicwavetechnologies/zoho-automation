@@ -60,7 +60,18 @@ class EnterpriseIdentityRepository:
         )
         if not company_id:
             company_id = f"company_{slug}"
+        self._ensure_company(company_id, slug=slug, display_name=display_name)
+        return company_id
 
+    def _ensure_company(
+        self,
+        company_id: str,
+        *,
+        slug: str | None = None,
+        display_name: str | None = None,
+    ) -> None:
+        effective_slug = slug or _clean_slug(company_id.removeprefix("company_"))
+        effective_name = display_name or company_id.replace("_", " ").strip() or DEFAULT_COMPANY_NAME
         self._execute(
             """
             INSERT INTO "Company" ("id", "slug", "name")
@@ -70,9 +81,8 @@ class EnterpriseIdentityRepository:
                 "name" = excluded."name",
                 "updatedAt" = now()
             """,
-            (company_id, slug, display_name),
+            (company_id, effective_slug, effective_name),
         )
-        return company_id
 
     def resolve_channel_identity(
         self,
@@ -217,20 +227,124 @@ class EnterpriseIdentityRepository:
         company_id: str,
         display_name: str | None = None,
         email: str | None = None,
+        role: str | None = None,
+        department_id: str | None = None,
     ) -> None:
         self._execute(
             """
             INSERT INTO "CompanyUser" (
-                "id", "companyId", "email", "displayName", "role", "status", "updatedAt"
+                "id", "companyId", "email", "displayName", "role", "departmentId", "status", "updatedAt"
             )
-            VALUES (%s, %s, %s, %s, 'MEMBER', 'active', now())
+            VALUES (%s, %s, %s, %s, %s, %s, 'active', now())
             ON CONFLICT ("id") DO UPDATE SET
                 "email" = COALESCE(excluded."email", "CompanyUser"."email"),
                 "displayName" = COALESCE(excluded."displayName", "CompanyUser"."displayName"),
+                "role" = COALESCE(excluded."role", "CompanyUser"."role"),
+                "departmentId" = COALESCE(excluded."departmentId", "CompanyUser"."departmentId"),
                 "updatedAt" = now()
             """,
-            (company_user_id, company_id, email, display_name),
+            (
+                company_user_id,
+                company_id,
+                email,
+                display_name,
+                role or "MEMBER",
+                department_id,
+            ),
         )
+
+    def upsert_dashboard_member(
+        self,
+        *,
+        provider: str,
+        provider_user_id: str,
+        display_name: str | None = None,
+        email: str | None = None,
+        company_id: str | None = None,
+        role: str | None = None,
+        department_id: str | None = None,
+        status: str = "active",
+    ) -> dict[str, Any]:
+        company_id = company_id or self.ensure_default_company()
+        self._ensure_company(company_id)
+        provider = str(provider or "dashboard").strip() or "dashboard"
+        provider_user_id = str(provider_user_id or "").strip()
+        if not provider_user_id:
+            raise ValueError("provider_user_id is required")
+
+        existing_id = None
+        if email:
+            existing = self._fetchone(
+                """
+                SELECT "id"
+                FROM "CompanyUser"
+                WHERE "companyId" = %s AND "email" = %s
+                LIMIT 1
+                """,
+                (company_id, email),
+            )
+            existing_id = self._row_get(existing, "id")
+
+        company_user_id = existing_id or _stable_id(
+            "cu", company_id, provider, provider_user_id
+        )
+        self._upsert_company_user(
+            company_user_id=company_user_id,
+            company_id=company_id,
+            display_name=display_name,
+            email=email,
+            role=role or "MEMBER",
+            department_id=department_id,
+        )
+        self._execute(
+            """
+            UPDATE "CompanyUser"
+            SET "status" = %s, "updatedAt" = now()
+            WHERE "id" = %s
+            """,
+            (status, company_user_id),
+        )
+        row = self._fetchone(
+            """
+            SELECT "id", "companyId", "email", "displayName", "role", "departmentId",
+                   "status", "createdAt", "updatedAt"
+            FROM "CompanyUser"
+            WHERE "id" = %s
+            """,
+            (company_user_id,),
+        )
+        return dict(row) if isinstance(row, Mapping) else {
+            "id": company_user_id,
+            "companyId": company_id,
+            "email": email,
+            "displayName": display_name,
+            "role": role or "MEMBER",
+            "departmentId": department_id,
+            "status": status,
+        }
+
+    def list_company_users(self, *, company_id: str | None = None) -> list[dict[str, Any]]:
+        company_id = company_id or self.ensure_default_company()
+        result = self._connection.execute(
+            """
+            SELECT "id", "companyId", "email", "displayName", "role", "departmentId",
+                   "status", "createdAt", "updatedAt"
+            FROM "CompanyUser"
+            WHERE "companyId" = %s
+            ORDER BY lower(COALESCE("displayName", "email", "id"))
+            """,
+            (company_id,),
+        )
+        fetchall = getattr(result, "fetchall", None)
+        try:
+            if fetchall is None:
+                return []
+            rows = fetchall()
+        finally:
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
+        return [dict(row) if isinstance(row, Mapping) else row for row in rows]
 
     def _execute(self, sql: str, args: tuple[Any, ...]) -> None:
         result = self._connection.execute(sql, args)

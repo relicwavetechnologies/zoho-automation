@@ -111,6 +111,12 @@ export function AuthWidget({ className }: AuthWidgetProps) {
   // populates user_id; the fallthroughs are forward-compat for a future
   // Portal that adds a userinfo endpoint (OQ-C1 in the plan).
   const label = me.display_name || me.email || truncateUserId(me.user_id);
+  const providerLabel =
+    me.provider === "lark"
+      ? "Lark"
+      : me.provider === "self-hosted"
+        ? "Self-Hosted OIDC"
+        : me.provider;
 
   return (
     <div
@@ -129,7 +135,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           {label}
         </span>
         <span className="truncate text-muted-foreground/70">
-          via {me.provider}
+          via {providerLabel}
         </span>
       </div>
       <button

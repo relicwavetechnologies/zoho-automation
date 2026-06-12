@@ -4,6 +4,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
+import { CompanyAuthOverlay } from '@/components/company-auth-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
@@ -49,6 +50,7 @@ import {
   setSessionsTotal
 } from '../store/session'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
+import { $companyAuth } from '../store/company-auth'
 
 import { ChatView } from './chat'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
@@ -107,6 +109,7 @@ export function DesktopController() {
   const refreshSessionsRequestRef = useRef(0)
 
   const gatewayState = useStore($gatewayState)
+  const companyAuth = useStore($companyAuth)
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
@@ -727,6 +730,10 @@ export function DesktopController() {
       />
     </Pane>
   )
+
+  if (companyAuth.visible) {
+    return <CompanyAuthOverlay />
+  }
 
   return (
     <AppShell
