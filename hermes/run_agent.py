@@ -499,7 +499,12 @@ class AIAgent:
 
     def _ensure_db_session(self) -> None:
         """Create session DB row on first use. Disables _session_db on failure."""
-        if self._session_db_created or not self._session_db:
+        if self._session_db_created:
+            return
+        if self._use_enterprise_session_store():
+            self._ensure_enterprise_session_metadata()
+            return
+        if not self._session_db:
             return
         source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
         try:
@@ -520,6 +525,48 @@ class AIAgent:
             logger.warning(
                 "Session DB creation failed (will retry next turn): %s", e
             )
+
+    def _use_enterprise_session_store(self) -> bool:
+        try:
+            from enterprise.session_store import use_enterprise_session_store_from_env
+
+            return use_enterprise_session_store_from_env()
+        except Exception:
+            return False
+
+    def _ensure_enterprise_session_metadata(self) -> None:
+        if self._session_db_created:
+            return
+        scope = self._enterprise_session_scope()
+        if scope is None:
+            return
+        try:
+            from enterprise.session_store import get_enterprise_session_repository
+
+            platform = (
+                os.environ.get("HERMES_SESSION_SOURCE")
+                or self.platform
+                or "tui"
+            )
+            get_enterprise_session_repository()._ensure_binding(
+                scope,
+                self.session_id,
+                platform=str(platform or "tui"),
+            )
+            self._session_db_created = True
+        except Exception as e:
+            logger.warning(
+                "Enterprise session metadata creation failed (will retry next turn): %s",
+                e,
+            )
+
+    def _enterprise_session_scope(self):
+        try:
+            from enterprise.session_store import current_company_session_scope
+
+            return current_company_session_scope()
+        except Exception:
+            return None
 
     def _transition_context_engine_session(
         self,
@@ -1444,7 +1491,7 @@ class AIAgent:
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
-        self._flush_messages_to_session_db(messages, conversation_history)
+        self._flush_messages_to_session_store(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -1503,6 +1550,46 @@ class AIAgent:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_message_sequence``."""
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
+
+    def _flush_messages_to_session_store(self, messages: List[Dict], conversation_history: List[Dict] = None):
+        if self._use_enterprise_session_store():
+            self._flush_messages_to_enterprise_store(messages, conversation_history)
+            return
+        self._flush_messages_to_session_db(messages, conversation_history)
+
+    def _flush_messages_to_enterprise_store(
+        self,
+        messages: List[Dict],
+        conversation_history: List[Dict] = None,
+    ) -> None:
+        scope = self._enterprise_session_scope()
+        if scope is None:
+            return
+        self._apply_persist_user_message_override(messages)
+        try:
+            if not self._session_db_created:
+                self._ensure_enterprise_session_metadata()
+            start_idx = len(conversation_history) if conversation_history else 0
+            flush_from = max(start_idx, self._last_flushed_db_idx)
+            if flush_from >= len(messages):
+                return
+            from enterprise.session_store import get_enterprise_session_repository
+
+            platform = (
+                os.environ.get("HERMES_SESSION_SOURCE")
+                or self.platform
+                or "tui"
+            )
+            get_enterprise_session_repository().append_session_messages(
+                scope,
+                self.session_id,
+                messages,
+                start_idx=flush_from,
+                platform=str(platform or "tui"),
+            )
+            self._last_flushed_db_idx = len(messages)
+        except Exception as e:
+            logger.warning("Enterprise session append failed: %s", e)
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.

@@ -496,3 +496,80 @@ def test_company_session_prune_only_removes_authenticated_members_sessions(gated
         assert db.get_session("bob-old") is not None
     finally:
         db.close()
+
+
+def test_company_sessions_read_from_enterprise_db_with_empty_state_db(
+    gated_lark_client, monkeypatch
+):
+    client, identity_db = gated_lark_client
+    _complete_lark_login(client)
+
+    from enterprise.session_store import DashboardCompanyIdentity, EnterpriseSessionBackend
+    from enterprise.session_repository import EnterpriseSessionRepository
+    from tests.enterprise.memory_pg import MemoryEnterpriseConnection, seed_company_session
+
+    memory = MemoryEnterpriseConnection()
+    alice_identity = gateway_company_identity.resolve_dashboard_session_identity(
+        provider="lark",
+        provider_user_id="ou_alice",
+        display_name="Alice Example",
+        email="alice@example.com",
+        company_id="company_hermes",
+        db=identity_db,
+    )
+    seed_company_session(
+        memory,
+        company_id=alice_identity.company_id,
+        company_user_id=alice_identity.company_user_id,
+        channel_identity_id=alice_identity.channel_identity_id,
+        session_id="enterprise-alice-session",
+        messages=[("user", "alice history")],
+    )
+    seed_company_session(
+        memory,
+        company_id=alice_identity.company_id,
+        company_user_id="cu_bob",
+        channel_identity_id="ci_bob",
+        session_id="enterprise-bob-session",
+        messages=[("user", "bob history")],
+    )
+
+    dashboard_identity = DashboardCompanyIdentity(
+        company_id=alice_identity.company_id,
+        company_user_id=alice_identity.company_user_id,
+        channel_identity_id=alice_identity.channel_identity_id,
+        company_role=alice_identity.company_role,
+        department_id=alice_identity.department_id,
+    )
+    backend = EnterpriseSessionBackend(
+        dashboard_identity,
+        EnterpriseSessionRepository(memory),
+    )
+
+    monkeypatch.setattr(
+        "enterprise.session_store.company_enterprise_session_mode",
+        lambda request: dashboard_identity,
+    )
+    monkeypatch.setattr(
+        "enterprise.session_store.get_session_backend",
+        lambda request: backend,
+    )
+
+    listing = client.get("/api/sessions?limit=20&offset=0")
+    assert listing.status_code == 200
+    assert [row["id"] for row in listing.json()["sessions"]] == ["enterprise-alice-session"]
+
+    detail = client.get("/api/sessions/enterprise-alice-session/messages")
+    assert detail.status_code == 200
+    assert detail.json()["messages"][0]["content"] == "alice history"
+
+    forbidden = client.get("/api/sessions/enterprise-bob-session")
+    assert forbidden.status_code == 404
+
+    from hermes_state import SessionDB
+
+    sqlite = SessionDB()
+    try:
+        assert sqlite.get_session("enterprise-alice-session") is None
+    finally:
+        sqlite.close()

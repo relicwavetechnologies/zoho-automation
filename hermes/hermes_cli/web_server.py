@@ -1926,15 +1926,18 @@ async def get_sessions(
             detail="order must be one of: created, recent",
         )
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        from enterprise.session_store import (
+            EnterpriseSessionBackend,
+            get_session_backend,
+        )
+
+        min_message_count = max(0, min_messages)
+        archived_only = archived == "only"
+        include_archived = archived == "include"
+        backend = get_session_backend(request)
         try:
-            min_message_count = max(0, min_messages)
-            archived_only = archived == "only"
-            include_archived = archived == "include"
-            allowed_ids = _current_company_session_ids(request)
-            if allowed_ids is None:
-                sessions = db.list_sessions_rich(
+            if isinstance(backend, EnterpriseSessionBackend):
+                sessions, total = backend.list_sessions(
                     limit=limit,
                     offset=offset,
                     min_message_count=min_message_count,
@@ -1942,15 +1945,19 @@ async def get_sessions(
                     archived_only=archived_only,
                     order_by_last_active=order == "recent",
                 )
-                total = db.session_count(
-                    min_message_count=min_message_count,
-                    include_archived=include_archived,
-                    archived_only=archived_only,
-                )
             else:
-                all_rows = [
-                    row
-                    for row in db.list_sessions_rich(
+                allowed_ids = _current_company_session_ids(request)
+                if allowed_ids is None:
+                    sessions, total = backend.list_sessions(
+                        limit=limit,
+                        offset=offset,
+                        min_message_count=min_message_count,
+                        include_archived=include_archived,
+                        archived_only=archived_only,
+                        order_by_last_active=order == "recent",
+                    )
+                else:
+                    all_rows, _ = backend.list_sessions(
                         limit=10_000,
                         offset=0,
                         min_message_count=min_message_count,
@@ -1958,21 +1965,22 @@ async def get_sessions(
                         archived_only=archived_only,
                         order_by_last_active=order == "recent",
                     )
-                    if str(row.get("id") or "") in allowed_ids
-                ]
-                total = len(all_rows)
-                sessions = all_rows[offset : offset + limit]
-            now = time.time()
-            for s in sessions:
-                s["is_active"] = (
-                    s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
-                # SQLite stores the flag as 0/1; expose a real JSON boolean.
-                s["archived"] = bool(s.get("archived"))
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+                    filtered = [
+                        row
+                        for row in all_rows
+                        if str(row.get("id") or "") in allowed_ids
+                    ]
+                    total = len(filtered)
+                    sessions = filtered[offset : offset + limit]
+            sessions = _decorate_session_rows(sessions)
+            return {
+                "sessions": sessions,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
         finally:
-            db.close()
+            backend.close()
     except HTTPException:
         raise
     except Exception:
@@ -1994,6 +2002,7 @@ async def search_sessions(request: Request, q: str = "", limit: int = 20):
     """
     if not q or not q.strip():
         return {"results": []}
+    _session_route_unsupported_in_enterprise(request, "Session search")
     try:
         from hermes_state import SessionDB
         db = SessionDB()
@@ -5283,6 +5292,39 @@ def _ensure_company_session_access(request: Request, session_id: str) -> str:
     return session_id
 
 
+def _resolve_scoped_session_id(request: Request, backend, session_id: str) -> str | None:
+    """Resolve a session id and enforce company binding scope for SQLite mode."""
+    sid = backend.resolve_session_id(session_id)
+    if not sid:
+        return None
+    from enterprise.session_store import EnterpriseSessionBackend
+
+    if isinstance(backend, EnterpriseSessionBackend):
+        return sid
+    return _ensure_company_session_access(request, sid)
+
+
+def _decorate_session_rows(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = time.time()
+    for row in sessions:
+        row["is_active"] = (
+            row.get("ended_at") is None
+            and (now - row.get("last_active", row.get("started_at", 0))) < 300
+        )
+        row["archived"] = bool(row.get("archived"))
+    return sessions
+
+
+def _session_route_unsupported_in_enterprise(request: Request, feature: str) -> None:
+    from enterprise.session_store import company_enterprise_session_mode
+
+    if company_enterprise_session_mode(request) is not None:
+        raise HTTPException(
+            status_code=501,
+            detail=f"{feature} is not available for enterprise-backed company sessions yet",
+        )
+
+
 def _session_latest_descendant(session_id: str):
     """Resolve a session id to the newest child leaf session.
 
@@ -5416,19 +5458,19 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions, request: Reque
             status_code=400,
             detail="ids must contain at most 500 entries",
         )
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from enterprise.session_store import get_session_backend
+
+    backend = get_session_backend(request)
     try:
-        allowed_ids = _current_company_session_ids(request)
-        target_ids = [
-            session_id
-            for session_id in body.ids
-            if allowed_ids is None or str(session_id or "") in allowed_ids
-        ]
-        deleted = db.delete_sessions(target_ids)
+        target_ids = []
+        for session_id in body.ids:
+            sid = _resolve_scoped_session_id(request, backend, str(session_id or ""))
+            if sid:
+                target_ids.append(sid)
+        deleted = backend.delete_sessions(target_ids)
         return {"ok": True, "deleted": deleted}
     finally:
-        db.close()
+        backend.close()
 
 
 @app.get("/api/sessions/empty/count")
@@ -5439,13 +5481,20 @@ async def count_empty_sessions_endpoint(request: Request):
     UI hides the affordance so users aren't presented with a button
     that does nothing. Cheap, single-COUNT query.
     """
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from enterprise.session_store import EnterpriseSessionBackend, get_session_backend
+
+    backend = get_session_backend(request)
     try:
-        rows = _filter_company_sessions(
-            request,
-            db.list_sessions_rich(limit=10_000, include_archived=True),
+        rows, _ = backend.list_sessions(
+            limit=10_000,
+            offset=0,
+            min_message_count=0,
+            include_archived=True,
+            archived_only=False,
+            order_by_last_active=False,
         )
+        if not isinstance(backend, EnterpriseSessionBackend):
+            rows = _filter_company_sessions(request, rows)
         count = sum(
             1
             for row in rows
@@ -5455,7 +5504,7 @@ async def count_empty_sessions_endpoint(request: Request):
         )
         return {"count": count}
     finally:
-        db.close()
+        backend.close()
 
 
 @app.delete("/api/sessions/empty")
@@ -5478,13 +5527,20 @@ async def delete_empty_sessions_endpoint(request: Request):
     prune-on-startup pass. Matching that pre-existing trade-off keeps
     the two delete endpoints' DB-vs-disk behaviour consistent.
     """
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from enterprise.session_store import EnterpriseSessionBackend, get_session_backend
+
+    backend = get_session_backend(request)
     try:
-        rows = _filter_company_sessions(
-            request,
-            db.list_sessions_rich(limit=10_000, include_archived=True),
+        rows, _ = backend.list_sessions(
+            limit=10_000,
+            offset=0,
+            min_message_count=0,
+            include_archived=True,
+            archived_only=False,
+            order_by_last_active=False,
         )
+        if not isinstance(backend, EnterpriseSessionBackend):
+            rows = _filter_company_sessions(request, rows)
         target_ids = [
             str(row.get("id") or "")
             for row in rows
@@ -5493,10 +5549,10 @@ async def delete_empty_sessions_endpoint(request: Request):
             and not (row.get("message_count") or 0)
             and row.get("ended_at") is not None
         ]
-        deleted = db.delete_sessions(target_ids)
+        deleted = backend.delete_sessions(target_ids)
         return {"ok": True, "deleted": deleted}
     finally:
-        db.close()
+        backend.close()
 
 
 @app.get("/api/sessions/stats")
@@ -5506,14 +5562,20 @@ async def get_session_stats(request: Request):
     Registered before ``/api/sessions/{session_id}`` so the literal ``stats``
     path isn't captured as a session id by the parameterized route.
     """
-    from hermes_state import SessionDB
+    from enterprise.session_store import EnterpriseSessionBackend, get_session_backend
 
-    db = SessionDB()
+    backend = get_session_backend(request)
     try:
-        all_rows = _filter_company_sessions(
-            request,
-            db.list_sessions_rich(limit=10_000, include_archived=True),
+        all_rows, _ = backend.list_sessions(
+            limit=10_000,
+            offset=0,
+            min_message_count=0,
+            include_archived=True,
+            archived_only=False,
+            order_by_last_active=False,
         )
+        if not isinstance(backend, EnterpriseSessionBackend):
+            all_rows = _filter_company_sessions(request, all_rows)
         total = len(all_rows)
         active_store = sum(1 for row in all_rows if not bool(row.get("archived")))
         archived = sum(1 for row in all_rows if bool(row.get("archived")))
@@ -5533,28 +5595,45 @@ async def get_session_stats(request: Request):
             "by_source": by_source,
         }
     finally:
-        db.close()
+        backend.close()
 
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, request: Request):
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from enterprise.session_store import get_session_backend
+
+    backend = get_session_backend(request)
     try:
-        sid = db.resolve_session_id(session_id)
-        if sid:
-            _ensure_company_session_access(request, sid)
-        session = db.get_session(sid) if sid else None
+        sid = _resolve_scoped_session_id(request, backend, session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        session = backend.get_session(sid)
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
         return session
     finally:
-        db.close()
+        backend.close()
 
 
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
 async def get_session_latest_descendant(session_id: str, request: Request):
+    from enterprise.session_store import company_enterprise_session_mode, get_session_backend
+
+    if company_enterprise_session_mode(request) is not None:
+        backend = get_session_backend(request)
+        try:
+            sid = _resolve_scoped_session_id(request, backend, session_id)
+            if not sid:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return {
+                "requested_session_id": session_id,
+                "session_id": sid,
+                "path": [sid],
+                "changed": sid != session_id,
+            }
+        finally:
+            backend.close()
     latest, path = _session_latest_descendant(session_id)
     if not latest:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -5568,33 +5647,33 @@ async def get_session_latest_descendant(session_id: str, request: Request):
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, request: Request):
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from enterprise.session_store import get_session_backend
+
+    backend = get_session_backend(request)
     try:
-        sid = db.resolve_session_id(session_id)
+        sid = _resolve_scoped_session_id(request, backend, session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        _ensure_company_session_access(request, sid)
-        messages = db.get_messages(sid)
+        messages = backend.get_messages(sid)
         return {"session_id": sid, "messages": messages}
     finally:
-        db.close()
+        backend.close()
 
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str, request: Request):
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from enterprise.session_store import get_session_backend
+
+    backend = get_session_backend(request)
     try:
-        sid = db.resolve_session_id(session_id)
+        sid = _resolve_scoped_session_id(request, backend, session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        _ensure_company_session_access(request, sid)
-        if not db.delete_session(sid):
+        if not backend.delete_session(sid):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
     finally:
-        db.close()
+        backend.close()
 
 
 class SessionRename(BaseModel):
@@ -5609,51 +5688,54 @@ async def rename_session_endpoint(session_id: str, body: SessionRename, request:
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
     restores the session. Either field may be omitted.
     """
-    from hermes_state import SessionDB
-    db = SessionDB()
+    from enterprise.session_store import get_session_backend
+
+    backend = get_session_backend(request)
     try:
-        sid = db.resolve_session_id(session_id)
+        sid = _resolve_scoped_session_id(request, backend, session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        _ensure_company_session_access(request, sid)
         if body.title is None and body.archived is None:
             raise HTTPException(
                 status_code=400,
                 detail="Nothing to update; provide 'title' and/or 'archived'.",
             )
-        if body.title is not None:
-            try:
-                db.set_session_title(sid, body.title or "")
-            except ValueError as e:
-                # Title too long, invalid characters, or already in use.
-                raise HTTPException(status_code=400, detail=str(e))
-        if body.archived is not None:
-            db.set_session_archived(sid, body.archived)
-        result = {"ok": True, "title": db.get_session_title(sid) or ""}
-        if body.archived is not None:
-            result["archived"] = bool(body.archived)
+        try:
+            title = body.title
+            if title is not None:
+                from hermes_state import SessionDB
+
+                title = SessionDB.sanitize_title(title) or ""
+            result = backend.update_session(
+                sid,
+                title=title,
+                archived=body.archived,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Session not found") from None
         return result
     finally:
-        db.close()
+        backend.close()
 
 
 @app.get("/api/sessions/{session_id}/export")
 async def export_session_endpoint(session_id: str, request: Request):
     """Export a single session (metadata + messages) as JSON."""
-    from hermes_state import SessionDB
+    from enterprise.session_store import get_session_backend
 
-    db = SessionDB()
+    backend = get_session_backend(request)
     try:
-        sid = db.resolve_session_id(session_id)
+        sid = _resolve_scoped_session_id(request, backend, session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
-        _ensure_company_session_access(request, sid)
-        data = db.export_session(sid)
+        data = backend.export_session(sid)
         if data is None:
             raise HTTPException(status_code=404, detail="Session not found")
         return data
     finally:
-        db.close()
+        backend.close()
 
 
 class SessionPrune(BaseModel):
@@ -5666,6 +5748,7 @@ async def prune_sessions_endpoint(body: SessionPrune, request: Request):
     """Delete ended sessions older than N days (mirrors `hermes sessions prune`)."""
     if body.older_than_days < 1:
         raise HTTPException(status_code=400, detail="older_than_days must be >= 1")
+    _session_route_unsupported_in_enterprise(request, "Session prune")
     from hermes_state import SessionDB
 
     db = SessionDB()
