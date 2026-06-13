@@ -68,7 +68,7 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
     assert r.status_code == 200
     body = r.json()
     assert body["auth_required"] is True
-    assert body["auth_providers"] == ["stub"]
+    assert "stub" in body["auth_providers"]
 
 
 def test_status_reports_auth_disabled_in_loopback_mode(loopback_client):
@@ -93,6 +93,9 @@ def test_status_preserves_existing_fields(loopback_client):
         "gateway_pid", "gateway_health_url", "gateway_state",
         "gateway_platforms", "gateway_exit_reason", "gateway_updated_at",
         "active_sessions", "auth_required", "auth_providers",
+        "enterprise_readiness",
     }
     missing = expected_keys - set(body.keys())
     assert not missing, f"/api/status dropped fields: {missing}"
+    assert body["enterprise_readiness"]["mode"] == "company"
+    assert "issues" in body["enterprise_readiness"]

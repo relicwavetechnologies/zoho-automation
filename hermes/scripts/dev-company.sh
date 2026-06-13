@@ -51,6 +51,7 @@ export HERMES_DESKTOP_USER_DATA_DIR="${HERMES_DESKTOP_USER_DATA_DIR:-/tmp/hermes
 export API_SERVER_ENABLED="${API_SERVER_ENABLED:-false}"
 
 if [[ "${1:-}" == "--check" ]]; then
+  "$PYTHON_BIN" -m enterprise.readiness --company-dev --check-database
   echo "Company dev env OK"
   echo "  HERMES_ENV_FILE=$HERMES_ENV_FILE"
   echo "  HERMES_HOME=$HERMES_HOME"
@@ -61,6 +62,9 @@ if [[ "${1:-}" == "--check" ]]; then
   echo "  HERMES_DASHBOARD_LARK_APP_SECRET=present(len=${#HERMES_DASHBOARD_LARK_APP_SECRET})"
   exit 0
 fi
+
+"$PYTHON_BIN" -m enterprise.migration_runner --apply
+"$PYTHON_BIN" -m enterprise.readiness --company-dev --check-database
 
 if [[ "${HERMES_DESKTOP_RESET_PROFILE:-1}" == "1" ]]; then
   rm -rf "$HERMES_DESKTOP_USER_DATA_DIR"

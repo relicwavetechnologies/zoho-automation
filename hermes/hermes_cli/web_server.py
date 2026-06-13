@@ -836,6 +836,28 @@ async def get_status():
     except Exception:
         # Module not importable yet (early startup) — leave as [].
         pass
+    enterprise_readiness: dict[str, Any] = {}
+    try:
+        from enterprise.readiness import collect_company_readiness
+
+        # Keep /api/status cheap and public-safe: no DB probe, no secrets, no
+        # URLs. dev-company/prod readiness paths do the heavier schema check.
+        enterprise_readiness = collect_company_readiness(check_database=False)
+    except Exception as exc:  # noqa: BLE001 — status must remain best-effort
+        enterprise_readiness = {
+            "ok": False,
+            "mode": "company",
+            "database_checked": False,
+            "checks": [],
+            "issues": [
+                {
+                    "component": "enterprise",
+                    "code": "enterprise_readiness_unavailable",
+                    "message": str(exc),
+                    "remediation": "Check enterprise readiness configuration",
+                }
+            ],
+        }
 
     return {
         "version": __version__,
@@ -855,6 +877,7 @@ async def get_status():
         "active_sessions": active_sessions,
         "auth_required": auth_required,
         "auth_providers": auth_providers,
+        "enterprise_readiness": enterprise_readiness,
     }
 
 
