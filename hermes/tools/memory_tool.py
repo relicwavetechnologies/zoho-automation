@@ -26,6 +26,7 @@ Design:
 import json
 import logging
 import os
+import hashlib
 import tempfile
 import time
 from contextlib import contextmanager
@@ -52,9 +53,45 @@ logger = logging.getLogger(__name__)
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
+def _safe_scope_component(label: str, value: str) -> str:
+    digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:24]
+    return f"{label}_{digest}"
+
+
+def get_company_memory_scope() -> Dict[str, str]:
+    """Return the active company memory scope, if this is an enterprise session."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return {}
+
+    company_id = str(get_session_env("HERMES_COMPANY_ID") or "").strip()
+    company_user_id = str(get_session_env("HERMES_COMPANY_USER_ID") or "").strip()
+    if not company_id and not company_user_id:
+        return {}
+    if not company_id or not company_user_id:
+        raise RuntimeError(
+            "Incomplete company memory scope: company_id and company_user_id are required"
+        )
+    return {
+        "company_id": company_id,
+        "company_user_id": company_user_id,
+    }
+
+
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
-    return get_hermes_home() / "memories"
+    base = get_hermes_home() / "memories"
+    scope = get_company_memory_scope()
+    if not scope:
+        return base
+    return (
+        base
+        / "companies"
+        / _safe_scope_component("company", scope["company_id"])
+        / "users"
+        / _safe_scope_component("user", scope["company_user_id"])
+    )
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -717,7 +754,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

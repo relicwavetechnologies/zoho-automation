@@ -103,6 +103,17 @@ ENTERPRISE_TABLES = (
             "actualCostUsd",
         ),
     ),
+    EnterpriseTable(
+        "HermesConnectorCredential",
+        (
+            "id",
+            "companyId",
+            "provider",
+            "scope",
+            "payloadEncrypted",
+            "status",
+        ),
+    ),
 )
 
 

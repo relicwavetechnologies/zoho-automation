@@ -1,14 +1,13 @@
-"""Per-company connector credentials, read natively from the runtime Postgres.
+"""Per-company connector credentials, read natively from runtime Postgres.
 
 The transformed Hermes runtime owns connector execution. Instead of per-process
-env credentials, it reads each company's encrypted OAuth credentials directly
-from the Divo schema (``ZohoConnectionProfile`` / ``ZohoConnection``) and
-decrypts them in process via :mod:`enterprise.token_crypto`.
+env credentials, it reads each company's encrypted OAuth credentials from a
+Hermes-owned connector credential table and decrypts them in process via
+:mod:`enterprise.token_crypto`.
 
-This phase is **read-only**: we never write refreshed tokens back to Postgres.
-Access tokens are refreshed in-memory by the token provider (see
-``tools/zoho_auth.py``) so they don't expire mid-use, mirroring Divo's
-``zoho-token.service.ts`` without taking ownership of the write path yet.
+During migration we still understand the old Divo-shaped tables
+(``ZohoConnectionProfile``, ``GoogleUserAuthLink``, ``LarkWorkspaceConfig``) as
+read-only references. Native Hermes rows always win when present.
 
 The connection is injected (like ``EnterpriseIdentityRepository``) so tests use a
 fake connection and production uses a psycopg connection owned by the gateway.
@@ -16,10 +15,15 @@ fake connection and production uses a psycopg connection owned by the gateway.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
-from enterprise.token_crypto import decrypt_token, try_decrypt_token
+from enterprise.token_crypto import decrypt_token, encrypt_token, try_decrypt_token
+
+NATIVE_CONNECTOR_TABLE = "HermesConnectorCredential"
+NATIVE_CONNECTOR_PROVIDERS = {"zoho", "google", "lark"}
 
 
 @dataclass(frozen=True)
@@ -56,8 +60,8 @@ class GoogleConnectionCredentials:
     """
 
     company_id: str
-    access_token: str
     source: str  # "user" | "company"
+    access_token: str = ""
     user_id: Optional[str] = None
     google_email: Optional[str] = None
     refresh_token: Optional[str] = None
@@ -71,8 +75,9 @@ class LarkConnectionCredentials:
     """Lark app credentials for one company.
 
     Lark authenticates the *app* (not a user): a tenant access token is minted
-    from ``app_id`` + ``app_secret``. ``source`` is ``"config"`` (per-company
-    ``LarkWorkspaceConfig``) or ``"env"`` (shared ``LARK_APP_*`` fallback).
+    from ``app_id`` + ``app_secret``. ``source`` is ``"native"`` (Hermes-owned),
+    ``"config"`` (legacy per-company ``LarkWorkspaceConfig``) or ``"env"``
+    (shared ``LARK_APP_*`` fallback, never used by enterprise runtime tools).
     """
 
     company_id: str
@@ -84,12 +89,75 @@ class LarkConnectionCredentials:
 
 
 class ConnectorCredentialRepository:
-    """Read + decrypt per-company connector credentials from Postgres."""
+    """Read/write encrypted per-company connector credentials from Postgres."""
 
     def __init__(self, connection: Any, *, encryption_key: str | None = None):
         self._connection = connection
         # None → token_crypto resolves ZOHO_TOKEN_ENCRYPTION_KEY from env.
         self._encryption_key = encryption_key
+
+    def put_connector_credential(
+        self,
+        *,
+        provider: str,
+        company_id: str,
+        payload: Mapping[str, Any],
+        company_user_id: str | None = None,
+        scope: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        status: str = "active",
+    ) -> str:
+        """Upsert one Hermes-owned encrypted connector credential row.
+
+        ``payload`` is encrypted as a single JSON document so provider-specific
+        token shapes can evolve without schema churn. The deterministic row id
+        makes repeated OAuth setup idempotent for a provider/company/user scope.
+        """
+        provider = self._normalize_provider(provider)
+        company_id = str(company_id or "").strip()
+        company_user_id = str(company_user_id or "").strip() or None
+        if not company_id:
+            raise ValueError("company_id is required")
+        if not isinstance(payload, Mapping) or not payload:
+            raise ValueError("payload must be a non-empty mapping")
+
+        effective_scope = str(scope or ("user" if company_user_id else "company")).strip() or "company"
+        credential_id = self._stable_credential_id(
+            provider=provider,
+            company_id=company_id,
+            company_user_id=company_user_id,
+            scope=effective_scope,
+        )
+        encrypted_payload = encrypt_token(
+            json.dumps(dict(payload), sort_keys=True, separators=(",", ":")),
+            self._encryption_key,
+        )
+        self._execute(
+            f"""
+            INSERT INTO "{NATIVE_CONNECTOR_TABLE}" (
+                "id", "companyId", "companyUserId", "provider", "scope",
+                "payloadEncrypted", "metadata", "status", "createdAt", "updatedAt"
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, now(), now())
+            ON CONFLICT ("id") DO UPDATE SET
+                "payloadEncrypted" = excluded."payloadEncrypted",
+                "metadata" = excluded."metadata",
+                "status" = excluded."status",
+                "revokedAt" = NULL,
+                "updatedAt" = now()
+            """,
+            (
+                credential_id,
+                company_id,
+                company_user_id,
+                provider,
+                effective_scope,
+                encrypted_payload,
+                json.dumps(dict(metadata or {}), sort_keys=True, separators=(",", ":")),
+                str(status or "active"),
+            ),
+        )
+        return credential_id
 
     def get_zoho_credentials(self, company_id: str) -> Optional[ZohoConnectionCredentials]:
         """Active Zoho connection for *company_id*, or ``None`` if not connected.
@@ -101,6 +169,10 @@ class ConnectorCredentialRepository:
         company_id = str(company_id or "").strip()
         if not company_id:
             return None
+
+        native = self._get_native_connector_payload("zoho", company_id)
+        if native is not None:
+            return self._zoho_from_native_payload(company_id, native)
 
         row = self._fetchone(
             """
@@ -174,6 +246,19 @@ class ConnectorCredentialRepository:
         if not company_id:
             return None
 
+        native = self._get_native_connector_payload(
+            "google",
+            company_id,
+            company_user_id=user_id,
+            allow_company_fallback=True,
+        )
+        if native is not None:
+            return self._google_from_native_payload(
+                company_id,
+                native,
+                user_id=user_id,
+            )
+
         row = None
         source = "company"
         if user_id:
@@ -232,7 +317,11 @@ class ConnectorCredentialRepository:
         )
 
     def get_lark_credentials(
-        self, company_id: str, *, env: Mapping[str, str] | None = None
+        self,
+        company_id: str,
+        *,
+        env: Mapping[str, str] | None = None,
+        allow_env_fallback: bool = True,
     ) -> Optional[LarkConnectionCredentials]:
         """Lark app credentials for *company_id*.
 
@@ -245,6 +334,10 @@ class ConnectorCredentialRepository:
         company_id = str(company_id or "").strip()
         if not company_id:
             return None
+
+        native = self._get_native_connector_payload("lark", company_id)
+        if native is not None:
+            return self._lark_from_native_payload(company_id, native)
 
         row = self._fetchone(
             """
@@ -273,20 +366,211 @@ class ConnectorCredentialRepository:
                     source="config",
                 )
 
-        environ = env if env is not None else os.environ
-        app_id = (environ.get("LARK_APP_ID") or "").strip()
-        app_secret = (environ.get("LARK_APP_SECRET") or "").strip()
-        if app_id and app_secret:
-            return LarkConnectionCredentials(
-                company_id=company_id,
-                app_id=app_id,
-                app_secret=app_secret,
-                api_base_url=(environ.get("LARK_API_BASE_URL") or "https://open.larksuite.com").rstrip("/"),
-                source="env",
-            )
+        if allow_env_fallback:
+            environ = env if env is not None else os.environ
+            app_id = (environ.get("LARK_APP_ID") or "").strip()
+            app_secret = (environ.get("LARK_APP_SECRET") or "").strip()
+            if app_id and app_secret:
+                return LarkConnectionCredentials(
+                    company_id=company_id,
+                    app_id=app_id,
+                    app_secret=app_secret,
+                    api_base_url=(environ.get("LARK_API_BASE_URL") or "https://open.larksuite.com").rstrip("/"),
+                    source="env",
+                )
         return None
 
+    def _get_native_connector_payload(
+        self,
+        provider: str,
+        company_id: str,
+        *,
+        company_user_id: str | None = None,
+        allow_company_fallback: bool = False,
+    ) -> Optional[Mapping[str, Any]]:
+        provider = self._normalize_provider(provider)
+        company_id = str(company_id or "").strip()
+        company_user_id = str(company_user_id or "").strip() or None
+        if not company_id:
+            return None
+
+        rows_to_try: list[tuple[str, tuple[Any, ...]]] = []
+        if company_user_id:
+            rows_to_try.append((
+                f"""
+                SELECT "payloadEncrypted", "metadata", "scope", "companyUserId"
+                FROM "{NATIVE_CONNECTOR_TABLE}"
+                WHERE "companyId" = %s
+                  AND "companyUserId" = %s
+                  AND "provider" = %s
+                  AND COALESCE("status", 'active') = 'active'
+                  AND "revokedAt" IS NULL
+                ORDER BY "updatedAt" DESC
+                LIMIT 1
+                """,
+                (company_id, company_user_id, provider),
+            ))
+        if allow_company_fallback or not company_user_id:
+            rows_to_try.append((
+                f"""
+                SELECT "payloadEncrypted", "metadata", "scope", "companyUserId"
+                FROM "{NATIVE_CONNECTOR_TABLE}"
+                WHERE "companyId" = %s
+                  AND "companyUserId" IS NULL
+                  AND "provider" = %s
+                  AND COALESCE("status", 'active') = 'active'
+                  AND "revokedAt" IS NULL
+                ORDER BY "updatedAt" DESC
+                LIMIT 1
+                """,
+                (company_id, provider),
+            ))
+
+        for sql, args in rows_to_try:
+            row = self._fetchone_optional(sql, args)
+            payload = self._decode_native_payload(row)
+            if payload is not None:
+                return payload
+        return None
+
+    def _zoho_from_native_payload(
+        self, company_id: str, payload: Mapping[str, Any]
+    ) -> Optional[ZohoConnectionCredentials]:
+        client_id = self._payload_get(payload, "client_id", "clientId")
+        client_secret = self._payload_get(payload, "client_secret", "clientSecret")
+        refresh_token = self._payload_get(payload, "refresh_token", "refreshToken")
+        if not client_id or not client_secret or not refresh_token:
+            return None
+        scopes = payload.get("scopes") or []
+        if isinstance(scopes, str):
+            scopes = [s for s in scopes.split() if s]
+        return ZohoConnectionCredentials(
+            company_id=company_id,
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+            access_token=self._payload_get(payload, "access_token", "accessToken") or None,
+            access_token_expires_at=payload.get("access_token_expires_at") or payload.get("accessTokenExpiresAt"),
+            accounts_base_url=(
+                self._payload_get(payload, "accounts_base_url", "accountsBaseUrl")
+                or "https://accounts.zoho.com"
+            ).rstrip("/"),
+            api_base_url=(
+                self._payload_get(payload, "api_base_url", "apiBaseUrl")
+                or "https://www.zohoapis.com"
+            ).rstrip("/"),
+            api_domain=self._payload_get(payload, "api_domain", "apiDomain") or None,
+            environment=self._payload_get(payload, "environment") or "prod",
+            status=self._payload_get(payload, "status") or "active",
+            scopes=list(scopes),
+        )
+
+    def _google_from_native_payload(
+        self,
+        company_id: str,
+        payload: Mapping[str, Any],
+        *,
+        user_id: str | None = None,
+    ) -> Optional[GoogleConnectionCredentials]:
+        access_token = self._payload_get(payload, "access_token", "accessToken")
+        refresh_token = self._payload_get(payload, "refresh_token", "refreshToken")
+        if not access_token and not refresh_token:
+            return None
+        native_user_id = self._payload_get(payload, "_credential_company_user_id")
+        native_scope = self._payload_get(payload, "_credential_scope")
+        source = "user" if native_user_id or native_scope == "user" else "company"
+        return GoogleConnectionCredentials(
+            company_id=company_id,
+            access_token=access_token or "",
+            source=source,
+            user_id=native_user_id or (str(user_id) if (user_id and source == "user") else None),
+            google_email=self._payload_get(payload, "google_email", "googleEmail") or None,
+            refresh_token=refresh_token or None,
+            access_token_expires_at=payload.get("access_token_expires_at") or payload.get("accessTokenExpiresAt"),
+            scope=self._payload_get(payload, "scope") or None,
+            token_type=self._payload_get(payload, "token_type", "tokenType") or "Bearer",
+        )
+
+    def _lark_from_native_payload(
+        self, company_id: str, payload: Mapping[str, Any]
+    ) -> Optional[LarkConnectionCredentials]:
+        app_id = self._payload_get(payload, "app_id", "appId")
+        app_secret = self._payload_get(payload, "app_secret", "appSecret")
+        if not app_id or not app_secret:
+            return None
+        return LarkConnectionCredentials(
+            company_id=company_id,
+            app_id=app_id,
+            app_secret=app_secret,
+            api_base_url=(
+                self._payload_get(payload, "api_base_url", "apiBaseUrl")
+                or "https://open.larksuite.com"
+            ).rstrip("/"),
+            static_tenant_access_token=(
+                self._payload_get(payload, "static_tenant_access_token", "staticTenantAccessToken")
+                or None
+            ),
+            source="native",
+        )
+
     # -- connection helpers (mirror EnterpriseIdentityRepository) -----------
+
+    @staticmethod
+    def _normalize_provider(provider: str) -> str:
+        normalized = str(provider or "").strip().lower()
+        if normalized not in NATIVE_CONNECTOR_PROVIDERS:
+            raise ValueError(f"Unsupported connector provider: {provider!r}")
+        return normalized
+
+    @staticmethod
+    def _stable_credential_id(
+        *,
+        provider: str,
+        company_id: str,
+        company_user_id: str | None,
+        scope: str,
+    ) -> str:
+        seed = "\x1f".join((provider, company_id, company_user_id or "", scope))
+        digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+        return f"cc_{digest}"
+
+    @staticmethod
+    def _payload_get(payload: Mapping[str, Any], *keys: str) -> str:
+        for key in keys:
+            value = payload.get(key)
+            if value is not None:
+                text = str(value).strip()
+                if text:
+                    return text
+        return ""
+
+    def _decode_native_payload(self, row: Any) -> Optional[Mapping[str, Any]]:
+        if row is None:
+            return None
+        encrypted = self._row_get(row, "payloadEncrypted")
+        raw = try_decrypt_token(encrypted, self._encryption_key)
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, Mapping):
+            return None
+        decoded = dict(payload)
+        scope = self._row_get(row, "scope")
+        company_user_id = self._row_get(row, "companyUserId")
+        if scope:
+            decoded["_credential_scope"] = str(scope)
+        if company_user_id:
+            decoded["_credential_company_user_id"] = str(company_user_id)
+        return decoded
+
+    def _fetchone_optional(self, sql: str, args: tuple[Any, ...]) -> Any:
+        try:
+            return self._fetchone(sql, args)
+        except Exception:  # noqa: BLE001 — native table may not exist during migration
+            return None
 
     def _fetchone(self, sql: str, args: tuple[Any, ...]) -> Any:
         result = self._connection.execute(sql, args)
@@ -299,6 +583,12 @@ class ConnectorCredentialRepository:
             close = getattr(result, "close", None)
             if close is not None:
                 close()
+
+    def _execute(self, sql: str, args: tuple[Any, ...]) -> None:
+        result = self._connection.execute(sql, args)
+        close = getattr(result, "close", None)
+        if close is not None:
+            close()
 
     @staticmethod
     def _row_get(row: Any, key: str) -> Any:

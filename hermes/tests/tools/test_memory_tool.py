@@ -6,6 +6,7 @@ from pathlib import Path
 
 from tools.memory_tool import (
     MemoryStore,
+    get_memory_dir,
     memory_tool,
     _scan_memory_content,
     MEMORY_SCHEMA,
@@ -256,6 +257,87 @@ class TestScanMemoryContent:
 # =========================================================================
 # MemoryStore core operations
 # =========================================================================
+
+
+class TestCompanyMemoryScope:
+    def test_memory_dir_uses_legacy_path_without_company_context(self, tmp_path, monkeypatch):
+        from gateway.session_context import clear_session_vars
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        clear_session_vars([])
+
+        assert get_memory_dir() == tmp_path / "memories"
+
+    def test_memory_dir_is_distinct_per_company_user(self, tmp_path, monkeypatch):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        alice_tokens = set_session_vars(
+            company_id="company_a",
+            company_user_id="alice",
+        )
+        try:
+            alice_dir = get_memory_dir()
+        finally:
+            clear_session_vars(alice_tokens)
+
+        bob_tokens = set_session_vars(
+            company_id="company_a",
+            company_user_id="bob",
+        )
+        try:
+            bob_dir = get_memory_dir()
+        finally:
+            clear_session_vars(bob_tokens)
+
+        assert alice_dir != bob_dir
+        assert tmp_path / "memories" in alice_dir.parents
+        assert tmp_path / "memories" in bob_dir.parents
+        assert "alice" not in str(alice_dir)
+        assert "bob" not in str(bob_dir)
+
+    def test_memory_store_isolated_per_company_user(self, tmp_path, monkeypatch):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        alice_tokens = set_session_vars(
+            company_id="company_a",
+            company_user_id="alice",
+        )
+        try:
+            alice_store = MemoryStore()
+            alice_store.load_from_disk()
+            alice_store.add("memory", "Alice private fact")
+        finally:
+            clear_session_vars(alice_tokens)
+
+        bob_tokens = set_session_vars(
+            company_id="company_a",
+            company_user_id="bob",
+        )
+        try:
+            bob_store = MemoryStore()
+            bob_store.load_from_disk()
+            assert "Alice private fact" not in bob_store.memory_entries
+            bob_store.add("memory", "Bob private fact")
+        finally:
+            clear_session_vars(bob_tokens)
+
+        alice_tokens = set_session_vars(
+            company_id="company_a",
+            company_user_id="alice",
+        )
+        try:
+            reloaded_alice = MemoryStore()
+            reloaded_alice.load_from_disk()
+        finally:
+            clear_session_vars(alice_tokens)
+
+        assert "Alice private fact" in reloaded_alice.memory_entries
+        assert "Bob private fact" not in reloaded_alice.memory_entries
+
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):

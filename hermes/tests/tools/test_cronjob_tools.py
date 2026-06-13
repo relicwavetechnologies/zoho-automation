@@ -247,6 +247,19 @@ class TestUnifiedCronjobTool:
         monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
         monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
 
+    def _with_company_context(self, **kwargs):
+        from gateway.session_context import set_session_vars
+
+        defaults = {
+            "company_id": "company_a",
+            "company_user_id": "user_a",
+            "channel_identity_id": "channel_a",
+            "company_role": "MEMBER",
+            "department_id": "",
+        }
+        defaults.update(kwargs)
+        return set_session_vars(**defaults)
+
     def test_create_and_list(self):
         created = json.loads(
             cronjob(
@@ -263,6 +276,58 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_company_scoped_tool_hides_other_users_jobs(self):
+        from cron.jobs import get_job
+        from gateway.session_context import clear_session_vars
+
+        alice_tokens = self._with_company_context(
+            company_user_id="alice",
+            channel_identity_id="channel_alice",
+        )
+        try:
+            alice_created = json.loads(
+                cronjob(action="create", prompt="Alice job", schedule="every 1h")
+            )
+        finally:
+            clear_session_vars(alice_tokens)
+
+        bob_tokens = self._with_company_context(
+            company_user_id="bob",
+            channel_identity_id="channel_bob",
+        )
+        try:
+            bob_created = json.loads(
+                cronjob(action="create", prompt="Bob job", schedule="every 1h")
+            )
+        finally:
+            clear_session_vars(bob_tokens)
+
+        assert get_job(alice_created["job_id"])["company_user_id"] == "alice"
+        assert get_job(bob_created["job_id"])["company_user_id"] == "bob"
+
+        alice_tokens = self._with_company_context(
+            company_user_id="alice",
+            channel_identity_id="channel_alice",
+        )
+        try:
+            listing = json.loads(cronjob(action="list", include_disabled=True))
+            attempted_update = json.loads(
+                cronjob(action="update", job_id=bob_created["job_id"], name="stolen")
+            )
+            attempted_remove = json.loads(
+                cronjob(action="remove", job_id=bob_created["job_id"])
+            )
+        finally:
+            clear_session_vars(alice_tokens)
+
+        assert listing["success"] is True
+        assert [job["job_id"] for job in listing["jobs"]] == [alice_created["job_id"]]
+        assert attempted_update["success"] is False
+        assert "not found" in attempted_update["error"]
+        assert attempted_remove["success"] is False
+        assert "not found" in attempted_remove["error"]
+        assert get_job(bob_created["job_id"]) is not None
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs

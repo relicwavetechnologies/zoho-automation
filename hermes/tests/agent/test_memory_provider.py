@@ -2,6 +2,7 @@
 
 import json
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
@@ -1029,6 +1030,36 @@ class TestOnMemoryWriteBridge:
     missing the bridge call, so single memory tool calls never notified
     external memory providers.
     """
+
+    def test_build_memory_write_metadata_includes_company_scope(self):
+        from agent.background_review import build_memory_write_metadata
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        agent = SimpleNamespace(
+            session_id="sess-1",
+            _parent_session_id="",
+            platform="desktop",
+            _memory_write_origin="assistant_tool",
+            _memory_write_context="foreground",
+        )
+
+        tokens = set_session_vars(
+            company_id="company_a",
+            company_user_id="user_a",
+            channel_identity_id="channel_a",
+            company_role="MEMBER",
+            department_id="dept_a",
+        )
+        try:
+            metadata = build_memory_write_metadata(agent)
+        finally:
+            clear_session_vars(tokens)
+
+        assert metadata["company_id"] == "company_a"
+        assert metadata["company_user_id"] == "user_a"
+        assert metadata["channel_identity_id"] == "channel_a"
+        assert metadata["company_role"] == "MEMBER"
+        assert metadata["department_id"] == "dept_a"
 
     def test_on_memory_write_add(self):
         """on_memory_write fires for 'add' actions."""

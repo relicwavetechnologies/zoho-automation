@@ -90,3 +90,48 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert provider.init_kwargs["user_id"] == "open-id"
     assert provider.init_kwargs["user_id_alt"] == "union-id"
     assert provider.init_kwargs["platform"] == "feishu"
+
+
+def test_aiagent_forwards_company_identity_to_memory_provider():
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "recording"}, "agent": {}}
+
+    tokens = set_session_vars(
+        company_id="company_a",
+        company_user_id="user_a",
+        channel_identity_id="channel_a",
+        company_role="MEMBER",
+        department_id="dept_a",
+    )
+    try:
+        with (
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch("plugins.memory.load_memory_provider", return_value=provider),
+            patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            from run_agent import AIAgent
+
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                session_id="sess-company",
+                platform="desktop",
+            )
+    finally:
+        clear_session_vars(tokens)
+
+    assert agent._memory_manager is not None
+    assert provider.init_session_id == "sess-company"
+    assert provider.init_kwargs["company_id"] == "company_a"
+    assert provider.init_kwargs["company_user_id"] == "user_a"
+    assert provider.init_kwargs["channel_identity_id"] == "channel_a"
+    assert provider.init_kwargs["company_role"] == "MEMBER"
+    assert provider.init_kwargs["department_id"] == "dept_a"

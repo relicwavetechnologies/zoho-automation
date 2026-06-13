@@ -198,6 +198,72 @@ class TestJobCRUD:
         assert fetched is not None
         assert fetched["prompt"] == "Check server status"
 
+    def test_create_stamps_company_owner_from_session_context(self, tmp_cron_dir):
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(
+            company_id="company_a",
+            company_user_id="user_a",
+            channel_identity_id="channel_a",
+            company_role="MEMBER",
+            department_id="dept_a",
+        )
+        try:
+            job = create_job(prompt="Scoped job", schedule="every 1h")
+        finally:
+            clear_session_vars(tokens)
+
+        assert job["company_id"] == "company_a"
+        assert job["company_user_id"] == "user_a"
+        assert job["channel_identity_id"] == "channel_a"
+        assert job["company_role"] == "MEMBER"
+        assert job["department_id"] == "dept_a"
+
+        scoped = get_job(
+            job["id"],
+            company_id="company_a",
+            company_user_id="user_a",
+        )
+        assert scoped is not None
+        assert scoped["id"] == job["id"]
+
+    def test_company_owner_filters_cron_crud(self, tmp_cron_dir):
+        alice = create_job(
+            prompt="Alice job",
+            schedule="every 1h",
+            company_id="company_a",
+            company_user_id="alice",
+            channel_identity_id="channel_alice",
+        )
+        bob = create_job(
+            prompt="Bob job",
+            schedule="every 1h",
+            company_id="company_a",
+            company_user_id="bob",
+            channel_identity_id="channel_bob",
+        )
+        legacy = create_job(prompt="Legacy job", schedule="every 1h")
+
+        alice_filter = {"company_id": "company_a", "company_user_id": "alice"}
+        bob_filter = {"company_id": "company_a", "company_user_id": "bob"}
+
+        assert [job["id"] for job in list_jobs(True, **alice_filter)] == [alice["id"]]
+        assert get_job(bob["id"], **alice_filter) is None
+        assert update_job(bob["id"], {"name": "stolen"}, **alice_filter) is None
+        assert pause_job(bob["id"], **alice_filter) is None
+        assert remove_job(bob["id"], **alice_filter) is False
+
+        updated = update_job(alice["id"], {"name": "Alice updated"}, **alice_filter)
+        assert updated is not None
+        assert updated["name"] == "Alice updated"
+
+        with pytest.raises(ValueError, match="company_user_id"):
+            update_job(alice["id"], {"company_user_id": "bob"}, **alice_filter)
+
+        assert get_job(legacy["id"], **alice_filter) is None
+        assert get_job(legacy["id"], include_unowned=True, **alice_filter) is not None
+        assert get_job(bob["id"], **bob_filter) is not None
+
     def test_list_jobs(self, tmp_cron_dir):
         create_job(prompt="Job 1", schedule="every 1h")
         create_job(prompt="Job 2", schedule="every 2h")

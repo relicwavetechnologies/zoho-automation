@@ -286,6 +286,28 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     return None
 
 
+def _company_owner_from_env() -> Dict[str, str]:
+    from gateway.session_context import get_session_env
+
+    owner = {
+        "company_id": str(get_session_env("HERMES_COMPANY_ID") or "").strip(),
+        "company_user_id": str(get_session_env("HERMES_COMPANY_USER_ID") or "").strip(),
+        "channel_identity_id": str(get_session_env("HERMES_CHANNEL_IDENTITY_ID") or "").strip(),
+        "company_role": str(get_session_env("HERMES_COMPANY_ROLE") or "").strip(),
+        "department_id": str(get_session_env("HERMES_DEPARTMENT_ID") or "").strip(),
+    }
+    return {key: value for key, value in owner.items() if value}
+
+
+def _company_filter_from_env() -> Dict[str, str]:
+    owner = _company_owner_from_env()
+    company_id = owner.get("company_id")
+    company_user_id = owner.get("company_user_id")
+    if company_id and company_user_id:
+        return {"company_id": company_id, "company_user_id": company_user_id}
+    return {}
+
+
 def _repeat_display(job: Dict[str, Any]) -> str:
     times = (job.get("repeat") or {}).get("times")
     completed = (job.get("repeat") or {}).get("completed", 0)
@@ -518,9 +540,10 @@ def cronjob(
             # Validate context_from references existing jobs
             if context_from:
                 from cron.jobs import get_job as _get_job
+                owner_filter = _company_filter_from_env()
                 refs = [context_from] if isinstance(context_from, str) else context_from
                 for ref_id in refs:
-                    if not _get_job(ref_id):
+                    if not _get_job(ref_id, **owner_filter):
                         return tool_error(
                             f"context_from job '{ref_id}' not found. "
                             "Use cronjob(action='list') to see available jobs.",
@@ -544,6 +567,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
+                **_company_owner_from_env(),
             )
             return json.dumps(
                 {
@@ -563,14 +587,21 @@ def cronjob(
             )
 
         if normalized == "list":
-            jobs = [_format_job(job) for job in list_jobs(include_disabled=include_disabled)]
+            jobs = [
+                _format_job(job)
+                for job in list_jobs(
+                    include_disabled=include_disabled,
+                    **_company_filter_from_env(),
+                )
+            ]
             return json.dumps({"success": True, "count": len(jobs), "jobs": jobs}, indent=2)
 
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
         try:
-            job = resolve_job_ref(job_id)
+            owner_filter = _company_filter_from_env()
+            job = resolve_job_ref(job_id, **owner_filter)
         except AmbiguousJobReference as exc:
             return json.dumps(
                 {
@@ -597,7 +628,7 @@ def cronjob(
         job_id = job["id"]
 
         if normalized == "remove":
-            removed = remove_job(job_id)
+            removed = remove_job(job_id, **owner_filter)
             if not removed:
                 return tool_error(f"Failed to remove job '{job_id}'", success=False)
             return json.dumps(
@@ -614,15 +645,15 @@ def cronjob(
             )
 
         if normalized == "pause":
-            updated = pause_job(job_id, reason=reason)
+            updated = pause_job(job_id, reason=reason, **owner_filter)
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized == "resume":
-            updated = resume_job(job_id)
+            updated = resume_job(job_id, **owner_filter)
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
-            updated = trigger_job(job_id)
+            updated = trigger_job(job_id, **owner_filter)
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized == "update":
@@ -664,7 +695,7 @@ def cronjob(
                 if refs:
                     from cron.jobs import get_job as _get_job
                     for ref_id in refs:
-                        if not _get_job(ref_id):
+                        if not _get_job(ref_id, **owner_filter):
                             return tool_error(
                                 f"context_from job '{ref_id}' not found. "
                                 "Use cronjob(action='list') to see available jobs.",
@@ -710,7 +741,7 @@ def cronjob(
                     updates["enabled"] = True
             if not updates:
                 return tool_error("No updates provided.", success=False)
-            updated = update_job(job_id, updates)
+            updated = update_job(job_id, updates, **owner_filter)
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)

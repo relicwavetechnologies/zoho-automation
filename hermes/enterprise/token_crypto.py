@@ -1,4 +1,4 @@
-"""AES-256-GCM token decryption — native port of Divo's ``token.crypto.ts``.
+"""AES-256-GCM token encryption/decryption for enterprise connector secrets.
 
 Divo stores Zoho/Google OAuth tokens encrypted at rest in Postgres. The
 transformed Hermes runtime reads those rows directly and decrypts them in
@@ -16,11 +16,9 @@ Cipher text format: ``v1:<iv_b64>:<tag_b64>:<ciphertext_b64>``
   - the Python AESGCM API expects ``ciphertext || tag``, so we append the tag
 
 The encryption key env var is ``ZOHO_TOKEN_ENCRYPTION_KEY`` (same key Divo uses
-for both Zoho and Google in production).
-
-Decrypt-only by design: this phase treats the credential store as read-only, so
-no ``encrypt_token`` is provided. If/when Hermes owns the write path (token
-refresh persisted back to Postgres), add the matching encrypt here.
+for both Zoho and Google in production). Hermes-owned connector credentials use
+the same envelope format so legacy rows and new native rows share one crypto
+boundary.
 """
 
 from __future__ import annotations
@@ -28,6 +26,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import secrets
 
 DEFAULT_KEY_ENV = "ZOHO_TOKEN_ENCRYPTION_KEY"
 _CIPHER_PREFIX = "v1"
@@ -85,6 +84,24 @@ def decrypt_token(cipher_text: str, encryption_key: str | None = None) -> str:
         ) from exc
 
     return plaintext.decode("utf-8")
+
+
+def encrypt_token(plaintext: str, encryption_key: str | None = None) -> str:
+    """Encrypt text as ``v1:<iv>:<tag>:<data>`` using AES-256-GCM."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    key = resolve_key(encryption_key)
+    iv = secrets.token_bytes(12)
+    sealed = AESGCM(key).encrypt(iv, str(plaintext or "").encode("utf-8"), None)
+    data, tag = sealed[:-16], sealed[-16:]
+    return ":".join(
+        (
+            _CIPHER_PREFIX,
+            base64.b64encode(iv).decode("ascii"),
+            base64.b64encode(tag).decode("ascii"),
+            base64.b64encode(data).decode("ascii"),
+        )
+    )
 
 
 def try_decrypt_token(

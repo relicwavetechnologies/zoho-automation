@@ -76,6 +76,40 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     ]
 
 
+def test_background_review_target_inherits_company_context(monkeypatch):
+    import agent.background_review as bg_review
+    from gateway.session_context import clear_session_vars, get_session_env, set_session_vars
+
+    captured = {}
+
+    def fake_run_review_in_thread(agent, messages_snapshot, prompt):
+        captured["company_id"] = get_session_env("HERMES_COMPANY_ID")
+        captured["company_user_id"] = get_session_env("HERMES_COMPANY_USER_ID")
+
+    monkeypatch.setattr(bg_review, "_run_review_in_thread", fake_run_review_in_thread)
+    agent = _bare_agent()
+
+    tokens = set_session_vars(
+        company_id="company_a",
+        company_user_id="user_a",
+    )
+    try:
+        target, _prompt = bg_review.spawn_background_review_thread(
+            agent,
+            messages_snapshot=[],
+            review_memory=True,
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    target()
+
+    assert captured == {
+        "company_id": "company_a",
+        "company_user_id": "user_a",
+    }
+
+
 def test_background_review_summarizer_receives_captured_messages_after_close(monkeypatch):
     """The action summarizer must see review messages even after close cleanup.
 

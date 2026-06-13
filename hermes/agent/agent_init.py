@@ -1133,6 +1133,22 @@ def init_agent(
                     # Thread gateway session key for stable per-chat Honcho session isolation
                     if agent._gateway_session_key:
                         _init_kwargs["gateway_session_key"] = agent._gateway_session_key
+                    # Thread enterprise identity for company/user memory scoping.
+                    try:
+                        from gateway.session_context import get_session_env as _get_session_env
+
+                        for _key, _env_name in (
+                            ("company_id", "HERMES_COMPANY_ID"),
+                            ("company_user_id", "HERMES_COMPANY_USER_ID"),
+                            ("channel_identity_id", "HERMES_CHANNEL_IDENTITY_ID"),
+                            ("company_role", "HERMES_COMPANY_ROLE"),
+                            ("department_id", "HERMES_DEPARTMENT_ID"),
+                        ):
+                            _value = str(_get_session_env(_env_name) or "").strip()
+                            if _value:
+                                _init_kwargs[_key] = _value
+                    except Exception:
+                        pass
                     # Profile identity for per-profile provider scoping
                     try:
                         from hermes_cli.profiles import get_active_profile_name

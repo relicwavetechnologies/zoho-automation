@@ -12,6 +12,8 @@ def test_schema_contract_contains_required_enterprise_tables_and_columns():
     assert "RuntimeConversationMessage" in tables
     assert "HermesSessionBinding" in tables
     assert "HermesRunStats" in tables
+    assert "HermesConnectorCredential" in tables
+    assert "payloadEncrypted" in tables["HermesConnectorCredential"].required_columns
     for table in ENTERPRISE_TABLES:
         assert table.required_columns
 

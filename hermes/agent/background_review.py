@@ -19,6 +19,7 @@ for invariants and PR review criteria.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -321,6 +322,21 @@ def build_memory_write_metadata(
         metadata["task_id"] = task_id
     if tool_call_id:
         metadata["tool_call_id"] = tool_call_id
+    try:
+        from gateway.session_context import get_session_env
+
+        for key, env_name in (
+            ("company_id", "HERMES_COMPANY_ID"),
+            ("company_user_id", "HERMES_COMPANY_USER_ID"),
+            ("channel_identity_id", "HERMES_CHANNEL_IDENTITY_ID"),
+            ("company_role", "HERMES_COMPANY_ROLE"),
+            ("department_id", "HERMES_DEPARTMENT_ID"),
+        ):
+            value = str(get_session_env(env_name) or "").strip()
+            if value:
+                metadata[key] = value
+    except Exception:
+        pass
     return {k: v for k, v in metadata.items() if v not in {None, ""}}
 
 
@@ -581,8 +597,10 @@ def spawn_background_review_thread(
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
+    parent_context = contextvars.copy_context()
+
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        parent_context.run(_run_review_in_thread, agent, messages_snapshot, prompt)
 
     return _target, prompt
 

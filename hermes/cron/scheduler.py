@@ -31,7 +31,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -111,6 +111,54 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
             exc,
         )
         return None
+
+
+def _cron_company_identity(job: Dict[str, Any]) -> Dict[str, str]:
+    identity = {
+        "company_id": str(job.get("company_id") or "").strip(),
+        "company_user_id": str(job.get("company_user_id") or "").strip(),
+        "channel_identity_id": str(job.get("channel_identity_id") or "").strip(),
+        "company_role": str(job.get("company_role") or "").strip(),
+        "department_id": str(job.get("department_id") or "").strip(),
+    }
+    return {key: value for key, value in identity.items() if value}
+
+
+def _bind_cron_company_session(
+    *,
+    job: Dict[str, Any],
+    session_id: str,
+    session_key: str,
+) -> None:
+    identity = _cron_company_identity(job)
+    if not identity:
+        return
+
+    missing = [
+        key
+        for key in ("company_id", "company_user_id", "channel_identity_id")
+        if not identity.get(key)
+    ]
+    if missing:
+        raise RuntimeError(
+            "Cron job has incomplete company owner identity; missing "
+            + ", ".join(missing)
+        )
+
+    from gateway.company_identity import bind_explicit_session_identity
+
+    bind_explicit_session_identity(
+        session_id=session_id,
+        session_key=session_key,
+        company_id=identity["company_id"],
+        company_user_id=identity["company_user_id"],
+        channel_identity_id=identity["channel_identity_id"],
+        company_role=identity.get("company_role", ""),
+        department_id=identity.get("department_id", ""),
+        platform="cron",
+        chat_id=str(job.get("id") or ""),
+        binding_source="cron",
+    )
 
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
@@ -1489,6 +1537,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _cron_session_key = f"cron:{job_id}"
+    _company_identity = _cron_company_identity(job)
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -1529,6 +1579,12 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         platform="",
         chat_id="",
         chat_name="",
+        company_id=_company_identity.get("company_id", ""),
+        company_user_id=_company_identity.get("company_user_id", ""),
+        channel_identity_id=_company_identity.get("channel_identity_id", ""),
+        company_role=_company_identity.get("company_role", ""),
+        department_id=_company_identity.get("department_id", ""),
+        session_key=_cron_session_key if _company_identity else "",
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
@@ -1564,6 +1620,12 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
     try:
+        _bind_cron_company_session(
+            job=job,
+            session_id=_cron_session_id,
+            session_key=_cron_session_key,
+        )
+
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv

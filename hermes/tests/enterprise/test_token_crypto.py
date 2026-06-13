@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from enterprise.token_crypto import (
     TokenCryptoError,
     decrypt_token,
+    encrypt_token,
     resolve_key,
     try_decrypt_token,
 )
@@ -29,6 +30,15 @@ def test_round_trip_with_base64_key():
     raw_key = "base64:" + base64.b64encode(key).decode()
     token = _encrypt_like_divo("1000.secrettoken", key, iv=b"x" * 12)
     assert decrypt_token(token, raw_key) == "1000.secrettoken"
+
+
+def test_encrypt_token_round_trip_uses_native_format():
+    key = b"0" * 32
+    raw_key = "base64:" + base64.b64encode(key).decode()
+    token = encrypt_token("native-secret", raw_key)
+
+    assert token.startswith("v1:")
+    assert decrypt_token(token, raw_key) == "native-secret"
 
 
 def test_round_trip_with_sha256_derived_key():

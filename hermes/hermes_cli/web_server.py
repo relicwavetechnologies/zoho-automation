@@ -5842,22 +5842,72 @@ def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwar
     return result
 
 
-def _find_cron_job_profile(job_id: str) -> Optional[str]:
+def _current_company_cron_owner(request: Request | None) -> Dict[str, str]:
+    if request is None or not getattr(app.state, "auth_required", False):
+        return {}
+
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from gateway.company_identity import resolve_dashboard_session_identity
+
+    try:
+        identity = resolve_dashboard_session_identity(
+            provider=getattr(sess, "provider", "") or "",
+            provider_user_id=getattr(sess, "user_id", "") or "",
+            display_name=getattr(sess, "display_name", "") or None,
+            email=getattr(sess, "email", "") or None,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Company identity unavailable: {exc}",
+        ) from exc
+
+    owner = {
+        "company_id": str(getattr(identity, "company_id", "") or "").strip(),
+        "company_user_id": str(getattr(identity, "company_user_id", "") or "").strip(),
+        "channel_identity_id": str(getattr(identity, "channel_identity_id", "") or "").strip(),
+        "company_role": str(getattr(identity, "company_role", "") or "").strip(),
+        "department_id": str(getattr(identity, "department_id", "") or "").strip(),
+    }
+    if not owner["company_id"] or not owner["company_user_id"]:
+        raise HTTPException(status_code=503, detail="Company identity unavailable")
+    return {key: value for key, value in owner.items() if value}
+
+
+def _cron_owner_filter_kwargs(owner: Dict[str, str]) -> Dict[str, Any]:
+    company_id = str(owner.get("company_id") or "").strip()
+    company_user_id = str(owner.get("company_user_id") or "").strip()
+    if company_id and company_user_id:
+        return {
+            "company_id": company_id,
+            "company_user_id": company_user_id,
+            "include_unowned": False,
+        }
+    return {}
+
+
+def _find_cron_job_profile(job_id: str, owner_filter: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    owner_filter = owner_filter or {}
     for profile in _cron_profile_dicts():
         name = str(profile.get("name") or "")
         if not name:
             continue
-        jobs = _call_cron_for_profile(name, "list_jobs", True)
+        jobs = _call_cron_for_profile(name, "list_jobs", True, **owner_filter)
         if any(j.get("id") == job_id or j.get("name") == job_id for j in jobs):
             return name
     return None
 
 
 @app.get("/api/cron/jobs")
-async def list_cron_jobs(profile: str = "all"):
+async def list_cron_jobs(profile: str = "all", request: Request = None):
+    owner = _current_company_cron_owner(request)
+    owner_filter = _cron_owner_filter_kwargs(owner)
     requested = (profile or "all").strip()
     if requested.lower() != "all":
-        return _call_cron_for_profile(requested, "list_jobs", True)
+        return _call_cron_for_profile(requested, "list_jobs", True, **owner_filter)
 
     jobs: List[Dict[str, Any]] = []
     for item in _cron_profile_dicts():
@@ -5865,25 +5915,28 @@ async def list_cron_jobs(profile: str = "all"):
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            jobs.extend(_call_cron_for_profile(name, "list_jobs", True, **owner_filter))
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
     return jobs
 
 
 @app.get("/api/cron/jobs/{job_id}")
-async def get_cron_job(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
+async def get_cron_job(job_id: str, profile: Optional[str] = None, request: Request = None):
+    owner = _current_company_cron_owner(request)
+    owner_filter = _cron_owner_filter_kwargs(owner)
+    selected = profile or _find_cron_job_profile(job_id, owner_filter)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _call_cron_for_profile(selected, "get_job", job_id)
+    job = _call_cron_for_profile(selected, "get_job", job_id, **owner_filter)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs")
-async def create_cron_job(body: CronJobCreate, profile: str = "default"):
+async def create_cron_job(body: CronJobCreate, profile: str = "default", request: Request = None):
+    owner = _current_company_cron_owner(request)
     try:
         return _call_cron_for_profile(
             profile,
@@ -5892,6 +5945,7 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
             schedule=body.schedule,
             name=body.name,
             deliver=body.deliver,
+            **owner,
         )
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
@@ -5899,12 +5953,14 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
 
 
 @app.put("/api/cron/jobs/{job_id}")
-async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
+async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[str] = None, request: Request = None):
+    owner = _current_company_cron_owner(request)
+    owner_filter = _cron_owner_filter_kwargs(owner)
+    selected = profile or _find_cron_job_profile(job_id, owner_filter)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
     try:
-        job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
+        job = _call_cron_for_profile(selected, "update_job", job_id, body.updates, **owner_filter)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not job:
@@ -5913,45 +5969,53 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
 
 
 @app.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
+async def pause_cron_job(job_id: str, profile: Optional[str] = None, request: Request = None):
+    owner = _current_company_cron_owner(request)
+    owner_filter = _cron_owner_filter_kwargs(owner)
+    selected = profile or _find_cron_job_profile(job_id, owner_filter)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _call_cron_for_profile(selected, "pause_job", job_id)
+    job = _call_cron_for_profile(selected, "pause_job", job_id, **owner_filter)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
+async def resume_cron_job(job_id: str, profile: Optional[str] = None, request: Request = None):
+    owner = _current_company_cron_owner(request)
+    owner_filter = _cron_owner_filter_kwargs(owner)
+    selected = profile or _find_cron_job_profile(job_id, owner_filter)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _call_cron_for_profile(selected, "resume_job", job_id)
+    job = _call_cron_for_profile(selected, "resume_job", job_id, **owner_filter)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
+async def trigger_cron_job(job_id: str, profile: Optional[str] = None, request: Request = None):
+    owner = _current_company_cron_owner(request)
+    owner_filter = _cron_owner_filter_kwargs(owner)
+    selected = profile or _find_cron_job_profile(job_id, owner_filter)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = _call_cron_for_profile(selected, "trigger_job", job_id)
+    job = _call_cron_for_profile(selected, "trigger_job", job_id, **owner_filter)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
 @app.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str, profile: Optional[str] = None):
-    selected = profile or _find_cron_job_profile(job_id)
+async def delete_cron_job(job_id: str, profile: Optional[str] = None, request: Request = None):
+    owner = _current_company_cron_owner(request)
+    owner_filter = _cron_owner_filter_kwargs(owner)
+    selected = profile or _find_cron_job_profile(job_id, owner_filter)
     if not selected:
         raise HTTPException(status_code=404, detail="Job not found")
     try:
-        removed = _call_cron_for_profile(selected, "remove_job", job_id)
+        removed = _call_cron_for_profile(selected, "remove_job", job_id, **owner_filter)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not removed:

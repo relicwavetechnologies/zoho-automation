@@ -7,9 +7,62 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _bind_cron_company_session
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestCronCompanyIdentity:
+    def test_bind_cron_company_session_uses_job_owner_identity(self, monkeypatch):
+        calls = []
+
+        def fake_bind_explicit_session_identity(**kwargs):
+            calls.append(kwargs)
+
+        monkeypatch.setattr(
+            "gateway.company_identity.bind_explicit_session_identity",
+            fake_bind_explicit_session_identity,
+        )
+
+        _bind_cron_company_session(
+            job={
+                "id": "job_123",
+                "company_id": "company_a",
+                "company_user_id": "user_a",
+                "channel_identity_id": "channel_a",
+                "company_role": "MEMBER",
+                "department_id": "dept_a",
+            },
+            session_id="cron_job_123_20260613_010203",
+            session_key="cron:job_123",
+        )
+
+        assert calls == [
+            {
+                "session_id": "cron_job_123_20260613_010203",
+                "session_key": "cron:job_123",
+                "company_id": "company_a",
+                "company_user_id": "user_a",
+                "channel_identity_id": "channel_a",
+                "company_role": "MEMBER",
+                "department_id": "dept_a",
+                "platform": "cron",
+                "chat_id": "job_123",
+                "binding_source": "cron",
+            }
+        ]
+
+    def test_bind_cron_company_session_rejects_incomplete_owner_identity(self):
+        with pytest.raises(RuntimeError, match="channel_identity_id"):
+            _bind_cron_company_session(
+                job={
+                    "id": "job_123",
+                    "company_id": "company_a",
+                    "company_user_id": "user_a",
+                },
+                session_id="cron_job_123_20260613_010203",
+                session_key="cron:job_123",
+            )
 
 
 class TestResolveOrigin:

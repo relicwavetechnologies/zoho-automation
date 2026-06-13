@@ -1,5 +1,7 @@
 """Regression tests for dashboard cron job profile routing."""
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 
@@ -104,6 +106,82 @@ async def test_list_cron_jobs_specific_profile_filters_results(isolated_profiles
 
     assert [job["id"] for job in jobs] == [worker_job["id"]]
     assert jobs[0]["profile"] == "worker_alpha"
+
+
+@pytest.mark.asyncio
+async def test_auth_required_cron_routes_scope_to_current_company_user(isolated_profiles, monkeypatch):
+    from gateway import company_identity
+    from hermes_cli import web_server
+
+    monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
+
+    def fake_resolve_dashboard_session_identity(**_kwargs):
+        return SimpleNamespace(
+            company_id="company_a",
+            company_user_id="alice",
+            channel_identity_id="channel_alice",
+            company_role="MEMBER",
+            department_id="dept_a",
+        )
+
+    monkeypatch.setattr(
+        company_identity,
+        "resolve_dashboard_session_identity",
+        fake_resolve_dashboard_session_identity,
+    )
+
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            session=SimpleNamespace(
+                provider="lark",
+                user_id="alice-open-id",
+                display_name="Alice",
+                email="alice@example.com",
+            )
+        )
+    )
+
+    alice_job = web_server._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="alice-owned",
+        schedule="every 1h",
+        name="alice-owned",
+        company_id="company_a",
+        company_user_id="alice",
+        channel_identity_id="channel_alice",
+    )
+    bob_job = web_server._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="bob-owned",
+        schedule="every 1h",
+        name="bob-owned",
+        company_id="company_a",
+        company_user_id="bob",
+        channel_identity_id="channel_bob",
+    )
+
+    jobs = await web_server.list_cron_jobs(profile="all", request=request)
+    assert [job["id"] for job in jobs] == [alice_job["id"]]
+
+    with pytest.raises(HTTPException) as blocked_get:
+        await web_server.get_cron_job(bob_job["id"], profile="default", request=request)
+    assert blocked_get.value.status_code == 404
+
+    created = await web_server.create_cron_job(
+        web_server.CronJobCreate(
+            prompt="created from dashboard",
+            schedule="every 2h",
+            name="dashboard-created",
+            deliver="local",
+        ),
+        profile="default",
+        request=request,
+    )
+    assert created["company_id"] == "company_a"
+    assert created["company_user_id"] == "alice"
+    assert created["channel_identity_id"] == "channel_alice"
 
 
 @pytest.mark.asyncio

@@ -45,11 +45,19 @@ _jobs_file_lock = threading.Lock()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
+_COMPANY_OWNER_FIELDS = (
+    "company_id",
+    "company_user_id",
+    "channel_identity_id",
+    "company_role",
+    "department_id",
+)
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
 # updated lets an unsafe value (``../escape``, absolute path, nested) leak
-# into output writes/deletes.
-_IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+# into output writes/deletes. Owner fields are immutable so tenancy cannot be
+# transferred through a generic update payload.
+_IMMUTABLE_JOB_FIELDS = frozenset({"id", *_COMPANY_OWNER_FIELDS})
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -99,6 +107,79 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     if value is None:
         return fallback
     return str(value)
+
+
+def _clean_owner_text(value: Any) -> str:
+    """Normalize optional owner identity values stored on company cron jobs."""
+    return str(value or "").strip()
+
+
+def _current_company_owner() -> Dict[str, str]:
+    """Return company identity from the active ContextVar session, if any."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return {}
+
+    owner = {
+        "company_id": _clean_owner_text(get_session_env("HERMES_COMPANY_ID")),
+        "company_user_id": _clean_owner_text(get_session_env("HERMES_COMPANY_USER_ID")),
+        "channel_identity_id": _clean_owner_text(get_session_env("HERMES_CHANNEL_IDENTITY_ID")),
+        "company_role": _clean_owner_text(get_session_env("HERMES_COMPANY_ROLE")),
+        "department_id": _clean_owner_text(get_session_env("HERMES_DEPARTMENT_ID")),
+    }
+    return {key: value for key, value in owner.items() if value}
+
+
+def _resolve_company_owner(
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    channel_identity_id: Optional[str] = None,
+    company_role: Optional[str] = None,
+    department_id: Optional[str] = None,
+) -> Dict[str, str]:
+    """Merge explicit owner values with the current company session context."""
+    owner = _current_company_owner()
+    explicit = {
+        "company_id": company_id,
+        "company_user_id": company_user_id,
+        "channel_identity_id": channel_identity_id,
+        "company_role": company_role,
+        "department_id": department_id,
+    }
+    for key, value in explicit.items():
+        if value is not None:
+            cleaned = _clean_owner_text(value)
+            if cleaned:
+                owner[key] = cleaned
+            else:
+                owner.pop(key, None)
+    return {key: value for key, value in owner.items() if value}
+
+
+def _job_matches_company_owner(
+    job: Dict[str, Any],
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    include_unowned: bool = False,
+) -> bool:
+    """Return whether a job is visible to the requested company owner scope."""
+    filter_company_id = _clean_owner_text(company_id)
+    filter_company_user_id = _clean_owner_text(company_user_id)
+    if not filter_company_id and not filter_company_user_id:
+        return True
+
+    job_company_id = _clean_owner_text(job.get("company_id"))
+    job_company_user_id = _clean_owner_text(job.get("company_user_id"))
+    if not job_company_id and not job_company_user_id:
+        return bool(include_unowned)
+    if filter_company_id and job_company_id != filter_company_id:
+        return False
+    if filter_company_user_id and job_company_user_id != filter_company_user_id:
+        return False
+    return True
 
 
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
@@ -152,6 +233,12 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
 
     profile = _coerce_job_text(normalized.get("profile")).strip()
     normalized["profile"] = profile or None
+    for key in _COMPANY_OWNER_FIELDS:
+        value = _clean_owner_text(normalized.get(key))
+        if value:
+            normalized[key] = value
+        else:
+            normalized.pop(key, None)
 
     return normalized
 
@@ -565,6 +652,11 @@ def create_job(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    channel_identity_id: Optional[str] = None,
+    company_role: Optional[str] = None,
+    department_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -614,6 +706,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        company_id/company_user_id/channel_identity_id/company_role/department_id:
+                Optional enterprise owner identity. When omitted, these are
+                captured from the current gateway session ContextVars if
+                present. Legacy local cron jobs remain unowned.
 
     Returns:
         The created job dict
@@ -649,6 +745,13 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
+    owner = _resolve_company_owner(
+        company_id=company_id,
+        company_user_id=company_user_id,
+        channel_identity_id=channel_identity_id,
+        company_role=company_role,
+        department_id=department_id,
+    )
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -704,6 +807,7 @@ def create_job(
         "workdir": normalized_workdir,
         "profile": normalized_profile,
     }
+    job.update(owner)
 
     jobs = load_jobs()
     jobs.append(job)
@@ -712,11 +816,22 @@ def create_job(
     return job
 
 
-def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+def get_job(
+    job_id: str,
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    include_unowned: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Get a job by ID."""
     jobs = load_jobs()
     for job in jobs:
-        if job["id"] == job_id:
+        if job["id"] == job_id and _job_matches_company_owner(
+            job,
+            company_id=company_id,
+            company_user_id=company_user_id,
+            include_unowned=include_unowned,
+        ):
             return _normalize_job_record(job)
     return None
 
@@ -734,7 +849,13 @@ class AmbiguousJobReference(LookupError):
         )
 
 
-def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
+def resolve_job_ref(
+    ref: str,
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    include_unowned: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Resolve a job reference (ID or name) to a job record.
 
     - Exact ID match wins (works even if a different job's name equals this ID).
@@ -744,7 +865,16 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
     """
     if not ref:
         return None
-    jobs = load_jobs()
+    jobs = [
+        job
+        for job in load_jobs()
+        if _job_matches_company_owner(
+            job,
+            company_id=company_id,
+            company_user_id=company_user_id,
+            include_unowned=include_unowned,
+        )
+    ]
     for job in jobs:
         if job["id"] == ref:
             return _normalize_job_record(job)
@@ -759,15 +889,37 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
     return _normalize_job_record(name_matches[0])
 
 
-def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
+def list_jobs(
+    include_disabled: bool = False,
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    include_unowned: bool = False,
+) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
-    jobs = [_normalize_job_record(j) for j in load_jobs()]
+    jobs = [
+        _normalize_job_record(j)
+        for j in load_jobs()
+        if _job_matches_company_owner(
+            j,
+            company_id=company_id,
+            company_user_id=company_user_id,
+            include_unowned=include_unowned,
+        )
+    ]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     return jobs
 
 
-def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def update_job(
+    job_id: str,
+    updates: Dict[str, Any],
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    include_unowned: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # Block mutation of immutable fields. ``id`` in particular is a filesystem
     # path component under OUTPUT_DIR — letting an update change it leaks
@@ -781,6 +933,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     jobs = load_jobs()
     for i, job in enumerate(jobs):
         if job["id"] != job_id:
+            continue
+        if not _job_matches_company_owner(
+            job,
+            company_id=company_id,
+            company_user_id=company_user_id,
+            include_unowned=include_unowned,
+        ):
             continue
 
         # Validate / normalize workdir if present in updates.  Empty string or
@@ -833,9 +992,21 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return None
 
 
-def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def pause_job(
+    job_id: str,
+    reason: Optional[str] = None,
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    include_unowned: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Pause a job without deleting it. Accepts a job ID or name."""
-    job = resolve_job_ref(job_id)
+    job = resolve_job_ref(
+        job_id,
+        company_id=company_id,
+        company_user_id=company_user_id,
+        include_unowned=include_unowned,
+    )
     if not job:
         return None
     return update_job(
@@ -846,12 +1017,26 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
             "paused_at": _hermes_now().isoformat(),
             "paused_reason": reason,
         },
+        company_id=company_id,
+        company_user_id=company_user_id,
+        include_unowned=include_unowned,
     )
 
 
-def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
+def resume_job(
+    job_id: str,
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    include_unowned: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Resume a paused job and compute the next future run from now. Accepts a job ID or name."""
-    job = resolve_job_ref(job_id)
+    job = resolve_job_ref(
+        job_id,
+        company_id=company_id,
+        company_user_id=company_user_id,
+        include_unowned=include_unowned,
+    )
     if not job:
         return None
 
@@ -865,12 +1050,26 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_reason": None,
             "next_run_at": next_run_at,
         },
+        company_id=company_id,
+        company_user_id=company_user_id,
+        include_unowned=include_unowned,
     )
 
 
-def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
+def trigger_job(
+    job_id: str,
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    include_unowned: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
-    job = resolve_job_ref(job_id)
+    job = resolve_job_ref(
+        job_id,
+        company_id=company_id,
+        company_user_id=company_user_id,
+        include_unowned=include_unowned,
+    )
     if not job:
         return None
     return update_job(
@@ -882,18 +1081,44 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_reason": None,
             "next_run_at": _hermes_now().isoformat(),
         },
+        company_id=company_id,
+        company_user_id=company_user_id,
+        include_unowned=include_unowned,
     )
 
 
-def remove_job(job_id: str) -> bool:
+def remove_job(
+    job_id: str,
+    *,
+    company_id: Optional[str] = None,
+    company_user_id: Optional[str] = None,
+    include_unowned: bool = False,
+) -> bool:
     """Remove a job by ID or name."""
-    job = resolve_job_ref(job_id)
+    job = resolve_job_ref(
+        job_id,
+        company_id=company_id,
+        company_user_id=company_user_id,
+        include_unowned=include_unowned,
+    )
     if not job:
         return False
     canonical_id = job["id"]
     jobs = load_jobs()
     original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != canonical_id]
+    jobs = [
+        j
+        for j in jobs
+        if not (
+            j["id"] == canonical_id
+            and _job_matches_company_owner(
+                j,
+                company_id=company_id,
+                company_user_id=company_user_id,
+                include_unowned=include_unowned,
+            )
+        )
+    ]
     if len(jobs) < original_len:
         # Resolve the output dir BEFORE saving so a legacy unsafe ID (e.g.
         # left over from before the create-time guard) fails closed without

@@ -1,8 +1,8 @@
 """Resolve per-company Lark clients from the enterprise credential vault.
 
-Mirrors ``tools/zoho_runtime.py`` / ``tools/google_runtime.py``. Prefers a
-per-company ``LarkWorkspaceConfig``; falls back to shared ``LARK_APP_*`` env
-credentials (what Divo uses today).
+Mirrors ``tools/zoho_runtime.py`` / ``tools/google_runtime.py``. Enterprise
+tools must fail closed when a company has not connected Lark; they must not
+silently fall back to shared process env credentials.
 """
 
 from __future__ import annotations
@@ -38,8 +38,6 @@ def _get_repository():
     except Exception:  # noqa: BLE001
         return None
     cfg = EnterprisePostgresConfig.from_env()
-    # Lark has an env fallback, so we still build a repository even though the
-    # DB may have no per-company row — get_lark_credentials handles the fallback.
     if not cfg.enabled or not cfg.database_url:
         return None
     try:
@@ -65,7 +63,7 @@ def resolve_lark_client(company_id: Optional[str]) -> Optional[LarkClient]:
     repo = _get_repository()
     if repo is None:
         return None
-    creds = repo.get_lark_credentials(company_id)
+    creds = repo.get_lark_credentials(company_id, allow_env_fallback=False)
     if creds is None:
         return None
 
@@ -91,7 +89,7 @@ def resolve_tool_client(kwargs: dict) -> LarkClient:
     from enterprise.lark_token import LarkAuthError
 
     raise LarkAuthError(
-        f"No Lark credentials for company {company_id} (no LarkWorkspaceConfig and no LARK_APP_* env)."
+        f"No Lark credentials for company {company_id}. Connect Lark for this company before using Lark tools."
     )
 
 
