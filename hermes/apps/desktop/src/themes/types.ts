@@ -63,4 +63,9 @@ export interface DesktopTheme {
   /** Hand-tuned dark palette. Skins like `nous` ship one. */
   darkColors?: DesktopThemeColors
   typography?: Partial<DesktopThemeTypography>
+  /**
+   * Flat surfaces — disables the grain/noise overlay for a clean, editor-like
+   * look (e.g. the `cursor` skin). Other skins keep their texture.
+   */
+  flat?: boolean
 }

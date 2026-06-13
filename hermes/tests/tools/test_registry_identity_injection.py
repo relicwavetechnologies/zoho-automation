@@ -40,7 +40,12 @@ def test_connector_handler_receives_identity(reg):
 
     reg.register(name="conn", toolset="t", schema=_schema("conn"), handler=handler)
 
-    sc.set_session_vars(company_id="comp_1", company_role="ADMIN", channel_identity_id="ci_1")
+    sc.set_session_vars(
+        company_id="comp_1",
+        company_role="ADMIN",
+        channel_identity_id="ci_1",
+        session_key="session-key-1",
+    )
     sc.set_current_session_id("sess_9")
 
     reg.dispatch("conn", {})
@@ -48,6 +53,7 @@ def test_connector_handler_receives_identity(reg):
     assert captured["company_id"] == "comp_1"
     assert captured["company_role"] == "ADMIN"
     assert captured["channel_identity_id"] == "ci_1"
+    assert captured["session_key"] == "session-key-1"
     assert captured["session_id"] == "sess_9"
 
 

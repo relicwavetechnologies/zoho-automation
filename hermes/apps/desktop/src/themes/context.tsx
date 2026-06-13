@@ -9,26 +9,22 @@
  * The two are persisted independently. Shift+X toggles light/dark.
  */
 
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-
-import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
+import { createContext, type ReactNode, useContext, useEffect, useMemo } from 'react'
 
 import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 
-const SKIN_KEY = 'hermes-desktop-theme-v2'
-const MODE_KEY = 'hermes-desktop-mode-v1'
-const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
+// The desktop is locked to a single look (the Cursor editor skin, dark). The
+// theming engine still drives all CSS tokens, but skin/mode are no longer
+// user-selectable — the picker UI is removed and these constants are the only
+// source of truth. To re-enable theming, restore a localStorage-backed
+// provider state and the picker surfaces.
+const LOCKED_SKIN = DEFAULT_SKIN_NAME
+const LOCKED_MODE: 'light' | 'dark' = 'dark'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
 const INJECTED_FONT_URLS = new Set<string>()
-
-const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
-  mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
-
-const normalizeSkin = (name: string | null | undefined): string =>
-  name && BUILTIN_THEMES[name] && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
 
@@ -209,7 +205,9 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
-    '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
+    // Flat skins (cursor) drop the grain for a clean editor surface; others
+    // keep their per-mode noise.
+    '--noise-opacity-mul': theme.flat ? '0' : isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 
   for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark), ...palette })) {
@@ -231,12 +229,10 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   }
 }
 
-// Boot-time paint to avoid a flash before <ThemeProvider> mounts.
+// Boot-time paint to avoid a flash before <ThemeProvider> mounts. Locked to
+// the single Cursor look — no localStorage read, no system-mode follow.
 if (typeof window !== 'undefined') {
-  const skin = normalizeSkin(window.localStorage.getItem(SKIN_KEY))
-  const mode = (window.localStorage.getItem(MODE_KEY) as ThemeMode) ?? 'light'
-  const resolved = resolveMode(mode)
-  applyTheme(deriveTheme(skin, resolved), resolved)
+  applyTheme(deriveTheme(LOCKED_SKIN, LOCKED_MODE), LOCKED_MODE)
 }
 
 // ─── Context ────────────────────────────────────────────────────────────────
@@ -251,72 +247,42 @@ interface ThemeContextValue {
   setMode: (mode: ThemeMode) => void
 }
 
-const SKIN_LIST = BUILTIN_THEME_LIST.map(({ name, label, description }) => ({ name, label, description }))
+// Only the locked skin is exposed; the picker UI is removed, so this list has
+// a single entry purely for any read-only label lookups.
+const SKIN_LIST = BUILTIN_THEME_LIST.filter(t => t.name === LOCKED_SKIN).map(({ name, label, description }) => ({
+  name,
+  label,
+  description
+}))
+
+const LOCKED_THEME = deriveTheme(LOCKED_SKIN, LOCKED_MODE)
 
 const ThemeContext = createContext<ThemeContextValue>({
-  theme: nousTheme,
-  themeName: DEFAULT_SKIN_NAME,
-  mode: 'light',
-  resolvedMode: 'light',
+  theme: LOCKED_THEME,
+  themeName: LOCKED_SKIN,
+  mode: LOCKED_MODE,
+  resolvedMode: LOCKED_MODE,
   availableThemes: SKIN_LIST,
   setTheme: () => {},
   setMode: () => {}
 })
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [themeName, setThemeNameState] = useState(() =>
-    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : normalizeSkin(window.localStorage.getItem(SKIN_KEY))
-  )
-
-  const [mode, setModeState] = useState<ThemeMode>(() =>
-    typeof window === 'undefined' ? 'light' : ((window.localStorage.getItem(MODE_KEY) as ThemeMode) ?? 'light')
-  )
-
-  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
-  const resolvedMode = resolveMode(mode, systemDark)
-  const activeTheme = useMemo(() => deriveTheme(themeName, resolvedMode), [themeName, resolvedMode])
-
-  useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
-
-  const setTheme = useCallback((name: string) => {
-    const next = normalizeSkin(name)
-    setThemeNameState(next)
-    window.localStorage.setItem(SKIN_KEY, next)
-  }, [])
-
-  const setMode = useCallback((next: ThemeMode) => {
-    setModeState(next)
-    window.localStorage.setItem(MODE_KEY, next)
-  }, [])
-
-  // Shift+X toggles light/dark anywhere outside an editable field.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const t = event.target as HTMLElement | null
-
-      const editing =
-        t?.isContentEditable ||
-        t instanceof HTMLInputElement ||
-        t instanceof HTMLTextAreaElement ||
-        t instanceof HTMLSelectElement
-
-      if (editing || event.repeat || event.altKey || event.ctrlKey || event.metaKey) {
-        return
-      }
-
-      if (event.shiftKey && event.code === 'KeyX') {
-        setMode(resolvedMode === 'dark' ? 'light' : 'dark')
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown)
-
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [resolvedMode, setMode])
+  // The look is locked: a single skin + dark mode, applied once. No persisted
+  // state, no system-mode follow, no Shift+X toggle, no setters.
+  useEffect(() => applyTheme(LOCKED_THEME, LOCKED_MODE), [])
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme: activeTheme, themeName, mode, resolvedMode, availableThemes: SKIN_LIST, setTheme, setMode }),
-    [activeTheme, themeName, mode, resolvedMode, setTheme, setMode]
+    () => ({
+      theme: LOCKED_THEME,
+      themeName: LOCKED_SKIN,
+      mode: LOCKED_MODE,
+      resolvedMode: LOCKED_MODE,
+      availableThemes: SKIN_LIST,
+      setTheme: () => {},
+      setMode: () => {}
+    }),
+    []
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

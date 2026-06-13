@@ -1,10 +1,19 @@
 export const SESSION_ROUTE_PREFIX = '/'
 export const NEW_CHAT_ROUTE = '/'
 export const SETTINGS_ROUTE = '/settings'
-// Settings/control-plane surfaces are moved to the future admin web UI.
-// Desktop remains a user-facing runtime client — no operator config exposure.
+// The desktop settings page is for EMPLOYEE-facing personal/local preferences
+// only — theme, chat, voice, local workspace, sessions, about. Operator config
+// (AI providers, gateway URL, API keys, MCP, safety/governance, advanced) lives
+// on the admin web console, NOT in the desktop client. Employees authenticate
+// via Lark OAuth into the singleton Divo workspace; they never paste provider
+// keys or pick models from the desktop.
 // Search for DESKTOP_SETTINGS_ENABLED to find all guarded navigation paths.
-export const DESKTOP_SETTINGS_ENABLED = false
+export const DESKTOP_SETTINGS_ENABLED = true
+// Operator/control-plane settings surfaces (providers, gateway, keys, MCP, and
+// the operator-only config sections). Off on the desktop — these are owned by
+// the admin web console. The components remain in the tree as the porting
+// reference for that console.
+export const DESKTOP_OPERATOR_SETTINGS_ENABLED = false
 export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'

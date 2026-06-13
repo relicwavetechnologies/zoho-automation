@@ -40,10 +40,11 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 try:
     from aiohttp import web
@@ -650,6 +651,8 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
 def _derive_chat_session_id(
     system_prompt: Optional[str],
     first_user_message: str,
+    *,
+    identity_scope: str = "",
 ) -> str:
     """Derive a stable session ID from the conversation's first user message.
 
@@ -660,7 +663,7 @@ def _derive_chat_session_id(
     the same Hermes session (and therefore the same Docker container sandbox
     directory) across turns.
     """
-    seed = f"{system_prompt or ''}\n{first_user_message}"
+    seed = f"{identity_scope}\n{system_prompt or ''}\n{first_user_message}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"api-{digest}"
 
@@ -716,8 +719,8 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
-        # Active run streams: run_id -> asyncio.Queue of SSE event dicts
-        self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
+        # Active run SSE buffers: run_id -> registered replayable stream marker.
+        self._run_streams: Dict[str, bool] = {}
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
         # Active run agent/task references for stop support
@@ -725,6 +728,14 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        # Canonical normalized run events for the runtime history writer.
+        self._run_event_normalizers: Dict[str, Any] = {}
+        self._run_runtime_events: Dict[str, List[Dict[str, Any]]] = {}
+        self._run_contexts: Dict[str, Any] = {}
+        self._run_event_locks: Dict[str, threading.Lock] = {}
+        self._run_loops: Dict[str, "asyncio.AbstractEventLoop"] = {}
+        self._runtime_history_writer: Optional[Any] = None
+        self._runtime_history_write_errors: Dict[str, str] = {}
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -943,6 +954,114 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return raw, None
 
+    @staticmethod
+    def _identity_mode_enabled() -> bool:
+        try:
+            from gateway.company_identity import is_enterprise_identity_enabled
+
+            return bool(is_enterprise_identity_enabled())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _identity_scope(identity_envelope: Any) -> str:
+        company_id = str(getattr(identity_envelope, "company_id", "") or "")
+        company_user_id = str(getattr(identity_envelope, "company_user_id", "") or "")
+        channel_identity_id = str(
+            getattr(identity_envelope, "channel_identity_id", "") or ""
+        )
+        return "\x1f".join((company_id, company_user_id, channel_identity_id))
+
+    @staticmethod
+    def _identity_required_response(message: str) -> "web.Response":
+        return web.json_response(
+            _openai_error(message, code="company_auth_required"),
+            status=401,
+        )
+
+    def _parse_enterprise_identity(
+        self,
+        mapping: Mapping[str, Any],
+        *,
+        session_key: str = "",
+        required: bool = False,
+    ) -> tuple[Any, Optional["web.Response"]]:
+        from enterprise.identity import EnterpriseIdentityEnvelope
+
+        envelope = EnterpriseIdentityEnvelope.from_mapping(
+            mapping,
+            session_key=session_key,
+        )
+        missing = [
+            field_name
+            for field_name in ("company_id", "company_user_id", "channel_identity_id")
+            if not getattr(envelope, field_name, "")
+        ]
+        if missing and required:
+            return envelope, self._identity_required_response(
+                "Company identity is required for this run. "
+                f"Missing fields: {', '.join(missing)}"
+            )
+        return envelope, None
+
+    def _session_authorized_for_identity(
+        self,
+        session_id: str,
+        identity_envelope: Any,
+    ) -> bool:
+        if not self._identity_mode_enabled():
+            return True
+        try:
+            from gateway.company_identity import get_session_identity
+
+            bound = get_session_identity(session_id)
+        except Exception:
+            logger.debug(
+                "Failed to resolve bound session identity for %s",
+                session_id,
+                exc_info=True,
+            )
+            return False
+        if not bound:
+            return False
+        return (
+            str(bound.get("company_id") or "") == str(identity_envelope.company_id or "")
+            and str(bound.get("company_user_id") or "")
+            == str(identity_envelope.company_user_id or "")
+        )
+
+    def _bind_api_session_identity(
+        self,
+        *,
+        session_id: str,
+        session_key: str,
+        identity_envelope: Any,
+        platform: str = "api_server",
+        chat_id: str | None = None,
+    ) -> None:
+        if not self._identity_mode_enabled():
+            return
+        from gateway.company_identity import bind_explicit_session_identity
+
+        bind_explicit_session_identity(
+            session_id=session_id,
+            session_key=session_key,
+            company_id=str(identity_envelope.company_id or ""),
+            company_user_id=str(identity_envelope.company_user_id or ""),
+            channel_identity_id=str(identity_envelope.channel_identity_id or ""),
+            company_role=str(identity_envelope.company_role or ""),
+            department_id=str(identity_envelope.department_id or ""),
+            platform=platform,
+            chat_id=chat_id or session_id,
+            binding_source="api_server",
+        )
+
+    @staticmethod
+    def _identity_from_stored_response(stored: Mapping[str, Any] | None) -> str:
+        if not isinstance(stored, Mapping):
+            return ""
+        return str(stored.get("identity_scope") or "")
+
     # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
@@ -950,8 +1069,10 @@ class APIServerAdapter(BasePlatformAdapter):
     def _ensure_session_db(self):
         """Lazily initialise and return the shared SessionDB instance.
 
-        Sessions are persisted to ``state.db`` so that ``hermes sessions list``
-        shows API-server conversations alongside CLI and gateway ones.
+        Sessions are mirrored to ``state.db`` so existing Hermes desktop/CLI
+        surfaces can list, resume, and search API-server conversations. In
+        enterprise mode, Postgres Runtime* tables are the production record
+        and this local DB is a reconstructable cache.
         """
         if self._session_db is None:
             try:
@@ -1351,6 +1472,14 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
+        identity_required = self._identity_mode_enabled()
+        identity_envelope, identity_err = self._parse_enterprise_identity(
+            body,
+            session_key=str(body.get("session_key") or body.get("sessionKey") or ""),
+            required=identity_required,
+        )
+        if identity_err is not None:
+            return identity_err
 
         db = self._ensure_session_db()
         if db is None:
@@ -1370,6 +1499,18 @@ class APIServerAdapter(BasePlatformAdapter):
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_prompt must be a string", code="invalid_system_prompt"), status=400)
         db.create_session(session_id, "api_server", model=str(model) if model else None, system_prompt=system_prompt)
+        try:
+            self._bind_api_session_identity(
+                session_id=session_id,
+                session_key=identity_envelope.session_key or session_id,
+                identity_envelope=identity_envelope,
+            )
+        except Exception as exc:
+            db.delete_session(session_id)
+            logger.warning("Failed to bind API session identity for %s: %s", session_id, exc)
+            return self._identity_required_response(
+                f"Failed to bind company identity for session {session_id}"
+            )
         title = body.get("title")
         if title is not None:
             try:
@@ -1454,12 +1595,25 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
         source_id = request.match_info["session_id"]
-        source, err = self._get_existing_session_or_404(source_id)
-        if err:
-            return err
         body, err = await self._read_json_body(request)
         if err:
             return err
+        identity_required = self._identity_mode_enabled()
+        identity_envelope, identity_err = self._parse_enterprise_identity(
+            body,
+            session_key=str(body.get("session_key") or body.get("sessionKey") or source_id),
+            required=identity_required,
+        )
+        if identity_err is not None:
+            return identity_err
+        source, err = self._get_existing_session_or_404(source_id)
+        if err:
+            return err
+        if not self._session_authorized_for_identity(source_id, identity_envelope):
+            return web.json_response(
+                _openai_error("Session not found for the authenticated company user", code="session_not_found"),
+                status=404,
+            )
         db = self._ensure_session_db()
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
         if not fork_id or re.search(r'[\r\n\x00]', fork_id):
@@ -1481,6 +1635,18 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         messages = db.get_messages(source_id)
         db.replace_messages(fork_id, messages)
+        try:
+            self._bind_api_session_identity(
+                session_id=fork_id,
+                session_key=identity_envelope.session_key or fork_id,
+                identity_envelope=identity_envelope,
+            )
+        except Exception as exc:
+            logger.warning("Failed to bind forked session identity for %s: %s", fork_id, exc)
+            db.delete_session(fork_id)
+            return self._identity_required_response(
+                f"Failed to bind company identity for session {fork_id}"
+            )
         title = body.get("title")
         if title is None:
             base = source.get("title") or "fork"
@@ -1504,12 +1670,25 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
-        if err:
-            return err
         body, err = await self._read_json_body(request)
         if err:
             return err
+        identity_required = self._identity_mode_enabled()
+        identity_envelope, identity_err = self._parse_enterprise_identity(
+            body,
+            session_key=gateway_session_key or session_id,
+            required=identity_required,
+        )
+        if identity_err is not None:
+            return identity_err
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        if not self._session_authorized_for_identity(session_id, identity_envelope):
+            return web.json_response(
+                _openai_error("Session not found for the authenticated company user", code="session_not_found"),
+                status=404,
+            )
         user_message, err = _session_chat_user_message(body)
         if err is not None:
             return err
@@ -1522,13 +1701,15 @@ class APIServerAdapter(BasePlatformAdapter):
             conversation_history=history,
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
-            gateway_session_key=gateway_session_key,
+            gateway_session_key=identity_envelope.session_key or gateway_session_key,
+            identity_envelope=identity_envelope,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = result.get("final_response", "") if isinstance(result, dict) else ""
         headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
-        if gateway_session_key:
-            headers["X-Hermes-Session-Key"] = gateway_session_key
+        effective_session_key = identity_envelope.session_key or gateway_session_key
+        if effective_session_key:
+            headers["X-Hermes-Session-Key"] = effective_session_key
         return web.json_response(
             {
                 "object": "hermes.session.chat.completion",
@@ -1548,12 +1729,25 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
-        _, err = self._get_existing_session_or_404(session_id)
-        if err:
-            return err
         body, err = await self._read_json_body(request)
         if err:
             return err
+        identity_required = self._identity_mode_enabled()
+        identity_envelope, identity_err = self._parse_enterprise_identity(
+            body,
+            session_key=gateway_session_key or session_id,
+            required=identity_required,
+        )
+        if identity_err is not None:
+            return identity_err
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        if not self._session_authorized_for_identity(session_id, identity_envelope):
+            return web.json_response(
+                _openai_error("Session not found for the authenticated company user", code="session_not_found"),
+                status=404,
+            )
         user_message, err = _session_chat_user_message(body)
         if err is not None:
             return err
@@ -1613,7 +1807,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
-                    gateway_session_key=gateway_session_key,
+                    gateway_session_key=identity_envelope.session_key or gateway_session_key,
+                    identity_envelope=identity_envelope,
                 )
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -1745,8 +1940,19 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
+        identity_required = self._identity_mode_enabled()
+        identity_envelope, identity_err = self._parse_enterprise_identity(
+            body,
+            session_key=gateway_session_key or "",
+            required=identity_required,
+        )
+        if identity_err is not None:
+            return identity_err
+        identity_scope = self._identity_scope(identity_envelope)
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
-        # When provided, history is loaded from state.db instead of from the request body.
+        # When provided, history is loaded from the local state.db cache
+        # instead of from the request body.
         #
         # Security: session continuation exposes conversation history, so it is
         # only allowed when the API key is configured and the request is
@@ -1774,6 +1980,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
             session_id = provided_session_id
+            if not self._session_authorized_for_identity(session_id, identity_envelope):
+                return web.json_response(
+                    _openai_error(
+                        "Session not found for the authenticated company user",
+                        code="session_not_found",
+                    ),
+                    status=404,
+                )
             try:
                 db = self._ensure_session_db()
                 if db is not None:
@@ -1791,8 +2005,27 @@ class APIServerAdapter(BasePlatformAdapter):
                 if cm.get("role") == "user":
                     first_user = cm.get("content", "")
                     break
-            session_id = _derive_chat_session_id(system_prompt, first_user)
+            session_id = _derive_chat_session_id(
+                system_prompt,
+                first_user,
+                identity_scope=identity_scope,
+            )
             # history already set from request body above
+            try:
+                self._bind_api_session_identity(
+                    session_id=session_id,
+                    session_key=identity_envelope.session_key or gateway_session_key or session_id,
+                    identity_envelope=identity_envelope,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to bind derived chat session identity for %s: %s",
+                    session_id,
+                    exc,
+                )
+                return self._identity_required_response(
+                    f"Failed to bind company identity for session {session_id}"
+                )
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
@@ -1879,7 +2112,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
-                gateway_session_key=gateway_session_key,
+                gateway_session_key=identity_envelope.session_key or gateway_session_key,
+                identity_envelope=identity_envelope,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -1898,14 +2132,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
-                gateway_session_key=gateway_session_key,
+                gateway_session_key=identity_envelope.session_key or gateway_session_key,
+                identity_envelope=identity_envelope,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            scoped_idempotency_key = (
+                f"{identity_scope}:{idempotency_key}" if identity_scope else idempotency_key
+            )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
+                result, usage = await _idem_cache.get_or_set(scoped_idempotency_key, fp, _compute_completion)
             except Exception as e:
                 logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
@@ -2169,6 +2407,7 @@ class APIServerAdapter(BasePlatformAdapter):
         store: bool,
         session_id: str,
         gateway_session_key: Optional[str] = None,
+        identity_scope: str = "",
     ) -> "web.StreamResponse":
         """Write an SSE stream for POST /v1/responses (OpenAI Responses API).
 
@@ -2277,6 +2516,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "conversation_history": conversation_history_snapshot,
                 "instructions": instructions,
                 "session_id": session_id,
+                "identity_scope": identity_scope,
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
@@ -2777,6 +3017,15 @@ class APIServerAdapter(BasePlatformAdapter):
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
+        identity_required = self._identity_mode_enabled()
+        identity_envelope, identity_err = self._parse_enterprise_identity(
+            body,
+            session_key=gateway_session_key or "",
+            required=identity_required,
+        )
+        if identity_err is not None:
+            return identity_err
+        identity_scope = self._identity_scope(identity_envelope)
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
@@ -2784,8 +3033,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Resolve conversation name to latest response_id
         if conversation:
-            previous_response_id = self._response_store.get_conversation(conversation)
+            scoped_conversation = (
+                f"{identity_scope}:{conversation}" if identity_scope else conversation
+            )
+            previous_response_id = self._response_store.get_conversation(scoped_conversation)
             # No error if conversation doesn't exist yet — it's a new conversation
+        else:
+            scoped_conversation = conversation
 
         # Normalize input to message list
         input_messages: List[Dict[str, Any]] = []
@@ -2836,6 +3090,15 @@ class APIServerAdapter(BasePlatformAdapter):
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
+            stored_identity_scope = self._identity_from_stored_response(stored)
+            if stored_identity_scope and stored_identity_scope != identity_scope:
+                return web.json_response(
+                    _openai_error(
+                        f"Previous response not found: {previous_response_id}",
+                        code="response_not_found",
+                    ),
+                    status=404,
+                )
             conversation_history = list(stored.get("conversation_history", []))
             stored_session_id = stored.get("session_id")
             # If no instructions provided, carry forward from previous
@@ -2911,7 +3174,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
-                gateway_session_key=gateway_session_key,
+                gateway_session_key=identity_envelope.session_key or gateway_session_key,
+                identity_envelope=identity_envelope,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2932,10 +3196,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 user_message=user_message,
                 instructions=instructions,
-                conversation=conversation,
+                conversation=scoped_conversation,
                 store=store,
                 session_id=session_id,
-                gateway_session_key=gateway_session_key,
+                gateway_session_key=identity_envelope.session_key or gateway_session_key,
+                identity_scope=identity_scope,
+                # company identity remains in the bound session context; the
+                # streaming writer only needs the scoped session key above.
             )
 
         async def _compute_response():
@@ -2944,7 +3211,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
-                gateway_session_key=gateway_session_key,
+                gateway_session_key=identity_envelope.session_key or gateway_session_key,
+                identity_envelope=identity_envelope,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2953,8 +3221,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 body,
                 keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
             )
+            scoped_idempotency_key = (
+                f"{identity_scope}:{idempotency_key}" if identity_scope else idempotency_key
+            )
             try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
+                result, usage = await _idem_cache.get_or_set(scoped_idempotency_key, fp, _compute_response)
             except Exception as e:
                 logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
@@ -3018,15 +3289,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 "conversation_history": full_history,
                 "instructions": instructions,
                 "session_id": session_id,
+                "identity_scope": identity_scope,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
-            if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+        if conversation:
+            self._response_store.set_conversation(
+                scoped_conversation,
+                response_id,
+            )
 
         response_headers = {"X-Hermes-Session-Id": session_id}
-        if gateway_session_key:
-            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        effective_session_key = identity_envelope.session_key or gateway_session_key
+        if effective_session_key:
+            response_headers["X-Hermes-Session-Key"] = effective_session_key
         return web.json_response(response_data, headers=response_headers)
 
     # ------------------------------------------------------------------
@@ -3447,6 +3723,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        identity_envelope: Any = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3462,35 +3739,72 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         def _run():
-            agent = self._create_agent(
-                ephemeral_system_prompt=ephemeral_system_prompt,
-                session_id=session_id,
-                stream_delta_callback=stream_delta_callback,
-                tool_progress_callback=tool_progress_callback,
-                tool_start_callback=tool_start_callback,
-                tool_complete_callback=tool_complete_callback,
-                gateway_session_key=gateway_session_key,
+            from gateway.session_context import clear_session_vars, set_session_vars
+
+            effective_session_key = (
+                str(getattr(identity_envelope, "session_key", "") or "")
+                or gateway_session_key
+                or session_id
+                or str(uuid.uuid4())
             )
-            if agent_ref is not None:
-                agent_ref[0] = agent
-            effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
+            session_tokens = set_session_vars(
+                session_key=effective_session_key,
+                company_id=str(getattr(identity_envelope, "company_id", "") or ""),
+                company_user_id=str(
+                    getattr(identity_envelope, "company_user_id", "") or ""
+                ),
+                channel_identity_id=str(
+                    getattr(identity_envelope, "channel_identity_id", "") or ""
+                ),
+                company_role=str(getattr(identity_envelope, "company_role", "") or ""),
+                department_id=str(
+                    getattr(identity_envelope, "department_id", "") or ""
+                ),
             )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
-            # Include the effective session ID in the result so callers
-            # (e.g. X-Hermes-Session-Id header) can track compression-
-            # triggered session rotations. (#16938)
-            _eff_sid = getattr(agent, "session_id", session_id)
-            if isinstance(_eff_sid, str) and _eff_sid:
-                result["session_id"] = _eff_sid
-            return result, usage
+            try:
+                effective_task_id = session_id or str(uuid.uuid4())
+                if (
+                    identity_envelope is not None
+                    and getattr(identity_envelope, "company_id", "")
+                    and getattr(identity_envelope, "company_user_id", "")
+                    and getattr(identity_envelope, "channel_identity_id", "")
+                ):
+                    self._bind_api_session_identity(
+                        session_id=effective_task_id,
+                        session_key=effective_session_key,
+                        identity_envelope=identity_envelope,
+                    )
+                agent = self._create_agent(
+                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=stream_delta_callback,
+                    tool_progress_callback=tool_progress_callback,
+                    tool_start_callback=tool_start_callback,
+                    tool_complete_callback=tool_complete_callback,
+                    gateway_session_key=effective_session_key,
+                )
+                if agent_ref is not None:
+                    agent_ref[0] = agent
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0)
+                    or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+                # Include the effective session ID in the result so callers
+                # (e.g. X-Hermes-Session-Id header) can track compression-
+                # triggered session rotations. (#16938)
+                _eff_sid = getattr(agent, "session_id", session_id)
+                if isinstance(_eff_sid, str) and _eff_sid:
+                    result["session_id"] = _eff_sid
+                return result, usage
+            finally:
+                clear_session_vars(session_tokens)
 
         return await loop.run_in_executor(None, _run)
 
@@ -3517,6 +3831,116 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    def _get_runtime_history_writer(self):
+        """Return the enterprise runtime history writer, or None in local mode."""
+        from enterprise.config import EnterprisePostgresConfig
+
+        config = EnterprisePostgresConfig.from_env()
+        if not config.enabled:
+            return None
+        if self._runtime_history_writer is not None:
+            return self._runtime_history_writer
+        if not config.database_url:
+            raise RuntimeError("Enterprise runtime history is enabled but no database URL is configured")
+
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Enterprise runtime history requires installing hermes-agent[enterprise]"
+            ) from exc
+
+        from enterprise.runtime_repository import EnterpriseRuntimeHistoryWriter
+
+        connection = psycopg.connect(
+            config.database_url,
+            autocommit=True,
+            row_factory=dict_row,
+        )
+        self._runtime_history_writer = EnterpriseRuntimeHistoryWriter(connection)
+        return self._runtime_history_writer
+
+    def _schedule_runtime_history_write(self, run_id: str, runtime_event: Any) -> None:
+        writer = self._runtime_history_writer
+        context = self._run_contexts.get(run_id)
+        loop = self._run_loops.get(run_id)
+        if writer is None or context is None or loop is None or not loop.is_running():
+            return
+
+        def _write() -> None:
+            writer.record_event(context, runtime_event)
+
+        def _submit() -> None:
+            future = loop.run_in_executor(None, _write)
+
+            def _done(done_future) -> None:
+                try:
+                    done_future.result()
+                except Exception as exc:
+                    self._runtime_history_write_errors[run_id] = str(exc)
+                    logger.exception(
+                        "[api_server] runtime history write failed for run %s",
+                        run_id,
+                    )
+
+            future.add_done_callback(_done)
+
+        loop.call_soon_threadsafe(_submit)
+
+    def _record_runtime_event(self, run_id: str, event: Dict[str, Any]) -> None:
+        """Normalize an emitted run event for canonical runtime persistence."""
+        normalizer = self._run_event_normalizers.get(run_id)
+        if normalizer is None:
+            return
+        try:
+            lock = self._run_event_locks.get(run_id)
+            if lock is None:
+                runtime_event = normalizer.normalize(event)
+                self._run_runtime_events.setdefault(run_id, []).append(runtime_event.as_dict())
+            else:
+                with lock:
+                    runtime_event = normalizer.normalize(event)
+                    self._run_runtime_events.setdefault(run_id, []).append(runtime_event.as_dict())
+            self._schedule_runtime_history_write(run_id, runtime_event)
+        except Exception:
+            logger.debug("[api_server] failed to normalize run event", exc_info=True)
+
+    @staticmethod
+    def _runtime_event_payload(runtime_event: Mapping[str, Any]) -> Dict[str, Any]:
+        raw = runtime_event.get("raw")
+        if isinstance(raw, Mapping) and raw:
+            return dict(raw)
+        return dict(runtime_event)
+
+    @staticmethod
+    def _parse_run_event_cursor(request: "web.Request") -> tuple[int, Optional["web.Response"]]:
+        raw_cursor = (
+            request.query.get("after_sequence", "").strip()
+            or request.headers.get("Last-Event-ID", "").strip()
+        )
+        if not raw_cursor:
+            return 0, None
+        try:
+            cursor = int(raw_cursor)
+        except ValueError:
+            return 0, web.json_response(
+                _openai_error(
+                    "Invalid event cursor; expected a non-negative integer sequence",
+                    code="invalid_event_cursor",
+                ),
+                status=400,
+            )
+        if cursor < 0:
+            return 0, web.json_response(
+                _openai_error(
+                    "Invalid event cursor; expected a non-negative integer sequence",
+                    code="invalid_event_cursor",
+                ),
+                status=400,
+            )
+        return cursor, None
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -3525,14 +3949,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_statuses.get(run_id, {}).get("status", "running"),
                 last_event=event.get("event"),
             )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
-            except Exception:
-                pass
-
+            self._record_runtime_event(run_id, event)
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
             if event_type == "tool.started":
@@ -3596,6 +4013,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+        identity_required = self._identity_mode_enabled()
+        approval_session_key = gateway_session_key or str(body.get("session_key") or body.get("sessionKey") or "")
+        identity_envelope, identity_err = self._parse_enterprise_identity(
+            body,
+            session_key=approval_session_key,
+            required=identity_required,
+        )
+        if identity_err is not None:
+            return identity_err
 
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
@@ -3643,14 +4069,114 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
-        approval_session_key = gateway_session_key or session_id or run_id
+        from enterprise.runtime_events import (
+            RuntimeEventNormalizer,
+            RuntimeIdentityContext,
+            RuntimeRunContext,
+        )
+
+        approval_session_key = (
+            str(getattr(identity_envelope, "session_key", "") or "")
+            or gateway_session_key
+            or session_id
+            or run_id
+        )
+        runtime_identity = RuntimeIdentityContext.from_envelope(identity_envelope)
+        if identity_required and (
+            not runtime_identity.company_id
+            or not runtime_identity.company_user_id
+            or not runtime_identity.channel_identity_id
+        ):
+            return self._identity_required_response(
+                "Company identity is required for this run."
+            )
+        if session_id and not self._session_authorized_for_identity(
+            str(session_id),
+            identity_envelope,
+        ):
+            try:
+                from gateway.company_identity import get_session_identity
+
+                if get_session_identity(str(session_id)):
+                    return web.json_response(
+                        _openai_error(
+                            "Session not found for the authenticated company user",
+                            code="session_not_found",
+                        ),
+                        status=404,
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to resolve session binding for run session %s",
+                    session_id,
+                    exc_info=True,
+                )
+        runtime_company_id = runtime_identity.company_id
+        runtime_session_key = approval_session_key or session_id or run_id
+        try:
+            self._bind_api_session_identity(
+                session_id=str(session_id),
+                session_key=runtime_session_key,
+                identity_envelope=identity_envelope,
+                platform="api_server",
+                chat_id=str(session_id or run_id),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to bind run session identity for %s: %s",
+                session_id,
+                exc,
+            )
+            return self._identity_required_response(
+                f"Failed to bind company identity for session {session_id}"
+            )
+        run_context = RuntimeRunContext(
+            run_id=run_id,
+            company_id=runtime_company_id,
+            department_id=runtime_identity.department_id,
+            channel="api_server",
+            channel_conversation_key=runtime_session_key,
+            raw_channel_key=session_id or runtime_session_key,
+            hermes_session_id=session_id,
+            session_key=runtime_session_key,
+            created_by_user_id=runtime_identity.company_user_id,
+            channel_identity_id=runtime_identity.channel_identity_id,
+            model_id=str(body.get("model") or self._model_name or ""),
+            system_prompt_snapshot=str(instructions or ""),
+            cwd=os.getcwd(),
+        )
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
-        self._run_streams[run_id] = q
+        self._run_streams[run_id] = True
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
+        self._run_event_normalizers[run_id] = RuntimeEventNormalizer(
+            run_id=run_id,
+            identity=runtime_identity,
+        )
+        self._run_runtime_events[run_id] = []
+        self._run_contexts[run_id] = run_context
+        self._run_event_locks[run_id] = threading.Lock()
+        self._run_loops[run_id] = loop
+        try:
+            history_writer = self._get_runtime_history_writer()
+            if history_writer is not None:
+                await loop.run_in_executor(None, history_writer.start_run, run_context)
+        except Exception as exc:
+            logger.exception("[api_server] failed to initialize runtime history for run %s", run_id)
+            self._run_streams.pop(run_id, None)
+            self._run_streams_created.pop(run_id, None)
+            self._run_approval_sessions.pop(run_id, None)
+            self._run_event_normalizers.pop(run_id, None)
+            self._run_runtime_events.pop(run_id, None)
+            self._run_contexts.pop(run_id, None)
+            self._run_event_locks.pop(run_id, None)
+            self._run_loops.pop(run_id, None)
+            return web.json_response(
+                _openai_error(f"Runtime history initialization failed: {exc}", code="runtime_history_failed"),
+                status=500,
+            )
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
@@ -3659,12 +4185,13 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, {
+                event = {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "delta": delta,
-                })
+                }
+                self._record_runtime_event(run_id, event)
             except Exception:
                 pass
 
@@ -3684,7 +4211,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
-                    gateway_session_key=gateway_session_key,
+                    gateway_session_key=runtime_session_key,
                 )
                 self._active_run_agents[run_id] = agent
 
@@ -3701,10 +4228,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "waiting_for_approval",
                         last_event="approval.request",
                     )
-                    try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
-                    except Exception:
-                        pass
+                    self._record_runtime_event(run_id, event)
 
                 def _run_sync():
                     from gateway.session_context import clear_session_vars, set_session_vars
@@ -3725,7 +4249,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         approval_token = set_current_session_key(approval_session_key)
                         session_tokens = set_session_vars(
                             platform="api_server",
-                            session_key=approval_session_key,
+                            session_key=runtime_session_key,
+                            **identity_envelope.session_vars(),
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(
@@ -3760,12 +4285,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 # block below never fires — issue #15561).
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    q.put_nowait({
+                    event = {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "error": error_msg,
-                    })
+                    }
+                    self._record_runtime_event(run_id, event)
                     self._set_run_status(
                         run_id,
                         "failed",
@@ -3774,13 +4300,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    q.put_nowait({
+                    event = {
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
                         "usage": usage,
-                    })
+                    }
+                    self._record_runtime_event(run_id, event)
                     self._set_run_status(
                         run_id,
                         "completed",
@@ -3795,11 +4322,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.cancelled",
                 )
                 try:
-                    q.put_nowait({
+                    event = {
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                    })
+                    }
+                    self._record_runtime_event(run_id, event)
                 except Exception:
                     pass
                 raise
@@ -3812,12 +4340,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.failed",
                 )
                 try:
-                    q.put_nowait({
+                    event = {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "error": str(exc),
-                    })
+                    }
+                    self._record_runtime_event(run_id, event)
                 except Exception:
                     pass
             finally:
@@ -3832,14 +4361,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     unregister_gateway_notify(approval_session_key)
                 except Exception:
                     pass
-                # Sentinel: signal SSE stream to close
-                try:
-                    q.put_nowait(None)
-                except Exception:
-                    pass
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                self._run_event_normalizers.pop(run_id, None)
+                self._run_contexts.pop(run_id, None)
+                self._run_event_locks.pop(run_id, None)
+                self._run_loops.pop(run_id, None)
 
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -3851,7 +4379,9 @@ class APIServerAdapter(BasePlatformAdapter):
             task.add_done_callback(self._background_tasks.discard)
 
         response_headers = (
-            {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
+            {"X-Hermes-Session-Key": runtime_session_key}
+            if runtime_session_key
+            else {}
         )
         return web.json_response(
             {"run_id": run_id, "status": "started"},
@@ -3881,6 +4411,9 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        after_sequence, cursor_error = self._parse_run_event_cursor(request)
+        if cursor_error is not None:
+            return cursor_error
 
         # Allow subscribing slightly before the run is registered (race condition window)
         for _ in range(20):
@@ -3889,8 +4422,6 @@ class APIServerAdapter(BasePlatformAdapter):
             await asyncio.sleep(0.05)
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
-
-        q = self._run_streams[run_id]
 
         response = web.StreamResponse(
             status=200,
@@ -3902,24 +4433,48 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         await response.prepare(request)
 
+        next_index = 0
+        if after_sequence > 0:
+            buffered_events = self._run_runtime_events.get(run_id, [])
+            while next_index < len(buffered_events):
+                try:
+                    sequence = int(buffered_events[next_index].get("sequence") or 0)
+                except (TypeError, ValueError, AttributeError):
+                    sequence = 0
+                if sequence > after_sequence:
+                    break
+                next_index += 1
+
+        last_keepalive = time.monotonic()
         try:
             while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=30.0)
-                except asyncio.TimeoutError:
-                    await response.write(b": keepalive\n\n")
-                    continue
-                if event is None:
-                    # Run finished — send final SSE comment and close
+                buffered_events = self._run_runtime_events.get(run_id, [])
+                while next_index < len(buffered_events):
+                    runtime_event = buffered_events[next_index]
+                    next_index += 1
+                    payload = self._runtime_event_payload(runtime_event)
+                    try:
+                        sequence = int(runtime_event.get("sequence") or 0)
+                    except (TypeError, ValueError, AttributeError):
+                        sequence = 0
+                    prefix = f"id: {sequence}\n" if sequence > 0 else ""
+                    wire = f"{prefix}data: {json.dumps(payload)}\n\n"
+                    await response.write(wire.encode())
+
+                status = self._run_statuses.get(run_id, {})
+                task = self._active_run_tasks.get(run_id)
+                if status.get("status") in {"completed", "failed", "cancelled"} and (
+                    task is None or task.done()
+                ):
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
-                await response.write(payload.encode())
+
+                if time.monotonic() - last_keepalive >= 30.0:
+                    await response.write(b": keepalive\n\n")
+                    last_keepalive = time.monotonic()
+                await asyncio.sleep(0.05)
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
-        finally:
-            self._run_streams.pop(run_id, None)
-            self._run_streams_created.pop(run_id, None)
 
         return response
 
@@ -3992,18 +4547,17 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         self._set_run_status(run_id, "running", last_event="approval.responded")
-        q = self._run_streams.get(run_id)
-        if q is not None:
-            try:
-                q.put_nowait({
-                    "event": "approval.responded",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "choice": choice,
-                    "resolved": resolved,
-                })
-            except Exception:
-                pass
+        try:
+            event = {
+                "event": "approval.responded",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "choice": choice,
+                "resolved": resolved,
+            }
+            self._record_runtime_event(run_id, event)
+        except Exception:
+            pass
 
         return web.json_response({
             "object": "hermes.run.approval_response",
@@ -4077,6 +4631,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
+                self._run_event_normalizers.pop(run_id, None)
+                self._run_runtime_events.pop(run_id, None)
+                self._run_contexts.pop(run_id, None)
+                self._run_event_locks.pop(run_id, None)
+                self._run_loops.pop(run_id, None)
+                self._runtime_history_write_errors.pop(run_id, None)
 
             stale_statuses = [
                 run_id

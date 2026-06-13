@@ -81,7 +81,7 @@ import PairingPage from "@/pages/PairingPage";
 import ChannelsPage from "@/pages/ChannelsPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
-import TeamMembersPage from "@/pages/TeamMembersPage";
+import EmployeesPage from "@/pages/EmployeesPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -96,6 +96,10 @@ import type { StatusResponse } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
+}
+
+function EmployeesLegacyRedirect() {
+  return <Navigate to="/employees" replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -137,7 +141,8 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/webhooks": WebhooksPage,
   "/system": SystemPage,
   "/profiles": ProfilesPage,
-  "/team": TeamMembersPage,
+  "/employees": EmployeesPage,
+  "/team": EmployeesLegacyRedirect,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -179,7 +184,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/webhooks", label: "Webhooks", icon: Webhook },
   { path: "/pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
-  { path: "/team", label: "Team", icon: Users },
+  { path: "/employees", label: "Employees", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   { path: "/system", label: "System", icon: Wrench },

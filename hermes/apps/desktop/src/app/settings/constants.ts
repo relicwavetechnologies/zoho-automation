@@ -345,24 +345,28 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'model',
     label: 'Model',
     icon: Sparkles,
+    tier: 'operator',
     keys: ['model_context_length', 'fallback_providers']
   },
   {
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
+    tier: 'employee',
     keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
   },
   {
     id: 'appearance',
     label: 'Appearance',
     icon: Palette,
+    tier: 'employee',
     keys: []
   },
   {
     id: 'workspace',
     label: 'Workspace',
     icon: Monitor,
+    tier: 'employee',
     keys: [
       'terminal.cwd',
       'code_execution.mode',
@@ -375,6 +379,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'safety',
     label: 'Safety',
     icon: Lock,
+    tier: 'operator',
     keys: [
       'approvals.mode',
       'approvals.timeout',
@@ -391,6 +396,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'memory',
     label: 'Memory & Context',
     icon: Brain,
+    tier: 'operator',
     keys: [
       'memory.memory_enabled',
       'memory.user_profile_enabled',
@@ -408,6 +414,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'voice',
     label: 'Voice',
     icon: Mic,
+    tier: 'employee',
     keys: [
       'tts.provider',
       'stt.enabled',
@@ -432,6 +439,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'advanced',
     label: 'Advanced',
     icon: Wrench,
+    tier: 'operator',
     keys: [
       'toolsets',
       'terminal.backend',
@@ -453,6 +461,15 @@ export const SECTIONS: DesktopConfigSection[] = [
     ]
   }
 ]
+
+// Config sections an employee sees in the desktop client (theme, chat, voice,
+// local workspace). Operator sections are filtered out unless the operator
+// surface is explicitly enabled.
+export const EMPLOYEE_SECTIONS: DesktopConfigSection[] = SECTIONS.filter(s => s.tier === 'employee')
+
+// The sections to surface given whether operator/control-plane settings are on.
+export const visibleSections = (operatorEnabled: boolean): DesktopConfigSection[] =>
+  operatorEnabled ? SECTIONS : EMPLOYEE_SECTIONS
 
 export interface ModeOption {
   id: ThemeMode

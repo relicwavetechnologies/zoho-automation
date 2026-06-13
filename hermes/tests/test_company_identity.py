@@ -42,6 +42,8 @@ def test_resolve_channel_identity_creates_company_user_and_session_binding(tmp_p
         assert session_identity["company_id"] == "company_emiac"
         assert session_identity["company_user_id"] == identity.company_user_id
         assert session_identity["channel_identity_id"] == identity.channel_identity_id
+        by_user = db.list_session_identities_for_company_user(identity.company_user_id)
+        assert [row["session_id"] for row in by_user] == ["session-1"]
     finally:
         db.close()
 
@@ -90,5 +92,59 @@ def test_upsert_dashboard_member_lists_only_current_company(tmp_path):
 
         rows = db.list_company_users(company_id="company_alpha")
         assert [row["email"] for row in rows] == ["alice@example.com"]
+
+        channels = db.list_channel_identities_for_company_user(alice["id"])
+        assert len(channels) == 1
+        assert channels[0]["platform"] == "lark"
+        assert channels[0]["platform_user_id"] == "ou_alice"
+        assert channels[0]["approved_source"] == "dashboard_auth"
+
+        found = db.find_dashboard_company_user(
+            provider="lark",
+            provider_user_id="ou_alice",
+            company_id="company_alpha",
+        )
+        assert found is not None
+        assert found["email"] == "alice@example.com"
+
+        company = db.get_company("company_alpha")
+        assert company is not None
+        assert company["display_name"]
+    finally:
+        db.close()
+
+
+def test_dashboard_member_updates_preserve_admin_role_and_disabled_status_on_login(tmp_path):
+    db = CompanyIdentityDB(tmp_path / "company.db")
+    try:
+        alice = db.upsert_dashboard_member(
+            provider="lark",
+            provider_user_id="ou_alice",
+            display_name="Alice Example",
+            email="alice@example.com",
+            company_id="company_alpha",
+        )
+
+        updated = db.update_company_user(
+            company_user_id=alice["id"],
+            company_id="company_alpha",
+            role="COMPANY_ADMIN",
+            status="disabled",
+        )
+        assert updated is not None
+        assert updated["role"] == "COMPANY_ADMIN"
+        assert updated["status"] == "disabled"
+
+        login_upsert = db.upsert_dashboard_member(
+            provider="lark",
+            provider_user_id="ou_alice",
+            display_name="Alice Changed",
+            email="alice@example.com",
+            company_id="company_alpha",
+        )
+
+        assert login_upsert["role"] == "COMPANY_ADMIN"
+        assert login_upsert["status"] == "disabled"
+        assert login_upsert["display_name"] == "Alice Changed"
     finally:
         db.close()

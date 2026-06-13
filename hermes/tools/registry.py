@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 _IDENTITY_CONTEXT_KWARGS = {
     "HERMES_COMPANY_ID": "company_id",
     "HERMES_COMPANY_USER_ID": "company_user_id",
+    "HERMES_SESSION_KEY": "session_key",
     "HERMES_SESSION_ID": "session_id",
     "HERMES_CHANNEL_IDENTITY_ID": "channel_identity_id",
     "HERMES_COMPANY_ROLE": "company_role",

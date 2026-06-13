@@ -19,6 +19,7 @@ const {
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
+  isOauthLoginRequiredError,
   normalizeRemoteBaseUrl,
   resolveEnvAuthMode,
   resolveAuthMode,
@@ -179,4 +180,13 @@ test('tokenPreview returns set for short tokens', () => {
 
 test('tokenPreview returns a masked suffix for long tokens', () => {
   assert.equal(tokenPreview('abcdefghijklmnop'), '...klmnop')
+})
+
+// --- isOauthLoginRequiredError ---
+
+test('isOauthLoginRequiredError detects tagged errors from main process', () => {
+  assert.equal(isOauthLoginRequiredError({ needsOauthLogin: true }), true)
+  assert.equal(isOauthLoginRequiredError({ needsOauthLogin: false }), false)
+  assert.equal(isOauthLoginRequiredError(null), false)
+  assert.equal(isOauthLoginRequiredError('sign-in required'), false)
 })

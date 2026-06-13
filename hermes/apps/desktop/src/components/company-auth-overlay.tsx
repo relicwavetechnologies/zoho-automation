@@ -50,8 +50,8 @@ export function CompanyAuthOverlay() {
   const isLark = auth.brand === 'lark'
   const title = isLark ? 'Sign in with Lark' : 'Company sign-in required'
   const subtitle = isLark
-    ? 'Use your company Lark account to continue to Hermes.'
-    : 'Sign in with your company account before using this Hermes workspace.'
+    ? 'Use your company Lark account in your default browser to continue to Hermes.'
+    : 'Sign in with your company account in your default browser before using this Hermes workspace.'
   const primaryLabel = isLark ? larkButtonLabel(auth.providerLabel) : `Continue with ${auth.providerLabel}`
 
   const signIn = async () => {

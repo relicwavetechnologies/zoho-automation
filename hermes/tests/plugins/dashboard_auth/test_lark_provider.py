@@ -70,6 +70,19 @@ class TestRegister:
         assert isinstance(provider, lark_plugin.LarkDashboardAuthProvider)
         assert provider._app_id == "cli_shared"
 
+    def test_register_expands_dashboard_env_references(self, monkeypatch):
+        monkeypatch.setenv("LARK_APP_ID", "cli_resolved")
+        monkeypatch.setenv("LARK_APP_SECRET", "resolved_secret")
+        monkeypatch.setenv("HERMES_DASHBOARD_LARK_APP_ID", "$LARK_APP_ID")
+        monkeypatch.setenv("HERMES_DASHBOARD_LARK_APP_SECRET", "${LARK_APP_SECRET}")
+        ctx = MagicMock()
+
+        lark_plugin.register(ctx)
+
+        ctx.register_dashboard_auth_provider.assert_called_once()
+        provider = ctx.register_dashboard_auth_provider.call_args.args[0]
+        assert provider._app_id == "cli_resolved"
+
 
 class TestLoginFlow:
     def test_start_login_builds_lark_authorize_url(self):

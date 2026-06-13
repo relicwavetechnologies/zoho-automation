@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Divo — Architecture</title>
+  <title>Divo on Hermes — Architecture</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -23,17 +23,17 @@
 
     <div class="phead">
       <div class="eyebrow">Under the hood</div>
-      <h1>One brain. <span class="accent">Channel-agnostic.</span> Tool-pluggable.</h1>
+      <h1>One Hermes runtime. <span class="accent">One architecture.</span> Every channel, every domain.</h1>
       <p class="lede">
-        Divo is a single orchestration engine fronted by interchangeable channels and backed by a registry of tools.
-        A LangGraph supervisor plans; a <code>call_tool</code> meta-tool dispatches; specialist agents execute; a status
-        channel streams every step back to whichever surface asked. Here's the real shape.
+        We are re-positioning Divo as a company-wide execution platform: one normalized request path from Lark, Desktop, and
+        Admin; one tool registry for every integration; and RBAC checks at dispatch time for safe multi-team operations.
+        One model, one planning loop, one status channel.
       </p>
     </div>
 
     <!-- the diagram -->
     <div class="section">
-      <div class="section-label">The request path <span class="ln"></span></div>
+      <div class="section-label">How the Hermes architecture routes every request <span class="ln"></span></div>
       <div class="arch">
         <div class="arch-row">
           <div class="arch-box"><h5>Lark webhook</h5><p>messaging · group-aware</p></div>
@@ -56,13 +56,19 @@
           <div class="arch-box"><h5>Orchestration</h5><p>schedule · memory</p></div>
         </div>
       </div>
-      <div class="callout accent" style="margin-top:16px;"><b>Unified brain.</b> The model never calls tools directly — it calls one meta-tool, <code>call_tool</code>, which looks up the registry, enforces permissions, runs the approval gate, and dispatches by <code>toolId</code>. Adding a tool (Ahrefs, WordPress) is registering it — not rewiring the graph.</div>
+      <div class="callout accent" style="margin-top:16px;"><b>Unified brain.</b> The model never calls tools directly — it calls
+      one meta-tool, <code>call_tool</code>, which looks up the registry, enforces permissions, runs the approval gate, and
+      dispatches by <code>toolId</code>. This is the migration principle: adding Ahrefs, WordPress, or terminal tooling is
+      a registry update, not a graph rewrite.</div>
     </div>
 
     <!-- add a capability -->
     <div class="section">
       <div class="section-label">Add a new domain — in three steps <span class="ln"></span></div>
-      <p class="section-sub">Divo grows by <b>adding tools and skills</b>, never by re-architecting. Describe what a system can do, teach Divo when to reach for it, register it — and the brain can do that job.</p>
+      <p class="section-sub">
+        <b>Growth pattern.</b> The architecture is built for velocity: add integration shape, teach intent in one skill, then
+        register it. No core loop changes. No rewrite. This is what makes <b>channel parity in one week</b> realistic.
+      </p>
       <div class="flow">
         <div class="flow-step"><div class="flow-num">1</div><h4>Make a tool</h4><p>A typed interface over the API — <code>list · create · update</code>. Zod-validated in, structured out.</p></div>
         <div class="flow-arrow">→</div>
@@ -89,13 +95,15 @@ skills.<span class="fn">load</span>(<span class="s">'airtable-ops'</span>)      
 <span class="c">// 3 · done — call_tool can now run Airtable jobs</span></pre>
         </div>
       </div>
-      <div class="callout green" style="margin-top:16px;"><b>That's the whole loop.</b> A new domain — Airtable, WordPress, a payments rail — goes from idea to “Divo can do that job” in hours, because every tool plugs into the same brain through <code>call_tool</code>.</div>
+      <div class="callout green" style="margin-top:16px;"><b>That's the loop.</b> A new domain — Airtable, WordPress, a payments rail — moves from idea to execution in days, because all tools connect through the same <code>call_tool</code> contract and RBAC policy chain.</div>
     </div>
 
     <!-- streaming -->
     <div class="section">
-      <div class="section-label">How a step reaches your screen <span class="ln"></span></div>
-      <p class="section-sub">The supervisor streams the model's <b>fullStream</b>; each chunk becomes a status event, forwarded over the desktop WebSocket and rendered as a timeline row — live, in order.</p>
+      <div class="section-label">Streaming contract across channels <span class="ln"></span></div>
+      <p class="section-sub">The supervisor streams the model's <b>fullStream</b>; each chunk becomes a status event, then
+      becomes the same user-facing timeline in desktop, Lark, or any future channel. Hermes gives us one event contract for
+      one company experience.</p>
       <div class="flow">
         <div class="flow-step"><div class="flow-num">1</div><h4>supervisor-think</h4><p>streamText fullStream — tool-call, tool-result, text-delta chunks.</p></div>
         <div class="flow-arrow">→</div>
@@ -110,7 +118,7 @@ skills.<span class="fn">load</span>(<span class="s">'airtable-ops'</span>)      
     <!-- tool families -->
     <div class="section">
       <div class="section-label">The tool families behind the brain <span class="ln"></span></div>
-      <p class="section-sub"><span style="color:var(--green)">●</span> read+write · <span style="color:var(--accent)">●</span> read-only · all behind one registry, each governed by RBAC (terminal is local-only and always-on).</p>
+      <p class="section-sub"><span style="color:var(--green)">●</span> read+write · <span style="color:var(--accent)">●</span> read-only · all behind one registry, each governed by RBAC. Company context is threaded into every dispatch; terminal remains local-only and always-on.</p>
       <div class="fam">
         <div class="f"><div class="fh"><span class="fi">🗂️</span> Zoho</div><div class="ft"><span class="rw">zoho.crm</span> · <span class="rw">zoho.books</span><br/>deals · invoices · payments<br/>script-mode analysis · CSV export</div></div>
         <div class="f"><div class="fh"><span class="fi">✉️</span> Google</div><div class="ft"><span class="rw">gmail</span> · <span class="rw">gcal</span> · <span class="rw">gdrive</span><br/>triage · send · schedule<br/>6 Divo email templates</div></div>
@@ -123,6 +131,7 @@ skills.<span class="fn">load</span>(<span class="s">'airtable-ops'</span>)      
 
     <!-- layering + memory -->
     <div class="section">
+      <div class="section-label">Governance and reliability layer <span class="ln"></span></div>
       <div class="grid-2">
         <div class="card">
           <h3>Clean layering · enforced</h3>
@@ -146,6 +155,7 @@ skills.<span class="fn">load</span>(<span class="s">'airtable-ops'</span>)      
             <li><b>Scheduled workflows</b> — timezone-aware briefings that run the same engine on a timer.</li>
             <li><b>HITL approval gates</b> — pause / resume on LangGraph checkpoints.</li>
           </ul></div>
+          <div class="callout accent" style="margin-top:14px;"><b>Ops confidence layer.</b> Context, approvals, and auditability are part of the same run path — this is what lets Divo serve one company with different roles safely.</div>
         </div>
       </div>
     </div>
@@ -168,11 +178,14 @@ skills.<span class="fn">load</span>(<span class="s">'airtable-ops'</span>)      
           </tbody>
         </table>
       </div>
+      <div class="callout green" style="margin-top:16px;"><b>Execution plan fit.</b> Week 1 makes this architecture the
+      shared runtime for Lark + Desktop + Admin. The next 2 months focus on native usage loops and adoption by teams who
+      execute daily on desktop and in channel context.</div>
     </div>
 
     <div class="foot">
-      <span>Divo · architecture</span>
-      <span>One engine · channel-agnostic · tool-pluggable</span>
+      <span>Divo on Hermes · architecture</span>
+      <span>One engine · RBAC-first · company-ready channel parity</span>
     </div>
   </main>
   <script src="deck.js"></script>

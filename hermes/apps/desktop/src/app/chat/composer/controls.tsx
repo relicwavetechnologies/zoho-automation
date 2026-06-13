@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import type { ChatBarState, VoiceStatus } from './types'
 
-export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-md'
+export const ICON_BTN = 'size-(--composer-control-size) shrink-0 rounded-full'
 export const GHOST_ICON_BTN = cn(
   ICON_BTN,
   'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'

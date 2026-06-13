@@ -42,7 +42,13 @@ def test_set_session_env_sets_contextvars(monkeypatch):
         user_name="alice",
         thread_id="17585",
     )
-    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        company_role="member",
+        department_id="dept_support",
+    )
 
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
@@ -60,6 +66,8 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+    assert get_session_env("HERMES_COMPANY_ROLE") == "member"
+    assert get_session_env("HERMES_DEPARTMENT_ID") == "dept_support"
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
@@ -104,6 +112,8 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == ""
     assert get_session_env("HERMES_SESSION_USER_NAME") == ""
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
+    assert get_session_env("HERMES_COMPANY_ROLE") == ""
+    assert get_session_env("HERMES_DEPARTMENT_ID") == ""
 
 
 def test_get_session_env_falls_back_to_os_environ(monkeypatch):

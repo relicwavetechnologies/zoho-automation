@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, FileText, Loader2, RefreshCw, Settings } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
+import { $companyAuth } from '@/store/company-auth'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 type BusyAction = 'configure' | 'retry' | null
@@ -13,12 +14,13 @@ type BusyAction = 'configure' | 'retry' | null
 // with no way to retry, configure the Hermes gateway, or find the logs.
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
+  const companyAuth = useStore($companyAuth)
   const onboarding = useStore($desktopOnboarding)
   const [busy, setBusy] = useState<BusyAction>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
 
-  const visible = Boolean(boot.error) && !boot.running
+  const visible = Boolean(boot.error) && !boot.running && !companyAuth.visible
   // While first-run onboarding owns the picker/flow we let it surface its own
   // progress; the recovery overlay is for hard failures, which it covers via a
   // higher z-index regardless of onboarding state.

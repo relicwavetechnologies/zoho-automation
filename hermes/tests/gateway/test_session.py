@@ -99,6 +99,150 @@ class TestSessionSourceRoundtrip:
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
 
 
+class TestCompanyIdentityBinding:
+    def test_session_store_binds_company_identity(self, tmp_path, monkeypatch):
+        import hermes_state
+        from company_identity import CompanyIdentityDB
+        from gateway import company_identity as gateway_company_identity
+
+        monkeypatch.delenv("HERMES_ENTERPRISE_DATABASE_URL", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.delenv("HERMES_ENTERPRISE_POSTGRES", raising=False)
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        identity_db = CompanyIdentityDB(tmp_path / "company.db")
+        monkeypatch.setattr(gateway_company_identity, "_identity_db", identity_db)
+
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+            user_id="67890",
+            user_name="Alice",
+        )
+
+        try:
+            entry = store.get_or_create_session(source)
+
+            assert entry.company_id == "company_default"
+            assert entry.company_user_id
+            assert entry.channel_identity_id
+
+            session_identity = identity_db.get_session_identity(entry.session_id)
+            assert session_identity is not None
+            assert session_identity["session_key"] == entry.session_key
+            assert session_identity["company_id"] == "company_default"
+            assert session_identity["company_user_id"] == entry.company_user_id
+        finally:
+            identity_db.close()
+
+    def test_enterprise_session_binding_uses_postgres_store_without_company_db(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_state
+        from enterprise.identity_repository import ResolvedCompanyIdentity
+        from gateway import company_identity as gateway_company_identity
+
+        class FakeEnterpriseStore:
+            def __init__(self):
+                self.bind_calls = []
+
+            def resolve_channel_identity(self, **kwargs):
+                assert kwargs["platform"] == "feishu"
+                return ResolvedCompanyIdentity(
+                    company_id="company_1",
+                    company_user_id="cu_1",
+                    channel_identity_id="ci_1",
+                    identity_key="user:ou_1",
+                    company_role="ADMIN",
+                    department_id="dept_1",
+                )
+
+            def bind_session_identity(self, **kwargs):
+                self.bind_calls.append(kwargs)
+
+        monkeypatch.setenv("HERMES_ENTERPRISE_DATABASE_URL", "postgresql://enterprise")
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        fake_store = FakeEnterpriseStore()
+        monkeypatch.setattr(gateway_company_identity, "_enterprise_identity_store", fake_store)
+        monkeypatch.setattr(gateway_company_identity, "_identity_db", None)
+
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="chat_1",
+            chat_type="dm",
+            user_id="ou_1",
+            user_name="Alice",
+        )
+
+        entry = store.get_or_create_session(source)
+
+        assert entry.company_id == "company_1"
+        assert entry.company_user_id == "cu_1"
+        assert entry.channel_identity_id == "ci_1"
+        assert entry.company_role == "ADMIN"
+        assert entry.department_id == "dept_1"
+        assert fake_store.bind_calls[0]["session_id"] == entry.session_id
+        assert not (tmp_path / "company.db").exists()
+
+    def test_enterprise_session_binding_does_not_fall_back_to_company_db(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_state
+        from gateway import company_identity as gateway_company_identity
+
+        class FailingEnterpriseStore:
+            def resolve_channel_identity(self, **kwargs):
+                raise RuntimeError("postgres unavailable")
+
+        monkeypatch.setenv("HERMES_ENTERPRISE_DATABASE_URL", "postgresql://enterprise")
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        monkeypatch.setattr(
+            gateway_company_identity,
+            "_enterprise_identity_store",
+            FailingEnterpriseStore(),
+        )
+        monkeypatch.setattr(gateway_company_identity, "_identity_db", None)
+
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        source = SessionSource(platform=Platform.FEISHU, chat_id="chat_1", user_id="ou_1")
+
+        with pytest.raises(RuntimeError, match="postgres unavailable"):
+            store.get_or_create_session(source)
+        assert not (tmp_path / "company.db").exists()
+
+    def test_session_context_exposes_company_identity(self):
+        from gateway.session_context import (
+            clear_session_vars,
+            get_session_env,
+            set_session_vars,
+        )
+
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id="12345",
+            user_id="67890",
+            session_key="agent:main:telegram:dm:12345",
+            company_id="company_default",
+            company_user_id="cu_123",
+            channel_identity_id="ci_456",
+            company_role="admin",
+            department_id="dept_finance",
+        )
+        try:
+            assert get_session_env("HERMES_COMPANY_ID") == "company_default"
+            assert get_session_env("HERMES_COMPANY_USER_ID") == "cu_123"
+            assert get_session_env("HERMES_CHANNEL_IDENTITY_ID") == "ci_456"
+            assert get_session_env("HERMES_COMPANY_ROLE") == "admin"
+            assert get_session_env("HERMES_DEPARTMENT_ID") == "dept_finance"
+        finally:
+            clear_session_vars(tokens)
+
+
 class TestSessionSourceDescription:
     def test_local_cli(self):
         source = SessionSource(

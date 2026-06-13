@@ -28,7 +28,8 @@ interface HermesSyntaxHighlighterProps extends SyntaxHighlighterProps {
   defer?: boolean
 }
 
-const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
+// VS Code's own themes so code highlighting matches the Cursor/VS Code editor.
+const SHIKI_THEME = { dark: 'dark-plus', light: 'light-plus' } as const
 
 /**
  * `github-light-default` colors comments `#6e7781` (~4.2:1 against the code

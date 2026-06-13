@@ -16,10 +16,13 @@ The routes:
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from typing import Any, Deque, Dict, Tuple
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -49,6 +52,51 @@ from hermes_cli.dashboard_auth.login_page import render_login_html
 _log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+_DESKTOP_LOGIN_TTL_SEC = 5 * 60
+
+
+@dataclass
+class _DesktopLoginState:
+    poll_secret: str
+    expires_at: float
+    access_token: str = ""
+    refresh_token: str = ""
+    session_expires_at: int = 0
+    completed: bool = False
+
+
+_desktop_login_states: dict[str, _DesktopLoginState] = {}
+_desktop_login_lock = threading.Lock()
+
+
+def _prune_desktop_login_states(now: float | None = None) -> None:
+    cutoff = now if now is not None else time.time()
+    expired = [
+        request_id
+        for request_id, state in _desktop_login_states.items()
+        if state.expires_at <= cutoff
+    ]
+    for request_id in expired:
+        _desktop_login_states.pop(request_id, None)
+
+
+def _absolute_dashboard_url(request: Request, path: str) -> str:
+    """Build an absolute URL to a dashboard path for external browsers."""
+    from hermes_cli.dashboard_auth.prefix import (
+        prefix_from_request,
+        resolve_public_url,
+    )
+
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    public_url = resolve_public_url()
+    if public_url:
+        return f"{public_url}{normalized_path}"
+
+    base = str(request.base_url).rstrip("/")
+    prefix = prefix_from_request(request)
+    return f"{base}{prefix}{normalized_path}"
 
 
 def _redirect_uri(request: Request) -> str:
@@ -168,6 +216,190 @@ async def api_auth_providers() -> Any:
             for p in providers
         ],
     }
+
+
+class _DesktopLoginStartBody(BaseModel):
+    provider: str = ""
+
+
+class _DesktopLoginExchangeBody(BaseModel):
+    request_id: str
+    poll_secret: str
+
+
+@router.post("/api/auth/desktop-login/start", name="desktop_login_start")
+async def api_desktop_login_start(
+    request: Request,
+    body: _DesktopLoginStartBody | None = None,
+):
+    """Start a system-browser login for the desktop app.
+
+    The system browser owns the Lark/Google cookies, while Electron owns the
+    desktop's HttpOnly Hermes session cookies. This endpoint creates a
+    short-lived handoff id so the browser can complete login and the desktop
+    can later claim the resulting Hermes session through
+    ``/api/auth/desktop-login/exchange``.
+    """
+    providers = list_providers()
+    if not providers:
+        return JSONResponse(
+            {"detail": "no auth providers registered"},
+            status_code=503,
+        )
+
+    requested_provider = (body.provider if body else "").strip()
+    provider = (
+        get_provider(requested_provider)
+        if requested_provider
+        else providers[0]
+    )
+    if provider is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown provider: {requested_provider!r}",
+        )
+
+    request_id = secrets.token_urlsafe(32)
+    poll_secret = secrets.token_urlsafe(32)
+    expires_at = time.time() + _DESKTOP_LOGIN_TTL_SEC
+
+    with _desktop_login_lock:
+        _prune_desktop_login_states()
+        _desktop_login_states[request_id] = _DesktopLoginState(
+            poll_secret=poll_secret,
+            expires_at=expires_at,
+        )
+
+    complete_path = (
+        f"/desktop-auth/complete?request_id={quote(request_id, safe='')}"
+    )
+    login_path = (
+        f"/auth/login?provider={quote(provider.name, safe='')}"
+        f"&next={quote(complete_path, safe='')}"
+    )
+
+    return {
+        "request_id": request_id,
+        "poll_secret": poll_secret,
+        "expires_at": int(expires_at),
+        "login_url": _absolute_dashboard_url(request, login_path),
+    }
+
+
+@router.get("/desktop-auth/complete", name="desktop_login_complete")
+async def desktop_login_complete(
+    request: Request,
+    request_id: str = "",
+):
+    """Browser landing page after OAuth; captures the session for desktop."""
+    if not request_id:
+        raise HTTPException(status_code=400, detail="Missing request_id")
+
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    access_token, refresh_token = read_session_cookies(request)
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Missing session cookie")
+
+    with _desktop_login_lock:
+        _prune_desktop_login_states()
+        state = _desktop_login_states.get(request_id)
+        if state is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Desktop login request expired or not found",
+            )
+        state.access_token = access_token
+        state.refresh_token = refresh_token or ""
+        state.session_expires_at = sess.expires_at
+        state.completed = True
+
+    return HTMLResponse(
+        """
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hermes sign-in complete</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f7f8fb;
+        color: #111827;
+      }
+      main {
+        width: min(28rem, calc(100vw - 2rem));
+        border: 1px solid #d8deea;
+        border-radius: 24px;
+        background: white;
+        padding: 32px;
+        box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+      }
+      h1 { margin: 0 0 12px; font-size: 24px; letter-spacing: -0.02em; }
+      p { margin: 0; color: #667085; line-height: 1.6; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Sign-in complete</h1>
+      <p>You can return to Hermes Desktop. This browser tab can be closed.</p>
+    </main>
+  </body>
+</html>
+        """,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+@router.post("/api/auth/desktop-login/exchange", name="desktop_login_exchange")
+async def api_desktop_login_exchange(
+    request: Request,
+    body: _DesktopLoginExchangeBody,
+):
+    """Claim a completed system-browser login from Electron.
+
+    The response sets the same Hermes session cookies onto Electron's OAuth
+    partition. The token values are never placed in the JSON body.
+    """
+    with _desktop_login_lock:
+        _prune_desktop_login_states()
+        state = _desktop_login_states.get(body.request_id)
+        if state is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Desktop login request expired or not found",
+            )
+        if not secrets.compare_digest(state.poll_secret, body.poll_secret):
+            raise HTTPException(status_code=403, detail="Invalid poll secret")
+        if not state.completed:
+            return JSONResponse({"status": "pending"}, status_code=202)
+
+        access_token = state.access_token
+        refresh_token = state.refresh_token
+        session_expires_at = state.session_expires_at
+        _desktop_login_states.pop(body.request_id, None)
+
+    if not access_token:
+        raise HTTPException(status_code=409, detail="Desktop login incomplete")
+
+    expires_in = max(60, session_expires_at - int(time.time()))
+    resp = JSONResponse({"status": "complete"})
+    set_session_cookies(
+        resp,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        access_token_expires_in=expires_in,
+        use_https=detect_https(request),
+        prefix=_prefix(request),
+    )
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +633,7 @@ def _sync_company_member(session) -> None:
     from gateway.company_identity import upsert_dashboard_member
 
     try:
-        upsert_dashboard_member(
+        row = upsert_dashboard_member(
             provider=session.provider,
             provider_user_id=session.user_id,
             display_name=session.display_name or None,
@@ -412,6 +644,13 @@ def _sync_company_member(session) -> None:
             status_code=503,
             detail=f"Failed to persist authenticated employee: {exc}",
         ) from exc
+
+    status = str((row or {}).get("status") or "active").strip().lower()
+    if status in {"disabled", "inactive", "suspended"}:
+        raise HTTPException(
+            status_code=403,
+            detail="This employee account is disabled.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +877,12 @@ async def api_auth_ws_ticket(request: Request):
     # don't load the ticket store.
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
 
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
+    ticket = mint_ticket(
+        user_id=sess.user_id,
+        provider=sess.provider,
+        email=sess.email or "",
+        display_name=sess.display_name or "",
+    )
     audit_log(
         AuditEvent.WS_TICKET_MINTED,
         provider=sess.provider,

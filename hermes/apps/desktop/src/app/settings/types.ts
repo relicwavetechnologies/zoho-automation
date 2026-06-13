@@ -26,6 +26,11 @@ export interface DesktopConfigSection {
   label: string
   icon: IconComponent
   keys: string[]
+  // 'employee' sections are personal/local prefs shown in the desktop client.
+  // 'operator' sections (model/provider, safety/governance, advanced, memory)
+  // are owned by the admin web console and hidden unless
+  // DESKTOP_OPERATOR_SETTINGS_ENABLED is on.
+  tier: 'employee' | 'operator'
 }
 
 export interface EnvRowProps {

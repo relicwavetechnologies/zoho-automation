@@ -701,7 +701,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
     )
     monkeypatch.setattr(
-        server, "_init_session", lambda sid, key, agent, history, cols=80: None
+        server,
+        "_init_session",
+        lambda sid, key, agent, history, cols=80, company_identity=None: None,
     )
 
     resp = server.handle_request(
@@ -3766,6 +3768,112 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     assert "state.db unavailable: locking protocol" in resp["error"]["message"]
 
 
+def test_session_create_binds_authenticated_company_identity(monkeypatch):
+    captured = {}
+    company_identity = {
+        "company_id": "company_1",
+        "company_user_id": "cu_alice",
+        "channel_identity_id": "ci_alice",
+        "company_role": "ADMIN",
+        "department_id": "dept_ops",
+    }
+
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        server.threading,
+        "Timer",
+        lambda *a, **k: types.SimpleNamespace(daemon=False, start=lambda: None),
+    )
+    monkeypatch.setattr(
+        server,
+        "_resolve_transport_company_identity",
+        lambda *a, **kw: dict(company_identity),
+    )
+    monkeypatch.setattr(
+        server,
+        "_bind_live_session_company_identity",
+        lambda session, session_key=None, platform="tui": captured.update(
+            {
+                "session_key": session_key,
+                "platform": platform,
+                "company_identity": dict(session.get("company_identity") or {}),
+            }
+        ),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    sid = resp["result"]["session_id"]
+    try:
+        stored_key = resp["result"]["stored_session_id"]
+        assert server._sessions[sid]["company_identity"] == company_identity
+        assert captured == {
+            "session_key": stored_key,
+            "platform": "tui",
+            "company_identity": company_identity,
+        }
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_session_list_filters_rows_to_authorized_company_sessions(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, source=None, limit=0):
+            return [
+                {
+                    "id": "alice-key",
+                    "title": "Alice",
+                    "preview": "hello",
+                    "started_at": 10.0,
+                    "message_count": 1,
+                    "source": "tui",
+                },
+                {
+                    "id": "bob-key",
+                    "title": "Bob",
+                    "preview": "secret",
+                    "started_at": 11.0,
+                    "message_count": 1,
+                    "source": "tui",
+                },
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_authorized_company_session_ids", lambda transport=None: {"alice-key"}
+    )
+
+    resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
+
+    assert [row["id"] for row in resp["result"]["sessions"]] == ["alice-key"]
+
+
+def test_session_resume_rejects_other_users_session(monkeypatch):
+    class _DB:
+        def get_session(self, session_id):
+            if session_id == "bob-key":
+                return {"id": "bob-key", "title": "Bob"}
+            return None
+
+        def get_session_by_title(self, title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_authorized_company_session_ids", lambda transport=None: {"alice-key"}
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "bob-key"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4007
+    assert "session not found" in resp["error"]["message"]
+
+
 # --------------------------------------------------------------------------
 # session.delete — TUI resume picker `d` key
 # --------------------------------------------------------------------------
@@ -3913,6 +4021,24 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
     # /sessions to it.
     assert captured["sessions_dir"] is not None
     assert str(captured["sessions_dir"]).endswith("sessions")
+
+
+def test_session_delete_rejects_other_users_session(monkeypatch):
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            raise AssertionError("delete_session must not run for unauthorized ids")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_authorized_company_session_ids", lambda transport=None: {"alice-key"}
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "bob-key"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4007
 
 
 # --------------------------------------------------------------------------
@@ -4261,6 +4387,45 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
     assert rows["sid-b"]["preview"] == "writing code"
 
 
+def test_session_active_list_filters_live_sessions_to_authenticated_user(monkeypatch):
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(
+        server,
+        "_resolve_transport_company_identity",
+        lambda transport=None: {
+            "company_id": "company_1",
+            "company_user_id": "cu_alice",
+        },
+    )
+
+    server._sessions["sid-a"] = _session(
+        session_key="alice-key",
+        company_identity={
+            "company_id": "company_1",
+            "company_user_id": "cu_alice",
+            "channel_identity_id": "ci_alice",
+        },
+    )
+    server._sessions["sid-b"] = _session(
+        session_key="bob-key",
+        company_identity={
+            "company_id": "company_1",
+            "company_user_id": "cu_bob",
+            "channel_identity_id": "ci_bob",
+        },
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.active_list", "params": {}}
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    assert [row["session_key"] for row in resp["result"]["sessions"]] == ["alice-key"]
+
+
 def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):
     """Switching into a still-running live session must hydrate partial output.
 
@@ -4451,6 +4616,27 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
     )
 
     assert resp["result"]["session_id"] is None
+
+
+def test_session_most_recent_filters_to_authorized_company_sessions(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200):
+            return [
+                {"id": "bob-key", "source": "tui", "title": "Bob", "started_at": 100},
+                {"id": "alice-key", "source": "tui", "title": "Alice", "started_at": 99},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_authorized_company_session_ids", lambda transport=None: {"alice-key"}
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "alice-key"
+    assert resp["result"]["title"] == "Alice"
 
 
 # ── browser.manage ───────────────────────────────────────────────────

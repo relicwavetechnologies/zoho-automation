@@ -281,7 +281,7 @@ class EnterpriseRuntimeHistoryWriter:
                 context.session_key,
                 conversation_id,
                 context.run_id,
-                "",
+                context.channel_identity_id,
                 context.created_by_user_id,
                 context.parent_hermes_session_id,
                 context.channel,

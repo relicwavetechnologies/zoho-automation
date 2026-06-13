@@ -474,10 +474,20 @@ def _lark_subsection(oauth_section: dict[str, Any]) -> dict[str, Any]:
 
 def _resolve_setting(env_vars: tuple[str, ...], cfg_value: Any) -> str:
     for env_var in env_vars:
-        value = os.environ.get(env_var, "").strip()
+        value = _expand_env_reference(os.environ.get(env_var, "")).strip()
         if value:
             return value
-    return str(cfg_value or "").strip()
+    return _expand_env_reference(cfg_value).strip()
+
+
+def _expand_env_reference(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    expanded = os.path.expandvars(text).strip()
+    if expanded.startswith("$"):
+        return ""
+    return expanded
 
 
 def register(ctx) -> None:
@@ -533,4 +543,3 @@ def register(ctx) -> None:
 
     ctx.register_dashboard_auth_provider(provider)
     LAST_SKIP_REASON = ""
-

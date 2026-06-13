@@ -7,6 +7,7 @@
     { href: 'desktop.html',        label: 'The Desktop',  page: 'desktop' },
     { href: 'integrations.html',   label: 'Integrations', page: 'integrations' },
     { href: 'architecture.html',   label: 'Architecture', page: 'architecture' },
+    { href: 'hermes-db.html',      label: 'DB Plan',      page: 'db', dot: 'green' },
     { href: 'roadmap.html',        label: 'Roadmap',      page: 'roadmap' },
   ];
 

@@ -174,6 +174,11 @@ class SessionContext:
     # Session metadata
     session_key: str = ""
     session_id: str = ""
+    company_id: str = ""
+    company_user_id: str = ""
+    channel_identity_id: str = ""
+    company_role: str = ""
+    department_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -187,6 +192,11 @@ class SessionContext:
             "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key,
             "session_id": self.session_id,
+            "company_id": self.company_id,
+            "company_user_id": self.company_user_id,
+            "channel_identity_id": self.channel_identity_id,
+            "company_role": self.company_role,
+            "department_id": self.department_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -491,6 +501,14 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Enterprise identity metadata mirrored here so current gateway turns can
+    # expose it to tools. During migration company.db is only a local cache.
+    company_id: Optional[str] = None
+    company_user_id: Optional[str] = None
+    channel_identity_id: Optional[str] = None
+    company_role: Optional[str] = None
+    department_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -521,6 +539,11 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "company_id": self.company_id,
+            "company_user_id": self.company_user_id,
+            "channel_identity_id": self.channel_identity_id,
+            "company_role": self.company_role,
+            "department_id": self.department_id,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -573,6 +596,11 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            company_id=data.get("company_id"),
+            company_user_id=data.get("company_user_id"),
+            channel_identity_id=data.get("channel_identity_id"),
+            company_role=data.get("company_role"),
+            department_id=data.get("department_id"),
         )
 
 
@@ -669,8 +697,10 @@ class SessionStore:
     """
     Manages session storage and retrieval.
     
-    Uses SQLite (via SessionDB) for session metadata and message transcripts.
-    Falls back to legacy JSONL files if SQLite is unavailable.
+    Uses SQLite (via SessionDB) for local session metadata and message
+    transcripts. In enterprise mode, Postgres Runtime* tables are the
+    production record; this local store remains a reconstructable cache for
+    desktop/CLI resume and search UX.
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
@@ -689,6 +719,25 @@ class SessionStore:
             self._db = SessionDB()
         except Exception as e:
             print(f"[gateway] Warning: SQLite session store unavailable, falling back to JSONL: {e}")
+
+    def _bind_company_identity(self, entry: SessionEntry, source: SessionSource) -> None:
+        """Best-effort company identity binding for the active gateway session."""
+        try:
+            from gateway.company_identity import bind_session_identity, is_enterprise_identity_enabled
+
+            bind_session_identity(entry, source)
+            with self._lock:
+                if self._entries.get(entry.session_key) is entry:
+                    self._save()
+        except Exception as exc:
+            try:
+                enterprise_enabled = is_enterprise_identity_enabled()
+            except Exception:
+                enterprise_enabled = False
+            if enterprise_enabled:
+                logger.error("Enterprise company identity binding failed: %s", exc, exc_info=True)
+                raise
+            logger.debug("Company identity binding failed: %s", exc, exc_info=True)
     
     def _ensure_loaded(self) -> None:
         """Load sessions index from disk if not already loaded."""
@@ -834,10 +883,10 @@ class SessionStore:
     def has_any_sessions(self) -> bool:
         """Check if any sessions have ever been created (across all platforms).
 
-        Uses the SQLite database as the source of truth because it preserves
-        historical session records (ended sessions still count).  The in-memory
-        ``_entries`` dict replaces entries on reset, so ``len(_entries)`` would
-        stay at 1 for single-platform users — which is the bug this fixes.
+        Uses the local SQLite UX index because it preserves historical session
+        records (ended sessions still count). The in-memory ``_entries`` dict
+        replaces entries on reset, so ``len(_entries)`` would stay at 1 for
+        single-platform users — which is the bug this fixes.
 
         The current session is already in the DB by the time this is called
         (get_or_create_session runs first), so we check ``> 1``.
@@ -952,6 +1001,7 @@ class SessionStore:
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
+        self._bind_company_identity(entry, source)
         return entry
 
     def update_session(
@@ -1177,6 +1227,8 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
+        if new_entry and new_entry.origin:
+            self._bind_company_identity(new_entry, new_entry.origin)
         return new_entry
 
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
@@ -1232,6 +1284,8 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Session DB reopen_session failed: %s", e)
 
+        if new_entry and new_entry.origin:
+            self._bind_company_identity(new_entry, new_entry.origin)
         return new_entry
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
@@ -1285,8 +1339,9 @@ class SessionStore:
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
 
-        Used by /retry, /undo, and /compress to persist modified conversation
-        history. state.db is the canonical store.
+        Used by /retry, /undo, and /compress to persist modified local
+        conversation history. In enterprise mode, state.db is a cache and the
+        canonical production record lives in Postgres Runtime* tables.
         """
         if self._db:
             try:
@@ -1297,9 +1352,10 @@ class SessionStore:
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.
 
-        state.db is the canonical store. The legacy JSONL fallback was removed
-        in spec 002 — pre-DB sessions on existing disks have already been
-        migrated (their DB row holds the full message history).
+        Local Hermes UX reads state.db. In enterprise mode this is a
+        reconstructable cache; production history reads should come from the
+        Postgres Runtime* tables once the client/admin surfaces are ported.
+        The legacy JSONL fallback was removed in spec 002.
         """
         if not self._db:
             return []
@@ -1394,6 +1450,11 @@ def build_session_context(
     if session_entry:
         context.session_key = session_entry.session_key
         context.session_id = session_entry.session_id
+        context.company_id = session_entry.company_id or ""
+        context.company_user_id = session_entry.company_user_id or ""
+        context.channel_identity_id = session_entry.channel_identity_id or ""
+        context.company_role = session_entry.company_role or ""
+        context.department_id = session_entry.department_id or ""
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
     

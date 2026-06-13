@@ -336,6 +336,9 @@ export function useStatusbarItems({
       },
       {
         id: 'model-summary',
+        // Hidden: the model picker now lives inline in the composer footer
+        // (Cursor-style), so the status-bar copy would be a duplicate.
+        hidden: true,
         label: (
           <span className="inline-flex min-w-0 items-center gap-0.5">
             <span className="truncate">

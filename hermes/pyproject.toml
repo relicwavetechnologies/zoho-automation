@@ -249,6 +249,9 @@ all = [
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]
+enterprise = [
+    "psycopg[binary]==3.3.4",
+]
 
 [project.scripts]
 hermes = "hermes_cli.main:main"

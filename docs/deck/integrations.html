@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Divo — Integration roadmap</title>
+  <title>Divo on Hermes — Integration Layer</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -34,12 +34,12 @@
   <main class="page page-wide" data-page="integrations">
 
     <div class="phead">
-      <div class="eyebrow">The roadmap · built for EMIAC</div>
-      <h1>The integrations that make Divo <span class="accent">daily-indispensable</span>.</h1>
+      <div class="eyebrow">Hermes rollout plan · built for EMIAC</div>
+      <h1>The integration layer that makes Divo <span class="accent">daily-indispensable</span>.</h1>
       <p class="lede">
-        EMIAC runs on content and links — 80+ writers, a 60k-publisher database, SEO at scale. These tiers are ranked by
-        two things: <b>how often someone would touch it each day</b>, and <b>whether it's only possible because Divo is
-        now a desktop app</b>. High on both = a killer.
+        EMIAC runs on content and links — 80+ writers, a 60k-publisher database, SEO at scale. We are migrating onto
+        Hermes for company-wide channels, so each integration is ranked by <b>daily touch frequency</b> and whether it
+        becomes truly sticky with the desktop moat. High on both = a killer.
       </p>
     </div>
 
@@ -47,7 +47,7 @@
     <div class="section">
       <div class="tier">
         <div class="tier-head"><span class="tn">Tier 0 · the moat</span><h3>Native OS surface</h3><span class="pill pill-blue"><span class="pd"></span>desktop-unique</span></div>
-        <p class="tdesc">Integrations with the <b>operating system</b> — the whole reason to be a native app. These turn Divo from a destination into a reflex, and everything else rides on them.</p>
+        <p class="tdesc">Hermes-native integrations with the <b>operating system</b> are the rollout anchor. These turn Divo from a destination into a reflex, and everything else scales faster.</p>
         <div class="ilist">
           <div class="irow"><span class="ii">⌨️</span><div class="ib"><div class="it">Local terminal <span class="pill pill-green"><span class="pd"></span>shipped</span></div><div class="id">Run scripts &amp; crawlers on the user's machine, approval-gated.</div></div></div>
           <div class="irow"><span class="ii">⚡</span><div class="ib"><div class="it">Global hotkey palette <span class="pill pill-blue"><span class="pd"></span>planned</span></div><div class="id">Summon Divo from any app in &lt;1s — the stickiness primitive.</div></div></div>
@@ -59,7 +59,7 @@
       <!-- tier 1 -->
       <div class="tier">
         <div class="tier-head"><span class="tn">Tier 1 · the killer</span><h3>SEO data layer</h3><span class="star">★ highest leverage</span></div>
-        <p class="tdesc">The single highest-value missing integration. EMIAC's whole product is ranking content and authoritative links — and <b>Ahrefs is already connected</b>. This one feeds prospecting, briefs, <em>and</em> reporting at once.</p>
+        <p class="tdesc">The single highest-value integration to finish early in Week 1 of rollout. EMIAC's product is ranking content and links — and <b>Ahrefs is already connected</b>. This one powers prospecting, briefs, and reporting at once.</p>
         <div class="ilist">
           <div class="irow"><span class="ii">📈</span><div class="ib"><div class="it">Ahrefs <span class="pill pill-blue"><span class="pd"></span>next</span></div><div class="id">Rank tracker, keywords, backlinks, site audit, content gap, SERP — domain qualification, briefs, link monitoring.</div></div></div>
           <div class="irow"><span class="ii">🔎</span><div class="ib"><div class="it">Google Search Console</div><div class="id">Real client performance: clicks, queries, CTR, AI-Overview visibility.</div></div></div>
@@ -158,13 +158,17 @@
     <!-- killer combos -->
     <div class="section">
       <div class="section-label">Killer combos — the demos that drive adoption <span class="ln"></span></div>
-      <p class="section-sub">The "wow" isn't any single integration — it's Divo <b>chaining</b> them in one sentence.</p>
+      <p class="section-sub">The "wow" isn't any single integration — it's Divo <b>chaining</b> them under Hermes in one sentence.</p>
       <div class="combo"><span class="cn">A</span><div><div class="ct">New-client onboarding</div><div class="cf">CRM client created → <code>ahrefs.site_audit</code> + content-gap → keyword set → <b>briefs auto-generated into Google Docs</b> → assigned to writers in Lark → scheduled.</div></div></div>
       <div class="combo"><span class="cn">B</span><div><div class="ct">Monthly client report — one click</div><div class="cf">Ahrefs rankings/backlinks delta + GSC clicks + GA conversions → branded report → emailed &amp; posted to the client's Lark channel. Replaces hours.</div></div></div>
       <div class="combo"><span class="cn">C</span><div><div class="ct">Link-placement pipeline — end to end</div><div class="cf">Prospect (Vibe + Ahrefs DR filter) → outreach sequence (Gmail) → reply triage → <b>live-link verification (local crawl)</b> → log to CRM → payout (Stripe) + invoice (Books).</div></div></div>
       <div class="combo"><span class="cn">D</span><div><div class="ct">Writer fast-loop</div><div class="cf"><code>⌘+hotkey</code> on a selected draft → AI/plagiarism + readability + brief-compliance → fix → <b>publish to WordPress</b> → verify indexation.</div></div></div>
       <div class="combo"><span class="cn">E</span><div><div class="ct">"While you slept"</div><div class="cf">Overnight: pull Ahrefs deltas, crawl all live placements, draft today's follow-ups, build the morning digest. You open the laptop to a triaged <b>Agent Inbox</b>.</div></div></div>
     </div>
+
+    <div class="callout accent" style="margin-top:10px;"><b>Rollout cadence:</b> the one-week phase gets Hermes parity live for the team,
+    while the next 2 months harden daily behaviors (morning briefings, live-link checks, onboarding + outreach loops) so this becomes a
+    default workflow, not a demo.</div>
 
     <div class="foot">
       <span>Divo · integration roadmap for EMIAC Technologies</span>

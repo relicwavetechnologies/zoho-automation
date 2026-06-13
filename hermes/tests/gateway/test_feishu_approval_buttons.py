@@ -755,6 +755,58 @@ class TestCardActionCallbackResponse:
         mock_submit.assert_not_called()
 
 
+class TestApprovalSessionBinding:
+    """Approval must be unambiguously bound to the intended in-flight session."""
+
+    @pytest.mark.asyncio
+    async def test_approval_only_resolves_its_own_session(self):
+        """Resolving approval_id 1 must not touch session_key for approval_id 2."""
+        adapter = _make_adapter()
+        adapter._approval_state[1] = {"session_key": "sess-A", "message_id": "m1", "chat_id": "oc_1"}
+        adapter._approval_state[2] = {"session_key": "sess-B", "message_id": "m2", "chat_id": "oc_2"}
+
+        resolved = []
+        with patch(
+            "tools.approval.resolve_gateway_approval",
+            side_effect=lambda sk, _c: resolved.append(sk) or 1,
+        ):
+            await adapter._resolve_approval(1, "once", "Alice", open_id="ou_alice", chat_id="oc_1")
+
+        assert resolved == ["sess-A"]
+        assert 1 not in adapter._approval_state
+        assert 2 in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_approval_resolved_twice_second_is_noop(self):
+        """A replayed card click (double-submit) calls resolve_gateway_approval exactly once."""
+        adapter = _make_adapter()
+        adapter._approval_state[7] = {"session_key": "sess-7", "message_id": "m7", "chat_id": "oc_7"}
+
+        resolve_calls = []
+        with patch(
+            "tools.approval.resolve_gateway_approval",
+            side_effect=lambda sk, c: resolve_calls.append((sk, c)) or 1,
+        ):
+            await adapter._resolve_approval(7, "once", "Alice", open_id="ou_alice", chat_id="oc_7")
+            await adapter._resolve_approval(7, "once", "Alice", open_id="ou_alice", chat_id="oc_7")
+
+        assert len(resolve_calls) == 1
+        assert resolve_calls[0] == ("sess-7", "once")
+
+    @pytest.mark.asyncio
+    async def test_different_users_different_sessions_no_bleed(self):
+        """User B resolving their own approval does not affect User A's pending approval."""
+        adapter = _make_adapter()
+        adapter._approval_state[10] = {"session_key": "sess-user-A", "message_id": "ma", "chat_id": "oc_A"}
+        adapter._approval_state[11] = {"session_key": "sess-user-B", "message_id": "mb", "chat_id": "oc_B"}
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._resolve_approval(11, "once", "UserB", open_id="ou_B", chat_id="oc_B")
+
+        mock_resolve.assert_called_once_with("sess-user-B", "once")
+        assert 10 in adapter._approval_state
+
+
 class TestResolveUpdatePrompt:
     """Test update prompt resolution persists the response file."""
 

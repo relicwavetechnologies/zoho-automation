@@ -68,11 +68,13 @@ class WSTransport:
         loop: asyncio.AbstractEventLoop,
         *,
         peer: str = "unknown",
+        auth_identity: dict[str, Any] | None = None,
     ) -> None:
         self._ws = ws
         self._loop = loop
         self._peer = peer
         self._closed = False
+        self.auth_identity = dict(auth_identity or {})
 
     def write(self, obj: dict) -> bool:
         if self._closed:
@@ -152,7 +154,12 @@ async def handle_ws(ws: Any) -> None:
         disconnect_reason = "connected"
         _log.info("ws accepted peer=%s", peer)
 
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        transport = WSTransport(
+            ws,
+            asyncio.get_running_loop(),
+            peer=peer,
+            auth_identity=getattr(ws, "_hermes_ws_auth_info", None),
+        )
 
         ready_ok = await transport.write_async(
             {

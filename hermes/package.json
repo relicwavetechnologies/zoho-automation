@@ -10,6 +10,10 @@
     "web"
   ],
   "scripts": {
+    "dev:company": "bash scripts/dev-company.sh",
+    "dev:company:check": "bash scripts/dev-company.sh --check",
+    "dev:company:stop": "bash scripts/dev-company-stop.sh",
+    "dev:company:smoke": "bash scripts/smoke-company-api.sh",
     "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"
   },
   "repository": {

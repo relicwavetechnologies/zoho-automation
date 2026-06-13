@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Divo on Hermes - DB-first transformation</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="deck.css" />
+  <style>
+    .decision { display:grid; grid-template-columns:1.05fr 0.95fr; gap:16px; align-items:stretch; }
+    @media (max-width:920px){ .decision { grid-template-columns:1fr; } }
+    .decision-card { position:relative; overflow:hidden; min-height:250px; }
+    .decision-card::after { content:''; position:absolute; inset:auto -80px -120px auto; width:260px; height:260px; border-radius:50%; background:var(--accent-bg); pointer-events:none; }
+    .big-call { font-size:34px; font-weight:600; letter-spacing:-0.03em; line-height:1.08; margin-bottom:14px; max-width:12ch; }
+    .big-call .accent { color:var(--accent); }
+    .mini-stack { display:grid; gap:10px; margin-top:18px; position:relative; z-index:1; }
+    .mini-row { display:flex; justify-content:space-between; gap:12px; padding:10px 12px; background:var(--surface-1); border:1px solid var(--border); border-radius:var(--r-md); font-size:12px; color:var(--fg-muted); }
+    .mini-row b { color:var(--fg); font-weight:600; }
+    .mini-row .ok { color:var(--green); font-weight:600; }
+    .mini-row .hold { color:var(--amber); font-weight:600; }
+
+    .db-current { display:grid; grid-template-columns:1fr 64px 1fr; gap:12px; align-items:stretch; margin-top:16px; }
+    @media (max-width:880px){ .db-current { grid-template-columns:1fr; } .bridge-arrow { min-height:38px; } }
+    .db-box { background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-lg); padding:18px; }
+    .db-box h3 { font-size:14px; margin-bottom:10px; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .db-list { display:grid; gap:8px; }
+    .db-list span { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:8px; background:var(--surface-1); border:1px solid var(--border-subtle); font-size:12px; color:var(--fg-muted); }
+    .db-list b { color:var(--fg); font-weight:600; }
+    .bridge-arrow { display:grid; place-items:center; color:var(--accent); font-size:26px; font-weight:600; }
+
+    .schema-board { display:grid; grid-template-columns:270px 1fr; gap:16px; align-items:stretch; }
+    @media (max-width:920px){ .schema-board { grid-template-columns:1fr; } }
+    .schema-tabs { display:grid; gap:8px; }
+    .schema-tabs button { text-align:left; padding:13px 14px; border:1px solid var(--border); border-radius:var(--r-md); background:var(--surface-2); color:var(--fg-muted); transition:0.15s; }
+    .schema-tabs button:hover { background:var(--surface-3); color:var(--fg); }
+    .schema-tabs button.active { border-color:hsl(214 70% 55% / 0.45); background:var(--accent-bg); color:var(--accent); }
+    .schema-tabs b { display:block; font-size:13px; color:inherit; margin-bottom:3px; }
+    .schema-tabs span { display:block; font-size:11.5px; color:var(--fg-dim); }
+    .schema-detail { min-height:330px; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-lg); padding:20px; }
+    .schema-detail h3 { font-size:18px; margin-bottom:8px; }
+    .schema-detail .desc { color:var(--fg-muted); font-size:13.5px; max-width:78ch; margin-bottom:16px; }
+    .node-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+    @media (max-width:760px){ .node-grid { grid-template-columns:1fr; } }
+    .node { border:1px solid var(--border); border-radius:var(--r-md); padding:13px 12px; background:var(--surface-1); }
+    .node .nt { font-family:var(--mono); font-size:12px; color:var(--fg); margin-bottom:5px; }
+    .node .np { font-size:12px; color:var(--fg-muted); line-height:1.5; }
+    .node.add { border-color:hsl(38 80% 50% / 0.35); background:var(--amber-bg); }
+    .node.keep { border-color:hsl(142 50% 40% / 0.35); background:var(--green-bg); }
+    .node.bridge { border-color:hsl(214 70% 55% / 0.35); background:var(--accent-bg); }
+
+    .map { background:var(--surface-1); border:1px solid var(--border); border-radius:var(--r-lg); padding:22px; overflow-x:auto; }
+    .map-line { display:grid; grid-template-columns:repeat(5, minmax(150px,1fr)); gap:12px; min-width:820px; align-items:stretch; }
+    .map-step { background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-md); padding:14px; position:relative; }
+    .map-step:not(:last-child)::after { content:'>'; position:absolute; right:-13px; top:50%; transform:translateY(-50%); color:var(--fg-faint); font-weight:700; }
+    .map-step .k { font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:var(--fg-dim); font-weight:700; margin-bottom:7px; }
+    .map-step .t { font-size:13px; font-weight:600; margin-bottom:5px; }
+    .map-step .p { font-size:12px; color:var(--fg-muted); line-height:1.45; }
+    .map-step.accent { border-color:hsl(214 70% 55% / 0.45); background:var(--accent-bg); }
+
+    .additive { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+    @media (max-width:980px){ .additive { grid-template-columns:repeat(2,1fr); } }
+    @media (max-width:620px){ .additive { grid-template-columns:1fr; } }
+    .add-card { border:1px solid var(--border); background:var(--surface-2); border-radius:var(--r-lg); padding:18px; }
+    .add-card .num { width:28px; height:28px; border-radius:8px; display:grid; place-items:center; background:var(--accent-bg); color:var(--accent); font-weight:700; font-size:12px; margin-bottom:12px; }
+    .add-card h3 { font-size:14px; margin-bottom:7px; }
+    .add-card p { font-size:12.5px; color:var(--fg-muted); line-height:1.55; }
+
+    .workplan { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    @media (max-width:900px){ .workplan { grid-template-columns:1fr; } }
+    .week-card { background:var(--surface-2); border:1px solid var(--border); border-radius:var(--r-lg); padding:20px; }
+    .checklist { display:grid; gap:10px; margin-top:14px; }
+    .check { display:grid; grid-template-columns:24px 1fr; gap:10px; align-items:flex-start; font-size:13px; color:var(--fg-muted); }
+    .check i { width:20px; height:20px; border-radius:50%; display:grid; place-items:center; background:var(--green-bg); color:var(--green); font-style:normal; font-size:11px; font-weight:700; margin-top:1px; }
+    .check b { color:var(--fg); font-weight:600; }
+  </style>
+</head>
+<body>
+  <main class="page page-wide" data-page="db">
+
+    <div class="phead">
+      <div class="eyebrow">DB-first transformation</div>
+      <h1>Make Hermes a Divo runtime by anchoring it to <span class="accent">one production database</span>.</h1>
+      <p class="lede">
+        The first step is not more tools. It is agreeing on the production data shape: Divo Postgres stays the source of truth,
+        Hermes keeps its local SQLite only as a compatibility/runtime cache until the bridge is complete.
+      </p>
+    </div>
+
+    <section class="section">
+      <div class="decision">
+        <div class="card decision-card">
+          <div class="big-call">Use <span class="accent">Divo Postgres</span> as the root DB.</div>
+          <p>
+            Hermes should not bring a separate production database. Divo already has company, users, memberships,
+            connector auth, tool permissions, runtime conversations, execution events, approvals, and audit tables.
+          </p>
+          <div class="mini-stack">
+            <div class="mini-row"><b>Production source of truth</b><span class="ok">Divo Postgres</span></div>
+            <div class="mini-row"><b>Hermes state.db</b><span class="hold">local compatibility</span></div>
+            <div class="mini-row"><b>New workstream</b><span class="ok">additive schema bridge</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-top">
+            <h3>Why this is the first move</h3>
+            <span class="pill pill-blue"><span class="pd"></span>decision</span>
+          </div>
+          <div class="prose">
+            <ul>
+              <li><b>Multi-company safety starts in the DB.</b> If sessions and tools are not company-bound, later RBAC becomes a patch.</li>
+              <li><b>Divo already owns the enterprise objects.</b> Reusing them avoids a second user/company system.</li>
+              <li><b>Hermes becomes the execution engine.</b> It should read/write through Divo contracts when deployed.</li>
+              <li><b>Tools can move after identity is stable.</b> Zoho, Google, Lark and future connectors need company-owned credentials first.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-label">Current DB reality <span class="ln"></span></div>
+      <p class="section-sub">
+        Hermes and Divo already overlap. The transformation is mostly a controlled mapping from Hermes' local session model
+        into Divo's company-aware Postgres model.
+      </p>
+      <div class="db-current">
+        <div class="db-box">
+          <h3>Hermes today <span class="pill pill-amber"><span class="pd"></span>local</span></h3>
+          <div class="db-list">
+            <span><b>state.db.sessions</b><em>conversation/run metadata</em></span>
+            <span><b>state.db.messages</b><em>transcript + tool calls</em></span>
+            <span><b>state_meta</b><em>runtime flags</em></span>
+            <span><b>compression_locks</b><em>local concurrency guard</em></span>
+          </div>
+        </div>
+        <div class="bridge-arrow">-&gt;</div>
+        <div class="db-box">
+          <h3>Divo production <span class="pill pill-green"><span class="pd"></span>Postgres</span></h3>
+          <div class="db-list">
+            <span><b>Company / User</b><em>tenant + people</em></span>
+            <span><b>RuntimeConversation</b><em>canonical thread</em></span>
+            <span><b>RuntimeRun / ExecutionRun</b><em>turn + trace</em></span>
+            <span><b>Tool / connector / audit</b><em>governed execution</em></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-label">The production flow we want <span class="ln"></span></div>
+      <div class="map">
+        <div class="map-line">
+          <div class="map-step">
+            <div class="k">1. Inbound</div>
+            <div class="t">Message arrives</div>
+            <div class="p">Lark, Desktop, API, or another future channel sends a request.</div>
+          </div>
+          <div class="map-step accent">
+            <div class="k">2. Identity</div>
+            <div class="t">Resolve company</div>
+            <div class="p">Map sender to `companyId`, `userId`, and `channelIdentityId`.</div>
+          </div>
+          <div class="map-step">
+            <div class="k">3. Conversation</div>
+            <div class="t">Open canonical thread</div>
+            <div class="p">Write or resume a Divo `RuntimeConversation`.</div>
+          </div>
+          <div class="map-step">
+            <div class="k">4. Run</div>
+            <div class="t">Execute with Hermes</div>
+            <div class="p">Hermes runs the turn and mirrors status into `RuntimeRun` / `ExecutionRun`.</div>
+          </div>
+          <div class="map-step">
+            <div class="k">5. Tools</div>
+            <div class="t">Use company-owned connectors</div>
+            <div class="p">Each tool call carries company context and writes audit/step rows.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-label">Schema intersection <span class="ln"></span></div>
+      <p class="section-sub">Click each area. The point is to reuse the Divo tables that are already enterprise-shaped, then add only the missing Hermes bridge pieces.</p>
+      <div class="schema-board">
+        <div class="schema-tabs" id="schemaTabs">
+          <button class="active" data-topic="identity"><b>Identity</b><span>company, user, channel identity</span></button>
+          <button data-topic="conversation"><b>Conversations</b><span>Hermes sessions into runtime threads</span></button>
+          <button data-topic="execution"><b>Execution</b><span>runs, steps, approvals, audit</span></button>
+          <button data-topic="connectors"><b>Connectors</b><span>Zoho, Lark, Google, future providers</span></button>
+        </div>
+        <div class="schema-detail" id="schemaDetail"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-label">Additive schema we should pin down first <span class="ln"></span></div>
+      <div class="additive">
+        <div class="add-card">
+          <div class="num">01</div>
+          <h3>RuntimeSessionBinding</h3>
+          <p>Maps Hermes `session_id` and gateway session keys to Divo `RuntimeConversation` and current `RuntimeRun`.</p>
+        </div>
+        <div class="add-card">
+          <div class="num">02</div>
+          <h3>Generic ConnectorAccount</h3>
+          <p>Normalizes Zoho, Lark, Google and future provider credentials under `companyId` and optional `userId`.</p>
+        </div>
+        <div class="add-card">
+          <div class="num">03</div>
+          <h3>ToolAuditEvent</h3>
+          <p>Either extend `StepResult`/`AuditLog`, or add a focused table for tool name, status, connector, actor and trace.</p>
+        </div>
+        <div class="add-card">
+          <div class="num">04</div>
+          <h3>Lifecycle fields</h3>
+          <p>Add `status`, `slug`, `deletedAt`, `lastActiveAt` style fields where Divo needs stronger tenant/user lifecycle control.</p>
+        </div>
+      </div>
+      <div class="callout amber" style="margin-top:16px;"><b>Important.</b> These are additive. We do not need to delete the existing Divo schema to make Hermes work. We need a clean bridge and a few first-class columns/tables.</div>
+    </section>
+
+    <section class="section">
+      <div class="section-label">Detailed DB mapping <span class="ln"></span></div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <thead>
+            <tr><th>Area</th><th>Existing Divo tables</th><th>Hermes meaning</th><th>Recommendation</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Tenant root</td>
+              <td><code>Company</code>, <code>Department</code></td>
+              <td>Which company owns the request and which workspace/team it belongs to.</td>
+              <td><strong>Reuse.</strong> Add company lifecycle metadata if needed.</td>
+            </tr>
+            <tr>
+              <td>People</td>
+              <td><code>User</code>, <code>AdminMembership</code>, <code>DepartmentMembership</code></td>
+              <td>Who is asking, what company they belong to, and their future policy role.</td>
+              <td><strong>Reuse.</strong> Keep RBAC enforcement for the next layer, but store identity now.</td>
+            </tr>
+            <tr>
+              <td>Channel identity</td>
+              <td><code>ChannelIdentity</code>, <code>LarkTenantBinding</code></td>
+              <td>External sender from Lark/Desktop/API mapped to a Divo company/user.</td>
+              <td><strong>Reuse and normalize.</strong> Make it less Lark-specific over time.</td>
+            </tr>
+            <tr>
+              <td>Conversation</td>
+              <td><code>RuntimeConversation</code>, <code>RuntimeConversationMessage</code></td>
+              <td>Hermes `sessions` and `messages` become canonical Divo conversation history.</td>
+              <td><strong>Reuse strongly.</strong> Add a Hermes session binding table or explicit fields.</td>
+            </tr>
+            <tr>
+              <td>Execution trace</td>
+              <td><code>RuntimeRun</code>, <code>ExecutionRun</code>, <code>ExecutionEvent</code>, <code>StepResult</code></td>
+              <td>One Hermes turn, all status events, each tool result, and final outcome.</td>
+              <td><strong>Reuse.</strong> Centralize bridge writes so transcript order never splits.</td>
+            </tr>
+            <tr>
+              <td>Tools and agents</td>
+              <td><code>RegisteredTool</code>, <code>AgentDefinition</code>, permission tables</td>
+              <td>Hermes tools become Divo-governed tools with company-aware allowlists.</td>
+              <td><strong>Reuse.</strong> Add provider/schema/risk metadata where needed.</td>
+            </tr>
+            <tr>
+              <td>Connectors</td>
+              <td><code>ZohoConnection</code>, <code>LarkUserAuthLink</code>, <code>GoogleUserAuthLink</code></td>
+              <td>Credentials used by tools must belong to the company/user, not the runtime machine.</td>
+              <td><strong>Reuse now, generalize next.</strong> Add generic connector account model.</td>
+            </tr>
+            <tr>
+              <td>Audit</td>
+              <td><code>AuditLog</code>, <code>McpActionLog</code>, <code>RuntimeApproval</code></td>
+              <td>Every side-effecting action should be traceable to company, user, tool and run.</td>
+              <td><strong>Extend.</strong> Add richer request/tool/actor metadata.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-label">Phased transformation <span class="ln"></span></div>
+      <div class="phases">
+        <div class="phase active"><div class="pm">1</div><div><div class="pt">DB intersection RFC <span class="pill pill-amber"><span class="pd"></span>start here</span></div><div class="pdesc">Finalize exact table mapping and additive schema names before more code moves. This is the decision document.</div></div></div>
+        <div class="phase"><div class="pm">2</div><div><div class="pt">Postgres bridge vertical slice</div><div class="pdesc">One Hermes gateway/API request dual-writes to Divo `RuntimeConversation`, `RuntimeConversationMessage`, `RuntimeRun`, and `ExecutionRun` while SQLite still works.</div></div></div>
+        <div class="phase"><div class="pm">3</div><div><div class="pt">Identity source of truth</div><div class="pdesc">Replace local company identity authority with Divo Postgres lookup. Every entrypoint resolves company/user/channel identity first.</div></div></div>
+        <div class="phase"><div class="pm">4</div><div><div class="pt">Tool context and connector ownership</div><div class="pdesc">Every Hermes tool receives `companyId`, chooses company-owned credentials, and writes trace/audit rows.</div></div></div>
+        <div class="phase"><div class="pm">5</div><div><div class="pt">Policy and cutover</div><div class="pdesc">Turn on RBAC/approval enforcement and make Postgres reads canonical for resume, history, admin UI and reporting.</div></div></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-label">Next working step <span class="ln"></span></div>
+      <div class="workplan">
+        <div class="week-card">
+          <div class="card-top">
+            <h3>What we do next</h3>
+            <span class="pill pill-blue"><span class="pd"></span>DB-first</span>
+          </div>
+          <div class="checklist">
+            <div class="check"><i>1</i><span><b>Write the schema RFC.</b> Name the tables/fields and map Hermes SQLite columns to Divo Postgres models.</span></div>
+            <div class="check"><i>2</i><span><b>Review with the tools agent.</b> Make sure Zoho/Google/Lark connector ownership fits the same company model.</span></div>
+            <div class="check"><i>3</i><span><b>Implement one bridge path.</b> Start with one gateway/API message, not all channels at once.</span></div>
+            <div class="check"><i>4</i><span><b>Prove no split-brain.</b> Tests must show SQLite and Postgres receive the same ordered session/message/run data during bridge mode.</span></div>
+          </div>
+        </div>
+        <div class="week-card">
+          <h3>What we deliberately do not do first</h3>
+          <div class="prose" style="margin-top:10px;">
+            <ul>
+              <li>Do not port all tools before company identity is canonical.</li>
+              <li>Do not create a second production Postgres service for Hermes.</li>
+              <li>Do not enforce RBAC before the audit/identity trail exists.</li>
+              <li>Do not scatter direct Postgres writes across Hermes. Keep a single bridge module.</li>
+            </ul>
+          </div>
+          <div class="callout accent" style="margin-top:14px;"><b>Recommendation.</b> The next engineering artifact should be a schema/bridge RFC, then one tested vertical slice. That keeps the transformation understandable and reversible.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-label">Sources used for this walkthrough <span class="ln"></span></div>
+      <div class="table-wrap">
+        <table class="tbl">
+          <tbody>
+            <tr><td>Divo schema</td><td><code>advance-backend/prisma/schema.prisma</code></td><td>Company, User, RuntimeConversation, connectors, permissions, audit.</td></tr>
+            <tr><td>Hermes local DB</td><td><code>hermes/hermes_state.py</code></td><td>SQLite `state.db` sessions/messages schema.</td></tr>
+            <tr><td>Current identity prototype</td><td><code>hermes/company_identity.py</code></td><td>Useful identity table shape, but production authority should move to Postgres.</td></tr>
+            <tr><td>Deck style</td><td><code>docs/deck/*.html</code>, <code>docs/deck/deck.css</code></td><td>Existing Divo product deck visual system.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="foot">
+      <span>Divo on Hermes · DB-first transformation</span>
+      <span>One production DB · additive bridge · tools after identity</span>
+    </div>
+  </main>
+
+  <script src="deck.js"></script>
+  <script>
+    (function () {
+      const DATA = {
+        identity: {
+          title: 'Identity: reuse Divo company and user spine',
+          desc: 'Before Hermes executes anything in production, Divo must know which company and which person or channel is behind the request.',
+          nodes: [
+            ['Company', 'Tenant root. Already owns integrations, tools, auth links and runtime data.', 'keep'],
+            ['User', 'Human identity used across admin, desktop, Lark and future channels.', 'keep'],
+            ['ChannelIdentity', 'External sender mapping. Reuse it, then normalize provider fields over time.', 'bridge'],
+            ['AdminMembership', 'Admin role binding to company.', 'keep'],
+            ['DepartmentMembership', 'Department and role binding for future RBAC.', 'keep'],
+            ['RuntimeSessionBinding', 'New bridge from Hermes session id to Divo conversation/run identity.', 'add']
+          ]
+        },
+        conversation: {
+          title: 'Conversation: map Hermes sessions into Divo runtime history',
+          desc: 'Hermes state.db has sessions and messages. Divo already has canonical runtime conversations and messages.',
+          nodes: [
+            ['RuntimeConversation', 'Long-lived thread keyed by company, channel and conversation key.', 'keep'],
+            ['RuntimeConversationMessage', 'Ordered user, assistant, tool-call and tool-result payloads.', 'keep'],
+            ['RuntimeRun', 'One execution turn inside a conversation.', 'keep'],
+            ['DesktopMessage', 'Desktop compatibility path. Keep or migrate gradually.', 'bridge'],
+            ['Hermes state.db.sessions', 'Compatibility source during bridge mode, not production authority.', 'bridge'],
+            ['Hermes state.db.messages', 'Dual-write until Postgres resume/history is canonical.', 'bridge']
+          ]
+        },
+        execution: {
+          title: 'Execution: make every Hermes turn observable in Divo',
+          desc: 'A production run needs status, tool steps, approvals and audit. Divo already has most of this shape.',
+          nodes: [
+            ['ExecutionRun', 'Top-level trace for channel, entrypoint, request id, status and summary.', 'keep'],
+            ['ExecutionEvent', 'Ordered lifecycle events emitted while Hermes works.', 'keep'],
+            ['StepResult', 'Each tool result and resolved entity output.', 'keep'],
+            ['RuntimeApproval', 'Approval checkpoint for risky or side-effecting actions.', 'keep'],
+            ['AuditLog', 'General action log. Extend with richer tool/actor metadata.', 'bridge'],
+            ['ToolAuditEvent', 'Optional focused event model if StepResult/AuditLog are not enough.', 'add']
+          ]
+        },
+        connectors: {
+          title: 'Connectors: company-owned credentials before tool expansion',
+          desc: 'Tools are only safe when their credentials are selected from the company context, not from a global runtime environment.',
+          nodes: [
+            ['ZohoConnection', 'Already company-owned and production-shaped for Zoho.', 'keep'],
+            ['LarkUserAuthLink', 'User and tenant binding for Lark actions.', 'keep'],
+            ['GoogleUserAuthLink', 'User-scoped Google credential binding.', 'keep'],
+            ['CompanyGoogleAuthLink', 'Company-level Google credential binding.', 'keep'],
+            ['ConnectorAccount', 'New generic provider/account layer for future connectors.', 'add'],
+            ['RegisteredTool', 'Tool catalog that should carry provider, schema and risk metadata.', 'bridge']
+          ]
+        }
+      };
+
+      const detail = document.getElementById('schemaDetail');
+      const tabs = document.querySelectorAll('#schemaTabs button');
+
+      function render(topic) {
+        const data = DATA[topic];
+        detail.innerHTML = `
+          <h3>${data.title}</h3>
+          <p class="desc">${data.desc}</p>
+          <div class="node-grid">
+            ${data.nodes.map(([title, body, type]) => `
+              <div class="node ${type}">
+                <div class="nt">${title}</div>
+                <div class="np">${body}</div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }
+
+      tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+          tabs.forEach((item) => item.classList.remove('active'));
+          tab.classList.add('active');
+          render(tab.dataset.topic);
+        });
+      });
+
+      render('identity');
+    })();
+  </script>
+</body>
+</html>

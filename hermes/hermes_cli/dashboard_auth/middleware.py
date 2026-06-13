@@ -30,20 +30,23 @@ from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
 
-# Prefixes that bypass the auth gate. Match via ``path == prefix`` or
-# ``path.startswith(prefix)`` — so ``/assets/`` (with trailing slash)
-# matches ``/assets/foo.css`` but not ``/assetsleak``. Auth-bootstrap
-# (login page, OAuth round trip, provider listing) and static asset
-# mounts go here.
-_GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
+# Exact paths that bypass the auth gate. Auth-bootstrap endpoints go here.
+_GATE_PUBLIC_EXACT: tuple[str, ...] = (
     "/auth/login",
     "/auth/callback",
     "/auth/password-login",
     "/auth/logout",
     "/login",
+    "/api/auth/desktop-login/start",
+    "/api/auth/desktop-login/exchange",
     "/api/auth/providers",
-    "/assets/",
     "/favicon.ico",
+)
+
+# Prefixes that bypass the auth gate. These intentionally end with a slash so
+# ``/assets/foo.css`` matches but ``/assetsleak`` does not.
+_GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
+    "/assets/",
     "/ds-assets/",
     "/fonts/",
     "/fonts-terminal/",
@@ -59,16 +62,66 @@ def _path_is_public(path: str) -> bool:
       the legacy ``_SESSION_TOKEN`` middleware also honours. Matched
       exactly (no prefix expansion) so adding ``/api/status`` doesn't
       accidentally expose ``/api/status/secret-extension``.
-    * :data:`_GATE_PUBLIC_PREFIXES` — auth-bootstrap routes and static
-      mounts. Prefix-matched so ``/assets/foo.css`` lights up via
-      ``/assets/``.
+    * :data:`_GATE_PUBLIC_EXACT` — auth-bootstrap routes.
+    * :data:`_GATE_PUBLIC_PREFIXES` — static mounts. Prefix-matched so
+      ``/assets/foo.css`` lights up via ``/assets/``.
     """
     if path in PUBLIC_API_PATHS:
         return True
-    return any(
-        path == prefix or path.startswith(prefix)
-        for prefix in _GATE_PUBLIC_PREFIXES
-    )
+    if path in _GATE_PUBLIC_EXACT:
+        return True
+    return any(path.startswith(prefix) for prefix in _GATE_PUBLIC_PREFIXES)
+
+
+def _forbidden_company_user_response(request: Request, *, reason: str) -> Response:
+    payload = {"error": reason, "detail": "This employee account is disabled."}
+    if request.url.path.startswith("/api/"):
+        response: Response = JSONResponse(payload, status_code=403)
+    else:
+        response = RedirectResponse(url="/login?error=user_disabled", status_code=303)
+    try:
+        from hermes_cli.dashboard_auth.cookies import clear_session_cookies
+        from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+        clear_session_cookies(response, prefix=prefix_from_request(request))
+    except Exception:
+        _log.debug("failed to clear disabled dashboard session cookies", exc_info=True)
+    return response
+
+
+def _company_user_gate_response(request: Request, session) -> Response | None:
+    if getattr(session, "provider", "") != "lark":
+        return None
+
+    try:
+        from gateway.company_identity import find_dashboard_company_user, get_identity_store
+
+        store = get_identity_store()
+        company_id = store.ensure_default_company()
+        row = find_dashboard_company_user(
+            provider=getattr(session, "provider", "") or "",
+            provider_user_id=getattr(session, "user_id", "") or "",
+            company_id=company_id,
+            db=store,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("dashboard-auth: company identity unavailable: %s", exc)
+        return JSONResponse(
+            {"detail": f"Company identity unavailable: {exc}"},
+            status_code=503,
+        )
+
+    status = str((row or {}).get("status") or "active").strip().lower()
+    if status in {"disabled", "inactive", "suspended"}:
+        audit_log(
+            AuditEvent.SESSION_VERIFY_FAILURE,
+            provider=getattr(session, "provider", "") or "",
+            user_id=getattr(session, "user_id", "") or "",
+            reason="company_user_disabled",
+            ip=_client_ip(request),
+        )
+        return _forbidden_company_user_response(request, reason="user_disabled")
+    return None
 
 
 def _client_ip(request: Request) -> str:
@@ -261,6 +314,9 @@ async def gated_auth_middleware(
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
             request.state.session = new_session
+            gate_response = _company_user_gate_response(request, new_session)
+            if gate_response is not None:
+                return gate_response
             response = await call_next(request)
             # Persist the ROTATED tokens. Portal rotates the refresh token on
             # every refresh and runs reuse-detection, so writing the new RT
@@ -305,6 +361,10 @@ async def gated_auth_middleware(
         from hermes_cli.dashboard_auth.prefix import prefix_from_request
         clear_session_cookies(response, prefix=prefix_from_request(request))
         return response
+
+    gate_response = _company_user_gate_response(request, session)
+    if gate_response is not None:
+        return gate_response
 
     request.state.session = session
     return await call_next(request)
@@ -365,4 +425,3 @@ def _attempt_refresh(request: Request, *, refresh_token):
         if new_session is not None:
             return new_session, provider.name
     return None
-

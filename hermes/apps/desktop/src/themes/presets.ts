@@ -269,7 +269,51 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/**
+ * Cursor — VS Code "Default Dark Modern" palette. Flat neutral grays in three
+ * elevation tiers (sidebar #181818 < editor #1e1e1e < widgets #252526), a muted
+ * blue brand accent, and no grain. Pairs with the `dark-plus` Shiki theme so
+ * code highlighting matches Cursor's editor exactly.
+ */
+export const cursorTheme: DesktopTheme = {
+  name: 'cursor',
+  label: 'Cursor',
+  description: 'Flat neutral dark — VS Code / Cursor editor look',
+  flat: true,
+  colors: {
+    background: '#181818',
+    foreground: '#cccccc',
+    card: '#1f1f1f',
+    cardForeground: '#cccccc',
+    muted: '#262626',
+    mutedForeground: '#8a8a8a',
+    popover: '#212121',
+    popoverForeground: '#cccccc',
+    primary: '#cccccc',
+    primaryForeground: '#181818',
+    secondary: '#222222',
+    secondaryForeground: '#e4e4e4',
+    accent: '#262626',
+    accentForeground: '#ffffff',
+    border: '#2a2a2a',
+    input: '#262626',
+    ring: '#0078d4',
+    midground: '#4daafc',
+    composerRing: '#0078d4',
+    destructive: '#f14c4c',
+    destructiveForeground: '#ffffff',
+    sidebarBackground: '#121212',
+    sidebarBorder: '#262626',
+    userBubble: '#202020',
+    userBubbleBorder: '#2d2d2d'
+  },
+  typography: {
+    fontMono: `"SF Mono", "Menlo", "Cascadia Code", "JetBrains Mono", ${SYSTEM_MONO}`
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
+  cursor: cursorTheme,
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
@@ -281,4 +325,4 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
-export const DEFAULT_SKIN_NAME = 'nous'
+export const DEFAULT_SKIN_NAME = 'cursor'

@@ -56,6 +56,11 @@ _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNS
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
+_COMPANY_ID: ContextVar = ContextVar("HERMES_COMPANY_ID", default=_UNSET)
+_COMPANY_USER_ID: ContextVar = ContextVar("HERMES_COMPANY_USER_ID", default=_UNSET)
+_CHANNEL_IDENTITY_ID: ContextVar = ContextVar("HERMES_CHANNEL_IDENTITY_ID", default=_UNSET)
+_COMPANY_ROLE: ContextVar = ContextVar("HERMES_COMPANY_ROLE", default=_UNSET)
+_DEPARTMENT_ID: ContextVar = ContextVar("HERMES_DEPARTMENT_ID", default=_UNSET)
 # ID of the message that triggered the current turn. Used as a reply anchor
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
@@ -76,6 +81,11 @@ _VAR_MAP = {
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
+    "HERMES_COMPANY_ID": _COMPANY_ID,
+    "HERMES_COMPANY_USER_ID": _COMPANY_USER_ID,
+    "HERMES_CHANNEL_IDENTITY_ID": _CHANNEL_IDENTITY_ID,
+    "HERMES_COMPANY_ROLE": _COMPANY_ROLE,
+    "HERMES_DEPARTMENT_ID": _DEPARTMENT_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
@@ -106,6 +116,11 @@ def set_session_vars(
     user_id: str = "",
     user_name: str = "",
     session_key: str = "",
+    company_id: str = "",
+    company_user_id: str = "",
+    channel_identity_id: str = "",
+    company_role: str = "",
+    department_id: str = "",
     message_id: str = "",
     cwd: str = "",
 ) -> list:
@@ -127,6 +142,11 @@ def set_session_vars(
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
+        _COMPANY_ID.set(company_id),
+        _COMPANY_USER_ID.set(company_user_id),
+        _CHANNEL_IDENTITY_ID.set(channel_identity_id),
+        _COMPANY_ROLE.set(company_role),
+        _DEPARTMENT_ID.set(department_id),
         _SESSION_MESSAGE_ID.set(message_id),
     ]
     try:
@@ -157,6 +177,11 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
         _SESSION_KEY,
+        _COMPANY_ID,
+        _COMPANY_USER_ID,
+        _CHANNEL_IDENTITY_ID,
+        _COMPANY_ROLE,
+        _DEPARTMENT_ID,
         _SESSION_MESSAGE_ID,
     ):
         var.set("")

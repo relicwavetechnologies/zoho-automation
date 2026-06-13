@@ -104,6 +104,7 @@ def test_history_writer_starts_run_with_real_conversation_and_binding():
             hermes_session_id="session_1",
             session_key="session-key",
             created_by_user_id="cu_1",
+            channel_identity_id="ci_1",
             model_id="deepseek-chat",
         )
     )
@@ -137,6 +138,7 @@ def test_history_writer_starts_run_with_real_conversation_and_binding():
         "conv_1",
         "run_1",
     )
+    assert connection.calls[2][1][6:8] == ("ci_1", "cu_1")
 
 
 def test_history_writer_records_message_status_and_stats():

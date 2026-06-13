@@ -872,34 +872,311 @@ def _serialize_company_user_timestamp(value: Any) -> str | None:
     return text or None
 
 
+@app.get("/api/company/me")
+async def get_company_me(request: Request):
+    """Return the authenticated employee's company profile."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from company_lark_enrichment import fetch_lark_profiles_by_open_ids
+    from company_member_profile import (
+        company_display_name,
+        resolve_lark_open_id,
+        serialize_company_user,
+        synthesize_session_company_user,
+    )
+    from gateway.company_identity import (
+        find_dashboard_company_user,
+        get_company,
+        get_identity_store,
+        list_channel_identities_for_company_user,
+    )
+
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    store = get_identity_store()
+    company_id = store.ensure_default_company()
+    company_row = get_company(company_id, db=store)
+    company_name = company_display_name(company_row)
+    session_map = {
+        "provider": getattr(sess, "provider", "") or "",
+        "user_id": getattr(sess, "user_id", "") or "",
+        "email": getattr(sess, "email", "") or "",
+        "display_name": getattr(sess, "display_name", "") or "",
+    }
+
+    row = find_dashboard_company_user(
+        provider=session_map["provider"],
+        provider_user_id=session_map["user_id"],
+        company_id=company_id,
+        db=store,
+    )
+    channels = (
+        list_channel_identities_for_company_user(str(row.get("id")), db=store)
+        if row and row.get("id")
+        else []
+    )
+    open_id = resolve_lark_open_id(
+        channel_identities=channels,
+        session_fallback=session_map,
+    )
+    lark_profiles = (
+        await asyncio.to_thread(fetch_lark_profiles_by_open_ids, [open_id])
+        if open_id
+        else {}
+    )
+
+    if row:
+        return serialize_company_user(
+            row,
+            channel_identities=channels,
+            session_fallback=session_map,
+            lark_enrichment=lark_profiles,
+            company_name=company_name,
+            include_company_name=True,
+        )
+    return synthesize_session_company_user(
+        session_map,
+        company_id=company_id,
+        company_name=company_name,
+        lark_enrichment=lark_profiles,
+    )
+
+
 @app.get("/api/company/team-members")
 async def get_company_team_members():
     """Employees who have authenticated against this Hermes company backend."""
-    from gateway.company_identity import get_identity_store, list_company_users
+    import asyncio
+
+    from company_lark_enrichment import fetch_lark_profiles_by_open_ids
+    from company_member_profile import resolve_lark_open_id, serialize_company_user
+    from gateway.company_identity import (
+        get_identity_store,
+        list_channel_identities_for_company_user,
+        list_company_users,
+    )
 
     store = get_identity_store()
     company_id = store.ensure_default_company()
     rows = list_company_users(company_id=company_id, db=store)
-    members = []
+    prepared: list[tuple[dict, list]] = []
+    open_ids: list[str] = []
     for row in rows:
-        members.append(
-            {
-                "id": row.get("id", ""),
-                "company_id": row.get("company_id") or row.get("companyId") or company_id,
-                "email": row.get("email") or "",
-                "display_name": row.get("display_name") or row.get("displayName") or "",
-                "role": row.get("role") or "MEMBER",
-                "department_id": row.get("department_id") or row.get("departmentId") or "",
-                "status": row.get("status") or "active",
-                "first_login_at": _serialize_company_user_timestamp(
-                    row.get("created_at") or row.get("createdAt")
-                ),
-                "last_login_at": _serialize_company_user_timestamp(
-                    row.get("updated_at") or row.get("updatedAt")
-                ),
-            }
+        user_id = row.get("id")
+        channels = (
+            list_channel_identities_for_company_user(str(user_id), db=store)
+            if user_id
+            else []
         )
+        prepared.append((row, channels))
+        open_id = resolve_lark_open_id(channel_identities=channels)
+        if open_id:
+            open_ids.append(open_id)
+
+    lark_profiles = await asyncio.to_thread(fetch_lark_profiles_by_open_ids, open_ids)
+    members = [
+        serialize_company_user(
+            row,
+            channel_identities=channels,
+            lark_enrichment=lark_profiles,
+        )
+        for row, channels in prepared
+    ]
     return {"company_id": company_id, "members": members}
+
+
+class CompanyTeamMemberUpdate(BaseModel):
+    role: str | None = None
+    status: str | None = None
+
+
+_COMPANY_ADMIN_ROLES = {"ADMIN", "COMPANY_ADMIN", "SUPER_ADMIN", "OWNER"}
+_COMPANY_MUTABLE_ROLES = {"MEMBER", "COMPANY_ADMIN", "SUPER_ADMIN"}
+_COMPANY_MUTABLE_STATUSES = {"active", "disabled"}
+
+
+def _company_row_field(row: dict[str, Any] | None, *keys: str) -> str:
+    if not row:
+        return ""
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _company_user_role(row: dict[str, Any] | None) -> str:
+    return _company_row_field(row, "role") or "MEMBER"
+
+
+def _company_user_status(row: dict[str, Any] | None) -> str:
+    return (_company_row_field(row, "status") or "active").lower()
+
+
+def _company_user_id(row: dict[str, Any] | None) -> str:
+    return _company_row_field(row, "id")
+
+
+def _is_company_admin(row: dict[str, Any] | None) -> bool:
+    return _company_user_role(row).upper() in _COMPANY_ADMIN_ROLES
+
+
+def _is_active_company_user(row: dict[str, Any] | None) -> bool:
+    return _company_user_status(row) == "active"
+
+
+def _normalize_company_role(value: str | None) -> str | None:
+    if value is None:
+        return None
+    role = str(value or "").strip().upper()
+    if role not in _COMPANY_MUTABLE_ROLES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported role {value!r}. Expected one of: {', '.join(sorted(_COMPANY_MUTABLE_ROLES))}",
+        )
+    return role
+
+
+def _normalize_company_status(value: str | None) -> str | None:
+    if value is None:
+        return None
+    status = str(value or "").strip().lower()
+    if status not in _COMPANY_MUTABLE_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported status {value!r}. Expected active or disabled.",
+        )
+    return status
+
+
+def _active_company_admin_count(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows if _is_active_company_user(row) and _is_company_admin(row))
+
+
+def _current_company_actor(request: Request, store) -> tuple[str, dict[str, Any]]:
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from gateway.company_identity import find_dashboard_company_user
+
+    company_id = store.ensure_default_company()
+    actor = find_dashboard_company_user(
+        provider=getattr(sess, "provider", "") or "",
+        provider_user_id=getattr(sess, "user_id", "") or "",
+        company_id=company_id,
+        db=store,
+    )
+    if not actor:
+        raise HTTPException(status_code=403, detail="Current employee is not registered")
+    if not _is_active_company_user(actor):
+        raise HTTPException(status_code=403, detail="Current employee is disabled")
+    return company_id, actor
+
+
+async def _serialize_company_member_for_api(store, row: dict[str, Any]) -> dict[str, Any]:
+    import asyncio
+
+    from company_lark_enrichment import fetch_lark_profiles_by_open_ids
+    from company_member_profile import resolve_lark_open_id, serialize_company_user
+    from gateway.company_identity import list_channel_identities_for_company_user
+
+    user_id = _company_user_id(row)
+    channels = (
+        list_channel_identities_for_company_user(user_id, db=store)
+        if user_id
+        else []
+    )
+    open_id = resolve_lark_open_id(channel_identities=channels)
+    lark_profiles = (
+        await asyncio.to_thread(fetch_lark_profiles_by_open_ids, [open_id])
+        if open_id
+        else {}
+    )
+    return serialize_company_user(
+        row,
+        channel_identities=channels,
+        lark_enrichment=lark_profiles,
+    )
+
+
+@app.patch("/api/company/team-members/{member_id}")
+async def update_company_team_member(
+    member_id: str,
+    body: CompanyTeamMemberUpdate,
+    request: Request,
+):
+    """Update a company employee role/status.
+
+    This is intentionally narrow T5.3 functionality: admin-only role and
+    disable/reactivate controls. If the company has no active admin yet, the
+    first logged-in active user may only promote themselves to bootstrap admin.
+    """
+    from gateway.company_identity import get_company_user, get_identity_store, list_company_users, update_company_user
+
+    store = get_identity_store()
+    company_id, actor = _current_company_actor(request, store)
+    target = get_company_user(member_id, company_id=company_id, db=store)
+    if not target:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    role = _normalize_company_role(body.role)
+    status = _normalize_company_status(body.status)
+    if role is None and status is None:
+        raise HTTPException(status_code=400, detail="No role or status update supplied")
+
+    rows = list_company_users(company_id=company_id, db=store)
+    active_admin_count = _active_company_admin_count(rows)
+    actor_id = _company_user_id(actor)
+    is_bootstrap = active_admin_count == 0
+
+    if not _is_company_admin(actor):
+        if not is_bootstrap:
+            raise HTTPException(status_code=403, detail="Company admin role required")
+        if member_id != actor_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Bootstrap admin can only update their own role first",
+            )
+
+    if status == "disabled" and member_id == actor_id:
+        raise HTTPException(status_code=400, detail="You cannot disable your own employee account")
+
+    current_role = _company_user_role(target)
+    current_status = _company_user_status(target)
+    next_role = role or current_role
+    next_status = status or current_status
+    if (
+        _is_company_admin(target)
+        and active_admin_count <= 1
+        and (next_role.upper() not in _COMPANY_ADMIN_ROLES or next_status != "active")
+    ):
+        raise HTTPException(status_code=400, detail="Cannot remove the last active company admin")
+
+    updated = update_company_user(
+        company_user_id=member_id,
+        company_id=company_id,
+        role=role,
+        status=status,
+        db=store,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    _log.info(
+        "company member updated: actor=%s target=%s role=%s status=%s",
+        actor_id,
+        member_id,
+        role or current_role,
+        status or current_status,
+    )
+    return await _serialize_company_member_for_api(store, updated)
 
 
 @app.get("/api/system/stats")
@@ -1619,6 +1896,7 @@ async def get_action_status(name: str, lines: int = 200):
 
 @app.get("/api/sessions")
 async def get_sessions(
+    request: Request,
     limit: int = 20,
     offset: int = 0,
     min_messages: int = 0,
@@ -1654,19 +1932,36 @@ async def get_sessions(
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
             include_archived = archived == "include"
-            sessions = db.list_sessions_rich(
-                limit=limit,
-                offset=offset,
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                order_by_last_active=order == "recent",
-            )
-            total = db.session_count(
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-            )
+            allowed_ids = _current_company_session_ids(request)
+            if allowed_ids is None:
+                sessions = db.list_sessions_rich(
+                    limit=limit,
+                    offset=offset,
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    order_by_last_active=order == "recent",
+                )
+                total = db.session_count(
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                )
+            else:
+                all_rows = [
+                    row
+                    for row in db.list_sessions_rich(
+                        limit=10_000,
+                        offset=0,
+                        min_message_count=min_message_count,
+                        include_archived=include_archived,
+                        archived_only=archived_only,
+                        order_by_last_active=order == "recent",
+                    )
+                    if str(row.get("id") or "") in allowed_ids
+                ]
+                total = len(all_rows)
+                sessions = all_rows[offset : offset + limit]
             now = time.time()
             for s in sessions:
                 s["is_active"] = (
@@ -1678,13 +1973,15 @@ async def get_sessions(
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
+async def search_sessions(request: Request, q: str = "", limit: int = 20):
     """Search sessions by ID plus full-text message content using FTS5.
 
     Direct session-id matches are surfaced first, then FTS message-content
@@ -1702,6 +1999,7 @@ async def search_sessions(q: str = "", limit: int = 20):
         db = SessionDB()
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
+            allowed_ids = _current_company_session_ids(request)
 
             # Walk parent_session_id to the compression root, memoized so a
             # chain of compression segments only costs one walk. We deliberately
@@ -1782,6 +2080,8 @@ async def search_sessions(q: str = "", limit: int = 20):
             def add_lineage_result(raw_sid: str, payload: dict) -> None:
                 if not raw_sid:
                     return
+                if allowed_ids is not None and str(raw_sid or "") not in allowed_ids:
+                    return
                 root = compression_root(raw_sid)
                 if root in seen or len(seen) >= safe_limit:
                     return
@@ -1841,6 +2141,8 @@ async def search_sessions(q: str = "", limit: int = 20):
             return {"results": list(seen.values())}
         finally:
             db.close()
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/sessions/search failed")
         raise HTTPException(status_code=500, detail="Search failed")
@@ -4921,6 +5223,65 @@ async def cancel_oauth_session(session_id: str, request: Request):
 # ---------------------------------------------------------------------------
 
 
+def _current_company_session_ids(request: Request) -> set[str] | None:
+    if not getattr(app.state, "auth_required", False):
+        return None
+
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from gateway.company_identity import (
+        list_session_identities_for_company_user,
+        resolve_dashboard_session_identity,
+    )
+
+    try:
+        identity = resolve_dashboard_session_identity(
+            provider=getattr(sess, "provider", "") or "",
+            provider_user_id=getattr(sess, "user_id", "") or "",
+            display_name=getattr(sess, "display_name", "") or None,
+            email=getattr(sess, "email", "") or None,
+        )
+        rows = list_session_identities_for_company_user(str(identity.company_user_id))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Company identity unavailable: {exc}",
+        ) from exc
+
+    return {
+        str(row.get("session_id") or "")
+        for row in rows
+        if str(row.get("company_id") or "") == str(identity.company_id or "")
+        and str(row.get("company_user_id") or "")
+        == str(identity.company_user_id or "")
+        and str(row.get("session_id") or "")
+    }
+
+
+def _filter_company_sessions(
+    request: Request,
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    allowed_ids = _current_company_session_ids(request)
+    if allowed_ids is None:
+        return rows
+    return [
+        row
+        for row in rows
+        if str(row.get("id") or row.get("session_id") or "") in allowed_ids
+    ]
+
+
+def _ensure_company_session_access(request: Request, session_id: str) -> str:
+    allowed_ids = _current_company_session_ids(request)
+    if allowed_ids is None:
+        return session_id
+    if str(session_id or "") not in allowed_ids:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session_id
+
 
 def _session_latest_descendant(session_id: str):
     """Resolve a session id to the newest child leaf session.
@@ -5014,7 +5375,7 @@ class BulkDeleteSessions(BaseModel):
 
 
 @app.post("/api/sessions/bulk-delete")
-async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
+async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions, request: Request):
     """Delete every session in ``body.ids`` in a single DB transaction.
 
     Backs the dashboard's bulk-select-and-delete flow on the sessions
@@ -5058,14 +5419,20 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     from hermes_state import SessionDB
     db = SessionDB()
     try:
-        deleted = db.delete_sessions(body.ids)
+        allowed_ids = _current_company_session_ids(request)
+        target_ids = [
+            session_id
+            for session_id in body.ids
+            if allowed_ids is None or str(session_id or "") in allowed_ids
+        ]
+        deleted = db.delete_sessions(target_ids)
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
 
 
 @app.get("/api/sessions/empty/count")
-async def count_empty_sessions_endpoint():
+async def count_empty_sessions_endpoint(request: Request):
     """Return the number of empty, ended, non-archived sessions.
 
     Drives the dashboard's "Delete empty (N)" button — when N is 0 the
@@ -5075,13 +5442,24 @@ async def count_empty_sessions_endpoint():
     from hermes_state import SessionDB
     db = SessionDB()
     try:
-        return {"count": db.count_empty_sessions()}
+        rows = _filter_company_sessions(
+            request,
+            db.list_sessions_rich(limit=10_000, include_archived=True),
+        )
+        count = sum(
+            1
+            for row in rows
+            if not bool(row.get("archived"))
+            and not (row.get("message_count") or 0)
+            and row.get("ended_at") is not None
+        )
+        return {"count": count}
     finally:
         db.close()
 
 
 @app.delete("/api/sessions/empty")
-async def delete_empty_sessions_endpoint():
+async def delete_empty_sessions_endpoint(request: Request):
     """Delete every empty (``message_count == 0``), ended,
     non-archived session in a single transaction.
 
@@ -5103,14 +5481,26 @@ async def delete_empty_sessions_endpoint():
     from hermes_state import SessionDB
     db = SessionDB()
     try:
-        deleted = db.delete_empty_sessions()
+        rows = _filter_company_sessions(
+            request,
+            db.list_sessions_rich(limit=10_000, include_archived=True),
+        )
+        target_ids = [
+            str(row.get("id") or "")
+            for row in rows
+            if str(row.get("id") or "")
+            and not bool(row.get("archived"))
+            and not (row.get("message_count") or 0)
+            and row.get("ended_at") is not None
+        ]
+        deleted = db.delete_sessions(target_ids)
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
 
 
 @app.get("/api/sessions/stats")
-async def get_session_stats():
+async def get_session_stats(request: Request):
     """Session-store statistics for the Sessions page (mirrors `hermes sessions stats`).
 
     Registered before ``/api/sessions/{session_id}`` so the literal ``stats``
@@ -5120,13 +5510,17 @@ async def get_session_stats():
 
     db = SessionDB()
     try:
-        total = db.session_count(include_archived=True)
-        active_store = db.session_count(include_archived=False)
-        archived = db.session_count(archived_only=True)
-        messages = db.message_count()
+        all_rows = _filter_company_sessions(
+            request,
+            db.list_sessions_rich(limit=10_000, include_archived=True),
+        )
+        total = len(all_rows)
+        active_store = sum(1 for row in all_rows if not bool(row.get("archived")))
+        archived = sum(1 for row in all_rows if bool(row.get("archived")))
+        messages = sum(int(row.get("message_count") or 0) for row in all_rows)
         by_source: Dict[str, int] = {}
         try:
-            for s in db.list_sessions_rich(limit=10000, include_archived=True):
+            for s in all_rows:
                 src = str(s.get("source") or "cli")
                 by_source[src] = by_source.get(src, 0) + 1
         except Exception:
@@ -5143,11 +5537,13 @@ async def get_session_stats():
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session_detail(session_id: str):
+async def get_session_detail(session_id: str, request: Request):
     from hermes_state import SessionDB
     db = SessionDB()
     try:
         sid = db.resolve_session_id(session_id)
+        if sid:
+            _ensure_company_session_access(request, sid)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -5158,10 +5554,11 @@ async def get_session_detail(session_id: str):
 
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
-async def get_session_latest_descendant(session_id: str):
+async def get_session_latest_descendant(session_id: str, request: Request):
     latest, path = _session_latest_descendant(session_id)
     if not latest:
         raise HTTPException(status_code=404, detail="Session not found")
+    _ensure_company_session_access(request, latest)
     return {
         "requested_session_id": path[0] if path else session_id,
         "session_id": latest,
@@ -5170,13 +5567,14 @@ async def get_session_latest_descendant(session_id: str):
     }
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str):
+async def get_session_messages(session_id: str, request: Request):
     from hermes_state import SessionDB
     db = SessionDB()
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_company_session_access(request, sid)
         messages = db.get_messages(sid)
         return {"session_id": sid, "messages": messages}
     finally:
@@ -5184,11 +5582,15 @@ async def get_session_messages(session_id: str):
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session_endpoint(session_id: str):
+async def delete_session_endpoint(session_id: str, request: Request):
     from hermes_state import SessionDB
     db = SessionDB()
     try:
-        if not db.delete_session(session_id):
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_company_session_access(request, sid)
+        if not db.delete_session(sid):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"ok": True}
     finally:
@@ -5201,7 +5603,7 @@ class SessionRename(BaseModel):
 
 
 @app.patch("/api/sessions/{session_id}")
-async def rename_session_endpoint(session_id: str, body: SessionRename):
+async def rename_session_endpoint(session_id: str, body: SessionRename, request: Request):
     """Update a session: rename (or clear its title) and/or archive it.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
@@ -5213,6 +5615,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_company_session_access(request, sid)
         if body.title is None and body.archived is None:
             raise HTTPException(
                 status_code=400,
@@ -5235,7 +5638,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
 
 
 @app.get("/api/sessions/{session_id}/export")
-async def export_session_endpoint(session_id: str):
+async def export_session_endpoint(session_id: str, request: Request):
     """Export a single session (metadata + messages) as JSON."""
     from hermes_state import SessionDB
 
@@ -5244,6 +5647,7 @@ async def export_session_endpoint(session_id: str):
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
+        _ensure_company_session_access(request, sid)
         data = db.export_session(sid)
         if data is None:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -5258,7 +5662,7 @@ class SessionPrune(BaseModel):
 
 
 @app.post("/api/sessions/prune")
-async def prune_sessions_endpoint(body: SessionPrune):
+async def prune_sessions_endpoint(body: SessionPrune, request: Request):
     """Delete ended sessions older than N days (mirrors `hermes sessions prune`)."""
     if body.older_than_days < 1:
         raise HTTPException(status_code=400, detail="older_than_days must be >= 1")
@@ -5267,9 +5671,27 @@ async def prune_sessions_endpoint(body: SessionPrune):
     db = SessionDB()
     try:
         sessions_dir = get_hermes_home() / "sessions"
-        removed = db.prune_sessions(
-            older_than_days=body.older_than_days,
-            source=(body.source or None),
+        allowed_ids = _current_company_session_ids(request)
+        if allowed_ids is None:
+            removed = db.prune_sessions(
+                older_than_days=body.older_than_days,
+                source=(body.source or None),
+                sessions_dir=sessions_dir if sessions_dir.exists() else None,
+            )
+            return {"ok": True, "removed": removed}
+
+        cutoff = time.time() - (body.older_than_days * 86400)
+        target_ids = [
+            str(row.get("id") or "")
+            for row in db.list_sessions_rich(limit=10_000, offset=0, include_archived=True)
+            if str(row.get("id") or "") in allowed_ids
+            and str(row.get("id") or "")
+            and row.get("ended_at") is not None
+            and float(row.get("started_at") or 0) < cutoff
+            and ((body.source or None) is None or str(row.get("source") or "") == str(body.source))
+        ]
+        removed = db.delete_sessions(
+            target_ids,
             sessions_dir=sessions_dir if sessions_dir.exists() else None,
         )
         return {"ok": True, "removed": removed}
@@ -7675,7 +8097,8 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                consume_internal_credential(internal)
+                info = consume_internal_credential(internal)
+                setattr(ws, "_hermes_ws_auth_info", info)
                 return None, "internal"
             except TicketInvalid as exc:
                 audit_log(
@@ -7691,7 +8114,8 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            info = consume_ticket(ticket)
+            setattr(ws, "_hermes_ws_auth_info", info)
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
@@ -7706,6 +8130,14 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        setattr(
+            ws,
+            "_hermes_ws_auth_info",
+            {
+                "user_id": "loopback-token",
+                "provider": "loopback-token",
+            },
+        )
         return None, "token"
     return "token_mismatch", "token"
 
@@ -7713,6 +8145,11 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
 def _ws_auth_ok(ws: "WebSocket") -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
     return _ws_auth_reason(ws)[0] is None
+
+
+def _ws_auth_info(ws: "WebSocket") -> dict[str, Any]:
+    info = getattr(ws, "_hermes_ws_auth_info", None)
+    return dict(info) if isinstance(info, dict) else {}
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id

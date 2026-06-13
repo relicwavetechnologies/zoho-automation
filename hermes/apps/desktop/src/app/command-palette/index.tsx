@@ -21,27 +21,23 @@ import {
   Info,
   KeyRound,
   MessageCircle,
-  Monitor,
-  Moon,
   Package,
-  Palette,
   Plus,
   Settings,
   Settings2,
-  Sun,
   Users,
   Wrench,
   Zap
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
-import { type ThemeMode, useTheme } from '@/themes/context'
 
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
+  DESKTOP_OPERATOR_SETTINGS_ENABLED,
   DESKTOP_SETTINGS_ENABLED,
   MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
@@ -50,7 +46,7 @@ import {
   SETTINGS_ROUTE,
   SKILLS_ROUTE
 } from '../routes'
-import { FIELD_LABELS, SECTIONS } from '../settings/constants'
+import { FIELD_LABELS, visibleSections } from '../settings/constants'
 import { prettyName } from '../settings/helpers'
 
 interface PaletteItem {
@@ -93,41 +89,47 @@ const toSessionEntry = (session: SessionRow): SessionEntry => ({
   title: sessionTitle(session)
 })
 
-const NON_CONFIG_SETTINGS: ReadonlyArray<{ icon: IconComponent; keywords?: string[]; label: string; tab: string }> = [
+// `operator: true` entries are admin/control-plane surfaces owned by the admin
+// web console — hidden on the employee desktop unless the operator surface is on.
+const NON_CONFIG_SETTINGS: ReadonlyArray<{
+  icon: IconComponent
+  keywords?: string[]
+  label: string
+  tab: string
+  operator?: boolean
+}> = [
   {
     icon: Zap,
     keywords: ['accounts', 'sign in', 'oauth', 'login', 'subscription', 'models', 'anthropic', 'openai'],
     label: 'Providers',
+    operator: true,
     tab: 'providers&pview=accounts'
   },
   {
     icon: KeyRound,
     keywords: ['providers', 'api key', 'keys', 'secrets', 'tokens'],
     label: 'Provider API keys',
+    operator: true,
     tab: 'providers&pview=keys'
   },
-  { icon: Globe, keywords: ['connection', 'messaging'], label: 'Gateway', tab: 'gateway' },
+  { icon: Globe, keywords: ['connection', 'messaging'], label: 'Gateway', operator: true, tab: 'gateway' },
   {
     icon: KeyRound,
     keywords: ['api', 'secrets', 'tokens', 'credentials', 'browser', 'search'],
     label: 'Tools & Keys',
+    operator: true,
     tab: 'keys&kview=tools'
   },
   {
     icon: Settings2,
     keywords: ['gateway', 'proxy', 'server', 'webhook', 'env'],
     label: 'Tools & Keys settings',
+    operator: true,
     tab: 'keys&kview=settings'
   },
-  { icon: Wrench, keywords: ['servers', 'tools'], label: 'MCP', tab: 'mcp' },
+  { icon: Wrench, keywords: ['servers', 'tools'], label: 'MCP', operator: true, tab: 'mcp' },
   { icon: Archive, keywords: ['history', 'archived'], label: 'Archived Chats', tab: 'sessions' },
   { icon: Info, keywords: ['version', 'about'], label: 'About', tab: 'about' }
-]
-
-const THEME_MODES: ReadonlyArray<{ icon: IconComponent; label: string; mode: ThemeMode }> = [
-  { icon: Sun, label: 'Light', mode: 'light' },
-  { icon: Moon, label: 'Dark', mode: 'dark' },
-  { icon: Monitor, label: 'System', mode: 'system' }
 ]
 
 function fieldLabel(key: string): string {
@@ -137,7 +139,6 @@ function fieldLabel(key: string): string {
 export function CommandPalette() {
   const open = useStore($commandPaletteOpen)
   const navigate = useNavigate()
-  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
 
@@ -233,41 +234,19 @@ export function CommandPalette() {
           }
         ]
       },
-      {
-        // Declared before Settings: cmdk keeps group order, so this keeps the
-        // theme/mode pickers on top for "theme"/"color" queries instead of
-        // buried under a fuzzy Settings match.
-        heading: 'Appearance',
-        items: [
-          {
-            icon: Palette,
-            id: 'appearance-theme',
-            keywords: ['theme', 'appearance', 'color', 'palette', 'skin', 'dark', 'light', 'look'],
-            label: 'Change theme…',
-            to: 'theme'
-          },
-          {
-            icon: Sun,
-            id: 'appearance-mode',
-            keywords: ['appearance', 'color mode', 'brightness', 'dark', 'light', 'system'],
-            label: 'Change color mode…',
-            to: 'color-mode'
-          }
-        ]
-      },
       ...(DESKTOP_SETTINGS_ENABLED
         ? [
             {
               heading: 'Settings',
               items: [
-                ...SECTIONS.map(section => ({
+                ...visibleSections(DESKTOP_OPERATOR_SETTINGS_ENABLED).map(section => ({
                   icon: section.icon,
                   id: `set-config-${section.id}`,
                   keywords: ['settings', section.label],
                   label: section.label,
                   run: go(settingsTab(`config:${section.id}`))
                 })),
-                ...NON_CONFIG_SETTINGS.map(entry => ({
+                ...NON_CONFIG_SETTINGS.filter(entry => DESKTOP_OPERATOR_SETTINGS_ENABLED || !entry.operator).map(entry => ({
                   icon: entry.icon,
                   id: `set-${entry.tab}`,
                   keywords: ['settings', ...(entry.keywords ?? [])],
@@ -305,7 +284,7 @@ export function CommandPalette() {
     }
 
     if (DESKTOP_SETTINGS_ENABLED) {
-      const fieldItems = SECTIONS.flatMap(section =>
+      const fieldItems = visibleSections(DESKTOP_OPERATOR_SETTINGS_ENABLED).flatMap(section =>
         section.keys.map(key => ({
           icon: section.icon,
           id: `field-${key}`,
@@ -318,7 +297,7 @@ export function CommandPalette() {
       result.push({ heading: 'Settings fields', items: fieldItems })
     }
 
-    if (DESKTOP_SETTINGS_ENABLED && mcpServers.length > 0) {
+    if (DESKTOP_OPERATOR_SETTINGS_ENABLED && mcpServers.length > 0) {
       result.push({
         heading: 'MCP servers',
         items: mcpServers.map(name => ({
@@ -350,52 +329,9 @@ export function CommandPalette() {
   const groups = useMemo(() => [...baseGroups, ...searchGroups], [baseGroups, searchGroups])
 
   // Nested palette pages (VS Code-style submenus). Reusable: add an entry here
-  // and point a root item at it via `to`.
-  const subPages = useMemo<Record<string, PalettePage>>(
-    () => ({
-      theme: {
-        title: 'Theme',
-        placeholder: 'Choose a theme…',
-        // Skins aren't inherently light/dark — the same skin renders in either
-        // mode. Group by appearance so picking an entry sets skin + mode at
-        // once, and keep the palette open so each pick previews live.
-        groups: (['light', 'dark'] as const).map(groupMode => ({
-          heading: groupMode === 'light' ? 'Light' : 'Dark',
-          items: availableThemes.map(theme => ({
-            active: themeName === theme.name && resolvedMode === groupMode,
-            icon: groupMode === 'light' ? Sun : Moon,
-            id: `theme-${theme.name}-${groupMode}`,
-            keepOpen: true,
-            keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
-            label: theme.label,
-            run: () => {
-              setTheme(theme.name)
-              setMode(groupMode)
-            }
-          }))
-        }))
-      },
-      'color-mode': {
-        title: 'Color mode',
-        placeholder: 'Choose color mode…',
-        groups: [
-          {
-            heading: 'Color mode',
-            items: THEME_MODES.map(entry => ({
-              active: mode === entry.mode,
-              icon: entry.icon,
-              id: `mode-${entry.mode}`,
-              keepOpen: true,
-              keywords: ['appearance', 'brightness', entry.label],
-              label: entry.label,
-              run: () => setMode(entry.mode)
-            }))
-          }
-        ]
-      }
-    }),
-    [availableThemes, mode, resolvedMode, setMode, setTheme, themeName]
-  )
+  // and point a root item at it via `to`. (The appearance pickers were removed
+  // when the desktop look was locked.)
+  const subPages = useMemo<Record<string, PalettePage>>(() => ({}), [])
 
   const activePage = page ? subPages[page] : null
   const visibleGroups = activePage ? activePage.groups : groups

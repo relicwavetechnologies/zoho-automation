@@ -140,6 +140,11 @@ function cookiesHaveSession(cookies) {
   return cookies.some(c => c && AT_COOKIE_VARIANTS.includes(c.name) && c.value)
 }
 
+/** True when a remote OAuth gateway is configured but the desktop has no session yet. */
+function isOauthLoginRequiredError(error) {
+  return Boolean(error && typeof error === 'object' && error.needsOauthLogin === true)
+}
+
 module.exports = {
   AT_COOKIE_VARIANTS,
   DEFAULT_REMOTE_GATEWAY_URL,
@@ -147,6 +152,7 @@ module.exports = {
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
+  isOauthLoginRequiredError,
   normalizeRemoteBaseUrl,
   resolveEnvAuthMode,
   resolveAuthMode,

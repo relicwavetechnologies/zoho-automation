@@ -78,6 +78,7 @@ CONFIGURABLE_TOOLSETS = [
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
+    ("zoho",            "💼 Zoho Books & CRM",          "finance reports, invoices, contacts, CRM records"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
 ]
@@ -513,6 +514,33 @@ TOOL_CATEGORIES = {
                 "tag": "PKCE OAuth — opens the setup wizard",
                 "env_vars": [],
                 "post_setup": "spotify",
+            },
+        ],
+    },
+    "zoho": {
+        "name": "Zoho Books & CRM",
+        "icon": "💼",
+        "providers": [
+            {
+                "name": "Zoho OAuth",
+                "tag": "Refresh-token based Zoho Books and CRM access",
+                "env_vars": [
+                    {
+                        "key": "ZOHO_CLIENT_ID",
+                        "prompt": "Zoho OAuth client ID",
+                        "url": "https://api-console.zoho.com/",
+                    },
+                    {
+                        "key": "ZOHO_CLIENT_SECRET",
+                        "prompt": "Zoho OAuth client secret",
+                        "url": "https://api-console.zoho.com/",
+                    },
+                    {
+                        "key": "ZOHO_REFRESH_TOKEN",
+                        "prompt": "Zoho OAuth refresh token",
+                        "url": "https://api-console.zoho.com/",
+                    },
+                ],
             },
         ],
     },

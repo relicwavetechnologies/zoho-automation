@@ -4401,7 +4401,13 @@ class GatewayRunner:
             os.getenv(v, "").lower() in {"true", "1", "yes"}
             for v in _builtin_allow_all_vars + _plugin_allow_all_vars
         )
-        if not _any_allowlist and not _allow_all:
+        _allowlist_relevant_platforms = [
+            platform
+            for platform, platform_config in self.config.platforms.items()
+            if platform_config.enabled
+            and platform not in {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK, Platform.MSGRAPH_WEBHOOK}
+        ]
+        if _allowlist_relevant_platforms and not _any_allowlist and not _allow_all:
             logger.warning(
                 "No user allowlists configured. All unauthorized users will be denied. "
                 "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
@@ -4663,8 +4669,7 @@ class GatewayRunner:
                     enabled_platform_count,
                 )
             else:
-                logger.warning("No messaging platforms enabled.")
-                logger.info("Gateway will continue running for cron job execution.")
+                logger.info("No messaging platforms enabled; gateway is running for dashboard, desktop, and cron.")
         
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters
@@ -15587,6 +15592,11 @@ class GatewayRunner:
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            company_id=str(context.company_id) if context.company_id else "",
+            company_user_id=str(context.company_user_id) if context.company_user_id else "",
+            channel_identity_id=str(context.channel_identity_id) if context.channel_identity_id else "",
+            company_role=str(context.company_role) if context.company_role else "",
+            department_id=str(context.department_id) if context.department_id else "",
             message_id=str(context.source.message_id) if context.source.message_id else "",
         )
 

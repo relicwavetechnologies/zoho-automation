@@ -274,6 +274,12 @@ export const api = {
     }),
   getCompanyTeamMembers: () =>
     fetchJSON<CompanyTeamMembersResponse>("/api/company/team-members"),
+  updateCompanyTeamMember: (id: string, body: CompanyTeamMemberUpdateRequest) =>
+    fetchJSON<CompanyTeamMember>(`/api/company/team-members/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   logout: () =>
     fetch(`${BASE}/auth/logout`, {
       method: "POST",
@@ -948,11 +954,26 @@ export interface CompanyTeamMember {
   status: string;
   first_login_at: string | null;
   last_login_at: string | null;
+  avatar_url?: string | null;
+  lark_open_id?: string | null;
+  lark_union_id?: string | null;
+  lark_user_id?: string | null;
+  department_name?: string | null;
+  provider?: string;
+}
+
+export interface CompanyAccountProfile extends CompanyTeamMember {
+  company_name: string;
 }
 
 export interface CompanyTeamMembersResponse {
   company_id: string;
   members: CompanyTeamMember[];
+}
+
+export interface CompanyTeamMemberUpdateRequest {
+  role?: string;
+  status?: string;
 }
 
 export interface ActionResponse {

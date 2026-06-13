@@ -65,6 +65,7 @@ import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '..
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
+import { SidebarProfileFooter } from './profile-footer'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -454,11 +455,9 @@ export function ChatSidebar({
                     <SidebarMenuButton
                       aria-disabled={!isInteractive}
                       className={cn(
-                        'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
-                        active &&
-                          'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
-                        !isInteractive &&
-                          'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
+                        'flex h-6 w-full justify-start gap-1.5 rounded-md px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
+                        active && 'bg-(--ui-control-active-background) text-foreground',
+                        !isInteractive && 'cursor-default hover:bg-transparent hover:text-inherit'
                       )}
                       onClick={() => onNavigate(item)}
                       tooltip={item.label}
@@ -600,6 +599,7 @@ export function ChatSidebar({
           />
         )}
       </SidebarContent>
+      {sidebarOpen && <SidebarProfileFooter />}
     </Sidebar>
   )
 }

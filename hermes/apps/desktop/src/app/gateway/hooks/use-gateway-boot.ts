@@ -9,6 +9,7 @@ import {
   applyDesktopBootProgress,
   completeDesktopBoot,
   failDesktopBoot,
+  pauseDesktopBootForAuth,
   setDesktopBootStep
 } from '@/store/boot'
 import { setGateway } from '@/store/gateway'
@@ -114,6 +115,7 @@ export function useGatewayBoot({
       try {
         if (await blockOnCompanyAuth()) {
           blockedByAuth = true
+          pauseDesktopBootForAuth()
           reconnectAttempt = 0
           return
         }
@@ -155,6 +157,7 @@ export function useGatewayBoot({
         // backoff in the finally block below.
         if (!cancelled && (await blockOnCompanyAuth(err))) {
           blockedByAuth = true
+          pauseDesktopBootForAuth()
           reconnectAttempt = 0
           return
         }
@@ -268,6 +271,7 @@ export function useGatewayBoot({
     async function boot() {
       try {
         if (await blockOnCompanyAuth()) {
+          pauseDesktopBootForAuth()
           return
         }
 
@@ -317,6 +321,7 @@ export function useGatewayBoot({
         bootCompleted = true
       } catch (err) {
         if (!cancelled && (await blockOnCompanyAuth(err))) {
+          pauseDesktopBootForAuth()
           return
         }
 

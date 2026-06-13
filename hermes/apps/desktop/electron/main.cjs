@@ -30,6 +30,7 @@ const {
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   cookiesHaveSession,
+  isOauthLoginRequiredError,
   normalizeRemoteBaseUrl,
   resolveEnvAuthMode,
   resolveAuthMode,
@@ -605,7 +606,7 @@ function updateBootProgress(update, options = {}) {
     timestamp: Date.now()
   }
 
-  if (update.message) {
+  if (update.message && update.phase !== 'backend.auth_required') {
     rememberLog(`[boot] ${update.message}`)
   }
 
@@ -2308,10 +2309,12 @@ function installMediaPermissions() {
 //   * REST is authed by HttpOnly session cookies (``hermes_session_at``),
 //     established by a browser redirect round-trip (/login → IDP →
 //     /auth/callback sets cookies). We cannot read the HttpOnly cookie value
-//     in JS — instead we let an Electron BrowserWindow complete the round
-//     trip into a PERSISTENT session partition, and thereafter route our REST
-//     through Electron's ``net`` bound to that same partition so the cookie
-//     jar attaches the cookie automatically.
+//     in JS. Desktop prefers a system-browser handoff so employees can reuse
+//     their existing Lark/Google session, then the gateway copies the Hermes
+//     session into Electron's PERSISTENT OAuth partition via a short-lived
+//     one-time exchange. Older gateways fall back to an embedded Electron
+//     BrowserWindow that completes the whole redirect trip inside that same
+//     partition.
 //   * WebSocket upgrades require a single-use ``?ticket=`` minted at
 //     ``POST /api/auth/ws-ticket`` (cookie-authed). The legacy ``?token=``
 //     path is unconditionally rejected by gated gateways.
@@ -2329,6 +2332,9 @@ function getOauthSession() {
 
 // Bare + prefixed variants of the access-token cookie live in
 // connection-config.cjs (cookiesHaveSession). See that module for details.
+
+const DESKTOP_BROWSER_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
+const DESKTOP_BROWSER_LOGIN_POLL_MS = 1000
 
 async function hasOauthSessionCookie(baseUrl) {
   const sess = getOauthSession()
@@ -2366,12 +2372,68 @@ async function clearOauthSession(baseUrl) {
   }
 }
 
+async function openSystemBrowserOauthLogin(baseUrl) {
+  if (!app.isReady()) {
+    throw new Error('Desktop is not ready to start an OAuth login.')
+  }
+  const normalizedBaseUrl = normalizeRemoteBaseUrl(baseUrl)
+  const start = await fetchJsonViaOauthSession(`${normalizedBaseUrl}/api/auth/desktop-login/start`, {
+    method: 'POST',
+    body: {},
+    timeoutMs: 8_000
+  })
+  const requestId = String(start?.request_id || '')
+  const pollSecret = String(start?.poll_secret || '')
+  const loginUrl = String(start?.login_url || '')
+
+  if (!requestId || !pollSecret || !loginUrl) {
+    throw new Error('Gateway did not return a valid desktop login handoff.')
+  }
+
+  rememberLog(`[oauth] opening system browser for ${normalizedBaseUrl}`)
+  await shell.openExternal(loginUrl)
+
+  const deadline = Date.now() + DESKTOP_BROWSER_LOGIN_TIMEOUT_MS
+  let sawComplete = false
+  while (Date.now() < deadline) {
+    const body = await fetchJsonViaOauthSession(`${normalizedBaseUrl}/api/auth/desktop-login/exchange`, {
+      method: 'POST',
+      body: {
+        request_id: requestId,
+        poll_secret: pollSecret
+      },
+      timeoutMs: 8_000
+    })
+
+    if (body?.status === 'complete') {
+      sawComplete = true
+      if (await hasOauthSessionCookie(normalizedBaseUrl)) {
+        return { baseUrl: normalizedBaseUrl, ok: true }
+      }
+    }
+
+    if (sawComplete) {
+      // Electron's cookie store can apply Set-Cookie asynchronously relative
+      // to the JSON body callback. Give it a brief chance to flush.
+      await sleep(250)
+      if (await hasOauthSessionCookie(normalizedBaseUrl)) {
+        return { baseUrl: normalizedBaseUrl, ok: true }
+      }
+      throw new Error('System browser sign-in completed, but the desktop session cookie was not stored.')
+    }
+
+    await sleep(DESKTOP_BROWSER_LOGIN_POLL_MS)
+  }
+
+  throw new Error('Timed out waiting for system browser sign-in to complete.')
+}
+
 // Open the gateway's /login page in a visible window using the OAuth session
 // partition, and resolve once the access-token cookie appears (login done) or
 // reject if the user closes the window first. The window navigates through the
 // IDP and back to /auth/callback, which sets the session cookies on the
 // partition; we poll the cookie jar rather than try to read the HttpOnly value.
-function openOauthLoginWindow(baseUrl) {
+function openEmbeddedOauthLoginWindow(baseUrl) {
   return new Promise((resolve, reject) => {
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))
@@ -2446,6 +2508,24 @@ function openOauthLoginWindow(baseUrl) {
   })
 }
 
+async function openOauthLoginWindow(baseUrl) {
+  const browserMode = String(process.env.HERMES_DESKTOP_OAUTH_BROWSER || 'system').trim().toLowerCase()
+
+  if (browserMode === 'embedded') {
+    return openEmbeddedOauthLoginWindow(baseUrl)
+  }
+
+  try {
+    return await openSystemBrowserOauthLogin(baseUrl)
+  } catch (error) {
+    if (error && (error.statusCode === 404 || error.statusCode === 405)) {
+      rememberLog('[oauth] desktop handoff endpoint unavailable; falling back to embedded login window')
+      return openEmbeddedOauthLoginWindow(baseUrl)
+    }
+    throw error
+  }
+}
+
 // JSON request routed through the OAuth session partition so the HttpOnly
 // session cookie is attached automatically by Electron's net stack. Used for
 // authed REST against a gated gateway, including minting WS tickets.
@@ -2477,8 +2557,8 @@ function fetchJsonViaOauthSession(url, options = {}) {
       useSessionCookies: true,
       redirect: 'follow'
     })
-    request.setHeader('Content-Type', 'application/json')
-    if (body) request.setHeader('Content-Length', String(body.length))
+    request.setHeader('Accept', 'application/json')
+    if (body) request.setHeader('Content-Type', 'application/json')
 
     let timedOut = false
     const timer = setTimeout(() => {
@@ -3020,6 +3100,21 @@ async function startHermes() {
         'HERMES_DESKTOP_REMOTE_URL plus either HERMES_DESKTOP_REMOTE_AUTH_MODE=oauth or HERMES_DESKTOP_REMOTE_TOKEN.'
     )
   })().catch(error => {
+    if (isOauthLoginRequiredError(error)) {
+      updateBootProgress(
+        {
+          error: null,
+          message: 'Company sign-in required',
+          phase: 'backend.auth_required',
+          running: false,
+          progress: 0
+        },
+        { allowDecrease: true }
+      )
+      connectionPromise = null
+      throw error
+    }
+
     const message = error instanceof Error ? error.message : String(error)
     updateBootProgress(
       {
@@ -3160,7 +3255,34 @@ function createWindow() {
   mainWindow.webContents.once('did-finish-load', () => {
     broadcastBootProgress()
     sendWindowStateChanged()
-    startHermes().catch(error => rememberLog(error.stack || error.message))
+    void (async () => {
+      try {
+        const status = await getRemoteAuthStatus()
+        if (status.authMode === 'oauth' && status.needsLogin) {
+          updateBootProgress(
+            {
+              error: null,
+              message: 'Company sign-in required',
+              phase: 'backend.auth_required',
+              running: false,
+              progress: 0
+            },
+            { allowDecrease: true }
+          )
+          return
+        }
+      } catch {
+        // Fall through to startHermes — renderer auth gate will handle OAuth.
+      }
+
+      startHermes().catch(error => {
+        if (isOauthLoginRequiredError(error)) {
+          return
+        }
+
+        rememberLog(error instanceof Error ? error.stack || error.message : String(error))
+      })
+    })()
   })
 }
 
@@ -3214,7 +3336,20 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
 })
 
 ipcMain.handle('hermes:api', async (_event, request) => {
-  const connection = await startHermes()
+  let connection
+  try {
+    connection = await startHermes()
+  } catch (error) {
+    if (isOauthLoginRequiredError(error)) {
+      return {
+        detail: 'Company sign-in required',
+        error: 'unauthenticated',
+        needsOauthLogin: true
+      }
+    }
+    throw error
+  }
+
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   const url = `${connection.baseUrl}${request.path}`
   // OAuth gateways authenticate REST via the HttpOnly session cookie held in

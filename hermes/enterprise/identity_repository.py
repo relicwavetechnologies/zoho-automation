@@ -12,6 +12,7 @@ from typing import Any, Mapping, Optional
 
 DEFAULT_COMPANY_SLUG = "default"
 DEFAULT_COMPANY_NAME = "Default Company"
+DISABLED_COMPANY_USER_STATUSES = {"disabled", "inactive", "suspended"}
 
 
 def _clean_slug(value: str) -> str:
@@ -28,6 +29,15 @@ def _stable_id(prefix: str, *parts: object) -> str:
 
 def _json_dumps(value: Mapping[str, Any]) -> str:
     return json.dumps(dict(value), sort_keys=True, separators=(",", ":"))
+
+
+def _normalize_text(value: str | None, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    return text or fallback
+
+
+def _is_disabled_status(value: Any) -> bool:
+    return str(value or "").strip().lower() in DISABLED_COMPANY_USER_STATUSES
 
 
 @dataclass(frozen=True)
@@ -74,8 +84,8 @@ class EnterpriseIdentityRepository:
         effective_name = display_name or company_id.replace("_", " ").strip() or DEFAULT_COMPANY_NAME
         self._execute(
             """
-            INSERT INTO "Company" ("id", "slug", "name")
-            VALUES (%s, %s, %s)
+            INSERT INTO "Company" ("id", "slug", "name", "updatedAt")
+            VALUES (%s, %s, %s, now())
             ON CONFLICT ("id") DO UPDATE SET
                 "slug" = excluded."slug",
                 "name" = excluded."name",
@@ -216,9 +226,114 @@ class EnterpriseIdentityRepository:
         thread_id: str | None = None,
         binding_source: str = "gateway",
     ) -> None:
-        # Canonical run/session persistence belongs to the runtime history
-        # writer. Wave 1 only resolves and persists channel identity rows.
-        return None
+        if not session_id or not session_key:
+            raise ValueError("session_id and session_key are required")
+
+        company_id = identity.company_id
+        if not company_id:
+            raise ValueError("identity.company_id is required")
+
+        effective_platform = str(platform or "tui")
+        effective_chat_id = str(chat_id or session_id)
+        conversation_id = self._ensure_runtime_conversation(
+            company_id=company_id,
+            company_user_id=identity.company_user_id,
+            session_key=session_key,
+            platform=effective_platform,
+            chat_id=effective_chat_id,
+            department_id=identity.department_id,
+        )
+        self._execute(
+            """
+            INSERT INTO "HermesSessionBinding" (
+                "id",
+                "companyId",
+                "hermesSessionId",
+                "sessionKey",
+                "conversationId",
+                "runId",
+                "channelIdentityId",
+                "resolvedUserId",
+                "parentHermesSessionId",
+                "platform",
+                "chatId",
+                "threadId",
+                "source"
+            )
+            VALUES (%s, %s, %s, %s, %s, NULL, NULLIF(%s, ''), NULLIF(%s, ''), NULL, %s, NULLIF(%s, ''), NULLIF(%s, ''), %s)
+            ON CONFLICT ("companyId", "hermesSessionId") DO UPDATE SET
+                "sessionKey" = excluded."sessionKey",
+                "conversationId" = excluded."conversationId",
+                "channelIdentityId" = excluded."channelIdentityId",
+                "resolvedUserId" = excluded."resolvedUserId",
+                "platform" = excluded."platform",
+                "chatId" = excluded."chatId",
+                "threadId" = excluded."threadId",
+                "source" = excluded."source",
+                "lastSeenAt" = now()
+            """,
+            (
+                _stable_id("hsb", company_id, session_id),
+                company_id,
+                session_id,
+                session_key,
+                conversation_id,
+                identity.channel_identity_id or "",
+                identity.company_user_id or "",
+                effective_platform,
+                effective_chat_id,
+                thread_id or "",
+                binding_source,
+            ),
+        )
+
+    def _ensure_runtime_conversation(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str | None,
+        session_key: str,
+        platform: str,
+        chat_id: str,
+        department_id: str | None = None,
+    ) -> str:
+        row = self._fetchone(
+            """
+            INSERT INTO "RuntimeConversation" (
+                "id",
+                "companyId",
+                "departmentId",
+                "channel",
+                "channelConversationKey",
+                "rawChannelKey",
+                "createdByUserId",
+                "createdByEmail",
+                "refsJson",
+                "updatedAt"
+            )
+            VALUES (%s, %s, NULLIF(%s, ''), %s, %s, %s, NULLIF(%s, ''), NULL, %s::jsonb, now())
+            ON CONFLICT ("companyId", "channel", "channelConversationKey") DO UPDATE SET
+                "departmentId" = COALESCE(excluded."departmentId", "RuntimeConversation"."departmentId"),
+                "rawChannelKey" = excluded."rawChannelKey",
+                "createdByUserId" = COALESCE("RuntimeConversation"."createdByUserId", excluded."createdByUserId"),
+                "updatedAt" = now()
+            RETURNING "id"
+            """,
+            (
+                _stable_id("conv", company_id, platform, session_key),
+                company_id,
+                department_id or "",
+                platform,
+                session_key,
+                chat_id,
+                company_user_id or "",
+                _json_dumps({"session_key": session_key}),
+            ),
+        )
+        conversation_id = self._row_get(row, "id")
+        if not conversation_id:
+            raise RuntimeError("RuntimeConversation upsert did not return an id")
+        return str(conversation_id)
 
     def _upsert_company_user(
         self,
@@ -235,11 +350,11 @@ class EnterpriseIdentityRepository:
             INSERT INTO "CompanyUser" (
                 "id", "companyId", "email", "displayName", "role", "departmentId", "status", "updatedAt"
             )
-            VALUES (%s, %s, %s, %s, %s, %s, 'active', now())
+            VALUES (%s, %s, %s, %s, COALESCE(%s, 'MEMBER'), %s, 'active', now())
             ON CONFLICT ("id") DO UPDATE SET
                 "email" = COALESCE(excluded."email", "CompanyUser"."email"),
                 "displayName" = COALESCE(excluded."displayName", "CompanyUser"."displayName"),
-                "role" = COALESCE(excluded."role", "CompanyUser"."role"),
+                "role" = COALESCE(%s, "CompanyUser"."role"),
                 "departmentId" = COALESCE(excluded."departmentId", "CompanyUser"."departmentId"),
                 "updatedAt" = now()
             """,
@@ -248,8 +363,9 @@ class EnterpriseIdentityRepository:
                 company_id,
                 email,
                 display_name,
-                role or "MEMBER",
+                role,
                 department_id,
+                role,
             ),
         )
 
@@ -288,12 +404,22 @@ class EnterpriseIdentityRepository:
         company_user_id = existing_id or _stable_id(
             "cu", company_id, provider, provider_user_id
         )
+        existing_row = self.get_company_user(
+            company_user_id,
+            company_id=company_id,
+        )
+        effective_status = _normalize_text(status, "active")
+        if existing_row and _is_disabled_status(existing_row.get("status")) and effective_status == "active":
+            # Login upsert must not silently reactivate an employee disabled
+            # by an admin action. Reactivation goes through update_company_user.
+            effective_status = str(existing_row.get("status") or "disabled")
+
         self._upsert_company_user(
             company_user_id=company_user_id,
             company_id=company_id,
             display_name=display_name,
             email=email,
-            role=role or "MEMBER",
+            role=role,
             department_id=department_id,
         )
         self._execute(
@@ -302,7 +428,14 @@ class EnterpriseIdentityRepository:
             SET "status" = %s, "updatedAt" = now()
             WHERE "id" = %s
             """,
-            (status, company_user_id),
+            (effective_status, company_user_id),
+        )
+        self._link_dashboard_channel_identity(
+            company_id=company_id,
+            company_user_id=company_user_id,
+            provider=provider,
+            provider_user_id=provider_user_id,
+            display_name=display_name,
         )
         row = self._fetchone(
             """
@@ -322,6 +455,288 @@ class EnterpriseIdentityRepository:
             "departmentId": department_id,
             "status": status,
         }
+
+    def _link_dashboard_channel_identity(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str,
+        provider: str,
+        provider_user_id: str,
+        display_name: str | None = None,
+    ) -> None:
+        identity_key = f"user:{provider_user_id}"
+        channel_identity_id = _stable_id("ci", company_id, provider, identity_key)
+        raw_payload = {
+            "platform": provider,
+            "user_id": provider_user_id,
+            "user_name": display_name,
+            "source": "dashboard_auth",
+        }
+        self._execute(
+            """
+            INSERT INTO "ChannelIdentity" (
+                "id",
+                "companyId",
+                "companyUserId",
+                "channel",
+                "externalUserId",
+                "externalTenantId",
+                "displayName",
+                "identityKind",
+                "identityKey",
+                "platformUserIdAlt",
+                "platformChatId",
+                "platformWorkspaceId",
+                "approvedSource",
+                "rawJson",
+                "firstSeenAt",
+                "lastSeenAt",
+                "updatedAt"
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now(), now(), now())
+            ON CONFLICT ("channel", "externalUserId", "companyId") DO UPDATE SET
+                "companyUserId" = excluded."companyUserId",
+                "displayName" = COALESCE(excluded."displayName", "ChannelIdentity"."displayName"),
+                "identityKey" = excluded."identityKey",
+                "approvedSource" = excluded."approvedSource",
+                "rawJson" = excluded."rawJson",
+                "lastSeenAt" = now(),
+                "updatedAt" = now()
+            """,
+            (
+                channel_identity_id,
+                company_id,
+                company_user_id,
+                provider,
+                provider_user_id,
+                company_id,
+                display_name,
+                "user",
+                identity_key,
+                None,
+                "",
+                company_id,
+                "dashboard_auth",
+                _json_dumps(raw_payload),
+            ),
+        )
+
+    def get_company(self, company_id: str) -> Optional[dict[str, Any]]:
+        row = self._fetchone(
+            """
+            SELECT "id", "slug", "name"
+            FROM "Company"
+            WHERE "id" = %s
+            """,
+            (company_id,),
+        )
+        if not isinstance(row, Mapping):
+            return None
+        return {
+            "id": self._row_get(row, "id"),
+            "slug": self._row_get(row, "slug"),
+            "display_name": self._row_get(row, "name"),
+        }
+
+    def find_dashboard_company_user(
+        self,
+        *,
+        provider: str,
+        provider_user_id: str,
+        company_id: str | None = None,
+    ) -> Optional[dict[str, Any]]:
+        company_id = company_id or self.ensure_default_company()
+        provider = str(provider or "dashboard").strip() or "dashboard"
+        provider_user_id = str(provider_user_id or "").strip()
+        if not provider_user_id:
+            return None
+        company_user_id = _stable_id("cu", company_id, provider, provider_user_id)
+        row = self._fetchone(
+            """
+            SELECT "id", "companyId", "email", "displayName", "role", "departmentId",
+                   "status", "createdAt", "updatedAt"
+            FROM "CompanyUser"
+            WHERE "id" = %s
+            """,
+            (company_user_id,),
+        )
+        return dict(row) if isinstance(row, Mapping) else None
+
+    def get_company_user(
+        self,
+        company_user_id: str,
+        *,
+        company_id: str | None = None,
+    ) -> Optional[dict[str, Any]]:
+        if company_id:
+            row = self._fetchone(
+                """
+                SELECT "id", "companyId", "email", "displayName", "role", "departmentId",
+                       "status", "createdAt", "updatedAt"
+                FROM "CompanyUser"
+                WHERE "id" = %s AND "companyId" = %s
+                """,
+                (company_user_id, company_id),
+            )
+        else:
+            row = self._fetchone(
+                """
+                SELECT "id", "companyId", "email", "displayName", "role", "departmentId",
+                       "status", "createdAt", "updatedAt"
+                FROM "CompanyUser"
+                WHERE "id" = %s
+                """,
+                (company_user_id,),
+            )
+        return dict(row) if isinstance(row, Mapping) else None
+
+    def update_company_user(
+        self,
+        *,
+        company_user_id: str,
+        company_id: str | None = None,
+        role: str | None = None,
+        status: str | None = None,
+    ) -> Optional[dict[str, Any]]:
+        company_id = company_id or self.ensure_default_company()
+        updates: list[str] = []
+        args: list[Any] = []
+        if role is not None:
+            updates.append('"role" = %s')
+            args.append(_normalize_text(role, "MEMBER"))
+        if status is not None:
+            updates.append('"status" = %s')
+            args.append(_normalize_text(status, "active"))
+        if not updates:
+            return self.get_company_user(company_user_id, company_id=company_id)
+
+        updates.append('"updatedAt" = now()')
+        args.extend([company_user_id, company_id])
+        self._execute(
+            f"""
+            UPDATE "CompanyUser"
+            SET {", ".join(updates)}
+            WHERE "id" = %s AND "companyId" = %s
+            """,
+            tuple(args),
+        )
+        return self.get_company_user(company_user_id, company_id=company_id)
+
+    def list_channel_identities_for_company_user(
+        self,
+        company_user_id: str,
+    ) -> list[dict[str, Any]]:
+        result = self._connection.execute(
+            """
+            SELECT "id", "companyId", "companyUserId", "channel", "externalUserId",
+                   "displayName", "identityKind", "identityKey", "platformUserIdAlt",
+                   "approvedSource", "rawJson", "firstSeenAt", "lastSeenAt"
+            FROM "ChannelIdentity"
+            WHERE "companyUserId" = %s
+            ORDER BY "lastSeenAt" DESC
+            """,
+            (company_user_id,),
+        )
+        fetchall = getattr(result, "fetchall", None)
+        try:
+            if fetchall is None:
+                return []
+            rows = fetchall()
+        finally:
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            normalized.append(
+                {
+                    "id": self._row_get(row, "id"),
+                    "company_id": self._row_get(row, "companyId"),
+                    "company_user_id": self._row_get(row, "companyUserId"),
+                    "platform": self._row_get(row, "channel"),
+                    "platform_user_id": self._row_get(row, "externalUserId"),
+                    "platform_user_id_alt": self._row_get(row, "platformUserIdAlt"),
+                    "display_name": self._row_get(row, "displayName"),
+                    "identity_kind": self._row_get(row, "identityKind"),
+                    "identity_key": self._row_get(row, "identityKey"),
+                    "approved_source": self._row_get(row, "approvedSource"),
+                    "raw_json": self._row_get(row, "rawJson"),
+                }
+            )
+        return normalized
+
+    def get_session_identity(self, session_id: str) -> Optional[dict[str, Any]]:
+        row = self._fetchone(
+            """
+            SELECT "hermesSessionId", "sessionKey", "companyId", "resolvedUserId",
+                   "channelIdentityId", "platform", "chatId", "threadId",
+                   "source", "lastSeenAt"
+            FROM "HermesSessionBinding"
+            WHERE "hermesSessionId" = %s
+            """,
+            (session_id,),
+        )
+        if not isinstance(row, Mapping):
+            return None
+        return {
+            "session_id": self._row_get(row, "hermesSessionId"),
+            "session_key": self._row_get(row, "sessionKey"),
+            "company_id": self._row_get(row, "companyId"),
+            "company_user_id": self._row_get(row, "resolvedUserId"),
+            "channel_identity_id": self._row_get(row, "channelIdentityId"),
+            "platform": self._row_get(row, "platform"),
+            "chat_id": self._row_get(row, "chatId"),
+            "thread_id": self._row_get(row, "threadId"),
+            "binding_source": self._row_get(row, "source"),
+            "last_seen_at": self._row_get(row, "lastSeenAt"),
+        }
+
+    def list_session_identities_for_company_user(
+        self,
+        company_user_id: str,
+    ) -> list[dict[str, Any]]:
+        result = self._connection.execute(
+            """
+            SELECT "hermesSessionId", "sessionKey", "companyId", "resolvedUserId",
+                   "channelIdentityId", "platform", "chatId", "threadId",
+                   "source", "lastSeenAt"
+            FROM "HermesSessionBinding"
+            WHERE "resolvedUserId" = %s
+            ORDER BY "lastSeenAt" DESC
+            """,
+            (company_user_id,),
+        )
+        fetchall = getattr(result, "fetchall", None)
+        try:
+            if fetchall is None:
+                return []
+            rows = fetchall()
+        finally:
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            normalized.append(
+                {
+                    "session_id": self._row_get(row, "hermesSessionId"),
+                    "session_key": self._row_get(row, "sessionKey"),
+                    "company_id": self._row_get(row, "companyId"),
+                    "company_user_id": self._row_get(row, "resolvedUserId"),
+                    "channel_identity_id": self._row_get(row, "channelIdentityId"),
+                    "platform": self._row_get(row, "platform"),
+                    "chat_id": self._row_get(row, "chatId"),
+                    "thread_id": self._row_get(row, "threadId"),
+                    "binding_source": self._row_get(row, "source"),
+                    "last_seen_at": self._row_get(row, "lastSeenAt"),
+                }
+            )
+        return normalized
 
     def list_company_users(self, *, company_id: str | None = None) -> list[dict[str, Any]]:
         company_id = company_id or self.ensure_default_company()

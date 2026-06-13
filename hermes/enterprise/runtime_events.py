@@ -56,6 +56,7 @@ class RuntimeRunContext:
     session_key: str
     department_id: str = ""
     created_by_user_id: str = ""
+    channel_identity_id: str = ""
     created_by_email: str = ""
     parent_run_id: str = ""
     parent_hermes_session_id: str = ""

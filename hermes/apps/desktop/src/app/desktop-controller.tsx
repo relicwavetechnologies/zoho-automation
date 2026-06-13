@@ -1,10 +1,11 @@
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { CompanyAuthOverlay } from '@/components/company-auth-overlay'
+import { syncCompanyAuthGate } from '@/lib/company-auth'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
@@ -69,7 +70,13 @@ import { ModelVisibilityOverlay } from './model-visibility-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
-import { DESKTOP_SETTINGS_ENABLED, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import {
+  DESKTOP_OPERATOR_SETTINGS_ENABLED,
+  NEW_CHAT_ROUTE,
+  routeSessionId,
+  sessionRoute,
+  SETTINGS_ROUTE
+} from './routes'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -110,6 +117,7 @@ export function DesktopController() {
 
   const gatewayState = useStore($gatewayState)
   const companyAuth = useStore($companyAuth)
+  const [companyAuthReady, setCompanyAuthReady] = useState(false)
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
   const freshDraftReady = useStore($freshDraftReady)
@@ -178,6 +186,12 @@ export function DesktopController() {
       unsubscribe?.()
       stopUpdatePoller()
     }
+  }, [])
+
+  // Resolve OAuth gate before mounting the shell so pre-login API calls do not
+  // spam the main-process IPC log with expected auth-required errors.
+  useLayoutEffect(() => {
+    void syncCompanyAuthGate(window.hermesDesktop).finally(() => setCompanyAuthReady(true))
   }, [])
 
   useEffect(() => {
@@ -318,7 +332,7 @@ export function DesktopController() {
   })
 
   const openProviderSettings = useCallback(() => {
-    if (DESKTOP_SETTINGS_ENABLED) {
+    if (DESKTOP_OPERATOR_SETTINGS_ENABLED) {
       navigate(`${SETTINGS_ROUTE}?tab=providers`)
     }
   }, [navigate])
@@ -598,6 +612,7 @@ export function DesktopController() {
       <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
       <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
       <UpdatesOverlay />
+      <CompanyAuthOverlay />
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
       <CommandPalette />
@@ -730,6 +745,10 @@ export function DesktopController() {
       />
     </Pane>
   )
+
+  if (!companyAuthReady) {
+    return <GatewayConnectingOverlay />
+  }
 
   if (companyAuth.visible) {
     return <CompanyAuthOverlay />

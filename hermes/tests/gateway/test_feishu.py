@@ -4944,3 +4944,88 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestFeishuSessionContinuity(unittest.TestCase):
+    """Session key stability and per-user isolation for Feishu messages.
+
+    Acceptance criteria (plan §2):
+    - Session key is stable across follow-up messages from the same user.
+    - In per-user group mode, different users get separate session keys.
+    - No cross-user session bleed — User A's key never equals User B's key
+      when their identities differ.
+    """
+
+    def _make_source(self, chat_id, user_id, chat_type="dm", thread_id=None):
+        from gateway.session import SessionSource
+        from gateway.config import Platform
+
+        return SessionSource(
+            platform=Platform.FEISHU,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+
+    def test_session_key_stable_across_follow_ups(self):
+        """Two consecutive DM messages from the same user produce the same session key."""
+        from gateway.session import build_session_key
+
+        msg1 = self._make_source("oc_user1", "ou_user1")
+        msg2 = self._make_source("oc_user1", "ou_user1")
+
+        self.assertEqual(build_session_key(msg1), build_session_key(msg2))
+
+    def test_dm_session_key_includes_chat_id(self):
+        """DM session key encodes the chat_id so each DM is isolated."""
+        from gateway.session import build_session_key
+
+        dm = self._make_source("oc_user1", "ou_user1")
+        key = build_session_key(dm)
+
+        self.assertIn("oc_user1", key)
+        self.assertIn("feishu", key)
+
+    def test_different_dm_users_get_different_keys(self):
+        """User A and User B in separate DMs never share a session key."""
+        from gateway.session import build_session_key
+
+        src_a = self._make_source("oc_user_A", "ou_A")
+        src_b = self._make_source("oc_user_B", "ou_B")
+
+        self.assertNotEqual(build_session_key(src_a), build_session_key(src_b))
+
+    def test_group_per_user_isolates_participants(self):
+        """With group_sessions_per_user=True, each user in the group has their own key."""
+        from gateway.session import build_session_key
+
+        src_a = self._make_source("oc_group", "ou_user_A", chat_type="group")
+        src_b = self._make_source("oc_group", "ou_user_B", chat_type="group")
+
+        key_a = build_session_key(src_a, group_sessions_per_user=True)
+        key_b = build_session_key(src_b, group_sessions_per_user=True)
+
+        self.assertNotEqual(key_a, key_b)
+
+    def test_group_shared_session_unifies_participants(self):
+        """With group_sessions_per_user=False, all users in the group share one key."""
+        from gateway.session import build_session_key
+
+        src_a = self._make_source("oc_group", "ou_user_A", chat_type="group")
+        src_b = self._make_source("oc_group", "ou_user_B", chat_type="group")
+
+        key_a = build_session_key(src_a, group_sessions_per_user=False)
+        key_b = build_session_key(src_b, group_sessions_per_user=False)
+
+        self.assertEqual(key_a, key_b)
+
+    def test_no_cross_user_bleed_same_company_different_chats(self):
+        """Same company, different DM chats → never the same session key."""
+        from gateway.session import build_session_key
+
+        # Simulate two employees at the same company each in their own DM.
+        src_a = self._make_source("oc_dm_A", "ou_emp_A")
+        src_b = self._make_source("oc_dm_B", "ou_emp_B")
+
+        self.assertNotEqual(build_session_key(src_a), build_session_key(src_b))

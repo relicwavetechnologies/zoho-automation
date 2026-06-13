@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Divo — Roadmap</title>
+  <title>Divo on Hermes — Roadmap</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -25,10 +25,9 @@
 
     <div class="phead">
       <div class="eyebrow">Where we are · where we're going</div>
-      <h1>Shipped, in flight, and <span class="accent">queued</span>.</h1>
+      <h1>Migration, hardening, and <span class="accent">adoption</span>.</h1>
       <p class="lede">
-        The desktop client went from a static shell to a Cursor-grade chat surface with local execution. Next is the
-        integration layer that makes it daily-indispensable for EMIAC — starting with the SEO data layer and the native moat.
+        The desktop client moved to a Cursor-grade chat surface with local execution. Hermes now aligns the backend and delivery layers into one company-wide system. Goal: 1-week migration parity and a 2-month measurable rollout to daily team usage.
       </p>
     </div>
 
@@ -36,9 +35,9 @@
     <div class="section">
       <div class="section-label">Version arc <span class="ln"></span></div>
       <div class="phases">
-        <div class="phase done"><div class="pm">V0</div><div><div class="pt">Core orchestration <span class="pill pill-green"><span class="pd"></span>done</span></div><div class="pdesc">The brain: supervisor + queue + Redis, the Lark channel, the tool registry, HITL approvals, admin dashboard. Production on real company data.</div></div></div>
-        <div class="phase active"><div class="pm">V1</div><div><div class="pt">Desktop + hardening <span class="pill pill-amber"><span class="pd"></span>in progress</span></div><div class="pdesc">The Tauri desktop app — streaming timeline, markdown, local terminal — plus 3-layer context management, scheduled workflows, and production hardening.</div></div></div>
-        <div class="phase"><div class="pm">V2</div><div><div class="pt">The integration layer <span class="pill pill-blue"><span class="pd"></span>next</span></div><div class="pdesc">Ahrefs + GSC, the native moat (global hotkey, clipboard, screen), the proactive Agent Inbox, and the outreach / content / payout engines — the EMIAC-specific killers.</div></div></div>
+        <div class="phase done"><div class="pm">V0</div><div><div class="pt">Legacy Divo baseline <span class="pill pill-green"><span class="pd"></span>done</span></div><div class="pdesc">The original brain: supervisor + queue + Redis, Lark channel, tool registry, HITL approvals, admin dashboard. Stable but not company-wide yet.</div></div></div>
+        <div class="phase active"><div class="pm">W1</div><div><div class="pt">Hermes migration parity <span class="pill pill-amber"><span class="pd"></span>in progress</span></div><div class="pdesc">Align backend to Hermes stack as the only runtime, finish channel parity (Lark + Desktop + Admin), and ship RBAC-first tool dispatch.</div></div></div>
+        <div class="phase"><div class="pm">M2</div><div><div class="pt">Adoption layer <span class="pill pill-blue"><span class="pd"></span>next</span></div><div class="pdesc">Ahrefs + GSC, native moat polish (hotkey, capture, clipboard), proactive Agent Inbox, and outreach/content/payout engines at daily cadence.</div></div></div>
       </div>
     </div>
 
@@ -57,12 +56,12 @@
         <div class="col">
           <div class="col-head"><span class="dot" style="background:var(--amber)"></span><span class="ct">In progress</span><span class="cn">backend</span></div>
           <div class="ci"><div class="cit">3-layer context management</div><div class="cid">Tool-result masking · summarization · token budget.</div></div>
-          <div class="ci"><div class="cit">Streaming performance</div><div class="cid">rAF coalescing + memoization across the renderer.</div></div>
+          <div class="ci"><div class="cit">Streaming performance</div><div class="cid">rAF coalescing + memoization across the renderer for both Lark and desktop.</div></div>
           <div class="ci"><div class="cit">Scheduled workflows</div><div class="cid">Timezone-aware briefings on the same engine.</div></div>
           <div class="ci"><div class="cit">Production hardening</div><div class="cid">Reconnect resilience, fallbacks, observability.</div></div>
         </div>
         <div class="col">
-          <div class="col-head"><span class="dot" style="background:var(--accent)"></span><span class="ct">Planned</span><span class="cn">V2 · EMIAC</span></div>
+          <div class="col-head"><span class="dot" style="background:var(--accent)"></span><span class="ct">Planned</span><span class="cn">M2 · EMIAC</span></div>
           <div class="ci"><div class="cit">Ahrefs + GSC tool family</div><div class="cid">★ The killer — feeds prospecting, briefs, reports.</div></div>
           <div class="ci"><div class="cit">Global hotkey + capture</div><div class="cid">Summon from any app; clipboard/selection context.</div></div>
           <div class="ci"><div class="cit">Proactive Agent Inbox</div><div class="cid">Morning briefing + watchers + native alerts.</div></div>
@@ -74,20 +73,20 @@
 
     <!-- next three -->
     <div class="section">
-      <div class="section-label">The next three moves <span class="ln"></span></div>
+      <div class="section-label">The next three rollout moves <span class="ln"></span></div>
       <div class="flow">
-        <div class="flow-step accent"><div class="flow-num">1</div><h4>Ahrefs + GSC</h4><p>Native tool family. Lowest effort (already connected), highest leverage — it's EMIAC's core data.</p></div>
+        <div class="flow-step accent"><div class="flow-num">1</div><h4>Hermes parity hardening</h4><p>Finalize normalized channels, RBAC propagation, and context contracts. This is the 1-week anchor.</p></div>
         <div class="flow-arrow">→</div>
-        <div class="flow-step accent"><div class="flow-num">2</div><h4>Global hotkey palette</h4><p>The native moat that makes Ahrefs — and everything — a sub-2-second reflex.</p></div>
+        <div class="flow-step accent"><div class="flow-num">2</div><h4>Ahrefs + GSC layer</h4><p>Native tool family and reporting baseline. Highest value, lowest risk next step after parity.</p></div>
         <div class="flow-arrow">→</div>
-        <div class="flow-step accent"><div class="flow-num">3</div><h4>Proactive briefing</h4><p>Morning digest + menu-bar Agent Inbox — the daily open-reflex for 80+ people.</p></div>
+        <div class="flow-step accent"><div class="flow-num">3</div><h4>Proactive native workflows</h4><p>Morning digests, watchers, and menu-bar Agent Inbox to drive 2-month adoption.</p></div>
       </div>
-      <div class="callout accent" style="margin-top:16px;">Those three turn Divo from "an app we built" into <b>"the first thing the team opens every morning."</b></div>
+      <div class="callout accent" style="margin-top:16px;">Those three turn Hermes migration into a real operating surface: not a one-time app launch, but a reflex for daily leadership and operations work.</div>
     </div>
 
     <div class="foot">
       <span>Divo · roadmap</span>
-      <span>V0 done · V1 in progress · V2 — the EMIAC integration layer</span>
+      <span>V0 done · W1 migration in progress · M2 — adoption and sticky workflows</span>
     </div>
   </main>
   <script src="deck.js"></script>

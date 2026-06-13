@@ -31,13 +31,15 @@ export function applyDesktopBootProgress(progress: DesktopBootProgress) {
   const current = $desktopBoot.get()
   const nextProgress = clampProgress(progress.progress)
   const mergedProgress = progress.running ? Math.max(current.progress, nextProgress) : nextProgress
+  const authPaused =
+    progress.phase === 'backend.auth_required' || progress.phase === 'renderer.auth_required'
 
   $desktopBoot.set({
     ...current,
     ...progress,
     error: progress.error ?? null,
     progress: mergedProgress,
-    visible: progress.running || mergedProgress < 100 || Boolean(progress.error)
+    visible: authPaused ? false : progress.running || mergedProgress < 100 || Boolean(progress.error)
   })
 }
 
@@ -86,5 +88,20 @@ export function failDesktopBoot(message: string) {
     running: false,
     timestamp: Date.now(),
     visible: true
+  })
+}
+
+/** Hide the boot overlay when company OAuth is required — not a failure. */
+export function pauseDesktopBootForAuth(message = 'Company sign-in required') {
+  const current = $desktopBoot.get()
+  $desktopBoot.set({
+    ...current,
+    error: null,
+    message,
+    phase: 'renderer.auth_required',
+    progress: clampProgress(current.progress),
+    running: false,
+    timestamp: Date.now(),
+    visible: false
   })
 }

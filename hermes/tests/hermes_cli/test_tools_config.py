@@ -95,6 +95,21 @@ def test_configurable_toolsets_include_context_engine():
     assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
+def test_configurable_toolsets_include_zoho_with_oauth_envs():
+    assert any(ts_key == "zoho" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+    providers = TOOL_CATEGORIES["zoho"]["providers"]
+    assert [provider["name"] for provider in providers] == ["Zoho OAuth"]
+    assert {
+        env_var["key"]
+        for env_var in providers[0]["env_vars"]
+    } == {
+        "ZOHO_CLIENT_ID",
+        "ZOHO_CLIENT_SECRET",
+        "ZOHO_REFRESH_TOKEN",
+    }
+
+
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
     config = {
         "context": {"engine": "lcm"},
@@ -1550,5 +1565,4 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
-
 

@@ -616,9 +616,195 @@ def _start_agent_build(sid: str, session: dict) -> None:
     threading.Thread(target=_build, daemon=True).start()
 
 
+def _transport_auth_identity(transport: Transport | None = None) -> dict[str, Any]:
+    transport = transport or current_transport()
+    info = getattr(transport, "auth_identity", None)
+    return dict(info) if isinstance(info, dict) else {}
+
+
+def _company_identity_payload(identity: Any) -> dict[str, str]:
+    if identity is None:
+        return {}
+    payload = {
+        "company_id": str(getattr(identity, "company_id", "") or ""),
+        "company_user_id": str(getattr(identity, "company_user_id", "") or ""),
+        "channel_identity_id": str(getattr(identity, "channel_identity_id", "") or ""),
+        "company_role": str(getattr(identity, "company_role", "") or ""),
+        "department_id": str(getattr(identity, "department_id", "") or ""),
+        "session_provider": str(getattr(identity, "session_provider", "") or ""),
+        "session_user_id": str(getattr(identity, "session_user_id", "") or ""),
+        "email": str(getattr(identity, "email", "") or ""),
+        "display_name": str(getattr(identity, "display_name", "") or ""),
+    }
+    return {k: v for k, v in payload.items() if v}
+
+
+def _resolve_transport_company_identity(
+    transport: Transport | None = None,
+) -> dict[str, str] | None:
+    transport = transport or current_transport()
+    if transport is None:
+        return None
+    cached = getattr(transport, "_hermes_company_identity_cache", None)
+    if isinstance(cached, dict):
+        return dict(cached)
+    if cached is False:
+        return None
+
+    info = _transport_auth_identity(transport)
+    provider = str(info.get("provider") or "").strip()
+    user_id = str(info.get("user_id") or "").strip()
+    if not provider or not user_id or provider in {
+        "loopback-token",
+        "server-internal",
+    }:
+        try:
+            setattr(transport, "_hermes_company_identity_cache", False)
+        except Exception:
+            pass
+        return None
+
+    try:
+        from gateway.company_identity import resolve_dashboard_session_identity
+
+        identity = resolve_dashboard_session_identity(
+            provider=provider,
+            provider_user_id=user_id,
+            display_name=str(info.get("display_name") or "").strip() or None,
+            email=str(info.get("email") or "").strip() or None,
+        )
+        payload = _company_identity_payload(identity)
+    except Exception:
+        logger.debug("failed to resolve transport company identity", exc_info=True)
+        raise
+
+    try:
+        setattr(transport, "_hermes_company_identity_cache", dict(payload))
+    except Exception:
+        pass
+    return payload
+
+
+def _bound_session_company_identity(session_key: str) -> dict[str, str] | None:
+    if not session_key:
+        return None
+    try:
+        from gateway.company_identity import get_session_identity
+
+        row = get_session_identity(session_key)
+    except Exception:
+        logger.debug("failed to resolve bound session identity", exc_info=True)
+        return None
+    if not isinstance(row, dict):
+        return None
+    payload = {
+        "company_id": str(row.get("company_id") or ""),
+        "company_user_id": str(row.get("company_user_id") or ""),
+        "channel_identity_id": str(row.get("channel_identity_id") or ""),
+        "company_role": str(row.get("company_role") or ""),
+        "department_id": str(row.get("department_id") or ""),
+    }
+    return payload if payload["company_id"] and payload["company_user_id"] else None
+
+
+def _session_company_identity(session: dict | None) -> dict[str, str] | None:
+    if not isinstance(session, dict):
+        return None
+    payload = session.get("company_identity")
+    if isinstance(payload, dict) and payload.get("company_id") and payload.get(
+        "company_user_id"
+    ):
+        return dict(payload)
+    session_key = str(session.get("session_key") or "")
+    bound = _bound_session_company_identity(session_key)
+    if bound:
+        session["company_identity"] = dict(bound)
+    return bound
+
+
+def _bind_live_session_company_identity(
+    session: dict,
+    *,
+    session_key: str | None = None,
+    platform: str = "tui",
+) -> None:
+    identity = _session_company_identity(session)
+    if not identity:
+        return
+    effective_key = str(session_key or session.get("session_key") or "")
+    if not effective_key:
+        return
+    try:
+        from gateway.company_identity import bind_explicit_session_identity
+
+        bind_explicit_session_identity(
+            session_id=effective_key,
+            session_key=effective_key,
+            company_id=identity["company_id"],
+            company_user_id=identity["company_user_id"],
+            channel_identity_id=identity["channel_identity_id"],
+            company_role=str(identity.get("company_role") or ""),
+            department_id=str(identity.get("department_id") or ""),
+            platform=platform,
+            chat_id=effective_key,
+            binding_source="tui_gateway",
+        )
+    except Exception:
+        logger.debug("failed to bind live session identity", exc_info=True)
+        raise
+
+
+def _authorized_company_session_ids(
+    transport: Transport | None = None,
+) -> set[str] | None:
+    identity = _resolve_transport_company_identity(transport)
+    if not identity:
+        return None
+    try:
+        from gateway.company_identity import list_session_identities_for_company_user
+
+        rows = list_session_identities_for_company_user(identity["company_user_id"])
+    except Exception:
+        logger.debug("failed to list authorized session identities", exc_info=True)
+        raise
+    allowed = {
+        str(row.get("session_id") or "")
+        for row in rows
+        if str(row.get("company_id") or "") == identity["company_id"]
+        and str(row.get("company_user_id") or "") == identity["company_user_id"]
+        and str(row.get("session_id") or "")
+    }
+    return allowed
+
+
+def _session_access_allowed(
+    session: dict | None,
+    transport: Transport | None = None,
+) -> bool:
+    current_identity = _resolve_transport_company_identity(transport)
+    if not current_identity:
+        return True
+    bound_identity = _session_company_identity(session)
+    if not bound_identity:
+        return False
+    return (
+        str(bound_identity.get("company_id") or "")
+        == str(current_identity.get("company_id") or "")
+        and str(bound_identity.get("company_user_id") or "")
+        == str(current_identity.get("company_user_id") or "")
+    )
+
+
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
-    return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+    if s is None:
+        return (None, _err(rid, 4001, "session not found"))
+    try:
+        if not _session_access_allowed(s):
+            return (None, _err(rid, 4001, "session not found"))
+    except Exception as exc:
+        return (None, _err(rid, 5033, f"company identity unavailable: {exc}"))
+    return (s, None)
 
 
 def _sess(params, rid):
@@ -825,7 +1011,18 @@ def _cwd_for_session_key(session_key: str) -> str:
     return ""
 
 
-def _set_session_context(session_key: str, cwd: str | None = None) -> list:
+def _session_for_key(session_key: str) -> dict | None:
+    for sess in list(_sessions.values()):
+        if sess.get("session_key") == session_key:
+            return sess
+    return None
+
+
+def _set_session_context(
+    session_key: str,
+    cwd: str | None = None,
+    identity: dict[str, str] | None = None,
+) -> list:
     try:
         from gateway.session_context import set_session_vars
 
@@ -834,7 +1031,24 @@ def _set_session_context(session_key: str, cwd: str | None = None) -> list:
         # know the parent workspace pass it explicitly so spawned agents inherit
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
-        return set_session_vars(session_key=session_key, cwd=resolved)
+        effective_identity = identity
+        if effective_identity is None:
+            live = _session_for_key(session_key)
+            effective_identity = _session_company_identity(live) if live else None
+        if effective_identity is None:
+            effective_identity = _bound_session_company_identity(session_key)
+        effective_identity = dict(effective_identity or {})
+        return set_session_vars(
+            session_key=session_key,
+            cwd=resolved,
+            company_id=str(effective_identity.get("company_id") or ""),
+            company_user_id=str(effective_identity.get("company_user_id") or ""),
+            channel_identity_id=str(
+                effective_identity.get("channel_identity_id") or ""
+            ),
+            company_role=str(effective_identity.get("company_role") or ""),
+            department_id=str(effective_identity.get("department_id") or ""),
+        )
     except Exception:
         return []
 
@@ -1458,6 +1672,10 @@ def _sync_session_key_after_compress(
             _restart_slash_worker(session)
         except Exception:
             pass
+    try:
+        _bind_live_session_company_identity(session, session_key=new_session_id)
+    except Exception:
+        logger.debug("failed to rebind session identity after compression", exc_info=True)
 
 
 def _get_usage(agent) -> dict:
@@ -2400,7 +2618,14 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     )
 
 
-def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+def _init_session(
+    sid: str,
+    key: str,
+    agent,
+    history: list,
+    cols: int = 80,
+    company_identity: dict[str, str] | None = None,
+):
     now = time.time()
     _sessions[sid] = {
         "agent": agent,
@@ -2424,7 +2649,12 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         # Pin async event emissions to whichever transport created the
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
         "transport": current_transport() or _stdio_transport,
+        "company_identity": dict(company_identity or {}),
     }
+    if not _sessions[sid]["company_identity"]:
+        bound_identity = _bound_session_company_identity(key)
+        if bound_identity:
+            _sessions[sid]["company_identity"] = bound_identity
     db = _get_db()
     if db is not None:
         row = db.get_session(key)
@@ -2814,6 +3044,10 @@ def _(rid, params: dict) -> dict:
         explicit_cwd = False
     resolved_cwd = _completion_cwd(params)
     _enable_gateway_prompts()
+    try:
+        company_identity = _resolve_transport_company_identity()
+    except Exception as exc:
+        return _err(rid, 5033, f"company identity unavailable: {exc}")
 
     ready = threading.Event()
     now = time.time()
@@ -2842,8 +3076,15 @@ def _(rid, params: dict) -> dict:
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
         "transport": current_transport() or _stdio_transport,
+        "company_identity": dict(company_identity or {}),
     }
     _register_session_cwd(_sessions[sid])
+    if company_identity:
+        try:
+            _bind_live_session_company_identity(_sessions[sid], session_key=key)
+        except Exception as exc:
+            _sessions.pop(sid, None)
+            return _err(rid, 5033, f"company session binding failed: {exc}")
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint
     # the composer, so eagerly creating a row left an "Untitled" empty session
@@ -2891,6 +3132,10 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _db_unavailable_error(rid, code=5006)
     try:
+        try:
+            allowed_ids = _authorized_company_session_ids()
+        except Exception as exc:
+            return _err(rid, 5033, f"company identity unavailable: {exc}")
         # Resume picker should surface human conversation sessions from every
         # user-facing surface — CLI, TUI, all gateway platforms (including new
         # ones not enumerated here), ACP adapter clients, webhook sessions,
@@ -2905,11 +3150,12 @@ def _(rid, params: dict) -> dict:
         # Over-fetch modestly so per-source filtering doesn't leave us
         # short; the compression-tip projection in ``list_sessions_rich``
         # can also merge rows.
-        fetch_limit = max(limit * 2, 200)
+        fetch_limit = 10_000 if allowed_ids is not None else max(limit * 2, 200)
         rows = [
             s
             for s in db.list_sessions_rich(source=None, limit=fetch_limit)
             if (s.get("source") or "").strip().lower() not in deny
+            and (allowed_ids is None or str(s.get("id") or "") in allowed_ids)
         ][:limit]
         return _ok(
             rid,
@@ -2950,15 +3196,25 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
+        try:
+            allowed_ids = _authorized_company_session_ids()
+        except Exception:
+            logger.exception("session.most_recent company identity lookup failed")
+            return _ok(rid, {"session_id": None})
         deny = frozenset({"tool"})
         # Over-fetch by a generous bounded amount so heavy sub-agent
         # users (lots of recent ``tool`` rows) don't get a false
         # "no eligible session" answer.  ``session.list`` uses a
         # similar over-fetch strategy.
-        rows = db.list_sessions_rich(source=None, limit=200)
+        rows = db.list_sessions_rich(
+            source=None,
+            limit=10_000 if allowed_ids is not None else 200,
+        )
         for row in rows:
             src = (row.get("source") or "").strip().lower()
             if src in deny:
+                continue
+            if allowed_ids is not None and str(row.get("id") or "") not in allowed_ids:
                 continue
             return _ok(
                 rid,
@@ -2987,6 +3243,10 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5000)
+    try:
+        allowed_ids = _authorized_company_session_ids()
+    except Exception as exc:
+        return _err(rid, 5033, f"company identity unavailable: {exc}")
     found = db.get_session(target)
     if not found:
         found = db.get_session_by_title(target)
@@ -2994,10 +3254,14 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    if allowed_ids is not None and str(target or "") not in allowed_ids:
+        return _err(rid, 4007, "session not found")
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
         live = _find_live_session_by_key(target)
-        if live is not None:
+        if live is not None and _session_access_allowed(
+            live[1], current_transport() or _stdio_transport
+        ):
             sid, session = live
             payload = _live_session_payload(
                 sid,
@@ -3055,7 +3319,15 @@ def _(rid, params: dict) -> dict:
             payload["resumed"] = target
             return _ok(rid, payload)
         try:
-            _init_session(sid, target, agent, history, cols=cols)
+            bound_identity = _bound_session_company_identity(target)
+            _init_session(
+                sid,
+                target,
+                agent,
+                history,
+                cols=cols,
+                company_identity=bound_identity,
+            )
             if sid in _sessions:
                 _sessions[sid]["display_history_prefix"] = display_history_prefix
         except Exception as e:
@@ -3240,7 +3512,14 @@ def _(rid, params: dict) -> dict:
     # Keep the natural creation/insertion order from ``_sessions``.  The
     # frontend marks the focused session with ``current``; it should not jump to
     # the top just because the user switched to it.
-    rows = [_session_live_item(sid, session, current) for sid, session in snapshot]
+    try:
+        rows = [
+            _session_live_item(sid, session, current)
+            for sid, session in snapshot
+            if _session_access_allowed(session, current_transport() or _stdio_transport)
+        ]
+    except Exception as exc:
+        return _err(rid, 5033, f"company identity unavailable: {exc}")
     return _ok(rid, {"sessions": rows})
 
 
@@ -3279,6 +3558,12 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5036)
+    try:
+        allowed_ids = _authorized_company_session_ids()
+    except Exception as exc:
+        return _err(rid, 5033, f"company identity unavailable: {exc}")
+    if allowed_ids is not None and str(target or "") not in allowed_ids:
+        return _err(rid, 4007, "session not found")
     # Block deletion of any session currently bound to a live TUI session
     # in this process.  The picker hides the active session anyway, but a
     # racing caller could still target it.  Snapshot via ``list(...)``
@@ -3647,6 +3932,11 @@ def _(rid, params: dict) -> dict:
     current = _sessions.get(sid)
     if not current:
         return _ok(rid, {"closed": False})
+    try:
+        if not _session_access_allowed(current, current_transport() or _stdio_transport):
+            return _ok(rid, {"closed": False})
+    except Exception as exc:
+        return _err(rid, 5033, f"company identity unavailable: {exc}")
     with _session_resume_lock:
         session = _sessions.pop(sid, None)
         if not session:
@@ -3688,6 +3978,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4008, "nothing to branch — send a message first")
     new_key = _new_session_key()
     branch_name = params.get("name", "")
+    company_identity = _session_company_identity(session)
     try:
         if branch_name:
             title = branch_name
@@ -3718,6 +4009,11 @@ def _(rid, params: dict) -> dict:
                 content=msg.get("content"),
             )
         db.set_session_title(new_key, title)
+        if company_identity:
+            _bind_live_session_company_identity(
+                {"session_key": new_key, "company_identity": company_identity},
+                session_key=new_key,
+            )
     except Exception as e:
         return _err(rid, 5008, f"branch failed: {e}")
     new_sid = uuid.uuid4().hex[:8]
@@ -3728,7 +4024,12 @@ def _(rid, params: dict) -> dict:
         finally:
             _clear_session_context(tokens)
         _init_session(
-            new_sid, new_key, agent, list(history), cols=session.get("cols", 80)
+            new_sid,
+            new_key,
+            agent,
+            list(history),
+            cols=session.get("cols", 80),
+            company_identity=company_identity,
         )
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
@@ -4292,7 +4593,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
 
             approval_token = set_current_session_key(session["session_key"])
-            session_tokens = _set_session_context(session["session_key"])
+            session_tokens = _set_session_context(
+                session["session_key"],
+                identity=_session_company_identity(session),
+            )
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty
@@ -4847,7 +5151,11 @@ def _(rid, params: dict) -> dict:
     task_id = f"bg_{uuid.uuid4().hex[:6]}"
 
     def run():
-        session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
+        session_tokens = _set_session_context(
+            task_id,
+            cwd=_session_cwd(session),
+            identity=_session_company_identity(session),
+        )
         try:
             from run_agent import AIAgent
 
@@ -4944,7 +5252,11 @@ def _(rid, params: dict) -> dict:
     def run():
         # Pin the validated preview cwd, else the parent workspace — never an
         # invalid client path, which would silently fall back to the launch dir.
-        session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
+        session_tokens = _set_session_context(
+            task_id,
+            cwd=(preview_cwd or _session_cwd(session)),
+            identity=_session_company_identity(session),
+        )
         try:
             from run_agent import AIAgent
             from tools.terminal_tool import register_task_env_overrides

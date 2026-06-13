@@ -143,6 +143,7 @@ model User {
 model Company {
   id                        String                     @id @default(uuid())
   name                      String
+  slug                      String?
   createdAt                 DateTime                   @default(now())
   updatedAt                 DateTime                   @updatedAt
   gatewayApiKey             String?                    @map("gateway_api_key")
@@ -191,6 +192,25 @@ model Company {
   userDepartmentPreferences UserDepartmentPreference[]
   agentDefinitions          AgentDefinition[]
   channelAgentMappings      ChannelAgentMapping[]
+}
+
+model CompanyUser {
+  id           String   @id @default(uuid())
+  companyId    String
+  userId       String?
+  email        String?
+  displayName  String?
+  role         String   @default("MEMBER")
+  departmentId String?
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([companyId, userId])
+  @@unique([companyId, email])
+  @@index([companyId, role])
+  @@index([companyId, departmentId])
+  @@index([companyId, status])
 }
 
 model RegisteredTool {
@@ -467,28 +487,41 @@ model ZohoOAuthConfig {
 }
 
 model ChannelIdentity {
-  id                 String   @id @default(uuid())
-  companyId          String
-  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  channel            String
-  externalUserId     String
-  externalTenantId   String
-  displayName        String?
-  email              String?
-  larkOpenId         String?
-  larkUserId         String?
-  sourceRoles        String[] @default([])
-  aiRole             String   @default("MEMBER")
-  aiRoleSource       String   @default("sync")
-  syncedAiRole       String?
-  syncedFromLarkRole String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  id                  String    @id @default(uuid())
+  companyId           String
+  company             Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  companyUserId       String?
+  channel             String
+  externalUserId      String
+  externalTenantId    String
+  displayName         String?
+  email               String?
+  larkOpenId          String?
+  larkUserId          String?
+  sourceRoles         String[]  @default([])
+  aiRole              String    @default("MEMBER")
+  aiRoleSource        String    @default("sync")
+  syncedAiRole        String?
+  syncedFromLarkRole  String?
+  identityKind        String?
+  identityKey         String?
+  platformUserIdAlt   String?
+  platformChatId      String?
+  platformWorkspaceId String?
+  approvedSource      String?
+  rawJson             Json?
+  firstSeenAt         DateTime?
+  lastSeenAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@unique([channel, externalUserId, companyId])
   @@index([companyId, larkOpenId])
   @@index([companyId, larkUserId])
   @@index([companyId, channel])
+  @@index([companyId, companyUserId])
+  @@index([companyId, identityKey])
+  @@index([companyId, platformChatId])
 }
 
 model LarkWorkspaceConfig {
@@ -1176,19 +1209,19 @@ model DesktopWorkspace {
 }
 
 model DesktopThread {
-  id                 String           @id @default(uuid())
+  id                 String            @id @default(uuid())
   userId             String
-  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   companyId          String
-  company            Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  channel            String           @default("desktop")
+  company            Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channel            String            @default("desktop")
   canonicalThreadKey String?
   workspaceId        String?
   workspace          DesktopWorkspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
   workspacePath      String?
   workspaceName      String?
   departmentId       String?
-  department         Department?      @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  department         Department?       @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   preferredEngine    String?
   title              String?
   summaryJson        Json?
@@ -1196,8 +1229,8 @@ model DesktopThread {
   taskStateJson      Json?
   taskStateUpdatedAt DateTime?
   lastMessageAt      DateTime?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
   messages           DesktopMessage[]
 
   @@unique([companyId, userId, channel, canonicalThreadKey])
@@ -1396,24 +1429,28 @@ model ExecutionEvent {
 }
 
 model StepResult {
-  id             String       @id @default(uuid())
-  executionId    String
-  execution      ExecutionRun @relation(fields: [executionId], references: [id], onDelete: Cascade)
-  sequence       Int
-  toolName       String
-  actorKey       String?
-  title          String?
-  success        Boolean
-  status         String?
-  authorityLevel String?
-  resolvedIds    Json?
-  entityIndexes  Json?
-  summary        String?
-  rawOutput      Json?
-  createdAt      DateTime     @default(now())
+  id              String       @id @default(uuid())
+  executionId     String
+  execution       ExecutionRun @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  sequence        Int
+  toolName        String
+  actorKey        String?
+  title           String?
+  success         Boolean
+  status          String?
+  authorityLevel  String?
+  resolvedIds     Json?
+  entityIndexes   Json?
+  summary         String?
+  rawOutput       Json?
+  toolCallId      String?
+  hermesSessionId String?
+  createdAt       DateTime     @default(now())
 
   @@unique([executionId, sequence])
   @@index([executionId, createdAt])
+  @@index([toolCallId])
+  @@index([hermesSessionId])
 }
 
 model RuntimeConversation {
@@ -1446,61 +1483,129 @@ model RuntimeConversation {
 }
 
 model RuntimeConversationMessage {
-  id              String              @id @default(uuid())
-  conversationId  String
-  conversation    RuntimeConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  runId           String?
-  run             RuntimeRun?         @relation(fields: [runId], references: [id], onDelete: SetNull)
-  sequence        Int
-  role            String
-  messageKind     String
-  sourceChannel   String
-  sourceMessageId String?
-  dedupeKey       String?
-  contentText     String?
-  contentJson     Json?
-  attachmentsJson Json?
-  toolCallJson    Json?
-  toolResultJson  Json?
-  visibility      String              @default("internal")
-  createdAt       DateTime            @default(now())
+  id                      String              @id @default(uuid())
+  conversationId          String
+  conversation            RuntimeConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  runId                   String?
+  run                     RuntimeRun?         @relation(fields: [runId], references: [id], onDelete: SetNull)
+  sequence                Int
+  role                    String
+  messageKind             String
+  sourceChannel           String
+  sourceMessageId         String?
+  dedupeKey               String?
+  contentText             String?
+  contentJson             Json?
+  attachmentsJson         Json?
+  toolCallJson            Json?
+  toolResultJson          Json?
+  visibility              String              @default("internal")
+  actingCompanyUserId     String?
+  actingChannelIdentityId String?
+  senderExternalId        String?
+  senderDisplayName       String?
+  hermesMessageId         String?
+  active                  Boolean             @default(true)
+  observed                Boolean             @default(true)
+  finishReason            String?
+  tokenCount              Int?
+  reasoningJson           Json?
+  toolCallId              String?
+  createdAt               DateTime            @default(now())
 
   @@unique([conversationId, sequence])
   @@index([conversationId, createdAt])
   @@index([runId, createdAt])
   @@index([dedupeKey])
+  @@index([actingCompanyUserId, createdAt])
+  @@index([actingChannelIdentityId, createdAt])
+  @@index([hermesMessageId])
+  @@index([toolCallId])
 }
 
 model RuntimeRun {
-  id             String                       @id @default(uuid())
-  conversationId String
-  conversation   RuntimeConversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  parentRunId    String?
-  engine         String                       @default("langgraph")
-  engineMode     String                       @default("primary")
-  channel        String
-  entrypoint     String
-  status         String                       @default("running")
-  currentNode    String?
-  stepCount      Int                          @default(0)
-  maxSteps       Int                          @default(12)
-  stopReason     String?
-  errorJson      Json?
-  traceJson      Json?
-  metadataJson   Json?
-  startedAt      DateTime                     @default(now())
-  finishedAt     DateTime?
-  createdAt      DateTime                     @default(now())
-  updatedAt      DateTime                     @updatedAt
-  messages       RuntimeConversationMessage[]
-  approvals      RuntimeApproval[]
-  snapshots      RuntimeSnapshot[]
-  parityReports  RuntimeShadowParityReport[]
+  id                    String                       @id @default(uuid())
+  conversationId        String
+  conversation          RuntimeConversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  parentRunId           String?
+  engine                String                       @default("langgraph")
+  engineMode            String                       @default("primary")
+  channel               String
+  entrypoint            String
+  status                String                       @default("running")
+  currentNode           String?
+  stepCount             Int                          @default(0)
+  maxSteps              Int                          @default(12)
+  stopReason            String?
+  errorJson             Json?
+  traceJson             Json?
+  metadataJson          Json?
+  hermesSessionId       String?
+  parentHermesSessionId String?
+  modelId               String?
+  systemPromptSnapshot  String?
+  cwd                   String?
+  startedAt             DateTime                     @default(now())
+  finishedAt            DateTime?
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+  messages              RuntimeConversationMessage[]
+  approvals             RuntimeApproval[]
+  snapshots             RuntimeSnapshot[]
+  parityReports         RuntimeShadowParityReport[]
 
   @@index([conversationId, startedAt])
   @@index([parentRunId])
   @@index([channel, startedAt])
   @@index([status, startedAt])
+  @@index([hermesSessionId])
+  @@index([parentHermesSessionId])
+}
+
+model HermesSessionBinding {
+  id                    String   @id @default(uuid())
+  companyId             String
+  hermesSessionId       String
+  sessionKey            String
+  conversationId        String
+  runId                 String?
+  channelIdentityId     String?
+  resolvedUserId        String?
+  parentHermesSessionId String?
+  platform              String?
+  chatId                String?
+  threadId              String?
+  source                String   @default("runtime")
+  boundAt               DateTime @default(now())
+  lastSeenAt            DateTime @default(now())
+
+  @@unique([companyId, hermesSessionId])
+  @@index([sessionKey])
+  @@index([conversationId])
+  @@index([runId])
+  @@index([channelIdentityId])
+  @@index([resolvedUserId])
+  @@index([parentHermesSessionId])
+}
+
+model HermesRunStats {
+  id               String   @id @default(uuid())
+  runId            String   @unique
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  cacheReadTokens  Int      @default(0)
+  cacheWriteTokens Int      @default(0)
+  reasoningTokens  Int      @default(0)
+  totalTokens      Int      @default(0)
+  estimatedCostUsd Decimal? @db.Decimal(18, 8)
+  actualCostUsd    Decimal? @db.Decimal(18, 8)
+  messageCount     Int      @default(0)
+  toolCallCount    Int      @default(0)
+  rewindCount      Int      @default(0)
+  billingStatus    String   @default("unbilled")
+  metadataJson     Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }
 
 model RuntimeApproval {
