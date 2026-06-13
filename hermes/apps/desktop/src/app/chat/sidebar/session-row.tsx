@@ -79,8 +79,8 @@ export function SidebarSessionRow({
     >
       <div
         className={cn(
-          'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
-          isSelected && 'bg-(--ui-row-active-background)',
+          'group relative grid min-h-7 cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-lg transition-colors duration-100 ease-out hover:bg-[#222222] hover:transition-none',
+          isSelected && 'bg-[#242424]',
           isWorking && 'text-foreground',
           dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
           className
@@ -92,7 +92,7 @@ export function SidebarSessionRow({
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+          className="z-0 flex min-w-0 items-center gap-2 bg-transparent py-0.5 pl-2.5 pr-1 text-left group-hover:pr-10"
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -148,20 +148,20 @@ export function SidebarSessionRow({
           ) : (
             <span
               className={cn(
-                'grid w-3.5 shrink-0 place-items-center',
+                'grid w-4 shrink-0 place-items-center',
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
               <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
             </span>
           )}
-          <span className="truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          <span className="truncate text-[0.875rem] font-normal text-[#b9b9b9] group-hover:text-[#dedede] group-data-[working=true]:text-[#dedede]">
             {title}
           </span>
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
           {!isWorking && (
-            <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
+            <span className="pointer-events-none absolute right-5 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
               {age}
             </span>
           )}
@@ -175,7 +175,7 @@ export function SidebarSessionRow({
           >
             <Button
               aria-label={`Actions for ${title}`}
-              className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+              className="size-5 rounded-md bg-transparent text-transparent transition-colors duration-100 hover:bg-[#303030] hover:text-foreground focus-visible:bg-[#303030] focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-[#303030] data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3!"
               size="icon"
               title="Session actions"
               variant="ghost"
@@ -220,7 +220,7 @@ function SidebarRowDot({
         'rounded-full',
         isWorking
           ? "relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
-          : 'size-1 bg-(--ui-text-quaternary) opacity-80',
+          : 'size-1.5 bg-[#686868] opacity-80',
         className
       )}
       role={isWorking ? 'status' : undefined}

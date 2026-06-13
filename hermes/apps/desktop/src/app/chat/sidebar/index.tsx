@@ -35,6 +35,7 @@ import {
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { FolderOpen, type IconComponent, MessageCircle, Send, Wrench } from '@/lib/icons'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
 import {
@@ -63,6 +64,7 @@ import {
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
+import type { StatusbarItem } from '../../shell/statusbar-controls'
 import type { SidebarNavItem } from '../../types'
 
 import { SidebarProfileFooter } from './profile-footer'
@@ -70,6 +72,13 @@ import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
 const VIRTUALIZE_THRESHOLD = 25
+const SIDEBAR_ICON_STROKE = 1.4
+
+function createThinSidebarIcon(Icon: IconComponent) {
+  return function ThinSidebarIcon({ className }: { className?: string }) {
+    return <Icon aria-hidden className={className} stroke={SIDEBAR_ICON_STROKE} />
+  }
+}
 
 // Render the modifier key the user actually presses on this platform. The
 // global accelerator is bound to both Cmd+N (macOS) and Ctrl+N (everywhere
@@ -81,17 +90,22 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
     label: 'New session',
-    icon: props => <Codicon name="robot" {...props} />,
+    icon: createThinSidebarIcon(Send),
     action: 'new-session'
   },
   {
     id: 'skills',
     label: 'Skills & Tools',
-    icon: props => <Codicon name="symbol-misc" {...props} />,
+    icon: createThinSidebarIcon(Wrench),
     route: SKILLS_ROUTE
   },
-  { id: 'messaging', label: 'Messaging', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: 'Artifacts', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
+  {
+    id: 'messaging',
+    label: 'Messaging',
+    icon: createThinSidebarIcon(MessageCircle),
+    route: MESSAGING_ROUTE
+  },
+  { id: 'artifacts', label: 'Artifacts', icon: createThinSidebarIcon(FolderOpen), route: ARTIFACTS_ROUTE }
 ]
 
 const WORKSPACE_PAGE = 5
@@ -200,22 +214,26 @@ function useSortableBindings(id: string) {
 
 interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   currentView: AppView
+  leftStatusbarItems?: readonly StatusbarItem[]
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
+  statusbarItems?: readonly StatusbarItem[]
 }
 
 export function ChatSidebar({
   currentView,
+  leftStatusbarItems = [],
   onNavigate,
   onLoadMoreSessions,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
-  onNewSessionInWorkspace
+  onNewSessionInWorkspace,
+  statusbarItems = []
 }: ChatSidebarProps) {
   const sidebarOpen = useStore($sidebarOpen)
   const panesFlipped = useStore($panesFlipped)
@@ -439,9 +457,9 @@ export function ChatSidebar({
       collapsible="none"
     >
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
-        <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
+        <SidebarGroup className="shrink-0 p-0 pb-2.5 pt-[calc(var(--titlebar-height)+0.5rem)]">
           <SidebarGroupContent>
-            <SidebarMenu className="gap-px">
+            <SidebarMenu className="gap-0.5">
               {SIDEBAR_NAV.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
@@ -455,15 +473,15 @@ export function ChatSidebar({
                     <SidebarMenuButton
                       aria-disabled={!isInteractive}
                       className={cn(
-                        'flex h-6 w-full justify-start gap-1.5 rounded-md px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
-                        active && 'bg-(--ui-control-active-background) text-foreground',
+                        'flex h-7 w-full justify-start gap-2 rounded-lg px-2.5 text-left text-[0.875rem] font-normal text-[#b9b9b9] transition-colors duration-100 ease-out hover:bg-[#222222] hover:text-[#dedede] hover:transition-none',
+                        active && 'bg-[#242424] text-[#dedede]',
                         !isInteractive && 'cursor-default hover:bg-transparent hover:text-inherit'
                       )}
                       onClick={() => onNavigate(item)}
                       tooltip={item.label}
                       type="button"
                     >
-                      <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
+                      <item.icon className="size-4 shrink-0 text-[#b7b7b7]" />
                       {sidebarOpen && (
                         <>
                           <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">{item.label}</span>
@@ -484,9 +502,11 @@ export function ChatSidebar({
         </SidebarGroup>
 
         {sidebarOpen && showSessionSections && (
-          <div className="shrink-0 px-2 pb-1 pt-1">
+          <div className="shrink-0 px-2.5 pb-1.5 pt-0.5">
             <SearchField
               aria-label="Search sessions"
+              containerClassName="w-full"
+              inputClassName="w-full [field-sizing:auto] text-[0.8125rem]"
               onChange={setSearchQuery}
               placeholder="Search sessions…"
               value={searchQuery}
@@ -497,7 +517,7 @@ export function ChatSidebar({
         {sidebarOpen && showSessionSections && trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
-            contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+            contentClassName="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain pb-2"
             emptyState={
               <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
                 No sessions match “{trimmedQuery}”.
@@ -521,7 +541,7 @@ export function ChatSidebar({
         {sidebarOpen && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
-            contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
+            contentClassName="flex min-h-10 shrink-0 flex-col gap-0.5 rounded-lg pb-2.5 pt-0.5"
             dndSensors={dndSensors}
             emptyState={<SidebarPinnedEmptyState />}
             label="Pinned"
@@ -543,7 +563,7 @@ export function ChatSidebar({
         {sidebarOpen && showSessionSections && !trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
-            contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+            contentClassName="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overscroll-contain pb-2"
             dndSensors={dndSensors}
             emptyState={showSessionSkeletons ? <SidebarSessionSkeletons /> : <SidebarAllPinnedState />}
             footer={
@@ -599,7 +619,7 @@ export function ChatSidebar({
           />
         )}
       </SidebarContent>
-      {sidebarOpen && <SidebarProfileFooter />}
+      {sidebarOpen && <SidebarProfileFooter leftStatusbarItems={leftStatusbarItems} statusbarItems={statusbarItems} />}
     </Sidebar>
   )
 }
@@ -614,9 +634,9 @@ interface SidebarSectionHeaderProps {
 
 function SidebarSectionHeader({ label, open, onToggle, action, meta }: SidebarSectionHeaderProps) {
   return (
-    <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
+    <div className="group/section flex shrink-0 items-center justify-between pb-1.5 pt-2.5">
       <button
-        className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
+        className="group/section-label flex w-fit items-center gap-1.5 bg-transparent text-left leading-none"
         onClick={onToggle}
         type="button"
       >
@@ -634,7 +654,7 @@ function SidebarSectionHeader({ label, open, onToggle, action, meta }: SidebarSe
 
 function SidebarSessionSkeletons() {
   return (
-    <div aria-hidden="true" className="grid gap-px">
+    <div aria-hidden="true" className="grid gap-1">
       {['w-32', 'w-40', 'w-28', 'w-36', 'w-24'].map((width, i) => (
         <div className="grid min-h-7 grid-cols-[minmax(0,1fr)_1.5rem] items-center rounded-lg" key={`${width}-${i}`}>
           <Skeleton className={cn('h-3.5 rounded-full', width)} />
@@ -653,8 +673,8 @@ const SidebarAllPinnedState = () => (
 
 function SidebarPinnedEmptyState() {
   return (
-    <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">
-      <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
+    <div className="flex min-h-8 items-center gap-2 rounded-lg pl-3 text-[0.8125rem] text-(--ui-text-tertiary)">
+      <span className="grid w-5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>
       <span>Shift-click a chat to pin</span>
@@ -857,14 +877,15 @@ function SidebarWorkspaceGroup({
   const nextCount = Math.min(WORKSPACE_PAGE, hiddenCount)
 
   return (
-    <div className={cn('grid gap-px', dragging && 'z-10 opacity-60', className)} ref={ref} style={style} {...rest}>
-      <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
+    <div className={cn('grid gap-0.5', dragging && 'z-10 opacity-60', className)} ref={ref} style={style} {...rest}>
+      <div className="group/workspace flex min-h-7 items-center gap-1.5 px-2.5 pt-0.5 text-[0.875rem] font-normal text-[#b9b9b9]">
         <button
-          className="flex min-w-0 items-center gap-1 bg-transparent text-left hover:text-(--ui-text-secondary)"
+          className="flex min-w-0 items-center gap-2 bg-transparent text-left hover:text-[#dedede]"
           onClick={() => setOpen(value => !value)}
           title={group.path ?? undefined}
           type="button"
         >
+          <FolderOpen aria-hidden className="size-4 shrink-0 text-[#b7b7b7]" stroke={SIDEBAR_ICON_STROKE} />
           <span className="truncate">{group.label}</span>
           <SidebarCount>{group.sessions.length}</SidebarCount>
           <DisclosureCaret
@@ -875,7 +896,7 @@ function SidebarWorkspaceGroup({
         {onNewSession && (
           <button
             aria-label={`New session in ${group.label}`}
-            className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+            className="grid size-4 shrink-0 place-items-center rounded-md bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-[#222222] hover:text-foreground group-hover/workspace:opacity-100"
             onClick={() => onNewSession(group.path)}
             title={`New session in ${group.label}`}
             type="button"
@@ -932,7 +953,7 @@ function SortableSidebarWorkspaceGroup(props: SortableWorkspaceProps) {
 }
 
 function SidebarCount({ children }: { children: React.ReactNode }) {
-  return <span className="text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
+  return <span className="text-[0.6875rem] font-normal text-[#777777]">{children}</span>
 }
 
 interface SortableSessionRowProps {
@@ -961,7 +982,7 @@ function SidebarLoadMoreRow({ loading, onClick, step }: SidebarLoadMoreRowProps)
 
   return (
     <button
-      className="flex min-h-5 items-center gap-1 self-start bg-transparent pl-2 text-left text-[0.6875rem] text-(--ui-text-tertiary) transition-colors duration-100 ease-out hover:text-foreground hover:transition-none disabled:cursor-default disabled:opacity-60 disabled:hover:text-(--ui-text-tertiary)"
+      className="flex min-h-6 items-center gap-1.5 self-start bg-transparent pl-2.5 text-left text-[0.6875rem] text-(--ui-text-tertiary) transition-colors duration-100 ease-out hover:text-foreground hover:transition-none disabled:cursor-default disabled:opacity-60 disabled:hover:text-(--ui-text-tertiary)"
       disabled={loading}
       onClick={onClick}
       type="button"

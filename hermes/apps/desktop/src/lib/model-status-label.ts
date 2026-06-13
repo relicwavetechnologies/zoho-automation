@@ -7,6 +7,28 @@ const REASONING_LABELS: Record<string, string> = {
   xhigh: 'Max'
 }
 
+export interface VisibleReasoningPill {
+  label: 'High' | 'Max'
+  tone: 'high' | 'max'
+}
+
+export function visibleReasoningPill(effort: string): null | VisibleReasoningPill {
+  switch (effort.trim().toLowerCase()) {
+    case 'high':
+      return { label: 'High', tone: 'high' }
+
+    case 'xhigh':
+      return { label: 'Max', tone: 'max' }
+
+    default:
+      return null
+  }
+}
+
+export function visibleReasoningPillLabel(effort: string): string {
+  return visibleReasoningPill(effort)?.label ?? ''
+}
+
 export function reasoningEffortLabel(effort: string): string {
   const key = effort.trim().toLowerCase()
 
@@ -95,9 +117,7 @@ export function formatModelStatusLabel(
     parts.push('Fast')
   }
 
-  // Always surface the effort (empty = Hermes default of medium) so the
-  // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  const suffix = parts.join(' ')
 
-  return `${name} · ${parts.join(' ')}`
+  return suffix ? `${name} · ${suffix}` : name
 }

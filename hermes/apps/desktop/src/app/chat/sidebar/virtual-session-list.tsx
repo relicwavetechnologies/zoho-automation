@@ -32,7 +32,7 @@ interface VirtualSessionListProps {
   workingSessionIdSet: Set<string>
 }
 
-const ROW_ESTIMATE_PX = 28
+const ROW_ESTIMATE_PX = 32
 const OVERSCAN_ROWS = 12
 
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
@@ -103,7 +103,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
   const list = (
     <div className={cn('relative min-h-0 flex-1 overflow-y-auto overscroll-contain', className)} ref={scrollerRef}>
-      <div className="grid gap-px" style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>
+      <div className="grid gap-0.5" style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>
         {rows}
       </div>
     </div>

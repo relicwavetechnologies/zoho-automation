@@ -2,13 +2,13 @@ import type * as React from 'react'
 
 import { cn } from '@/lib/utils'
 
-// Section label in the rails — Cursor/VS Code style: a small, muted, uppercase
-// caption with letter-spacing and no decorative dot.
+// Section label in the rails — Cursor-style muted title text, not an all-caps
+// utility caption.
 export function SidebarPanelLabel({ children, className, ...props }: React.ComponentProps<'span'>) {
   return (
     <span
       className={cn(
-        'flex min-w-0 items-center pl-2 text-[0.64rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-tertiary)',
+        'flex min-w-0 items-center pl-2.5 text-[0.8125rem] font-normal tracking-normal text-[#8f8f8f]',
         className
       )}
       {...props}

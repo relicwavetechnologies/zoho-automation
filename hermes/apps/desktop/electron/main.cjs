@@ -3149,9 +3149,14 @@ function createWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    // No macOS vibrancy: the app is a flat, opaque dark editor (Cursor-style).
+    // Vibrancy turns the window into a translucent material that composites the
+    // desktop/blur behind it, which reads as a light, mottled background image.
+    vibrancy: undefined,
     icon,
-    backgroundColor: '#f7f7f7',
+    // Opaque dark fallback so there's no light flash before the renderer paints
+    // and nothing light can bleed through. Matches the locked main-content bg.
+    backgroundColor: '#141414',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,

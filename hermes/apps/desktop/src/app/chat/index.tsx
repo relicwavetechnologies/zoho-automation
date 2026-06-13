@@ -11,7 +11,6 @@ import { Suspense, useCallback, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
-import { Backdrop } from '@/components/Backdrop'
 import { NotificationStack } from '@/components/notifications'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
@@ -316,7 +315,6 @@ export function ChatView({
         className
       )}
     >
-      <Backdrop />
       <ChatHeader
         activeSessionId={activeSessionId}
         isRoutedSessionView={isRoutedSessionView}

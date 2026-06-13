@@ -1240,11 +1240,11 @@ canvas {
   color: #4daafc;
 }
 
-/* User message bubble: a flat, subtly-raised neutral card (Cursor), not the
-   blurred "glass" surface. Kill the backdrop blur + shadow so it reads crisp. */
+/* User message card: fixed Cursor-style geometry and surface, not theme-derived. */
 [data-slot='aui_user-message-root'] .composer-human-message {
-  background: var(--dt-user-bubble);
-  border-color: var(--dt-user-bubble-border);
+  border-radius: 8px;
+  border-color: #3a3a3a;
+  background: #202020;
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -1253,4 +1253,28 @@ canvas {
 /* Headings/bold a touch brighter than body, matching VS Code's chat contrast. */
 [data-slot='aui_assistant-message-content'] .aui-md :where(strong, b, h1, h2, h3, h4) {
   color: #e6e6e6;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   LOCKED SURFACE COLORS — fixed product values, not theme-derived.
+   The theme selector is removed and these override the computed --ui-bg-* chain
+   (last :root wins, and applyTheme never sets these inline), so NO theme/skin
+   can change them.
+     · Main content / chat / editor surface → #141414
+     · Sidebar (+ status bar)               → #171718
+   Accent/toggle palette:
+     amber #eab064 · red #b75464 · green #2a4334
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  --ui-bg-chrome: #141414;
+  --ui-bg-sidebar: #171718;
+  --ui-chat-surface-background: #141414;
+  --ui-editor-surface-background: #141414;
+  --ui-sidebar-surface-background: #171718;
+  --dt-background: #141414;
+  --dt-sidebar-bg: #171718;
+  --ui-thinking-low: #eab064;
+  --ui-thinking-medium: #2a4334;
+  --ui-thinking-high: #eab064;
+  --ui-thinking-max: #b75464;
 }

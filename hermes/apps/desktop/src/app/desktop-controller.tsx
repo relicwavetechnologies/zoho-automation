@@ -5,16 +5,17 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 're
 
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { CompanyAuthOverlay } from '@/components/company-auth-overlay'
-import { syncCompanyAuthGate } from '@/lib/company-auth'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
+import { syncCompanyAuthGate } from '@/lib/company-auth'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getSessionMessages, listSessions } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { toggleCommandPalette } from '../store/command-palette'
+import { $companyAuth } from '../store/company-auth'
 import {
   $panesFlipped,
   $pinnedSessionIds,
@@ -51,7 +52,6 @@ import {
   setSessionsTotal
 } from '../store/session'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
-import { $companyAuth } from '../store/company-auth'
 
 import { ChatView } from './chat'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
@@ -586,12 +586,14 @@ export function DesktopController() {
   const sidebar = (
     <ChatSidebar
       currentView={currentView}
+      leftStatusbarItems={leftStatusbarItems}
       onArchiveSession={sessionId => void archiveSession(sessionId)}
       onDeleteSession={sessionId => void removeSession(sessionId)}
       onLoadMoreSessions={loadMoreSessions}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
+      statusbarItems={statusbarItems}
     />
   )
 
@@ -756,11 +758,9 @@ export function DesktopController() {
 
   return (
     <AppShell
-      leftStatusbarItems={leftStatusbarItems}
       leftTitlebarTools={titlebarToolGroups.flat.left}
       onOpenSettings={openSettings}
       overlays={overlays}
-      statusbarItems={statusbarItems}
       titlebarTools={titlebarToolGroups.flat.right}
     >
       <Pane
