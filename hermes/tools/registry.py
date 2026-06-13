@@ -82,6 +82,35 @@ def _enterprise_identity_kwargs() -> dict:
     return resolved
 
 
+def _permission_identity(kwargs: dict | None = None) -> dict:
+    """Return identity for permission checks, with explicit kwargs winning."""
+    identity = _enterprise_identity_kwargs()
+    for key in _IDENTITY_CONTEXT_KWARGS.values():
+        value = (kwargs or {}).get(key)
+        if value:
+            identity[key] = value
+    return identity
+
+
+def _tool_permission_decision(entry: "ToolEntry", kwargs: dict | None = None):
+    try:
+        from enterprise.tool_permissions import check_tool_permission
+
+        return check_tool_permission(
+            tool_name=entry.name,
+            toolset=entry.toolset,
+            identity=_permission_identity(kwargs),
+        )
+    except Exception as exc:
+        logger.debug("Tool permission check failed for %s: %s", entry.name, exc)
+        class _Decision:
+            allowed = False
+            reason = "Tool permission check failed closed"
+            code = "permission_check_failed"
+
+        return _Decision()
+
+
 def _is_registry_register_call(node: ast.AST) -> bool:
     """Return True when *node* is a ``registry.register(...)`` call expression."""
     if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
@@ -418,6 +447,15 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
+            permission = _tool_permission_decision(entry)
+            if not permission.allowed:
+                if not quiet:
+                    logger.debug(
+                        "Tool %s unavailable (permission denied: %s)",
+                        name,
+                        permission.code or permission.reason,
+                    )
+                continue
             # Ensure schema always has a "name" field — use entry.name as fallback
             schema_with_name = {**entry.schema, "name": entry.name}
             # Apply runtime-dynamic overrides (e.g. delegate_task description
@@ -459,6 +497,15 @@ class ToolRegistry:
         if _handler_accepts_var_keyword(entry.handler):
             for key, value in _enterprise_identity_kwargs().items():
                 kwargs.setdefault(key, value)
+        permission = _tool_permission_decision(entry, kwargs)
+        if not permission.allowed:
+            return json.dumps(
+                {
+                    "error": permission.reason or "Tool execution denied",
+                    "code": permission.code or "tool_permission_denied",
+                },
+                ensure_ascii=False,
+            )
         try:
             if entry.is_async:
                 from model_tools import _run_async
