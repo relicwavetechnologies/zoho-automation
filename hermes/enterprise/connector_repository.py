@@ -159,6 +159,72 @@ class ConnectorCredentialRepository:
         )
         return credential_id
 
+    def list_connector_credentials(self, *, company_id: str) -> list[dict[str, Any]]:
+        """Return non-secret native connector credential rows for one company."""
+        company_id = str(company_id or "").strip()
+        if not company_id:
+            return []
+        rows = self._fetchall_optional(
+            f"""
+            SELECT
+                "id",
+                "companyId",
+                "companyUserId",
+                "provider",
+                "scope",
+                "metadata",
+                "status",
+                "createdAt",
+                "updatedAt",
+                "revokedAt"
+            FROM "{NATIVE_CONNECTOR_TABLE}"
+            WHERE "companyId" = %s
+            ORDER BY "provider" ASC, "scope" ASC, "updatedAt" DESC
+            """,
+            (company_id,),
+        )
+        return [self._public_connector_row(row) for row in rows]
+
+    def revoke_connector_credentials(
+        self,
+        *,
+        provider: str,
+        company_id: str,
+        company_user_id: str | None = None,
+        scope: str | None = None,
+    ) -> int:
+        """Mark native connector credentials revoked for a company/provider."""
+        provider = self._normalize_provider(provider)
+        company_id = str(company_id or "").strip()
+        company_user_id = str(company_user_id or "").strip() or None
+        scope = str(scope or "").strip() or None
+        if not company_id:
+            return 0
+
+        filters = [
+            '"companyId" = %s',
+            '"provider" = %s',
+            '"revokedAt" IS NULL',
+        ]
+        args: list[Any] = [company_id, provider]
+        if company_user_id is not None:
+            filters.append('"companyUserId" = %s')
+            args.append(company_user_id)
+        if scope is not None:
+            filters.append('"scope" = %s')
+            args.append(scope)
+
+        return self._execute_rowcount(
+            f"""
+            UPDATE "{NATIVE_CONNECTOR_TABLE}"
+            SET "status" = 'revoked',
+                "revokedAt" = now(),
+                "updatedAt" = now()
+            WHERE {' AND '.join(filters)}
+            """,
+            tuple(args),
+        )
+
     def get_zoho_credentials(self, company_id: str) -> Optional[ZohoConnectionCredentials]:
         """Active Zoho connection for *company_id*, or ``None`` if not connected.
 
@@ -572,6 +638,12 @@ class ConnectorCredentialRepository:
         except Exception:  # noqa: BLE001 — native table may not exist during migration
             return None
 
+    def _fetchall_optional(self, sql: str, args: tuple[Any, ...]) -> list[Any]:
+        try:
+            return self._fetchall(sql, args)
+        except Exception:  # noqa: BLE001 — native table may not exist during migration
+            return []
+
     def _fetchone(self, sql: str, args: tuple[Any, ...]) -> Any:
         result = self._connection.execute(sql, args)
         fetchone = getattr(result, "fetchone", None)
@@ -584,11 +656,31 @@ class ConnectorCredentialRepository:
             if close is not None:
                 close()
 
+    def _fetchall(self, sql: str, args: tuple[Any, ...]) -> list[Any]:
+        result = self._connection.execute(sql, args)
+        fetchall = getattr(result, "fetchall", None)
+        if fetchall is None:
+            return []
+        try:
+            return list(fetchall() or [])
+        finally:
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
+
     def _execute(self, sql: str, args: tuple[Any, ...]) -> None:
         result = self._connection.execute(sql, args)
         close = getattr(result, "close", None)
         if close is not None:
             close()
+
+    def _execute_rowcount(self, sql: str, args: tuple[Any, ...]) -> int:
+        result = self._connection.execute(sql, args)
+        rowcount = int(getattr(result, "rowcount", 0) or 0)
+        close = getattr(result, "close", None)
+        if close is not None:
+            close()
+        return rowcount
 
     @staticmethod
     def _row_get(row: Any, key: str) -> Any:
@@ -600,3 +692,20 @@ class ConnectorCredentialRepository:
             return row[key]
         except (KeyError, TypeError, IndexError):
             return None
+
+    def _public_connector_row(self, row: Any) -> dict[str, Any]:
+        metadata = self._row_get(row, "metadata") or {}
+        if not isinstance(metadata, Mapping):
+            metadata = {}
+        return {
+            "id": str(self._row_get(row, "id") or ""),
+            "company_id": str(self._row_get(row, "companyId") or ""),
+            "company_user_id": str(self._row_get(row, "companyUserId") or ""),
+            "provider": str(self._row_get(row, "provider") or ""),
+            "scope": str(self._row_get(row, "scope") or ""),
+            "metadata": dict(metadata),
+            "status": str(self._row_get(row, "status") or ""),
+            "created_at": self._row_get(row, "createdAt"),
+            "updated_at": self._row_get(row, "updatedAt"),
+            "revoked_at": self._row_get(row, "revokedAt"),
+        }

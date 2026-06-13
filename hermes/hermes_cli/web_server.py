@@ -993,9 +993,38 @@ class CompanyTeamMemberUpdate(BaseModel):
     status: str | None = None
 
 
+class CompanyConnectorCredentialUpsert(BaseModel):
+    scope: str | None = None
+    company_user_id: str | None = None
+    metadata: dict[str, Any] | None = None
+
+    # Zoho
+    client_id: str | None = None
+    client_secret: str | None = None
+    refresh_token: str | None = None
+    access_token: str | None = None
+    accounts_base_url: str | None = None
+    api_base_url: str | None = None
+    api_domain: str | None = None
+    environment: str | None = None
+    oauth_scopes: list[str] | str | None = None
+
+    # Google
+    google_email: str | None = None
+    oauth_scope: str | None = None
+    token_type: str | None = None
+    access_token_expires_at: str | None = None
+
+    # Lark
+    app_id: str | None = None
+    app_secret: str | None = None
+    static_tenant_access_token: str | None = None
+
+
 _COMPANY_ADMIN_ROLES = {"ADMIN", "COMPANY_ADMIN", "SUPER_ADMIN", "OWNER"}
 _COMPANY_MUTABLE_ROLES = {"MEMBER", "COMPANY_ADMIN", "SUPER_ADMIN"}
 _COMPANY_MUTABLE_STATUSES = {"active", "disabled"}
+_COMPANY_CONNECTOR_PROVIDERS = {"zoho", "google", "lark"}
 
 
 def _company_row_field(row: dict[str, Any] | None, *keys: str) -> str:
@@ -1078,6 +1107,186 @@ def _current_company_actor(request: Request, store) -> tuple[str, dict[str, Any]
     if not _is_active_company_user(actor):
         raise HTTPException(status_code=403, detail="Current employee is disabled")
     return company_id, actor
+
+
+def _require_company_admin_actor(request: Request, store) -> tuple[str, dict[str, Any]]:
+    company_id, actor = _current_company_actor(request, store)
+    if not _is_company_admin(actor):
+        raise HTTPException(status_code=403, detail="Company admin role required")
+    return company_id, actor
+
+
+def _get_company_connector_repository():
+    try:
+        from enterprise.connector_repository import ConnectorCredentialRepository
+        from enterprise.db import get_enterprise_connection
+
+        return ConnectorCredentialRepository(get_enterprise_connection())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Enterprise connector credential store is unavailable: {exc}",
+        ) from exc
+
+
+def _normalize_connector_provider(provider: str) -> str:
+    normalized = str(provider or "").strip().lower()
+    if normalized not in _COMPANY_CONNECTOR_PROVIDERS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown connector provider {provider!r}",
+        )
+    return normalized
+
+
+def _normalize_connector_scope(provider: str, value: str | None) -> str:
+    scope = str(value or "company").strip().lower()
+    if scope not in {"company", "user"}:
+        raise HTTPException(status_code=422, detail="scope must be company or user")
+    if provider in {"zoho", "lark"} and scope != "company":
+        raise HTTPException(
+            status_code=422,
+            detail=f"{provider} credentials are company-scoped",
+        )
+    return scope
+
+
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _require_body_text(body: CompanyConnectorCredentialUpsert, field: str) -> str:
+    value = _clean_text(getattr(body, field, None))
+    if not value:
+        raise HTTPException(status_code=422, detail=f"{field} is required")
+    return value
+
+
+def _connector_scopes(value: list[str] | str | None) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw = value.replace(",", " ").split()
+    else:
+        raw = value
+    return [str(item or "").strip() for item in raw if str(item or "").strip()]
+
+
+def _connector_payload(
+    provider: str,
+    body: CompanyConnectorCredentialUpsert,
+) -> dict[str, Any]:
+    if provider == "zoho":
+        payload = {
+            "client_id": _require_body_text(body, "client_id"),
+            "client_secret": _require_body_text(body, "client_secret"),
+            "refresh_token": _require_body_text(body, "refresh_token"),
+            "access_token": _clean_text(body.access_token),
+            "accounts_base_url": _clean_text(body.accounts_base_url) or "https://accounts.zoho.com",
+            "api_base_url": _clean_text(body.api_base_url) or "https://www.zohoapis.com",
+            "api_domain": _clean_text(body.api_domain),
+            "environment": _clean_text(body.environment) or "prod",
+            "scopes": _connector_scopes(body.oauth_scopes),
+            "status": "active",
+        }
+        return {
+            key: value
+            for key, value in payload.items()
+            if value != "" and value != []
+        }
+
+    if provider == "google":
+        access_token = _clean_text(body.access_token)
+        refresh_token = _clean_text(body.refresh_token)
+        if not access_token and not refresh_token:
+            raise HTTPException(
+                status_code=422,
+                detail="google access_token or refresh_token is required",
+            )
+        payload = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "google_email": _clean_text(body.google_email),
+            "scope": _clean_text(body.oauth_scope) or " ".join(_connector_scopes(body.oauth_scopes)),
+            "token_type": _clean_text(body.token_type) or "Bearer",
+            "access_token_expires_at": _clean_text(body.access_token_expires_at),
+        }
+        return {key: value for key, value in payload.items() if value}
+
+    if provider == "lark":
+        payload = {
+            "app_id": _require_body_text(body, "app_id"),
+            "app_secret": _require_body_text(body, "app_secret"),
+            "api_base_url": _clean_text(body.api_base_url) or "https://open.larksuite.com",
+            "static_tenant_access_token": _clean_text(body.static_tenant_access_token),
+        }
+        return {key: value for key, value in payload.items() if value}
+
+    raise HTTPException(status_code=404, detail=f"Unknown connector provider {provider!r}")
+
+
+def _connector_metadata(
+    *,
+    provider: str,
+    body: CompanyConnectorCredentialUpsert,
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    metadata = dict(body.metadata or {})
+    metadata["configured_by_company_user_id"] = _company_user_id(actor)
+    metadata["provider"] = provider
+    if body.google_email:
+        metadata["google_email"] = _clean_text(body.google_email)
+    if body.oauth_scopes:
+        metadata["oauth_scopes"] = _connector_scopes(body.oauth_scopes)
+    if body.oauth_scope:
+        metadata["oauth_scope"] = _clean_text(body.oauth_scope)
+    return metadata
+
+
+def _safe_connector_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in dict(metadata or {}).items():
+        lower = str(key).lower()
+        if any(marker in lower for marker in ("secret", "token", "key", "password")):
+            continue
+        safe[str(key)] = value
+    return safe
+
+
+def _serialize_connector_row(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata") if isinstance(row, dict) else {}
+    return {
+        "id": row.get("id"),
+        "provider": row.get("provider"),
+        "scope": row.get("scope"),
+        "company_user_id": row.get("company_user_id") or None,
+        "status": row.get("status"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "revoked_at": row.get("revoked_at"),
+        "metadata": _safe_connector_metadata(metadata if isinstance(metadata, dict) else {}),
+    }
+
+
+def _connector_status_response(company_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    serialized = [_serialize_connector_row(row) for row in rows]
+    by_provider: dict[str, list[dict[str, Any]]] = {provider: [] for provider in sorted(_COMPANY_CONNECTOR_PROVIDERS)}
+    for row in serialized:
+        provider = str(row.get("provider") or "")
+        if provider in by_provider:
+            by_provider[provider].append(row)
+    connectors = [
+        {
+            "provider": provider,
+            "connected": any(
+                row.get("status") == "active" and not row.get("revoked_at")
+                for row in provider_rows
+            ),
+            "credentials": provider_rows,
+        }
+        for provider, provider_rows in by_provider.items()
+    ]
+    return {"company_id": company_id, "connectors": connectors}
 
 
 async def _serialize_company_member_for_api(store, row: dict[str, Any]) -> dict[str, Any]:
@@ -1177,6 +1386,88 @@ async def update_company_team_member(
         status or current_status,
     )
     return await _serialize_company_member_for_api(store, updated)
+
+
+@app.get("/api/company/connectors")
+async def list_company_connectors(request: Request):
+    """List non-secret connector credential status for the current company."""
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, _actor = _current_company_actor(request, store)
+    repo = _get_company_connector_repository()
+    rows = repo.list_connector_credentials(company_id=company_id)
+    return _connector_status_response(company_id, rows)
+
+
+@app.put("/api/company/connectors/{provider}")
+async def upsert_company_connector(
+    provider: str,
+    body: CompanyConnectorCredentialUpsert,
+    request: Request,
+):
+    """Admin-only write path for native Hermes connector credentials.
+
+    This intentionally stores already-obtained credentials. Provider-specific
+    browser OAuth setup UIs can build on top of this endpoint without changing
+    the encrypted storage boundary.
+    """
+    from gateway.company_identity import get_identity_store
+
+    provider = _normalize_connector_provider(provider)
+    store = get_identity_store()
+    company_id, actor = _require_company_admin_actor(request, store)
+    credential_scope = _normalize_connector_scope(provider, body.scope)
+    company_user_id = (
+        _clean_text(body.company_user_id)
+        if credential_scope == "user"
+        else None
+    )
+    if credential_scope == "user" and not company_user_id:
+        company_user_id = _company_user_id(actor)
+    payload = _connector_payload(provider, body)
+    metadata = _connector_metadata(provider=provider, body=body, actor=actor)
+
+    repo = _get_company_connector_repository()
+    credential_id = repo.put_connector_credential(
+        provider=provider,
+        company_id=company_id,
+        company_user_id=company_user_id,
+        scope=credential_scope,
+        payload=payload,
+        metadata=metadata,
+    )
+    rows = repo.list_connector_credentials(company_id=company_id)
+    response = _connector_status_response(company_id, rows)
+    response["credential_id"] = credential_id
+    return response
+
+
+@app.delete("/api/company/connectors/{provider}")
+async def revoke_company_connector(
+    provider: str,
+    request: Request,
+    scope: str | None = None,
+    company_user_id: str | None = None,
+):
+    """Admin-only disconnect path for native Hermes connector credentials."""
+    from gateway.company_identity import get_identity_store
+
+    provider = _normalize_connector_provider(provider)
+    store = get_identity_store()
+    company_id, _actor = _require_company_admin_actor(request, store)
+    credential_scope = _normalize_connector_scope(provider, scope) if scope else None
+    repo = _get_company_connector_repository()
+    revoked = repo.revoke_connector_credentials(
+        provider=provider,
+        company_id=company_id,
+        company_user_id=company_user_id,
+        scope=credential_scope,
+    )
+    rows = repo.list_connector_credentials(company_id=company_id)
+    response = _connector_status_response(company_id, rows)
+    response["revoked"] = revoked
+    return response
 
 
 @app.get("/api/system/stats")

@@ -73,6 +73,61 @@ def _complete_lark_login(client: TestClient):
     return callback
 
 
+class _FakeConnectorRepository:
+    def __init__(self):
+        self.upserts = []
+        self.revocations = []
+        self.rows = []
+
+    def put_connector_credential(self, **kwargs):
+        self.upserts.append(kwargs)
+        credential_id = f"cc_{len(self.upserts)}"
+        self.rows = [
+            row
+            for row in self.rows
+            if not (
+                row["provider"] == kwargs["provider"]
+                and row.get("company_user_id") == (kwargs.get("company_user_id") or "")
+                and row["scope"] == kwargs["scope"]
+            )
+        ]
+        self.rows.append({
+            "id": credential_id,
+            "company_id": kwargs["company_id"],
+            "company_user_id": kwargs.get("company_user_id") or "",
+            "provider": kwargs["provider"],
+            "scope": kwargs["scope"],
+            "metadata": kwargs.get("metadata") or {},
+            "status": "active",
+            "created_at": "created",
+            "updated_at": "updated",
+            "revoked_at": None,
+        })
+        return credential_id
+
+    def list_connector_credentials(self, *, company_id):
+        return [row for row in self.rows if row["company_id"] == company_id]
+
+    def revoke_connector_credentials(self, **kwargs):
+        self.revocations.append(kwargs)
+        count = 0
+        for row in self.rows:
+            if row["company_id"] != kwargs["company_id"]:
+                continue
+            if row["provider"] != kwargs["provider"]:
+                continue
+            if kwargs.get("company_user_id") and row.get("company_user_id") != kwargs["company_user_id"]:
+                continue
+            if kwargs.get("scope") and row.get("scope") != kwargs["scope"]:
+                continue
+            if row.get("revoked_at"):
+                continue
+            row["status"] = "revoked"
+            row["revoked_at"] = "revoked"
+            count += 1
+        return count
+
+
 @pytest.fixture
 def gated_lark_client(tmp_path, monkeypatch):
     clear_providers()
@@ -235,6 +290,108 @@ def test_company_team_member_admin_actions_and_disabled_gate(gated_lark_client):
                 follow_redirects=False,
             )
     assert callback.status_code == 403
+
+
+def test_company_connector_admin_write_path_redacts_secrets(gated_lark_client, monkeypatch):
+    client, identity_db = gated_lark_client
+    _complete_lark_login(client)
+    alice = identity_db.find_dashboard_company_user(
+        provider="lark",
+        provider_user_id="ou_alice",
+        company_id="company_hermes",
+    )
+    identity_db.update_company_user(
+        company_user_id=alice["id"],
+        company_id="company_hermes",
+        role="COMPANY_ADMIN",
+    )
+    repo = _FakeConnectorRepository()
+    monkeypatch.setattr(web_server, "_get_company_connector_repository", lambda: repo)
+
+    response = client.put(
+        "/api/company/connectors/lark",
+        json={
+            "app_id": "cli_lark_runtime",
+            "app_secret": "runtime-secret",
+            "api_base_url": "https://open.larksuite.com",
+            "metadata": {"label": "production", "token_hint": "should-hide"},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["credential_id"] == "cc_1"
+    assert "runtime-secret" not in json.dumps(body)
+    assert "should-hide" not in json.dumps(body)
+    assert repo.upserts[0]["company_id"] == "company_hermes"
+    assert repo.upserts[0]["scope"] == "company"
+    assert repo.upserts[0]["payload"]["app_secret"] == "runtime-secret"
+    assert body["connectors"][1]["provider"] == "lark"
+    assert body["connectors"][1]["connected"] is True
+    assert body["connectors"][1]["credentials"][0]["metadata"] == {
+        "configured_by_company_user_id": alice["id"],
+        "label": "production",
+        "provider": "lark",
+    }
+
+    listed = client.get("/api/company/connectors")
+    assert listed.status_code == 200
+    assert "runtime-secret" not in json.dumps(listed.json())
+
+    revoke = client.delete("/api/company/connectors/lark?scope=company")
+    assert revoke.status_code == 200
+    assert revoke.json()["revoked"] == 1
+    assert repo.revocations[0]["company_id"] == "company_hermes"
+
+
+def test_company_connector_write_requires_admin(gated_lark_client, monkeypatch):
+    client, _identity_db = gated_lark_client
+    _complete_lark_login(client)
+    repo = _FakeConnectorRepository()
+    monkeypatch.setattr(web_server, "_get_company_connector_repository", lambda: repo)
+
+    response = client.put(
+        "/api/company/connectors/lark",
+        json={"app_id": "cli_lark_runtime", "app_secret": "runtime-secret"},
+    )
+
+    assert response.status_code == 403
+    assert repo.upserts == []
+
+
+def test_company_connector_google_user_scope_defaults_to_actor(gated_lark_client, monkeypatch):
+    client, identity_db = gated_lark_client
+    _complete_lark_login(client)
+    alice = identity_db.find_dashboard_company_user(
+        provider="lark",
+        provider_user_id="ou_alice",
+        company_id="company_hermes",
+    )
+    identity_db.update_company_user(
+        company_user_id=alice["id"],
+        company_id="company_hermes",
+        role="COMPANY_ADMIN",
+    )
+    repo = _FakeConnectorRepository()
+    monkeypatch.setattr(web_server, "_get_company_connector_repository", lambda: repo)
+
+    response = client.put(
+        "/api/company/connectors/google",
+        json={
+            "scope": "user",
+            "refresh_token": "1//refresh",
+            "google_email": "alice@example.com",
+            "oauth_scope": "https://www.googleapis.com/auth/gmail.readonly",
+        },
+    )
+
+    assert response.status_code == 200
+    upsert = repo.upserts[0]
+    assert upsert["provider"] == "google"
+    assert upsert["scope"] == "user"
+    assert upsert["company_user_id"] == alice["id"]
+    assert upsert["payload"]["refresh_token"] == "1//refresh"
+    assert "1//refresh" not in json.dumps(response.json())
 
 
 def test_disabled_lark_member_existing_cookie_is_rejected(gated_lark_client):

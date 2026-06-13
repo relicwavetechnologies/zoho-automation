@@ -14,26 +14,43 @@ RAW_KEY = "base64:" + base64.b64encode(KEY).decode()
 
 
 class _Cursor:
-    def __init__(self, row):
+    def __init__(self, row=None, *, rows=None, rowcount=0):
         self._row = row
+        self._rows = rows or []
+        self.rowcount = rowcount
 
     def fetchone(self):
         return self._row
+
+    def fetchall(self):
+        return self._rows
 
     def close(self):
         pass
 
 
 class _NativeConn:
-    def __init__(self, rows: dict[tuple[str, str, str | None], dict[str, Any]] | None = None):
+    def __init__(
+        self,
+        rows: dict[tuple[str, str, str | None], dict[str, Any]] | None = None,
+        *,
+        list_rows: list[dict[str, Any]] | None = None,
+        rowcount: int = 0,
+    ):
         self.rows = rows or {}
+        self.list_rows = list_rows or []
+        self.rowcount = rowcount
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
 
     def execute(self, sql, args):
         self.executed.append((sql, args))
         if 'INSERT INTO "HermesConnectorCredential"' in sql:
             return _Cursor(None)
+        if 'UPDATE "HermesConnectorCredential"' in sql:
+            return _Cursor(rowcount=self.rowcount)
         if 'FROM "HermesConnectorCredential"' in sql:
+            if '"payloadEncrypted"' not in sql:
+                return _Cursor(rows=self.list_rows)
             if '"companyUserId" = %s' in sql:
                 key = (args[2], args[0], args[1])
             else:
@@ -148,3 +165,60 @@ def test_lark_env_fallback_can_be_disabled_for_enterprise_runtime():
     )
 
     assert creds is None
+
+
+def test_list_connector_credentials_returns_non_secret_rows():
+    conn = _NativeConn(
+        list_rows=[
+            {
+                "id": "cc_1",
+                "companyId": "comp_1",
+                "companyUserId": None,
+                "provider": "lark",
+                "scope": "company",
+                "metadata": {"label": "prod"},
+                "status": "active",
+                "createdAt": "created",
+                "updatedAt": "updated",
+                "revokedAt": None,
+                "payloadEncrypted": "must-not-leak",
+            }
+        ]
+    )
+    repo = ConnectorCredentialRepository(conn, encryption_key=RAW_KEY)
+
+    rows = repo.list_connector_credentials(company_id="comp_1")
+
+    assert rows == [
+        {
+            "id": "cc_1",
+            "company_id": "comp_1",
+            "company_user_id": "",
+            "provider": "lark",
+            "scope": "company",
+            "metadata": {"label": "prod"},
+            "status": "active",
+            "created_at": "created",
+            "updated_at": "updated",
+            "revoked_at": None,
+        }
+    ]
+
+
+def test_revoke_connector_credentials_marks_native_rows():
+    conn = _NativeConn(rowcount=2)
+    repo = ConnectorCredentialRepository(conn, encryption_key=RAW_KEY)
+
+    revoked = repo.revoke_connector_credentials(
+        provider="google",
+        company_id="comp_1",
+        company_user_id="user_1",
+        scope="user",
+    )
+
+    assert revoked == 2
+    sql, args = conn.executed[-1]
+    assert 'UPDATE "HermesConnectorCredential"' in sql
+    assert '"companyUserId" = %s' in sql
+    assert '"scope" = %s' in sql
+    assert args == ("comp_1", "google", "user_1", "user")
