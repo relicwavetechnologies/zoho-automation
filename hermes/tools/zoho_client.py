@@ -188,10 +188,7 @@ class ZohoClient:
     # ------------------------------------------------------------------
 
     async def list_books_organizations(self) -> list[dict[str, Any]]:
-        try:
-            data = await self._request("books", "GET", "/organizations")
-        except Exception:
-            return []
+        data = await self._request("books", "GET", "/organizations")
         organizations = []
         for org in _as_records(data.get("organizations") if isinstance(data, dict) else None):
             org_id = _as_str(org.get("organization_id")) or _as_str(org.get("organizationId"))

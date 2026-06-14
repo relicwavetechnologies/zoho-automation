@@ -124,7 +124,7 @@ def resolve_zoho_client(
         client_id=creds.client_id,
         client_secret=creds.client_secret,
         refresh_token=creds.refresh_token,
-        organization_id=None,  # resolved at runtime from /organizations
+        organization_id=creds.organization_id,
         accounts_base_url=creds.accounts_base_url or DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
         api_base_url=creds.api_base_url or DEFAULT_ZOHO_API_BASE_URL,
         scopes=(" ".join(creds.scopes) or None),
@@ -134,7 +134,7 @@ def resolve_zoho_client(
     client = ZohoClient(
         provider,
         api_base_url=credentials.api_base_url,
-        organization_id=None,
+        organization_id=credentials.organization_id,
         **client_kwargs,
     )
     _company_clients[company_id] = client

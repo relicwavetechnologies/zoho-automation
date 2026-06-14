@@ -378,6 +378,7 @@ def test_company_connector_zoho_self_client_validates_and_stores_refresh_token(
         assert credentials.client_id == "zoho-client"
         assert credentials.client_secret == "zoho-secret"
         assert credentials.refresh_token == "zoho-refresh"
+        assert credentials.organization_id == "org-123"
         assert credentials.accounts_base_url == "https://accounts.zoho.com"
         return SimpleNamespace(
             access_token="zoho-access",
@@ -394,6 +395,7 @@ def test_company_connector_zoho_self_client_validates_and_stores_refresh_token(
             "client_id": "zoho-client",
             "client_secret": "zoho-secret",
             "refresh_token": "zoho-refresh",
+            "organization_id": "org-123",
             "oauth_scopes": "ZohoBooks.fullaccess.all",
             "metadata": {"label": "finance"},
         },
@@ -409,6 +411,7 @@ def test_company_connector_zoho_self_client_validates_and_stores_refresh_token(
     assert upsert["scope"] == "company"
     assert upsert["payload"]["client_secret"] == "zoho-secret"
     assert upsert["payload"]["refresh_token"] == "zoho-refresh"
+    assert upsert["payload"]["organization_id"] == "org-123"
     assert upsert["payload"]["access_token"] == "zoho-access"
     assert upsert["payload"]["access_token_expires_at"]
     assert upsert["payload"]["scopes"] == ["ZohoBooks.fullaccess.all"]

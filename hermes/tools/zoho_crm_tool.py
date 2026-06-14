@@ -119,13 +119,6 @@ async def _handle_zoho_crm(args: dict[str, Any], **kwargs: Any) -> str:
         return tool_error(f"Unknown Zoho CRM operation: {op}", success=False)
 
     try:
-        from tools.zoho_runtime import resolve_tool_client
-
-        client = resolve_tool_client(kwargs)
-    except Exception as exc:
-        return tool_error(_map_zoho_error(exc), success=False, operation=op)
-
-    try:
         if op in CRM_WRITE_OPS:
             approved = require_zoho_write_approval(
                 pattern_key=f"zoho_crm:{op}",
@@ -142,10 +135,22 @@ async def _handle_zoho_crm(args: dict[str, Any], **kwargs: Any) -> str:
                     approval_pending=approved.get("approval_pending", False),
                     pattern_key=approved.get("pattern_key"),
                 )
+            try:
+                from tools.zoho_runtime import resolve_tool_client
+
+                client = resolve_tool_client(kwargs)
+            except Exception as exc:
+                return tool_error(_map_zoho_error(exc), success=False, operation=op)
             result = await _execute_write(client, op, args)
             result["approval"] = approved.get("approval")
             return tool_result(result)
 
+        try:
+            from tools.zoho_runtime import resolve_tool_client
+
+            client = resolve_tool_client(kwargs)
+        except Exception as exc:
+            return tool_error(_map_zoho_error(exc), success=False, operation=op)
         result = await _execute_read(client, op, args)
         return tool_result(result)
     except Exception as exc:

@@ -1026,6 +1026,7 @@ class CompanyConnectorCredentialUpsert(BaseModel):
     client_secret: str | None = None
     refresh_token: str | None = None
     access_token: str | None = None
+    organization_id: str | None = None
     accounts_base_url: str | None = None
     api_base_url: str | None = None
     api_domain: str | None = None
@@ -1223,6 +1224,7 @@ def _connector_payload(
             "client_secret": _require_body_text(body, "client_secret"),
             "refresh_token": _require_body_text(body, "refresh_token"),
             "access_token": _clean_text(body.access_token),
+            "organization_id": _clean_text(body.organization_id),
             "accounts_base_url": _clean_text(body.accounts_base_url) or "https://accounts.zoho.com",
             "api_base_url": _clean_text(body.api_base_url) or "https://www.zohoapis.com",
             "api_domain": _clean_text(body.api_domain),
@@ -1296,6 +1298,7 @@ async def _validated_zoho_connector_payload(
         client_id=_require_body_text(body, "client_id"),
         client_secret=_require_body_text(body, "client_secret"),
         refresh_token=_require_body_text(body, "refresh_token"),
+        organization_id=_clean_text(body.organization_id) or None,
         accounts_base_url=accounts_base_url,
         api_base_url=api_base_url,
         scopes=" ".join(_connector_scopes(body.oauth_scopes)) or None,
@@ -1332,6 +1335,7 @@ async def _validated_zoho_connector_payload(
         "client_id": credentials.client_id,
         "client_secret": credentials.client_secret,
         "refresh_token": credentials.refresh_token,
+        "organization_id": credentials.organization_id,
         "access_token": token.access_token,
         "access_token_expires_at": expires_at,
         "accounts_base_url": accounts_base_url,
@@ -1368,6 +1372,8 @@ def _connector_metadata(
         metadata["accounts_base_url"] = _clean_text(body.accounts_base_url) or "https://accounts.zoho.com"
         metadata["api_base_url"] = _clean_text(body.api_base_url) or "https://www.zohoapis.com"
         metadata["environment"] = _clean_text(body.environment) or "prod"
+        if body.organization_id:
+            metadata["organization_id"] = _clean_text(body.organization_id)
     if provider == "lark":
         metadata["api_base_url"] = _clean_text(body.api_base_url) or "https://open.larksuite.com"
     return metadata

@@ -1029,6 +1029,7 @@ export interface CompanyConnectorUpsertRequest {
   client_id?: string;
   client_secret?: string;
   refresh_token?: string;
+  organization_id?: string;
   accounts_base_url?: string;
   api_base_url?: string;
   environment?: string;

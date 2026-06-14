@@ -30,9 +30,10 @@ NATIVE_CONNECTOR_PROVIDERS = {"zoho", "google", "lark"}
 class ZohoConnectionCredentials:
     """Decrypted Zoho OAuth credentials for one company.
 
-    ``organization_id`` is intentionally absent: Zoho Books resolves it at
-    runtime from the ``/organizations`` endpoint (Divo does the same), so it is
-    not stored on the connection.
+    ``organization_id`` is optional because some Zoho self-client setups cannot
+    reliably auto-discover the default Books organization before the first tool
+    call. When present, runtime uses it directly; otherwise the client falls
+    back to ``/organizations`` discovery.
     """
 
     company_id: str
@@ -41,6 +42,7 @@ class ZohoConnectionCredentials:
     refresh_token: str
     accounts_base_url: str
     api_base_url: str
+    organization_id: Optional[str] = None
     access_token: Optional[str] = None
     access_token_expires_at: Optional[Any] = None
     api_domain: Optional[str] = None
@@ -515,6 +517,14 @@ class ConnectorCredentialRepository:
             client_id=client_id,
             client_secret=client_secret,
             refresh_token=refresh_token,
+            organization_id=self._payload_get(
+                payload,
+                "organization_id",
+                "organizationId",
+                "zoho_organization_id",
+                "zohoOrganizationId",
+            )
+            or None,
             access_token=self._payload_get(payload, "access_token", "accessToken") or None,
             access_token_expires_at=payload.get("access_token_expires_at") or payload.get("accessTokenExpiresAt"),
             accounts_base_url=(

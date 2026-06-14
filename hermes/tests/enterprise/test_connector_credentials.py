@@ -95,6 +95,7 @@ def test_native_zoho_credentials_are_preferred_over_legacy_tables():
             "client_id": "zoho-client",
             "client_secret": "zoho-secret",
             "refresh_token": "zoho-refresh",
+            "organization_id": "org-123",
             "accounts_base_url": "https://accounts.zoho.eu/",
             "api_base_url": "https://www.zohoapis.eu/",
             "scopes": "ZohoBooks.fullaccess.all",
@@ -108,6 +109,7 @@ def test_native_zoho_credentials_are_preferred_over_legacy_tables():
     assert creds.client_id == "zoho-client"
     assert creds.client_secret == "zoho-secret"
     assert creds.refresh_token == "zoho-refresh"
+    assert creds.organization_id == "org-123"
     assert creds.accounts_base_url == "https://accounts.zoho.eu"
     assert creds.api_base_url == "https://www.zohoapis.eu"
     assert creds.scopes == ["ZohoBooks.fullaccess.all"]

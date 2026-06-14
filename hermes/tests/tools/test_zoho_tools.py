@@ -195,6 +195,26 @@ async def test_zoho_books_write_blocks_cron_without_approval(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_zoho_books_blocked_write_does_not_resolve_client(monkeypatch):
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+
+    def explode(_kwargs):
+        raise AssertionError("client resolution should not run before approval")
+
+    monkeypatch.setattr("tools.zoho_runtime.resolve_tool_client", explode)
+
+    result = json.loads(
+        await _handle_zoho_books(
+            {"op": "void_invoice", "invoiceId": "inv-1"},
+        )
+    )
+
+    assert result["success"] is False
+    assert "approval" in result["error"].lower()
+
+
+@pytest.mark.asyncio
 async def test_zoho_crm_search_text_and_reports():
     client = FakeZohoClient()
     search = json.loads(
@@ -251,6 +271,26 @@ async def test_zoho_crm_create_update_delete_are_real_handlers():
         "crm_update_record",
         "crm_delete_record",
     ]
+
+
+@pytest.mark.asyncio
+async def test_zoho_crm_blocked_write_does_not_resolve_client(monkeypatch):
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+
+    def explode(_kwargs):
+        raise AssertionError("client resolution should not run before approval")
+
+    monkeypatch.setattr("tools.zoho_runtime.resolve_tool_client", explode)
+
+    result = json.loads(
+        await _handle_zoho_crm(
+            {"op": "delete", "module": "Leads", "recordId": "lead-1"},
+        )
+    )
+
+    assert result["success"] is False
+    assert "approval" in result["error"].lower()
 
 
 def test_zoho_tools_are_registered_and_resolve_in_toolsets(monkeypatch):

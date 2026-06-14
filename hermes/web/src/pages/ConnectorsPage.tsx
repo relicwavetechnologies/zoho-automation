@@ -60,6 +60,7 @@ type ConnectorSetupDraft = {
   client_secret: string;
   label: string;
   oauth_scopes: string;
+  organization_id: string;
   refresh_token: string;
 };
 
@@ -99,6 +100,7 @@ function initialSetupDraft(provider: CompanyConnectorProvider): ConnectorSetupDr
     client_secret: "",
     label: provider === "zoho" ? "Zoho self-client" : `${PROVIDER_COPY[provider].name} app`,
     oauth_scopes: provider === "zoho" ? DEFAULT_ZOHO_SCOPES : "",
+    organization_id: "",
     refresh_token: "",
   };
 }
@@ -387,6 +389,16 @@ function ConnectorSetupPanel({
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="grid gap-1.5">
+                  <Label htmlFor="zoho-organization-id">Books organization ID</Label>
+                  <Input
+                    id="zoho-organization-id"
+                    value={draft.organization_id}
+                    onChange={(event) => onChange({ organization_id: event.target.value })}
+                    placeholder="Optional, recommended for production"
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="grid gap-1.5">
                   <Label htmlFor="zoho-accounts-base-url">Accounts base URL</Label>
                   <Input
                     id="zoho-accounts-base-url"
@@ -631,6 +643,7 @@ export default function ConnectorsPage() {
               client_id: setupDraft.client_id.trim(),
               client_secret: setupDraft.client_secret.trim(),
               refresh_token: setupDraft.refresh_token.trim(),
+              organization_id: setupDraft.organization_id.trim(),
               accounts_base_url:
                 setupDraft.accounts_base_url.trim() ||
                 DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
