@@ -277,3 +277,36 @@ class TestSetupFeishuAdapterIntegration:
             from gateway.platforms.feishu import FeishuAdapter
             adapter = FeishuAdapter(PlatformConfig())
             assert adapter._group_policy == "open"
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_company_lark_channel_env_sets_adapter_state(self):
+        env = {
+            "HERMES_LARK_CHANNEL_APP_ID": "cli_company",
+            "HERMES_LARK_CHANNEL_APP_SECRET": "secret_company",
+            "HERMES_LARK_CHANNEL_DOMAIN": "lark",
+            "HERMES_LARK_CHANNEL_CONNECTION_MODE": "webhook",
+            "HERMES_LARK_CHANNEL_VERIFICATION_TOKEN": "verify_company",
+            "HERMES_LARK_CHANNEL_WEBHOOK_HOST": "127.0.0.1",
+            "HERMES_LARK_CHANNEL_WEBHOOK_PORT": "8765",
+            "HERMES_LARK_CHANNEL_WEBHOOK_PATH": "/feishu/webhook",
+            "HERMES_LARK_CHANNEL_ALLOW_ALL_USERS": "true",
+            "HERMES_LARK_CHANNEL_GROUP_POLICY": "open",
+            "HERMES_LARK_CHANNEL_REQUIRE_MENTION": "true",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            from gateway.config import PlatformConfig
+            from gateway.platforms.feishu import FeishuAdapter
+
+            adapter = FeishuAdapter(PlatformConfig())
+
+        assert adapter._app_id == "cli_company"
+        assert adapter._app_secret == "secret_company"
+        assert adapter._domain_name == "lark"
+        assert adapter._connection_mode == "webhook"
+        assert adapter._verification_token == "verify_company"
+        assert adapter._webhook_host == "127.0.0.1"
+        assert adapter._webhook_port == 8765
+        assert adapter._webhook_path == "/feishu/webhook"
+        assert adapter._group_policy == "open"
+        assert adapter._require_mention is True

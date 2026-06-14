@@ -882,3 +882,36 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestCompanyLarkChannelEnv:
+    def test_company_lark_channel_env_enables_feishu_platform(self):
+        config = GatewayConfig()
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_LARK_CHANNEL_ENABLED": "true",
+                "LARK_APP_ID": "cli_company",
+                "LARK_APP_SECRET": "secret_company",
+                "HERMES_LARK_CHANNEL_DOMAIN": "lark",
+                "HERMES_LARK_CHANNEL_CONNECTION_MODE": "webhook",
+                "HERMES_LARK_CHANNEL_VERIFICATION_TOKEN": "verify_company",
+                "HERMES_LARK_CHANNEL_WEBHOOK_HOST": "127.0.0.1",
+                "HERMES_LARK_CHANNEL_WEBHOOK_PORT": "8765",
+                "HERMES_LARK_CHANNEL_WEBHOOK_PATH": "/feishu/webhook",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        feishu = config.platforms[Platform.FEISHU]
+        assert feishu.enabled is True
+        assert feishu.extra["app_id"] == "cli_company"
+        assert feishu.extra["app_secret"] == "secret_company"
+        assert feishu.extra["domain"] == "lark"
+        assert feishu.extra["connection_mode"] == "webhook"
+        assert feishu.extra["verification_token"] == "verify_company"
+        assert feishu.extra["webhook_host"] == "127.0.0.1"
+        assert feishu.extra["webhook_port"] == "8765"
+        assert feishu.extra["webhook_path"] == "/feishu/webhook"

@@ -457,8 +457,21 @@ def _escape_markdown_text(text: str) -> str:
     return _MARKDOWN_SPECIAL_CHARS_RE.sub(r"\\\1", text)
 
 
+def _env_first(*names: str, default: str = "") -> str:
+    """Return the first non-empty environment variable value."""
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
 def _to_boolean(value: Any) -> bool:
-    return value is True or value == 1 or value == "true"
+    if value is True or value == 1:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
 
 
 def _is_style_enabled(style: Dict[str, Any] | None, key: str) -> bool:
@@ -1503,7 +1516,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Env-only so adapter and gateway auth bypass share one source; yaml
         # feishu.allow_bots is bridged to this env var at config load.
-        allow_bots = os.getenv("FEISHU_ALLOW_BOTS", "none").strip().lower()
+        allow_bots = _env_first(
+            "FEISHU_ALLOW_BOTS",
+            "HERMES_LARK_CHANNEL_ALLOW_BOTS",
+            default="none",
+        ).strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
@@ -1512,25 +1529,46 @@ class FeishuAdapter(BasePlatformAdapter):
             allow_bots = "none"
 
         return FeishuAdapterSettings(
-            app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
-            app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
-            domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip().lower(),
-            connection_mode=str(
-                extra.get("connection_mode") or os.getenv("FEISHU_CONNECTION_MODE", "websocket")
-            ).strip().lower(),
-            encrypt_key=str(extra.get("encrypt_key") or os.getenv("FEISHU_ENCRYPT_KEY", "")).strip(),
-            verification_token=str(
-                extra.get("verification_token") or os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+            app_id=str(
+                extra.get("app_id")
+                or _env_first("FEISHU_APP_ID", "HERMES_LARK_CHANNEL_APP_ID")
             ).strip(),
-            group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            app_secret=str(
+                extra.get("app_secret")
+                or _env_first("FEISHU_APP_SECRET", "HERMES_LARK_CHANNEL_APP_SECRET")
+            ).strip(),
+            domain_name=str(
+                extra.get("domain") or _env_first("FEISHU_DOMAIN", "HERMES_LARK_CHANNEL_DOMAIN", default="feishu")
+            ).strip().lower(),
+            connection_mode=str(
+                extra.get("connection_mode")
+                or _env_first("FEISHU_CONNECTION_MODE", "HERMES_LARK_CHANNEL_CONNECTION_MODE", default="websocket")
+            ).strip().lower(),
+            encrypt_key=str(extra.get("encrypt_key") or _env_first("FEISHU_ENCRYPT_KEY", "HERMES_LARK_CHANNEL_ENCRYPT_KEY")).strip(),
+            verification_token=str(
+                extra.get("verification_token")
+                or _env_first(
+                    "FEISHU_VERIFICATION_TOKEN",
+                    "HERMES_LARK_CHANNEL_VERIFICATION_TOKEN",
+                    "LARK_VERIFICATION_TOKEN",
+                )
+            ).strip(),
+            group_policy=_env_first(
+                "FEISHU_GROUP_POLICY",
+                "HERMES_LARK_CHANNEL_GROUP_POLICY",
+                default="allowlist",
+            ).strip().lower(),
             allowed_group_users=frozenset(
                 item.strip()
-                for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
+                for item in _env_first(
+                    "FEISHU_ALLOWED_USERS",
+                    "HERMES_LARK_CHANNEL_ALLOWED_USERS",
+                ).split(",")
                 if item.strip()
             ),
-            bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
-            bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
-            bot_name=os.getenv("FEISHU_BOT_NAME", "").strip(),
+            bot_open_id=_env_first("FEISHU_BOT_OPEN_ID", "HERMES_LARK_CHANNEL_BOT_OPEN_ID").strip(),
+            bot_user_id=_env_first("FEISHU_BOT_USER_ID", "HERMES_LARK_CHANNEL_BOT_USER_ID").strip(),
+            bot_name=_env_first("FEISHU_BOT_NAME", "HERMES_LARK_CHANNEL_BOT_NAME").strip(),
             dedup_cache_size=max(
                 32,
                 int(os.getenv("HERMES_FEISHU_DEDUP_CACHE_SIZE", str(_DEFAULT_DEDUP_CACHE_SIZE))),
@@ -1553,13 +1591,18 @@ class FeishuAdapter(BasePlatformAdapter):
                 os.getenv("HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", str(_DEFAULT_MEDIA_BATCH_DELAY_SECONDS))
             ),
             webhook_host=str(
-                extra.get("webhook_host") or os.getenv("FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST)
+                extra.get("webhook_host")
+                or _env_first("FEISHU_WEBHOOK_HOST", "HERMES_LARK_CHANNEL_WEBHOOK_HOST", default=_DEFAULT_WEBHOOK_HOST)
             ).strip(),
             webhook_port=int(
-                extra.get("webhook_port") or os.getenv("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))
+                extra.get("webhook_port")
+                or _env_first("FEISHU_WEBHOOK_PORT", "HERMES_LARK_CHANNEL_WEBHOOK_PORT", default=str(_DEFAULT_WEBHOOK_PORT))
             ),
             webhook_path=(
-                str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
+                str(
+                    extra.get("webhook_path")
+                    or _env_first("FEISHU_WEBHOOK_PATH", "HERMES_LARK_CHANNEL_WEBHOOK_PATH", default=_DEFAULT_WEBHOOK_PATH)
+                ).strip()
                 or _DEFAULT_WEBHOOK_PATH
             ),
             ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
@@ -1571,7 +1614,10 @@ class FeishuAdapter(BasePlatformAdapter):
             group_rules=group_rules,
             allow_bots=allow_bots,
             require_mention=_to_boolean(
-                extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
+                extra.get(
+                    "require_mention",
+                    _env_first("FEISHU_REQUIRE_MENTION", "HERMES_LARK_CHANNEL_REQUIRE_MENTION", default="true"),
+                )
             ),
         )
 

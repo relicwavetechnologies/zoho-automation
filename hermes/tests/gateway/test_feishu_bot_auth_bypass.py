@@ -21,6 +21,8 @@ def _isolate_feishu_env(monkeypatch):
         "FEISHU_ALLOW_BOTS",
         "FEISHU_ALLOWED_USERS",
         "FEISHU_ALLOW_ALL_USERS",
+        "HERMES_LARK_CHANNEL_ALLOWED_USERS",
+        "HERMES_LARK_CHANNEL_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):
@@ -96,6 +98,21 @@ def test_feishu_human_still_checked_against_allowlist_when_bot_policy_set(monkey
 
     assert runner._is_user_authorized(_make_feishu_human_source("ou_stranger")) is False
     assert runner._is_user_authorized(_make_feishu_human_source("ou_human")) is True
+
+
+def test_feishu_human_authorized_by_company_lark_channel_allow_all(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("HERMES_LARK_CHANNEL_ALLOW_ALL_USERS", "true")
+
+    assert runner._is_user_authorized(_make_feishu_human_source("ou_new_employee")) is True
+
+
+def test_feishu_human_authorized_by_company_lark_channel_allowlist(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("HERMES_LARK_CHANNEL_ALLOWED_USERS", "ou_allowed")
+
+    assert runner._is_user_authorized(_make_feishu_human_source("ou_allowed")) is True
+    assert runner._is_user_authorized(_make_feishu_human_source("ou_stranger")) is False
 
 
 def test_feishu_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):

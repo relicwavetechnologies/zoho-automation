@@ -4355,6 +4355,7 @@ class GatewayRunner:
             "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
             "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
             "FEISHU_ALLOWED_USERS",
+            "HERMES_LARK_CHANNEL_ALLOWED_USERS",
             "WECOM_ALLOWED_USERS",
             "WECOM_CALLBACK_ALLOWED_USERS",
             "WEIXIN_ALLOWED_USERS",
@@ -4370,6 +4371,7 @@ class GatewayRunner:
             "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
             "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
             "FEISHU_ALLOW_ALL_USERS",
+            "HERMES_LARK_CHANNEL_ALLOW_ALL_USERS",
             "WECOM_ALLOW_ALL_USERS",
             "WECOM_CALLBACK_ALLOW_ALL_USERS",
             "WEIXIN_ALLOW_ALL_USERS",
@@ -7142,6 +7144,11 @@ class GatewayRunner:
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
             return True
+        if source.platform == Platform.FEISHU and os.getenv(
+            "HERMES_LARK_CHANNEL_ALLOW_ALL_USERS",
+            "",
+        ).lower() in {"true", "1", "yes"}:
+            return True
 
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
@@ -7155,6 +7162,8 @@ class GatewayRunner:
 
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        if source.platform == Platform.FEISHU and not platform_allowlist:
+            platform_allowlist = os.getenv("HERMES_LARK_CHANNEL_ALLOWED_USERS", "").strip()
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:

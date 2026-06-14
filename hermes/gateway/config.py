@@ -56,6 +56,15 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
+def _env_first(*names: str, default: str = "") -> str:
+    """Return the first non-empty environment variable value."""
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
     """Normalize unauthorized DM behavior to a supported value."""
     if isinstance(value, str):
@@ -1623,9 +1632,26 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 thread_id=os.getenv("DINGTALK_HOME_CHANNEL_THREAD_ID") or None,
             )
 
-    # Feishu / Lark
-    feishu_app_id = os.getenv("FEISHU_APP_ID")
-    feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
+    # Feishu / Lark.  Company-mode Hermes uses canonical HERMES_LARK_CHANNEL_*
+    # names, while the mature adapter still accepts legacy FEISHU_* variables.
+    lark_channel_enabled = os.getenv("HERMES_LARK_CHANNEL_ENABLED", "").lower() in {
+        "true",
+        "1",
+        "yes",
+        "on",
+    }
+    lark_app_id_fallback = ("LARK_APP_ID",) if lark_channel_enabled else ()
+    lark_app_secret_fallback = ("LARK_APP_SECRET",) if lark_channel_enabled else ()
+    feishu_app_id = _env_first(
+        "FEISHU_APP_ID",
+        "HERMES_LARK_CHANNEL_APP_ID",
+        *lark_app_id_fallback,
+    )
+    feishu_app_secret = _env_first(
+        "FEISHU_APP_SECRET",
+        "HERMES_LARK_CHANNEL_APP_SECRET",
+        *lark_app_secret_fallback,
+    )
     if feishu_app_id and feishu_app_secret:
         if Platform.FEISHU not in config.platforms:
             config.platforms[Platform.FEISHU] = PlatformConfig()
@@ -1633,22 +1659,47 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,
-            "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
-            "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+            "domain": _env_first("FEISHU_DOMAIN", "HERMES_LARK_CHANNEL_DOMAIN", default="feishu"),
+            "connection_mode": _env_first(
+                "FEISHU_CONNECTION_MODE",
+                "HERMES_LARK_CHANNEL_CONNECTION_MODE",
+                default="websocket",
+            ),
         })
-        feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+        feishu_encrypt_key = _env_first("FEISHU_ENCRYPT_KEY", "HERMES_LARK_CHANNEL_ENCRYPT_KEY")
         if feishu_encrypt_key:
             config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
-        feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+        feishu_verification_token = _env_first(
+            "FEISHU_VERIFICATION_TOKEN",
+            "HERMES_LARK_CHANNEL_VERIFICATION_TOKEN",
+            "LARK_VERIFICATION_TOKEN",
+        )
         if feishu_verification_token:
             config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
-        feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
+        feishu_webhook_host = _env_first("FEISHU_WEBHOOK_HOST", "HERMES_LARK_CHANNEL_WEBHOOK_HOST")
+        if feishu_webhook_host:
+            config.platforms[Platform.FEISHU].extra["webhook_host"] = feishu_webhook_host
+        feishu_webhook_port = _env_first("FEISHU_WEBHOOK_PORT", "HERMES_LARK_CHANNEL_WEBHOOK_PORT")
+        if feishu_webhook_port:
+            config.platforms[Platform.FEISHU].extra["webhook_port"] = feishu_webhook_port
+        feishu_webhook_path = _env_first("FEISHU_WEBHOOK_PATH", "HERMES_LARK_CHANNEL_WEBHOOK_PATH")
+        if feishu_webhook_path:
+            config.platforms[Platform.FEISHU].extra["webhook_path"] = feishu_webhook_path
+        feishu_home = _env_first("FEISHU_HOME_CHANNEL", "HERMES_LARK_CHANNEL_HOME_CHANNEL")
         if feishu_home:
             config.platforms[Platform.FEISHU].home_channel = HomeChannel(
                 platform=Platform.FEISHU,
                 chat_id=feishu_home,
-                name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
-                thread_id=os.getenv("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
+                name=_env_first(
+                    "FEISHU_HOME_CHANNEL_NAME",
+                    "HERMES_LARK_CHANNEL_HOME_CHANNEL_NAME",
+                    default="Home",
+                ),
+                thread_id=_env_first(
+                    "FEISHU_HOME_CHANNEL_THREAD_ID",
+                    "HERMES_LARK_CHANNEL_HOME_CHANNEL_THREAD_ID",
+                )
+                or None,
             )
 
     # WeCom (Enterprise WeChat)
