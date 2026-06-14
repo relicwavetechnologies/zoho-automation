@@ -21,6 +21,7 @@ class FakeConnection:
     def __init__(self):
         self.calls = []
         self.company_users = {}
+        self.channel_identities = {}
         self.session_bindings = {}
         self.runtime_conversations = {}
 
@@ -95,6 +96,23 @@ class FakeConnection:
             }
             self.session_bindings[args[2]] = row
             return FakeCursor()
+        if 'FROM "ChannelIdentity"' in sql and 'WHERE "companyId" = %s' in sql:
+            company_id, channel, identity_key, external_user_id, lark_open_id, user_id_alt = args
+            for row in self.channel_identities.values():
+                if row.get("companyId") != company_id:
+                    continue
+                same_channel = (
+                    row.get("channel") == channel
+                    and (
+                        row.get("identityKey") == identity_key
+                        or row.get("externalUserId") == external_user_id
+                    )
+                )
+                same_lark_open_id = row.get("larkOpenId") and row.get("larkOpenId") == lark_open_id
+                same_alt = row.get("platformUserIdAlt") and row.get("platformUserIdAlt") == user_id_alt
+                if same_channel or same_lark_open_id or same_alt:
+                    return FakeCursor(row)
+            return FakeCursor()
         if 'SELECT "hermesSessionId", "sessionKey", "companyId", "resolvedUserId"' in sql:
             if 'WHERE "hermesSessionId" = %s' in sql:
                 return FakeCursor(self.session_bindings.get(args[0]))
@@ -106,11 +124,31 @@ class FakeConnection:
                 ]
             )
         if 'RETURNING "id", "companyUserId", "identityKey", "aiRole"' in sql:
+            row = {
+                "id": args[0],
+                "companyId": args[1],
+                "companyUserId": args[2],
+                "channel": args[3],
+                "externalUserId": args[4],
+                "displayName": args[6],
+                "identityKey": args[8],
+                "platformUserIdAlt": args[9],
+                "platformChatId": args[10],
+                "platformWorkspaceId": args[11],
+                "aiRole": "ADMIN",
+            }
+            key = (row["channel"], row["externalUserId"], row["companyId"])
+            existing = self.channel_identities.get(key, {})
+            for field, value in row.items():
+                if field == "displayName" and value is None:
+                    continue
+                existing[field] = value
+            self.channel_identities[key] = existing
             return FakeCursor(
                 {
-                    "id": "ci_existing",
-                    "companyUserId": args[2],
-                    "identityKey": args[8],
+                    "id": existing["id"],
+                    "companyUserId": existing.get("companyUserId"),
+                    "identityKey": existing["identityKey"],
                     "aiRole": "ADMIN",
                 }
             )
@@ -135,15 +173,17 @@ def test_enterprise_identity_repository_upserts_company_user_and_channel(monkeyp
 
     assert identity.company_id == "company_emiac-tech"
     assert identity.company_user_id
-    assert identity.channel_identity_id == "ci_existing"
+    assert identity.channel_identity_id
     assert identity.identity_key == "user:ou_123"
     assert identity.company_role == "ADMIN"
 
     company_sql, company_args = connection.calls[0]
-    user_sql, user_args = connection.calls[1]
-    channel_sql, channel_args = connection.calls[2]
+    lookup_sql, _lookup_args = connection.calls[1]
+    user_sql, user_args = connection.calls[2]
+    channel_sql, channel_args = connection.calls[3]
     assert 'INSERT INTO "Company"' in company_sql
     assert company_args == ("company_emiac-tech", "emiac-tech", "Emiac Tech")
+    assert 'FROM "ChannelIdentity"' in lookup_sql
     assert 'INSERT INTO "CompanyUser"' in user_sql
     assert user_args[:2] == (identity.company_user_id, "company_emiac-tech")
     assert 'INSERT INTO "ChannelIdentity"' in channel_sql
@@ -166,6 +206,43 @@ def test_enterprise_identity_repository_supports_channel_only_identity(monkeypat
     channel_args = connection.calls[-1][1]
     assert channel_args[4] == "chat:local"
     assert channel_args[5] == "local"
+
+
+def test_enterprise_identity_repository_reuses_imported_lark_identity(monkeypatch):
+    monkeypatch.delenv("HERMES_COMPANY_ID", raising=False)
+    connection = FakeConnection()
+    connection.channel_identities[("lark", "ou_anish", "company_relicwave")] = {
+        "id": "ci_imported_anish",
+        "companyId": "company_relicwave",
+        "companyUserId": None,
+        "channel": "lark",
+        "externalUserId": "ou_anish",
+        "larkOpenId": "ou_anish",
+        "email": "anish@emiactech.com",
+        "displayName": "Anish Suman",
+        "identityKey": "user:ou_anish",
+    }
+    repo = EnterpriseIdentityRepository(connection)
+
+    identity = repo.resolve_channel_identity(
+        platform="feishu",
+        chat_id="oc_chat",
+        user_id="ou_anish",
+        user_name=None,
+        company_id="company_relicwave",
+    )
+
+    assert identity.company_id == "company_relicwave"
+    assert identity.channel_identity_id == "ci_imported_anish"
+    assert identity.company_user_id
+
+    company_user = connection.company_users[identity.company_user_id]
+    assert company_user["email"] == "anish@emiactech.com"
+    assert company_user["displayName"] == "Anish Suman"
+
+    channel = connection.channel_identities[("lark", "ou_anish", "company_relicwave")]
+    assert channel["companyUserId"] == identity.company_user_id
+    assert channel["platformChatId"] == "oc_chat"
 
 
 def test_enterprise_identity_repository_upserts_dashboard_member(monkeypatch):

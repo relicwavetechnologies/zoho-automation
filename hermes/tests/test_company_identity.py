@@ -23,7 +23,7 @@ def test_resolve_channel_identity_creates_company_user_and_session_binding(tmp_p
 
         channel = db.get_channel_identity(identity.channel_identity_id)
         assert channel is not None
-        assert channel["platform"] == "feishu"
+        assert channel["platform"] == "lark"
         assert channel["platform_user_id"] == "ou_user"
         assert channel["platform_user_id_alt"] == "on_union"
         assert channel["platform_chat_id"] == "oc_chat"
@@ -42,6 +42,7 @@ def test_resolve_channel_identity_creates_company_user_and_session_binding(tmp_p
         assert session_identity["company_id"] == "company_emiac"
         assert session_identity["company_user_id"] == identity.company_user_id
         assert session_identity["channel_identity_id"] == identity.channel_identity_id
+        assert session_identity["platform"] == "lark"
         by_user = db.list_session_identities_for_company_user(identity.company_user_id)
         assert [row["session_id"] for row in by_user] == ["session-1"]
     finally:
@@ -146,5 +147,42 @@ def test_dashboard_member_updates_preserve_admin_role_and_disabled_status_on_log
         assert login_upsert["role"] == "COMPANY_ADMIN"
         assert login_upsert["status"] == "disabled"
         assert login_upsert["display_name"] == "Alice Changed"
+    finally:
+        db.close()
+
+
+def test_feishu_channel_reuses_existing_lark_dashboard_identity(tmp_path):
+    db = CompanyIdentityDB(tmp_path / "company.db")
+    try:
+        member = db.upsert_dashboard_member(
+            provider="lark",
+            provider_user_id="ou_anish",
+            display_name="Anish Suman",
+            email="anish@emiactech.com",
+            company_id="company_relicwave",
+        )
+        existing_channel = db.list_channel_identities_for_company_user(member["id"])[0]
+
+        identity = db.resolve_channel_identity(
+            platform="feishu",
+            chat_id="oc_chat",
+            user_id="ou_anish",
+            user_name=None,
+            company_id="company_relicwave",
+        )
+
+        assert identity.company_id == "company_relicwave"
+        assert identity.company_user_id == member["id"]
+        assert identity.channel_identity_id == existing_channel["id"]
+
+        channel = db.get_channel_identity(identity.channel_identity_id)
+        assert channel is not None
+        assert channel["platform"] == "lark"
+        assert channel["platform_chat_id"] == "oc_chat"
+        assert channel["display_name"] == "Anish Suman"
+
+        company_user = db.get_company_user(member["id"])
+        assert company_user is not None
+        assert company_user["email"] == "anish@emiactech.com"
     finally:
         db.close()

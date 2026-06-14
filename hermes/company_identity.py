@@ -73,6 +73,13 @@ def _is_disabled_status(value: Any) -> bool:
     return str(value or "").strip().lower() in DISABLED_COMPANY_USER_STATUSES
 
 
+def _canonical_channel(value: str | None) -> str:
+    channel = str(value or "unknown").strip().lower() or "unknown"
+    if channel == "feishu":
+        return "lark"
+    return channel
+
+
 @dataclass(frozen=True)
 class CompanyIdentity:
     company_id: str
@@ -265,7 +272,7 @@ class CompanyIdentityDB:
         raw: Mapping[str, Any] | None = None,
     ) -> CompanyIdentity:
         company_id = company_id or self.ensure_default_company()
-        platform = str(platform or "unknown")
+        platform = _canonical_channel(platform)
         chat_id = str(chat_id or "")
         user_id = str(user_id).strip() if user_id else None
         user_id_alt = str(user_id_alt).strip() if user_id_alt else None
@@ -286,16 +293,40 @@ class CompanyIdentityDB:
             identity_key = f"chat:{chat_key}"
             identity_kind = "channel"
 
-        company_user_id = None
+        existing_identity = self._find_existing_channel_identity(
+            company_id=company_id,
+            platform=platform,
+            identity_key=identity_key,
+            platform_user_id=platform_user_id,
+            user_id_alt=user_id_alt,
+        )
+
+        company_user_id = (
+            str(existing_identity["company_user_id"])
+            if existing_identity and existing_identity["company_user_id"]
+            else None
+        )
         if platform_user_id:
-            company_user_id = _stable_id("cu", company_id, platform, platform_user_id)
+            company_user_id = company_user_id or _stable_id(
+                "cu", company_id, platform, platform_user_id
+            )
             self._upsert_company_user(
                 company_user_id=company_user_id,
                 company_id=company_id,
-                display_name=user_name,
+                display_name=(
+                    user_name
+                    or (str(existing_identity["display_name"]) if existing_identity and existing_identity["display_name"] else None)
+                ),
+                email=(
+                    str(existing_identity["email"]) if existing_identity and existing_identity["email"] else None
+                ),
             )
 
-        channel_identity_id = _stable_id("ci", company_id, platform, identity_key)
+        channel_identity_id = (
+            str(existing_identity["id"])
+            if existing_identity and existing_identity["id"]
+            else _stable_id("ci", company_id, platform, identity_key)
+        )
         now = _now()
         raw_payload = {
             "platform": platform,
@@ -325,7 +356,7 @@ class CompanyIdentityDB:
                     platform_user_id_alt = excluded.platform_user_id_alt,
                     platform_chat_id = excluded.platform_chat_id,
                     platform_workspace_id = excluded.platform_workspace_id,
-                    display_name = excluded.display_name,
+                    display_name = COALESCE(excluded.display_name, channel_identities.display_name),
                     identity_kind = excluded.identity_kind,
                     raw_json = excluded.raw_json,
                     last_seen_at = excluded.last_seen_at
@@ -334,7 +365,7 @@ class CompanyIdentityDB:
                     channel_identity_id,
                     company_id,
                     company_user_id,
-                    platform,
+                    _canonical_channel(platform),
                     identity_key,
                     user_id,
                     user_id_alt,
@@ -355,6 +386,39 @@ class CompanyIdentityDB:
             channel_identity_id=channel_identity_id,
             identity_key=identity_key,
         )
+
+    def _find_existing_channel_identity(
+        self,
+        *,
+        company_id: str,
+        platform: str,
+        identity_key: str,
+        platform_user_id: str | None,
+        user_id_alt: str | None,
+    ) -> sqlite3.Row | None:
+        if not platform_user_id and not user_id_alt:
+            return None
+        return self._conn.execute(
+            """
+            SELECT ci.*, cu.email
+            FROM channel_identities ci
+            LEFT JOIN company_users cu ON cu.id = ci.company_user_id
+            WHERE ci.company_id = ?
+              AND (
+                (ci.platform = ? AND (ci.identity_key = ? OR ci.platform_user_id = ?))
+                OR ci.platform_user_id_alt = ?
+              )
+            ORDER BY ci.last_seen_at DESC
+            LIMIT 1
+            """,
+            (
+                company_id,
+                platform,
+                identity_key,
+                platform_user_id,
+                user_id_alt,
+            ),
+        ).fetchone()
 
     def _upsert_company_user(
         self,
@@ -574,6 +638,7 @@ class CompanyIdentityDB:
         binding_source: str = "gateway",
     ) -> None:
         now = _now()
+        effective_platform = _canonical_channel(platform)
         with self._lock:
             self._conn.execute(
                 """
@@ -600,7 +665,7 @@ class CompanyIdentityDB:
                     identity.company_id,
                     identity.company_user_id,
                     identity.channel_identity_id,
-                    platform,
+                    effective_platform,
                     chat_id,
                     thread_id,
                     binding_source,

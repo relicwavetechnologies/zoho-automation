@@ -40,6 +40,13 @@ def _is_disabled_status(value: Any) -> bool:
     return str(value or "").strip().lower() in DISABLED_COMPANY_USER_STATUSES
 
 
+def _canonical_channel(value: str | None) -> str:
+    channel = str(value or "unknown").strip().lower() or "unknown"
+    if channel == "feishu":
+        return "lark"
+    return channel
+
+
 @dataclass(frozen=True)
 class ResolvedCompanyIdentity:
     company_id: str
@@ -108,7 +115,7 @@ class EnterpriseIdentityRepository:
         raw: Mapping[str, Any] | None = None,
     ) -> ResolvedCompanyIdentity:
         company_id = company_id or self.ensure_default_company()
-        platform = str(platform or "unknown")
+        platform = _canonical_channel(platform)
         chat_id = str(chat_id or "")
         user_id = str(user_id).strip() if user_id else None
         user_id_alt = str(user_id_alt).strip() if user_id_alt else None
@@ -131,16 +138,29 @@ class EnterpriseIdentityRepository:
             identity_kind = "channel"
             external_user_id = identity_key
 
-        company_user_id = None
+        existing_identity = self._find_existing_channel_identity(
+            company_id=company_id,
+            platform=platform,
+            identity_key=identity_key,
+            platform_user_id=platform_user_id,
+            user_id_alt=user_id_alt,
+        )
+
+        company_user_id = self._row_get(existing_identity, "companyUserId")
         if platform_user_id:
-            company_user_id = _stable_id("cu", company_id, platform, platform_user_id)
+            company_user_id = company_user_id or _stable_id(
+                "cu", company_id, platform, platform_user_id
+            )
             self._upsert_company_user(
                 company_user_id=company_user_id,
                 company_id=company_id,
-                display_name=user_name,
+                display_name=user_name or self._row_get(existing_identity, "displayName"),
+                email=self._row_get(existing_identity, "email"),
             )
 
-        channel_identity_id = _stable_id("ci", company_id, platform, identity_key)
+        channel_identity_id = self._row_get(existing_identity, "id") or _stable_id(
+            "ci", company_id, platform, identity_key
+        )
         raw_payload = {
             "platform": platform,
             "chat_id": chat_id,
@@ -177,7 +197,7 @@ class EnterpriseIdentityRepository:
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, now(), now(), now())
             ON CONFLICT ("channel", "externalUserId", "companyId") DO UPDATE SET
                 "companyUserId" = excluded."companyUserId",
-                "displayName" = excluded."displayName",
+                "displayName" = COALESCE(excluded."displayName", "ChannelIdentity"."displayName"),
                 "identityKind" = excluded."identityKind",
                 "identityKey" = excluded."identityKey",
                 "platformUserIdAlt" = excluded."platformUserIdAlt",
@@ -215,6 +235,40 @@ class EnterpriseIdentityRepository:
             company_role=self._row_get(row, "aiRole") or "MEMBER",
         )
 
+    def _find_existing_channel_identity(
+        self,
+        *,
+        company_id: str,
+        platform: str,
+        identity_key: str,
+        platform_user_id: str | None,
+        user_id_alt: str | None,
+    ) -> Any:
+        if not platform_user_id and not user_id_alt:
+            return None
+        return self._fetchone(
+            """
+            SELECT "id", "companyUserId", "displayName", "email", "aiRole"
+            FROM "ChannelIdentity"
+            WHERE "companyId" = %s
+              AND (
+                ("channel" = %s AND ("identityKey" = %s OR "externalUserId" = %s))
+                OR "larkOpenId" = %s
+                OR "platformUserIdAlt" = %s
+              )
+            ORDER BY "lastSeenAt" DESC NULLS LAST, "updatedAt" DESC NULLS LAST
+            LIMIT 1
+            """,
+            (
+                company_id,
+                platform,
+                identity_key,
+                platform_user_id,
+                platform_user_id,
+                user_id_alt,
+            ),
+        )
+
     def bind_session_identity(
         self,
         *,
@@ -233,7 +287,7 @@ class EnterpriseIdentityRepository:
         if not company_id:
             raise ValueError("identity.company_id is required")
 
-        effective_platform = str(platform or "tui")
+        effective_platform = _canonical_channel(platform or "tui")
         effective_chat_id = str(chat_id or session_id)
         conversation_id = self._ensure_runtime_conversation(
             company_id=company_id,
