@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
 import {
   Building2,
   CheckCircle2,
@@ -8,12 +15,16 @@ import {
   Mail,
   MessageSquare,
   RefreshCw,
+  Save,
   ShieldCheck,
   Unplug,
+  X,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { Label } from "@nous-research/ui/ui/components/label";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -23,6 +34,7 @@ import type {
   CompanyConnectorCredential,
   CompanyConnectorProvider,
   CompanyConnectorSummary,
+  CompanyConnectorUpsertRequest,
 } from "@/lib/api";
 import { cn, themedBody } from "@/lib/utils";
 
@@ -34,6 +46,22 @@ type ProviderCopy = {
 };
 
 const PROVIDERS: CompanyConnectorProvider[] = ["zoho", "google", "lark"];
+const DEFAULT_LARK_API_BASE_URL = "https://open.larksuite.com";
+const DEFAULT_ZOHO_ACCOUNTS_BASE_URL = "https://accounts.zoho.com";
+const DEFAULT_ZOHO_API_BASE_URL = "https://www.zohoapis.com";
+const DEFAULT_ZOHO_SCOPES = "ZohoBooks.fullaccess.all";
+
+type ConnectorSetupDraft = {
+  accounts_base_url: string;
+  api_base_url: string;
+  app_id: string;
+  app_secret: string;
+  client_id: string;
+  client_secret: string;
+  label: string;
+  oauth_scopes: string;
+  refresh_token: string;
+};
 
 const PROVIDER_COPY: Record<CompanyConnectorProvider, ProviderCopy> = {
   zoho: {
@@ -58,6 +86,21 @@ const PROVIDER_COPY: Record<CompanyConnectorProvider, ProviderCopy> = {
 
 function blankConnector(provider: CompanyConnectorProvider): CompanyConnectorSummary {
   return { connected: false, credentials: [], provider };
+}
+
+function initialSetupDraft(provider: CompanyConnectorProvider): ConnectorSetupDraft {
+  return {
+    accounts_base_url: DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
+    api_base_url:
+      provider === "lark" ? DEFAULT_LARK_API_BASE_URL : DEFAULT_ZOHO_API_BASE_URL,
+    app_id: "",
+    app_secret: "",
+    client_id: "",
+    client_secret: "",
+    label: provider === "zoho" ? "Zoho self-client" : `${PROVIDER_COPY[provider].name} app`,
+    oauth_scopes: provider === "zoho" ? DEFAULT_ZOHO_SCOPES : "",
+    refresh_token: "",
+  };
 }
 
 function formatTimestamp(value: string | null | undefined): string {
@@ -182,17 +225,234 @@ function CredentialRow({ credential }: { credential: CompanyConnectorCredential 
   );
 }
 
+function SecretNotice() {
+  return (
+    <div className="rounded border border-border/60 bg-background-base/30 px-3 py-2 text-xs text-muted-foreground">
+      Secrets are write-only. Hermes stores them encrypted and this page will only show
+      non-secret status after save.
+    </div>
+  );
+}
+
+function ConnectorSetupPanel({
+  draft,
+  onCancel,
+  onChange,
+  onSubmit,
+  provider,
+  saving,
+}: {
+  draft: ConnectorSetupDraft;
+  onCancel: () => void;
+  onChange: (updates: Partial<ConnectorSetupDraft>) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  provider: CompanyConnectorProvider;
+  saving: boolean;
+}) {
+  const copy = PROVIDER_COPY[provider];
+
+  return (
+    <Card className="border-primary/35">
+      <form onSubmit={onSubmit}>
+        <CardHeader className="gap-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                Configure connector
+              </div>
+              <CardTitle className="mt-1 text-lg">{copy.name}</CardTitle>
+              <div className="mt-1 max-w-3xl text-sm text-muted-foreground">
+                {provider === "zoho"
+                  ? "Paste the Zoho Self Client credentials and refresh token. Hermes validates the refresh token once, stores it encrypted, and refreshes access tokens server-side."
+                  : "Paste the company Lark app credentials used by native Hermes Lark tools and contact enrichment."}
+              </div>
+            </div>
+            <Button
+              ghost
+              size="sm"
+              type="button"
+              className="uppercase"
+              onClick={onCancel}
+              prefix={<X className="h-4 w-4" />}
+            >
+              Cancel
+            </Button>
+          </div>
+        </CardHeader>
+
+        <CardContent className="grid gap-4 p-4 sm:p-5">
+          <SecretNotice />
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor={`${provider}-label`}>Label</Label>
+              <Input
+                id={`${provider}-label`}
+                value={draft.label}
+                onChange={(event) => onChange({ label: event.target.value })}
+                placeholder="Production"
+              />
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor={`${provider}-api-base-url`}>API base URL</Label>
+              <Input
+                id={`${provider}-api-base-url`}
+                value={draft.api_base_url}
+                onChange={(event) => onChange({ api_base_url: event.target.value })}
+                placeholder={
+                  provider === "lark"
+                    ? DEFAULT_LARK_API_BASE_URL
+                    : DEFAULT_ZOHO_API_BASE_URL
+                }
+              />
+            </div>
+          </div>
+
+          {provider === "lark" ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="lark-app-id">Lark app ID</Label>
+                <Input
+                  id="lark-app-id"
+                  value={draft.app_id}
+                  onChange={(event) => onChange({ app_id: event.target.value })}
+                  placeholder="cli_..."
+                  required
+                  spellCheck={false}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="lark-app-secret">Lark app secret</Label>
+                <Input
+                  id="lark-app-secret"
+                  type="password"
+                  value={draft.app_secret}
+                  onChange={(event) => onChange({ app_secret: event.target.value })}
+                  placeholder="App secret"
+                  required
+                  spellCheck={false}
+                />
+              </div>
+            </div>
+          ) : null}
+
+          {provider === "zoho" ? (
+            <div className="grid gap-4">
+              <div className="rounded border border-border/60 bg-background-base/30 px-3 py-2 text-xs text-muted-foreground">
+                Zoho Self Client flow: generate a grant code in the Zoho API Console,
+                exchange it for a refresh token, then paste that refresh token here.
+                Hermes will keep using the refresh token to rotate short-lived access
+                tokens automatically.
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="zoho-client-id">Client ID</Label>
+                  <Input
+                    id="zoho-client-id"
+                    value={draft.client_id}
+                    onChange={(event) => onChange({ client_id: event.target.value })}
+                    placeholder="1000..."
+                    required
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="zoho-client-secret">Client secret</Label>
+                  <Input
+                    id="zoho-client-secret"
+                    type="password"
+                    value={draft.client_secret}
+                    onChange={(event) => onChange({ client_secret: event.target.value })}
+                    placeholder="Client secret"
+                    required
+                    spellCheck={false}
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="zoho-refresh-token">Refresh token</Label>
+                <textarea
+                  id="zoho-refresh-token"
+                  className="min-h-[92px] w-full border border-border bg-transparent px-3 py-2 text-sm font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                  value={draft.refresh_token}
+                  onChange={(event) => onChange({ refresh_token: event.target.value })}
+                  placeholder="1000..."
+                  required
+                  spellCheck={false}
+                />
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="zoho-accounts-base-url">Accounts base URL</Label>
+                  <Input
+                    id="zoho-accounts-base-url"
+                    value={draft.accounts_base_url}
+                    onChange={(event) =>
+                      onChange({ accounts_base_url: event.target.value })
+                    }
+                    placeholder={DEFAULT_ZOHO_ACCOUNTS_BASE_URL}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="zoho-scopes">Scopes</Label>
+                  <Input
+                    id="zoho-scopes"
+                    value={draft.oauth_scopes}
+                    onChange={(event) => onChange({ oauth_scopes: event.target.value })}
+                    placeholder={DEFAULT_ZOHO_SCOPES}
+                    spellCheck={false}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="submit"
+              size="sm"
+              className="uppercase"
+              disabled={saving}
+              prefix={saving ? <Spinner /> : <Save className="h-4 w-4" />}
+            >
+              {provider === "zoho"
+                ? saving
+                  ? "Validating..."
+                  : "Validate & save"
+                : saving
+                  ? "Saving..."
+                  : "Save connector"}
+            </Button>
+            <div className="text-xs text-muted-foreground">
+              {provider === "zoho"
+                ? "Validation calls Zoho once before encrypted storage."
+                : "Saving updates the company-scoped Lark app credential."}
+            </div>
+          </div>
+        </CardContent>
+      </form>
+    </Card>
+  );
+}
+
 function ConnectorCard({
   busy,
   connector,
+  onConfigure,
   onDisconnect,
 }: {
   busy: boolean;
   connector: CompanyConnectorSummary;
+  onConfigure: (provider: CompanyConnectorProvider) => void;
   onDisconnect: (provider: CompanyConnectorProvider) => void;
 }) {
   const copy = PROVIDER_COPY[connector.provider];
   const Icon = copy.icon;
+  const canConfigure = connector.provider === "lark" || connector.provider === "zoho";
   const activeCredentials = connector.credentials.filter(isActiveCredential);
   const revokedCredentials = connector.credentials.filter(
     (credential) => credential.revoked_at || credential.status === "revoked",
@@ -251,11 +511,16 @@ function ConnectorCard({
           <Button
             size="sm"
             className="uppercase"
-            disabled
+            disabled={!canConfigure || busy}
+            onClick={() => onConfigure(connector.provider)}
             prefix={<Link2 className="h-4 w-4" />}
-            title="Provider OAuth setup is the next implementation slice."
+            title={
+              canConfigure
+                ? `Configure ${copy.name}`
+                : "Google OAuth setup is a separate follow-up slice."
+            }
           >
-            Configure OAuth
+            {connector.connected ? "Reconnect" : "Configure"}
           </Button>
           <Button
             ghost
@@ -294,6 +559,10 @@ export default function ConnectorsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [busyProvider, setBusyProvider] = useState<CompanyConnectorProvider | null>(null);
+  const [setupProvider, setSetupProvider] = useState<CompanyConnectorProvider | null>(null);
+  const [setupDraft, setSetupDraft] = useState<ConnectorSetupDraft>(
+    initialSetupDraft("lark"),
+  );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null);
   const { toast, showToast } = useToast();
@@ -326,6 +595,76 @@ export default function ConnectorsPage() {
       }
     },
     [normalizeConnectors, showToast],
+  );
+
+  const configure = useCallback((provider: CompanyConnectorProvider) => {
+    setSetupProvider(provider);
+    setSetupDraft(initialSetupDraft(provider));
+  }, []);
+
+  const updateSetupDraft = useCallback((updates: Partial<ConnectorSetupDraft>) => {
+    setSetupDraft((current) => ({ ...current, ...updates }));
+  }, []);
+
+  const saveConnector = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const provider = setupProvider;
+      if (!provider) return;
+      if (provider !== "lark" && provider !== "zoho") {
+        showToast("Google setup is not wired in this slice.", "error");
+        return;
+      }
+
+      const body: CompanyConnectorUpsertRequest =
+        provider === "lark"
+          ? {
+              app_id: setupDraft.app_id.trim(),
+              app_secret: setupDraft.app_secret.trim(),
+              api_base_url:
+                setupDraft.api_base_url.trim() || DEFAULT_LARK_API_BASE_URL,
+              metadata: {
+                label: setupDraft.label.trim() || "Lark app",
+              },
+            }
+          : {
+              client_id: setupDraft.client_id.trim(),
+              client_secret: setupDraft.client_secret.trim(),
+              refresh_token: setupDraft.refresh_token.trim(),
+              accounts_base_url:
+                setupDraft.accounts_base_url.trim() ||
+                DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
+              api_base_url:
+                setupDraft.api_base_url.trim() || DEFAULT_ZOHO_API_BASE_URL,
+              oauth_scopes:
+                setupDraft.oauth_scopes.trim() || DEFAULT_ZOHO_SCOPES,
+              metadata: {
+                label: setupDraft.label.trim() || "Zoho self-client",
+                setup_method: "self_client",
+              },
+            };
+
+      setBusyProvider(provider);
+      try {
+        const response = await api.upsertCompanyConnector(provider, body);
+        setCompanyId(response.company_id || "company_default");
+        setConnectors(normalizeConnectors(response.connectors));
+        setLastLoadedAt(new Date().toISOString());
+        setSetupProvider(null);
+        showToast(
+          provider === "zoho"
+            ? "Zoho self-client credentials validated and saved"
+            : "Lark app credentials saved",
+          "success",
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        showToast(`Failed to save ${PROVIDER_COPY[provider].name}: ${message}`, "error");
+      } finally {
+        setBusyProvider(null);
+      }
+    },
+    [normalizeConnectors, setupDraft, setupProvider, showToast],
   );
 
   const disconnect = useCallback(
@@ -435,6 +774,17 @@ export default function ConnectorsPage() {
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
 
+      {setupProvider ? (
+        <ConnectorSetupPanel
+          draft={setupDraft}
+          onCancel={() => setSetupProvider(null)}
+          onChange={updateSetupDraft}
+          onSubmit={saveConnector}
+          provider={setupProvider}
+          saving={busyProvider === setupProvider}
+        />
+      ) : null}
+
       {loadError && connectors.every((connector) => connector.credentials.length === 0) ? (
         <Card className="border-destructive/40">
           <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -515,7 +865,7 @@ export default function ConnectorsPage() {
               <CardTitle className="mt-1 text-lg">Native Hermes credential status</CardTitle>
               <div className="mt-1 max-w-3xl text-sm text-muted-foreground">
                 These credentials live in Hermes enterprise storage, scoped to the active company.
-                Disconnect revokes stored credentials; browser OAuth setup is the next slice.
+                Lark and Zoho can be configured here; Disconnect revokes stored credentials.
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -538,6 +888,7 @@ export default function ConnectorsPage() {
             key={connector.provider}
             busy={busyProvider === connector.provider}
             connector={connector}
+            onConfigure={configure}
             onDisconnect={disconnect}
           />
         ))}

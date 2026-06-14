@@ -1248,6 +1248,89 @@ def _connector_payload(
     raise HTTPException(status_code=404, detail=f"Unknown connector provider {provider!r}")
 
 
+async def _refresh_zoho_connector_token(credentials) -> Any:
+    """Exchange a Zoho self-client refresh token for an access token."""
+    from tools.zoho_auth import ZohoTokenProvider
+
+    provider = ZohoTokenProvider(credentials)
+    await provider.get_access_token(force_refresh=True)
+    return provider._cached_token
+
+
+async def _validated_zoho_connector_payload(
+    body: CompanyConnectorCredentialUpsert,
+) -> dict[str, Any]:
+    """Build and validate the durable Zoho self-client credential payload."""
+    from tools.zoho_auth import (
+        DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
+        DEFAULT_ZOHO_API_BASE_URL,
+        ZohoAuthError,
+        ZohoCredentials,
+    )
+
+    accounts_base_url = (
+        _clean_text(body.accounts_base_url) or DEFAULT_ZOHO_ACCOUNTS_BASE_URL
+    ).rstrip("/")
+    api_base_url = (
+        _clean_text(body.api_base_url) or DEFAULT_ZOHO_API_BASE_URL
+    ).rstrip("/")
+    credentials = ZohoCredentials(
+        client_id=_require_body_text(body, "client_id"),
+        client_secret=_require_body_text(body, "client_secret"),
+        refresh_token=_require_body_text(body, "refresh_token"),
+        accounts_base_url=accounts_base_url,
+        api_base_url=api_base_url,
+        scopes=" ".join(_connector_scopes(body.oauth_scopes)) or None,
+    )
+
+    try:
+        token = await _refresh_zoho_connector_token(credentials)
+    except ZohoAuthError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Zoho refresh token validation failed: {exc}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not validate Zoho credentials against Zoho: {exc}",
+        ) from exc
+
+    if token is None or not getattr(token, "access_token", ""):
+        raise HTTPException(
+            status_code=400,
+            detail="Zoho refresh token validation failed: token response did not include an access token",
+        )
+
+    expires_at = datetime.fromtimestamp(
+        float(getattr(token, "expires_at", 0)),
+        tz=timezone.utc,
+    ).isoformat()
+    scopes = _connector_scopes(body.oauth_scopes)
+    if not scopes and getattr(token, "scope", None):
+        scopes = _connector_scopes(str(token.scope))
+
+    payload = {
+        "client_id": credentials.client_id,
+        "client_secret": credentials.client_secret,
+        "refresh_token": credentials.refresh_token,
+        "access_token": token.access_token,
+        "access_token_expires_at": expires_at,
+        "accounts_base_url": accounts_base_url,
+        "api_base_url": api_base_url,
+        "api_domain": _clean_text(body.api_domain)
+        or _clean_text(getattr(token, "api_domain", None)),
+        "environment": _clean_text(body.environment) or "prod",
+        "scopes": scopes,
+        "status": "active",
+    }
+    return {
+        key: value
+        for key, value in payload.items()
+        if value != "" and value != []
+    }
+
+
 def _connector_metadata(
     *,
     provider: str,
@@ -1263,6 +1346,12 @@ def _connector_metadata(
         metadata["oauth_scopes"] = _connector_scopes(body.oauth_scopes)
     if body.oauth_scope:
         metadata["oauth_scope"] = _clean_text(body.oauth_scope)
+    if provider == "zoho":
+        metadata["accounts_base_url"] = _clean_text(body.accounts_base_url) or "https://accounts.zoho.com"
+        metadata["api_base_url"] = _clean_text(body.api_base_url) or "https://www.zohoapis.com"
+        metadata["environment"] = _clean_text(body.environment) or "prod"
+    if provider == "lark":
+        metadata["api_base_url"] = _clean_text(body.api_base_url) or "https://open.larksuite.com"
     return metadata
 
 
@@ -1448,7 +1537,11 @@ async def upsert_company_connector(
     )
     if credential_scope == "user" and not company_user_id:
         company_user_id = _company_user_id(actor)
-    payload = _connector_payload(provider, body)
+    payload = (
+        await _validated_zoho_connector_payload(body)
+        if provider == "zoho"
+        else _connector_payload(provider, body)
+    )
     metadata = _connector_metadata(provider=provider, body=body, actor=actor)
 
     repo = _get_company_connector_repository()

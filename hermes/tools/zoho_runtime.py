@@ -16,10 +16,13 @@ re-fetched every time (mirrors Divo's ``zoho-token.service.ts`` caching).
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Optional
 
 from tools.zoho_auth import (
     CachedZohoAccessToken,
+    DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
+    DEFAULT_ZOHO_API_BASE_URL,
     ZohoCredentials,
     ZohoTokenProvider,
 )
@@ -77,7 +80,12 @@ def _seed_access_token(provider: ZohoTokenProvider, creds: Any) -> None:
     if not creds.access_token or creds.access_token_expires_at is None:
         return
     try:
-        expires_at = creds.access_token_expires_at.timestamp()
+        raw_expires_at = creds.access_token_expires_at
+        if isinstance(raw_expires_at, str):
+            raw_expires_at = datetime.fromisoformat(
+                raw_expires_at.replace("Z", "+00:00")
+            )
+        expires_at = raw_expires_at.timestamp()
     except Exception:  # noqa: BLE001 — non-datetime / naive value ⇒ skip seeding
         return
     provider._cached_token = CachedZohoAccessToken(
@@ -117,8 +125,8 @@ def resolve_zoho_client(
         client_secret=creds.client_secret,
         refresh_token=creds.refresh_token,
         organization_id=None,  # resolved at runtime from /organizations
-        accounts_base_url=creds.accounts_base_url or ZohoCredentials.accounts_base_url,
-        api_base_url=creds.api_base_url or ZohoCredentials.api_base_url,
+        accounts_base_url=creds.accounts_base_url or DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
+        api_base_url=creds.api_base_url or DEFAULT_ZOHO_API_BASE_URL,
         scopes=(" ".join(creds.scopes) or None),
     )
     provider = ZohoTokenProvider(credentials)

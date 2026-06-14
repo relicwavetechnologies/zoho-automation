@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import MagicMock, patch
 
@@ -329,6 +331,7 @@ def test_company_connector_admin_write_path_redacts_secrets(gated_lark_client, m
     assert body["connectors"][1]["provider"] == "lark"
     assert body["connectors"][1]["connected"] is True
     assert body["connectors"][1]["credentials"][0]["metadata"] == {
+        "api_base_url": "https://open.larksuite.com",
         "configured_by_company_user_id": alice["id"],
         "label": "production",
         "provider": "lark",
@@ -342,6 +345,107 @@ def test_company_connector_admin_write_path_redacts_secrets(gated_lark_client, m
     assert revoke.status_code == 200
     assert revoke.json()["revoked"] == 1
     assert repo.revocations[0]["company_id"] == "company_hermes"
+
+
+def test_company_connector_zoho_self_client_validates_and_stores_refresh_token(
+    gated_lark_client,
+    monkeypatch,
+):
+    client, identity_db = gated_lark_client
+    _complete_lark_login(client)
+    alice = identity_db.find_dashboard_company_user(
+        provider="lark",
+        provider_user_id="ou_alice",
+        company_id="company_hermes",
+    )
+    identity_db.update_company_user(
+        company_user_id=alice["id"],
+        company_id="company_hermes",
+        role="COMPANY_ADMIN",
+    )
+    repo = _FakeConnectorRepository()
+    monkeypatch.setattr(web_server, "_get_company_connector_repository", lambda: repo)
+
+    async def fake_refresh(credentials):
+        assert credentials.client_id == "zoho-client"
+        assert credentials.client_secret == "zoho-secret"
+        assert credentials.refresh_token == "zoho-refresh"
+        assert credentials.accounts_base_url == "https://accounts.zoho.com"
+        return SimpleNamespace(
+            access_token="zoho-access",
+            expires_at=time.time() + 3600,
+            api_domain="https://www.zohoapis.com",
+            scope="ZohoBooks.fullaccess.all",
+        )
+
+    monkeypatch.setattr(web_server, "_refresh_zoho_connector_token", fake_refresh)
+
+    response = client.put(
+        "/api/company/connectors/zoho",
+        json={
+            "client_id": "zoho-client",
+            "client_secret": "zoho-secret",
+            "refresh_token": "zoho-refresh",
+            "oauth_scopes": "ZohoBooks.fullaccess.all",
+            "metadata": {"label": "finance"},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "zoho-secret" not in json.dumps(body)
+    assert "zoho-refresh" not in json.dumps(body)
+    assert "zoho-access" not in json.dumps(body)
+    upsert = repo.upserts[0]
+    assert upsert["provider"] == "zoho"
+    assert upsert["scope"] == "company"
+    assert upsert["payload"]["client_secret"] == "zoho-secret"
+    assert upsert["payload"]["refresh_token"] == "zoho-refresh"
+    assert upsert["payload"]["access_token"] == "zoho-access"
+    assert upsert["payload"]["access_token_expires_at"]
+    assert upsert["payload"]["scopes"] == ["ZohoBooks.fullaccess.all"]
+    assert body["connectors"][2]["provider"] == "zoho"
+    assert body["connectors"][2]["connected"] is True
+
+
+def test_company_connector_zoho_invalid_refresh_token_does_not_store(
+    gated_lark_client,
+    monkeypatch,
+):
+    from tools.zoho_auth import ZohoTokenError
+
+    client, identity_db = gated_lark_client
+    _complete_lark_login(client)
+    alice = identity_db.find_dashboard_company_user(
+        provider="lark",
+        provider_user_id="ou_alice",
+        company_id="company_hermes",
+    )
+    identity_db.update_company_user(
+        company_user_id=alice["id"],
+        company_id="company_hermes",
+        role="COMPANY_ADMIN",
+    )
+    repo = _FakeConnectorRepository()
+    monkeypatch.setattr(web_server, "_get_company_connector_repository", lambda: repo)
+
+    async def fake_refresh(_credentials):
+        raise ZohoTokenError("invalid_code")
+
+    monkeypatch.setattr(web_server, "_refresh_zoho_connector_token", fake_refresh)
+
+    response = client.put(
+        "/api/company/connectors/zoho",
+        json={
+            "client_id": "zoho-client",
+            "client_secret": "zoho-secret",
+            "refresh_token": "bad-refresh",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Zoho refresh token validation failed" in response.text
+    assert repo.upserts == []
 
 
 def test_company_connector_write_requires_admin(gated_lark_client, monkeypatch):

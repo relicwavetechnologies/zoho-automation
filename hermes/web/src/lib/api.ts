@@ -282,6 +282,18 @@ export const api = {
     }),
   getCompanyConnectors: () =>
     fetchJSON<CompanyConnectorsResponse>("/api/company/connectors"),
+  upsertCompanyConnector: (
+    provider: CompanyConnectorProvider,
+    body: CompanyConnectorUpsertRequest,
+  ) =>
+    fetchJSON<CompanyConnectorsResponse & { credential_id: string }>(
+      `/api/company/connectors/${encodeURIComponent(provider)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
   disconnectCompanyConnector: (provider: CompanyConnectorProvider) =>
     fetchJSON<CompanyConnectorsResponse & { revoked: number }>(
       `/api/company/connectors/${encodeURIComponent(provider)}`,
@@ -1008,6 +1020,22 @@ export interface CompanyConnectorSummary {
 export interface CompanyConnectorsResponse {
   company_id: string;
   connectors: CompanyConnectorSummary[];
+}
+
+export interface CompanyConnectorUpsertRequest {
+  scope?: CompanyConnectorScope;
+  company_user_id?: string | null;
+  metadata?: Record<string, unknown>;
+  client_id?: string;
+  client_secret?: string;
+  refresh_token?: string;
+  accounts_base_url?: string;
+  api_base_url?: string;
+  environment?: string;
+  oauth_scopes?: string | string[];
+  app_id?: string;
+  app_secret?: string;
+  static_tenant_access_token?: string;
 }
 
 export interface ActionResponse {
