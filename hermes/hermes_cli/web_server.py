@@ -1152,6 +1152,24 @@ def _get_company_connector_repository():
         ) from exc
 
 
+def _invalidate_connector_runtime_cache(provider: str) -> None:
+    """Drop in-process connector clients after admin credential changes."""
+    module_name = {
+        "google": "tools.google_runtime",
+        "lark": "tools.lark_runtime",
+        "zoho": "tools.zoho_runtime",
+    }.get(str(provider or "").strip().lower())
+    if not module_name:
+        return
+    try:
+        module = __import__(module_name, fromlist=["reset_cache"])
+        reset_cache = getattr(module, "reset_cache", None)
+        if callable(reset_cache):
+            reset_cache()
+    except Exception as exc:  # noqa: BLE001 — credential save must not fail after DB commit
+        _log.warning("failed to invalidate %s connector runtime cache: %s", provider, exc)
+
+
 def _normalize_connector_provider(provider: str) -> str:
     normalized = str(provider or "").strip().lower()
     if normalized not in _COMPANY_CONNECTOR_PROVIDERS:
@@ -1553,6 +1571,7 @@ async def upsert_company_connector(
         payload=payload,
         metadata=metadata,
     )
+    _invalidate_connector_runtime_cache(provider)
     rows = repo.list_connector_credentials(company_id=company_id)
     response = _connector_status_response(company_id, rows)
     response["credential_id"] = credential_id
@@ -1580,6 +1599,7 @@ async def revoke_company_connector(
         company_user_id=company_user_id,
         scope=credential_scope,
     )
+    _invalidate_connector_runtime_cache(provider)
     rows = repo.list_connector_credentials(company_id=company_id)
     response = _connector_status_response(company_id, rows)
     response["revoked"] = revoked

@@ -309,6 +309,12 @@ def test_company_connector_admin_write_path_redacts_secrets(gated_lark_client, m
     )
     repo = _FakeConnectorRepository()
     monkeypatch.setattr(web_server, "_get_company_connector_repository", lambda: repo)
+    invalidated: list[str] = []
+    monkeypatch.setattr(
+        web_server,
+        "_invalidate_connector_runtime_cache",
+        lambda provider: invalidated.append(provider),
+    )
 
     response = client.put(
         "/api/company/connectors/lark",
@@ -321,6 +327,7 @@ def test_company_connector_admin_write_path_redacts_secrets(gated_lark_client, m
     )
 
     assert response.status_code == 200
+    assert invalidated == ["lark"]
     body = response.json()
     assert body["credential_id"] == "cc_1"
     assert "runtime-secret" not in json.dumps(body)
@@ -345,6 +352,7 @@ def test_company_connector_admin_write_path_redacts_secrets(gated_lark_client, m
     assert revoke.status_code == 200
     assert revoke.json()["revoked"] == 1
     assert repo.revocations[0]["company_id"] == "company_hermes"
+    assert invalidated == ["lark", "lark"]
 
 
 def test_company_connector_zoho_self_client_validates_and_stores_refresh_token(
