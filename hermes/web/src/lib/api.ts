@@ -280,6 +280,13 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  getCompanyConnectors: () =>
+    fetchJSON<CompanyConnectorsResponse>("/api/company/connectors"),
+  disconnectCompanyConnector: (provider: CompanyConnectorProvider) =>
+    fetchJSON<CompanyConnectorsResponse & { revoked: number }>(
+      `/api/company/connectors/${encodeURIComponent(provider)}`,
+      { method: "DELETE" },
+    ),
   logout: () =>
     fetch(`${BASE}/auth/logout`, {
       method: "POST",
@@ -974,6 +981,33 @@ export interface CompanyTeamMembersResponse {
 export interface CompanyTeamMemberUpdateRequest {
   role?: string;
   status?: string;
+}
+
+export type CompanyConnectorProvider = "google" | "lark" | "zoho";
+export type CompanyConnectorScope = "company" | "user" | string;
+export type CompanyConnectorStatus = "active" | "revoked" | string;
+
+export interface CompanyConnectorCredential {
+  id: string;
+  provider: CompanyConnectorProvider | string;
+  scope: CompanyConnectorScope;
+  company_user_id: string | null;
+  status: CompanyConnectorStatus;
+  created_at: string | null;
+  updated_at: string | null;
+  revoked_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface CompanyConnectorSummary {
+  provider: CompanyConnectorProvider;
+  connected: boolean;
+  credentials: CompanyConnectorCredential[];
+}
+
+export interface CompanyConnectorsResponse {
+  company_id: string;
+  connectors: CompanyConnectorSummary[];
 }
 
 export interface ActionResponse {
