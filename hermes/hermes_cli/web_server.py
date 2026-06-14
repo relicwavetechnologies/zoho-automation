@@ -1277,6 +1277,29 @@ async def _refresh_zoho_connector_token(credentials) -> Any:
     return provider._cached_token
 
 
+async def _discover_zoho_books_organization_id(credentials, token) -> str:
+    """Best-effort Books organization discovery using the freshly minted token."""
+    from tools.zoho_auth import ZohoTokenProvider
+    from tools.zoho_client import ZohoClient
+
+    if credentials.organization_id:
+        return credentials.organization_id
+    if token is None:
+        return ""
+
+    provider = ZohoTokenProvider(credentials)
+    provider._cached_token = token
+    client = ZohoClient(
+        provider,
+        api_base_url=credentials.api_base_url,
+        organization_id=credentials.organization_id,
+    )
+    organizations = await client.list_books_organizations()
+    default_org = next((org for org in organizations if org.get("isDefault") is True), None)
+    organization_id = (default_org or (organizations[0] if organizations else {})).get("organizationId")
+    return _clean_text(organization_id)
+
+
 async def _validated_zoho_connector_payload(
     body: CompanyConnectorCredentialUpsert,
 ) -> dict[str, Any]:
@@ -1331,11 +1354,18 @@ async def _validated_zoho_connector_payload(
     if not scopes and getattr(token, "scope", None):
         scopes = _connector_scopes(str(token.scope))
 
+    organization_id = credentials.organization_id
+    if not organization_id:
+        try:
+            organization_id = await _discover_zoho_books_organization_id(credentials, token)
+        except Exception:
+            organization_id = ""
+
     payload = {
         "client_id": credentials.client_id,
         "client_secret": credentials.client_secret,
         "refresh_token": credentials.refresh_token,
-        "organization_id": credentials.organization_id,
+        "organization_id": organization_id,
         "access_token": token.access_token,
         "access_token_expires_at": expires_at,
         "accounts_base_url": accounts_base_url,
@@ -1567,6 +1597,8 @@ async def upsert_company_connector(
         else _connector_payload(provider, body)
     )
     metadata = _connector_metadata(provider=provider, body=body, actor=actor)
+    if provider == "zoho" and payload.get("organization_id"):
+        metadata["organization_id"] = payload["organization_id"]
 
     repo = _get_company_connector_repository()
     credential_id = repo.put_connector_credential(

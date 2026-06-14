@@ -419,6 +419,59 @@ def test_company_connector_zoho_self_client_validates_and_stores_refresh_token(
     assert body["connectors"][2]["connected"] is True
 
 
+def test_company_connector_zoho_auto_discovers_books_org_id(
+    gated_lark_client,
+    monkeypatch,
+):
+    client, identity_db = gated_lark_client
+    _complete_lark_login(client)
+    alice = identity_db.find_dashboard_company_user(
+        provider="lark",
+        provider_user_id="ou_alice",
+        company_id="company_hermes",
+    )
+    identity_db.update_company_user(
+        company_user_id=alice["id"],
+        company_id="company_hermes",
+        role="COMPANY_ADMIN",
+    )
+    repo = _FakeConnectorRepository()
+    monkeypatch.setattr(web_server, "_get_company_connector_repository", lambda: repo)
+
+    async def fake_refresh(credentials):
+        assert credentials.organization_id is None
+        return SimpleNamespace(
+            access_token="zoho-access",
+            expires_at=time.time() + 3600,
+            api_domain="https://www.zohoapis.com",
+            scope="ZohoBooks.fullaccess.all",
+        )
+
+    async def fake_discover(credentials, token):
+        assert credentials.organization_id is None
+        assert token.access_token == "zoho-access"
+        return "org-auto"
+
+    monkeypatch.setattr(web_server, "_refresh_zoho_connector_token", fake_refresh)
+    monkeypatch.setattr(web_server, "_discover_zoho_books_organization_id", fake_discover)
+
+    response = client.put(
+        "/api/company/connectors/zoho",
+        json={
+            "client_id": "zoho-client",
+            "client_secret": "zoho-secret",
+            "refresh_token": "zoho-refresh",
+            "oauth_scopes": "ZohoBooks.fullaccess.all",
+            "metadata": {"label": "finance"},
+        },
+    )
+
+    assert response.status_code == 200
+    upsert = repo.upserts[0]
+    assert upsert["payload"]["organization_id"] == "org-auto"
+    assert upsert["metadata"]["organization_id"] == "org-auto"
+
+
 def test_company_connector_zoho_invalid_refresh_token_does_not_store(
     gated_lark_client,
     monkeypatch,

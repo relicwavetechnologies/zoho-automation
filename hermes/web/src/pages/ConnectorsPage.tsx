@@ -389,12 +389,12 @@ function ConnectorSetupPanel({
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="zoho-organization-id">Books organization ID</Label>
+                  <Label htmlFor="zoho-organization-id">Books organization ID override</Label>
                   <Input
                     id="zoho-organization-id"
                     value={draft.organization_id}
                     onChange={(event) => onChange({ organization_id: event.target.value })}
-                    placeholder="Optional, recommended for production"
+                    placeholder="Optional. Hermes discovers this automatically."
                     spellCheck={false}
                   />
                 </div>
