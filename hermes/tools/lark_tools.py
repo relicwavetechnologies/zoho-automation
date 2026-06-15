@@ -5,14 +5,15 @@ messaging, doc, base (bitable), calendar, contacts, task, approval. Credentials
 resolve per company (see ``tools/lark_runtime.py``); ``company_id`` is injected
 at dispatch (T3.1). All families share the tenant-token ``LarkClient``.
 
-People resolution (name → open_id) is a higher-level concern Divo handles with a
-directory resolver; these tools take open_ids directly (use ``lark_contacts``
-lookup to resolve first), matching the Lark Open API contract.
+People resolution (name → open_id) is handled from Hermes company identity for
+the high-traffic operations where Divo users naturally mention teammates by
+name: tasks, DMs/mentions, and calendar attendees/free-busy.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -20,14 +21,11 @@ from tools.registry import registry, tool_error, tool_result
 
 
 def _check() -> bool:
-    """Available in enterprise mode (per-company config or LARK_APP_* env)."""
+    """Available when company-mode Lark runtime credentials can be resolved."""
     try:
-        import os
+        from tools.lark_runtime import lark_tools_available
 
-        from tools.lark_runtime import enterprise_enabled
-
-        has_env = bool((os.getenv("LARK_APP_ID") or "").strip() and (os.getenv("LARK_APP_SECRET") or "").strip())
-        return enterprise_enabled() and has_env
+        return lark_tools_available()
     except Exception:  # noqa: BLE001
         return False
 
@@ -64,24 +62,71 @@ def _members(ids: Any, role: str) -> list[dict[str, str]]:
 
 # ── Messaging ───────────────────────────────────────────────────────────────
 
-LARK_MESSAGING_OPS = {"send", "list_chats"}
+LARK_MESSAGING_OPS = {"send", "list", "get", "reply", "send_dm", "list_chats", "search", "mention"}
 _RECEIVE_ID_TYPES = {"open_id", "user_id", "union_id", "email", "chat_id"}
 
 LARK_MESSAGING_SCHEMA = {
     "name": "lark_messaging",
-    "description": "Send Lark/Feishu messages and list the bot's chats. Operations: send, list_chats.",
+    "description": "Send, reply, DM, mention, list/search messages, and list chats in Lark/Feishu.",
     "parameters": {
         "type": "object",
         "properties": {
             "op": {"type": "string", "enum": sorted(LARK_MESSAGING_OPS)},
+            "chatId": {"type": "string", "description": "Target chat ID for send/list/search/mention."},
+            "messageId": {"type": "string", "description": "Message ID for get/reply."},
             "receiveId": {"type": "string", "description": "open_id / chat_id / email of the recipient."},
             "receiveIdType": {"type": "string", "enum": sorted(_RECEIVE_ID_TYPES)},
             "text": {"type": "string"},
+            "recipientName": {"type": "string", "description": "Human-readable Lark user name for send_dm."},
+            "query": {"type": "string", "description": "Search query for message search."},
+            "mentionNames": {"type": "array", "items": {"type": "string"}},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
             "maxResults": {"type": "integer", "minimum": 1, "maximum": 100},
         },
         "required": ["op"],
     },
 }
+
+
+def _message_id(data: dict[str, Any]) -> str | None:
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    return data.get("message_id") or message.get("message_id")
+
+
+def _text_message_content(text: str) -> str:
+    return json.dumps({"text": text})
+
+
+def _parse_message_text(message: dict[str, Any]) -> str:
+    body = message.get("body")
+    if isinstance(body, dict):
+        raw = body.get("content")
+    else:
+        raw = body
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return str(parsed.get("text") or parsed.get("content") or "")
+        except json.JSONDecodeError:
+            return raw
+    return ""
+
+
+def _norm_message(message: dict[str, Any]) -> dict[str, Any]:
+    sender = message.get("sender") if isinstance(message.get("sender"), dict) else {}
+    return {
+        "messageId": message.get("message_id") or message.get("messageId") or message.get("id"),
+        "text": _parse_message_text(message),
+        "senderId": sender.get("id") or sender.get("sender_id") or message.get("sender_id"),
+        "timestamp": message.get("create_time") or message.get("update_time") or message.get("timestamp"),
+    }
+
+
+def _limit_arg(args: dict[str, Any], *, default: int, maximum: int) -> int:
+    try:
+        return max(1, min(maximum, int(args.get("limit") or args.get("maxResults") or default)))
+    except (TypeError, ValueError):
+        return default
 
 
 async def _handle_lark_messaging(args: dict[str, Any], **kwargs: Any) -> str:
@@ -94,12 +139,12 @@ async def _handle_lark_messaging(args: dict[str, Any], **kwargs: Any) -> str:
         return tool_error(str(exc), success=False, operation=op)
     try:
         if op == "send":
-            receive_id = str(args.get("receiveId") or "").strip()
+            receive_id = str(args.get("chatId") or args.get("receiveId") or "").strip()
             if not receive_id:
-                return tool_error("receiveId is required for send", success=False, operation=op)
-            receive_id_type = str(args.get("receiveIdType") or "open_id").strip()
+                return tool_error("chatId or receiveId is required for send", success=False, operation=op)
+            receive_id_type = str(args.get("receiveIdType") or "chat_id").strip()
             if receive_id_type not in _RECEIVE_ID_TYPES:
-                receive_id_type = "open_id"
+                receive_id_type = "chat_id"
             data = await client.request(
                 "POST",
                 "/open-apis/im/v1/messages",
@@ -107,18 +152,128 @@ async def _handle_lark_messaging(args: dict[str, Any], **kwargs: Any) -> str:
                 json_body={
                     "receive_id": receive_id,
                     "msg_type": "text",
-                    "content": json.dumps({"text": str(args.get("text") or "")}),
+                    "content": _text_message_content(str(args.get("text") or "")),
                 },
             )
-            return tool_result({"success": True, "message": "Message sent.", "messageId": (data or {}).get("message_id")})
+            return tool_result({"success": True, "message": "Message sent.", "messageId": _message_id(data or {})})
+        if op == "reply":
+            message_id = str(args.get("messageId") or "").strip()
+            text = str(args.get("text") or "")
+            if not message_id or not text:
+                return tool_error("messageId and text are required for reply", success=False, operation=op)
+            data = await client.request(
+                "POST",
+                f"/open-apis/im/v1/messages/{message_id}/reply",
+                json_body={"msg_type": "text", "content": _text_message_content(text)},
+            )
+            return tool_result({"success": True, "message": "Reply sent.", "messageId": _message_id(data or {})})
+        if op == "send_dm":
+            text = str(args.get("text") or "")
+            if not text:
+                return tool_error("text is required for send_dm", success=False, operation=op)
+            open_id = str(args.get("receiveId") or args.get("chatId") or "").strip()
+            if not open_id and args.get("recipientName"):
+                resolved = _resolve_lark_people(
+                    company_id=_company_id(kwargs),
+                    queries=[str(args["recipientName"])],
+                    requester_open_id=_session_lark_user_id(kwargs),
+                )
+                if resolved["ambiguous"]:
+                    detail = "; ".join(
+                        f"\"{item['query']}\" -> "
+                        + " / ".join(str(match.get("displayName") or match.get("openId")) for match in item["matches"])
+                        for item in resolved["ambiguous"]
+                    )
+                    return tool_error(f"Ambiguous recipient - please clarify: {detail}", success=False, operation=op)
+                if resolved["notFound"] or not resolved["resolved"]:
+                    return tool_error(f"Could not find Lark user: {args['recipientName']}", success=False, operation=op)
+                open_id = str(resolved["resolved"][0]["openId"])
+            if not open_id:
+                return tool_error("recipientName or receiveId/open_id is required for send_dm", success=False, operation=op)
+            data = await client.request(
+                "POST",
+                "/open-apis/im/v1/messages",
+                params={"receive_id_type": "open_id"},
+                json_body={"receive_id": open_id, "msg_type": "text", "content": _text_message_content(text)},
+            )
+            return tool_result({"success": True, "message": "DM sent.", "messageId": _message_id(data or {})})
+        if op == "mention":
+            chat_id = str(args.get("chatId") or args.get("receiveId") or "").strip()
+            text = str(args.get("text") or "")
+            names = [str(item).strip() for item in (args.get("mentionNames") or []) if str(item).strip()]
+            if not chat_id or not text or not names:
+                return tool_error("chatId, text, and mentionNames are required for mention", success=False, operation=op)
+            resolved = _resolve_lark_people(
+                company_id=_company_id(kwargs),
+                queries=names,
+                requester_open_id=_session_lark_user_id(kwargs),
+            )
+            if resolved["notFound"]:
+                return tool_error(f"Could not find: {', '.join(resolved['notFound'])}", success=False, operation=op)
+            if resolved["ambiguous"]:
+                detail = "; ".join(
+                    f"\"{item['query']}\" -> "
+                    + " / ".join(str(match.get("displayName") or match.get("openId")) for match in item["matches"])
+                    for item in resolved["ambiguous"]
+                )
+                return tool_error(f"Ambiguous names: {detail}", success=False, operation=op)
+            elements: list[dict[str, Any]] = []
+            for person in resolved["resolved"]:
+                elements.append({"tag": "at", "user_id": person["openId"]})
+                elements.append({"tag": "text", "text": " "})
+            elements.append({"tag": "text", "text": text})
+            data = await client.request(
+                "POST",
+                "/open-apis/im/v1/messages",
+                params={"receive_id_type": "chat_id"},
+                json_body={
+                    "receive_id": chat_id,
+                    "msg_type": "post",
+                    "content": json.dumps({"zh_cn": {"title": "", "content": [elements]}}),
+                },
+            )
+            return tool_result({"success": True, "message": f"Message sent with {len(resolved['resolved'])} mention(s).", "messageId": _message_id(data or {})})
+        if op == "list":
+            chat_id = str(args.get("chatId") or "").strip()
+            if not chat_id:
+                return tool_error("chatId is required for list", success=False, operation=op)
+            limit = _limit_arg(args, default=20, maximum=50)
+            data = await client.request(
+                "GET",
+                "/open-apis/im/v1/messages",
+                params={"container_id_type": "chat", "container_id": chat_id, "page_size": limit},
+            )
+            messages = [_norm_message(item) for item in (data or {}).get("items", [])]
+            return tool_result({"success": True, "message": f"Found {len(messages)} messages.", "data": messages})
+        if op == "get":
+            message_id = str(args.get("messageId") or "").strip()
+            if not message_id:
+                return tool_error("messageId is required for get", success=False, operation=op)
+            data = await client.request("GET", f"/open-apis/im/v1/messages/{message_id}")
+            items = (data or {}).get("items", [])
+            message = items[0] if items else (data or {}).get("message", data)
+            return tool_result({"success": True, "data": _norm_message(message if isinstance(message, dict) else {})})
+        if op == "search":
+            chat_id = str(args.get("chatId") or "").strip()
+            query = str(args.get("query") or "").strip()
+            if not chat_id or not query:
+                return tool_error("chatId and query are required for search", success=False, operation=op)
+            limit = _limit_arg(args, default=20, maximum=50)
+            data = await client.request(
+                "GET",
+                "/open-apis/im/v1/messages",
+                params={"container_id_type": "chat", "container_id": chat_id, "query": query, "page_size": limit},
+            )
+            messages = [_norm_message(item) for item in (data or {}).get("items", [])]
+            return tool_result({"success": True, "message": f"Found {len(messages)} messages.", "data": messages})
         if op == "list_chats":
-            page_size = max(1, min(100, int(args.get("maxResults") or 20)))
+            page_size = _limit_arg(args, default=20, maximum=100)
             data = await client.request("GET", "/open-apis/im/v1/chats", params={"page_size": page_size})
             chats = (data or {}).get("items", [])
             return tool_result({
                 "success": True,
                 "message": f"Found {len(chats)} chat(s).",
-                "data": [{"chat_id": c.get("chat_id"), "name": c.get("name"), "description": c.get("description")} for c in chats],
+                "data": [{"chat_id": c.get("chat_id"), "name": c.get("name"), "type": c.get("chat_type"), "memberCount": c.get("member_count"), "description": c.get("description")} for c in chats],
             })
         return tool_error(f"Unhandled lark_messaging operation: {op}", success=False, operation=op)
     except Exception as exc:  # noqa: BLE001
@@ -348,13 +503,24 @@ async def _handle_lark_base(args: dict[str, Any], **kwargs: Any) -> str:
 
 # ── Calendar (Calendar v4) ───────────────────────────────────────────────────
 
-LARK_CALENDAR_OPS = {"list", "get", "create", "update", "delete", "free_busy", "list_attendees", "update_attendees"}
+LARK_CALENDAR_OPS = {
+    "list",
+    "get",
+    "create",
+    "create_recurring",
+    "update",
+    "delete",
+    "free_busy",
+    "list_attendees",
+    "update_attendees",
+}
 
 LARK_CALENDAR_SCHEMA = {
     "name": "lark_calendar",
     "description": (
-        "Lark/Feishu Calendar. Operations: list, get, create, update, delete, free_busy, list_attendees, "
-        "update_attendees. Times are ISO 8601; attendee/user ids are open_ids."
+        "Lark/Feishu Calendar. Operations: list, get, create, create_recurring, update, delete, "
+        "free_busy, list_attendees, update_attendees. Times are ISO 8601. Use attendeeNames/names "
+        "for teammate lookup, or raw open_id arrays when already known."
     ),
     "parameters": {
         "type": "object",
@@ -367,10 +533,15 @@ LARK_CALENDAR_SCHEMA = {
             "startTime": {"type": "string", "description": "ISO 8601."},
             "endTime": {"type": "string", "description": "ISO 8601."},
             "attendeeIds": {"type": "array", "items": {"type": "string"}},
+            "attendeeNames": {"type": "array", "items": {"type": "string"}},
             "removeAttendeeIds": {"type": "array", "items": {"type": "string"}},
+            "addNames": {"type": "array", "items": {"type": "string"}},
+            "removeNames": {"type": "array", "items": {"type": "string"}},
             "userIds": {"type": "array", "items": {"type": "string"}},
+            "names": {"type": "array", "items": {"type": "string"}},
             "dateFrom": {"type": "string"},
             "dateTo": {"type": "string"},
+            "recurrence": {"type": "object", "additionalProperties": True},
             "limit": {"type": "integer", "minimum": 1, "maximum": 50},
         },
         "required": ["op"],
@@ -389,6 +560,71 @@ def _norm_event(ev: dict[str, Any]) -> dict[str, Any]:
         "startTime": _epoch_to_iso((ev.get("start_time") or {}).get("timestamp")),
         "endTime": _epoch_to_iso((ev.get("end_time") or {}).get("timestamp")),
     }
+
+
+def _build_rrule(recurrence: Any) -> str:
+    if not isinstance(recurrence, dict):
+        raise ValueError("recurrence is required for create_recurring")
+    freq = str(recurrence.get("frequency") or "").strip().upper()
+    if freq not in {"DAILY", "WEEKLY", "MONTHLY", "YEARLY"}:
+        raise ValueError("recurrence.frequency must be DAILY, WEEKLY, MONTHLY, or YEARLY")
+    rule = f"RRULE:FREQ={freq}"
+    days = [str(day).strip().upper() for day in (recurrence.get("daysOfWeek") or recurrence.get("byDay") or []) if str(day).strip()]
+    if days:
+        allowed = {"MO", "TU", "WE", "TH", "FR", "SA", "SU"}
+        invalid = [day for day in days if day not in allowed]
+        if invalid:
+            raise ValueError(f"Invalid recurrence weekday(s): {', '.join(invalid)}")
+        rule += f";BYDAY={','.join(days)}"
+    if recurrence.get("count"):
+        rule += f";COUNT={int(recurrence['count'])}"
+    elif recurrence.get("until"):
+        until = str(recurrence["until"]).strip()
+        if until.endswith("Z"):
+            until_dt = datetime.fromisoformat(until[:-1] + "+00:00")
+        else:
+            until_dt = datetime.fromisoformat(until)
+            if until_dt.tzinfo is None:
+                until_dt = until_dt.replace(tzinfo=timezone.utc)
+        rule += f";UNTIL={until_dt.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    return rule
+
+
+def _calendar_user_ids(args: dict[str, Any], kwargs: dict[str, Any], *, id_key: str, names_key: str) -> list[str]:
+    ids = [str(item).strip() for item in (args.get(id_key) or []) if str(item).strip()]
+    if ids:
+        return ids
+    names = [str(item).strip() for item in (args.get(names_key) or []) if str(item).strip()]
+    if not names:
+        return []
+    resolved = _resolve_lark_people(
+        company_id=_company_id(kwargs),
+        queries=names,
+        requester_open_id=_session_lark_user_id(kwargs),
+    )
+    if resolved["notFound"]:
+        raise ValueError(f"Could not find Lark users: {', '.join(resolved['notFound'])}")
+    if resolved["ambiguous"]:
+        detail = "; ".join(
+            f"\"{item['query']}\" -> "
+            + " / ".join(str(match.get("displayName") or match.get("openId")) for match in item["matches"])
+            for item in resolved["ambiguous"]
+        )
+        raise ValueError(f"Ambiguous names - please clarify: {detail}")
+    return [str(person["openId"]) for person in resolved["resolved"]]
+
+
+def _calendar_attendee_ids(
+    args: dict[str, Any],
+    kwargs: dict[str, Any],
+    *,
+    default_include_requester: bool = False,
+) -> list[str]:
+    ids = _calendar_user_ids(args, kwargs, id_key="attendeeIds", names_key="attendeeNames")
+    requester = _session_lark_user_id(kwargs)
+    if default_include_requester and requester and requester not in ids:
+        ids.append(requester)
+    return ids
 
 
 async def _handle_lark_calendar(args: dict[str, Any], **kwargs: Any) -> str:
@@ -431,8 +667,27 @@ async def _handle_lark_calendar(args: dict[str, Any], **kwargs: Any) -> str:
             body: dict[str, Any] = {"summary": title, "start_time": _cal_time(start), "end_time": _cal_time(end)}
             if args.get("description"):
                 body["description"] = str(args["description"])
-            if args.get("attendeeIds"):
-                body["attendees"] = [{"type": "user", "user_id": str(a)} for a in args["attendeeIds"]]
+            attendee_ids = _calendar_attendee_ids(args, kwargs, default_include_requester=True)
+            if attendee_ids:
+                body["attendees"] = [{"type": "user", "user_id": str(a)} for a in attendee_ids]
+            data = await client.request("POST", f"{base}/events", json_body=body)
+            return tool_result({"success": True, "eventId": (data or {}).get("event", {}).get("event_id")})
+        if op == "create_recurring":
+            title = str(args.get("title") or "").strip()
+            start, end = str(args.get("startTime") or ""), str(args.get("endTime") or "")
+            if not title or not start or not end:
+                return tool_error("title, startTime, endTime are required for create_recurring", success=False, operation=op)
+            body = {
+                "summary": title,
+                "start_time": _cal_time(start),
+                "end_time": _cal_time(end),
+                "recurrence": [_build_rrule(args.get("recurrence"))],
+            }
+            if args.get("description"):
+                body["description"] = str(args["description"])
+            attendee_ids = _calendar_attendee_ids(args, kwargs, default_include_requester=True)
+            if attendee_ids:
+                body["attendees"] = [{"type": "user", "user_id": str(a)} for a in attendee_ids]
             data = await client.request("POST", f"{base}/events", json_body=body)
             return tool_result({"success": True, "eventId": (data or {}).get("event", {}).get("event_id")})
         if op == "update":
@@ -455,10 +710,10 @@ async def _handle_lark_calendar(args: dict[str, Any], **kwargs: Any) -> str:
             await client.request("DELETE", f"{base}/events/{eid}")
             return tool_result({"success": True, "message": "Event deleted."})
         if op == "free_busy":
-            user_ids = args.get("userIds") or []
+            user_ids = _calendar_user_ids(args, kwargs, id_key="userIds", names_key="names")
             d_from, d_to = str(args.get("dateFrom") or ""), str(args.get("dateTo") or "")
             if not user_ids or not d_from or not d_to:
-                return tool_error("userIds, dateFrom, dateTo are required for free_busy", success=False, operation=op)
+                return tool_error("userIds or names, dateFrom, dateTo are required for free_busy", success=False, operation=op)
             out: dict[str, Any] = {}
             for uid in user_ids:
                 data = await client.request(
@@ -484,8 +739,8 @@ async def _handle_lark_calendar(args: dict[str, Any], **kwargs: Any) -> str:
             eid = str(args.get("eventId") or "").strip()
             if not eid:
                 return tool_error("eventId is required", success=False, operation=op)
-            add_ids = args.get("attendeeIds") or []
-            remove_ids = set(str(r) for r in (args.get("removeAttendeeIds") or []))
+            add_ids = _calendar_user_ids(args, kwargs, id_key="attendeeIds", names_key="addNames")
+            remove_ids = set(_calendar_user_ids(args, kwargs, id_key="removeAttendeeIds", names_key="removeNames"))
             if add_ids:
                 await client.request("POST", f"{base}/events/{eid}/attendees", json_body={"attendees": [{"type": "user", "user_id": str(a)} for a in add_ids]})
             if remove_ids:
@@ -578,7 +833,7 @@ async def _handle_lark_contacts(args: dict[str, Any], **kwargs: Any) -> str:
 # ── Task (Task v2) ───────────────────────────────────────────────────────────
 
 LARK_TASK_OPS = {
-    "create", "get", "list", "update", "delete", "complete",
+    "create", "get", "list", "listMine", "listOpenMine", "update", "delete", "complete",
     "create_subtask", "list_subtasks", "create_tasklist", "list_tasklists",
     "add_to_tasklist", "remove_from_tasklist",
 }
@@ -586,9 +841,10 @@ LARK_TASK_OPS = {
 LARK_TASK_SCHEMA = {
     "name": "lark_task",
     "description": (
-        "Lark/Feishu Tasks. Operations: create, get, list, update, delete, complete, create_subtask, "
-        "list_subtasks, create_tasklist, list_tasklists, add_to_tasklist, remove_from_tasklist. "
-        "dueDate is ISO 8601; assignee ids are open_ids."
+        "Lark/Feishu Tasks. Operations: create, get, list, listMine, listOpenMine, update, delete, "
+        "complete, create_subtask, list_subtasks, create_tasklist, list_tasklists, add_to_tasklist, "
+        "remove_from_tasklist. dueDate is ISO 8601. assigneeIds take raw Lark ids; assigneeNames "
+        "resolve people from Hermes company identity."
     ),
     "parameters": {
         "type": "object",
@@ -597,10 +853,17 @@ LARK_TASK_SCHEMA = {
             "taskId": {"type": "string"},
             "parentTaskId": {"type": "string"},
             "tasklistId": {"type": "string"},
+            "tasklist": {"type": "string", "description": "Tasklist GUID alias used by Divo; same as tasklistId for list/create."},
             "title": {"type": "string"},
             "notes": {"type": "string"},
             "dueDate": {"type": "string", "description": "ISO 8601."},
             "assigneeIds": {"type": "array", "items": {"type": "string"}},
+            "assigneeNames": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Human-readable names such as Anish or Shivam sir; resolved to Lark ids.",
+            },
+            "followerIds": {"type": "array", "items": {"type": "string"}},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
         },
         "required": ["op"],
@@ -612,7 +875,12 @@ def _task_due(iso: str) -> dict[str, Any]:
     return {"timestamp": str(_iso_to_epoch(iso) * 1000), "is_all_day": False}
 
 
-def _task_body(args: dict[str, Any]) -> dict[str, Any]:
+def _task_body(
+    args: dict[str, Any],
+    *,
+    assignee_ids: list[str] | None = None,
+    include_followers: bool = False,
+) -> dict[str, Any]:
     body: dict[str, Any] = {}
     if args.get("title"):
         body["summary"] = str(args["title"])
@@ -620,21 +888,330 @@ def _task_body(args: dict[str, Any]) -> dict[str, Any]:
         body["description"] = str(args["notes"])
     if args.get("dueDate"):
         body["due"] = _task_due(str(args["dueDate"]))
-    members = _members(args.get("assigneeIds"), "assignee")
+    members = _members(assignee_ids if assignee_ids is not None else args.get("assigneeIds"), "assignee")
+    if include_followers:
+        members.extend(_members(args.get("followerIds"), "follower"))
     if members:
         body["members"] = members
     return body
 
 
+def _task_id(t: dict[str, Any]) -> str | None:
+    return t.get("guid") or t.get("task_id") or t.get("id")
+
+
+def _is_task_completed(t: dict[str, Any]) -> bool:
+    completed_at = str(t.get("completed_at") or "0")
+    if completed_at not in {"0", "", "undefined", "None"}:
+        return True
+    if str(t.get("status") or "").lower() == "completed":
+        return True
+    return bool(t.get("completed") or t.get("done"))
+
+
+def _task_has_member(task: dict[str, Any], lark_user_id: str) -> bool:
+    normalized = str(lark_user_id or "").strip().lower()
+    if not normalized:
+        return False
+    for member in task.get("members") or []:
+        if not isinstance(member, dict):
+            continue
+        if str(member.get("id") or "").strip().lower() == normalized:
+            return True
+    creator = task.get("creator") if isinstance(task.get("creator"), dict) else {}
+    return str(creator.get("id") or "").strip().lower() == normalized
+
+
 def _norm_task(t: dict[str, Any]) -> dict[str, Any]:
-    completed = bool(t.get("completed")) or str(t.get("status", "")).lower() == "completed" or bool(t.get("completed_at") and str(t.get("completed_at")) not in ("0", ""))
+    completed = _is_task_completed(t)
     due = (t.get("due") or {}).get("timestamp")
     return {
-        "taskId": t.get("guid") or t.get("task_id") or t.get("id"),
-        "title": t.get("summary"),
+        "taskId": _task_id(t),
+        "title": t.get("summary") or t.get("title"),
         "completed": completed,
         "dueDate": _epoch_to_iso(int(due) // 1000) if due else None,
     }
+
+
+_STRIP_TITLES_RE = re.compile(r"\b(mr|mrs|ms|miss|dr|prof|sir|ma'am|shri|smt)\b\.?", re.IGNORECASE)
+
+
+def _normalize_person_name(name: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s@._-]", "", _STRIP_TITLES_RE.sub("", name.lower()))).strip()
+
+
+def _tokens(value: str) -> set[str]:
+    return {part for part in value.split() if part}
+
+
+def _overlap_score(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(len(a), len(b))
+
+
+def _session_lark_user_id(kwargs: dict[str, Any]) -> str:
+    value = str(kwargs.get("lark_open_id") or kwargs.get("lark_user_id") or "").strip()
+    if value:
+        return value
+    try:
+        from gateway.session_context import get_session_env
+
+        return str(get_session_env("HERMES_SESSION_USER_ID", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _company_id(kwargs: dict[str, Any]) -> str:
+    value = str(kwargs.get("company_id") or "").strip()
+    if value:
+        return value
+    try:
+        from gateway.session_context import get_session_env
+
+        return str(get_session_env("HERMES_COMPANY_ID", "") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _identity_rows_for_company(company_id: str) -> list[dict[str, Any]]:
+    try:
+        from gateway.company_identity import list_channel_identities_for_company_user, list_company_users
+    except Exception:  # noqa: BLE001
+        return []
+    rows: list[dict[str, Any]] = []
+    for user in list_company_users(company_id=company_id):
+        company_user_id = str(
+            user.get("id")
+            or user.get("company_user_id")
+            or user.get("companyUserId")
+            or ""
+        ).strip()
+        if not company_user_id:
+            continue
+        for identity in list_channel_identities_for_company_user(company_user_id):
+            platform = str(identity.get("platform") or identity.get("channel") or "").strip().lower()
+            if platform not in {"lark", "feishu"}:
+                continue
+            rows.append({"user": user, "identity": identity})
+    return rows
+
+
+def _raw_identity_json(identity: dict[str, Any]) -> dict[str, Any]:
+    raw = identity.get("raw_json") or identity.get("rawJson")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _lark_people_directory(company_id: str) -> list[dict[str, Any]]:
+    directory: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in _identity_rows_for_company(company_id):
+        user = row["user"]
+        identity = row["identity"]
+        raw = _raw_identity_json(identity)
+        open_id = str(
+            identity.get("platform_user_id")
+            or identity.get("externalUserId")
+            or raw.get("open_id")
+            or raw.get("user_id")
+            or ""
+        ).strip()
+        if not open_id or open_id in seen:
+            continue
+        display_name = str(
+            identity.get("display_name")
+            or identity.get("displayName")
+            or user.get("display_name")
+            or user.get("displayName")
+            or user.get("email")
+            or open_id
+        ).strip()
+        email = str(user.get("email") or raw.get("email") or "").strip()
+        norm_name = _normalize_person_name(display_name)
+        directory.append(
+            {
+                "openId": open_id,
+                "displayName": display_name,
+                "email": email,
+                "normName": norm_name,
+                "tokens": _tokens(norm_name),
+            }
+        )
+        seen.add(open_id)
+    return directory
+
+
+def _resolve_lark_people(
+    *,
+    company_id: str,
+    queries: list[str],
+    requester_open_id: str,
+) -> dict[str, Any]:
+    directory = _lark_people_directory(company_id)
+    self_aliases = {"me", "myself", "i", "self"}
+    resolved: list[dict[str, Any]] = []
+    ambiguous: list[dict[str, Any]] = []
+    not_found: list[str] = []
+    seen: set[str] = set()
+
+    def add_person(person: dict[str, Any]) -> None:
+        open_id = str(person.get("openId") or "").strip()
+        if open_id and open_id not in seen:
+            seen.add(open_id)
+            resolved.append(
+                {
+                    "openId": open_id,
+                    "displayName": person.get("displayName") or open_id,
+                    **({"email": person["email"]} if person.get("email") else {}),
+                }
+            )
+
+    for raw_query in queries:
+        query = str(raw_query or "").strip()
+        if not query:
+            continue
+        normalized = _normalize_person_name(query)
+        if normalized in self_aliases:
+            if requester_open_id:
+                self_entry = next((item for item in directory if item["openId"] == requester_open_id), None)
+                add_person(self_entry or {"openId": requester_open_id, "displayName": "You"})
+            else:
+                not_found.append(query)
+            continue
+
+        exact = [
+            item
+            for item in directory
+            if item["normName"] == normalized or str(item.get("email") or "").lower() == normalized
+        ]
+        if len(exact) == 1:
+            add_person(exact[0])
+            continue
+        if len(exact) > 1:
+            ambiguous.append({"query": query, "matches": exact})
+            continue
+
+        query_tokens = _tokens(normalized)
+        contained = [
+            item
+            for item in directory
+            if query_tokens
+            and (
+                query_tokens.issubset(item["tokens"])
+                or item["tokens"].issubset(query_tokens)
+            )
+        ]
+        if len(contained) == 1:
+            add_person(contained[0])
+            continue
+        if len(contained) > 1:
+            ambiguous.append({"query": query, "matches": contained})
+            continue
+
+        scored = [
+            (item, _overlap_score(query_tokens, item["tokens"]))
+            for item in directory
+        ]
+        scored = [(item, score) for item, score in scored if score >= 0.5]
+        scored.sort(key=lambda item: item[1], reverse=True)
+        if not scored:
+            not_found.append(query)
+            continue
+        top_score = scored[0][1]
+        best = [item for item, score in scored if score == top_score]
+        if len(best) == 1:
+            add_person(best[0])
+        else:
+            ambiguous.append({"query": query, "matches": best})
+    return {"resolved": resolved, "ambiguous": ambiguous, "notFound": not_found}
+
+
+def _assignee_name_queries(args: dict[str, Any]) -> list[str]:
+    return [str(item).strip() for item in (args.get("assigneeNames") or []) if str(item).strip()]
+
+
+def _explicit_assignee_ids(args: dict[str, Any]) -> list[str] | None:
+    ids = [str(item).strip() for item in (args.get("assigneeIds") or []) if str(item).strip()]
+    return ids or None
+
+
+def _resolve_assignee_ids(
+    args: dict[str, Any],
+    kwargs: dict[str, Any],
+    *,
+    default_to_requester: bool = False,
+) -> list[str] | None:
+    explicit = _explicit_assignee_ids(args)
+    if explicit:
+        return explicit
+    names = _assignee_name_queries(args)
+    requester = _session_lark_user_id(kwargs)
+    if names:
+        resolved = _resolve_lark_people(
+            company_id=_company_id(kwargs),
+            queries=names,
+            requester_open_id=requester,
+        )
+        if resolved["notFound"]:
+            raise ValueError(f"Could not find Lark users: {', '.join(resolved['notFound'])}")
+        if resolved["ambiguous"]:
+            detail = "; ".join(
+                f"\"{item['query']}\" -> "
+                + " / ".join(str(match.get("displayName") or match.get("openId")) for match in item["matches"])
+                for item in resolved["ambiguous"]
+            )
+            raise ValueError(f"Ambiguous assignee names - please clarify: {detail}")
+        return [item["openId"] for item in resolved["resolved"]]
+    if default_to_requester and requester:
+        return [requester]
+    return None
+
+
+def _tasklist_id(args: dict[str, Any]) -> str:
+    return str(args.get("tasklistId") or args.get("tasklist") or "").strip()
+
+
+async def _list_lark_tasks(
+    client: Any,
+    *,
+    limit: int,
+    tasklist_id: str = "",
+) -> list[dict[str, Any]]:
+    seen: dict[str, dict[str, Any]] = {}
+
+    async def collect(target_tasklist_id: str = "", page_size: int = 100) -> None:
+        params: dict[str, Any] = {"page_size": max(1, min(100, page_size))}
+        if target_tasklist_id:
+            params["tasklist_id"] = target_tasklist_id
+        data = await client.request("GET", "/open-apis/task/v2/tasks", params=params)
+        for item in (data or {}).get("items", []):
+            if not isinstance(item, dict):
+                continue
+            item_id = str(_task_id(item) or "")
+            if item_id:
+                seen[item_id] = item
+
+    if tasklist_id:
+        await collect(tasklist_id, limit)
+    else:
+        await collect("", limit)
+        if not seen:
+            lists = await client.request("GET", "/open-apis/task/v2/tasklists", params={"page_size": 50})
+            for tasklist in (lists or {}).get("items", []):
+                if not isinstance(tasklist, dict):
+                    continue
+                tlid = str(tasklist.get("guid") or "").strip()
+                if tlid:
+                    await collect(tlid, 100)
+    return list(seen.values())[:limit]
 
 
 async def _handle_lark_task(args: dict[str, Any], **kwargs: Any) -> str:
@@ -649,8 +1226,14 @@ async def _handle_lark_task(args: dict[str, Any], **kwargs: Any) -> str:
         if op == "create":
             if not str(args.get("title") or "").strip():
                 return tool_error("title is required for create", success=False, operation=op)
-            data = await client.request("POST", "/open-apis/task/v2/tasks", json_body=_task_body(args))
-            return tool_result({"success": True, "data": _norm_task((data or {}).get("task", {}))})
+            assignee_ids = _resolve_assignee_ids(args, kwargs, default_to_requester=True)
+            data = await client.request(
+                "POST",
+                "/open-apis/task/v2/tasks",
+                json_body=_task_body(args, assignee_ids=assignee_ids, include_followers=True),
+            )
+            task = _norm_task((data or {}).get("task", {}))
+            return tool_result({"success": True, "taskId": task.get("taskId"), "data": task, "message": f"Task \"{task.get('title') or args.get('title')}\" created"})
         if op == "get":
             tid = str(args.get("taskId") or "").strip()
             if not tid:
@@ -659,37 +1242,51 @@ async def _handle_lark_task(args: dict[str, Any], **kwargs: Any) -> str:
             return tool_result({"success": True, "data": _norm_task((data or {}).get("task", {}))})
         if op == "list":
             limit = max(1, min(100, int(args.get("limit") or 50)))
-            params = {"page_size": limit}
-            if args.get("tasklistId"):
-                params["tasklist_id"] = str(args["tasklistId"])
-            data = await client.request("GET", "/open-apis/task/v2/tasks", params=params)
-            return tool_result({"success": True, "data": [_norm_task(t) for t in (data or {}).get("items", [])]})
+            tasks = await _list_lark_tasks(client, limit=limit, tasklist_id=_tasklist_id(args))
+            return tool_result({"success": True, "data": [_norm_task(t) for t in tasks], "message": f"Found {len(tasks)} tasks"})
+        if op in {"listMine", "listOpenMine"}:
+            requester = _session_lark_user_id(kwargs)
+            if not requester:
+                return tool_result({"success": False, "data": [], "message": "Cannot determine current user identity"})
+            limit = max(1, min(100, int(args.get("limit") or 50)))
+            tasks = await _list_lark_tasks(client, limit=limit, tasklist_id=_tasklist_id(args))
+            tasks = [task for task in tasks if _task_has_member(task, requester)]
+            if op == "listOpenMine":
+                tasks = [task for task in tasks if not _is_task_completed(task)]
+            return tool_result({"success": True, "data": [_norm_task(t) for t in tasks], "message": f"Found {len(tasks)} {'open ' if op == 'listOpenMine' else ''}tasks assigned to you"})
         if op == "update":
             tid = str(args.get("taskId") or "").strip()
             if not tid:
                 return tool_error("taskId is required", success=False, operation=op)
-            body = _task_body(args)
+            body = _task_body(args, assignee_ids=_resolve_assignee_ids(args, kwargs))
             fields = ",".join(k for k in body)
+            if not fields:
+                return tool_error("No task fields supplied for update", success=False, operation=op)
             await client.request("PATCH", f"/open-apis/task/v2/tasks/{tid}", params={"update_fields": fields}, json_body=body)
-            return tool_result({"success": True, "message": "Task updated."})
+            return tool_result({"success": True, "taskId": tid, "message": "Task updated."})
         if op == "complete":
             tid = str(args.get("taskId") or "").strip()
             if not tid:
                 return tool_error("taskId is required", success=False, operation=op)
             await client.request("POST", f"/open-apis/task/v2/tasks/{tid}/complete")
-            return tool_result({"success": True, "message": "Task completed."})
+            return tool_result({"success": True, "taskId": tid, "message": "Task marked complete"})
         if op == "delete":
             tid = str(args.get("taskId") or "").strip()
             if not tid:
                 return tool_error("taskId is required", success=False, operation=op)
             await client.request("DELETE", f"/open-apis/task/v2/tasks/{tid}")
-            return tool_result({"success": True, "message": "Task deleted."})
+            return tool_result({"success": True, "taskId": tid, "message": "Task deleted."})
         if op == "create_subtask":
             parent = str(args.get("parentTaskId") or "").strip()
             if not parent or not str(args.get("title") or "").strip():
                 return tool_error("parentTaskId and title are required for create_subtask", success=False, operation=op)
-            data = await client.request("POST", f"/open-apis/task/v2/tasks/{parent}/subtasks", json_body=_task_body(args))
-            return tool_result({"success": True, "data": _norm_task((data or {}).get("task", {}))})
+            data = await client.request(
+                "POST",
+                f"/open-apis/task/v2/tasks/{parent}/subtasks",
+                json_body=_task_body(args, assignee_ids=_resolve_assignee_ids(args, kwargs)),
+            )
+            task = _norm_task((data or {}).get("task", {}))
+            return tool_result({"success": True, "taskId": task.get("taskId"), "data": task, "message": f"Subtask \"{task.get('title') or args.get('title')}\" created"})
         if op == "list_subtasks":
             tid = str(args.get("taskId") or "").strip()
             if not tid:
@@ -697,26 +1294,26 @@ async def _handle_lark_task(args: dict[str, Any], **kwargs: Any) -> str:
             data = await client.request("GET", f"/open-apis/task/v2/tasks/{tid}/subtasks")
             return tool_result({"success": True, "data": [_norm_task(t) for t in (data or {}).get("items", [])]})
         if op == "list_tasklists":
-            data = await client.request("GET", "/open-apis/task/v2/tasklists")
+            data = await client.request("GET", "/open-apis/task/v2/tasklists", params={"page_size": 50})
             return tool_result({"success": True, "data": [{"guid": t.get("guid"), "name": t.get("name")} for t in (data or {}).get("items", [])]})
         if op == "create_tasklist":
             if not str(args.get("title") or "").strip():
                 return tool_error("title is required for create_tasklist", success=False, operation=op)
             body = {"name": str(args["title"])}
-            members = _members(args.get("assigneeIds"), "editor")
+            members = _members(_resolve_assignee_ids(args, kwargs), "editor")
             if members:
                 body["members"] = members
             data = await client.request("POST", "/open-apis/task/v2/tasklists", json_body=body)
             tl = (data or {}).get("tasklist", {})
-            return tool_result({"success": True, "data": {"guid": tl.get("guid"), "name": tl.get("name")}})
+            return tool_result({"success": True, "data": {"guid": tl.get("guid"), "name": tl.get("name")}, "message": f"Tasklist \"{tl.get('name') or args['title']}\" created"})
         if op in ("add_to_tasklist", "remove_from_tasklist"):
             tid = str(args.get("taskId") or "").strip()
-            tlid = str(args.get("tasklistId") or "").strip()
+            tlid = _tasklist_id(args)
             if not tid or not tlid:
                 return tool_error("taskId and tasklistId are required", success=False, operation=op)
             action = "add" if op == "add_to_tasklist" else "remove"
             await client.request("POST", f"/open-apis/task/v2/tasklists/{tlid}/tasks/{action}", json_body={"tasks": [{"guid": tid}]})
-            return tool_result({"success": True, "message": f"Task {action}ed."})
+            return tool_result({"success": True, "taskId": tid, "message": "Task added to tasklist" if action == "add" else "Task removed from tasklist"})
         return tool_error(f"Unhandled lark_task operation: {op}", success=False, operation=op)
     except Exception as exc:  # noqa: BLE001
         return tool_error(str(exc), success=False, operation=op)

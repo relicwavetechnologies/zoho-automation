@@ -8,9 +8,11 @@ silently fall back to shared process env credentials.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+import os
+from typing import Any, Mapping, Optional
 
 from enterprise.lark_token import LarkClient, LarkTokenProvider
+from tools.connector_policy import connector_identity_from_kwargs, require_connector_access
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +52,20 @@ def _get_repository():
     return _repository
 
 
-def resolve_lark_client(company_id: Optional[str]) -> Optional[LarkClient]:
+def resolve_lark_client(
+    company_id: Optional[str],
+    *,
+    policy_identity: Mapping[str, Any] | None = None,
+) -> Optional[LarkClient]:
     """Build (or reuse) a LarkClient for the company, or ``None`` if no creds."""
     company_id = str(company_id or "").strip()
     if not company_id or not enterprise_enabled():
         return None
+    require_connector_access(
+        provider="lark",
+        company_id=company_id,
+        identity=policy_identity,
+    )
 
     cached = _clients.get(company_id)
     if cached is not None:
@@ -78,12 +89,46 @@ def resolve_lark_client(company_id: Optional[str]) -> Optional[LarkClient]:
     return client
 
 
+def lark_tools_available() -> bool:
+    """Whether Lark tool schemas should be exposed to an agent session.
+
+    ``check_fn`` is called without tool-call kwargs, so it cannot validate the
+    exact company/user. It should only answer "is there a configured Lark
+    runtime surface for this process?". The handler still performs the
+    company-scoped credential lookup before any API call.
+    """
+    if not enterprise_enabled():
+        return False
+
+    company_id = (
+        os.getenv("HERMES_COMPANY_ID")
+        or os.getenv("COMPANY_ID")
+        or os.getenv("HERMES_DEFAULT_COMPANY_ID")
+        or ""
+    ).strip()
+    repo = _get_repository()
+    if company_id and repo is not None:
+        try:
+            if repo.get_lark_credentials(company_id, allow_env_fallback=False) is not None:
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Lark credential availability probe failed: %s", exc)
+
+    return bool(
+        (os.getenv("LARK_APP_ID") or "").strip()
+        and (os.getenv("LARK_APP_SECRET") or "").strip()
+    )
+
+
 def resolve_tool_client(kwargs: dict) -> LarkClient:
     explicit = kwargs.get("client")
     if explicit is not None:
         return explicit
     company_id = kwargs.get("company_id")
-    client = resolve_lark_client(company_id)
+    client = resolve_lark_client(
+        company_id,
+        policy_identity=connector_identity_from_kwargs(kwargs),
+    )
     if client is not None:
         return client
     from enterprise.lark_token import LarkAuthError
