@@ -34,6 +34,7 @@ const DEFAULT_REMOTE_GATEWAY_URL = ''
 // → __Secure-, loopback HTTP → bare). Mirrors
 // hermes_cli/dashboard_auth/cookies.py.
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
+const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
 function normalizeRemoteBaseUrl(rawUrl) {
   const value = String(rawUrl || '').trim()
@@ -140,6 +141,21 @@ function cookiesHaveSession(cookies) {
   return cookies.some(c => c && AT_COOKIE_VARIANTS.includes(c.name) && c.value)
 }
 
+/**
+ * True if the browser still has a dashboard refresh-token cookie. The access
+ * cookie intentionally expires sooner; when only the refresh cookie remains,
+ * the next cookie-authed request should refresh the session transparently.
+ */
+function cookiesHaveRefreshSession(cookies) {
+  if (!Array.isArray(cookies)) return false
+  return cookies.some(c => c && RT_COOKIE_VARIANTS.includes(c.name) && c.value)
+}
+
+/** True if either the access or refresh dashboard session cookie is present. */
+function cookiesHaveSessionMaterial(cookies) {
+  return cookiesHaveSession(cookies) || cookiesHaveRefreshSession(cookies)
+}
+
 /** True when a remote OAuth gateway is configured but the desktop has no session yet. */
 function isOauthLoginRequiredError(error) {
   return Boolean(error && typeof error === 'object' && error.needsOauthLogin === true)
@@ -148,10 +164,13 @@ function isOauthLoginRequiredError(error) {
 module.exports = {
   AT_COOKIE_VARIANTS,
   DEFAULT_REMOTE_GATEWAY_URL,
+  RT_COOKIE_VARIANTS,
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  cookiesHaveRefreshSession,
   cookiesHaveSession,
+  cookiesHaveSessionMaterial,
   isOauthLoginRequiredError,
   normalizeRemoteBaseUrl,
   resolveEnvAuthMode,

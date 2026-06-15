@@ -29,7 +29,7 @@ const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
-  cookiesHaveSession,
+  cookiesHaveSessionMaterial,
   isOauthLoginRequiredError,
   normalizeRemoteBaseUrl,
   resolveEnvAuthMode,
@@ -2330,8 +2330,9 @@ function getOauthSession() {
   return oauthSession
 }
 
-// Bare + prefixed variants of the access-token cookie live in
-// connection-config.cjs (cookiesHaveSession). See that module for details.
+// Bare + prefixed session-cookie variants live in connection-config.cjs. The
+// desktop treats either AT or RT as usable auth material: an RT-only jar should
+// be allowed to hit /api/auth/ws-ticket so the backend can refresh it.
 
 const DESKTOP_BROWSER_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
 const DESKTOP_BROWSER_LOGIN_POLL_MS = 1000
@@ -2343,15 +2344,25 @@ async function hasOauthSessionCookie(baseUrl) {
   try {
     // Query by URL so the cookie jar applies Domain/Path/Secure scoping for us.
     const cookies = await sess.cookies.get({ url: baseUrl })
-    return cookiesHaveSession(cookies)
+    return cookiesHaveSessionMaterial(cookies)
   } catch {
     // Fall back to a host match if the URL query path errors.
     try {
       const cookies = await sess.cookies.get({ domain: parsed.hostname })
-      return cookiesHaveSession(cookies)
+      return cookiesHaveSessionMaterial(cookies)
     } catch {
       return false
     }
+  }
+}
+
+async function flushOauthSessionStorage() {
+  const sess = getOauthSession()
+  if (!sess || typeof sess.flushStorageData !== 'function') return
+  try {
+    await sess.flushStorageData()
+  } catch {
+    // Best effort. Electron will still persist cookies eventually.
   }
 }
 
@@ -2370,6 +2381,7 @@ async function clearOauthSession(baseUrl) {
   } catch {
     // Best effort — a stale cookie self-expires anyway.
   }
+  await flushOauthSessionStorage()
 }
 
 async function openSystemBrowserOauthLogin(baseUrl) {
@@ -2408,6 +2420,7 @@ async function openSystemBrowserOauthLogin(baseUrl) {
     if (body?.status === 'complete') {
       sawComplete = true
       if (await hasOauthSessionCookie(normalizedBaseUrl)) {
+        await flushOauthSessionStorage()
         return { baseUrl: normalizedBaseUrl, ok: true }
       }
     }
@@ -2417,6 +2430,7 @@ async function openSystemBrowserOauthLogin(baseUrl) {
       // to the JSON body callback. Give it a brief chance to flush.
       await sleep(250)
       if (await hasOauthSessionCookie(normalizedBaseUrl)) {
+        await flushOauthSessionStorage()
         return { baseUrl: normalizedBaseUrl, ok: true }
       }
       throw new Error('System browser sign-in completed, but the desktop session cookie was not stored.')
@@ -2459,7 +2473,11 @@ function openEmbeddedOauthLoginWindow(baseUrl) {
         // window already torn down
       }
       if (err) reject(err)
-      else resolve({ baseUrl, ok: true })
+      else {
+        flushOauthSessionStorage()
+          .catch(() => undefined)
+          .finally(() => resolve({ baseUrl, ok: true }))
+      }
     }
 
     const checkCookie = async () => {

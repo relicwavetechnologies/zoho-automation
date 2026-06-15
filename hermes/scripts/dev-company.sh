@@ -105,7 +105,10 @@ export HERMES_HOME="${HERMES_HOME:-/tmp/hermes-divo-oauth}"
 export HERMES_DASHBOARD_PUBLIC_URL="${HERMES_DASHBOARD_PUBLIC_URL:-http://127.0.0.1:9119}"
 export HERMES_DESKTOP_REMOTE_URL="${HERMES_DESKTOP_REMOTE_URL:-http://127.0.0.1:9119}"
 export HERMES_DESKTOP_REMOTE_AUTH_MODE="${HERMES_DESKTOP_REMOTE_AUTH_MODE:-oauth}"
-export HERMES_DESKTOP_USER_DATA_DIR="${HERMES_DESKTOP_USER_DATA_DIR:-/tmp/hermes-desktop-oauth-profile}"
+DEFAULT_DESKTOP_USER_DATA_DIR="$HERMES_HOME/desktop-profile"
+LEGACY_DESKTOP_USER_DATA_DIR="/tmp/hermes-desktop-oauth-profile"
+DESKTOP_USER_DATA_DIR_FROM_ENV="${HERMES_DESKTOP_USER_DATA_DIR:-}"
+export HERMES_DESKTOP_USER_DATA_DIR="${DESKTOP_USER_DATA_DIR_FROM_ENV:-$DEFAULT_DESKTOP_USER_DATA_DIR}"
 export API_SERVER_ENABLED="${API_SERVER_ENABLED:-false}"
 
 if [[ "${1:-}" == "--check" ]]; then
@@ -115,6 +118,7 @@ if [[ "${1:-}" == "--check" ]]; then
   echo "  HERMES_HOME=$HERMES_HOME"
   echo "  HERMES_DASHBOARD_PUBLIC_URL=$HERMES_DASHBOARD_PUBLIC_URL"
   echo "  HERMES_DESKTOP_REMOTE_URL=$HERMES_DESKTOP_REMOTE_URL"
+  echo "  HERMES_DESKTOP_USER_DATA_DIR=$HERMES_DESKTOP_USER_DATA_DIR"
   echo "  HERMES_ENTERPRISE_POSTGRES=${HERMES_ENTERPRISE_POSTGRES:-unset}"
   echo "  HERMES_DASHBOARD_LARK_APP_ID=present(len=${#HERMES_DASHBOARD_LARK_APP_ID})"
   echo "  HERMES_DASHBOARD_LARK_APP_SECRET=present(len=${#HERMES_DASHBOARD_LARK_APP_SECRET})"
@@ -129,7 +133,12 @@ fi
 "$PYTHON_BIN" -m enterprise.migration_runner --apply
 "$PYTHON_BIN" -m enterprise.readiness --company-dev --check-database
 
-if [[ "${HERMES_DESKTOP_RESET_PROFILE:-1}" == "1" ]]; then
+if [[ -z "$DESKTOP_USER_DATA_DIR_FROM_ENV" && "${HERMES_DESKTOP_RESET_PROFILE:-0}" != "1" && ! -e "$HERMES_DESKTOP_USER_DATA_DIR" && -d "$LEGACY_DESKTOP_USER_DATA_DIR" ]]; then
+  mkdir -p "$(dirname "$HERMES_DESKTOP_USER_DATA_DIR")"
+  mv "$LEGACY_DESKTOP_USER_DATA_DIR" "$HERMES_DESKTOP_USER_DATA_DIR"
+fi
+
+if [[ "${HERMES_DESKTOP_RESET_PROFILE:-0}" == "1" ]]; then
   rm -rf "$HERMES_DESKTOP_USER_DATA_DIR"
 fi
 
@@ -165,9 +174,9 @@ cat <<EOF
    • Local listener → http://${HERMES_LARK_CHANNEL_WEBHOOK_HOST:-127.0.0.1}:${HERMES_LARK_CHANNEL_WEBHOOK_PORT:-8765}${HERMES_LARK_CHANNEL_WEBHOOK_PATH:-/feishu/webhook}
    • Console URL    → ${HERMES_LARK_CHANNEL_PUBLIC_WEBHOOK_URL:-https://<your-tunnel-domain>${HERMES_LARK_CHANNEL_WEBHOOK_PATH:-/feishu/webhook}}
 
- Stop:  pnpm dev:company:stop
- Profile: ${HERMES_DESKTOP_USER_DATA_DIR}
-         (wiped each start unless HERMES_DESKTOP_RESET_PROFILE=0)
+Stop:  pnpm dev:company:stop
+Profile: ${HERMES_DESKTOP_USER_DATA_DIR}
+         (persistent; set HERMES_DESKTOP_RESET_PROFILE=1 only when you want a fresh login)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF

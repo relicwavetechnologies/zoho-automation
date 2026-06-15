@@ -18,9 +18,12 @@ const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  cookiesHaveRefreshSession,
   cookiesHaveSession,
+  cookiesHaveSessionMaterial,
   isOauthLoginRequiredError,
   normalizeRemoteBaseUrl,
+  RT_COOKIE_VARIANTS,
   resolveEnvAuthMode,
   resolveAuthMode,
   tokenPreview
@@ -157,6 +160,18 @@ test('cookiesHaveSession ignores unrelated cookies', () => {
   assert.equal(cookiesHaveSession([{ name: 'other', value: 'x' }]), false)
 })
 
+test('cookiesHaveRefreshSession detects refresh-token cookie variants', () => {
+  assert.equal(cookiesHaveRefreshSession([{ name: 'hermes_session_rt', value: 'x' }]), true)
+  assert.equal(cookiesHaveRefreshSession([{ name: '__Host-hermes_session_rt', value: 'x' }]), true)
+  assert.equal(cookiesHaveRefreshSession([{ name: '__Secure-hermes_session_rt', value: 'x' }]), true)
+})
+
+test('cookiesHaveSessionMaterial accepts access or refresh cookies', () => {
+  assert.equal(cookiesHaveSessionMaterial([{ name: 'hermes_session_at', value: 'x' }]), true)
+  assert.equal(cookiesHaveSessionMaterial([{ name: 'hermes_session_rt', value: 'x' }]), true)
+  assert.equal(cookiesHaveSessionMaterial([{ name: 'other', value: 'x' }]), false)
+})
+
 test('cookiesHaveSession handles non-arrays', () => {
   assert.equal(cookiesHaveSession(null), false)
   assert.equal(cookiesHaveSession(undefined), false)
@@ -165,6 +180,10 @@ test('cookiesHaveSession handles non-arrays', () => {
 
 test('AT_COOKIE_VARIANTS covers all three deploy shapes', () => {
   assert.deepEqual(AT_COOKIE_VARIANTS, ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at'])
+})
+
+test('RT_COOKIE_VARIANTS covers all three deploy shapes', () => {
+  assert.deepEqual(RT_COOKIE_VARIANTS, ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt'])
 })
 
 // --- tokenPreview ---
