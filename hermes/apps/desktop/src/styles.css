@@ -939,6 +939,82 @@ canvas {
   padding-bottom: var(--composer-shell-pad-block-end);
 }
 
+[data-slot='composer-landing'] {
+  --composer-control-size: 2.25rem;
+  --composer-control-primary-size: 2.25rem;
+  --composer-control-gap: 0.8rem;
+  --composer-row-gap: 0.9rem;
+  --composer-surface-radius: 1.1rem;
+  --composer-surface-pad-x: 1rem;
+  --composer-surface-pad-y: 0.7rem;
+  --composer-input-pad-x: 0.3rem;
+  --composer-input-pad-top: 0.15rem;
+  --composer-input-min-height: 3.4rem;
+  --composer-input-max-height: 10rem;
+  --composer-fallback-height: 8.25rem;
+}
+
+[data-slot='composer-landing'] [data-slot='composer-root'] {
+  width: 100%;
+  padding-bottom: 0;
+}
+
+[data-slot='composer-landing'] [data-slot='composer-root'] > .pointer-events-none {
+  display: none;
+}
+
+[data-slot='composer-landing'] [data-slot='composer-surface'] {
+  border-color: #343434 !important;
+  border-radius: var(--composer-surface-radius) !important;
+  box-shadow:
+    0 1rem 3.25rem rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.075) !important;
+}
+
+[data-slot='composer-landing'] [data-slot='composer-surface'] > [aria-hidden='true'] {
+  background: #1f1f1f !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+[data-slot='composer-landing'] [data-slot='composer-fade'] {
+  /* Hug the content (input + footer) so the surface padding stays even top and
+     bottom — no tall min-height dumping slack below the footer row. */
+  min-height: 0;
+}
+
+[data-slot='composer-landing'] [data-slot='composer-rich-input'] {
+  color: #c3c3c3;
+  font-size: clamp(0.95rem, 1.5vw, 1.25rem);
+  letter-spacing: -0.025em;
+}
+
+[data-slot='composer-landing'] [data-slot='composer-rich-input']:empty::before {
+  color: #686868 !important;
+}
+
+[data-slot='composer-landing'] [aria-label='Model and thinking mode'] {
+  max-width: min(28rem, 55vw);
+  padding-inline: 0.15rem;
+  color: #b9b9b9;
+  font-size: clamp(0.9rem, 1.2vw, 1rem);
+  letter-spacing: -0.025em;
+}
+
+[data-slot='composer-landing'] [aria-label='Model and thinking mode'] svg,
+[data-slot='composer-landing'] [aria-label='Add context'] svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+[data-slot='composer-landing'] [data-slot='composer-root'] .codicon {
+  font-size: 1.05rem !important;
+}
+
+[data-slot='composer-landing'] [aria-label='Start voice conversation'] .codicon {
+  font-size: 1.15rem !important;
+}
+
 /* Collapsed (single-line) composer reads as a pill/capsule; once the input
    wraps or attachments appear it becomes the rounded card. Driving the shared
    radius var means the surface, its blur layer and the content layer all follow
@@ -984,6 +1060,28 @@ canvas {
 
 [data-slot='composer-root']:focus-within [data-slot='composer-surface'] > [aria-hidden='true'] {
   background: var(--ui-chat-bubble-background) !important;
+}
+
+[data-slot='composer-landing'] [data-slot='composer-root']:focus-within [data-slot='composer-surface'] > [aria-hidden='true'] {
+  background: #1f1f1f !important;
+}
+
+@media (max-width: 720px) {
+  [data-slot='composer-landing'] {
+    --composer-control-size: 2rem;
+    --composer-control-primary-size: 2rem;
+    --composer-control-gap: 0.55rem;
+    --composer-row-gap: 0.75rem;
+    --composer-surface-radius: 1rem;
+    --composer-input-min-height: 3.6rem;
+    --composer-fallback-height: 7.4rem;
+  }
+
+  [data-slot='composer-landing-wordmark'] {
+    margin-bottom: 1rem;
+    font-size: clamp(2.75rem, 15vw, 4.5rem);
+    letter-spacing: 0.055em;
+  }
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading

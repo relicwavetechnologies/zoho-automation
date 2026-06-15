@@ -40,6 +40,7 @@ export function ComposerControls({
   conversation,
   disabled,
   hasComposerPayload,
+  mode = 'default',
   state,
   voiceStatus,
   onDictate
@@ -50,6 +51,7 @@ export function ComposerControls({
   conversation: ConversationProps
   disabled: boolean
   hasComposerPayload: boolean
+  mode?: 'default' | 'landing'
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
@@ -62,7 +64,9 @@ export function ComposerControls({
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
-      <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
+      {mode !== 'landing' && (
+        <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
+      )}
       {showVoicePrimary ? (
         <Button
           aria-label="Start voice conversation"
@@ -76,7 +80,7 @@ export function ComposerControls({
           title="Start voice conversation"
           type="button"
         >
-          <AudioLines size={17} />
+          {mode === 'landing' ? <Codicon name="mic" size="1.25rem" /> : <AudioLines size={17} />}
         </Button>
       ) : (
         <Button

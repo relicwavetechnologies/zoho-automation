@@ -32,8 +32,6 @@ import {
   $currentProvider,
   $freshDraftReady,
   $gatewayState,
-  $introPersonality,
-  $introSeed,
   $messages,
   $selectedStoredSessionId,
   $sessions,
@@ -179,8 +177,6 @@ export function ChatView({
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayState = useStore($gatewayState)
   const gatewayOpen = gatewayState === 'open'
-  const introPersonality = useStore($introPersonality)
-  const introSeed = useStore($introSeed)
   const messages = useStore($messages)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
@@ -197,6 +193,7 @@ export function ChatView({
   const loadingSession = isRoutedSessionView && messages.length === 0 && !activeSessionId
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleMessageIsUser(messages))
   const showChatBar = !loadingSession
+  const chatBarPlacement = showIntro ? 'landing' : 'bottom'
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
@@ -332,10 +329,9 @@ export function ChatView({
       >
         <AssistantRuntimeProvider runtime={runtime}>
           <Thread
-            clampToComposer={showChatBar}
+            clampToComposer={showChatBar && !showIntro}
             cwd={currentCwd}
             gateway={gateway}
-            intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={onCancel}
@@ -343,7 +339,7 @@ export function ChatView({
             sessionKey={threadKey}
           />
           {showChatBar && (
-            <Suspense fallback={<ChatBarFallback />}>
+            <Suspense fallback={<ChatBarFallback placement={chatBarPlacement} />}>
               <ChatBar
                 busy={busy}
                 cwd={currentCwd}
@@ -363,6 +359,7 @@ export function ChatView({
                 onRemoveAttachment={onRemoveAttachment}
                 onSubmit={onSubmit}
                 onTranscribeAudio={onTranscribeAudio}
+                placement={chatBarPlacement}
                 queueSessionKey={selectedSessionId || activeSessionId}
                 sessionId={activeSessionId}
                 state={chatBarState}

@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Divo Dex Landing Preview</title>
+    <style>
+      @font-face {
+        font-family: "Collapse";
+        font-style: normal;
+        font-weight: 700;
+        font-display: swap;
+        src: url("../node_modules/@nous-research/ui/dist/fonts/Collapse-Bold.woff2") format("woff2");
+      }
+
+      :root {
+        color-scheme: dark;
+        --bg: #111111;
+        --panel: #1f1f1f;
+        --panel-border: #343434;
+        --panel-soft: #2a2a2a;
+        --text: #c3c3c3;
+        --text-muted: #858585;
+        --text-faint: #686868;
+        --button: #e2e2e2;
+        --button-icon: #161616;
+        --ring: rgba(255, 255, 255, 0.075);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.035), transparent 34rem),
+          var(--bg);
+        color: var(--text);
+        font-family:
+          ui-sans-serif,
+          -apple-system,
+          BlinkMacSystemFont,
+          "SF Pro Display",
+          "Segoe UI",
+          sans-serif;
+      }
+
+      .shell {
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        padding: 2rem;
+      }
+
+      .landing {
+        width: min(64rem, calc(100vw - 3.75rem));
+        transform: translateY(-1.25rem);
+      }
+
+      .wordmark {
+        margin: 0 0 1.85rem;
+        color: #bdbdbd;
+        font-family: "Collapse", serif;
+        font-size: clamp(5.25rem, 12.4vw, 9.8rem);
+        font-weight: 700;
+        letter-spacing: 0.075em;
+        line-height: 0.78;
+        text-align: center;
+        text-transform: uppercase;
+        text-wrap: nowrap;
+        mix-blend-mode: plus-lighter;
+      }
+
+      .composer {
+        min-height: 12.5rem;
+        border: 1px solid var(--panel-border);
+        border-radius: 1.5rem;
+        background: var(--panel);
+        box-shadow:
+          0 1.5rem 4.5rem rgba(0, 0, 0, 0.34),
+          inset 0 1px 0 var(--ring);
+      }
+
+      .composer-text {
+        min-height: 7.55rem;
+        padding: 1.45rem 1.55rem 0;
+        color: var(--text-faint);
+        font-size: clamp(1.2rem, 2.6vw, 1.75rem);
+        font-weight: 400;
+        letter-spacing: -0.025em;
+      }
+
+      .composer-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.25rem;
+        padding: 0 1.25rem 1.25rem;
+      }
+
+      .left-controls {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 1.55rem;
+      }
+
+      .round {
+        display: grid;
+        width: 3rem;
+        height: 3rem;
+        flex: 0 0 auto;
+        place-items: center;
+        border: 0;
+        border-radius: 999px;
+        background: var(--panel-soft);
+        color: #a8a8a8;
+      }
+
+      .round.light {
+        background: var(--button);
+        color: var(--button-icon);
+      }
+
+      .model {
+        display: inline-flex;
+        min-width: 0;
+        align-items: center;
+        gap: 0.35rem;
+        color: #b9b9b9;
+        font-size: clamp(1.1rem, 2.2vw, 1.6rem);
+        font-weight: 500;
+        letter-spacing: -0.025em;
+        white-space: nowrap;
+      }
+
+      .suggestion {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.55rem;
+        margin-top: 2.55rem;
+        border: 1px solid #303030;
+        border-radius: 999px;
+        padding: 0.72rem 1.25rem;
+        color: #bdbdbd;
+        background: rgba(22, 22, 22, 0.76);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+        font-size: clamp(1rem, 2vw, 1.55rem);
+        letter-spacing: -0.03em;
+      }
+
+      .shortcut {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.12rem;
+        color: #6d6d6d;
+      }
+
+      svg {
+        display: block;
+      }
+
+      @media (max-width: 720px) {
+        .shell {
+          padding: 1rem;
+        }
+
+        .landing {
+          width: 100%;
+          transform: translateY(-0.5rem);
+        }
+
+        .wordmark {
+          margin-bottom: 1.35rem;
+          font-size: clamp(3.4rem, 18vw, 5.5rem);
+          letter-spacing: 0.055em;
+        }
+
+        .composer {
+          min-height: 11rem;
+          border-radius: 1.35rem;
+        }
+
+        .composer-text {
+          min-height: 6.15rem;
+          padding: 1.2rem 1.25rem 0;
+        }
+
+        .composer-controls {
+          padding: 0 1rem 1rem;
+        }
+
+        .left-controls {
+          gap: 0.9rem;
+        }
+
+        .round {
+          width: 2.65rem;
+          height: 2.65rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="landing" aria-label="Divo Dex landing preview">
+        <h1 class="wordmark">Divo Dex</h1>
+
+        <div class="composer" role="group" aria-label="Composer preview">
+          <div class="composer-text">Plan, Build, / for skills, @ for context</div>
+
+          <div class="composer-controls">
+            <div class="left-controls">
+              <button class="round" type="button" aria-label="Add context">
+                <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+                  <path d="M15 5v20M5 15h20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                </svg>
+              </button>
+
+              <div class="model">
+                <span>Composer 2.5</span>
+                <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+                  <path d="m5.4 7.7 4.6 4.6 4.6-4.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </div>
+            </div>
+
+            <button class="round light" type="button" aria-label="Voice input">
+              <svg width="29" height="29" viewBox="0 0 29 29" aria-hidden="true">
+                <path d="M14.5 4.6a4 4 0 0 0-4 4v5.6a4 4 0 1 0 8 0V8.6a4 4 0 0 0-4-4Z" fill="currentColor" />
+                <path d="M7.2 13.8a7.3 7.3 0 0 0 14.6 0M14.5 21.1v3.3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <button class="suggestion" type="button">
+          <span>Plan New Idea</span>
+          <span class="shortcut">Shift Tab</span>
+        </button>
+      </section>
+    </main>
+  </body>
+</html>

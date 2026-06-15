@@ -116,6 +116,7 @@ export function ChatBar({
   focusKey,
   gateway,
   maxRecordingSeconds = 120,
+  placement = 'bottom',
   queueSessionKey,
   sessionId,
   state,
@@ -171,12 +172,13 @@ export function ChatBar({
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
   const slash = useSlashCompletions({ gateway: gateway ?? null })
 
+  const landing = placement === 'landing'
   const hasComposerPayload = draft.trim().length > 0 || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   // Collapsed = a single-line capsule (everything inline); expanded = the input
   // gets its own full-width row with the controls beneath, in a rounded card.
   // Attachments force the expanded card so the pill never wraps awkwardly.
-  const surfaceExpanded = expanded || attachments.length > 0
+  const surfaceExpanded = landing || expanded || attachments.length > 0
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
   const showHelpHint = draft === '?'
@@ -218,6 +220,8 @@ export function ChatBar({
     ? gatewayState === 'closed' || gatewayState === 'error'
       ? 'Reconnecting to Hermes…'
       : 'Starting Hermes...'
+    : landing
+      ? 'Plan, Build, / for skills, @ for context'
     : restingPlaceholder
 
   const focusInput = useCallback(() => {
@@ -341,6 +345,7 @@ export function ChatBar({
   // until a wrap or row change actually happens.
   const lastBucketedHeightRef = useRef(0)
   const lastBucketedSurfaceHeightRef = useRef(0)
+
   const syncComposerMetrics = useCallback(() => {
     const composer = composerRef.current
 
@@ -1171,6 +1176,7 @@ export function ChatBar({
       }}
       disabled={disabled}
       hasComposerPayload={hasComposerPayload}
+      mode={landing ? 'landing' : 'default'}
       onDictate={dictate}
       state={state}
       voiceStatus={voiceStatus}
@@ -1188,6 +1194,8 @@ export function ChatBar({
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(
+          // Sizing (min-height, font) is owned by styles.css — the landing
+          // block scopes its own --composer-input-min-height + font clamp.
           'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) w-full overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent px-(--composer-input-pad-x) pt-(--composer-input-pad-top) leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
           '**:data-ref-text:cursor-default'
@@ -1236,146 +1244,190 @@ export function ChatBar({
     </div>
   )
 
+  const composerRoot = (
+    <ComposerPrimitive.Root
+      className={cn(
+        'group/composer z-30 max-w-full rounded-2xl',
+        landing
+          ? 'relative w-full pt-0 pb-0'
+          : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]'
+      )}
+      data-drag-active={dragActive ? '' : undefined}
+      data-expanded={surfaceExpanded ? '' : undefined}
+      data-placement={placement}
+      data-slot="composer-root"
+      data-thread-scrolled-up={scrolledUp ? '' : undefined}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      onSubmit={e => {
+        e.preventDefault()
+
+        if (composingRef.current) {
+          return
+        }
+
+        submitDraft()
+      }}
+      ref={composerRef}
+    >
+      {showHelpHint && <HelpHint />}
+      {trigger && (
+        <ComposerTriggerPopover
+          activeIndex={triggerActive}
+          items={triggerItems}
+          kind={trigger.kind}
+          loading={triggerLoading}
+          onHover={setTriggerActive}
+          onPick={replaceTriggerWithChip}
+        />
+      )}
+      <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} />
+      {activeQueueSessionKey && queuedPrompts.length > 0 && (
+        <div className="relative z-6 mb-1 px-0.5">
+          <QueuePanel
+            busy={busy}
+            editingId={queueEdit?.entryId ?? null}
+            entries={queuedPrompts}
+            onDelete={id => {
+              if (removeQueuedPrompt(activeQueueSessionKey, id) && queueEdit?.entryId === id) {
+                exitQueuedEdit('cancel')
+              }
+            }}
+            onEdit={beginQueuedEdit}
+            onSendNow={id => void sendQueuedNow(id)}
+          />
+        </div>
+      )}
+      {/* Top-fade is only for the docked composer (fades into the scrolling
+          thread). The landing composer is a flat uniform card. */}
+      {!landing && (
+        <div
+          className="pointer-events-none absolute inset-0 rounded-[inherit]"
+          style={{ background: COMPOSER_FADE_BACKGROUND }}
+        />
+      )}
+      <div className="relative w-full rounded-[inherit]">
+        <div
+          className={cn(
+            'relative z-4 isolate rounded-(--composer-surface-radius) border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] shadow-composer transition-[border-color,box-shadow] duration-200 ease-out',
+            COMPOSER_DROP_FADE_CLASS,
+            'group-focus-within/composer:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)] group-focus-within/composer:shadow-composer-focus',
+            'group-has-data-[state=open]/composer:border-t-transparent',
+            'group-has-data-[state=open]/composer:shadow-[0_0.0625rem_0_0.0625rem_color-mix(in_srgb,var(--dt-composer-ring)_calc(35%*var(--composer-ring-strength)),transparent),0_0.5rem_1.5rem_color-mix(in_srgb,var(--shadow-ink)_6%,transparent)]',
+            dragActive && COMPOSER_DROP_ACTIVE_CLASS
+          )}
+          data-slot="composer-surface"
+          ref={composerSurfaceRef}
+        >
+          <div
+            aria-hidden
+            className={cn(
+              'pointer-events-none absolute inset-0 -z-10 rounded-(--composer-surface-radius)',
+              landing
+                ? // Landing: flat, opaque elevated card — no glass blur (sleek).
+                  'bg-(--dt-card)'
+                : cn(
+                    'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
+                    'backdrop-blur-[0.75rem] backdrop-saturate-[1.12]',
+                    '[-webkit-backdrop-filter:blur(0.75rem)_saturate(1.12)]',
+                    'transition-[background-color] duration-150 ease-out',
+                    'group-data-[thread-scrolled-up]/composer:bg-[color-mix(in_srgb,var(--dt-card)_48%,transparent)]',
+                    'group-focus-within/composer:bg-[color-mix(in_srgb,var(--dt-card)_85%,transparent)]'
+                  )
+            )}
+          />
+          <div
+            className={cn(
+              'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-(--composer-surface-radius) px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
+              scrolledUp
+                ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer:opacity-100'
+                : 'opacity-100'
+            )}
+            data-slot="composer-fade"
+          >
+            <VoiceActivity state={voiceActivityState} />
+            <VoicePlaybackActivity />
+            {queueEdit && editingQueuedPrompt && (
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
+                <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">Editing queued turn in composer</div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    className="h-6 rounded-md px-2 text-[0.68rem]"
+                    onClick={() => exitQueuedEdit('cancel')}
+                    type="button"
+                    variant="ghost"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    className="h-6 rounded-md px-2 text-[0.68rem]"
+                    onClick={() => exitQueuedEdit('save')}
+                    type="button"
+                  >
+                    Save
+                  </Button>
+                </div>
+              </div>
+            )}
+            {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+            {surfaceExpanded ? (
+              <div className="flex w-full flex-col gap-(--composer-row-gap)">
+                <div className="min-w-0 w-full">{input}</div>
+                <div className="flex items-center justify-between gap-(--composer-control-gap)">
+                  <div className="flex min-w-0 items-center gap-(--composer-control-gap)">
+                    {contextMenu}
+                    {modelSelector}
+                  </div>
+                  <div className="flex items-center justify-end">{controls}</div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex w-full items-center gap-(--composer-control-gap)">
+                {contextMenu}
+                <div className="min-w-0 flex-1">{input}</div>
+                {modelSelector}
+                {controls}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </ComposerPrimitive.Root>
+  )
+
   return (
     <>
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
-        <ComposerPrimitive.Root
-          className="group/composer absolute bottom-0 left-1/2 z-30 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 rounded-2xl pt-2 pb-[var(--composer-shell-pad-block-end)]"
-          data-drag-active={dragActive ? '' : undefined}
-          data-expanded={surfaceExpanded ? '' : undefined}
-          data-slot="composer-root"
-          data-thread-scrolled-up={scrolledUp ? '' : undefined}
-          onDragEnter={handleDragEnter}
-          onDragLeave={handleDragLeave}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
-          onSubmit={e => {
-            e.preventDefault()
-
-            if (composingRef.current) {
-              return
-            }
-
-            submitDraft()
-          }}
-          ref={composerRef}
-        >
-          {showHelpHint && <HelpHint />}
-          {trigger && (
-            <ComposerTriggerPopover
-              activeIndex={triggerActive}
-              items={triggerItems}
-              kind={trigger.kind}
-              loading={triggerLoading}
-              onHover={setTriggerActive}
-              onPick={replaceTriggerWithChip}
-            />
-          )}
-          <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} />
-          {activeQueueSessionKey && queuedPrompts.length > 0 && (
-            <div className="relative z-6 mb-1 px-0.5">
-              <QueuePanel
-                busy={busy}
-                editingId={queueEdit?.entryId ?? null}
-                entries={queuedPrompts}
-                onDelete={id => {
-                  if (removeQueuedPrompt(activeQueueSessionKey, id) && queueEdit?.entryId === id) {
-                    exitQueuedEdit('cancel')
-                  }
-                }}
-                onEdit={beginQueuedEdit}
-                onSendNow={id => void sendQueuedNow(id)}
-              />
-            </div>
-          )}
+        {landing ? (
           <div
-            className="pointer-events-none absolute inset-0 rounded-[inherit]"
-            style={{ background: COMPOSER_FADE_BACKGROUND }}
-          />
-          <div className="relative w-full rounded-[inherit]">
-            <div
-              className={cn(
-                'relative z-4 isolate rounded-(--composer-surface-radius) border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] shadow-composer transition-[border-color,box-shadow] duration-200 ease-out',
-                COMPOSER_DROP_FADE_CLASS,
-                'group-focus-within/composer:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)] group-focus-within/composer:shadow-composer-focus',
-                'group-has-data-[state=open]/composer:border-t-transparent',
-                'group-has-data-[state=open]/composer:shadow-[0_0.0625rem_0_0.0625rem_color-mix(in_srgb,var(--dt-composer-ring)_calc(35%*var(--composer-ring-strength)),transparent),0_0.5rem_1.5rem_color-mix(in_srgb,var(--shadow-ink)_6%,transparent)]',
-                dragActive && COMPOSER_DROP_ACTIVE_CLASS
-              )}
-              data-slot="composer-surface"
-              ref={composerSurfaceRef}
+            className="absolute left-1/2 top-1/2 z-30 w-[min(43rem,calc(100%-3rem))] max-w-full -translate-x-1/2 -translate-y-1/2"
+            data-slot="composer-landing"
+          >
+            <h1
+              aria-label="Divo Dex"
+              className="mb-5 text-center font-['Collapse'] text-[clamp(3.75rem,8.2vw,6.8rem)] font-bold uppercase leading-[0.78] tracking-[0.075em] text-[#bdbdbd] mix-blend-plus-lighter"
+              data-slot="composer-landing-wordmark"
             >
-              <div
-                aria-hidden
-                className={cn(
-                  'pointer-events-none absolute inset-0 -z-10 rounded-(--composer-surface-radius)',
-                  'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
-                  'backdrop-blur-[0.75rem] backdrop-saturate-[1.12]',
-                  '[-webkit-backdrop-filter:blur(0.75rem)_saturate(1.12)]',
-                  'transition-[background-color] duration-150 ease-out',
-                  'group-data-[thread-scrolled-up]/composer:bg-[color-mix(in_srgb,var(--dt-card)_48%,transparent)]',
-                  'group-focus-within/composer:bg-[color-mix(in_srgb,var(--dt-card)_85%,transparent)]'
-                )}
-              />
-              <div
-                className={cn(
-                  'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-(--composer-surface-radius) px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
-                  scrolledUp
-                    ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer:opacity-100'
-                    : 'opacity-100'
-                )}
-                data-slot="composer-fade"
-              >
-                <VoiceActivity state={voiceActivityState} />
-                <VoicePlaybackActivity />
-                {queueEdit && editingQueuedPrompt && (
-                  <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
-                    <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">
-                      Editing queued turn in composer
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Button
-                        className="h-6 rounded-md px-2 text-[0.68rem]"
-                        onClick={() => exitQueuedEdit('cancel')}
-                        type="button"
-                        variant="ghost"
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        className="h-6 rounded-md px-2 text-[0.68rem]"
-                        onClick={() => exitQueuedEdit('save')}
-                        type="button"
-                      >
-                        Save
-                      </Button>
-                    </div>
-                  </div>
-                )}
-                {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
-                {surfaceExpanded ? (
-                  <div className="flex w-full flex-col gap-(--composer-row-gap)">
-                    <div className="min-w-0 w-full">{input}</div>
-                    <div className="flex items-center justify-between gap-(--composer-control-gap)">
-                      <div className="flex min-w-0 items-center gap-(--composer-control-gap)">
-                        {contextMenu}
-                        {modelSelector}
-                      </div>
-                      <div className="flex items-center justify-end">{controls}</div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex w-full items-center gap-(--composer-control-gap)">
-                    {contextMenu}
-                    <div className="min-w-0 flex-1">{input}</div>
-                    {modelSelector}
-                    {controls}
-                  </div>
-                )}
-              </div>
-            </div>
+              Divo Dex
+            </h1>
+            {composerRoot}
+            <button
+              className="mt-6 inline-flex items-center gap-1.5 rounded-full border border-[#303030] bg-[#161616]/75 px-4 py-2 text-[clamp(0.875rem,1.2vw,1rem)] tracking-[-0.03em] text-[#bdbdbd] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-[#3e3e3e] hover:bg-[#1d1d1d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+              onClick={() => {
+                insertText('Plan a new idea: ')
+                requestMainFocus()
+              }}
+              type="button"
+            >
+              <span>Plan New Idea</span>
+              <span className="text-[#6d6d6d]">⇧Tab</span>
+            </button>
           </div>
-        </ComposerPrimitive.Root>
+        ) : (
+          composerRoot
+        )}
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>
 
       <UrlDialog
@@ -1390,13 +1442,19 @@ export function ChatBar({
   )
 }
 
-export function ChatBarFallback() {
-  return (
+export function ChatBarFallback({ placement = 'bottom' }: { placement?: ChatBarProps['placement'] }) {
+  const landing = placement === 'landing'
+
+  const fallback = (
     <div
       className={cn(
-        'group/composer absolute bottom-0 left-1/2 z-30 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 rounded-2xl pt-2 pb-[var(--composer-shell-pad-block-end)]',
+        'group/composer z-30 max-w-full rounded-2xl',
+        landing
+          ? 'relative w-full pt-0 pb-0'
+          : 'absolute bottom-0 left-1/2 w-[min(var(--composer-width),calc(100%-2rem))] -translate-x-1/2 pt-2 pb-[var(--composer-shell-pad-block-end)]',
         'bg-linear-to-b from-transparent to-background/55'
       )}
+      data-placement={placement}
       data-slot="composer-root"
     >
       <div className="composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-(--composer-surface-radius) border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] shadow-composer">
@@ -1413,6 +1471,26 @@ export function ChatBarFallback() {
           )}
         />
       </div>
+    </div>
+  )
+
+  if (!landing) {
+    return fallback
+  }
+
+  return (
+    <div
+      className="absolute left-1/2 top-1/2 z-30 w-[min(46rem,calc(100%-3rem))] max-w-full -translate-x-1/2 -translate-y-1/2"
+      data-slot="composer-landing"
+    >
+      <h1
+        aria-label="Divo Dex"
+        className="mb-5 text-center font-['Collapse'] text-[clamp(3.75rem,8.2vw,6.8rem)] font-bold uppercase leading-[0.78] tracking-[0.075em] text-[#bdbdbd] mix-blend-plus-lighter"
+        data-slot="composer-landing-wordmark"
+      >
+        Divo Dex
+      </h1>
+      {fallback}
     </div>
   )
 }

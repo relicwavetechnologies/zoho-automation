@@ -31,6 +31,7 @@ export interface ChatBarProps {
   busy: boolean
   disabled: boolean
   focusKey?: string | null
+  placement?: 'bottom' | 'landing'
   maxRecordingSeconds?: number
   state: ChatBarState
   gateway?: HermesGateway | null

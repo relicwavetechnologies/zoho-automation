@@ -299,7 +299,9 @@ export const cursorTheme: DesktopTheme = {
     input: '#262626',
     ring: '#0078d4',
     midground: '#4daafc',
-    composerRing: '#0078d4',
+    // Neutral gray composer outline — the reference composer has no blue tint
+    // on its border (resting or focus). Keeps the input sleek and editor-like.
+    composerRing: '#525252',
     destructive: '#f14c4c',
     destructiveForeground: '#ffffff',
     sidebarBackground: '#121212',

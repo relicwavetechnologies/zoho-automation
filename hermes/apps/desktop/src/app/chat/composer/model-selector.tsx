@@ -72,7 +72,9 @@ export function ComposerModelSelector({
         <Button
           aria-label="Model and thinking mode"
           className={cn(
-            'h-(--composer-control-size) max-w-[14rem] shrink-0 gap-1.5 rounded-full px-2 text-xs',
+            // Tight rounded-rect that hugs the label (not a tall bulbous pill);
+            // the hover/open pebble then reads sleek with even padding.
+            'h-6 max-w-[14rem] shrink-0 gap-1 rounded-md px-1.5 text-xs',
             'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground',
             'data-[state=open]:bg-(--chrome-action-hover) data-[state=open]:text-foreground'
           )}
