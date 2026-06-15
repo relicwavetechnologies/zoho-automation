@@ -777,6 +777,108 @@ def _authorized_company_session_ids(
     return allowed
 
 
+def _enterprise_api_messages_to_conversation(messages: list[dict]) -> list[dict]:
+    history: list[dict] = []
+    for row in messages or []:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get("role") or "").strip()
+        if role not in {"user", "assistant", "tool", "system"}:
+            continue
+        content = row.get("content")
+        msg = {"role": role, "content": content if content is not None else ""}
+        tool_call_id = str(row.get("tool_call_id") or "").strip()
+        if tool_call_id:
+            msg["tool_call_id"] = tool_call_id
+        tool_name = str(row.get("tool_name") or "").strip()
+        if tool_name:
+            msg["tool_name"] = tool_name
+        raw_tool_calls = row.get("tool_calls")
+        if isinstance(raw_tool_calls, list) and raw_tool_calls:
+            normalized_tool_calls = []
+            for idx, call in enumerate(raw_tool_calls):
+                if not isinstance(call, dict):
+                    continue
+                if isinstance(call.get("function"), dict):
+                    normalized_tool_calls.append(call)
+                    continue
+                name = call.get("name")
+                if not name:
+                    continue
+                normalized_tool_calls.append(
+                    {
+                        "id": str(call.get("id") or tool_call_id or f"call_{idx}"),
+                        "type": "function",
+                        "function": {
+                            "name": str(name),
+                            "arguments": call.get("arguments") or "{}",
+                        },
+                    }
+                )
+            if normalized_tool_calls:
+                msg["tool_calls"] = normalized_tool_calls
+        finish_reason = row.get("finish_reason")
+        if finish_reason:
+            msg["finish_reason"] = finish_reason
+        history.append(msg)
+    return history
+
+
+def _enterprise_session_resume_snapshot(
+    session_id_or_prefix: str,
+    identity: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    identity = identity or _resolve_transport_company_identity()
+    if not identity:
+        return None
+    company_id = str(identity.get("company_id") or "").strip()
+    company_user_id = str(identity.get("company_user_id") or "").strip()
+    if not company_id or not company_user_id:
+        return None
+    try:
+        from enterprise.db import enterprise_postgres_enabled, get_enterprise_connection
+        from enterprise.session_repository import (
+            CompanySessionScope,
+            EnterpriseSessionRepository,
+        )
+
+        if not enterprise_postgres_enabled():
+            return None
+        scope = CompanySessionScope(
+            company_id=company_id,
+            company_user_id=company_user_id,
+            channel_identity_id=str(identity.get("channel_identity_id") or ""),
+            company_role=str(identity.get("company_role") or ""),
+            department_id=str(identity.get("department_id") or ""),
+        )
+        repo = EnterpriseSessionRepository(get_enterprise_connection())
+        resolved = repo.resolve_session_id(scope, session_id_or_prefix)
+        if not resolved:
+            return None
+        session = repo.get_session_for_user(scope, resolved)
+        if not session:
+            return None
+        history = _enterprise_api_messages_to_conversation(
+            repo.list_messages_for_session(scope, resolved)
+        )
+        return {
+            "session": session,
+            "session_id": resolved,
+            "history": history,
+            "display_history": list(history),
+            "identity": {
+                "company_id": company_id,
+                "company_user_id": company_user_id,
+                "channel_identity_id": str(identity.get("channel_identity_id") or ""),
+                "company_role": str(identity.get("company_role") or ""),
+                "department_id": str(identity.get("department_id") or ""),
+            },
+        }
+    except Exception:
+        logger.debug("failed to load enterprise session resume snapshot", exc_info=True)
+        raise
+
+
 def _session_access_allowed(
     session: dict | None,
     transport: Transport | None = None,
@@ -3244,16 +3346,29 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _db_unavailable_error(rid, code=5000)
     try:
+        transport_identity = _resolve_transport_company_identity()
         allowed_ids = _authorized_company_session_ids()
     except Exception as exc:
         return _err(rid, 5033, f"company identity unavailable: {exc}")
+    enterprise_snapshot = None
     found = db.get_session(target)
     if not found:
         found = db.get_session_by_title(target)
         if found:
             target = found["id"]
         else:
-            return _err(rid, 4007, "session not found")
+            try:
+                enterprise_snapshot = _enterprise_session_resume_snapshot(
+                    target,
+                    identity=transport_identity,
+                )
+            except Exception as exc:
+                return _err(rid, 5033, f"company session unavailable: {exc}")
+            if enterprise_snapshot:
+                target = str(enterprise_snapshot["session_id"])
+                found = enterprise_snapshot["session"]
+            else:
+                return _err(rid, 4007, "session not found")
     if allowed_ids is not None and str(target or "") not in allowed_ids:
         return _err(rid, 4007, "session not found")
     # Fast path: if the session is already live, reuse it under the lock.
@@ -3280,16 +3395,26 @@ def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     _enable_gateway_prompts()
     try:
-        db.reopen_session(target)
-        history = db.get_messages_as_conversation(target)
-        display_history = db.get_messages_as_conversation(
-            target, include_ancestors=True
-        )
+        if enterprise_snapshot is not None:
+            history = list(enterprise_snapshot["history"])
+            display_history = list(enterprise_snapshot["display_history"])
+            company_identity = dict(enterprise_snapshot["identity"])
+        else:
+            db.reopen_session(target)
+            history = db.get_messages_as_conversation(target)
+            display_history = db.get_messages_as_conversation(
+                target, include_ancestors=True
+            )
+            company_identity = _bound_session_company_identity(target)
         display_history_prefix = display_history[
             : max(0, len(display_history) - len(history))
         ]
         messages = _history_to_messages(display_history)
-        tokens = _set_session_context(target)
+        tokens = (
+            _set_session_context(target, identity=company_identity)
+            if company_identity
+            else _set_session_context(target)
+        )
         try:
             agent = _make_agent(sid, target, session_id=target)
         finally:
@@ -3319,15 +3444,17 @@ def _(rid, params: dict) -> dict:
             payload["resumed"] = target
             return _ok(rid, payload)
         try:
-            bound_identity = _bound_session_company_identity(target)
-            _init_session(
-                sid,
-                target,
-                agent,
-                history,
-                cols=cols,
-                company_identity=bound_identity,
-            )
+            if company_identity:
+                _init_session(
+                    sid,
+                    target,
+                    agent,
+                    history,
+                    cols=cols,
+                    company_identity=company_identity,
+                )
+            else:
+                _init_session(sid, target, agent, history, cols=cols)
             if sid in _sessions:
                 _sessions[sid]["display_history_prefix"] = display_history_prefix
         except Exception as e:

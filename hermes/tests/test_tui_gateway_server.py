@@ -717,6 +717,104 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
 
 
+def test_session_resume_hydrates_enterprise_session_when_sqlite_misses(monkeypatch):
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, _target):
+            return None
+
+        def get_session_by_title(self, _target):
+            return None
+
+        def reopen_session(self, _target):
+            raise AssertionError("enterprise resume must not reopen SQLite")
+
+    identity = {
+        "company_id": "company_1",
+        "company_user_id": "cu_1",
+        "channel_identity_id": "ci_1",
+        "company_role": "MEMBER",
+    }
+    snapshot = {
+        "session": {"id": "enterprise-session", "source": "tui"},
+        "session_id": "enterprise-session",
+        "history": [
+            {"role": "user", "content": "old prompt"},
+            {"role": "assistant", "content": "old answer"},
+        ],
+        "display_history": [
+            {"role": "user", "content": "old prompt"},
+            {"role": "assistant", "content": "old answer"},
+        ],
+        "identity": identity,
+    }
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_resolve_transport_company_identity", lambda: identity)
+    monkeypatch.setattr(server, "_authorized_company_session_ids", lambda: {"enterprise-session"})
+    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _target: None)
+    monkeypatch.setattr(
+        server,
+        "_enterprise_session_resume_snapshot",
+        lambda target, identity=None: snapshot if target == "enterprise-session" else None,
+    )
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+
+    def fake_set_context(target, cwd=None, identity=None):
+        captured["context"] = {"target": target, "cwd": cwd, "identity": identity}
+        return ["token"]
+
+    monkeypatch.setattr(server, "_set_session_context", fake_set_context)
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: captured.setdefault("cleared", tokens))
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *args, **kwargs: types.SimpleNamespace(model="test"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
+    )
+
+    def fake_init(sid, key, agent, history, cols=80, company_identity=None):
+        captured["init"] = {
+            "sid": sid,
+            "key": key,
+            "history": history,
+            "company_identity": company_identity,
+        }
+        server._sessions[sid] = {
+            "agent": agent,
+            "created_at": 1,
+            "history": history,
+            "session_key": key,
+            "company_identity": company_identity or {},
+        }
+
+    monkeypatch.setattr(server, "_init_session", fake_init)
+
+    previous_sessions = dict(server._sessions)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.resume", "params": {"session_id": "enterprise-session"}}
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    assert "error" not in resp
+    assert resp["result"]["resumed"] == "enterprise-session"
+    assert resp["result"]["messages"] == [
+        {"role": "user", "text": "old prompt"},
+        {"role": "assistant", "text": "old answer"},
+    ]
+    assert captured["context"]["identity"] == identity
+    assert captured["init"]["company_identity"] == identity
+    assert captured["init"]["history"] == snapshot["history"]
+
+
 def test_status_callback_emits_kind_and_text():
     with patch("tui_gateway.server._emit") as emit:
         cb = server._agent_cbs("sid")["status_callback"]
