@@ -38,6 +38,8 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   '.zsh': 'shell'
 }
 
+const LOCAL_PREVIEW_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/i
+
 function basename(value: string) {
   return value.split(/[\\/]/).filter(Boolean).pop() || value
 }
@@ -74,6 +76,15 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   }
 
   if (/^https?:\/\//i.test(raw)) {
+    try {
+      const url = new URL(raw)
+      if (!LOCAL_PREVIEW_HOST_RE.test(url.host)) {
+        return null
+      }
+    } catch {
+      return null
+    }
+
     return { kind: 'url', label: basename(raw), source: raw, url: raw }
   }
 

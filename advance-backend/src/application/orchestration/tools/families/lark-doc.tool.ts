@@ -8,7 +8,7 @@ import type { ToolActionGroup } from '../../../../domain/permissions/tool-action
 import { asToolId } from '../../../../shared/ids';
 
 const Schema = z.object({
-  op: z.enum(['get', 'create', 'list_blocks', 'append_block', 'update_block', 'delete_block', 'insert_table', 'share']),
+  op: z.enum(['get', 'create', 'create_markdown', 'list_blocks', 'append_block', 'append_markdown', 'update_block', 'delete_block', 'insert_table', 'share']),
   docToken: z.string().optional(),
   title: z.string().optional(),
   content: z.string().optional(),
@@ -25,14 +25,18 @@ const ResultSchema = z.object({
   success: z.boolean(),
   data: z.unknown().optional(),
   docToken: z.string().optional(),
+  url: z.string().optional(),
+  docUrl: z.string().optional(),
   message: z.string().optional(),
 });
 type Res = z.infer<typeof ResultSchema>;
 
 export interface LarkDocClientPort {
   getDoc(docToken: string): Promise<unknown>;
-  createDoc(title: string): Promise<{ docToken: string }>;
+  createDoc(title: string): Promise<{ docToken: string; url?: string; docUrl?: string }>;
+  createMarkdownDoc(title: string, markdown: string): Promise<{ docToken: string; url?: string; docUrl?: string }>;
   appendBlock(docToken: string, content: string, blockType?: string): Promise<void>;
+  appendMarkdown(docToken: string, markdown: string): Promise<void>;
   listBlocks(docToken: string): Promise<unknown[]>;
   updateBlock(docToken: string, blockId: string, content: string, blockType?: string): Promise<void>;
   deleteBlock(docToken: string, blockId: string): Promise<void>;
@@ -42,7 +46,7 @@ export interface LarkDocClientPort {
 
 const inferAction = (op: Args['op']): ToolActionGroup => {
   if (op === 'get' || op === 'list_blocks') return 'read';
-  if (op === 'create') return 'create';
+  if (op === 'create' || op === 'create_markdown') return 'create';
   return 'update';
 };
 
@@ -54,10 +58,10 @@ export const createLarkDocTool = (deps: { client: LarkDocClientPort }): Tool<Arg
   resultSchema: ResultSchema,
   description: 'Read, create, and edit Lark Docs — append/update/delete blocks, insert tables, share docs.',
   parameterDocs: `
-- op: get|create|list_blocks|append_block|update_block|delete_block|insert_table|share
+- op: get|create|create_markdown|list_blocks|append_block|append_markdown|update_block|delete_block|insert_table|share
 - docToken: Lark doc token (required for all except create)
-- title: Doc title (required for create)
-- content: Block text content (for append_block, update_block)
+- title: Doc title (required for create/create_markdown)
+- content: Block text content or markdown content (for create_markdown, append_block, append_markdown, update_block)
 - blockType: text|heading1|heading2|heading3|bullet|code (default: text)
 - blockId: Block ID (required for update_block, delete_block; optional afterBlockId for insert_table)
 - rows, cols: Table dimensions in cells (required for insert_table)
@@ -83,7 +87,26 @@ export const createLarkDocTool = (deps: { client: LarkDocClientPort }): Tool<Arg
           if (!args.title) return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'title required' }));
           ctx.onProgress?.('Creating document…');
           const r = await deps.client.createDoc(args.title);
-          return ok({ success: true, docToken: r.docToken, message: 'Doc created' });
+          return ok({
+            success: true,
+            docToken: r.docToken,
+            ...(r.url ? { url: r.url, docUrl: r.docUrl ?? r.url } : {}),
+            data: r,
+            message: 'Doc created',
+          });
+        }
+        case 'create_markdown': {
+          if (!args.title || !args.content)
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'title and content required for create_markdown' }));
+          ctx.onProgress?.('Creating document…');
+          const r = await deps.client.createMarkdownDoc(args.title, args.content);
+          return ok({
+            success: true,
+            docToken: r.docToken,
+            ...(r.url ? { url: r.url, docUrl: r.docUrl ?? r.url } : {}),
+            data: r,
+            message: 'Doc created from markdown',
+          });
         }
         case 'append_block': {
           if (!args.docToken || !args.content)
@@ -91,6 +114,13 @@ export const createLarkDocTool = (deps: { client: LarkDocClientPort }): Tool<Arg
           ctx.onProgress?.('Updating document…');
           await deps.client.appendBlock(args.docToken, args.content, args.blockType);
           return ok({ success: true, message: 'Block appended' });
+        }
+        case 'append_markdown': {
+          if (!args.docToken || !args.content)
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken and content required' }));
+          ctx.onProgress?.('Updating document…');
+          await deps.client.appendMarkdown(args.docToken, args.content);
+          return ok({ success: true, message: 'Markdown appended' });
         }
         case 'list_blocks': {
           if (!args.docToken) return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken required' }));

@@ -59,6 +59,7 @@ import os
 import secrets
 import time
 import urllib.parse
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import httpx
@@ -77,7 +78,15 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_ACCOUNTS_BASE_URL = "https://accounts.larksuite.com"
 _DEFAULT_API_BASE_URL = "https://open.larksuite.com"
-_DEFAULT_SCOPES = "offline_access"
+_DEFAULT_SCOPES = (
+    "offline_access "
+    "contact:user:search contact:user.email:readonly "
+    "task:task:read task:task:write "
+    "docs:permission.setting:write_only "
+    "calendar:calendar:read calendar:calendar.event:read "
+    "calendar:calendar.event:create calendar:calendar.event:update "
+    "calendar:calendar.event:delete calendar:calendar.free_busy:read"
+)
 _AUTHORIZE_PATH = "/open-apis/authen/v1/authorize"
 _TOKEN_PATH = "/open-apis/authen/v2/oauth/token"
 _USER_INFO_PATH = "/open-apis/authen/v1/user_info"
@@ -220,6 +229,7 @@ class LarkDashboardAuthProvider(DashboardAuthProvider):
             expires_at=exp,
             access_token=access_token,
             refresh_token="",
+            user_id_alt=str(payload.get("user_id_alt") or ""),
         )
 
     def refresh_session(self, *, refresh_token: str) -> Session:
@@ -233,14 +243,9 @@ class LarkDashboardAuthProvider(DashboardAuthProvider):
         if not raw_refresh_token:
             raise RefreshExpiredError("missing Lark refresh token")
 
-        token_payload = self._exchange_token(
-            {
-                "grant_type": "refresh_token",
-                "client_id": self._app_id,
-                "client_secret": self._app_secret,
-                "refresh_token": raw_refresh_token,
-            },
-            bad_request_exc=RefreshExpiredError,
+        token_payload = self._refresh_lark_token(
+            refresh_token=raw_refresh_token,
+            session_payload=payload,
         )
 
         try:
@@ -255,6 +260,7 @@ class LarkDashboardAuthProvider(DashboardAuthProvider):
                 "email": payload.get("email") or "",
                 "name": payload.get("name") or "",
                 "tenant_key": payload.get("org_id") or "",
+                "union_id": payload.get("user_id_alt") or "",
             }
 
         return self._session_from_lark(
@@ -267,6 +273,34 @@ class LarkDashboardAuthProvider(DashboardAuthProvider):
 
     def revoke_session(self, *, refresh_token: str) -> None:
         return None
+
+    def _refresh_lark_token(
+        self,
+        *,
+        refresh_token: str,
+        session_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return self._exchange_refresh_token(refresh_token)
+        except RefreshExpiredError:
+            synced_refresh = _find_synced_refresh_token(session_payload)
+            if not synced_refresh or synced_refresh == refresh_token:
+                raise
+            logger.info(
+                "dashboard-auth-lark: retrying refresh with synced tool-vault token"
+            )
+            return self._exchange_refresh_token(synced_refresh)
+
+    def _exchange_refresh_token(self, refresh_token: str) -> dict[str, Any]:
+        return self._exchange_token(
+            {
+                "grant_type": "refresh_token",
+                "client_id": self._app_id,
+                "client_secret": self._app_secret,
+                "refresh_token": refresh_token,
+            },
+            bad_request_exc=RefreshExpiredError,
+        )
 
     def _exchange_token(
         self,
@@ -324,6 +358,8 @@ class LarkDashboardAuthProvider(DashboardAuthProvider):
             "refresh_token": refresh_token,
             "expires_in": expires_in,
             "refresh_expires_in": refresh_expires_in,
+            "scope": str(payload.get("scope") or self._scopes or "").strip(),
+            "token_type": str(payload.get("token_type") or "Bearer").strip(),
         }
 
     def _fetch_user_info(self, user_access_token: str) -> dict[str, Any]:
@@ -380,6 +416,7 @@ class LarkDashboardAuthProvider(DashboardAuthProvider):
         display_name = str(
             user.get("name") or user.get("en_name") or email or user_id
         ).strip()
+        user_id_alt = str(user.get("union_id") or "").strip()
         org_id = str(user.get("tenant_key") or "").strip()
         if not org_id:
             raise ProviderError("Lark user profile missing tenant_key")
@@ -392,6 +429,7 @@ class LarkDashboardAuthProvider(DashboardAuthProvider):
                 "sub": user_id,
                 "email": email,
                 "name": display_name,
+                "user_id_alt": user_id_alt,
                 "org_id": org_id,
                 "exp": access_exp,
             },
@@ -403,6 +441,7 @@ class LarkDashboardAuthProvider(DashboardAuthProvider):
                 "sub": user_id,
                 "email": email,
                 "name": display_name,
+                "user_id_alt": user_id_alt,
                 "org_id": org_id,
                 "exp": refresh_exp,
                 "rt": refresh_token,
@@ -419,6 +458,20 @@ class LarkDashboardAuthProvider(DashboardAuthProvider):
             expires_at=access_exp,
             access_token=signed_access,
             refresh_token=signed_refresh,
+            user_id_alt=user_id_alt,
+            auth_metadata={
+                "lark_access_token": access_token,
+                "lark_refresh_token": refresh_token,
+                "lark_open_id": str(user.get("open_id") or user_id or "").strip(),
+                "lark_user_id": str(user.get("user_id") or "").strip(),
+                "lark_email": email,
+                "lark_name": display_name,
+                "lark_tenant_key": org_id,
+                "scope": self._scopes,
+                "token_type": "Bearer",
+                "access_token_expires_at": datetime.fromtimestamp(access_exp, tz=timezone.utc).isoformat(),
+                "refresh_token_expires_at": datetime.fromtimestamp(refresh_exp, tz=timezone.utc).isoformat(),
+            },
         )
 
     def _validate_redirect_uri(self, redirect_uri: str) -> None:
@@ -488,6 +541,16 @@ def _expand_env_reference(value: Any) -> str:
     if expanded.startswith("$"):
         return ""
     return expanded
+
+
+def _find_synced_refresh_token(payload: dict[str, Any]) -> str:
+    try:
+        from hermes_cli.dashboard_auth.lark_tool_link import find_synced_lark_refresh_token
+
+        return find_synced_lark_refresh_token(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("dashboard-auth-lark: synced refresh fallback unavailable: %s", exc)
+        return ""
 
 
 def register(ctx) -> None:

@@ -281,9 +281,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // then falls back to MODEL_PROVIDER + MODEL_ID for backward compatibility.
   // Falls back silently to configured fast model, or gpt-4o-mini (direct OpenAI) by default,
   // on rate-limit / high-demand errors.
-  const defaultModelTarget = await prisma.aiModelTargetConfig.findUnique({
-    where: { targetKey: 'default' },
-  });
+  const forceEnvModelConfig = process.env['DIVO_FORCE_ENV_MODEL_CONFIG'] === 'true';
+  const defaultModelTarget = forceEnvModelConfig
+    ? null
+    : await prisma.aiModelTargetConfig.findUnique({
+      where: { targetKey: 'default' },
+    });
 
   const createConfiguredModel = (provider: string, modelId: string) => {
     if (provider === 'google') {
@@ -445,7 +448,17 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Lark tool clients ──────────────────────────────────────────────────
   const larkClientDeps = { appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET };
-  const larkPeopleResolver = new LarkPeopleResolver(prisma);
+  const larkPeopleResolver = new LarkPeopleResolver(prisma, {
+    async searchUsers(companyId: string, requesterOpenId: string, query: string) {
+      const userToken = requesterOpenId
+        ? await resolveLarkUserTokenByOpenId(requesterOpenId, companyId)
+        : null;
+      const client = userToken
+        ? new LarkContactsClient({ ...larkClientDeps, userToken })
+        : new LarkContactsClient(larkClientDeps);
+      return client.searchUsers({ query, limit: 20, excludeExternalUsers: true });
+    },
+  });
   const larkTaskClient     = new LarkTaskClient(larkClientDeps);
   const larkMsgToolClient  = new LarkToolMessagingClient(larkClientDeps);
   const larkContactsClient = new LarkContactsClient(larkClientDeps);
@@ -482,6 +495,40 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     prisma,
     env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '',
   );
+
+  async function resolveLarkUserTokenByUserId(userId: string, companyId: string): Promise<string | null> {
+    const link = await larkUserAuthLinkRepo.findByUserId(userId, companyId);
+    if (!link.ok || !link.value) return null;
+    const { accessToken, refreshToken, accessTokenExpiresAt } = link.value;
+    const isExpired = accessTokenExpiresAt && new Date(accessTokenExpiresAt).getTime() < Date.now() + 60_000;
+    if (!isExpired && accessToken) return accessToken;
+    if (!refreshToken) return null;
+    try {
+      const refreshed = await larkOAuthService.refreshUserToken(refreshToken);
+      await larkUserAuthLinkRepo.upsert({
+        userId, companyId,
+        larkOpenId:    link.value.larkOpenId ?? '',
+        larkTenantKey: link.value.larkTenantKey,
+        larkEmail:     link.value.larkEmail,
+        accessToken:   refreshed.accessToken,
+        refreshToken:  refreshed.refreshToken ?? refreshToken,
+        tokenType:     refreshed.tokenType,
+        accessTokenExpiresAt:  new Date(Date.now() + refreshed.expiresIn * 1000),
+        refreshTokenExpiresAt: refreshed.refreshTokenExpiresIn
+          ? new Date(Date.now() + refreshed.refreshTokenExpiresIn * 1000)
+          : null,
+      });
+      return refreshed.accessToken;
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveLarkUserTokenByOpenId(larkOpenId: string, companyId: string): Promise<string | null> {
+    const link = await larkUserAuthLinkRepo.findByLarkOpenId(larkOpenId, companyId);
+    if (!link.ok || !link.value) return null;
+    return resolveLarkUserTokenByUserId(link.value.userId, companyId);
+  }
 
   // ── Google OAuth + repositories ──────────────────────────────────────────
   const googleUserLinkRepo    = new GoogleUserAuthLinkRepository(prisma, env);
@@ -746,38 +793,24 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     peopleResolver: larkPeopleResolver,
     userTokenResolver: {
       async resolve(userId: string, companyId: string): Promise<string | null> {
-        const link = await larkUserAuthLinkRepo.findByUserId(userId, companyId);
-        if (!link.ok || !link.value) return null;
-        const { accessToken, refreshToken, accessTokenExpiresAt } = link.value;
-        const isExpired = accessTokenExpiresAt && new Date(accessTokenExpiresAt).getTime() < Date.now() + 60_000;
-        if (!isExpired && accessToken) return accessToken;
-        if (!refreshToken) return null;
-        try {
-          const refreshed = await larkOAuthService.refreshUserToken(refreshToken);
-          await larkUserAuthLinkRepo.upsert({
-            userId, companyId,
-            larkOpenId:    link.value.larkOpenId ?? '',
-            larkTenantKey: link.value.larkTenantKey,
-            larkEmail:     link.value.larkEmail,
-            accessToken:   refreshed.accessToken,
-            refreshToken:  refreshed.refreshToken ?? refreshToken,
-            tokenType:     refreshed.tokenType,
-            accessTokenExpiresAt:  new Date(Date.now() + refreshed.expiresIn * 1000),
-            refreshTokenExpiresAt: refreshed.refreshTokenExpiresIn
-              ? new Date(Date.now() + refreshed.refreshTokenExpiresIn * 1000)
-              : null,
-          });
-          return refreshed.accessToken;
-        } catch {
-          return null;
-        }
+        return resolveLarkUserTokenByUserId(userId, companyId);
       },
     },
     createUserClient: (userToken: string) =>
       new LarkTaskClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, userToken }),
   }));
   toolRegistry.register(createLarkMessagingTool({ client: larkMsgToolClient, peopleResolver: larkPeopleResolver }));
-  toolRegistry.register(createLarkContactsTool({ peopleResolver: larkPeopleResolver, contactsClient: larkContactsClient }));
+  toolRegistry.register(createLarkContactsTool({
+    peopleResolver: larkPeopleResolver,
+    contactsClient: larkContactsClient,
+    userTokenResolver: {
+      async resolve(userId: string, companyId: string): Promise<string | null> {
+        return resolveLarkUserTokenByUserId(userId, companyId);
+      },
+    },
+    createUserClient: (userToken: string) =>
+      new LarkContactsClient({ ...larkClientDeps, userToken }),
+  }));
   toolRegistry.register(createLarkCalendarTool({ client: larkCalendarClient, peopleResolver: larkPeopleResolver }));
   toolRegistry.register(createLarkDocTool({ client: larkDocClient }));
   toolRegistry.register(createLarkBaseTool({ client: larkBaseClient }));

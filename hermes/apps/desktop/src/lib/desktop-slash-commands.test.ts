@@ -17,6 +17,8 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/usage')).toBe(true)
     expect(isDesktopSlashSuggestion('/yolo')).toBe(true)
     expect(isDesktopSlashCommand('/yolo')).toBe(true)
+    expect(isDesktopSlashSuggestion('/sethome')).toBe(true)
+    expect(isDesktopSlashCommand('/sethome')).toBe(true)
   })
 
   it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {
@@ -39,6 +41,8 @@ describe('desktop slash command curation', () => {
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)
+    expect(isDesktopSlashSuggestion('/set-home')).toBe(false)
+    expect(isDesktopSlashCommand('/set-home')).toBe(true)
   })
 
   it('filters built-in catalog noise but keeps skill / quick-command extensions', () => {

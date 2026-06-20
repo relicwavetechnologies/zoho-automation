@@ -112,7 +112,12 @@ export function isTitleFetchable(value: string): boolean {
 
   const url = parseUrl(value)
 
-  return Boolean(url && /^https?:$/.test(url.protocol) && !LOCAL_HOST_RE.test(url.host))
+  return Boolean(
+    url
+      && /^https?:$/.test(url.protocol)
+      && !LOCAL_HOST_RE.test(url.host)
+      && url.hostname.includes('.')
+  )
 }
 
 export function fetchLinkTitle(url: string): Promise<string> {

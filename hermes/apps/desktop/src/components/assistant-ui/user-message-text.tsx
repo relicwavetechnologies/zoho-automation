@@ -2,6 +2,8 @@ import type { FC } from 'react'
 import { Fragment, useMemo } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { LarkContextRefChip, LarkContextRefChipList } from '@/components/today-panel/lark-context-ref-chip'
+import { parseLarkContextBlock } from '@/lib/today-panel'
 import { cn } from '@/lib/utils'
 
 // User messages should render the bare-minimum of markdown: backtick `code`
@@ -96,10 +98,18 @@ interface UserMessageTextProps {
 }
 
 export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) => {
-  const top = useMemo(() => splitFences(text), [text])
+  const { refs, body } = useMemo(() => parseLarkContextBlock(text), [text])
+  const top = useMemo(() => splitFences(body), [body])
 
   return (
     <span className={cn('block', className)} data-slot="aui_user-message-text">
+      {refs.length > 0 && (
+        <LarkContextRefChipList className="mb-1.5">
+          {refs.map((ref, refIndex) => (
+            <LarkContextRefChip key={`${ref.kind}-${ref.label}-${refIndex}`} ref={ref} />
+          ))}
+        </LarkContextRefChipList>
+      )}
       {top.map((segment, segmentIndex) => {
         if (segment.kind === 'fence') {
           return (

@@ -39,6 +39,8 @@ _IDENTITY_CONTEXT_KWARGS = {
     "HERMES_COMPANY_USER_ID": "company_user_id",
     "HERMES_SESSION_KEY": "session_key",
     "HERMES_SESSION_ID": "session_id",
+    "HERMES_SESSION_CHAT_ID": "chat_id",
+    "HERMES_SESSION_USER_ID": "lark_open_id",
     "HERMES_CHANNEL_IDENTITY_ID": "channel_identity_id",
     "HERMES_COMPANY_ROLE": "company_role",
     "HERMES_DEPARTMENT_ID": "department_id",
@@ -112,10 +114,12 @@ def _tool_permission_decision(entry: "ToolEntry", kwargs: dict | None = None):
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
-    """Return True when *node* is a ``registry.register(...)`` call expression."""
-    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+    """Return True when *node* is a ``registry.register(...)`` call."""
+    if isinstance(node, ast.Expr):
+        node = node.value
+    if not isinstance(node, ast.Call):
         return False
-    func = node.value.func
+    func = node.func
     return (
         isinstance(func, ast.Attribute)
         and func.attr == "register"
@@ -124,11 +128,30 @@ def _is_registry_register_call(node: ast.AST) -> bool:
     )
 
 
-def _module_registers_tools(module_path: Path) -> bool:
-    """Return True when the module contains a top-level ``registry.register(...)`` call.
+def _top_level_register_calls(node: ast.AST) -> bool:
+    """Find module-level registrations without descending into definitions."""
+    if _is_registry_register_call(node):
+        return True
+    if isinstance(
+        node,
+        (
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+            ast.Lambda,
+        ),
+    ):
+        return False
+    return any(_top_level_register_calls(child) for child in ast.iter_child_nodes(node))
 
-    Only inspects module-body statements so that helper modules which happen
-    to call ``registry.register()`` inside a function are not picked up.
+
+def _module_registers_tools(module_path: Path) -> bool:
+    """Return True when the module contains module-scope tool registrations.
+
+    Imports are expensive and can have optional dependency side effects, so
+    discovery first scans the module AST. Registrations may be direct
+    statements or inside top-level control-flow such as loops/conditionals.
+    Calls hidden inside functions/classes are intentionally ignored.
     """
     try:
         source = module_path.read_text(encoding="utf-8")
@@ -136,7 +159,7 @@ def _module_registers_tools(module_path: Path) -> bool:
     except (OSError, SyntaxError):
         return False
 
-    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+    return any(_top_level_register_calls(stmt) for stmt in tree.body)
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
@@ -204,15 +227,44 @@ class ToolEntry:
 # ---------------------------------------------------------------------------
 
 _CHECK_FN_TTL_SECONDS = 30.0
-_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_check_fn_cache: Dict[tuple[Callable, tuple], tuple[float, bool]] = {}
 _check_fn_cache_lock = threading.Lock()
+
+
+def _check_fn_identity_cache_key(fn: Callable) -> tuple[Callable, tuple]:
+    """Return a check-cache key scoped to the current enterprise identity.
+
+    Some check functions are session/user dependent: Google/Lark/Zoho tools are
+    visible only when the current turn has company identity and connector
+    credentials. Caching solely by function object lets a no-identity turn cache
+    ``False`` and hide connector tools for a later valid user until the TTL
+    expires. Include the identity context for all check functions; non-enterprise
+    tools still share the same empty tuple in normal CLI use.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return (fn, ())
+    return (
+        fn,
+        (
+            get_session_env("HERMES_COMPANY_ID", ""),
+            get_session_env("HERMES_COMPANY_USER_ID", ""),
+            get_session_env("HERMES_CHANNEL_IDENTITY_ID", ""),
+            get_session_env("HERMES_COMPANY_ROLE", ""),
+            get_session_env("HERMES_DEPARTMENT_ID", ""),
+            get_session_env("HERMES_SESSION_KEY", ""),
+            get_session_env("HERMES_SESSION_ID", ""),
+        ),
+    )
 
 
 def _check_fn_cached(fn: Callable) -> bool:
     """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
     now = time.monotonic()
+    cache_key = _check_fn_identity_cache_key(fn)
     with _check_fn_cache_lock:
-        cached = _check_fn_cache.get(fn)
+        cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
@@ -222,7 +274,7 @@ def _check_fn_cached(fn: Callable) -> bool:
     except Exception:
         value = False
     with _check_fn_cache_lock:
-        _check_fn_cache[fn] = (now, value)
+        _check_fn_cache[cache_key] = (now, value)
     return value
 
 

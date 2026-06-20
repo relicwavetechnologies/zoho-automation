@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
+import { COMPLETION_DRAWER_BELOW_CLASS, COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
 const COMMON_COMMANDS: [string, string][] = [
   ['/help', 'full list of commands + hotkeys'],
@@ -22,9 +22,10 @@ const HOTKEYS: [string, string][] = [
   ['↑ / ↓', 'cycle popover / history']
 ]
 
-export function HelpHint() {
+export function HelpHint({ placement = 'bottom' }: { placement?: 'bottom' | 'top' }) {
+  const drawerClass = placement === 'bottom' ? COMPLETION_DRAWER_BELOW_CLASS : COMPLETION_DRAWER_CLASS
   return (
-    <div className={COMPLETION_DRAWER_CLASS} data-slot="composer-completion-drawer" data-state="open" role="dialog">
+    <div className={drawerClass} data-slot="composer-completion-drawer" data-state="open" role="dialog">
       <Section title="Common commands">
         {COMMON_COMMANDS.map(([key, desc]) => (
           <Row description={desc} key={key} keyLabel={key} mono />

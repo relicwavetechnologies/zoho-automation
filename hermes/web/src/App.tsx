@@ -41,6 +41,7 @@ import {
   RotateCw,
   Settings,
   Shield,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Star,
@@ -83,6 +84,7 @@ import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import EmployeesPage from "@/pages/EmployeesPage";
 import ConnectorsPage from "@/pages/ConnectorsPage";
+import PolicyPage from "@/pages/PolicyPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -93,7 +95,7 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
-import type { StatusResponse } from "@/lib/api";
+import type { PolicyMeResponse, StatusResponse } from "@/lib/api";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -109,6 +111,20 @@ function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
     return null;
   }
   return <Navigate to="/sessions" replace />;
+}
+
+function AccessDeniedRoute({ path }: { path: string }) {
+  return (
+    <div className="mx-auto flex min-h-[360px] w-full max-w-2xl flex-col items-center justify-center gap-3 rounded-lg border border-current/15 bg-midground/5 p-6 text-center">
+      <ShieldAlert className="h-8 w-8 text-amber-300" />
+      <div>
+        <h1 className="text-xl font-semibold text-midground">Access denied</h1>
+        <p className="mt-1 text-sm text-text-secondary">
+          Your current role is not allowed to open <span className="font-mono">{path}</span>.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 const CHAT_NAV_ITEM: NavItem = {
@@ -145,6 +161,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/employees": EmployeesPage,
   "/team": EmployeesLegacyRedirect,
   "/connectors": ConnectorsPage,
+  "/policy": PolicyPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -188,6 +205,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/employees", label: "Employees", icon: Users },
   { path: "/connectors", label: "Connectors", icon: Plug },
+  { path: "/policy", label: "Policy", icon: ShieldCheck },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   { path: "/system", label: "System", icon: Wrench },
@@ -282,6 +300,7 @@ function partitionSidebarNav(
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
   manifests: PluginManifest[],
+  navPermissions?: Record<string, boolean>,
 ): Array<{
   key: string;
   path: string;
@@ -306,14 +325,19 @@ function buildRoutes(
 
   for (const [path, Component] of Object.entries(builtinRoutes)) {
     const om = byOverride.get(path);
+    const allowed = navPermissions?.[path] ?? true;
     if (om) {
       routes.push({
         key: `override:${om.name}`,
         path,
-        element: <PluginPage name={om.name} />,
+        element: allowed ? <PluginPage name={om.name} /> : <AccessDeniedRoute path={path} />,
       });
     } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
+      routes.push({
+        key: `builtin:${path}`,
+        path,
+        element: allowed ? <Component /> : <AccessDeniedRoute path={path} />,
+      });
     }
   }
 
@@ -382,6 +406,7 @@ export default function App() {
   // the flag is off — see AnalyticsPage), but hiding the nav entry avoids
   // surfacing misleading token/cost numbers in the sidebar.  Default off.
   const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
+  const [policyMe, setPolicyMe] = useState<PolicyMeResponse | null>(null);
   useEffect(() => {
     api
       .getConfig()
@@ -392,6 +417,12 @@ export default function App() {
         setShowTokenAnalytics(dash.show_token_analytics === true);
       })
       .catch(() => setShowTokenAnalytics(false));
+  }, []);
+  useEffect(() => {
+    api
+      .getPolicyMe()
+      .then(setPolicyMe)
+      .catch(() => setPolicyMe(null));
   }, []);
 
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
@@ -428,18 +459,19 @@ export default function App() {
     const base = embeddedChat
       ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
       : BUILTIN_NAV_REST;
-    return showTokenAnalytics
+    const analyticsFiltered = showTokenAnalytics
       ? base
       : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
+    return analyticsFiltered.filter((item) => policyMe?.nav?.[item.path] ?? true);
+  }, [embeddedChat, policyMe, showTokenAnalytics]);
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),
     [builtinNav, manifests],
   );
   const routes = useMemo(
-    () => buildRoutes(builtinRoutes, manifests),
-    [builtinRoutes, manifests],
+    () => buildRoutes(builtinRoutes, manifests, policyMe?.nav),
+    [builtinRoutes, manifests, policyMe],
   );
   const pluginTabMeta = useMemo(
     () =>

@@ -1,0 +1,1174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Divo Dex — Today panel (v3)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0e0e0e;
+      --bg2: #111111;
+      --sidebar: #101010;
+      --line: #262626;
+      --line2: #2f2f2f;
+      --fg: #d8d8d8;
+      --fg-dim: #9a9a9a;
+      --fg-faint: #6b6b6b;
+      --fg-ghost: #555;
+      --salmon: #cd9883;
+      --green: #6fc08a;
+      --red: #e0697a;
+      --amber: #eab064;
+      --blue: #7fa9cf;
+      --radius: 13px;
+      --sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--fg);
+      -webkit-font-smoothing: antialiased;
+      font-feature-settings: "cv01", "cv02", "ss01";
+      letter-spacing: -0.01em;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      height: 100vh;
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: var(--sidebar);
+      display: flex;
+      flex-direction: column;
+      padding: 14px 10px;
+      gap: 4px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 450;
+      color: var(--fg-dim);
+      cursor: default;
+    }
+    .nav-item.active { background: #1a1a1a; color: #eee; }
+    .nav-dot { width: 16px; height: 16px; border-radius: 4px; background: #2a2a2a; flex: 0 0 auto; }
+    .sidebar .search {
+      margin: 10px 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #141414;
+      color: var(--fg-faint);
+      font-size: 11.5px;
+      padding: 8px 10px;
+    }
+    .session {
+      padding: 7px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      color: var(--fg-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .session.active { background: #1a1a1a; color: #e8e8e8; }
+    .sidebar-footer {
+      margin-top: auto;
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding-left: 8px;
+    }
+    .avatar {
+      width: 30px; height: 30px; border-radius: 999px;
+      background: linear-gradient(135deg, #3a3a3a, #222);
+      display: grid; place-items: center; font-size: 10px; font-weight: 550; color: #ccc;
+    }
+
+    .main { display: flex; min-width: 0; height: 100vh; background: var(--bg2); }
+
+    .composer-pane {
+      flex: 0 0 50%;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 20px 24px 24px;
+      overflow: auto;
+    }
+
+    .composer-shell {
+      width: 100%;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .ref-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding-bottom: 12px;
+      min-height: 0;
+    }
+    .ref-chips:empty {
+      display: none;
+      padding-bottom: 0;
+    }
+    .ref-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+      border: 1px solid color-mix(in srgb, var(--blue) 40%, transparent);
+      background: color-mix(in srgb, var(--blue) 10%, #121820);
+      border-radius: 999px;
+      padding: 5px 8px 5px 10px;
+      font-size: 11.5px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      color: #c5d9ed;
+      cursor: default;
+      animation: chipIn 0.15s ease;
+    }
+    .ref-chip .label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 200px;
+    }
+    @keyframes chipIn {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: none; }
+    }
+    .ref-chip .kind {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #7fa9cf;
+      opacity: 0.85;
+    }
+    .ref-chip button {
+      border: 0;
+      background: transparent;
+      color: #888;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+    }
+    .ref-chip button:hover { color: #ccc; }
+
+    .composer {
+      border: 1px solid color-mix(in srgb, var(--fg) 9%, transparent);
+      border-radius: 20px;
+      background: #151515;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 20px 60px rgba(0,0,0,0.38);
+      padding: 16px 18px 14px;
+      min-height: 120px;
+      display: flex;
+      flex-direction: column;
+      transition: min-height 0.2s ease, padding 0.2s ease;
+    }
+    .composer.has-refs {
+      padding-top: 14px;
+      min-height: 140px;
+    }
+    .composer-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 72px;
+    }
+    .composer textarea {
+      width: 100%;
+      border: 0;
+      outline: none;
+      resize: none;
+      background: transparent;
+      color: #ececec;
+      font: 450 15px/1.55 var(--sans);
+      letter-spacing: -0.015em;
+      min-height: 72px;
+      flex: 1;
+    }
+    .composer textarea::placeholder { color: var(--fg-ghost); font-weight: 400; }
+    .composer-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
+    }
+    .icon-btn {
+      width: 32px; height: 32px; border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #1e1e1e;
+      color: #8e8e8e;
+      display: grid; place-items: center;
+      font-size: 17px; font-weight: 300;
+      cursor: pointer;
+    }
+    .icon-btn:hover { background: #252525; color: #bbb; }
+    .model-pill {
+      margin-right: auto;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: transparent;
+      color: #c8c8c8;
+      font-size: 11.5px;
+      font-weight: 500;
+      padding: 6px 11px;
+      cursor: pointer;
+    }
+    .mic-btn {
+      width: 32px; height: 32px; border-radius: 999px;
+      background: #e4e4e4; color: #1a1a1a;
+      display: grid; place-items: center; cursor: pointer;
+    }
+    .composer-actions { display: flex; gap: 10px; margin-top: 12px; }
+    .plan-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 11.5px;
+      font-weight: 500;
+      color: var(--fg-dim);
+      cursor: pointer;
+      background: transparent;
+    }
+    .plan-pill:hover { border-color: var(--line2); color: #ccc; background: #161616; }
+    .kbd {
+      font-size: 10px;
+      color: var(--fg-faint);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 1px 5px;
+    }
+
+    .resize-handle {
+      flex: 0 0 5px;
+      cursor: col-resize;
+      position: relative;
+      z-index: 2;
+      margin: 0 -2px;
+    }
+    .resize-handle::before {
+      content: "";
+      position: absolute;
+      top: 0; bottom: 0; left: 50%;
+      width: 1px;
+      transform: translateX(-50%);
+      background: var(--line);
+      opacity: 0.7;
+    }
+    .resize-handle:hover::before,
+    .resize-handle.dragging::before {
+      background: color-mix(in srgb, var(--salmon) 70%, white);
+      opacity: 1;
+    }
+
+    /* ---- Right pane ---- */
+    .right-pane {
+      flex: 0 0 50%;
+      min-width: 0;
+      background: #101010;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-left: 1px solid var(--line);
+    }
+
+    .right-head {
+      flex-shrink: 0;
+      padding: 18px 18px 0;
+    }
+    .right-head-top {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .today-title {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: #e6e6e6;
+    }
+    .today-title span { font-weight: 450; color: var(--fg-faint); }
+    .sync-badge {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10.5px;
+      font-weight: 500;
+      color: var(--fg-faint);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 9px;
+    }
+    .sync-dot {
+      width: 6px; height: 6px; border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 6px rgba(111,192,138,0.5);
+    }
+    .assign-btn {
+      border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+      background: #1a1a1a;
+      color: #d0d0d0;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 550;
+      padding: 7px 11px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .assign-btn:hover { background: #222; color: #eee; }
+
+    .stat-chips {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .stat-chip {
+      flex: 1;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #171717;
+      padding: 10px 12px;
+      text-align: left;
+      cursor: pointer;
+      transition: 0.12s;
+    }
+    .stat-chip:hover { background: #1b1b1b; }
+    .stat-chip.active {
+      border-color: color-mix(in srgb, var(--salmon) 45%, transparent);
+      background: #1d1a18;
+    }
+    .stat-chip b {
+      display: block;
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1;
+      margin-bottom: 3px;
+      letter-spacing: -0.03em;
+    }
+    .stat-chip span {
+      font-size: 10.5px;
+      font-weight: 500;
+      color: var(--fg-faint);
+    }
+    .stat-chip[data-filter="overdue"] b { color: var(--red); }
+    .stat-chip[data-filter="today"] b { color: var(--amber); }
+    .stat-chip[data-filter="meetings"] b { color: var(--blue); }
+
+    .panel-scroll {
+      flex: 1;
+      overflow: auto;
+      padding: 0 16px 16px;
+    }
+
+    .section { margin-bottom: 10px; }
+    .section.dimmed { opacity: 0.35; pointer-events: none; }
+
+    .panel-card {
+      border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+      border-radius: var(--radius);
+      background: #161616;
+      overflow: hidden;
+    }
+
+    .panel-label {
+      padding: 9px 12px;
+      border-bottom: 1px solid #242424;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: #666;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .panel-label .count-badge {
+      font-size: 10px;
+      font-weight: 600;
+      color: #888;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    /* Next meeting hero */
+    .hero-meeting {
+      border: 1px solid color-mix(in srgb, var(--blue) 25%, transparent);
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, #161a1f 0%, #161616 60%);
+      padding: 14px 14px 12px;
+      cursor: pointer;
+      transition: 0.12s;
+    }
+    .hero-meeting:hover { background: linear-gradient(135deg, #1a1f26 0%, #1a1a1a 60%); }
+    .hero-meeting.selected { border-color: color-mix(in srgb, var(--blue) 50%, transparent); }
+    .hero-eyebrow {
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .hero-eyebrow .countdown {
+      margin-left: auto;
+      font-variant-numeric: tabular-nums;
+      color: var(--green);
+      letter-spacing: 0;
+      text-transform: none;
+      font-size: 10px;
+    }
+    .hero-title {
+      font-size: 14px;
+      font-weight: 550;
+      letter-spacing: -0.02em;
+      color: #e8e8e8;
+      margin-bottom: 4px;
+    }
+    .hero-sub {
+      font-size: 11px;
+      font-weight: 450;
+      color: #777;
+    }
+    .hero-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .hero-btn {
+      border: 1px solid var(--line);
+      background: #1e1e1e;
+      color: #bbb;
+      border-radius: 8px;
+      font-size: 10.5px;
+      font-weight: 550;
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+    .hero-btn.primary {
+      background: color-mix(in srgb, var(--blue) 15%, #1e1e1e);
+      border-color: color-mix(in srgb, var(--blue) 30%, transparent);
+      color: #b8d4ef;
+    }
+    .hero-btn:hover { background: #252525; }
+
+    /* Active follow-ups */
+    .active-card {
+      border: 1px solid color-mix(in srgb, var(--green) 20%, transparent);
+      border-radius: var(--radius);
+      background: #161616;
+      padding: 11px 12px;
+      cursor: pointer;
+      transition: 0.12s;
+    }
+    .active-card:hover { background: #1a1a1a; }
+    .active-card.selected { border-color: color-mix(in srgb, var(--green) 40%, transparent); }
+    .active-top { display: flex; align-items: center; gap: 9px; }
+    .pulse {
+      width: 8px; height: 8px; border-radius: 999px; background: var(--green);
+      box-shadow: 0 0 0 0 rgba(111,192,138,0.45);
+      animation: pulse 2s infinite;
+      flex-shrink: 0;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(111,192,138,0.45); }
+      70% { box-shadow: 0 0 0 7px rgba(111,192,138,0); }
+      100% { box-shadow: 0 0 0 0 rgba(111,192,138,0); }
+    }
+    .active-title { font-size: 11.5px; font-weight: 550; color: #e0e0e0; }
+    .active-sub { font-size: 10.5px; color: #777; margin-top: 1px; }
+    .count-pill {
+      margin-left: auto;
+      min-width: 22px; height: 22px; border-radius: 6px;
+      background: #222; display: grid; place-items: center;
+      font-size: 11px; font-weight: 600; color: #c8c8c8;
+      padding: 0 6px;
+      flex-shrink: 0;
+    }
+    .lifecycle-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #242424;
+    }
+    .lifecycle-btn {
+      flex: 1;
+      border: 1px solid var(--line);
+      background: #1a1a1a;
+      color: #aaa;
+      border-radius: 7px;
+      font-size: 10px;
+      font-weight: 550;
+      padding: 6px 4px;
+      cursor: pointer;
+    }
+    .lifecycle-btn:hover { background: #222; color: #ddd; }
+    .lifecycle-btn.done {
+      border-color: color-mix(in srgb, var(--green) 30%, transparent);
+      color: var(--green);
+    }
+
+    /* Task rows */
+    .group-label {
+      padding: 8px 12px 4px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #555;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .group-dot { width: 6px; height: 6px; border-radius: 999px; }
+    .group-dot.overdue { background: var(--red); }
+    .group-dot.today { background: var(--amber); }
+
+    .task-row, .needs-row, .doc-row, .meeting-row {
+      display: grid;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid #222;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .task-row:last-child, .needs-row:last-child, .doc-row:last-child, .meeting-row:last-child { border-bottom: 0; }
+    .task-row:hover, .needs-row:hover, .doc-row:hover, .meeting-row:hover { background: #1a1a1a; }
+    .task-row.selected, .needs-row.selected, .doc-row.selected, .meeting-row.selected { background: #1d1d1d; }
+
+    .task-row { grid-template-columns: 20px 1fr; }
+    .radio {
+      width: 17px; height: 17px; border-radius: 999px;
+      border: 1px solid #383838;
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    .task-row.done .radio {
+      background: color-mix(in srgb, var(--green) 25%, transparent);
+      border-color: var(--green);
+      position: relative;
+    }
+    .task-row.done .radio::after {
+      content: "✓";
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      font-size: 9px;
+      color: var(--green);
+    }
+    .task-row.done .task-title { color: #666; text-decoration: line-through; text-decoration-color: #444; }
+
+    .row-title {
+      font-size: 12.5px;
+      font-weight: 500;
+      letter-spacing: -0.02em;
+      color: #d6d6d6;
+      line-height: 1.4;
+    }
+    .row-meta {
+      margin-top: 3px;
+      font-size: 10.5px;
+      font-weight: 450;
+      color: #777;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .tag {
+      border: 1px solid color-mix(in srgb, var(--salmon) 35%, transparent);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 9.5px;
+      font-weight: 550;
+      color: var(--salmon);
+    }
+    .tag.muted { border-color: var(--line2); color: #888; font-weight: 500; }
+    .tag.green { border-color: color-mix(in srgb, var(--green) 35%, transparent); color: var(--green); }
+    .tag.red { border-color: color-mix(in srgb, var(--red) 35%, transparent); color: var(--red); }
+    .tag.blue { border-color: color-mix(in srgb, var(--blue) 35%, transparent); color: var(--blue); }
+
+    .meeting-row { grid-template-columns: 42px 1fr; }
+    .meeting-time {
+      font-size: 11px;
+      font-weight: 550;
+      color: #aaa;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+    .now-pill {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 9.5px;
+      font-weight: 550;
+      color: var(--green);
+      border: 1px solid color-mix(in srgb, var(--green) 35%, transparent);
+      border-radius: 4px;
+      padding: 0 5px;
+    }
+
+    /* Needs you */
+    .needs-row { grid-template-columns: 28px 1fr; align-items: start; }
+    .needs-icon {
+      width: 24px; height: 24px; border-radius: 7px;
+      display: grid; place-items: center;
+      font-size: 12px;
+      margin-top: 1px;
+    }
+    .needs-icon.mention { background: #1f2430; color: var(--blue); }
+    .needs-icon.approval { background: #2a2218; color: var(--amber); }
+
+    /* Wiki & docs */
+    .doc-row { grid-template-columns: 28px 1fr; align-items: start; }
+    .doc-icon {
+      width: 24px; height: 24px; border-radius: 7px;
+      background: #1e1e1e;
+      display: grid; place-items: center;
+      font-size: 11px;
+      margin-top: 1px;
+    }
+
+    /* CTA */
+    .day-cta {
+      margin-top: 4px;
+      padding: 0 16px 18px;
+      flex-shrink: 0;
+    }
+    .summarize-btn {
+      width: 100%;
+      border: 1px solid color-mix(in srgb, var(--salmon) 35%, transparent);
+      background: color-mix(in srgb, var(--salmon) 8%, #161616);
+      color: #e0cfc4;
+      border-radius: 12px;
+      font-size: 12.5px;
+      font-weight: 550;
+      letter-spacing: -0.01em;
+      padding: 12px 16px;
+      cursor: pointer;
+      transition: 0.12s;
+    }
+    .summarize-btn:hover {
+      background: color-mix(in srgb, var(--salmon) 14%, #1a1a1a);
+      border-color: color-mix(in srgb, var(--salmon) 50%, transparent);
+    }
+    .hint-text {
+      padding: 0 18px 8px;
+      font-size: 10.5px;
+      color: #555;
+      flex-shrink: 0;
+    }
+
+    .drawer {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      display: none;
+      align-items: stretch;
+      justify-content: flex-end;
+      z-index: 50;
+    }
+    .drawer.open { display: flex; }
+    .drawer-panel {
+      width: min(400px, 92vw);
+      background: #171717;
+      border-left: 1px solid var(--line);
+      padding: 20px;
+      animation: slideIn 0.2s ease;
+      overflow: auto;
+    }
+    @keyframes slideIn {
+      from { transform: translateX(16px); opacity: 0; }
+      to { transform: none; opacity: 1; }
+    }
+    .drawer h2 { margin: 0 0 8px; font-size: 16px; font-weight: 550; color: #eee; }
+    .drawer p { margin: 0 0 16px; font-size: 12.5px; color: var(--fg-dim); line-height: 1.5; }
+    .drawer .close {
+      border: 1px solid var(--line);
+      background: #222;
+      color: #ddd;
+      border-radius: 8px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .sidebar { display: none; }
+      .composer-pane, .right-pane { flex: 0 0 50% !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" aria-hidden="true">
+      <div class="nav-item active"><span class="nav-dot"></span>New session</div>
+      <div class="nav-item"><span class="nav-dot"></span>Skills &amp; Tools</div>
+      <div class="nav-item"><span class="nav-dot"></span>Plugins</div>
+      <div class="nav-item"><span class="nav-dot"></span>Messaging</div>
+      <div class="nav-item"><span class="nav-dot"></span>Artifacts</div>
+      <div class="search">Search sessions…</div>
+      <div class="session active">hi there</div>
+      <div class="session">Send a Lark message to Anish…</div>
+      <div class="session">Prepare Q3 rollout brief</div>
+      <div class="sidebar-footer">
+        <div class="avatar">AV</div>
+        <div>
+          <div style="font-size:12px;font-weight:500;color:#ddd">Abhishek Verma</div>
+          <div style="font-size:10.5px;color:#666">Admin</div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main" id="mainSplit">
+      <!-- LEFT: Composer -->
+      <section class="composer-pane" id="composerPane">
+        <div class="composer-shell">
+          <div class="composer" id="composer">
+            <div class="ref-chips" id="refChips"></div>
+            <div class="composer-body">
+              <textarea id="composerInput" placeholder="Plan, build, / for skills, @ for context" rows="3"></textarea>
+            </div>
+            <div class="composer-toolbar">
+              <button class="icon-btn" type="button">+</button>
+              <button class="model-pill" type="button">Deepseek V4 Flash ▾</button>
+              <button class="mic-btn" type="button">◉</button>
+            </div>
+          </div>
+          <div class="composer-actions">
+            <button class="plan-pill" type="button">Plan new idea <span class="kbd">⇧Tab</span></button>
+          </div>
+        </div>
+      </section>
+
+      <div class="resize-handle" id="resizeHandle"></div>
+
+      <!-- RIGHT: Today panel -->
+      <aside class="right-pane" id="rightPane">
+        <div class="right-head">
+          <div class="right-head-top">
+            <div class="today-title">Your day <span>· Wed, Jun 17</span></div>
+            <span class="sync-badge"><span class="sync-dot"></span>Synced from Lark</span>
+            <button class="assign-btn" type="button" id="assignBtn">+ Assign follow-up</button>
+          </div>
+          <div class="stat-chips" id="statChips">
+            <button class="stat-chip" data-filter="overdue" type="button">
+              <b>2</b><span>Overdue</span>
+            </button>
+            <button class="stat-chip" data-filter="today" type="button">
+              <b>3</b><span>Due today</span>
+            </button>
+            <button class="stat-chip" data-filter="meetings" type="button">
+              <b>4</b><span>Meetings</span>
+            </button>
+          </div>
+        </div>
+
+        <p class="hint-text">Tap any row to pin it as composer context.</p>
+
+        <div class="panel-scroll" id="panelScroll">
+          <!-- Next meeting hero -->
+          <div class="section" data-section="meetings">
+            <div class="hero-meeting selectable" data-id="hero-m1" data-kind="meeting"
+                 data-label="Product sync" data-detail="10:00 · With Vira · Lark VC">
+              <div class="hero-eyebrow">
+                ▶ Next meeting
+                <span class="countdown">in 10 min</span>
+              </div>
+              <div class="hero-title">Product sync</div>
+              <div class="hero-sub">10:00 · 30m · Vira, Aaron, 4 others · Lark VC</div>
+              <div class="hero-actions">
+                <button class="hero-btn primary" type="button" onclick="event.stopPropagation()">Join VC</button>
+                <button class="hero-btn" type="button" onclick="event.stopPropagation()">Prep brief</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Active follow-ups -->
+          <div class="section" data-section="followups">
+            <div class="active-card selectable" data-id="fu-active" data-kind="followup"
+                 data-label="Review vendor contract" data-detail="Active · From Vira">
+              <div class="active-top">
+                <span class="pulse"></span>
+                <div>
+                  <div class="active-title">Active follow-ups</div>
+                  <div class="active-sub">Review vendor contract — Zoho renewal</div>
+                </div>
+                <span class="count-pill">1</span>
+              </div>
+              <div class="lifecycle-row" onclick="event.stopPropagation()">
+                <button class="lifecycle-btn" type="button">Pause</button>
+                <button class="lifecycle-btn" type="button">Update doc</button>
+                <button class="lifecycle-btn done" type="button">Done</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tasks -->
+          <div class="section" data-section="tasks" id="tasksSection">
+            <div class="panel-card">
+              <div class="panel-label">Tasks <span class="count-badge">5 open</span></div>
+              <div class="group-label"><span class="group-dot overdue"></span> Overdue</div>
+              <div class="task-row selectable" data-id="t1" data-kind="task" data-group="overdue"
+                   data-label="Send Q2 finance report" data-detail="2 days late · Finance">
+                <div class="radio"></div>
+                <div>
+                  <div class="row-title task-title">Send Q2 finance report to Aaron</div>
+                  <div class="row-meta"><span class="tag red">2 days late</span><span>Finance</span></div>
+                </div>
+              </div>
+              <div class="task-row selectable" data-id="t2" data-kind="task" data-group="overdue"
+                   data-label="Review vendor contract" data-detail="Yesterday · Ops">
+                <div class="radio"></div>
+                <div>
+                  <div class="row-title task-title">Review vendor contract — Zoho renewal</div>
+                  <div class="row-meta"><span>Yesterday</span><span class="tag">Divo Follow Up</span></div>
+                </div>
+              </div>
+              <div class="group-label"><span class="group-dot today"></span> Due today</div>
+              <div class="task-row selectable" data-id="t3" data-kind="task" data-group="today"
+                   data-label="Finalize memory design doc" data-detail="5:00 PM · Divo">
+                <div class="radio"></div>
+                <div>
+                  <div class="row-title task-title">Finalize Divo memory design doc</div>
+                  <div class="row-meta"><span>5:00 PM</span><span class="tag muted">Divo</span></div>
+                </div>
+              </div>
+              <div class="task-row selectable" data-id="t4" data-kind="task" data-group="today"
+                   data-label="Reply to Aaron re: gateway" data-detail="EOD · Divo">
+                <div class="radio"></div>
+                <div>
+                  <div class="row-title task-title">Reply to Aaron re: gateway rollout</div>
+                  <div class="row-meta"><span>EOD</span><span class="tag muted">Divo</span></div>
+                </div>
+              </div>
+              <div class="task-row selectable" data-id="t5" data-kind="task" data-group="today"
+                   data-label="Approve design tokens PR" data-detail="EOD · Design">
+                <div class="radio"></div>
+                <div>
+                  <div class="row-title task-title">Approve design tokens PR</div>
+                  <div class="row-meta"><span>EOD</span><span class="tag muted">Design</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Meetings -->
+          <div class="section" data-section="meetings">
+            <div class="panel-card" style="margin-top:10px">
+              <div class="panel-label">Meetings <span class="count-badge">4 today</span></div>
+              <div class="meeting-row selectable selected" data-id="m1" data-kind="meeting"
+                   data-label="Product sync" data-detail="10:00 · Lark VC">
+                <div class="meeting-time">10:00</div>
+                <div>
+                  <div class="row-title">Product sync</div>
+                  <div class="row-meta">With Vira · Lark VC</div>
+                  <span class="now-pill">Now</span>
+                </div>
+              </div>
+              <div class="meeting-row selectable" data-id="m2" data-kind="meeting"
+                   data-label="Design review" data-detail="14:00 · 4 guests">
+                <div class="meeting-time">14:00</div>
+                <div>
+                  <div class="row-title">Design review</div>
+                  <div class="row-meta">45m · 4 guests</div>
+                </div>
+              </div>
+              <div class="meeting-row selectable" data-id="m3" data-kind="meeting"
+                   data-label="1:1 with Aaron" data-detail="16:30 · 30m">
+                <div class="meeting-time">16:30</div>
+                <div>
+                  <div class="row-title">1:1 with Aaron</div>
+                  <div class="row-meta">30m</div>
+                </div>
+              </div>
+              <div class="meeting-row selectable" data-id="m4" data-kind="meeting"
+                   data-label="Client demo — Acme" data-detail="18:00 · 6 guests">
+                <div class="meeting-time">18:00</div>
+                <div>
+                  <div class="row-title">Client demo — Acme</div>
+                  <div class="row-meta">45m · 6 guests</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Needs you -->
+          <div class="section" data-section="needs">
+            <div class="panel-card" style="margin-top:10px">
+              <div class="panel-label">Needs you <span class="count-badge">3</span></div>
+              <div class="needs-row selectable" data-id="n1" data-kind="mention"
+                   data-label="@you in #eng-platform" data-detail="Aaron · 1h ago">
+                <div class="needs-icon mention">@</div>
+                <div>
+                  <div class="row-title">@you in #eng-platform</div>
+                  <div class="row-meta">Aaron asked for Q2 numbers · 1h ago</div>
+                </div>
+              </div>
+              <div class="needs-row selectable" data-id="n2" data-kind="approval"
+                   data-label="Approve: Zoho renewal" data-detail="Procurement · waiting 2d">
+                <div class="needs-icon approval">✓</div>
+                <div>
+                  <div class="row-title">Approve: Zoho Books renewal</div>
+                  <div class="row-meta"><span class="tag">Procurement</span><span>Waiting 2 days</span></div>
+                </div>
+              </div>
+              <div class="needs-row selectable" data-id="n3" data-kind="mention"
+                   data-label="DM from Vira" data-detail="Can you review the wiki update?">
+                <div class="needs-icon mention">@</div>
+                <div>
+                  <div class="row-title">DM from Vira</div>
+                  <div class="row-meta">"Can you review the wiki update?" · 3h ago</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Wiki & docs -->
+          <div class="section" data-section="docs">
+            <div class="panel-card" style="margin-top:10px">
+              <div class="panel-label">Wiki &amp; docs</div>
+              <div class="doc-row selectable" data-id="d1" data-kind="wiki"
+                   data-label="Divo Follow Ups / Updates" data-detail="Wiki · edited 2h ago">
+                <div class="doc-icon">📄</div>
+                <div>
+                  <div class="row-title">Divo Follow Ups / Updates</div>
+                  <div class="row-meta"><span class="tag blue">Wiki</span><span>Edited 2h ago by you</span></div>
+                </div>
+              </div>
+              <div class="doc-row selectable" data-id="d2" data-kind="doc"
+                   data-label="Q3 rollout tracking doc" data-detail="Follow-up tracking doc">
+                <div class="doc-icon">📋</div>
+                <div>
+                  <div class="row-title">Q3 enterprise rollout — tracking doc</div>
+                  <div class="row-meta"><span class="tag green">Tracking doc</span><span>Active follow-up</span></div>
+                </div>
+              </div>
+              <div class="doc-row selectable" data-id="d3" data-kind="wiki"
+                   data-label="UI Design System" data-detail="Wiki reference">
+                <div class="doc-icon">📄</div>
+                <div>
+                  <div class="row-title">UI Design System</div>
+                  <div class="row-meta"><span class="tag blue">Wiki</span><span>Divo — References</span></div>
+                </div>
+              </div>
+              <div class="doc-row selectable" data-id="d4" data-kind="doc"
+                   data-label="Eng standup minutes" data-detail="Yesterday · 3 action items">
+                <div class="doc-icon">🎙</div>
+                <div>
+                  <div class="row-title">Eng standup minutes — Jun 16</div>
+                  <div class="row-meta"><span>妙记</span><span>3 open action items</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="day-cta">
+          <button class="summarize-btn" type="button" id="summarizeBtn">
+            Summarize &amp; plan my day
+          </button>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div class="drawer" id="drawer">
+    <div class="drawer-panel">
+      <h2 id="drawerTitle">Detail</h2>
+      <p id="drawerBody"></p>
+      <button class="close" type="button" id="drawerClose">Close</button>
+    </div>
+  </div>
+
+  <script>
+    const composerPane = document.getElementById('composerPane');
+    const rightPane = document.getElementById('rightPane');
+    const resizeHandle = document.getElementById('resizeHandle');
+    const mainSplit = document.getElementById('mainSplit');
+    const refChips = document.getElementById('refChips');
+    const composerEl = document.getElementById('composer');
+    const composerInput = document.getElementById('composerInput');
+
+    let splitRatio = 0.5;
+    const MIN_RATIO = 0.34;
+    const MAX_RATIO = 0.66;
+
+    function applySplit(ratio) {
+      splitRatio = Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio));
+      const left = splitRatio * 100;
+      composerPane.style.flex = `0 0 ${left}%`;
+      rightPane.style.flex = `0 0 ${100 - left}%`;
+    }
+
+    let dragging = false;
+    resizeHandle.addEventListener('mousedown', (e) => {
+      dragging = true;
+      resizeHandle.classList.add('dragging');
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const rect = mainSplit.getBoundingClientRect();
+      applySplit((e.clientX - rect.left) / rect.width);
+    });
+    window.addEventListener('mouseup', () => {
+      dragging = false;
+      resizeHandle.classList.remove('dragging');
+    });
+
+    const refs = new Map();
+    const KIND_LABEL = {
+      task: 'task', meeting: 'meeting', followup: 'follow-up',
+      mention: 'mention', approval: 'approval', wiki: 'wiki', doc: 'doc'
+    };
+
+    function renderChips() {
+      refChips.innerHTML = '';
+      refs.forEach((ref, id) => {
+        const chip = document.createElement('span');
+        chip.className = 'ref-chip';
+        const kind = (KIND_LABEL[ref.kind] || ref.kind).toUpperCase();
+        chip.innerHTML =
+          `<span class="kind">${kind}</span><span class="label">${ref.label}</span>` +
+          `<button type="button" aria-label="Remove">×</button>`;
+        chip.querySelector('button').onclick = () => {
+          refs.delete(id);
+          document.querySelectorAll(`[data-id="${id}"]`).forEach(el => el.classList.remove('selected'));
+          renderChips();
+        };
+        refChips.appendChild(chip);
+      });
+      composerEl.classList.toggle('has-refs', refs.size > 0);
+    }
+
+    function toggleRef(el) {
+      const id = el.dataset.id;
+      const ref = { id, kind: el.dataset.kind, label: el.dataset.label, detail: el.dataset.detail };
+      if (refs.has(id)) {
+        refs.delete(id);
+        el.classList.remove('selected');
+      } else {
+        refs.set(id, ref);
+        el.classList.add('selected');
+      }
+      renderChips();
+    }
+
+    document.querySelectorAll('.selectable').forEach((el) => {
+      el.addEventListener('click', () => toggleRef(el));
+      el.addEventListener('dblclick', () => {
+        const drawer = document.getElementById('drawer');
+        document.getElementById('drawerTitle').textContent = el.dataset.label;
+        document.getElementById('drawerBody').textContent =
+          `${el.dataset.detail}\n\nIn the real app: lifecycle drawer or Lark deep-link.`;
+        drawer.classList.add('open');
+      });
+    });
+
+    let activeFilter = null;
+    document.querySelectorAll('.stat-chip').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const f = chip.dataset.filter;
+        activeFilter = activeFilter === f ? null : f;
+        document.querySelectorAll('.stat-chip').forEach(c => c.classList.toggle('active', c.dataset.filter === activeFilter));
+        document.querySelectorAll('.section').forEach((sec) => {
+          const s = sec.dataset.section;
+          if (!activeFilter) { sec.classList.remove('dimmed'); return; }
+          const show = (activeFilter === 'overdue' || activeFilter === 'today') && s === 'tasks'
+            || activeFilter === 'meetings' && (s === 'meetings')
+            || activeFilter === 'overdue' && s === 'followups';
+          sec.classList.toggle('dimmed', !show && activeFilter !== null);
+        });
+        if (activeFilter === 'overdue') {
+          document.querySelectorAll('.task-row').forEach(r => {
+            r.style.display = r.dataset.group === 'overdue' ? '' : 'none';
+          });
+        } else if (activeFilter === 'today') {
+          document.querySelectorAll('.task-row').forEach(r => {
+            r.style.display = r.dataset.group === 'today' ? '' : 'none';
+          });
+        } else {
+          document.querySelectorAll('.task-row').forEach(r => { r.style.display = ''; });
+        }
+      });
+    });
+
+    document.getElementById('summarizeBtn').onclick = () => {
+      const prompt = `Here's my day from Lark — help me run it.
+
+[OVERDUE · 2]
+- Send Q2 finance report to Aaron — 2 days late
+- Review vendor contract (Zoho renewal) — due yesterday
+
+[DUE TODAY · 3]
+- Finalize Divo memory design doc — 5:00 PM
+- Reply to Aaron re: gateway rollout — EOD
+- Approve design tokens PR — EOD
+
+[MEETINGS · 4]
+- 10:00 Product sync (30m)
+- 14:00 Design review (45m)
+- 16:30 1:1 with Aaron (30m)
+- 18:00 Client demo — Acme (45m)
+
+[NEEDS YOU · 3]
+- @you in #eng-platform — Aaron asked for Q2 numbers
+- Approve: Zoho Books renewal (waiting 2d)
+- DM from Vira — review wiki update
+
+Please:
+1. Order what I should tackle first, around the meetings.
+2. Flag anything I can delegate or defer.
+3. Draft any messages I need to send.`;
+      composerInput.value = prompt;
+      composerInput.focus();
+    };
+
+    document.getElementById('assignBtn').onclick = () => {
+      document.getElementById('drawerTitle').textContent = 'Assign follow-up';
+      document.getElementById('drawerBody').textContent =
+        'Create modal: assignee, due date, policy preset, optional tracking doc.';
+      document.getElementById('drawer').classList.add('open');
+    };
+
+    document.getElementById('drawerClose').onclick = () => document.getElementById('drawer').classList.remove('open');
+    document.getElementById('drawer').onclick = (e) => {
+      if (e.target.id === 'drawer') document.getElementById('drawer').classList.remove('open');
+    };
+
+    applySplit(splitRatio);
+  </script>
+</body>
+</html>

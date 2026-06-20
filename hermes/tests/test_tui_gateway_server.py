@@ -3916,6 +3916,160 @@ def test_session_create_binds_authenticated_company_identity(monkeypatch):
         server._sessions.pop(sid, None)
 
 
+def test_transport_company_identity_negative_cache_refreshes_after_auth(monkeypatch):
+    class _Transport:
+        auth_identity = {}
+
+    class _Identity:
+        company_id = "company_1"
+        company_user_id = "cu_alice"
+        channel_identity_id = "ci_alice"
+        company_role = "SUPER_ADMIN"
+        department_id = "dept_ops"
+        session_provider = "lark"
+        session_user_id = "ou_alice"
+        email = "alice@example.com"
+        display_name = "Alice"
+
+    transport = _Transport()
+    assert server._resolve_transport_company_identity(transport) is None
+    assert getattr(transport, "_hermes_company_identity_cache") is False
+
+    calls = []
+
+    def resolve_identity(**kwargs):
+        calls.append(kwargs)
+        return _Identity()
+
+    monkeypatch.setattr(
+        "gateway.company_identity.resolve_dashboard_session_identity",
+        resolve_identity,
+    )
+    transport.auth_identity = {
+        "provider": "lark",
+        "user_id": "ou_alice",
+        "email": "alice@example.com",
+        "display_name": "Alice",
+    }
+
+    resolved = server._resolve_transport_company_identity(transport)
+
+    assert resolved == {
+        "company_id": "company_1",
+        "company_user_id": "cu_alice",
+        "channel_identity_id": "ci_alice",
+        "company_role": "SUPER_ADMIN",
+        "department_id": "dept_ops",
+        "session_provider": "lark",
+        "session_user_id": "ou_alice",
+        "email": "alice@example.com",
+        "display_name": "Alice",
+    }
+    assert calls
+
+
+def test_transport_company_identity_cache_is_auth_identity_scoped(monkeypatch):
+    class _Transport:
+        auth_identity = {
+            "provider": "lark",
+            "user_id": "ou_alice",
+            "email": "alice@example.com",
+        }
+
+    class _Identity:
+        company_id = "company_1"
+        company_user_id = ""
+        channel_identity_id = ""
+        company_role = "MEMBER"
+        department_id = ""
+        session_provider = "lark"
+        session_user_id = ""
+        email = ""
+        display_name = ""
+
+    calls = []
+
+    def resolve_identity(**kwargs):
+        calls.append(kwargs)
+        ident = _Identity()
+        ident.company_user_id = f"cu_{len(calls)}"
+        ident.channel_identity_id = f"ci_{len(calls)}"
+        ident.session_user_id = kwargs["provider_user_id"]
+        ident.email = kwargs.get("email") or ""
+        return ident
+
+    monkeypatch.setattr(
+        "gateway.company_identity.resolve_dashboard_session_identity",
+        resolve_identity,
+    )
+    transport = _Transport()
+
+    first = server._resolve_transport_company_identity(transport)
+    second = server._resolve_transport_company_identity(transport)
+    transport.auth_identity = {
+        "provider": "lark",
+        "user_id": "ou_bob",
+        "email": "bob@example.com",
+    }
+    third = server._resolve_transport_company_identity(transport)
+
+    assert first["company_user_id"] == "cu_1"
+    assert second["company_user_id"] == "cu_1"
+    assert third["company_user_id"] == "cu_2"
+    assert len(calls) == 2
+
+
+def test_refresh_agent_tool_schema_updates_tools_and_prompt_cache(monkeypatch):
+    fake_model_tools = types.ModuleType("model_tools")
+    fake_registry = types.ModuleType("tools.registry")
+    calls = []
+
+    def get_tool_definitions(**kwargs):
+        calls.append(kwargs)
+        return [
+            {"type": "function", "function": {"name": "session_search"}},
+            {"type": "function", "function": {"name": "lark_doc"}},
+        ]
+
+    fake_model_tools.get_tool_definitions = get_tool_definitions
+    fake_model_tools.invalidate_tool_defs_cache = lambda: calls.append({"invalidate": "defs"})
+    fake_registry.invalidate_check_fn_cache = lambda: calls.append({"invalidate": "checks"})
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "tools.registry", fake_registry)
+
+    class _Agent:
+        enabled_toolsets = ["session_search", "lark"]
+        disabled_toolsets = None
+        tools = [{"type": "function", "function": {"name": "session_search"}}]
+        valid_tool_names = {"session_search"}
+        _cached_system_prompt = "stale prompt"
+        session_id = "session_1"
+        persisted = []
+
+        class _DB:
+            def __init__(self, outer):
+                self.outer = outer
+
+            def update_system_prompt(self, session_id, prompt):
+                self.outer.persisted.append((session_id, prompt))
+
+        def __init__(self):
+            self._session_db = self._DB(self)
+
+        def _build_system_prompt(self, system_message=None):
+            return "fresh prompt with lark_doc"
+
+    agent = _Agent()
+
+    assert server._refresh_agent_tool_schema(agent) is True
+    assert agent.valid_tool_names == {"session_search", "lark_doc"}
+    assert agent._cached_system_prompt == "fresh prompt with lark_doc"
+    assert agent.persisted == [("session_1", "fresh prompt with lark_doc")]
+    assert calls[0] == {"invalidate": "checks"}
+    assert calls[1] == {"invalidate": "defs"}
+    assert calls[2]["enabled_toolsets"] == ["session_search", "lark"]
+
+
 def test_session_list_filters_rows_to_authorized_company_sessions(monkeypatch):
     class _DB:
         def list_sessions_rich(self, source=None, limit=0):

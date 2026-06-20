@@ -31,7 +31,8 @@ def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None):
             return self
         def __exit__(self, *_a):
             return False
-        def text(self, query, max_results=5):
+        def text(self, query, max_results=5, **kwargs):
+            # Accept region/safesearch/backend kwargs the provider now passes.
             if text_raises is not None:
                 raise text_raises
             for hit in (text_results or []):
@@ -222,7 +223,9 @@ class TestDDGSSearchOnlyErrors:
         from agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
-    def test_web_extract_returns_search_only_error(self, monkeypatch):
+    def test_web_extract_falls_back_to_native_free_extractor(self, monkeypatch):
+        """ddgs is search-only, but web_extract now transparently falls back to
+        the free built-in 'native' extractor (no paid backend, no error)."""
         import asyncio
         from tools import web_tools
 
@@ -231,11 +234,19 @@ class TestDDGSSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+        # Mock the page fetch so the native extractor stays offline.
+        monkeypatch.setattr(
+            "tools.web_quality.fetch_page_content",
+            lambda url, **kw: {
+                "title": "Example",
+                "meta_description": "",
+                "content": "Example body text.",
+            },
+        )
 
         result_str = asyncio.get_event_loop().run_until_complete(
-            web_tools.web_extract_tool(["https://example.com"])
+            web_tools.web_extract_tool(["https://example.com"], use_llm_processing=False)
         )
         result = json.loads(result_str)
-        assert result["success"] is False
-        assert "search-only" in result["error"].lower()
-        assert "duckduckgo" in result["error"].lower() or "ddgs" in result["error"].lower()
+        assert "search-only" not in result_str.lower()
+        assert result["results"][0]["content"] == "Example body text."

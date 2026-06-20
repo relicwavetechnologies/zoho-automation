@@ -197,12 +197,32 @@ class CompanyIdentityDB:
                     FOREIGN KEY (company_user_id) REFERENCES company_users(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS company_user_home_channels (
+                    id TEXT PRIMARY KEY,
+                    company_id TEXT NOT NULL,
+                    company_user_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    chat_name TEXT,
+                    thread_id TEXT,
+                    channel_identity_id TEXT,
+                    metadata_json TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(company_id, company_user_id, platform),
+                    FOREIGN KEY (company_id) REFERENCES companies(id),
+                    FOREIGN KEY (company_user_id) REFERENCES company_users(id),
+                    FOREIGN KEY (channel_identity_id) REFERENCES channel_identities(id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_channel_identities_company_user
                     ON channel_identities(company_id, company_user_id);
                 CREATE INDEX IF NOT EXISTS idx_session_identities_company_user
                     ON session_identities(company_id, company_user_id);
                 CREATE INDEX IF NOT EXISTS idx_tool_audit_logs_session
                     ON tool_audit_logs(session_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_company_user_home_channels_user
+                    ON company_user_home_channels(company_id, company_user_id);
                 """
             )
             row = self._conn.execute("SELECT COUNT(*) AS c FROM schema_version").fetchone()
@@ -400,7 +420,7 @@ class CompanyIdentityDB:
             return None
         return self._conn.execute(
             """
-            SELECT ci.*, cu.email
+            SELECT ci.*, cu.email, cu.role AS company_role
             FROM channel_identities ci
             LEFT JOIN company_users cu ON cu.id = ci.company_user_id
             WHERE ci.company_id = ?
@@ -408,7 +428,12 @@ class CompanyIdentityDB:
                 (ci.platform = ? AND (ci.identity_key = ? OR ci.platform_user_id = ?))
                 OR ci.platform_user_id_alt = ?
               )
-            ORDER BY ci.last_seen_at DESC
+            ORDER BY
+              CASE WHEN COALESCE(cu.email, '') <> '' THEN 0 ELSE 1 END,
+              CASE WHEN ci.approved_source = 'dashboard_auth' THEN 0 ELSE 1 END,
+              CASE WHEN COALESCE(cu.role, '') IN ('SUPER_ADMIN', 'OWNER', 'COMPANY_ADMIN', 'ADMIN') THEN 0 ELSE 1 END,
+              CASE WHEN ci.identity_key = ? OR ci.platform_user_id = ? THEN 0 ELSE 1 END,
+              ci.last_seen_at DESC
             LIMIT 1
             """,
             (
@@ -417,8 +442,193 @@ class CompanyIdentityDB:
                 identity_key,
                 platform_user_id,
                 user_id_alt,
+                identity_key,
+                platform_user_id,
             ),
         ).fetchone()
+
+    def _find_company_user_id_by_channel_alt(
+        self,
+        *,
+        company_id: str,
+        provider: str,
+        provider_user_id_alt: str | None,
+    ) -> str | None:
+        provider_user_id_alt = str(provider_user_id_alt or "").strip()
+        if not provider_user_id_alt:
+            return None
+        row = self._conn.execute(
+            """
+            SELECT ci.company_user_id
+            FROM channel_identities ci
+            LEFT JOIN company_users cu ON cu.id = ci.company_user_id
+            WHERE ci.company_id = ?
+              AND ci.platform = ?
+              AND ci.platform_user_id_alt = ?
+              AND NULLIF(ci.company_user_id, '') IS NOT NULL
+            ORDER BY
+              CASE WHEN COALESCE(cu.email, '') <> '' THEN 0 ELSE 1 END,
+              CASE WHEN ci.approved_source = 'dashboard_auth' THEN 0 ELSE 1 END,
+              CASE WHEN COALESCE(cu.role, '') IN ('SUPER_ADMIN', 'OWNER', 'COMPANY_ADMIN', 'ADMIN') THEN 0 ELSE 1 END,
+              ci.last_seen_at DESC
+            LIMIT 1
+            """,
+            (company_id, provider, provider_user_id_alt),
+        ).fetchone()
+        return str(row["company_user_id"]) if row and row["company_user_id"] else None
+
+    def _list_company_user_ids_by_channel_alt(
+        self,
+        *,
+        company_id: str,
+        provider: str,
+        provider_user_id_alt: str | None,
+    ) -> list[str]:
+        provider_user_id_alt = str(provider_user_id_alt or "").strip()
+        if not provider_user_id_alt:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT company_user_id
+            FROM channel_identities
+            WHERE company_id = ?
+              AND platform = ?
+              AND platform_user_id_alt = ?
+              AND NULLIF(company_user_id, '') IS NOT NULL
+            """,
+            (company_id, provider, provider_user_id_alt),
+        ).fetchall()
+        return [str(row["company_user_id"]) for row in rows if row["company_user_id"]]
+
+    def _merge_channel_alt_to_company_user(
+        self,
+        *,
+        company_id: str,
+        provider: str,
+        provider_user_id_alt: str | None,
+        target_company_user_id: str,
+    ) -> None:
+        source_ids = self._list_company_user_ids_by_channel_alt(
+            company_id=company_id,
+            provider=provider,
+            provider_user_id_alt=provider_user_id_alt,
+        )
+        provider_user_id_alt = str(provider_user_id_alt or "").strip()
+        now = _now()
+        if provider_user_id_alt:
+            with self._lock:
+                self._conn.execute(
+                    """
+                    UPDATE channel_identities
+                    SET company_user_id = ?, last_seen_at = ?
+                    WHERE company_id = ?
+                      AND platform = ?
+                      AND platform_user_id_alt = ?
+                      AND COALESCE(company_user_id, '') <> ?
+                    """,
+                    (
+                        target_company_user_id,
+                        now,
+                        company_id,
+                        provider,
+                        provider_user_id_alt,
+                        target_company_user_id,
+                    ),
+                )
+        self._merge_company_user_refs(
+            company_id=company_id,
+            target_company_user_id=target_company_user_id,
+            source_company_user_ids=source_ids,
+        )
+
+    def _merge_company_user_refs(
+        self,
+        *,
+        company_id: str,
+        target_company_user_id: str,
+        source_company_user_ids: list[str],
+    ) -> None:
+        now = _now()
+        with self._lock:
+            for source_company_user_id in sorted(set(source_company_user_ids)):
+                if not source_company_user_id or source_company_user_id == target_company_user_id:
+                    continue
+                self._conn.execute(
+                    """
+                    UPDATE channel_identities
+                    SET company_user_id = ?, last_seen_at = ?
+                    WHERE company_id = ? AND company_user_id = ?
+                    """,
+                    (target_company_user_id, now, company_id, source_company_user_id),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE session_identities
+                    SET company_user_id = ?, last_seen_at = ?
+                    WHERE company_id = ? AND company_user_id = ?
+                    """,
+                    (target_company_user_id, now, company_id, source_company_user_id),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE tool_audit_logs
+                    SET company_user_id = ?
+                    WHERE company_id = ? AND company_user_id = ?
+                    """,
+                    (target_company_user_id, company_id, source_company_user_id),
+                )
+                self._conn.execute(
+                    """
+                    DELETE FROM company_user_home_channels
+                    WHERE company_id = ?
+                      AND company_user_id = ?
+                      AND EXISTS (
+                        SELECT 1
+                        FROM company_user_home_channels target
+                        WHERE target.company_id = company_user_home_channels.company_id
+                          AND target.company_user_id = ?
+                          AND target.platform = company_user_home_channels.platform
+                      )
+                    """,
+                    (company_id, source_company_user_id, target_company_user_id),
+                )
+                self._conn.execute(
+                    """
+                    UPDATE company_user_home_channels
+                    SET company_user_id = ?, updated_at = ?
+                    WHERE company_id = ? AND company_user_id = ?
+                    """,
+                    (target_company_user_id, now, company_id, source_company_user_id),
+                )
+                self._conn.execute(
+                    """
+                    DELETE FROM company_users
+                    WHERE id = ?
+                      AND company_id = ?
+                      AND NOT EXISTS (
+                        SELECT 1 FROM channel_identities
+                        WHERE company_id = ? AND company_user_id = ?
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM session_identities
+                        WHERE company_id = ? AND company_user_id = ?
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM company_user_home_channels
+                        WHERE company_id = ? AND company_user_id = ?
+                      )
+                    """,
+                    (
+                        source_company_user_id,
+                        company_id,
+                        company_id,
+                        source_company_user_id,
+                        company_id,
+                        source_company_user_id,
+                        company_id,
+                        source_company_user_id,
+                    ),
+                )
 
     def _upsert_company_user(
         self,
@@ -467,6 +677,7 @@ class CompanyIdentityDB:
         *,
         provider: str,
         provider_user_id: str,
+        provider_user_id_alt: str | None = None,
         display_name: str | None = None,
         email: str | None = None,
         company_id: str | None = None,
@@ -478,6 +689,7 @@ class CompanyIdentityDB:
         self._ensure_company(company_id)
         provider = str(provider or "dashboard").strip() or "dashboard"
         provider_user_id = str(provider_user_id or "").strip()
+        provider_user_id_alt = str(provider_user_id_alt or "").strip() or None
         if not provider_user_id:
             raise ValueError("provider_user_id is required")
 
@@ -493,6 +705,11 @@ class CompanyIdentityDB:
             ).fetchone()
             existing_id = row["id"] if row else None
 
+        existing_id = existing_id or self._find_company_user_id_by_channel_alt(
+            company_id=company_id,
+            provider=provider,
+            provider_user_id_alt=provider_user_id_alt,
+        )
         company_user_id = existing_id or _stable_id(
             "cu", company_id, provider, provider_user_id
         )
@@ -527,7 +744,14 @@ class CompanyIdentityDB:
             company_user_id=company_user_id,
             provider=provider,
             provider_user_id=provider_user_id,
+            provider_user_id_alt=provider_user_id_alt,
             display_name=display_name,
+        )
+        self._merge_channel_alt_to_company_user(
+            company_id=company_id,
+            provider=provider,
+            provider_user_id_alt=provider_user_id_alt,
+            target_company_user_id=company_user_id,
         )
         row = self.get_company_user(company_user_id)
         if row is None:
@@ -541,14 +765,17 @@ class CompanyIdentityDB:
         company_user_id: str,
         provider: str,
         provider_user_id: str,
+        provider_user_id_alt: str | None = None,
         display_name: str | None = None,
     ) -> None:
         identity_key = f"user:{provider_user_id}"
         channel_identity_id = _stable_id("ci", company_id, provider, identity_key)
+        provider_user_id_alt = str(provider_user_id_alt or "").strip() or None
         now = _now()
         raw_payload = {
             "platform": provider,
             "user_id": provider_user_id,
+            "user_id_alt": provider_user_id_alt,
             "user_name": display_name,
             "source": "dashboard_auth",
         }
@@ -565,6 +792,7 @@ class CompanyIdentityDB:
                 ON CONFLICT(company_id, platform, identity_key) DO UPDATE SET
                     company_user_id = excluded.company_user_id,
                     platform_user_id = excluded.platform_user_id,
+                    platform_user_id_alt = COALESCE(excluded.platform_user_id_alt, channel_identities.platform_user_id_alt),
                     display_name = COALESCE(excluded.display_name, channel_identities.display_name),
                     approved_source = excluded.approved_source,
                     raw_json = excluded.raw_json,
@@ -577,7 +805,7 @@ class CompanyIdentityDB:
                     provider,
                     identity_key,
                     provider_user_id,
-                    None,
+                    provider_user_id_alt,
                     "",
                     company_id,
                     display_name,
@@ -696,6 +924,101 @@ class CompanyIdentityDB:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def upsert_company_user_home_channel(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str,
+        platform: str,
+        chat_id: str,
+        chat_name: str | None = None,
+        thread_id: str | None = None,
+        channel_identity_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        company_id = _normalize_text(company_id)
+        company_user_id = _normalize_text(company_user_id)
+        platform = _canonical_channel(platform)
+        chat_id = _normalize_text(chat_id)
+        if not company_id or not company_user_id or not platform or not chat_id:
+            raise ValueError("company_id, company_user_id, platform, and chat_id are required")
+
+        self._ensure_company(company_id)
+        home_id = _stable_id("home", company_id, company_user_id, platform)
+        now = _now()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO company_user_home_channels (
+                    id, company_id, company_user_id, platform, chat_id, chat_name,
+                    thread_id, channel_identity_id, metadata_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(company_id, company_user_id, platform) DO UPDATE SET
+                    chat_id = excluded.chat_id,
+                    chat_name = excluded.chat_name,
+                    thread_id = excluded.thread_id,
+                    channel_identity_id = excluded.channel_identity_id,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    home_id,
+                    company_id,
+                    company_user_id,
+                    platform,
+                    chat_id,
+                    chat_name,
+                    thread_id,
+                    channel_identity_id,
+                    _json_dumps(metadata or {}),
+                    now,
+                    now,
+                ),
+            )
+        row = self.get_company_user_home_channel(
+            company_id=company_id,
+            company_user_id=company_user_id,
+            platform=platform,
+        )
+        if row is None:
+            raise RuntimeError("company user home channel did not persist")
+        return row
+
+    def get_company_user_home_channel(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str,
+        platform: str,
+    ) -> Optional[dict[str, Any]]:
+        row = self._conn.execute(
+            """
+            SELECT *
+            FROM company_user_home_channels
+            WHERE company_id = ? AND company_user_id = ? AND platform = ?
+            """,
+            (company_id, company_user_id, _canonical_channel(platform)),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_company_user_home_channels(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM company_user_home_channels
+            WHERE company_id = ? AND company_user_id = ?
+            ORDER BY platform
+            """,
+            (company_id, company_user_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_channel_identity(self, channel_identity_id: str) -> Optional[dict[str, Any]]:
         row = self._conn.execute(
             "SELECT * FROM channel_identities WHERE id = ?",
@@ -717,6 +1040,7 @@ class CompanyIdentityDB:
         company_id: str | None = None,
         role: str | None = None,
         status: str | None = None,
+        department_id: str | None = None,
     ) -> Optional[dict[str, Any]]:
         company_id = company_id or self.ensure_default_company()
         updates: list[str] = []
@@ -727,6 +1051,9 @@ class CompanyIdentityDB:
         if status is not None:
             updates.append("status = ?")
             args.append(_normalize_text(status, "active"))
+        if department_id is not None:
+            updates.append("department_id = ?")
+            args.append(_normalize_text(department_id, "") or None)
         if not updates:
             row = self.get_company_user(company_user_id)
             return row if row and row.get("company_id") == company_id else None

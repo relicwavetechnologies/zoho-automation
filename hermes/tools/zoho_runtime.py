@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from tools.zoho_auth import (
     CachedZohoAccessToken,
@@ -27,6 +27,7 @@ from tools.zoho_auth import (
     ZohoTokenProvider,
 )
 from tools.zoho_client import ZohoClient
+from tools.connector_policy import connector_identity_from_kwargs, require_connector_access
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,10 @@ def _seed_access_token(provider: ZohoTokenProvider, creds: Any) -> None:
 
 
 def resolve_zoho_client(
-    company_id: Optional[str], **client_kwargs: Any
+    company_id: Optional[str],
+    *,
+    policy_identity: Mapping[str, Any] | None = None,
+    **client_kwargs: Any,
 ) -> Optional[ZohoClient]:
     """Build (or reuse) a ZohoClient for *company_id* from the vault.
 
@@ -108,6 +112,11 @@ def resolve_zoho_client(
     company_id = str(company_id or "").strip()
     if not company_id or not enterprise_enabled():
         return None
+    require_connector_access(
+        provider="zoho",
+        company_id=company_id,
+        identity=policy_identity,
+    )
 
     cached = _company_clients.get(company_id)
     if cached is not None:
@@ -175,7 +184,10 @@ def resolve_tool_client(kwargs: dict) -> ZohoClient:
         return explicit
 
     company_id = kwargs.get("company_id")
-    client = resolve_zoho_client(company_id)
+    client = resolve_zoho_client(
+        company_id,
+        policy_identity=connector_identity_from_kwargs(kwargs),
+    )
     if client is not None:
         return client
 

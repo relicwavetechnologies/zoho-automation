@@ -10,6 +10,7 @@ Read-only on credentials: tokens are cached in-memory, never persisted.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -98,6 +99,18 @@ class LarkTokenProvider:
         return _CachedLarkToken(token, time.time() + max(0, expire))
 
 
+class LarkStaticTokenProvider:
+    """Token provider for an already-minted user access token."""
+
+    def __init__(self, access_token: str) -> None:
+        self.access_token = str(access_token or "").strip()
+
+    async def get_token(self, *, force_refresh: bool = False) -> str:
+        if not self.access_token:
+            raise LarkAuthError("Lark user access token not configured")
+        return self.access_token
+
+
 class LarkClient:
     """Minimal authorized JSON client for Lark Open APIs."""
 
@@ -128,7 +141,10 @@ class LarkClient:
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
             async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout), transport=self._transport) as client:
                 resp = await client.request(method, url, params=params, json=json_body, headers=headers)
-            payload = resp.json() if resp.content else {}
+            try:
+                payload = resp.json() if resp.content else {}
+            except json.JSONDecodeError:
+                payload = {}
             code = payload.get("code")
             # 99991663/99991661 = invalid/expired tenant token → refresh once.
             if code in (99991663, 99991661) and attempt == 0:

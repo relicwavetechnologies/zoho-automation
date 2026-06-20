@@ -27,6 +27,10 @@ import {
   pinSession,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
+  TODAY_PANEL_DEFAULT_WIDTH,
+  TODAY_PANEL_MAX_WIDTH,
+  TODAY_PANEL_MIN_WIDTH,
+  TODAY_PANEL_PANE_ID,
   unpinSession
 } from '../store/layout'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
@@ -54,6 +58,7 @@ import {
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 
 import { ChatView } from './chat'
+import { TodayPanelShell } from './chat/today-panel-shell'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -105,6 +110,7 @@ const MessagingView = lazy(async () => ({ default: (await import('./messaging'))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
+const IntegrationsView = lazy(async () => ({ default: (await import('./integrations')).IntegrationsView }))
 
 export function DesktopController() {
   const queryClient = useQueryClient()
@@ -524,6 +530,7 @@ export function DesktopController() {
       busyRef,
       createBackendSessionForSend,
       handleSkinCommand,
+      queryClient,
       requestGateway,
       selectedStoredSessionIdRef,
       startFreshSessionDraft,
@@ -748,6 +755,21 @@ export function DesktopController() {
     </Pane>
   )
 
+  const todayPanelPane = (
+    <Pane
+      disabled={!chatOpen || terminalTakeoverActive}
+      id={TODAY_PANEL_PANE_ID}
+      key="today-panel"
+      maxWidth={TODAY_PANEL_MAX_WIDTH}
+      minWidth={TODAY_PANEL_MIN_WIDTH}
+      resizable
+      side="right"
+      width={`clamp(20rem, 32vw, ${TODAY_PANEL_DEFAULT_WIDTH}px)`}
+    >
+      {chatOpen ? <TodayPanelShell /> : null}
+    </Pane>
+  )
+
   if (!companyAuthReady) {
     return <GatewayConnectingOverlay />
   }
@@ -789,6 +811,14 @@ export function DesktopController() {
           <Route
             element={
               <Suspense fallback={null}>
+                <IntegrationsView setStatusbarItemGroup={setStatusbarItemGroup} />
+              </Suspense>
+            }
+            path="integrations"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
                 <MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />
               </Suspense>
             }
@@ -819,6 +849,7 @@ export function DesktopController() {
       */}
       {panesFlipped ? fileBrowserPane : previewPane}
       {panesFlipped ? previewPane : fileBrowserPane}
+      {todayPanelPane}
     </AppShell>
   )
 }

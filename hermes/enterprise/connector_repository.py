@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
@@ -24,6 +25,21 @@ from enterprise.token_crypto import decrypt_token, encrypt_token, try_decrypt_to
 
 NATIVE_CONNECTOR_TABLE = "HermesConnectorCredential"
 NATIVE_CONNECTOR_PROVIDERS = {"zoho", "google", "lark"}
+
+
+def _default_zoho_accounts_base_url() -> str:
+    return (
+        os.getenv("ZOHO_ACCOUNTS_BASE_URL")
+        or os.getenv("ZOHO_ACCOUNTS_BASE")
+        or "https://accounts.zoho.com"
+    ).strip().rstrip("/")
+
+
+def _default_zoho_api_base_url() -> str:
+    return (
+        os.getenv("ZOHO_API_BASE_URL")
+        or "https://www.zohoapis.com"
+    ).strip().rstrip("/")
 
 
 @dataclass(frozen=True)
@@ -88,6 +104,24 @@ class LarkConnectionCredentials:
     api_base_url: str = "https://open.larksuite.com"
     static_tenant_access_token: Optional[str] = None
     source: str = "config"
+
+
+@dataclass(frozen=True)
+class LarkUserConnectionCredentials:
+    """Decrypted per-user Lark OAuth tokens ported from Divo."""
+
+    company_id: str
+    user_id: str
+    lark_tenant_key: str
+    lark_open_id: Optional[str]
+    lark_user_id: Optional[str]
+    lark_email: str
+    lark_name: Optional[str]
+    access_token: str
+    refresh_token: Optional[str] = None
+    token_type: Optional[str] = None
+    access_token_expires_at: Optional[Any] = None
+    refresh_token_expires_at: Optional[Any] = None
 
 
 class ConnectorCredentialRepository:
@@ -448,6 +482,244 @@ class ConnectorCredentialRepository:
                 )
         return None
 
+    def get_lark_user_credentials(
+        self,
+        company_id: str,
+        *,
+        user_id: str | None = None,
+        company_user_id: str | None = None,
+        lark_open_id: str | None = None,
+        email: str | None = None,
+    ) -> Optional[LarkUserConnectionCredentials]:
+        """Return a decrypted per-user Lark OAuth link, if available.
+
+        Divo stores these in ``LarkUserAuthLink`` keyed by ``User.id``. Hermes
+        sessions usually carry ``CompanyUser.id``, so resolve via
+        ``CompanyUser.userId`` / email / open_id without assuming a single ID
+        shape during migration.
+        """
+        company_id = str(company_id or "").strip()
+        if not company_id:
+            return None
+
+        candidates: list[tuple[str, Any]] = []
+        if user_id:
+            candidates.append(("user_id", str(user_id).strip()))
+        if company_user_id:
+            candidates.append(("company_user_id", str(company_user_id).strip()))
+        if lark_open_id:
+            candidates.append(("lark_open_id", str(lark_open_id).strip()))
+        if email:
+            candidates.append(("email", str(email).strip().lower()))
+
+        for kind, value in candidates:
+            if not value:
+                continue
+            row = self._find_lark_user_auth_link(company_id, kind, value)
+            if row is not None:
+                return self._lark_user_from_row(row)
+        return None
+
+    def update_lark_user_tokens(
+        self,
+        *,
+        company_id: str,
+        user_id: str,
+        access_token: str,
+        refresh_token: str | None = None,
+        token_type: str | None = None,
+        access_token_expires_at: Any | None = None,
+        refresh_token_expires_at: Any | None = None,
+    ) -> None:
+        company_id = str(company_id or "").strip()
+        user_id = str(user_id or "").strip()
+        if not company_id or not user_id or not access_token:
+            return
+        updates = ['"accessTokenEncrypted" = %s', '"lastUsedAt" = now()', '"updatedAt" = now()']
+        args: list[Any] = [encrypt_token(access_token, self._encryption_key)]
+        if refresh_token:
+            updates.append('"refreshTokenEncrypted" = %s')
+            args.append(encrypt_token(refresh_token, self._encryption_key))
+        if token_type:
+            updates.append('"tokenType" = %s')
+            args.append(token_type)
+        if access_token_expires_at is not None:
+            updates.append('"accessTokenExpiresAt" = %s')
+            args.append(access_token_expires_at)
+        if refresh_token_expires_at is not None:
+            updates.append('"refreshTokenExpiresAt" = %s')
+            args.append(refresh_token_expires_at)
+        args.extend([company_id, user_id])
+        self._execute(
+            f"""
+            UPDATE "LarkUserAuthLink"
+            SET {", ".join(updates)}
+            WHERE "companyId" = %s
+              AND "userId" = %s
+              AND "revokedAt" IS NULL
+            """,
+            tuple(args),
+        )
+
+    def upsert_lark_user_auth_link(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str | None = None,
+        user_id: str | None = None,
+        lark_tenant_key: str = "",
+        lark_open_id: str = "",
+        lark_user_id: str | None = None,
+        lark_email: str = "",
+        lark_name: str | None = None,
+        access_token: str,
+        refresh_token: str | None = None,
+        token_type: str | None = None,
+        access_token_expires_at: Any | None = None,
+        refresh_token_expires_at: Any | None = None,
+        token_metadata: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Upsert the legacy-shaped Lark user OAuth link used by Lark tools."""
+        company_id = str(company_id or "").strip()
+        resolved_user_id = self._resolve_lark_auth_user_id(
+            company_id=company_id,
+            company_user_id=company_user_id,
+            user_id=user_id,
+            lark_open_id=lark_open_id,
+            lark_email=lark_email,
+        )
+        access_token = str(access_token or "").strip()
+        if not company_id:
+            raise ValueError("company_id is required")
+        if not resolved_user_id:
+            raise ValueError("Could not resolve Hermes user id for Lark OAuth link")
+        if not access_token:
+            raise ValueError("access_token is required")
+
+        link_id = self._stable_credential_id(
+            provider="lark",
+            company_id=company_id,
+            company_user_id=resolved_user_id,
+            scope="user-auth-link",
+        )
+        metadata_json = json.dumps(dict(token_metadata or {}), sort_keys=True, separators=(",", ":"))
+        self._execute(
+            """
+            INSERT INTO "LarkUserAuthLink" (
+                "id", "userId", "companyId", "larkTenantKey", "larkOpenId",
+                "larkUserId", "larkEmail", "larkName", "accessTokenEncrypted",
+                "refreshTokenEncrypted", "tokenType", "accessTokenExpiresAt",
+                "refreshTokenExpiresAt", "tokenMetadata", "linkedAt", "lastUsedAt",
+                "createdAt", "updatedAt"
+            )
+            VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s::jsonb, now(), now(),
+                now(), now()
+            )
+            ON CONFLICT ("userId", "companyId") DO UPDATE SET
+                "larkTenantKey" = excluded."larkTenantKey",
+                "larkOpenId" = excluded."larkOpenId",
+                "larkUserId" = excluded."larkUserId",
+                "larkEmail" = excluded."larkEmail",
+                "larkName" = excluded."larkName",
+                "accessTokenEncrypted" = excluded."accessTokenEncrypted",
+                "refreshTokenEncrypted" = excluded."refreshTokenEncrypted",
+                "tokenType" = excluded."tokenType",
+                "accessTokenExpiresAt" = excluded."accessTokenExpiresAt",
+                "refreshTokenExpiresAt" = excluded."refreshTokenExpiresAt",
+                "tokenMetadata" = excluded."tokenMetadata",
+                "lastUsedAt" = now(),
+                "revokedAt" = NULL,
+                "updatedAt" = now()
+            """,
+            (
+                link_id,
+                resolved_user_id,
+                company_id,
+                str(lark_tenant_key or ""),
+                str(lark_open_id or ""),
+                str(lark_user_id or "") or None,
+                str(lark_email or ""),
+                str(lark_name or "") or None,
+                encrypt_token(access_token, self._encryption_key),
+                encrypt_token(refresh_token, self._encryption_key) if refresh_token else None,
+                str(token_type or "Bearer"),
+                access_token_expires_at,
+                refresh_token_expires_at,
+                metadata_json,
+            ),
+        )
+        return resolved_user_id
+
+    def _resolve_lark_auth_user_id(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str | None,
+        user_id: str | None,
+        lark_open_id: str | None,
+        lark_email: str | None,
+    ) -> str:
+        company_id = str(company_id or "").strip()
+        explicit = str(user_id or "").strip()
+        if explicit:
+            return explicit
+        company_user_id = str(company_user_id or "").strip()
+        lark_open_id = str(lark_open_id or "").strip()
+        lark_email = str(lark_email or "").strip().lower()
+        if not company_id:
+            return ""
+
+        row = self._fetchone_optional(
+            """
+            SELECT COALESCE(cu."userId", u."id", lua."userId") AS "userId"
+            FROM "CompanyUser" cu
+            LEFT JOIN "User" u
+              ON lower(COALESCE(u."email", '')) = lower(COALESCE(cu."email", ''))
+            LEFT JOIN "LarkUserAuthLink" lua
+              ON lua."companyId" = cu."companyId"
+             AND (
+                  lower(COALESCE(lua."larkEmail", '')) = lower(COALESCE(cu."email", ''))
+               OR lua."larkOpenId" = %s
+             )
+             AND lua."revokedAt" IS NULL
+            WHERE cu."companyId" = %s
+              AND (
+                   cu."id" = %s
+                OR lower(COALESCE(cu."email", '')) = %s
+              )
+            ORDER BY CASE WHEN cu."id" = %s THEN 0 ELSE 1 END
+            LIMIT 1
+            """,
+            (lark_open_id, company_id, company_user_id, lark_email, company_user_id),
+        )
+        resolved = self._row_get(row, "userId")
+        if resolved:
+            return str(resolved)
+
+        row = self._fetchone_optional(
+            """
+            SELECT COALESCE(lua."userId", u."id") AS "userId"
+            FROM "LarkUserAuthLink" lua
+            LEFT JOIN "User" u
+              ON lower(COALESCE(u."email", '')) = lower(COALESCE(lua."larkEmail", ''))
+            WHERE lua."companyId" = %s
+              AND (
+                   lua."larkOpenId" = %s
+                OR lower(COALESCE(lua."larkEmail", '')) = %s
+              )
+              AND lua."revokedAt" IS NULL
+            ORDER BY lua."updatedAt" DESC
+            LIMIT 1
+            """,
+            (company_id, lark_open_id, lark_email),
+        )
+        resolved = self._row_get(row, "userId")
+        return str(resolved or "")
+
     def _get_native_connector_payload(
         self,
         provider: str,
@@ -529,11 +801,11 @@ class ConnectorCredentialRepository:
             access_token_expires_at=payload.get("access_token_expires_at") or payload.get("accessTokenExpiresAt"),
             accounts_base_url=(
                 self._payload_get(payload, "accounts_base_url", "accountsBaseUrl")
-                or "https://accounts.zoho.com"
+                or _default_zoho_accounts_base_url()
             ).rstrip("/"),
             api_base_url=(
                 self._payload_get(payload, "api_base_url", "apiBaseUrl")
-                or "https://www.zohoapis.com"
+                or _default_zoho_api_base_url()
             ).rstrip("/"),
             api_domain=self._payload_get(payload, "api_domain", "apiDomain") or None,
             environment=self._payload_get(payload, "environment") or "prod",
@@ -587,6 +859,96 @@ class ConnectorCredentialRepository:
                 or None
             ),
             source="native",
+        )
+
+    def _find_lark_user_auth_link(
+        self,
+        company_id: str,
+        kind: str,
+        value: str,
+    ) -> Any:
+        base_select = """
+            SELECT lua."userId", lua."companyId", lua."larkTenantKey",
+                   lua."larkOpenId", lua."larkUserId", lua."larkEmail",
+                   lua."larkName", lua."accessTokenEncrypted",
+                   lua."refreshTokenEncrypted", lua."tokenType",
+                   lua."accessTokenExpiresAt", lua."refreshTokenExpiresAt"
+            FROM "LarkUserAuthLink" lua
+        """
+        if kind == "user_id":
+            return self._fetchone_optional(
+                base_select
+                + """
+                WHERE lua."companyId" = %s
+                  AND lua."userId" = %s
+                  AND lua."revokedAt" IS NULL
+                LIMIT 1
+                """,
+                (company_id, value),
+            )
+        if kind == "company_user_id":
+            return self._fetchone_optional(
+                base_select
+                + """
+                JOIN "CompanyUser" cu
+                  ON cu."companyId" = lua."companyId"
+                 AND (
+                      cu."userId" = lua."userId"
+                   OR lower(COALESCE(cu."email", '')) = lower(lua."larkEmail")
+                 )
+                WHERE lua."companyId" = %s
+                  AND cu."id" = %s
+                  AND lua."revokedAt" IS NULL
+                ORDER BY CASE WHEN cu."userId" = lua."userId" THEN 0 ELSE 1 END
+                LIMIT 1
+                """,
+                (company_id, value),
+            )
+        if kind == "lark_open_id":
+            return self._fetchone_optional(
+                base_select
+                + """
+                WHERE lua."companyId" = %s
+                  AND lua."larkOpenId" = %s
+                  AND lua."revokedAt" IS NULL
+                LIMIT 1
+                """,
+                (company_id, value),
+            )
+        if kind == "email":
+            return self._fetchone_optional(
+                base_select
+                + """
+                WHERE lua."companyId" = %s
+                  AND lower(lua."larkEmail") = %s
+                  AND lua."revokedAt" IS NULL
+                LIMIT 1
+                """,
+                (company_id, value),
+            )
+        return None
+
+    def _lark_user_from_row(self, row: Mapping[str, Any]) -> Optional[LarkUserConnectionCredentials]:
+        access_token = try_decrypt_token(
+            self._row_get(row, "accessTokenEncrypted"), self._encryption_key
+        )
+        if not access_token:
+            return None
+        return LarkUserConnectionCredentials(
+            company_id=str(self._row_get(row, "companyId") or ""),
+            user_id=str(self._row_get(row, "userId") or ""),
+            lark_tenant_key=str(self._row_get(row, "larkTenantKey") or ""),
+            lark_open_id=self._row_get(row, "larkOpenId") or None,
+            lark_user_id=self._row_get(row, "larkUserId") or None,
+            lark_email=str(self._row_get(row, "larkEmail") or ""),
+            lark_name=self._row_get(row, "larkName") or None,
+            access_token=access_token,
+            refresh_token=try_decrypt_token(
+                self._row_get(row, "refreshTokenEncrypted"), self._encryption_key
+            ),
+            token_type=self._row_get(row, "tokenType") or None,
+            access_token_expires_at=self._row_get(row, "accessTokenExpiresAt"),
+            refresh_token_expires_at=self._row_get(row, "refreshTokenExpiresAt"),
         )
 
     # -- connection helpers (mirror EnterpriseIdentityRepository) -----------

@@ -60,8 +60,8 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Enterprise finance/CRM connectors (gated on Zoho OAuth env via check_fn)
     "zoho_books", "zoho_crm",
-    # Google Workspace connectors (gated on enterprise Postgres + Google OAuth app via check_fn)
-    "gmail", "google_drive",
+    # Google Workspace connectors (gated per-user credential + scopes via check_fn)
+    "gmail", "google_calendar", "google_drive", "google_docs", "google_sheets", "google_slides",
     # Lark/Feishu connectors (gated on enterprise Postgres + LARK_APP_* via check_fn)
     "lark_messaging", "lark_doc", "lark_base", "lark_calendar",
     "lark_contacts", "lark_task", "lark_approval",
@@ -193,7 +193,7 @@ TOOLSETS = {
     },
     
     "messaging": {
-        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
+        "description": "Cross-platform messaging: list configured targets and send messages through connected platforms",
         "tools": ["send_message"],
         "includes": []
     },
@@ -201,6 +201,28 @@ TOOLSETS = {
     "zoho": {
         "description": "Zoho Books finance and Zoho CRM enterprise records",
         "tools": ["zoho_books", "zoho_crm"],
+        "includes": []
+    },
+
+    "google": {
+        "description": "Google Workspace: Gmail, Calendar, Drive, Docs, Sheets, and Slides",
+        "tools": [
+            "gmail",
+            "google_calendar",
+            "google_drive",
+            "google_docs",
+            "google_sheets",
+            "google_slides",
+        ],
+        "includes": [],
+    },
+
+    "lark": {
+        "description": "Native Lark/Feishu tools: messaging, docs, base, calendar, contacts, tasks, and approvals",
+        "tools": [
+            "lark_messaging", "lark_doc", "lark_base", "lark_calendar",
+            "lark_contacts", "lark_task", "lark_approval",
+        ],
         "includes": []
     },
 

@@ -154,15 +154,20 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+# Detect markdown tables: post-type `md` renders these poorly, so structured
+# answers are promoted to interactive cards with native table elements.
+_MARKDOWN_TABLE_RE = re.compile(r"^\s*\|.*\|\s*\n\s*\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_CARD_TITLE = "Divo Dex"
+_CARD_MAX_TABLE_ROWS = 15
+_CARD_MAX_MARKDOWN_CHARS = 1200
+_CARD_MAX_ELEMENTS = 30
+_CARD_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -571,6 +576,214 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _normalize_markdown(content: str) -> str:
+    return (content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _strip_markdown_inline(content: str) -> str:
+    text = (content or "").strip()
+    for _ in range(4):
+        text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = text.replace("**", "")
+    text = re.sub(r"__([^_]+)__", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    text = re.sub(r"_([^_]+)_", r"\1", text)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = _MARKDOWN_LINK_RE.sub(r"\1", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _slug_card_column_name(header: str, index: int) -> str:
+    slug = re.sub(r"\s+", "_", header.strip().lower())
+    slug = re.sub(r"[^a-z0-9_]", "", slug)
+    return slug or f"col_{index}"
+
+
+def _is_markdown_table_block(block: str) -> bool:
+    lines = [line.strip() for line in block.splitlines() if line.strip()]
+    return len(lines) >= 3 and "|" in lines[0] and bool(_CARD_TABLE_SEPARATOR_RE.match(lines[1]))
+
+
+def _parse_markdown_table(block: str) -> Optional[Dict[str, Any]]:
+    lines = [line.strip() for line in block.splitlines() if line.strip()]
+    if len(lines) < 3 or not _CARD_TABLE_SEPARATOR_RE.match(lines[1]):
+        return None
+
+    def parse_row(line: str) -> List[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    headers = parse_row(lines[0])
+    if not headers:
+        return None
+
+    seen_names: Dict[str, int] = {}
+    columns: List[Dict[str, str]] = []
+    for index, header in enumerate(headers):
+        display_name = _strip_markdown_inline(header) or f"Column {index + 1}"
+        base_name = _slug_card_column_name(display_name, index)
+        count = seen_names.get(base_name, 0)
+        seen_names[base_name] = count + 1
+        name = base_name if count == 0 else f"{base_name}_{count + 1}"
+        columns.append({"name": name, "display_name": display_name})
+
+    rows: List[Dict[str, str]] = []
+    for line in lines[2:]:
+        cells = parse_row(line)
+        row: Dict[str, str] = {}
+        for index, column in enumerate(columns):
+            row[column["name"]] = _strip_markdown_inline(cells[index] if index < len(cells) else "")
+        rows.append(row)
+
+    if not rows:
+        return None
+    return {"columns": columns, "rows": rows, "total_rows": len(rows)}
+
+
+def _soften_card_headings(markdown: str) -> str:
+    return re.sub(r"^#{1,3}\s+(.+)$", r"**\1**", markdown, flags=re.MULTILINE)
+
+
+def _split_card_markdown(markdown: str) -> List[str]:
+    if len(markdown) <= _CARD_MAX_MARKDOWN_CHARS:
+        return [markdown]
+    chunks: List[str] = []
+    current = ""
+    for line in markdown.splitlines():
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) <= _CARD_MAX_MARKDOWN_CHARS:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+        current = line
+    if current:
+        chunks.append(current)
+    return chunks or [markdown[:_CARD_MAX_MARKDOWN_CHARS]]
+
+
+def _extract_card_title_and_body(markdown: str) -> tuple[str, str]:
+    normalized = _normalize_markdown(markdown)
+    if not normalized:
+        return _CARD_TITLE, "No content available."
+    lines = normalized.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^#\s+(.+)$", line.strip())
+        if not match:
+            continue
+        body = "\n".join([*lines[:index], *lines[index + 1:]]).strip()
+        return match.group(1).strip() or _CARD_TITLE, body or normalized
+    return _CARD_TITLE, normalized
+
+
+def _card_summary(title: str, body: str) -> str:
+    source = _strip_markdown_to_plain_text(body) or _strip_markdown_to_plain_text(title) or _CARD_TITLE
+    source = re.sub(r"\s+", " ", source).strip()
+    return source[:157] + "..." if len(source) > 160 else source
+
+
+def _markdown_card_element(content: str, *, margin: Optional[str] = None) -> Dict[str, Any]:
+    element: Dict[str, Any] = {
+        "tag": "markdown",
+        "content": content,
+        "text_size": "normal",
+    }
+    if margin:
+        element["margin"] = margin
+    return element
+
+
+def _table_card_element(parsed: Dict[str, Any], element_id: str) -> Dict[str, Any]:
+    rows = parsed["rows"][:_CARD_MAX_TABLE_ROWS]
+    return {
+        "tag": "table",
+        "element_id": element_id,
+        "page_size": min(10, max(1, len(rows))),
+        "row_height": "low",
+        "header_style": {"bold": True, "text_color": "grey"},
+        "columns": [
+            {
+                "name": column["name"],
+                "display_name": column["display_name"],
+                "data_type": "text",
+                "width": "auto",
+            }
+            for column in parsed["columns"]
+        ],
+        "rows": rows,
+    }
+
+
+def _build_card_body_elements(body: str) -> List[Dict[str, Any]]:
+    normalized = _normalize_markdown(body)
+    if not normalized:
+        return [_markdown_card_element("No content available.")]
+
+    preprocessed = re.sub(
+        r"^(\*\*.+\*\*|#{1,6}\s+.+)\n(\s*\|.+\|)",
+        r"\1\n\n\2",
+        normalized,
+        flags=re.MULTILINE,
+    )
+    blocks = [block.strip() for block in re.split(r"\n{2,}", preprocessed) if block.strip()]
+    elements: List[Dict[str, Any]] = []
+    table_index = 0
+
+    for block in blocks:
+        if _is_markdown_table_block(block):
+            parsed = _parse_markdown_table(block)
+            if parsed:
+                table_index += 1
+                elements.append(_table_card_element(parsed, f"data_table_{table_index}"))
+                total_rows = int(parsed.get("total_rows") or 0)
+                if total_rows > _CARD_MAX_TABLE_ROWS:
+                    elements.append(
+                        _markdown_card_element(
+                            f"_Showing {_CARD_MAX_TABLE_ROWS} of {total_rows} rows._",
+                            margin="4px 0 0 0",
+                        )
+                    )
+                continue
+
+        softened = _soften_card_headings(block)
+        for chunk in _split_card_markdown(softened):
+            elements.append(
+                _markdown_card_element(
+                    chunk,
+                    margin="8px 0 0 0" if elements else None,
+                )
+            )
+            if len(elements) >= _CARD_MAX_ELEMENTS:
+                elements.append(_markdown_card_element("_Response shortened for Lark display._", margin="8px 0 0 0"))
+                return elements
+
+    return elements or [_markdown_card_element("No content available.")]
+
+
+def _build_interactive_markdown_card_payload(content: str) -> str:
+    title, body = _extract_card_title_and_body(content)
+    card: Dict[str, Any] = {
+        "schema": "2.0",
+        "config": {
+            "width_mode": "fill",
+            "update_multi": True,
+            "enable_forward": True,
+            "summary": {"content": _card_summary(title, body)},
+        },
+        "header": {
+            "template": "default",
+            "title": {"tag": "plain_text", "content": _CARD_TITLE},
+        },
+        "body": {
+            "vertical_spacing": "8px",
+            "padding": "12px 12px 12px 12px",
+            "elements": _build_card_body_elements(body),
+        },
+    }
+    if title != _CARD_TITLE:
+        card["header"]["subtitle"] = {"tag": "plain_text", "content": title}
+    return json.dumps(card, ensure_ascii=False)
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -4370,12 +4583,8 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_interactive_markdown_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

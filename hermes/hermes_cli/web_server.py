@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import base64
 import binascii
+import html
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hmac
@@ -178,6 +179,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 from hermes_cli.dashboard_auth.public_paths import (
     PUBLIC_API_PATHS as _PUBLIC_API_PATHS,
+    is_public_api_path,
 )
 
 
@@ -332,12 +334,75 @@ async def auth_middleware(request: Request, call_next):
     if getattr(request.app.state, "auth_required", False):
         return await call_next(request)
     path = request.url.path
-    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
+    if path.startswith("/api/") and not is_public_api_path(path):
         if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
             )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def policy_middleware(request: Request, call_next):
+    """Apply central RBAC/ABAC checks to sensitive dashboard API routes."""
+    if getattr(request.app.state, "auth_required", False) and getattr(request.state, "session", None) is None:
+        from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+
+        async def _after_gate(authenticated_request: Request):
+            return await _policy_checked_response(authenticated_request, call_next)
+
+        return await gated_auth_middleware(request, _after_gate)
+    return await _policy_checked_response(request, call_next)
+
+
+async def _policy_checked_response(request: Request, call_next):
+    """Run policy enforcement after any dashboard auth session is attached."""
+    path = request.url.path
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    try:
+        from enterprise.policy import admin_route_decision, decision_allows_effectively, is_enforced
+        from enterprise.policy.catalog import route_policy_for_path
+        from gateway.company_identity import get_identity_store
+
+        route_policy = route_policy_for_path(path, request.method)
+        if route_policy is None:
+            return await call_next(request)
+
+        store = get_identity_store()
+        try:
+            company_id, actor = _policy_actor_for_request(request, store)
+        except HTTPException as exc:
+            if is_enforced():
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            company_id, actor = store.ensure_default_company(), {}
+        decision = admin_route_decision(
+            path=path,
+            method=request.method,
+            principal=_policy_identity_from_actor(actor, company_id=company_id),
+        )
+        if decision is not None and not decision_allows_effectively(decision):
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": decision.reason or "Access denied",
+                    "code": decision.code or "policy_denied",
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - policy failures fail closed only in enforce mode
+        try:
+            from enterprise.policy import is_enforced
+
+            if is_enforced():
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": f"Policy enforcement unavailable: {exc}"},
+                )
+        except Exception:
+            pass
     return await call_next(request)
 
 
@@ -895,6 +960,32 @@ def _serialize_company_user_timestamp(value: Any) -> str | None:
     return text or None
 
 
+def _read_home_channel_field(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in row:
+            return row.get(key)
+    return None
+
+
+def _serialize_company_home_channel(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(_read_home_channel_field(row, "id") or ""),
+        "company_id": str(_read_home_channel_field(row, "company_id", "companyId") or ""),
+        "company_user_id": str(_read_home_channel_field(row, "company_user_id", "companyUserId") or ""),
+        "platform": str(_read_home_channel_field(row, "platform") or ""),
+        "chat_id": str(_read_home_channel_field(row, "chat_id", "chatId") or ""),
+        "chat_name": _read_home_channel_field(row, "chat_name", "chatName"),
+        "thread_id": _read_home_channel_field(row, "thread_id", "threadId"),
+        "channel_identity_id": _read_home_channel_field(row, "channel_identity_id", "channelIdentityId"),
+        "created_at": _serialize_company_user_timestamp(
+            _read_home_channel_field(row, "created_at", "createdAt")
+        ),
+        "updated_at": _serialize_company_user_timestamp(
+            _read_home_channel_field(row, "updated_at", "updatedAt")
+        ),
+    }
+
+
 @app.get("/api/company/me")
 async def get_company_me(request: Request):
     """Return the authenticated employee's company profile."""
@@ -913,6 +1004,7 @@ async def get_company_me(request: Request):
         find_dashboard_company_user,
         get_company,
         get_identity_store,
+        list_company_user_home_channels,
         list_channel_identities_for_company_user,
     )
 
@@ -953,7 +1045,7 @@ async def get_company_me(request: Request):
     )
 
     if row:
-        return serialize_company_user(
+        payload = serialize_company_user(
             row,
             channel_identities=channels,
             session_fallback=session_map,
@@ -961,12 +1053,1026 @@ async def get_company_me(request: Request):
             company_name=company_name,
             include_company_name=True,
         )
-    return synthesize_session_company_user(
+        payload["home_channels"] = [
+            _serialize_company_home_channel(home)
+            for home in list_company_user_home_channels(
+                company_id=company_id,
+                company_user_id=str(row.get("id")),
+                db=store,
+            )
+        ]
+        return payload
+    payload = synthesize_session_company_user(
         session_map,
         company_id=company_id,
         company_name=company_name,
         lark_enrichment=lark_profiles,
     )
+    payload["home_channels"] = []
+    return payload
+
+
+@app.get("/api/policy/me")
+async def get_policy_me(request: Request):
+    """Return the current dashboard actor and policy capabilities."""
+    from enterprise.policy import build_capabilities, policy_mode
+    from enterprise.policy.catalog import ADMIN_ROUTE_POLICIES, NAV_PATH_CAPABILITIES
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    identity = _policy_identity_from_actor(actor, company_id=company_id)
+    capabilities = build_capabilities(identity)
+    nav = {
+        path: bool(capabilities.get(capability))
+        for path, capability in NAV_PATH_CAPABILITIES.items()
+    }
+    route_catalog = [
+        {
+            "key": key,
+            "capability": policy.capability,
+            "action": policy.action,
+            "resource": policy.resource,
+            "label": policy.label,
+            "admin_only": policy.admin_only,
+            "allowed": bool(capabilities.get(policy.capability)),
+        }
+        for key, policy in sorted(ADMIN_ROUTE_POLICIES.items())
+    ]
+    return {
+        "mode": policy_mode(),
+        "actor": _serialize_policy_actor(actor, company_id=company_id),
+        "capabilities": capabilities,
+        "nav": nav,
+        "routes": route_catalog,
+    }
+
+
+@app.get("/api/policy/audit")
+async def get_policy_audit(request: Request, limit: int = 100):
+    """Return recent local policy audit events for the admin UI."""
+    from enterprise.policy import require_policy
+    from enterprise.policy.audit import read_recent_policy_audit
+    from enterprise.policy.models import PolicyContext, PolicyResource
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    require_policy(
+        principal=_policy_identity_from_actor(actor, company_id=company_id),
+        action="read",
+        resource=PolicyResource(
+            type="AdminRoute",
+            id="policy.audit",
+            company_id=company_id,
+            risk_class="admin",
+            attributes={"capability": "policy.manage"},
+        ),
+        context=PolicyContext(phase="policy_audit"),
+    )
+    return {"events": read_recent_policy_audit(limit=limit)}
+
+
+class PolicyBindingUpsert(BaseModel):
+    principal_type: str
+    principal_id: str
+    resource_type: str
+    resource_id: str
+    action: str
+    effect: str = "permit"
+    context: dict[str, Any] | None = None
+
+
+@app.get("/api/policy/bindings")
+async def get_policy_bindings(request: Request):
+    """Return editable policy bindings for the current company."""
+    from enterprise.policy import require_policy
+    from enterprise.policy.models import PolicyContext, PolicyResource
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    require_policy(
+        principal=_policy_identity_from_actor(actor, company_id=company_id),
+        action="manage",
+        resource=PolicyResource(
+            type="AdminRoute",
+            id="policy",
+            company_id=company_id,
+            risk_class="admin",
+            attributes={"capability": "policy.manage"},
+        ),
+        context=PolicyContext(phase="policy_bindings"),
+    )
+    repo = _get_policy_repository()
+    return {
+        "company_id": company_id,
+        "bindings": [
+            binding.to_dict()
+            for binding in repo.list_bindings(company_id=company_id, include_inactive=False)
+        ],
+    }
+
+
+@app.post("/api/policy/bindings")
+async def create_policy_binding(body: PolicyBindingUpsert, request: Request):
+    """Create or replace a policy binding for the current company."""
+    from enterprise.policy.models import PolicyContext, PolicyResource
+    from enterprise.policy import require_policy
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    require_policy(
+        principal=_policy_identity_from_actor(actor, company_id=company_id),
+        action="manage",
+        resource=PolicyResource(
+            type="AdminRoute",
+            id="policy",
+            company_id=company_id,
+            risk_class="admin",
+            attributes={"capability": "policy.manage"},
+        ),
+        context=PolicyContext(phase="policy_bindings"),
+    )
+    repo = _get_policy_repository()
+    try:
+        binding = repo.put_binding(
+            company_id=company_id,
+            binding={
+                "principal_type": body.principal_type,
+                "principal_id": body.principal_id,
+                "resource_type": body.resource_type,
+                "resource_id": body.resource_id,
+                "action": body.action,
+                "effect": body.effect,
+                "context": body.context or {},
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"binding": binding.to_dict()}
+
+
+@app.delete("/api/policy/bindings/{binding_id}")
+async def delete_policy_binding(binding_id: str, request: Request):
+    """Soft-delete a policy binding for the current company."""
+    from enterprise.policy import require_policy
+    from enterprise.policy.models import PolicyContext, PolicyResource
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    require_policy(
+        principal=_policy_identity_from_actor(actor, company_id=company_id),
+        action="manage",
+        resource=PolicyResource(
+            type="AdminRoute",
+            id="policy",
+            company_id=company_id,
+            risk_class="admin",
+            attributes={"capability": "policy.manage"},
+        ),
+        context=PolicyContext(phase="policy_bindings"),
+    )
+    repo = _get_policy_repository()
+    deleted = repo.delete_binding(company_id=company_id, binding_id=binding_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Policy binding not found")
+    return {"ok": True}
+
+
+@app.get("/api/company/home-channels")
+async def get_company_home_channels(request: Request):
+    """Return home-channel delivery targets for the authenticated employee."""
+    from gateway.company_identity import get_identity_store, list_company_user_home_channels
+
+    store = get_identity_store()
+    company_id, actor = _current_company_actor(request, store)
+    actor_id = str(actor.get("id") or "")
+    return {
+        "company_id": company_id,
+        "company_user_id": actor_id,
+        "home_channels": [
+            _serialize_company_home_channel(row)
+            for row in list_company_user_home_channels(
+                company_id=company_id,
+                company_user_id=actor_id,
+                db=store,
+            )
+        ],
+    }
+
+
+class CompanyDesktopHomeChannelUpsert(BaseModel):
+    device_id: str
+    device_name: str | None = None
+
+
+class FollowUpCreateApiBody(BaseModel):
+    title: str
+    assigneeId: str | None = None
+    assigneeQuery: str | None = None
+    dueDate: str
+    notes: str | None = None
+    policyPreset: str = "start_pause_done"
+    sourceSessionId: str | None = None
+
+
+class FollowUpStartIntentApiBody(BaseModel):
+    active_session_id: str | None = None
+    activeSessionId: str | None = None
+
+
+class FollowUpPauseApiBody(BaseModel):
+    reason: str | None = None
+
+
+class FollowUpUpdateDocApiBody(BaseModel):
+    note: str | None = None
+    content: str | None = None
+
+
+class FollowUpCompleteApiBody(BaseModel):
+    summary: str | None = None
+
+
+@app.put("/api/company/home-channels/desktop")
+async def set_company_desktop_home_channel(
+    body: CompanyDesktopHomeChannelUpsert,
+    request: Request,
+):
+    """Set the authenticated employee's desktop app as a home target."""
+    from gateway.company_identity import get_identity_store, upsert_company_user_home_channel
+
+    device_id = str(body.device_id or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=422, detail="device_id is required")
+    if len(device_id) > 160:
+        raise HTTPException(status_code=422, detail="device_id is too long")
+
+    device_name = (body.device_name or "Desktop").strip()[:160] or "Desktop"
+    store = get_identity_store()
+    company_id, actor = _current_company_actor(request, store)
+    actor_id = str(actor.get("id") or "")
+    row = upsert_company_user_home_channel(
+        company_id=company_id,
+        company_user_id=actor_id,
+        platform="desktop",
+        chat_id=device_id,
+        chat_name=device_name,
+        metadata={"source": "desktop", "device_name": device_name},
+        db=store,
+    )
+    return _serialize_company_home_channel(row)
+
+
+def _get_follow_up_repository():
+    try:
+        from enterprise.db import get_enterprise_connection
+        from enterprise.follow_up_repository import FollowUpRepository
+
+        return FollowUpRepository(get_enterprise_connection())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Divo Follow Ups store is unavailable: {exc}",
+        ) from exc
+
+
+def _get_follow_up_service():
+    from enterprise.follow_ups.service import (
+        CompanyIdentityFollowUpResolver,
+        DivoFollowUpsService,
+        NativeToolFollowUpLarkGateway,
+    )
+
+    return DivoFollowUpsService(
+        repository=_get_follow_up_repository(),
+        identity_resolver=CompanyIdentityFollowUpResolver(),
+        lark_gateway=NativeToolFollowUpLarkGateway(),
+    )
+
+
+def _follow_up_policy_for_preset(preset: str | None) -> dict[str, Any]:
+    base = {
+        "doc_update_mode": "summary_checkpoint",
+        "completion_summary_required": True,
+    }
+    value = str(preset or "start_pause_done").strip()
+    if value == "start_done":
+        return {**base, "notify_on_start": True, "notify_on_pause": False, "notify_on_done": True}
+    if value == "only_done":
+        return {**base, "notify_on_start": False, "notify_on_pause": False, "notify_on_done": True}
+    return {**base, "notify_on_start": True, "notify_on_pause": True, "notify_on_done": True}
+
+
+def _follow_up_created_payload(repo, company_id: str, follow_up_id: str) -> dict[str, Any]:
+    try:
+        for event in repo.list_events(company_id, follow_up_id):
+            if getattr(event, "event_type", "") == "created":
+                payload = getattr(event, "payload_json", {}) or {}
+                return dict(payload) if isinstance(payload, dict) else {}
+    except Exception as exc:  # noqa: BLE001 - list views should degrade gracefully
+        _log.debug("failed to read follow-up created event: %s", exc)
+    return {}
+
+
+def _follow_up_user_name(company_id: str, company_user_id: str, store) -> str:
+    try:
+        from gateway.company_identity import get_company_user
+
+        row = get_company_user(company_user_id, company_id=company_id, db=store)
+        return (
+            _company_row_field(row, "display_name", "displayName", "name", "email")
+            or company_user_id
+        )
+    except Exception:
+        return company_user_id
+
+
+def _follow_up_due_group_and_label(due_date: str | None) -> tuple[str, str]:
+    value = str(due_date or "").strip()
+    lower = value.lower()
+    if lower == "today":
+        return "today", "Today EOD"
+    if lower == "tomorrow":
+        return "today", "Tomorrow EOD"
+    if value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+            today = datetime.now(timezone.utc).date()
+            if parsed < today:
+                return "overdue", f"Overdue · {parsed.isoformat()}"
+            if parsed == today:
+                return "today", "Today"
+            return "upcoming", parsed.isoformat()
+        except ValueError:
+            return "upcoming", value
+    return "upcoming", "No due date"
+
+
+def _follow_up_lifecycle_actions(follow_up, *, actor: dict[str, Any] | None) -> dict[str, Any]:
+    actor_id = _company_user_id(actor)
+    status = str(getattr(follow_up, "status", "") or "")
+    is_assignee = bool(actor_id) and actor_id == str(getattr(follow_up, "assignee_company_user_id", "") or "")
+    is_delegator = bool(actor_id) and actor_id == str(getattr(follow_up, "delegator_company_user_id", "") or "")
+    has_doc = bool(getattr(follow_up, "tracking_doc_url", None) or getattr(follow_up, "tracking_doc_token", None))
+    policy = dict(getattr(follow_up, "follow_up_policy_json", {}) or {})
+    return {
+        "isFollowUp": True,
+        "canStart": is_assignee and status in {"assigned", "starting", "paused"},
+        "canPause": is_assignee and status == "active",
+        "canUpdateDoc": is_assignee and status == "active" and has_doc,
+        "canComplete": is_assignee and status == "active",
+        "canReassign": is_delegator and status in {"assigned", "starting", "active", "paused"},
+        "canOpenTrackingDoc": has_doc,
+        "requiresCompletionSummary": bool(policy.get("completion_summary_required", True)),
+    }
+
+
+def _plain_lark_task_lifecycle_actions() -> dict[str, Any]:
+    return {
+        "isFollowUp": False,
+        "canStart": False,
+        "canPause": False,
+        "canUpdateDoc": False,
+        "canComplete": False,
+        "canReassign": False,
+        "canOpenTrackingDoc": False,
+        "requiresCompletionSummary": False,
+    }
+
+
+def _serialize_follow_up_record(follow_up, *, repo, store, actor: dict[str, Any] | None = None) -> dict[str, Any]:
+    company_id = str(getattr(follow_up, "company_id", "") or "")
+    created = _follow_up_created_payload(repo, company_id, str(getattr(follow_up, "id", "") or ""))
+    due_date = str(created.get("due_date") or "")
+    group, due_label = _follow_up_due_group_and_label(due_date)
+    title = str(created.get("title") or getattr(follow_up, "lark_task_guid", "") or "").strip()
+    return {
+        "id": str(getattr(follow_up, "id", "") or ""),
+        "title": title,
+        "status": str(getattr(follow_up, "status", "") or ""),
+        "assignedByName": _follow_up_user_name(
+            company_id,
+            str(getattr(follow_up, "delegator_company_user_id", "") or ""),
+            store,
+        ),
+        "assigneeName": _follow_up_user_name(
+            company_id,
+            str(getattr(follow_up, "assignee_company_user_id", "") or ""),
+            store,
+        ),
+        "dueLabel": due_label,
+        "dueDate": due_date or None,
+        "group": group,
+        "notes": created.get("notes") or None,
+        "larkTaskGuid": str(getattr(follow_up, "lark_task_guid", "") or "") or None,
+        "larkTaskUrl": created.get("lark_task_url") or None,
+        "trackingDocToken": getattr(follow_up, "tracking_doc_token", None),
+        "trackingDocUrl": getattr(follow_up, "tracking_doc_url", None),
+        "delegatedTag": "Divo Follow Up",
+        "followUpPolicyJson": dict(getattr(follow_up, "follow_up_policy_json", {}) or {}),
+        "lifecycleActions": _follow_up_lifecycle_actions(follow_up, actor=actor),
+    }
+
+
+def _serialize_lark_task_record(task: dict[str, Any], *, actor: dict[str, Any]) -> dict[str, Any] | None:
+    task_id = _clean_text(task.get("taskId") or task.get("guid") or task.get("id"))
+    title = _clean_text(task.get("title") or task.get("summary"))
+    if not task_id or not title:
+        return None
+    due_date = _clean_text(task.get("dueDate"))
+    group, due_label = _follow_up_due_group_and_label(due_date)
+    actor_name = _company_row_field(actor, "display_name", "displayName", "name", "email") or "You"
+    return {
+        "id": f"lark:{task_id}",
+        "title": title,
+        "status": "assigned",
+        "assignedByName": "Lark Tasks",
+        "assigneeName": actor_name,
+        "dueLabel": due_label,
+        "dueDate": due_date or None,
+        "group": group,
+        "notes": _clean_text(task.get("notes") or task.get("description")) or None,
+        "larkTaskGuid": task_id,
+        "larkTaskUrl": _clean_text(task.get("url") or task.get("taskUrl")) or None,
+        "trackingDocToken": None,
+        "trackingDocUrl": None,
+        "delegatedTag": None,
+        "followUpPolicyJson": {},
+        "lifecycleActions": _plain_lark_task_lifecycle_actions(),
+    }
+
+
+def _actor_lark_channel_context(company_user_id: str, *, store) -> tuple[str, str]:
+    if not company_user_id:
+        return "", ""
+    try:
+        from company_member_profile import resolve_channel_identity_id, resolve_lark_open_id
+        from gateway.company_identity import list_channel_identities_for_company_user
+
+        channels = list_channel_identities_for_company_user(company_user_id, db=store)
+        return (
+            resolve_lark_open_id(channel_identities=channels) or "",
+            resolve_channel_identity_id(channel_identities=channels) or "",
+        )
+    except Exception as exc:  # noqa: BLE001 - Lark slices degrade independently
+        _log.debug("failed to resolve Lark channel context for actor %s: %s", company_user_id, exc)
+        return "", ""
+
+
+def _actor_lark_open_id(company_user_id: str, *, store) -> str:
+    return _actor_lark_channel_context(company_user_id, store=store)[0]
+
+
+def _lark_registry_identity_kwargs(
+    *,
+    company_id: str,
+    actor: dict[str, Any],
+    store,
+) -> dict[str, Any]:
+    company_user_id = _company_user_id(actor)
+    lark_open_id, channel_identity_id = _actor_lark_channel_context(company_user_id, store=store)
+    return {
+        "company_id": company_id,
+        "company_user_id": company_user_id,
+        "company_role": _company_user_role(actor),
+        "department_id": _company_row_field(actor, "department_id", "departmentId"),
+        "lark_open_id": lark_open_id,
+        "channel_identity_id": channel_identity_id,
+    }
+
+
+def _list_current_user_lark_open_tasks(
+    *,
+    company_id: str,
+    actor: dict[str, Any],
+    store,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    identity = _lark_registry_identity_kwargs(company_id=company_id, actor=actor, store=store)
+    if not identity.get("lark_open_id") or not identity.get("channel_identity_id"):
+        return []
+    try:
+        import tools.lark_tools  # noqa: F401 - ensures lark_task is registered
+        from tools.registry import registry
+
+        raw = registry.dispatch(
+            "lark_task",
+            {"op": "listOpenMine", "limit": limit},
+            **identity,
+        )
+        parsed = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001 - list route degrades to Divo-only
+        _log.debug("failed to list Lark tasks for follow-up merge: %s", exc)
+        return []
+    if not isinstance(parsed, dict) or not parsed.get("success"):
+        _log.debug("lark_task.listOpenMine unavailable for follow-up merge: %s", parsed)
+        return []
+    data = parsed.get("data")
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def _merge_lark_tasks_with_follow_ups(
+    *,
+    lark_tasks: list[dict[str, Any]],
+    follow_up_records: list[dict[str, Any]],
+    actor: dict[str, Any],
+) -> list[dict[str, Any]]:
+    follow_ups_by_task_guid = {
+        str(record.get("larkTaskGuid") or ""): record
+        for record in follow_up_records
+        if str(record.get("larkTaskGuid") or "")
+    }
+    emitted_follow_up_ids: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for task in lark_tasks:
+        task_record = _serialize_lark_task_record(task, actor=actor)
+        if task_record is None:
+            continue
+        follow_up_record = follow_ups_by_task_guid.get(str(task_record.get("larkTaskGuid") or ""))
+        if follow_up_record is not None:
+            merged.append(follow_up_record)
+            emitted_follow_up_ids.add(str(follow_up_record.get("id") or ""))
+        else:
+            merged.append(task_record)
+    for record in follow_up_records:
+        record_id = str(record.get("id") or "")
+        if record_id not in emitted_follow_up_ids:
+            merged.append(record)
+    return merged
+
+
+def _dispatch_lark_tool_for_actor(
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    company_id: str,
+    actor: dict[str, Any],
+    store,
+) -> list[dict[str, Any]]:
+    identity = _lark_registry_identity_kwargs(company_id=company_id, actor=actor, store=store)
+    if not identity.get("lark_open_id") or not identity.get("channel_identity_id"):
+        return []
+    try:
+        import tools.lark_tools  # noqa: F401 - ensures tools are registered
+        from tools.registry import registry
+
+        raw = registry.dispatch(
+            tool_name,
+            args,
+            **identity,
+        )
+        parsed = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001 - today slices degrade independently
+        _log.debug("%s unavailable for today panel: %s", tool_name, exc)
+        return []
+    if not isinstance(parsed, dict) or not parsed.get("success"):
+        _log.debug("%s returned no data for today panel: %s", tool_name, parsed)
+        return []
+    data = parsed.get("data")
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def _today_date_label() -> str:
+    from hermes_time import now as hermes_now
+
+    return hermes_now().strftime("%a, %b %d")
+
+
+def _today_window_iso() -> tuple[str, str]:
+    from hermes_time import now as hermes_now
+
+    local_now = hermes_now()
+    start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = local_now.replace(hour=23, minute=59, second=59, microsecond=0)
+    return start.isoformat(), end.isoformat()
+
+
+def _serialize_today_meeting(event: dict[str, Any]) -> dict[str, Any] | None:
+    event_id = _clean_text(event.get("eventId") or event.get("event_id"))
+    title = _clean_text(event.get("summary") or event.get("title")) or "(No title)"
+    start_time = _clean_text(event.get("startTime"))
+    if not event_id:
+        return None
+    time_label = ""
+    if start_time:
+        try:
+            from hermes_time import now as hermes_now
+
+            parsed = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            local = parsed.astimezone(hermes_now().tzinfo)
+            time_label = local.strftime("%H:%M")
+        except ValueError:
+            time_label = start_time
+    attendee_count = event.get("attendeeCount")
+    duration = event.get("durationMin")
+    sub_parts = []
+    if duration:
+        sub_parts.append(f"{duration}m")
+    if attendee_count:
+        sub_parts.append(f"{attendee_count} guests")
+    vc_url = _clean_text(event.get("vcUrl"))
+    if vc_url:
+        sub_parts.append("Lark VC")
+    return {
+        "id": f"cal:{event_id}",
+        "eventId": event_id,
+        "time": time_label,
+        "title": title,
+        "sub": " · ".join(sub_parts) if sub_parts else "Calendar",
+        "startTime": start_time or None,
+        "endTime": _clean_text(event.get("endTime")) or None,
+        "vcUrl": vc_url or None,
+        "durationMin": duration,
+        "attendeeCount": attendee_count,
+    }
+
+
+def _list_today_calendar_events(
+    *,
+    company_id: str,
+    actor: dict[str, Any],
+    store,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    date_from, date_to = _today_window_iso()
+    events = _dispatch_lark_tool_for_actor(
+        "lark_calendar",
+        {"op": "list", "dateFrom": date_from, "dateTo": date_to, "limit": limit},
+        company_id=company_id,
+        actor=actor,
+        store=store,
+    )
+    meetings = [_serialize_today_meeting(event) for event in events]
+    meetings = [item for item in meetings if item is not None]
+    meetings.sort(key=lambda item: item.get("startTime") or "")
+    now = datetime.now(timezone.utc)
+    for meeting in meetings:
+        start_time = meeting.get("startTime")
+        if not start_time:
+            continue
+        try:
+            start = datetime.fromisoformat(str(start_time).replace("Z", "+00:00"))
+            end_raw = meeting.get("endTime")
+            end = (
+                datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
+                if end_raw
+                else start
+            )
+            meeting["soon"] = start <= now <= end
+        except ValueError:
+            meeting["soon"] = False
+    return meetings
+
+
+def _serialize_needs_you_approval(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": f"approval:{item.get('instanceCode') or item.get('instance_code')}",
+        "kind": "approval",
+        "title": _clean_text(item.get("title")) or "Approval",
+        "meta": _clean_text(item.get("status")) or "Pending",
+        "instanceCode": _clean_text(item.get("instanceCode") or item.get("instance_code")),
+        "approvalCode": _clean_text(item.get("approvalCode") or item.get("approval_code")),
+    }
+
+
+def _serialize_needs_you_mention(item: dict[str, Any]) -> dict[str, Any]:
+    chat_name = _clean_text(item.get("chatName")) or "Chat"
+    sender = _clean_text(item.get("senderName"))
+    text = _clean_text(item.get("text"))
+    meta = f"{sender}: {text}" if sender and text else text or sender or "Mention"
+    return {
+        "id": f"mention:{item.get('messageId') or item.get('message_id')}",
+        "kind": "mention",
+        "title": f"@you in {chat_name}",
+        "meta": meta[:160],
+        "messageId": _clean_text(item.get("messageId") or item.get("message_id")),
+        "chatId": _clean_text(item.get("chatId") or item.get("chat_id")),
+    }
+
+
+def _list_today_needs_you(
+    *,
+    company_id: str,
+    actor: dict[str, Any],
+    store,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    approvals = _dispatch_lark_tool_for_actor(
+        "lark_approval",
+        {"op": "listPendingMine", "limit": limit},
+        company_id=company_id,
+        actor=actor,
+        store=store,
+    )
+    mentions = _dispatch_lark_tool_for_actor(
+        "lark_messaging",
+        {"op": "listMentionsMine", "limit": limit},
+        company_id=company_id,
+        actor=actor,
+        store=store,
+    )
+    items = [_serialize_needs_you_approval(item) for item in approvals]
+    items.extend(_serialize_needs_you_mention(item) for item in mentions)
+    return items[:limit]
+
+
+def _collect_today_docs(task_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    docs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in task_records:
+        lifecycle = record.get("lifecycleActions") if isinstance(record.get("lifecycleActions"), dict) else {}
+        if not lifecycle.get("isFollowUp"):
+            continue
+        token = _clean_text(record.get("trackingDocToken"))
+        url = _clean_text(record.get("trackingDocUrl"))
+        title = _clean_text(record.get("title")) or "Tracking doc"
+        key = token or url
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        docs.append({
+            "id": f"doc:{token or url}",
+            "kind": "doc",
+            "title": f"{title} — tracking doc",
+            "meta": "Active follow-up",
+            "docToken": token or None,
+            "docUrl": url or None,
+            "tag": "Tracking doc",
+        })
+    return docs
+
+
+def _active_follow_up_summaries(task_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    active: list[dict[str, Any]] = []
+    for record in task_records:
+        lifecycle = record.get("lifecycleActions") if isinstance(record.get("lifecycleActions"), dict) else {}
+        if not lifecycle.get("isFollowUp"):
+            continue
+        status = str(record.get("status") or "")
+        if status not in {"active", "starting"}:
+            continue
+        active.append({
+            "id": str(record.get("id") or ""),
+            "title": _clean_text(record.get("title")) or "Follow-up",
+            "status": status,
+            "assigneeName": _clean_text(record.get("assigneeName")),
+            "assignedByName": _clean_text(record.get("assignedByName")),
+            "dueLabel": _clean_text(record.get("dueLabel")),
+            "trackingDocUrl": _clean_text(record.get("trackingDocUrl")) or None,
+            "lifecycleActions": lifecycle,
+        })
+    return active
+
+
+def _ensure_follow_up_actor_access(follow_up, actor: dict[str, Any]) -> None:
+    actor_id = _company_user_id(actor)
+    if actor_id not in {
+        str(getattr(follow_up, "delegator_company_user_id", "") or ""),
+        str(getattr(follow_up, "assignee_company_user_id", "") or ""),
+    }:
+        raise HTTPException(status_code=404, detail="Follow-up not found")
+
+
+@app.get("/api/company/follow-ups")
+async def list_company_follow_ups(request: Request):
+    """List Divo Follow Ups related to the current employee."""
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    actor_id = _company_user_id(actor)
+    repo = _get_follow_up_repository()
+    rows = repo.list_for_user(company_id, actor_id)
+    follow_up_records = [
+        _serialize_follow_up_record(row, repo=repo, store=store, actor=actor)
+        for row in rows
+    ]
+    lark_tasks = _list_current_user_lark_open_tasks(
+        company_id=company_id,
+        actor=actor,
+        store=store,
+    )
+    return {
+        "company_id": company_id,
+        "tasks": _merge_lark_tasks_with_follow_ups(
+            lark_tasks=lark_tasks,
+            follow_up_records=follow_up_records,
+            actor=actor,
+        ),
+    }
+
+
+@app.get("/api/company/today")
+async def get_company_today(request: Request):
+    """Aggregated Lark today panel for the desktop landing screen."""
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    actor_id = _company_user_id(actor)
+    follow_up_records: list[dict[str, Any]] = []
+    try:
+        repo = _get_follow_up_repository()
+        rows = repo.list_for_user(company_id, actor_id)
+        follow_up_records = [
+            _serialize_follow_up_record(row, repo=repo, store=store, actor=actor)
+            for row in rows
+        ]
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        _log.warning("today panel: follow-ups store unavailable, degrading to Lark-only: %s", exc.detail)
+    lark_tasks = _list_current_user_lark_open_tasks(
+        company_id=company_id,
+        actor=actor,
+        store=store,
+    )
+    tasks = _merge_lark_tasks_with_follow_ups(
+        lark_tasks=lark_tasks,
+        follow_up_records=follow_up_records,
+        actor=actor,
+    )
+    meetings = _list_today_calendar_events(company_id=company_id, actor=actor, store=store)
+    needs_you = _list_today_needs_you(company_id=company_id, actor=actor, store=store)
+    docs = _collect_today_docs(tasks)
+    active_follow_ups = _active_follow_up_summaries(tasks)
+    return {
+        "company_id": company_id,
+        "dateLabel": _today_date_label(),
+        "syncedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "tasks": tasks,
+        "meetings": meetings,
+        "activeFollowUps": active_follow_ups,
+        "needsYou": needs_you,
+        "docs": docs,
+    }
+
+
+@app.post("/api/company/follow-ups")
+async def create_company_follow_up(body: FollowUpCreateApiBody, request: Request):
+    """Create a Divo Follow Up using the current employee as delegator."""
+    from enterprise.follow_ups.service import CreateFollowUpRequest, FollowUpServiceError
+    from gateway.company_identity import get_identity_store
+
+    title = _clean_text(body.title)
+    due_date = _clean_text(body.dueDate)
+    if not title:
+        raise HTTPException(status_code=422, detail="title is required")
+    if not due_date:
+        raise HTTPException(status_code=422, detail="dueDate is required")
+    if not _clean_text(body.assigneeId) and not _clean_text(body.assigneeQuery):
+        raise HTTPException(status_code=422, detail="assigneeId or assigneeQuery is required")
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    service = _get_follow_up_service()
+    try:
+        result = service.create_follow_up(
+            CreateFollowUpRequest(
+                company_id=company_id,
+                delegator_company_user_id=_company_user_id(actor),
+                assignee_company_user_id=_clean_text(body.assigneeId) or None,
+                assignee_query=_clean_text(body.assigneeQuery) or None,
+                title=title,
+                due_date=due_date,
+                notes=_clean_text(body.notes) or None,
+                source_session_id=_clean_text(body.sourceSessionId) or None,
+                follow_up_policy_json=_follow_up_policy_for_preset(body.policyPreset),
+            )
+        )
+    except FollowUpServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    repo = service._repository
+    return {"followUp": _serialize_follow_up_record(result.follow_up, repo=repo, store=store, actor=actor)}
+
+
+@app.get("/api/company/follow-ups/{follow_up_id}")
+async def get_company_follow_up_detail(follow_up_id: str, request: Request):
+    """Return one Divo Follow Up detail payload."""
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    repo = _get_follow_up_repository()
+    follow_up = repo.get_follow_up(company_id, follow_up_id)
+    if follow_up is None:
+        raise HTTPException(status_code=404, detail="Follow-up not found")
+    _ensure_follow_up_actor_access(follow_up, actor)
+    return {"followUp": _serialize_follow_up_record(follow_up, repo=repo, store=store, actor=actor)}
+
+
+@app.post("/api/company/follow-ups/{follow_up_id}/start-intent")
+async def start_company_follow_up_intent(
+    follow_up_id: str,
+    body: FollowUpStartIntentApiBody,
+    request: Request,
+):
+    """Confirmed-start endpoint called after Dex verifies the agent is working."""
+    from enterprise.follow_ups.service import FollowUpServiceError, StartFollowUpRequest
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    service = _get_follow_up_service()
+    active_session_id = _clean_text(body.active_session_id) or _clean_text(body.activeSessionId)
+    try:
+        result = service.start_follow_up(
+            StartFollowUpRequest(
+                company_id=company_id,
+                follow_up_id=follow_up_id,
+                actor_company_user_id=_company_user_id(actor),
+                active_session_id=active_session_id,
+            )
+        )
+    except FollowUpServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"followUp": _serialize_follow_up_record(result.follow_up, repo=service._repository, store=store, actor=actor)}
+
+
+@app.post("/api/company/follow-ups/{follow_up_id}/pause")
+async def pause_company_follow_up(
+    follow_up_id: str,
+    request: Request,
+    body: FollowUpPauseApiBody | None = None,
+):
+    """Pause an active Divo Follow Up."""
+    from enterprise.follow_ups.service import FollowUpServiceError, PauseFollowUpRequest
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    service = _get_follow_up_service()
+    try:
+        result = service.pause_follow_up(
+            PauseFollowUpRequest(
+                company_id=company_id,
+                follow_up_id=follow_up_id,
+                actor_company_user_id=_company_user_id(actor),
+                reason=_clean_text(getattr(body, "reason", None)) or None,
+            )
+        )
+    except FollowUpServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"followUp": _serialize_follow_up_record(result.follow_up, repo=service._repository, store=store, actor=actor)}
+
+
+@app.post("/api/company/follow-ups/{follow_up_id}/update-doc")
+async def update_company_follow_up_doc(
+    follow_up_id: str,
+    body: FollowUpUpdateDocApiBody,
+    request: Request,
+):
+    """Append an assignee-approved checkpoint to the Divo tracking doc."""
+    from enterprise.follow_ups.service import FollowUpServiceError, UpdateFollowUpDocRequest
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    service = _get_follow_up_service()
+    note = _clean_text(body.note) or _clean_text(body.content)
+    try:
+        result = service.update_tracking_doc_checkpoint(
+            UpdateFollowUpDocRequest(
+                company_id=company_id,
+                follow_up_id=follow_up_id,
+                actor_company_user_id=_company_user_id(actor),
+                note=note,
+            )
+        )
+    except FollowUpServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"followUp": _serialize_follow_up_record(result.follow_up, repo=service._repository, store=store, actor=actor)}
+
+
+@app.post("/api/company/follow-ups/{follow_up_id}/complete")
+async def complete_company_follow_up(
+    follow_up_id: str,
+    body: FollowUpCompleteApiBody,
+    request: Request,
+):
+    """Complete a Divo Follow Up after approved summary."""
+    from enterprise.follow_ups.service import CompleteFollowUpRequest, FollowUpServiceError
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    service = _get_follow_up_service()
+    try:
+        result = service.complete_follow_up(
+            CompleteFollowUpRequest(
+                company_id=company_id,
+                follow_up_id=follow_up_id,
+                actor_company_user_id=_company_user_id(actor),
+                summary=_clean_text(body.summary),
+            )
+        )
+    except FollowUpServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"followUp": _serialize_follow_up_record(result.follow_up, repo=service._repository, store=store, actor=actor)}
 
 
 @app.get("/api/company/team-members")
@@ -1014,6 +2120,7 @@ async def get_company_team_members():
 class CompanyTeamMemberUpdate(BaseModel):
     role: str | None = None
     status: str | None = None
+    department_id: str | None = None
 
 
 class CompanyConnectorCredentialUpsert(BaseModel):
@@ -1108,6 +2215,22 @@ def _normalize_company_status(value: str | None) -> str | None:
     return status
 
 
+def _normalize_company_department_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    department_id = str(value or "").strip().lower()
+    if not department_id:
+        return ""
+    if len(department_id) > 128:
+        raise HTTPException(status_code=422, detail="department_id must be 128 characters or fewer")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._:-]*", department_id):
+        raise HTTPException(
+            status_code=422,
+            detail="department_id must use lowercase letters, numbers, dots, underscores, colons, or hyphens",
+        )
+    return department_id
+
+
 def _active_company_admin_count(rows: list[dict[str, Any]]) -> int:
     return sum(1 for row in rows if _is_active_company_user(row) and _is_company_admin(row))
 
@@ -1130,6 +2253,17 @@ def _current_company_actor(request: Request, store) -> tuple[str, dict[str, Any]
         raise HTTPException(status_code=403, detail="Current employee is not registered")
     if not _is_active_company_user(actor):
         raise HTTPException(status_code=403, detail="Current employee is disabled")
+    try:
+        from enterprise.policy import bootstrap_super_admin_actor
+
+        actor = bootstrap_super_admin_actor(
+            actor,
+            store=store,
+            company_id=company_id,
+            source="dashboard_actor_resolution",
+        ) or actor
+    except Exception as exc:  # noqa: BLE001 - bootstrap must not block normal auth
+        _log.debug("super admin bootstrap check failed: %s", exc)
     return company_id, actor
 
 
@@ -1138,6 +2272,52 @@ def _require_company_admin_actor(request: Request, store) -> tuple[str, dict[str
     if not _is_company_admin(actor):
         raise HTTPException(status_code=403, detail="Company admin role required")
     return company_id, actor
+
+
+def _local_dashboard_policy_actor(store) -> tuple[str, dict[str, Any]]:
+    """Loopback token mode has no OAuth actor; treat local dashboard as owner."""
+    company_id = store.ensure_default_company()
+    return company_id, {
+        "id": "local_dashboard",
+        "company_id": company_id,
+        "role": "SUPER_ADMIN",
+        "department_id": "",
+        "status": "active",
+        "email": "",
+        "display_name": "Local dashboard",
+    }
+
+
+def _policy_actor_for_request(request: Request, store) -> tuple[str, dict[str, Any]]:
+    if getattr(request.state, "session", None) is None:
+        if getattr(request.app.state, "auth_required", False):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        return _local_dashboard_policy_actor(store)
+    return _current_company_actor(request, store)
+
+
+def _policy_identity_from_actor(actor: dict[str, Any], *, company_id: str) -> dict[str, Any]:
+    return {
+        "company_id": _company_row_field(actor, "company_id", "companyId") or company_id,
+        "company_user_id": _company_row_field(actor, "id", "company_user_id", "companyUserId"),
+        "company_role": _company_user_role(actor),
+        "department_id": _company_row_field(actor, "department_id", "departmentId"),
+        "status": _company_user_status(actor),
+        "email": _company_row_field(actor, "email"),
+    }
+
+
+def _serialize_policy_actor(actor: dict[str, Any], *, company_id: str) -> dict[str, Any]:
+    return {
+        "company_id": company_id,
+        "company_user_id": _company_row_field(actor, "id", "company_user_id", "companyUserId"),
+        "email": _company_row_field(actor, "email"),
+        "display_name": _company_row_field(actor, "display_name", "displayName") or "Local dashboard",
+        "role": _company_user_role(actor),
+        "department_id": _company_row_field(actor, "department_id", "departmentId"),
+        "status": _company_user_status(actor),
+        "is_super_admin": _company_user_role(actor).upper() in {"SUPER_ADMIN", "OWNER"},
+    }
 
 
 def _get_company_connector_repository():
@@ -1151,6 +2331,18 @@ def _get_company_connector_repository():
             status_code=503,
             detail=f"Enterprise connector credential store is unavailable: {exc}",
         ) from exc
+
+
+def _get_policy_repository():
+    try:
+        from enterprise.db import get_enterprise_connection
+        from enterprise.policy import get_policy_repository
+
+        return get_policy_repository(get_enterprise_connection())
+    except Exception:
+        from enterprise.policy import get_policy_repository
+
+        return get_policy_repository()
 
 
 def _invalidate_connector_runtime_cache(provider: str) -> None:
@@ -1169,6 +2361,12 @@ def _invalidate_connector_runtime_cache(provider: str) -> None:
             reset_cache()
     except Exception as exc:  # noqa: BLE001 — credential save must not fail after DB commit
         _log.warning("failed to invalidate %s connector runtime cache: %s", provider, exc)
+    try:
+        from model_tools import invalidate_tool_defs_cache
+
+        invalidate_tool_defs_cache()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("failed to invalidate tool definition cache: %s", exc)
 
 
 def _normalize_connector_provider(provider: str) -> str:
@@ -1214,6 +2412,25 @@ def _connector_scopes(value: list[str] | str | None) -> list[str]:
     return [str(item or "").strip() for item in raw if str(item or "").strip()]
 
 
+def _default_zoho_accounts_base_url() -> str:
+    from tools.zoho_auth import DEFAULT_ZOHO_ACCOUNTS_BASE_URL
+
+    return (
+        os.getenv("ZOHO_ACCOUNTS_BASE_URL")
+        or os.getenv("ZOHO_ACCOUNTS_BASE")
+        or DEFAULT_ZOHO_ACCOUNTS_BASE_URL
+    ).strip().rstrip("/")
+
+
+def _default_zoho_api_base_url() -> str:
+    from tools.zoho_auth import DEFAULT_ZOHO_API_BASE_URL
+
+    return (
+        os.getenv("ZOHO_API_BASE_URL")
+        or DEFAULT_ZOHO_API_BASE_URL
+    ).strip().rstrip("/")
+
+
 def _connector_payload(
     provider: str,
     body: CompanyConnectorCredentialUpsert,
@@ -1225,8 +2442,8 @@ def _connector_payload(
             "refresh_token": _require_body_text(body, "refresh_token"),
             "access_token": _clean_text(body.access_token),
             "organization_id": _clean_text(body.organization_id),
-            "accounts_base_url": _clean_text(body.accounts_base_url) or "https://accounts.zoho.com",
-            "api_base_url": _clean_text(body.api_base_url) or "https://www.zohoapis.com",
+            "accounts_base_url": _clean_text(body.accounts_base_url) or _default_zoho_accounts_base_url(),
+            "api_base_url": _clean_text(body.api_base_url) or _default_zoho_api_base_url(),
             "api_domain": _clean_text(body.api_domain),
             "environment": _clean_text(body.environment) or "prod",
             "scopes": _connector_scopes(body.oauth_scopes),
@@ -1305,17 +2522,15 @@ async def _validated_zoho_connector_payload(
 ) -> dict[str, Any]:
     """Build and validate the durable Zoho self-client credential payload."""
     from tools.zoho_auth import (
-        DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
-        DEFAULT_ZOHO_API_BASE_URL,
         ZohoAuthError,
         ZohoCredentials,
     )
 
     accounts_base_url = (
-        _clean_text(body.accounts_base_url) or DEFAULT_ZOHO_ACCOUNTS_BASE_URL
+        _clean_text(body.accounts_base_url) or _default_zoho_accounts_base_url()
     ).rstrip("/")
     api_base_url = (
-        _clean_text(body.api_base_url) or DEFAULT_ZOHO_API_BASE_URL
+        _clean_text(body.api_base_url) or _default_zoho_api_base_url()
     ).rstrip("/")
     credentials = ZohoCredentials(
         client_id=_require_body_text(body, "client_id"),
@@ -1399,8 +2614,8 @@ def _connector_metadata(
     if body.oauth_scope:
         metadata["oauth_scope"] = _clean_text(body.oauth_scope)
     if provider == "zoho":
-        metadata["accounts_base_url"] = _clean_text(body.accounts_base_url) or "https://accounts.zoho.com"
-        metadata["api_base_url"] = _clean_text(body.api_base_url) or "https://www.zohoapis.com"
+        metadata["accounts_base_url"] = _clean_text(body.accounts_base_url) or _default_zoho_accounts_base_url()
+        metadata["api_base_url"] = _clean_text(body.api_base_url) or _default_zoho_api_base_url()
         metadata["environment"] = _clean_text(body.environment) or "prod"
         if body.organization_id:
             metadata["organization_id"] = _clean_text(body.organization_id)
@@ -1487,11 +2702,12 @@ async def update_company_team_member(
     body: CompanyTeamMemberUpdate,
     request: Request,
 ):
-    """Update a company employee role/status.
+    """Update a company employee role/status/department.
 
-    This is intentionally narrow T5.3 functionality: admin-only role and
-    disable/reactivate controls. If the company has no active admin yet, the
-    first logged-in active user may only promote themselves to bootstrap admin.
+    This is intentionally narrow T5.3 functionality: admin-only role,
+    department, and disable/reactivate controls. If the company has no active
+    admin yet, the first logged-in active user may only promote themselves to
+    bootstrap admin.
     """
     from gateway.company_identity import get_company_user, get_identity_store, list_company_users, update_company_user
 
@@ -1503,8 +2719,9 @@ async def update_company_team_member(
 
     role = _normalize_company_role(body.role)
     status = _normalize_company_status(body.status)
-    if role is None and status is None:
-        raise HTTPException(status_code=400, detail="No role or status update supplied")
+    department_id = _normalize_company_department_id(body.department_id)
+    if role is None and status is None and department_id is None:
+        raise HTTPException(status_code=400, detail="No role, status, or department update supplied")
 
     rows = list_company_users(company_id=company_id, db=store)
     active_admin_count = _active_company_admin_count(rows)
@@ -1539,17 +2756,19 @@ async def update_company_team_member(
         company_id=company_id,
         role=role,
         status=status,
+        department_id=department_id,
         db=store,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Employee not found")
 
     _log.info(
-        "company member updated: actor=%s target=%s role=%s status=%s",
+        "company member updated: actor=%s target=%s role=%s status=%s department_id=%s",
         actor_id,
         member_id,
         role or current_role,
         status or current_status,
+        department_id if department_id is not None else _company_row_field(target, "department_id", "departmentId"),
     )
     return await _serialize_company_member_for_api(store, updated)
 
@@ -1642,6 +2861,257 @@ async def revoke_company_connector(
     response = _connector_status_response(company_id, rows)
     response["revoked"] = revoked
     return response
+
+
+@app.get("/api/company/integration-plugins")
+async def list_integration_plugins(request: Request):
+    """List enterprise integration plugin manifests and current-user connection state."""
+    from enterprise.integration_plugins import build_integration_plugins_response
+    from gateway.company_identity import get_identity_store
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    repo = _get_company_connector_repository()
+    rows = repo.list_connector_credentials(company_id=company_id)
+    serialized = [_serialize_connector_row(row) for row in rows]
+    return build_integration_plugins_response(
+        company_id=company_id,
+        actor=actor,
+        connector_rows=serialized,
+    )
+
+
+@app.get("/api/company/integration-plugins/{plugin_id}/oauth/start")
+async def start_integration_plugin_oauth(plugin_id: str, request: Request):
+    """Start a member-scoped integration plugin OAuth flow."""
+    from enterprise.integration_plugins import GOOGLE_WORKSPACE_PLUGIN_ID, LARK_PLUGIN_ID, get_integration_plugin
+    from enterprise.integration_plugins.google_oauth import (
+        GoogleIntegrationOAuthError,
+        build_google_authorize_url,
+    )
+    from enterprise.integration_plugins.lark_oauth import (
+        LarkIntegrationOAuthError,
+        build_lark_authorize_url,
+        lark_redirect_uri,
+    )
+    from enterprise.integration_plugins.status import oauth_environment_status
+    from gateway.company_identity import get_identity_store
+
+    plugin = get_integration_plugin(plugin_id)
+    if plugin is None:
+        raise HTTPException(status_code=404, detail=f"Unknown integration plugin {plugin_id!r}")
+
+    store = get_identity_store()
+    company_id, actor = _policy_actor_for_request(request, store)
+    if not _is_active_company_user(actor):
+        raise HTTPException(status_code=403, detail="Current employee is disabled")
+
+    if plugin.auth_model != "oauth":
+        raise HTTPException(status_code=400, detail="This plugin does not use OAuth")
+
+    oauth = oauth_environment_status()
+    if plugin_id == GOOGLE_WORKSPACE_PLUGIN_ID and not oauth["google_configured"]:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "oauth_not_configured",
+                "message": "Google OAuth app credentials are not configured on the server.",
+            },
+        )
+
+    if plugin_id == GOOGLE_WORKSPACE_PLUGIN_ID and not oauth["redirect_configured"]:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "error": "redirect_uri_not_configured",
+                "phase": 2,
+                "hint": "Set GOOGLE_OAUTH_REDIRECT_URI and allowlist it in Google Cloud Console.",
+            },
+        )
+    if plugin_id == LARK_PLUGIN_ID and not oauth["lark_configured"]:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "oauth_not_configured",
+                "message": "Lark OAuth app credentials are not configured on the server.",
+            },
+        )
+
+    company_user_id = _company_user_id(actor)
+    if not company_user_id:
+        raise HTTPException(status_code=403, detail="Current employee identity is required")
+
+    if plugin_id == LARK_PLUGIN_ID:
+        try:
+            request_base = str(request.base_url).rstrip("/")
+            authorize_url = build_lark_authorize_url(
+                company_id=company_id,
+                company_user_id=company_user_id,
+                user_id=_company_row_field(actor, "userId", "user_id") or None,
+                user_email=_company_row_field(actor, "email") or None,
+                request_base_url=request_base,
+            )
+            return {
+                "authorize_url": authorize_url,
+                "redirect_uri": lark_redirect_uri(request_base_url=request_base),
+            }
+        except LarkIntegrationOAuthError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if plugin_id != GOOGLE_WORKSPACE_PLUGIN_ID:
+        raise HTTPException(status_code=501, detail=f"OAuth for plugin {plugin_id!r} is not implemented yet")
+
+    try:
+        authorize_url = build_google_authorize_url(
+            company_id=company_id,
+            company_user_id=company_user_id,
+            plugin_id=plugin_id,
+        )
+    except GoogleIntegrationOAuthError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {"authorize_url": authorize_url}
+
+
+@app.get("/api/company/integration-plugins/{plugin_id}/oauth/callback")
+async def complete_integration_plugin_oauth_callback(
+    plugin_id: str,
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    """OAuth callback — persists user-scoped integration credentials from signed state."""
+    from enterprise.integration_plugins import GOOGLE_WORKSPACE_PLUGIN_ID, LARK_PLUGIN_ID, get_integration_plugin
+    from enterprise.integration_plugins.google_oauth import (
+        GoogleIntegrationOAuthError,
+        complete_google_oauth_callback,
+    )
+    from enterprise.integration_plugins.lark_oauth import (
+        LarkIntegrationOAuthError,
+        complete_lark_oauth_callback,
+    )
+    from starlette.responses import HTMLResponse
+
+    plugin = get_integration_plugin(plugin_id)
+    if plugin is None:
+        raise HTTPException(status_code=404, detail=f"Unknown integration plugin {plugin_id!r}")
+
+    plugin_label = "Lark" if plugin_id == LARK_PLUGIN_ID else "Google"
+    if error:
+        return HTMLResponse(
+            _integration_oauth_result_html(
+                ok=False,
+                title=f"{plugin_label} connection cancelled",
+                message=f"{plugin_label} returned: {error}",
+            ),
+            status_code=400,
+        )
+
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing OAuth code or state")
+
+    repo = _get_company_connector_repository()
+    if plugin_id == LARK_PLUGIN_ID:
+        try:
+            result = await complete_lark_oauth_callback(
+                code=code,
+                state=state,
+                repo=repo,
+                invalidate_runtime_cache=_invalidate_connector_runtime_cache,
+            )
+        except LarkIntegrationOAuthError as exc:
+            return HTMLResponse(
+                _integration_oauth_result_html(
+                    ok=False,
+                    title="Lark connection failed",
+                    message=str(exc),
+                ),
+                status_code=400,
+            )
+
+        email = str(result.get("lark_email") or "").strip()
+        return HTMLResponse(
+            _integration_oauth_result_html(
+                ok=True,
+                title="Lark connected",
+                message=f"Connected {email or 'your Lark account'}. You can close this tab and return to Divo.",
+            )
+        )
+
+    if plugin_id != GOOGLE_WORKSPACE_PLUGIN_ID:
+        raise HTTPException(status_code=501, detail=f"OAuth for plugin {plugin_id!r} is not implemented yet")
+
+    try:
+        result = await complete_google_oauth_callback(
+            code=code,
+            state=state,
+            repo=repo,
+            invalidate_runtime_cache=_invalidate_connector_runtime_cache,
+        )
+    except GoogleIntegrationOAuthError as exc:
+        return HTMLResponse(
+            _integration_oauth_result_html(
+                ok=False,
+                title="Google connection failed",
+                message=str(exc),
+            ),
+            status_code=400,
+        )
+
+    email = str(result.get("google_email") or "").strip()
+    return HTMLResponse(
+        _integration_oauth_result_html(
+            ok=True,
+            title="Google connected",
+            message=f"Connected {email or 'your Google account'}. You can close this tab and return to Divo.",
+        )
+    )
+
+
+def _integration_oauth_result_html(*, ok: bool, title: str, message: str) -> str:
+    accent = "#16a34a" if ok else "#dc2626"
+    safe_title = html.escape(title)
+    safe_message = html.escape(message)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{safe_title}</title>
+  <style>
+    body {{
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      background: #0b0d12;
+      color: #e5e7eb;
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }}
+    .card {{
+      max-width: 28rem;
+      padding: 1.5rem 1.75rem;
+      border: 1px solid #1f2937;
+      border-radius: 1rem;
+      background: #111827;
+      box-shadow: 0 20px 50px rgba(0,0,0,.35);
+    }}
+    h1 {{
+      margin: 0 0 .75rem;
+      font-size: 1.125rem;
+      color: {accent};
+    }}
+    p {{ margin: 0; line-height: 1.5; color: #cbd5e1; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>{safe_title}</h1>
+    <p>{safe_message}</p>
+  </div>
+</body>
+</html>"""
 
 
 @app.get("/api/system/stats")
@@ -5714,6 +7184,7 @@ def _current_company_session_ids(request: Request) -> set[str] | None:
         identity = resolve_dashboard_session_identity(
             provider=getattr(sess, "provider", "") or "",
             provider_user_id=getattr(sess, "user_id", "") or "",
+            provider_user_id_alt=getattr(sess, "user_id_alt", "") or None,
             display_name=getattr(sess, "display_name", "") or None,
             email=getattr(sess, "email", "") or None,
         )
@@ -6404,6 +7875,7 @@ def _current_company_cron_owner(request: Request | None) -> Dict[str, str]:
         identity = resolve_dashboard_session_identity(
             provider=getattr(sess, "provider", "") or "",
             provider_user_id=getattr(sess, "user_id", "") or "",
+            provider_user_id_alt=getattr(sess, "user_id_alt", "") or None,
             display_name=getattr(sess, "display_name", "") or None,
             email=getattr(sess, "email", "") or None,
         )

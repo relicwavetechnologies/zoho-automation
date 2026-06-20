@@ -28,20 +28,43 @@ interface HermesSyntaxHighlighterProps extends SyntaxHighlighterProps {
   defer?: boolean
 }
 
-// VS Code's own themes so code highlighting matches the Cursor/VS Code editor.
-const SHIKI_THEME = { dark: 'dark-plus', light: 'light-plus' } as const
-
 /**
- * `github-light-default` colors comments `#6e7781` (~4.2:1 against the code
- * card background) — borderline unreadable at our 11px code size, and worst of
- * all for shell snippets where a single `#` turns the rest of the line into one
- * long comment span. Remap light-mode comments to GitHub's darker muted gray
- * (`#57606a`, ~6.4:1). Dark mode (`#8b949e`, ~6.1:1) already reads fine, so we
- * leave it untouched. Keyed per theme name so the bump only applies in light.
+ * Cursor-style near-monochrome code theme. Cursor's chat code blocks don't use
+ * rainbow syntax highlighting — they render all code in a single warm
+ * salmon-pink, with comments dimmed to a cool gray. We reproduce that with a
+ * minimal custom theme: `editor.foreground` paints every token pink (since we
+ * override nothing else), and only comment scopes are remapped to gray. The
+ * background is transparent so the `CodeCard` surface shows through.
  */
-const SHIKI_COLOR_REPLACEMENTS: Record<string, Record<string, string>> = {
-  'github-light-default': { '#6e7781': '#57606a' }
-}
+const CURSOR_CODE_PINK_DARK = '#cd9883'
+const CURSOR_CODE_PINK_LIGHT = '#a8543b'
+const CURSOR_COMMENT_DARK = '#6b7280'
+const CURSOR_COMMENT_LIGHT = '#8a8a8a'
+
+// Minimal TextMate/VS Code theme shape Shiki accepts. Typed loosely because
+// react-shiki re-exports Shiki's broad `ThemeRegistrationAny` union; a plain
+// object literal structurally satisfies the raw-theme branch.
+const makeMonochromeCodeTheme = (
+  name: string,
+  type: 'dark' | 'light',
+  foreground: string,
+  comment: string
+) => ({
+  name,
+  type,
+  colors: { 'editor.foreground': foreground, 'editor.background': '#00000000' },
+  tokenColors: [
+    {
+      scope: ['comment', 'punctuation.definition.comment', 'string.quoted.docstring'],
+      settings: { foreground: comment, fontStyle: 'italic' }
+    }
+  ]
+})
+
+const SHIKI_THEME = {
+  dark: makeMonochromeCodeTheme('cursor-code-dark', 'dark', CURSOR_CODE_PINK_DARK, CURSOR_COMMENT_DARK),
+  light: makeMonochromeCodeTheme('cursor-code-light', 'light', CURSOR_CODE_PINK_LIGHT, CURSOR_COMMENT_LIGHT)
+} as const
 
 export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   components: { Pre },
@@ -89,7 +112,6 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
             <ShikiHighlighter
               addDefaultStyles={false}
               as="div"
-              colorReplacements={SHIKI_COLOR_REPLACEMENTS}
               defaultColor="light-dark()"
               delay={120}
               language={language || 'text'}

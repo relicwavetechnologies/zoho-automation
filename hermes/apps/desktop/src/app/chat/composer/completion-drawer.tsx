@@ -45,7 +45,7 @@ export function ComposerCompletionDrawer({
       adapter={adapter}
       aria-label={ariaLabel}
       char={char}
-      className={COMPLETION_DRAWER_CLASS}
+      className={COMPLETION_DRAWER_BELOW_CLASS}
       data-slot="composer-completion-drawer"
     >
       {children}

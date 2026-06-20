@@ -127,11 +127,12 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
-        "IMPORTANT: When the user asks to send to a specific channel or person "
-        "(not just a bare platform name), call send_message(action='list') FIRST to see "
-        "available targets, then send to the correct one.\n"
-        "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "IMPORTANT: For capability questions, do not name specific messaging "
+        "platforms as available. Call send_message(action='list') when the user "
+        "asks which messaging targets are configured.\n"
+        "When the user asks to send to a specific channel, person, or platform, "
+        "call send_message(action='list') FIRST unless they provided an exact "
+        "configured target from a previous list result."
     ),
     "parameters": {
         "type": "object",
@@ -143,7 +144,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target returned by send_message(action='list'), or a configured platform/home alias. Common formats are '<platform>', '<platform>:<channel-or-chat-id>', '<platform>:<channel-or-chat-id>:<thread-id>', '<platform>:#<channel-name>', or '<platform>:<direct-user-id>'. Do not infer which platform names are configured from this schema; list targets first."
             },
             "message": {
                 "type": "string",

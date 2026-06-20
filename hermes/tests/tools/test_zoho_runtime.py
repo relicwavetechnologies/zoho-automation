@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from enterprise.connector_repository import ZohoConnectionCredentials
 from tools.zoho_auth import ZohoCredentials, ZohoTokenProvider
 from tools import zoho_runtime
@@ -55,3 +57,37 @@ def test_resolve_zoho_client_uses_connector_store_organization_id(monkeypatch):
 
     assert client.organization_id == "org-123"
     assert client.token_provider.credentials.organization_id == "org-123"
+
+
+def test_resolve_zoho_client_checks_policy_before_cached_client(monkeypatch):
+    cached = object()
+
+    zoho_runtime.reset_cache()
+    monkeypatch.setenv("HERMES_POLICY_MODE", "enforce")
+    monkeypatch.setattr(zoho_runtime, "enterprise_enabled", lambda: True)
+    zoho_runtime._company_clients["comp_1"] = cached
+
+    with pytest.raises(PermissionError):
+        zoho_runtime.resolve_zoho_client(
+            "comp_1",
+            policy_identity={
+                "company_id": "comp_1",
+                "company_user_id": "cu_1",
+                "company_role": "MEMBER",
+                "channel_identity_id": "ci_1",
+                "status": "active",
+            },
+        )
+
+    allowed = zoho_runtime.resolve_zoho_client(
+        "comp_1",
+        policy_identity={
+            "company_id": "comp_1",
+            "company_user_id": "cu_2",
+            "company_role": "SUPER_ADMIN",
+            "channel_identity_id": "ci_2",
+            "status": "active",
+        },
+    )
+
+    assert allowed is cached

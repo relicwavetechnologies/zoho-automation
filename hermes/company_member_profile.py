@@ -195,3 +195,14 @@ def resolve_lark_open_id(
         if provider == "lark" and user_id:
             return user_id
     return None
+
+
+def resolve_channel_identity_id(
+    *,
+    channel_identities: list[Mapping[str, Any]] | None = None,
+) -> str | None:
+    channel = _pick_dashboard_channel_identity(channel_identities)
+    if channel is None:
+        return None
+    value = _read_field(channel, "id")
+    return value or None

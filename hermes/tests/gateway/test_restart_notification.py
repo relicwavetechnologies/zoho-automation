@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
+from company_identity import CompanyIdentityDB
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.session_context import clear_session_vars, set_session_vars
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
@@ -237,6 +239,70 @@ async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path
     assert home is not None
     assert home.chat_id == "parent-42"
     assert home.thread_id == "topic-7"
+
+
+@pytest.mark.asyncio
+async def test_company_sethome_persists_per_user_home_channel_without_env_write(tmp_path, monkeypatch):
+    """Company-mode /sethome stores a user-scoped home target, not global env."""
+    import gateway.company_identity as company_identity
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_ENTERPRISE_POSTGRES", "false")
+    identity_db = CompanyIdentityDB(tmp_path / "company.db")
+    monkeypatch.setattr(company_identity, "_identity_db", identity_db)
+    member = identity_db.upsert_dashboard_member(
+        provider="lark",
+        provider_user_id="ou_alice",
+        display_name="Alice",
+        email="alice@example.com",
+        company_id="company_alpha",
+    )
+    channel_identity_id = identity_db.list_channel_identities_for_company_user(member["id"])[0]["id"]
+
+    saved = {}
+
+    def _fake_save_env_value(key, value):
+        saved[key] = value
+
+    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
+
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="home-42",
+        chat_name="Ops Home",
+        thread_id="topic-7",
+        user_id="tg_alice",
+        company_id="company_alpha",
+        company_user_id=member["id"],
+        channel_identity_id=channel_identity_id,
+    )
+    try:
+        runner, _adapter = make_restart_runner()
+        source = make_restart_source(chat_id="home-42", thread_id="topic-7")
+        source.chat_name = "Ops Home"
+        source.user_id = "tg_alice"
+        source.user_name = "Alice"
+        event = MessageEvent(
+            text="/sethome",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-home-company",
+        )
+
+        result = await runner._handle_set_home_command(event)
+    finally:
+        clear_session_vars(tokens)
+
+    assert "Home channel set" in result
+    assert saved == {}
+    row = identity_db.get_company_user_home_channel(
+        company_id="company_alpha",
+        company_user_id=member["id"],
+        platform="telegram",
+    )
+    assert row is not None
+    assert row["chat_id"] == "home-42"
+    assert row["thread_id"] == "topic-7"
 
 
 # ── home-channel startup notifications ─────────────────────────────────────

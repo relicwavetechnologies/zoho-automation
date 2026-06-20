@@ -2,9 +2,10 @@
 
 import json
 
+import httpx
 import pytest
 
-import tools.lark_tools  # noqa: F401 — registers lark_messaging
+import tools.lark_tools as lark_tools  # noqa: F401 — registers lark_messaging
 from tools.registry import registry
 
 
@@ -52,6 +53,40 @@ def _patch_company_people(monkeypatch):
     monkeypatch.setattr("gateway.company_identity.list_channel_identities_for_company_user", fake_identities)
 
 
+def _patch_duplicate_current_user(monkeypatch):
+    def fake_users(*, company_id=None):
+        assert company_id == "comp_1"
+        return [
+            {
+                "id": "cu_abhishek",
+                "display_name": "Abhishek Verma",
+                "email": "abhishek@emiactech.com",
+            }
+        ]
+
+    def fake_identities(company_user_id):
+        assert company_user_id == "cu_abhishek"
+        return [
+            {
+                "platform": "lark",
+                "platform_user_id": "beac9a13",
+                "platform_user_id_alt": "on_same_union",
+                "display_name": "Abhishek Verma",
+                "approved_source": "gateway",
+            },
+            {
+                "platform": "lark",
+                "platform_user_id": "ou_abhishek",
+                "platform_user_id_alt": "on_same_union",
+                "display_name": "Abhishek Verma",
+                "approved_source": "dashboard_auth",
+            },
+        ]
+
+    monkeypatch.setattr("gateway.company_identity.list_company_users", fake_users)
+    monkeypatch.setattr("gateway.company_identity.list_channel_identities_for_company_user", fake_identities)
+
+
 def _admin_identity_kwargs():
     return {
         "company_id": "comp_1",
@@ -88,6 +123,75 @@ async def test_send_builds_text_message():
     assert body["receive_id"] == "oc_1"
     assert body["msg_type"] == "text"
     assert json.loads(body["content"])["text"] == "hi"
+
+
+@pytest.mark.asyncio
+async def test_send_defaults_to_current_lark_chat():
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(platform="lark", chat_id="oc_current")
+    try:
+        client = FakeLarkClient({"/messages": {"message_id": "om_123"}})
+        out = json.loads(
+            registry.dispatch(
+                "lark_messaging",
+                {"op": "send", "text": "hi current chat"},
+                client=client,
+            )
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert out["success"] is True
+    _, _, params, body = client.calls[-1]
+    assert params["receive_id_type"] == "chat_id"
+    assert body["receive_id"] == "oc_current"
+
+
+@pytest.mark.asyncio
+async def test_send_markdown_table_uses_interactive_card():
+    client = FakeLarkClient({"/messages": {"message_id": "om_123"}})
+    text = """Done.
+
+| Field | Value |
+|---|---|
+| **Title** | Hermes Harness Docs Test |
+| **URL** | https://example.com/doc |
+"""
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_messaging",
+            {"op": "send", "receiveId": "oc_1", "receiveIdType": "chat_id", "text": text},
+            client=client,
+        )
+    )
+
+    assert out["success"] is True
+    _, _, _, body = client.calls[-1]
+    assert body["msg_type"] == "interactive"
+    card = json.loads(body["content"])
+    assert card["schema"] == "2.0"
+    assert any(element["tag"] == "table" for element in card["body"]["elements"])
+
+
+@pytest.mark.asyncio
+async def test_send_markdown_bullets_uses_post():
+    client = FakeLarkClient({"/messages": {"message_id": "om_123"}})
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_messaging",
+            {"op": "send", "receiveId": "oc_1", "receiveIdType": "chat_id", "text": "- **Task:** done"},
+            client=client,
+        )
+    )
+
+    assert out["success"] is True
+    _, _, _, body = client.calls[-1]
+    assert body["msg_type"] == "post"
+    post = json.loads(body["content"])
+    assert post["zh_cn"]["content"][0][0]["tag"] == "md"
 
 
 @pytest.mark.asyncio
@@ -185,6 +289,12 @@ async def test_doc_create_and_append():
     })
     out = json.loads(registry.dispatch("lark_doc", {"op": "create", "title": "Spec"}, client=client))
     assert out["success"] is True and out["docToken"] == "doc_1"
+    assert client.calls[0] == (
+        "POST",
+        "/open-apis/docs_ai/v1/documents",
+        None,
+        {"content": "<title>Spec</title>", "format": "xml"},
+    )
 
     client2 = FakeLarkClient({"/children": {}})
     out2 = json.loads(registry.dispatch(
@@ -193,6 +303,176 @@ async def test_doc_create_and_append():
     _, path, _, body = client2.calls[-1]
     assert "/blocks/doc_1/children" in path
     assert body["children"][0]["block_type"] == 3  # heading1
+
+
+@pytest.mark.asyncio
+async def test_doc_create_returns_url_from_api_response():
+    client = FakeLarkClient({
+        "/documents": {"document": {"document_id": "doc_1", "url": "https://tenant.larksuite.com/docx/doc_1"}},
+    })
+
+    out = json.loads(registry.dispatch("lark_doc", {"op": "create", "title": "Spec"}, client=client))
+
+    assert out["success"] is True
+    assert out["docToken"] == "doc_1"
+    assert out["url"] == "https://tenant.larksuite.com/docx/doc_1"
+    assert out["docUrl"] == "https://tenant.larksuite.com/docx/doc_1"
+    assert out["data"]["url"] == "https://tenant.larksuite.com/docx/doc_1"
+
+
+@pytest.mark.asyncio
+async def test_doc_create_resolves_url_from_drive_metadata_api():
+    client = FakeLarkClient({
+        "/documents": {"document": {"document_id": "doc_1"}},
+        "/metas/batch_query": {
+            "metas": [
+                {
+                    "doc_token": "doc_1",
+                    "doc_type": "docx",
+                    "title": "Spec",
+                    "url": "https://tenant.larksuite.com/docx/doc_1",
+                }
+            ]
+        },
+    })
+
+    out = json.loads(registry.dispatch("lark_doc", {"op": "create", "title": "Spec"}, client=client))
+
+    assert out["success"] is True
+    assert out["url"] == "https://tenant.larksuite.com/docx/doc_1"
+    assert out["docUrl"] == "https://tenant.larksuite.com/docx/doc_1"
+    assert "urlHint" not in out
+    _, path, _, body = client.calls[-1]
+    assert path == "/open-apis/drive/v1/metas/batch_query"
+    assert body == {
+        "request_docs": [{"doc_token": "doc_1", "doc_type": "docx"}],
+        "with_url": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_doc_create_returns_url_hint_when_drive_metadata_has_no_url():
+    client = FakeLarkClient({
+        "/documents": {"document": {"document_id": "doc_1"}},
+        "/metas/batch_query": {"metas": [{"doc_token": "doc_1", "doc_type": "docx"}]},
+    })
+
+    out = json.loads(registry.dispatch("lark_doc", {"op": "create", "title": "Spec"}, client=client))
+
+    assert out["success"] is True
+    assert out["docToken"] == "doc_1"
+    assert "url" not in out
+    assert "Drive metadata lookup" in out["urlHint"]
+
+
+@pytest.mark.asyncio
+async def test_doc_create_markdown_builds_structured_blocks():
+    client = FakeLarkClient({
+        "/documents": {"document": {"document_id": "doc_1"}},
+    })
+    markdown = """# Strategy Brief
+
+Opening context for the team.
+
+## Priorities
+- Reduce response time
+- Improve finance exports
+
+| Owner | Task |
+| --- | --- |
+| Anish | Review |
+
+```text
+ship checklist
+```
+"""
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_doc",
+            {"op": "create_markdown", "title": "Strategy Brief", "markdown": markdown},
+            client=client,
+        )
+    )
+
+    assert out["success"] is True
+    assert out["docToken"] == "doc_1"
+    assert out["message"] == "Document created from markdown."
+    method, path, _params, body = client.calls[0]
+    assert method == "POST"
+    assert path == "/open-apis/docs_ai/v1/documents"
+    assert body["format"] == "markdown"
+    assert body["content"].startswith("# Strategy Brief")
+    assert "Opening context for the team." in body["content"]
+    assert "Anish | Review" in body["content"]
+    assert "ship checklist" in body["content"]
+
+
+@pytest.mark.asyncio
+async def test_doc_append_markdown_requires_body_and_appends_blocks():
+    client = FakeLarkClient({"/children": {}})
+
+    missing = json.loads(registry.dispatch("lark_doc", {"op": "append_markdown", "docToken": "doc_1"}, client=client))
+    out = json.loads(
+        registry.dispatch(
+            "lark_doc",
+            {"op": "append_markdown", "docToken": "doc_1", "content": "### Next\n1. Smoke test"},
+            client=client,
+        )
+    )
+
+    assert missing["success"] is False
+    assert out["success"] is True
+    method, path, _params, body = client.calls[-1]
+    assert method == "PUT"
+    assert path == "/open-apis/docs_ai/v1/documents/doc_1"
+    assert body == {
+        "block_id": "-1",
+        "command": "block_insert_after",
+        "content": "### Next\n1. Smoke test",
+        "format": "markdown",
+        "revision_id": -1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_doc_insert_table_omits_invalid_cells_count():
+    client = FakeLarkClient({"/children": {}})
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_doc",
+            {"op": "insert_table", "docToken": "doc_1", "rows": 2, "cols": 3},
+            client=client,
+        )
+    )
+
+    assert out["success"] is True
+    _, path, _params, body = client.calls[-1]
+    assert path == "/open-apis/docx/v1/documents/doc_1/blocks/doc_1/children"
+    table = body["children"][0]["table"]
+    assert table["property"] == {"row_size": 2, "column_size": 3}
+    assert "cells" not in table
+
+
+@pytest.mark.asyncio
+async def test_doc_share_uses_drive_v1_public_permission_and_visibility_alias():
+    client = FakeLarkClient({"/permissions/doc_1/public": {}})
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_doc",
+            {"op": "share", "docToken": "doc_1", "visibility": "organization"},
+            client=client,
+        )
+    )
+
+    assert out["success"] is True
+    method, path, params, body = client.calls[-1]
+    assert method == "PATCH"
+    assert path == "/open-apis/drive/v1/permissions/doc_1/public"
+    assert params == {"type": "docx"}
+    assert body == {"external_access": False, "link_share_entity": "tenant_readable"}
 
 
 @pytest.mark.asyncio
@@ -212,7 +492,12 @@ async def test_base_create_and_search():
 
 @pytest.mark.asyncio
 async def test_calendar_create_converts_time_and_list_normalizes():
-    client = FakeLarkClient({"/events": {"event": {"event_id": "ev1"}}})
+    client = FakeLarkClient({
+        "/calendars/primary": {
+            "calendars": [{"calendar": {"calendar_id": "feishu.cn_primary_cal@group.calendar.feishu.cn"}}],
+        },
+        "/events": {"event": {"event_id": "ev1"}},
+    })
     out = json.loads(registry.dispatch(
         "lark_calendar",
         {"op": "create", "title": "Sync", "startTime": "2026-06-12T10:00:00Z", "endTime": "2026-06-12T11:00:00Z",
@@ -223,23 +508,69 @@ async def test_calendar_create_converts_time_and_list_normalizes():
     assert body["start_time"]["timestamp"].isdigit()
     assert body["attendees"][0]["user_id"] == "ou_a"
 
-    client2 = FakeLarkClient({"/events": {"items": [
-        {"event_id": "ev2", "summary": "Standup", "start_time": {"timestamp": "1781000000"}, "end_time": {"timestamp": "1781003600"}}]}})
+    client2 = FakeLarkClient({
+        "/calendars/primary": {
+            "calendars": [{"calendar": {"calendar_id": "feishu.cn_primary_cal@group.calendar.feishu.cn"}}],
+        },
+        "/events": {"items": [
+            {"event_id": "ev2", "summary": "Standup", "start_time": {"timestamp": "1781000000"}, "end_time": {"timestamp": "1781003600"}}]},
+    })
     out2 = json.loads(registry.dispatch("lark_calendar", {"op": "list", "limit": 3}, client=client2))
     assert out2["data"][0]["eventId"] == "ev2"
     assert out2["data"][0]["startTime"].startswith("2026")
     # Lark's events endpoint rejects page_size < 50 and requires a time window:
     # request the API minimum (50) + start/end, slice client-side. (Real-API
     # constraint that a naive mock would miss — see live test 2026-06-12.)
-    _, _, params, _ = client2.calls[-1]
+    assert client2.calls[0][1] == "/open-apis/calendar/v4/calendars/primary"
+    _, events_path, params, _ = client2.calls[-1]
+    assert events_path.endswith("/events")
+    assert "feishu.cn_primary_cal@group.calendar.feishu.cn" in events_path
     assert params["page_size"] == 50
     assert "start_time" in params and "end_time" in params
 
 
 @pytest.mark.asyncio
+async def test_calendar_create_uses_user_oauth_client_for_primary_calendar():
+    app_client = FakeLarkClient({})
+    user_client = FakeLarkClient({
+        "/calendars/primary": {
+            "calendars": [{"calendar": {"calendar_id": "feishu.cn_user_primary@group.calendar.feishu.cn"}}],
+        },
+        "/events": {"event": {"event_id": "ev_user"}},
+    })
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_calendar",
+            {
+                "op": "create",
+                "title": "User calendar sync",
+                "startTime": "2026-06-12T10:00:00Z",
+                "endTime": "2026-06-12T11:00:00Z",
+            },
+            client=app_client,
+            user_client=user_client,
+            **_admin_identity_kwargs(),
+        )
+    )
+
+    assert out["success"] is True
+    assert out["eventId"] == "ev_user"
+    assert app_client.calls == []
+    assert user_client.calls[0][1] == "/open-apis/calendar/v4/calendars/primary"
+    assert user_client.calls[-1][0] == "POST"
+    assert "/calendars/feishu.cn_user_primary@group.calendar.feishu.cn/events" in user_client.calls[-1][1]
+
+
+@pytest.mark.asyncio
 async def test_calendar_create_recurring_resolves_attendee_names(monkeypatch):
     _patch_company_people(monkeypatch)
-    client = FakeLarkClient({"/events": {"event": {"event_id": "ev_recurring"}}})
+    client = FakeLarkClient({
+        "/calendars/primary": {
+            "calendars": [{"calendar": {"calendar_id": "feishu.cn_primary_cal@group.calendar.feishu.cn"}}],
+        },
+        "/events": {"event": {"event_id": "ev_recurring"}},
+    })
 
     out = json.loads(
         registry.dispatch(
@@ -272,6 +603,9 @@ async def test_calendar_free_busy_and_update_attendees_resolve_names(monkeypatch
     _patch_company_people(monkeypatch)
     client = FakeLarkClient(
         {
+            "/calendars/primary": {
+                "calendars": [{"calendar": {"calendar_id": "feishu.cn_primary_cal@group.calendar.feishu.cn"}}],
+            },
             "/freebusy/list": {"freebusy_list": [{"start_time": "2026-06-15T10:00:00Z", "end_time": "2026-06-15T10:30:00Z"}]},
             "/events/ev1/attendees/batch_delete": {},
             "/events/ev1/attendees": {
@@ -308,17 +642,124 @@ async def test_calendar_free_busy_and_update_attendees_resolve_names(monkeypatch
     assert busy["success"] is True
     assert busy["data"]["ou_anish"]["busy"][0]["start"] == "2026-06-15T10:00:00Z"
     assert updated["success"] is True
-    assert client.calls[0][3]["user_id"] == "ou_anish"
-    assert client.calls[1][3]["attendees"] == [{"type": "user", "user_id": "ou_anish"}]
-    assert client.calls[-1][3]["attendee_ids"] == ["att_rahul"]
+    free_busy_call = next(call for call in client.calls if call[1].endswith("/freebusy/list"))
+    assert free_busy_call[3]["user_id"] == "ou_anish"
+    add_attendee_call = next(
+        call for call in client.calls if call[0] == "POST" and call[1].endswith("/attendees") and not call[1].endswith("batch_delete")
+    )
+    assert add_attendee_call[3]["attendees"] == [{"type": "user", "user_id": "ou_anish"}]
+    delete_call = next(call for call in client.calls if call[1].endswith("/attendees/batch_delete"))
+    assert delete_call[3]["attendee_ids"] == ["att_rahul"]
 
 
 @pytest.mark.asyncio
-async def test_contacts_lookup_batch_get_id():
-    client = FakeLarkClient({"/batch_get_id": {"user_list": [{"user_id": "ou_1", "email": "a@x.com"}]}})
+async def test_contacts_lookup_uses_user_supported_search():
+    client = FakeLarkClient({"/users/search": {"items": [{"open_id": "ou_1", "email": "a@x.com"}]}})
     out = json.loads(registry.dispatch("lark_contacts", {"op": "lookup", "emails": ["a@x.com"]}, client=client))
     assert out["success"] is True
     assert out["data"]["found"][0]["openId"] == "ou_1"
+    assert client.calls[0] == (
+        "POST",
+        "/open-apis/contact/v3/users/search",
+        {"page_size": 5},
+        {"query": "a@x.com"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_contacts_search_and_get_normalize_workspace_users():
+    client = FakeLarkClient(
+        {
+            "/users/search": {
+                "items": [
+                    {
+                        "open_id": "ou_1",
+                        "user_id": "u_1",
+                        "name": "Abhishek Verma",
+                        "email": "abhishek@emiactech.com",
+                        "department_ids": ["od_1"],
+                        "p2p_chat_id": "oc_1",
+                    }
+                ]
+            },
+        }
+    )
+
+    searched = json.loads(
+        registry.dispatch(
+            "lark_contacts",
+            {"op": "search", "query": "abhishek", "limit": 5, "excludeExternalUsers": True},
+            client=client,
+        )
+    )
+    got = json.loads(registry.dispatch("lark_contacts", {"op": "get", "openIds": ["ou_1"]}, client=client))
+
+    assert searched["success"] is True
+    assert searched["data"][0]["openId"] == "ou_1"
+    assert searched["data"][0]["p2pChatId"] == "oc_1"
+    assert searched["data"][0]["department"] == "od_1"
+    assert got["success"] is True
+    assert got["data"][0]["displayName"] == "Abhishek Verma"
+    assert client.calls[0] == (
+        "POST",
+        "/open-apis/contact/v3/users/search",
+        {"page_size": 5},
+        {"query": "abhishek", "filter": {"exclude_external_users": True}},
+    )
+    assert client.calls[1] == (
+        "POST",
+        "/open-apis/contact/v3/users/search",
+        {"page_size": 1},
+        {"filter": {"user_ids": ["ou_1"]}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_task_assignee_name_falls_back_to_live_lark_search(monkeypatch):
+    monkeypatch.setattr("gateway.company_identity.list_company_users", lambda *, company_id=None: [])
+    client = FakeLarkClient(
+        {
+            "/users/search": {"items": [{"open_id": "ou_live", "name": "Live User", "email": "live@example.com"}]},
+            "/tasks": {"task": {"guid": "t1", "summary": "Follow up"}},
+        }
+    )
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_task",
+            {"op": "create", "title": "Follow up", "assigneeNames": ["Live User"]},
+            client=client,
+            **_admin_identity_kwargs(),
+        )
+    )
+
+    assert out["success"] is True
+    assert client.calls[0][1] == "/open-apis/contact/v3/users/search"
+    assert client.calls[-1][3]["members"] == [{"id": "ou_live", "type": "user", "role": "assignee"}]
+
+
+@pytest.mark.asyncio
+async def test_messaging_send_dm_falls_back_to_live_lark_search(monkeypatch):
+    monkeypatch.setattr("gateway.company_identity.list_company_users", lambda *, company_id=None: [])
+    client = FakeLarkClient(
+        {
+            "/users/search": {"items": [{"open_id": "ou_live", "name": "Live User"}]},
+            "/messages": {"message_id": "om_123"},
+        }
+    )
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_messaging",
+            {"op": "send_dm", "recipientName": "Live User", "text": "hello"},
+            client=client,
+            **_admin_identity_kwargs(),
+        )
+    )
+
+    assert out["success"] is True
+    assert client.calls[0][1] == "/open-apis/contact/v3/users/search"
+    assert client.calls[-1][3]["receive_id"] == "ou_live"
 
 
 @pytest.mark.asyncio
@@ -370,6 +811,60 @@ async def test_task_create_resolves_assignee_names_from_company_identity(monkeyp
     assert out["success"] is True
     _, _, _, body = client.calls[-1]
     assert body["members"] == [{"id": "ou_anish", "type": "user", "role": "assignee"}]
+
+
+def test_lark_people_directory_dedupes_same_union_identity(monkeypatch):
+    _patch_duplicate_current_user(monkeypatch)
+
+    people = lark_tools._lark_people_directory("comp_1")
+    resolved_by_name = lark_tools._resolve_lark_people(
+        company_id="comp_1",
+        queries=["Abhishek Verma"],
+        requester_open_id="beac9a13",
+    )
+    resolved_by_email = lark_tools._resolve_lark_people(
+        company_id="comp_1",
+        queries=["abhishek@emiactech.com"],
+        requester_open_id="beac9a13",
+    )
+
+    assert people == [
+        {
+            "openId": "ou_abhishek",
+            "displayName": "Abhishek Verma",
+            "email": "abhishek@emiactech.com",
+            "normName": "abhishek verma",
+            "tokens": {"abhishek", "verma"},
+            "aliases": {"beac9a13", "ou_abhishek", "on_same_union"},
+        }
+    ]
+    assert resolved_by_name["ambiguous"] == []
+    assert resolved_by_name["resolved"][0]["openId"] == "ou_abhishek"
+    assert resolved_by_email["ambiguous"] == []
+    assert resolved_by_email["resolved"][0]["openId"] == "ou_abhishek"
+
+
+@pytest.mark.asyncio
+async def test_task_create_defaults_to_canonical_open_id_for_duplicate_current_user(monkeypatch):
+    _patch_duplicate_current_user(monkeypatch)
+    client = FakeLarkClient({"/tasks": {"task": {"guid": "t1", "summary": "Do it"}}})
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_task",
+            {"op": "create", "title": "Do it"},
+            client=client,
+            company_id="comp_1",
+            company_user_id="cu_abhishek",
+            channel_identity_id="ci_short",
+            company_role="ADMIN",
+            lark_open_id="beac9a13",
+        )
+    )
+
+    assert out["success"] is True
+    _, _, _, body = client.calls[-1]
+    assert body["members"] == [{"id": "ou_abhishek", "type": "user", "role": "assignee"}]
 
 
 @pytest.mark.asyncio
@@ -447,6 +942,111 @@ async def test_task_complete_and_tasklists():
 
 
 @pytest.mark.asyncio
+async def test_task_update_uses_current_task_v2_body_shape():
+    client = FakeLarkClient({"/tasks/t1": {"task": {"guid": "t1", "summary": "Updated"}}})
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_task",
+            {
+                "op": "update",
+                "taskId": "t1",
+                "title": "Updated",
+                "notes": "Desc",
+                "dueDate": "2026-06-21T18:00:00+05:30",
+            },
+            client=client,
+        )
+    )
+
+    assert out["success"] is True
+    method, path, params, body = client.calls[-1]
+    assert method == "PATCH"
+    assert path == "/open-apis/task/v2/tasks/t1"
+    assert params == {"user_id_type": "open_id"}
+    assert body["task"]["summary"] == "Updated"
+    assert body["task"]["description"] == "Desc"
+    assert body["task"]["due"]["timestamp"] == "1782045000000"
+    assert body["update_fields"] == ["summary", "description", "due"]
+
+
+@pytest.mark.asyncio
+async def test_task_complete_and_reopen_patch_completed_at():
+    client = FakeLarkClient({
+        "/tasks/t1": {"task": {"guid": "t1", "summary": "Task", "completed_at": "0"}},
+    })
+
+    complete = json.loads(registry.dispatch("lark_task", {"op": "complete", "taskId": "t1"}, client=client))
+    reopen = json.loads(registry.dispatch("lark_task", {"op": "reopen", "taskId": "t1"}, client=client))
+
+    assert complete["success"] is True
+    assert reopen["success"] is True
+    complete_body = client.calls[0][3]
+    reopen_body = client.calls[1][3]
+    assert complete_body["update_fields"] == ["completed_at"]
+    assert int(complete_body["task"]["completed_at"]) > 0
+    assert reopen_body == {"task": {"completed_at": "0"}, "update_fields": ["completed_at"]}
+
+
+@pytest.mark.asyncio
+async def test_lark_client_treats_non_json_success_as_empty_payload():
+    from enterprise.lark_token import LarkClient, LarkStaticTokenProvider
+
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200, text="done"))
+    client = LarkClient(
+        LarkStaticTokenProvider("u-token"),
+        api_base_url="https://open.larksuite.com",
+        transport=transport,
+    )
+
+    data = await client.request("POST", "/open-apis/task/v2/tasks/t1/complete")
+
+    assert data == {}
+
+
+@pytest.mark.asyncio
+async def test_task_comment_adds_human_visible_tracking_link():
+    client = FakeLarkClient({"/comments": {"comment": {"id": "c1"}}})
+
+    out = json.loads(
+        registry.dispatch(
+            "lark_task",
+            {
+                "op": "comment",
+                "taskId": "t1",
+                "content": "Tracking doc: https://tenant.larksuite.com/docx/doc_1",
+            },
+            client=client,
+        )
+    )
+
+    assert out["success"] is True
+    assert out["taskId"] == "t1"
+    assert out["commentId"] == "c1"
+    method, path, params, body = client.calls[-1]
+    assert method == "POST"
+    assert path == "/open-apis/task/v2/comments"
+    assert params == {"user_id_type": "open_id"}
+    assert body == {
+        "resource_id": "t1",
+        "resource_type": "task",
+        "content": "Tracking doc: https://tenant.larksuite.com/docx/doc_1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_task_comment_requires_task_and_content():
+    client = FakeLarkClient({})
+
+    no_task = json.loads(registry.dispatch("lark_task", {"op": "comment", "content": "hi"}, client=client))
+    no_content = json.loads(registry.dispatch("lark_task", {"op": "comment", "taskId": "t1"}, client=client))
+
+    assert no_task["success"] is False
+    assert no_content["success"] is False
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
 async def test_approval_create_form_and_list():
     client = FakeLarkClient({"/instances": {"instance_code": "ic1"}})
     out = json.loads(registry.dispatch(
@@ -463,6 +1063,64 @@ async def test_family_required_params():
     assert json.loads(registry.dispatch("lark_base", {"op": "get_record", "appToken": "a", "tableId": "t"}, client=client))["success"] is False
     assert json.loads(registry.dispatch("lark_task", {"op": "get"}, client=client))["success"] is False
     assert json.loads(registry.dispatch("lark_approval", {"op": "get", "approvalCode": "AC"}, client=client))["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_approval_list_pending_mine_degrades_without_user():
+    client = FakeLarkClient({})
+    out = json.loads(registry.dispatch("lark_approval", {"op": "listPendingMine"}, client=client))
+    assert out["success"] is True
+    assert out["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_approval_list_pending_mine_queries_tasks():
+    client = FakeLarkClient(
+        {
+            "/tasks/query": {
+                "tasks": [
+                    {
+                        "instance_code": "ic1",
+                        "approval_code": "ac1",
+                        "title": "Expense",
+                        "status": "PENDING",
+                    }
+                ]
+            }
+        }
+    )
+    out = json.loads(
+        registry.dispatch(
+            "lark_approval",
+            {"op": "listPendingMine", "limit": 5},
+            client=client,
+            lark_open_id="ou_user_1",
+        )
+    )
+    assert out["success"] is True
+    assert out["data"][0]["instanceCode"] == "ic1"
+    assert client.calls[-1][1] == "/open-apis/approval/v4/tasks/query"
+
+
+@pytest.mark.asyncio
+async def test_messaging_list_mentions_mine_degrades_on_search_failure():
+    class _FailSearchClient(FakeLarkClient):
+        async def request(self, method, path, **kwargs):
+            if "/search/v1/message" in path:
+                raise RuntimeError("search unavailable")
+            return await super().request(method, path, **kwargs)
+
+    client = _FailSearchClient({})
+    out = json.loads(
+        registry.dispatch(
+            "lark_messaging",
+            {"op": "listMentionsMine"},
+            client=client,
+            lark_open_id="ou_user_1",
+        )
+    )
+    assert out["success"] is True
+    assert out["data"] == []
 
 
 def test_lark_tools_are_autodiscoverable():

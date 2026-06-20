@@ -170,7 +170,13 @@ def gated_lark_client(tmp_path, monkeypatch):
     web_server.app.state.auth_required = prev_required
 
 
-def test_lark_login_sets_cookie_upserts_member_and_mints_ws_ticket(gated_lark_client):
+def test_lark_login_sets_cookie_upserts_member_and_mints_ws_ticket(gated_lark_client, monkeypatch):
+    monkeypatch.setenv("HERMES_POLICY_MODE", "enforce")
+    synced = []
+    monkeypatch.setattr(
+        "hermes_cli.dashboard_auth.lark_tool_link.sync_lark_tool_auth",
+        lambda session, *, company_row=None: synced.append((session, company_row)) or True,
+    )
     client, identity_db = gated_lark_client
     identity_db.upsert_dashboard_member(
         provider="lark",
@@ -194,6 +200,10 @@ def test_lark_login_sets_cookie_upserts_member_and_mints_ws_ticket(gated_lark_cl
     assert start.status_code == 302
     assert "accounts.larksuite.com" in start.headers["location"]
     callback = _complete_lark_login(client)
+    assert synced
+    assert synced[0][0].auth_metadata["lark_access_token"] == "u_access_test"
+    assert synced[0][0].auth_metadata["lark_refresh_token"] == "u_refresh_test"
+    assert synced[0][1]["email"] == "alice@example.com"
     set_cookies = callback.headers.get_list("set-cookie")
     assert any("hermes_session_at" in cookie for cookie in set_cookies)
     assert any("hermes_session_rt" in cookie for cookie in set_cookies)
@@ -218,12 +228,7 @@ def test_lark_login_sets_cookie_upserts_member_and_mints_ws_ticket(gated_lark_cl
     assert me_body["company_name"]
 
     directory = client.get("/api/company/team-members")
-    assert directory.status_code == 200
-    body = directory.json()
-    assert body["company_id"] == "company_hermes"
-    assert [member["email"] for member in body["members"]] == ["alice@example.com"]
-    assert body["members"][0]["lark_open_id"] == "ou_alice"
-    assert body["members"][0]["provider"] == "lark"
+    assert directory.status_code == 403
     assert identity_db.list_company_users(company_id="company_other")[0]["email"] == "other@example.com"
 
 
@@ -237,6 +242,11 @@ def test_company_team_member_admin_actions_and_disabled_gate(gated_lark_client):
         company_id="company_hermes",
     )
     assert alice is not None
+    identity_db.update_company_user(
+        company_user_id=alice["id"],
+        company_id="company_hermes",
+        role="COMPANY_ADMIN",
+    )
 
     promote = client.patch(
         f"/api/company/team-members/{alice['id']}",
@@ -360,6 +370,8 @@ def test_company_connector_zoho_self_client_validates_and_stores_refresh_token(
     monkeypatch,
 ):
     client, identity_db = gated_lark_client
+    monkeypatch.setenv("ZOHO_ACCOUNTS_BASE_URL", "https://accounts.zoho.com")
+    monkeypatch.setenv("ZOHO_API_BASE_URL", "https://www.zohoapis.com")
     _complete_lark_login(client)
     alice = identity_db.find_dashboard_company_user(
         provider="lark",
@@ -417,6 +429,58 @@ def test_company_connector_zoho_self_client_validates_and_stores_refresh_token(
     assert upsert["payload"]["scopes"] == ["ZohoBooks.fullaccess.all"]
     assert body["connectors"][2]["provider"] == "zoho"
     assert body["connectors"][2]["connected"] is True
+
+
+def test_company_connector_zoho_uses_env_region_defaults(
+    gated_lark_client,
+    monkeypatch,
+):
+    client, identity_db = gated_lark_client
+    monkeypatch.setenv("ZOHO_ACCOUNTS_BASE_URL", "https://accounts.zoho.in")
+    monkeypatch.setenv("ZOHO_API_BASE_URL", "https://www.zohoapis.in")
+    _complete_lark_login(client)
+    alice = identity_db.find_dashboard_company_user(
+        provider="lark",
+        provider_user_id="ou_alice",
+        company_id="company_hermes",
+    )
+    identity_db.update_company_user(
+        company_user_id=alice["id"],
+        company_id="company_hermes",
+        role="COMPANY_ADMIN",
+    )
+    repo = _FakeConnectorRepository()
+    monkeypatch.setattr(web_server, "_get_company_connector_repository", lambda: repo)
+
+    async def fake_refresh(credentials):
+        assert credentials.accounts_base_url == "https://accounts.zoho.in"
+        assert credentials.api_base_url == "https://www.zohoapis.in"
+        return SimpleNamespace(
+            access_token="zoho-access",
+            expires_at=time.time() + 3600,
+            api_domain="https://www.zohoapis.in",
+            scope="ZohoBooks.fullaccess.all",
+        )
+
+    monkeypatch.setattr(web_server, "_refresh_zoho_connector_token", fake_refresh)
+
+    response = client.put(
+        "/api/company/connectors/zoho",
+        json={
+            "client_id": "zoho-client",
+            "client_secret": "zoho-secret",
+            "refresh_token": "zoho-refresh",
+            "oauth_scopes": "ZohoBooks.fullaccess.all",
+            "metadata": {"label": "finance"},
+        },
+    )
+
+    assert response.status_code == 200
+    upsert = repo.upserts[0]
+    assert upsert["payload"]["accounts_base_url"] == "https://accounts.zoho.in"
+    assert upsert["payload"]["api_base_url"] == "https://www.zohoapis.in"
+    assert upsert["metadata"]["accounts_base_url"] == "https://accounts.zoho.in"
+    assert upsert["metadata"]["api_base_url"] == "https://www.zohoapis.in"
 
 
 def test_company_connector_zoho_auto_discovers_books_org_id(

@@ -478,6 +478,89 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
     return value or None
 
 
+def _delivery_platform_for_home_platform(platform_name: str) -> str:
+    # Identity storage canonicalizes Feishu/Lark to "lark"; the live gateway
+    # adapter and cron delivery platform remain "feishu".
+    name = str(platform_name or "").strip().lower()
+    return "feishu" if name == "lark" else name
+
+
+def _home_target_from_company_row(row: dict, *, platform_name: str | None = None) -> Optional[dict]:
+    chat_id = str(row.get("chat_id") or row.get("chatId") or "").strip()
+    if not chat_id:
+        return None
+    platform = platform_name or str(row.get("platform") or "").strip().lower()
+    if not platform:
+        return None
+    delivery_platform = _delivery_platform_for_home_platform(platform)
+    if delivery_platform == "desktop":
+        # Desktop home is persisted so the account/reminder UX is correct, but
+        # cron needs a real desktop inbox/push transport before it can deliver
+        # proactive results there. Do not route it through messaging adapters.
+        return None
+    thread_id = row.get("thread_id") if "thread_id" in row else row.get("threadId")
+    return {
+        "platform": delivery_platform,
+        "chat_id": chat_id,
+        "thread_id": str(thread_id) if thread_id else None,
+    }
+
+
+def _get_company_user_home_target(platform_name: str, job: dict) -> Optional[dict]:
+    company_id = str(job.get("company_id") or "").strip()
+    company_user_id = str(job.get("company_user_id") or "").strip()
+    if not company_id or not company_user_id:
+        return None
+    try:
+        from gateway.company_identity import get_company_user_home_channel
+
+        row = get_company_user_home_channel(
+            company_id=company_id,
+            company_user_id=company_user_id,
+            platform=platform_name,
+        )
+        if not row:
+            return None
+        return _home_target_from_company_row(row, platform_name=platform_name)
+    except Exception as exc:
+        logger.debug(
+            "Job '%s': failed to read company user home channel for %s: %s",
+            job.get("id", "?"),
+            platform_name,
+            exc,
+            exc_info=True,
+        )
+        return None
+
+
+def _iter_company_user_home_targets(job: dict) -> list[dict]:
+    company_id = str(job.get("company_id") or "").strip()
+    company_user_id = str(job.get("company_user_id") or "").strip()
+    if not company_id or not company_user_id:
+        return []
+    try:
+        from gateway.company_identity import list_company_user_home_channels
+
+        rows = list_company_user_home_channels(
+            company_id=company_id,
+            company_user_id=company_user_id,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Job '%s': failed to list company user home channels: %s",
+            job.get("id", "?"),
+            exc,
+            exc_info=True,
+        )
+        return []
+    targets = []
+    for row in rows:
+        target = _home_target_from_company_row(row)
+        if target:
+            targets.append(target)
+    return targets
+
+
 def _iter_home_target_platforms():
     """Iterate built-in + plugin platform names that expose a home channel.
 
@@ -511,6 +594,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
+        company_targets = _iter_company_user_home_targets(job)
+        if company_targets:
+            logger.info(
+                "Job '%s' has deliver=origin but no origin; falling back to user home channel",
+                job.get("name", job.get("id", "?")),
+            )
+            return company_targets[0]
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
         for platform_name in _iter_home_target_platforms():
@@ -571,6 +661,9 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     if not _is_known_delivery_platform(platform_name):
         return None
+    company_target = _get_company_user_home_target(platform_name, job)
+    if company_target:
+        return company_target
     chat_id = _get_home_target_chat_id(platform_name)
     if not chat_id:
         return None
@@ -609,7 +702,7 @@ def _normalize_deliver_value(deliver) -> str:
 _ROUTING_TOKENS = frozenset({"all"})
 
 
-def _expand_routing_tokens(part: str) -> List[str]:
+def _expand_routing_tokens(part: str, job: dict | None = None) -> List[str]:
     """Expand a routing-intent token to concrete platform names.
 
     ``all`` expands to every platform in ``_iter_home_target_platforms()``
@@ -621,6 +714,10 @@ def _expand_routing_tokens(part: str) -> List[str]:
     if token not in _ROUTING_TOKENS:
         return [part]
     expanded: List[str] = []
+    for target in _iter_company_user_home_targets(job or {}):
+        platform_name = str(target.get("platform") or "").strip().lower()
+        if platform_name and platform_name not in expanded:
+            expanded.append(platform_name)
     for platform_name in _iter_home_target_platforms():
         if _get_home_target_chat_id(platform_name):
             expanded.append(platform_name)
@@ -646,7 +743,7 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     # Expand routing intents.
     parts: List[str] = []
     for raw in raw_parts:
-        parts.extend(_expand_routing_tokens(raw))
+        parts.extend(_expand_routing_tokens(raw, job=job))
 
     seen = set()
     targets = []
@@ -760,24 +857,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
-    if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
-    else:
-        delivery_content = content
-
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
-    from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-
     try:
         config = load_gateway_config()
     except Exception as e:
@@ -791,6 +870,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+        delivery_content = (
+            _format_cron_delivery_content(job, content, platform_name=platform_name)
+            if wrap_response
+            else content
+        )
+
+        # Extract MEDIA: tags so attachments are forwarded as files, not raw text.
+        from gateway.platforms.base import BasePlatformAdapter
+        media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+        media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
@@ -921,6 +1010,32 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None
+
+
+def _format_cron_delivery_content(job: dict, content: str, *, platform_name: str) -> str:
+    """Build the user-visible scheduled-task wrapper for a delivery platform."""
+    task_name = str(job.get("name") or job.get("id") or "scheduled task")
+    job_id = str(job.get("id") or "")
+    normalized_platform = str(platform_name or "").strip().lower()
+
+    if normalized_platform in {"feishu", "lark"}:
+        return (
+            f"# {task_name}\n\n"
+            f"**Scheduled task result** · `job_id: {job_id}`\n\n"
+            f"---\n\n"
+            f"{content}\n\n"
+            f"---\n\n"
+            f"_To stop or manage this job, send me a new message like "
+            f"`stop reminder {task_name}`._"
+        )
+
+    return (
+        f"Cronjob Response: {task_name}\n"
+        f"(job_id: {job_id})\n"
+        f"-------------\n\n"
+        f"{content}\n\n"
+        f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+    )
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds

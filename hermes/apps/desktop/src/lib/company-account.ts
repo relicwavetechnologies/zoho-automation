@@ -1,3 +1,16 @@
+export interface CompanyHomeChannel {
+  id: string
+  company_id: string
+  company_user_id: string
+  platform: string
+  chat_id: string
+  chat_name: string | null
+  thread_id: string | null
+  channel_identity_id: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
 export interface CompanyAccountProfile {
   id: string
   company_id: string
@@ -15,6 +28,7 @@ export interface CompanyAccountProfile {
   provider: string
   first_login_at: string | null
   last_login_at: string | null
+  home_channels?: CompanyHomeChannel[]
 }
 
 interface AuthMeResponse {
@@ -42,11 +56,31 @@ const FIXTURE_PROFILE: CompanyAccountProfile = {
   status: 'active',
   provider: 'lark',
   first_login_at: '2026-01-01T00:00:00+00:00',
-  last_login_at: '2026-06-01T00:00:00+00:00'
+  last_login_at: '2026-06-01T00:00:00+00:00',
+  home_channels: []
 }
 
 function useFixtureProfile(): boolean {
   return import.meta.env.VITE_DESKTOP_ACCOUNT_FIXTURE === 'true'
+}
+
+const DESKTOP_HOME_DEVICE_ID_KEY = 'hermes.desktop.home_device_id'
+
+function getDesktopHomeDeviceId(): string {
+  if (typeof window === 'undefined') {
+    return 'desktop'
+  }
+  const existing = window.localStorage.getItem(DESKTOP_HOME_DEVICE_ID_KEY)
+  if (existing?.trim()) {
+    return existing
+  }
+  const generated =
+    typeof window.crypto?.randomUUID === 'function'
+      ? window.crypto.randomUUID()
+      : `desktop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  const deviceId = `desktop:${generated}`
+  window.localStorage.setItem(DESKTOP_HOME_DEVICE_ID_KEY, deviceId)
+  return deviceId
 }
 
 export function companyAccountDisplayName(profile: CompanyAccountProfile): string {
@@ -95,6 +129,45 @@ export function companyAccountProviderLabel(profile: CompanyAccountProfile): str
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
 }
 
+function normalizeHomePlatform(value: string): string {
+  const platform = value.trim().toLowerCase()
+  return platform === 'feishu' ? 'lark' : platform
+}
+
+export function companyAccountHasHomeChannel(
+  profile: CompanyAccountProfile,
+  platform = 'lark'
+): boolean {
+  const target = normalizeHomePlatform(platform)
+  return Boolean(
+    profile.home_channels?.some(channel => {
+      return normalizeHomePlatform(channel.platform) === target && Boolean(channel.chat_id?.trim())
+    })
+  )
+}
+
+export function companyAccountHomeReminder(profile: CompanyAccountProfile): string | null {
+  if (companyAccountHasAnyHomeChannel(profile)) {
+    return null
+  }
+  return 'Run /sethome here for Desktop home, or run it in Lark for Lark home.'
+}
+
+export function companyAccountHasAnyHomeChannel(profile: CompanyAccountProfile): boolean {
+  return Boolean(profile.home_channels?.some(channel => Boolean(channel.chat_id?.trim())))
+}
+
+export async function setDesktopHomeChannel(deviceName = 'Desktop'): Promise<CompanyHomeChannel> {
+  return window.hermesDesktop.api<CompanyHomeChannel>({
+    path: '/api/company/home-channels/desktop',
+    method: 'PUT',
+    body: {
+      device_id: getDesktopHomeDeviceId(),
+      device_name: deviceName
+    }
+  })
+}
+
 async function fetchAuthMeFallback(): Promise<CompanyAccountProfile | null> {
   try {
     const auth = await window.hermesDesktop.api<AuthMeResponse>({ path: '/api/auth/me' })
@@ -114,7 +187,8 @@ async function fetchAuthMeFallback(): Promise<CompanyAccountProfile | null> {
       status: 'active',
       provider: auth.provider || 'dashboard',
       first_login_at: null,
-      last_login_at: null
+      last_login_at: null,
+      home_channels: []
     }
   } catch {
     return null

@@ -23,7 +23,7 @@ export async function listEmployees(options?: {
 
 export async function updateEmployee(
   id: string,
-  updates: { role?: string; status?: string },
+  updates: { role?: string; status?: string; department_id?: string },
 ): Promise<EmployeeRow> {
   const response = await api.updateCompanyTeamMember(id, updates);
   return mapApiMemberToEmployee(response);

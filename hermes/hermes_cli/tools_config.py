@@ -79,6 +79,8 @@ CONFIGURABLE_TOOLSETS = [
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("zoho",            "💼 Zoho Books & CRM",          "finance reports, invoices, contacts, CRM records"),
+    ("google",          "📧 Google Workspace",          "Gmail, Calendar, Drive, Docs, Sheets, Slides"),
+    ("lark",            "🪽 Lark / Feishu",             "messaging, docs, calendar, contacts, tasks, approvals"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
 ]

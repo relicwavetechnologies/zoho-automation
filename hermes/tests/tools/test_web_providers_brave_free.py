@@ -252,7 +252,9 @@ class TestBraveFreeSearchOnlyErrors:
         from agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
-    def test_web_extract_returns_search_only_error(self, monkeypatch):
+    def test_web_extract_falls_back_to_native_free_extractor(self, monkeypatch):
+        """brave-free is search-only, but web_extract now transparently falls
+        back to the free built-in 'native' extractor (no paid backend needed)."""
         import asyncio
         from tools import web_tools
 
@@ -261,11 +263,18 @@ class TestBraveFreeSearchOnlyErrors:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+        monkeypatch.setattr(
+            "tools.web_quality.fetch_page_content",
+            lambda url, **kw: {
+                "title": "Example",
+                "meta_description": "",
+                "content": "Example body text.",
+            },
+        )
 
         result_str = asyncio.get_event_loop().run_until_complete(
-            web_tools.web_extract_tool(["https://example.com"])
+            web_tools.web_extract_tool(["https://example.com"], use_llm_processing=False)
         )
         result = json.loads(result_str)
-        assert result["success"] is False
-        assert "search-only" in result["error"].lower()
-        assert "brave" in result["error"].lower()
+        assert "search-only" not in result_str.lower()
+        assert result["results"][0]["content"] == "Example body text."

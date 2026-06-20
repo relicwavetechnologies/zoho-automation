@@ -1,335 +1,97 @@
 ---
 name: google-workspace
-description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
-version: 1.1.0
+description: "Divo-native Google Workspace: Gmail, Calendar, Drive, Docs, Sheets, and Slides through connector tools."
+version: 2.0.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
-required_credential_files:
-  - path: google_token.json
-    description: Google OAuth2 token (created by setup script)
-  - path: google_client_secret.json
-    description: Google OAuth2 client credentials (downloaded from Google Cloud Console)
 metadata:
   hermes:
-    tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Email, OAuth]
+    tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Slides, Email, OAuth]
     homepage: https://github.com/NousResearch/hermes-agent
-    related_skills: [himalaya]
+    requires_toolsets: [google]
 ---
 
 # Google Workspace
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
+Use this skill to route Google Workspace requests through Divo's native connector tools. In Divo Dex, Google Workspace is a first-class integration connected from the Plugins section. Do not use terminal mail clients, `himalaya`, `gws`, or `scripts/google_api.py` for execution when the native Google tools are active.
 
-## References
+## Native Tool Map
 
-- `references/gmail-search-syntax.md` — Gmail search operators (is:unread, from:, newer_than:, etc.)
+| User intent | Native tool | Typical operations |
+| --- | --- | --- |
+| Gmail, email, inbox, unread mail, drafts, reply, forward, labels | `gmail` | `profile`, `list`, `search`, `get`, `send`, `draft_create`, `draft_update`, `draft_send`, `reply`, `forward`, `labels_list`, `labels_modify` |
+| Calendar, meetings, availability, Google Meet | `google_calendar` | `calendars_list`, `events_list`, `event_create`, `event_update`, `event_delete`, `free_busy`, `event_create_meet` |
+| Drive files/folders, search, upload, download, export, sharing | `google_drive` | `list`, `search`, `get`, `download`, `export`, `upload`, `create`, `share`, `permissions_update` |
+| Google Docs, writeups, notes, document editing | `google_docs` | `create`, `read`, `append`, `patch`, `export`, `share` |
+| Google Sheets, spreadsheets, tables, ranges | `google_sheets` | `create`, `read_range`, `append_rows`, `update_range`, `batch_update`, `export`, `share` |
+| Google Slides, decks, presentations | `google_slides` | `create`, `get`, `read_content`, `update_text`, `export`, `share` |
 
-## Scripts
+## Routing Rules
 
-- `scripts/setup.py` — OAuth2 setup (run once to authorize)
-- `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
+1. For Google Workspace tasks, call the matching native tool immediately when it is available.
+2. Do not run terminal probes such as `which himalaya`, `himalaya --help`, `gws --help`, or `python scripts/google_api.py`.
+3. Do not web-search for Google clients or setup instructions before using the native tool.
+4. If the native Google tool is not visible, say the Google Workspace connector or required scope is missing and ask the user to connect or reconnect Google Workspace from Plugins.
+5. If a tool returns `reconnect_required`, tell the user to connect Google Workspace in Plugins.
+6. If a tool returns `scope_upgrade_required`, tell the user which scopes are missing and ask them to reconnect Google Workspace in Plugins.
+7. Return created file URLs from the tool result. Docs, Sheets, Slides, Drive, and Calendar create/read/search responses should be treated as the source of truth for IDs and URLs.
+8. Respond in English unless the user explicitly asks for another language.
 
-## First-Time Setup
+## Safety Rules
 
-The setup is fully non-interactive — you drive it step by step so it works
-on CLI, Telegram, Discord, or any platform.
+Ask for confirmation before write actions that send, modify, share, delete, or invite:
 
-Define a shorthand first:
+- Sending, replying to, forwarding, or drafting email for later send.
+- Creating, updating, or deleting calendar events.
+- Uploading, creating, editing, deleting, sharing, or changing permissions on Drive files.
+- Creating or modifying Docs, Sheets, or Slides.
 
-```bash
-GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
-```
+For read-only requests such as "check my latest email", "find Drive files", "read this doc", "what is on my calendar", or "list upcoming events", use the tool directly without asking a setup question.
 
-### Step 0: Check if already set up
+## Gmail Patterns
 
-```bash
-$GSETUP --check
-```
+Use Gmail search syntax through `gmail` `search`:
 
-If it prints `AUTHENTICATED`, skip to Usage — setup is already done.
+- Latest inbox mail: `in:inbox`
+- Unread mail: `is:unread`
+- Recent mail: `newer_than:7d`
+- From someone: `from:person@example.com`
+- Attachments: `has:attachment`
+- PDFs: `filename:pdf`
 
-### Step 1: Triage — ask the user what they need
+For more search operators, load `references/gmail-search-syntax.md`.
 
-Before starting OAuth setup, ask the user TWO questions:
+## Calendar Patterns
 
-**Question 1: "What Google services do you need? Just email, or also
-Calendar/Drive/Sheets/Docs?"**
+- List upcoming events with `google_calendar` `events_list`.
+- Use ISO 8601 timestamps with timezone offsets for event creation and updates.
+- Use `free_busy` before proposing meeting times when attendees are provided.
+- Use `event_create_meet` when the user asks for a Google Meet link.
 
-- **Email only** → They don't need this skill at all. Use the `himalaya` skill
-  instead — it works with a Gmail App Password (Settings → Security → App
-  Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
-  Load the himalaya skill and follow its setup instructions.
+## Drive Patterns
 
-- **Email + Calendar** → Continue with this skill, but use
-  `--services email,calendar` during auth so the consent screen only asks for
-  the scopes they actually need.
+- Search first when the user gives a natural-language file name.
+- Use `get` after `search` when more metadata is needed.
+- Prefer `export` for Google-native Docs/Sheets/Slides when the user asks to download content.
+- Use sharing tools only after confirmation and include target email, role, file ID/name, and whether link access changes.
 
-- **Calendar/Drive/Sheets/Docs only** → Continue with this skill and use a
-  narrower `--services` set like `calendar,drive,sheets,docs`.
+## Docs, Sheets, And Slides Patterns
 
-- **Full Workspace access** → Continue with this skill and use the default
-  `all` service set.
-
-**Question 2: "Does your Google account use Advanced Protection (hardware
-security keys required to sign in)? If you're not sure, you probably don't
-— it's something you would have explicitly enrolled in."**
-
-- **No / Not sure** → Normal setup. Continue below.
-- **Yes** → Their Workspace admin must add the OAuth client ID to the org's
-  allowed apps list before Step 4 will work. Let them know upfront.
-
-### Step 2: Create OAuth credentials (one-time, ~5 minutes)
-
-Tell the user:
-
-> You need a Google Cloud OAuth client. This is a one-time setup:
->
-> 1. Create or select a project:
->    https://console.cloud.google.com/projectselector2/home/dashboard
-> 2. Enable the required APIs from the API Library:
->    https://console.cloud.google.com/apis/library
->    Enable: Gmail API, Google Calendar API, Google Drive API,
->    Google Sheets API, Google Docs API, People API
-> 3. Create the OAuth client here:
->    https://console.cloud.google.com/apis/credentials
->    Credentials → Create Credentials → OAuth 2.0 Client ID
-> 4. Application type: "Desktop app" → Create
-> 5. If the app is still in Testing, add the user's Google account as a test user here:
->    https://console.cloud.google.com/auth/audience
->    Audience → Test users → Add users
-> 6. Download the JSON file and tell me the file path
->
-> Important Hermes CLI note: if the file path starts with `/`, do NOT send only the bare path as its own message in the CLI, because it can be mistaken for a slash command. Send it in a sentence instead, like:
-> `The JSON file path is: /home/user/Downloads/client_secret_....json`
-
-Once they provide the path:
-
-```bash
-$GSETUP --client-secret /path/to/client_secret.json
-```
-
-If they paste the raw client ID / client secret values instead of a file path,
-write a valid Desktop OAuth JSON file for them yourself, save it somewhere
-explicit (for example `~/Downloads/hermes-google-client-secret.json`), then run
-`--client-secret` against that file.
-
-### Step 3: Get authorization URL
-
-Use the service set chosen in Step 1. Examples:
-
-```bash
-$GSETUP --auth-url --services email,calendar --format json
-$GSETUP --auth-url --services calendar,drive,sheets,docs --format json
-$GSETUP --auth-url --services all --format json
-```
-
-This returns JSON with an `auth_url` field and also saves the exact URL to
-`~/.hermes/google_oauth_last_url.txt`.
-
-Agent rules for this step:
-- Extract the `auth_url` field and send that exact URL to the user as a single line.
-- Tell the user that the browser will likely fail on `http://localhost:1` after approval, and that this is expected.
-- Tell them to copy the ENTIRE redirected URL from the browser address bar.
-- If the user gets `Error 403: access_denied`, send them directly to `https://console.cloud.google.com/auth/audience` to add themselves as a test user.
-
-### Step 4: Exchange the code
-
-The user will paste back either a URL like `http://localhost:1/?code=4/0A...&scope=...`
-or just the code string. Either works. The `--auth-url` step stores a temporary
-pending OAuth session locally so `--auth-code` can complete the PKCE exchange
-later, even on headless systems:
-
-```bash
-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
-```
-
-If `--auth-code` fails because the code expired, was already used, or came from
-an older browser tab, it now returns a fresh `fresh_auth_url`. In that case,
-immediately send the new URL to the user and have them retry with the newest
-browser redirect only.
-
-### Step 5: Verify
-
-```bash
-$GSETUP --check
-```
-
-Should print `AUTHENTICATED`. Setup is complete — token refreshes automatically from now on.
-
-### Notes
-
-- Token is stored at `~/.hermes/google_token.json` and auto-refreshes.
-- Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
-- If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
-- To revoke: `$GSETUP --revoke`
-
-## Usage
-
-All commands go through the API script. Set `GAPI` as a shorthand:
-
-```bash
-GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
-```
-
-### Gmail
-
-```bash
-# Search (returns JSON array with id, from, subject, date, snippet)
-$GAPI gmail search "is:unread" --max 10
-$GAPI gmail search "from:boss@company.com newer_than:1d"
-$GAPI gmail search "has:attachment filename:pdf newer_than:7d"
-
-# Read full message (returns JSON with body text)
-$GAPI gmail get MESSAGE_ID
-
-# Send
-$GAPI gmail send --to user@example.com --subject "Hello" --body "Message text"
-$GAPI gmail send --to user@example.com --subject "Report" --body "<h1>Q4</h1><p>Details...</p>" --html
-$GAPI gmail send --to user@example.com --subject "Hello" --from '"Research Agent" <user@example.com>' --body "Message text"
-
-# Reply (automatically threads and sets In-Reply-To)
-$GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
-$GAPI gmail reply MESSAGE_ID --from '"Support Bot" <user@example.com>' --body "Thanks"
-
-# Labels
-$GAPI gmail labels
-$GAPI gmail modify MESSAGE_ID --add-labels LABEL_ID
-$GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
-```
-
-### Calendar
-
-```bash
-# List events (defaults to next 7 days)
-$GAPI calendar list
-$GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z
-
-# Create event (ISO 8601 with timezone required)
-$GAPI calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00 --end 2026-03-01T10:30:00-06:00
-$GAPI calendar create --summary "Lunch" --start 2026-03-01T12:00:00Z --end 2026-03-01T13:00:00Z --location "Cafe"
-$GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
-
-# Delete event
-$GAPI calendar delete EVENT_ID
-```
-
-### Drive
-
-```bash
-# Search existing files
-$GAPI drive search "quarterly report" --max 10
-$GAPI drive search "mimeType='application/pdf'" --raw-query --max 5
-
-# Get metadata for a single file
-$GAPI drive get FILE_ID
-
-# Upload a local file (auto-detects MIME type)
-$GAPI drive upload /path/to/report.pdf
-$GAPI drive upload /path/to/image.png --name "Logo.png" --parent FOLDER_ID
-
-# Download (binary files download as-is; Google-native files export to a
-# sensible default — Docs→pdf, Sheets→csv, Slides→pdf, Drawings→png)
-$GAPI drive download FILE_ID
-$GAPI drive download DOC_ID --output ~/doc.pdf
-$GAPI drive download DOC_ID --export-mime text/plain --output ~/doc.txt
-
-# Create a folder
-$GAPI drive create-folder "Reports"
-$GAPI drive create-folder "Q4" --parent FOLDER_ID
-
-# Share
-$GAPI drive share FILE_ID --email alice@example.com --role reader
-$GAPI drive share FILE_ID --email alice@example.com --role writer --notify
-$GAPI drive share FILE_ID --type anyone --role reader        # anyone with link
-$GAPI drive share FILE_ID --type domain --domain example.com --role reader
-
-# Delete — defaults to trash (reversible). Use --permanent to skip the trash.
-$GAPI drive delete FILE_ID
-$GAPI drive delete FILE_ID --permanent
-```
-
-### Contacts
-
-```bash
-$GAPI contacts list --max 20
-```
-
-### Sheets
-
-```bash
-# Create a new spreadsheet
-$GAPI sheets create --title "Q4 Budget"
-$GAPI sheets create --title "Inventory" --sheet-name "Stock"
-
-# Read
-$GAPI sheets get SHEET_ID "Sheet1!A1:D10"
-
-# Write
-$GAPI sheets update SHEET_ID "Sheet1!A1:B2" --values '[["Name","Score"],["Alice","95"]]'
-
-# Append rows
-$GAPI sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
-```
-
-### Docs
-
-```bash
-# Read
-$GAPI docs get DOC_ID
-
-# Create a new Doc (optionally seeded with body text)
-$GAPI docs create --title "Meeting Notes"
-$GAPI docs create --title "Draft" --body "First paragraph..."
-
-# Append text to the end of an existing Doc
-$GAPI docs append DOC_ID --text "Additional content to append"
-```
-
-## Output Format
-
-All commands return JSON. Parse with `jq` or read directly. Key fields:
-
-- **Gmail search**: `[{id, threadId, from, to, subject, date, snippet, labels}]`
-- **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
-- **Gmail send/reply**: `{status: "sent", id, threadId}`
-- **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
-- **Calendar create**: `{status: "created", id, summary, htmlLink}`
-- **Drive search**: `[{id, name, mimeType, modifiedTime, webViewLink}]`
-- **Drive get**: `{id, name, mimeType, modifiedTime, size, webViewLink, parents, owners}`
-- **Drive upload**: `{status: "uploaded", id, name, mimeType, webViewLink}`
-- **Drive download**: `{status: "downloaded", id, name, path, mimeType}`
-- **Drive create-folder**: `{status: "created", id, name, webViewLink}`
-- **Drive share**: `{status: "shared", permissionId, fileId, role, type}`
-- **Drive delete**: `{status: "trashed" | "deleted", fileId, permanent}`
-- **Contacts list**: `[{name, emails: [...], phones: [...]}]`
-- **Sheets get**: `[[cell, cell, ...], ...]`
-- **Sheets create**: `{status: "created", spreadsheetId, title, spreadsheetUrl}`
-- **Docs create**: `{status: "created", documentId, title, url}`
-- **Docs append**: `{status: "appended", documentId, inserted_at, characters}`
-
-## Rules
-
-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
-2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
-3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
-4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
-5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
+- For new written documents, use `google_docs create` with the title and body text.
+- For existing documents, use `read` before `append` or `patch` unless the requested target is unambiguous.
+- For spreadsheets, use A1 notation ranges and prefer `append_rows` for adding rows.
+- For decks, use `google_slides create` for a new presentation and `read_content` before targeted edits.
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
-| `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
-| `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
-| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
-| `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
-| `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
-| Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |
+| Tool error | Agent response |
+| --- | --- |
+| `reconnect_required` | "Google Workspace is not connected for this Divo user. Please connect Google Workspace from Plugins, then retry." |
+| `scope_upgrade_required` | "Google Workspace is connected but missing required scopes: ... Please reconnect Google Workspace from Plugins to grant them." |
+| 401 from Google | Treat as reconnect required. |
+| 403 or insufficient scope | Treat as scope upgrade required. |
 
-## Revoking Access
+## Legacy Notes
 
-```bash
-$GSETUP --revoke
-```
+The bundled CLI scripts remain in the repository for standalone Hermes compatibility and debugging only. They are not the execution path for Divo Dex when native Google tools are active.

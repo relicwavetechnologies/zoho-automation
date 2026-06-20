@@ -56,6 +56,16 @@ function runtimeMismatchGateway(): OnboardingContext['requestGateway'] {
   }
 }
 
+function unavailableGateway(): OnboardingContext['requestGateway'] {
+  return async method => {
+    if (method === 'setup.status' || method === 'setup.runtime_check') {
+      throw new Error(`${method} unavailable`)
+    }
+
+    throw new Error(`unexpected gateway method: ${method}`)
+  }
+}
+
 function onboardingContext(requestGateway: OnboardingContext['requestGateway']): OnboardingContext {
   return { requestGateway }
 }
@@ -142,6 +152,23 @@ describe('refreshOnboarding', () => {
     await Promise.all([first, second])
 
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['shared'])
+  })
+
+  it('keeps a cached configured runtime when readiness RPCs are temporarily unavailable', async () => {
+    const onCompleted = vi.fn()
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: true }))
+
+    const ready = await refreshOnboarding({
+      onCompleted,
+      requestGateway: unavailableGateway()
+    })
+
+    expect(ready).toBe(true)
+    expect(onCompleted).toHaveBeenCalledTimes(1)
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
+    expect($desktopOnboarding.get().configured).toBe(true)
+    expect($desktopOnboarding.get().requested).toBe(false)
   })
 })
 

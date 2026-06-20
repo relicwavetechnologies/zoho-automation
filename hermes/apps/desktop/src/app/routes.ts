@@ -16,6 +16,7 @@ export const DESKTOP_SETTINGS_ENABLED = true
 export const DESKTOP_OPERATOR_SETTINGS_ENABLED = false
 export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SKILLS_ROUTE = '/skills'
+export const INTEGRATIONS_ROUTE = '/integrations'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
@@ -28,6 +29,7 @@ export type AppView =
   | 'chat'
   | 'command-center'
   | 'cron'
+  | 'integrations'
   | 'messaging'
   | 'profiles'
   | 'settings'
@@ -38,6 +40,7 @@ export type AppRouteId =
   | 'artifacts'
   | 'command-center'
   | 'cron'
+  | 'integrations'
   | 'messaging'
   | 'new'
   | 'profiles'
@@ -55,6 +58,7 @@ export const APP_ROUTES = [
   { id: 'settings', path: SETTINGS_ROUTE, view: 'settings' },
   { id: 'command-center', path: COMMAND_CENTER_ROUTE, view: 'command-center' },
   { id: 'skills', path: SKILLS_ROUTE, view: 'skills' },
+  { id: 'integrations', path: INTEGRATIONS_ROUTE, view: 'integrations' },
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },

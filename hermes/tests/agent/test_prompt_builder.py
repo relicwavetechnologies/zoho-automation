@@ -15,10 +15,13 @@ from agent.prompt_builder import (
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
+    build_active_capability_boundary_prompt,
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
+    DEFAULT_LANGUAGE_GUIDANCE,
+    DIVO_FIRST_CLASS_CONNECTOR_GUIDANCE,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
@@ -1195,6 +1198,93 @@ class TestBuildSkillsSystemPromptConditional:
         assert "nested-null" in result
 
 
+class TestActiveCapabilityBoundaryPrompt:
+    def test_groups_available_tools_and_sets_current_session_boundary(self):
+        result = build_active_capability_boundary_prompt(
+            available_tools={"web_search", "feishu_doc_read"},
+            available_toolsets={"web", "feishu_doc"},
+        )
+
+        assert "Current capability boundary" in result
+        assert "Active toolsets: feishu_doc, web" in result
+        assert "web_search" in result
+        assert "feishu_doc_read" in result
+        assert "not currently available" in result
+        assert "Do not present the skill catalog as executable capability" in result
+        assert "skills I can load on demand" in result
+        assert "do not name specific messaging platforms as available" in result
+        assert "Omit a Skills/System section" in result
+        assert "Do not include 'etc.' examples" in result
+
+    def test_empty_inventory_returns_empty_prompt(self):
+        assert build_active_capability_boundary_prompt() == ""
+
+    def test_google_native_routing_guidance_when_gmail_active(self):
+        import tools.google_tools  # noqa: F401 - register google tool metadata for grouping
+
+        result = build_active_capability_boundary_prompt(
+            available_tools={"gmail", "google_calendar", "google_drive"},
+            available_toolsets={"google"},
+        )
+        assert "Google Workspace routing" in result
+        assert "first-class native connector" in result
+        assert "himalaya" in result
+        assert "gws" in result
+        assert "google_api.py" in result
+        assert "Do not load or use terminal mail CLIs" in result
+        assert "web-search" in result
+        assert "gmail" in result
+        assert "google_calendar" in result
+        assert "google_drive" in result
+        assert "- google:" in result
+
+    def test_default_language_guidance_forbids_chinese_by_default(self):
+        assert "respond in English" in DEFAULT_LANGUAGE_GUIDANCE
+        assert "Do not answer in Chinese" in DEFAULT_LANGUAGE_GUIDANCE
+
+    def test_divo_connector_guidance_forbids_terminal_google_fallbacks(self):
+        assert "Divo first-class workspace connectors" in DIVO_FIRST_CLASS_CONNECTOR_GUIDANCE
+        assert "himalaya" in DIVO_FIRST_CLASS_CONNECTOR_GUIDANCE
+        assert "gws" in DIVO_FIRST_CLASS_CONNECTOR_GUIDANCE
+        assert "connect or reconnect Google Workspace from Plugins" in DIVO_FIRST_CLASS_CONNECTOR_GUIDANCE
+
+    def test_himalaya_hidden_when_native_google_toolset_active(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "email" / "himalaya"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: himalaya\n"
+            "description: Terminal email\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    fallback_for_toolsets: [google]\n"
+            "---\n"
+        )
+
+        result = build_skills_system_prompt(
+            available_tools={"gmail"},
+            available_toolsets={"google"},
+        )
+
+        assert "himalaya" not in result
+
+    def test_lark_native_routing_guidance_when_lark_tools_active(self):
+        result = build_active_capability_boundary_prompt(
+            available_tools={"lark_doc", "lark_task", "lark_calendar", "lark_messaging"},
+            available_toolsets={"lark"},
+        )
+        assert "Lark/Feishu routing" in result
+        assert "create_markdown" in result
+        assert "English only" in result
+        assert "do not answer in Chinese" in result
+        assert "lark_contacts" in result
+        assert "lark-ops skill" in result
+        assert "Do not inspect the codebase" in result
+        assert "lark_task" in result
+        assert "execute through native Lark tools" in result
+
+
 # =========================================================================
 # Tool-use enforcement guidance
 # =========================================================================
@@ -1268,5 +1358,3 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

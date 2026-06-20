@@ -114,6 +114,104 @@ ENTERPRISE_TABLES = (
             "status",
         ),
     ),
+    EnterpriseTable(
+        "PolicySchemaVersion",
+        ("id", "companyId", "schemaText", "checksum", "status", "createdAt"),
+    ),
+    EnterpriseTable(
+        "PolicyTemplate",
+        ("id", "companyId", "name", "templateText", "status", "createdAt"),
+    ),
+    EnterpriseTable(
+        "PolicyBinding",
+        (
+            "id",
+            "companyId",
+            "templateId",
+            "principalType",
+            "principalId",
+            "resourceType",
+            "resourceId",
+            "action",
+            "effect",
+            "contextJson",
+            "status",
+        ),
+    ),
+    EnterpriseTable(
+        "PolicySnapshot",
+        ("id", "companyId", "schemaVersionId", "snapshotJson", "checksum", "status", "createdAt"),
+    ),
+    EnterpriseTable(
+        "PolicyDecisionLog",
+        ("id", "companyId", "principalId", "action", "resourceType", "resourceId", "decision", "createdAt"),
+    ),
+    EnterpriseTable(
+        "PolicyToolCatalog",
+        ("id", "companyId", "toolName", "toolset", "action", "riskClass"),
+    ),
+    EnterpriseTable(
+        "PolicyRouteCatalog",
+        ("id", "companyId", "routeKey", "method", "pathPattern", "action", "riskClass"),
+    ),
+    EnterpriseTable(
+        "CompanyUserHomeChannel",
+        (
+            "id",
+            "companyId",
+            "companyUserId",
+            "platform",
+            "chatId",
+        ),
+    ),
+    EnterpriseTable(
+        "HermesMemoryEntry",
+        (
+            "id",
+            "companyId",
+            "companyUserId",
+            "scope",
+            "kind",
+            "content",
+            "source",
+            "deletedAt",
+        ),
+    ),
+    EnterpriseTable(
+        "HermesMemoryAudit",
+        ("id", "companyId", "entryId", "action", "createdAt"),
+    ),
+    EnterpriseTable(
+        "HermesFollowUp",
+        (
+            "id",
+            "companyId",
+            "larkTaskGuid",
+            "delegatorCompanyUserId",
+            "assigneeCompanyUserId",
+            "status",
+        ),
+    ),
+    EnterpriseTable(
+        "HermesFollowUpEvent",
+        ("id", "followUpId", "eventType", "createdAt"),
+    ),
+    EnterpriseTable(
+        "HermesRagChunk",
+        (
+            "id",
+            "companyId",
+            "sourceType",
+            "sourceId",
+            "chunkIndex",
+            "documentKey",
+            "visibility",
+            "chunkText",
+            "embedding",
+            "payload",
+            "embeddingSchemaVersion",
+        ),
+    ),
 )
 
 

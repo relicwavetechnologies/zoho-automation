@@ -9,10 +9,11 @@ fork inherits the cached prompt verbatim.
 
 Three tiers are joined with ``\\n\\n``:
 
-* ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
-  guidance, computer-use guidance, nous subscription block, tool-use
-  enforcement guidance + per-model operational guidance, skills prompt,
-  alibaba model-name workaround, environment hints, platform hints.
+* ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), current
+  Divo user identity, tool guidance, computer-use guidance, nous
+  subscription block, tool-use enforcement guidance + per-model
+  operational guidance, skills prompt, alibaba model-name workaround,
+  environment hints, platform hints.
 * ``context``  — caller-supplied ``system_message`` plus context files
   (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``.
 * ``volatile`` — memory snapshot, USER.md profile, external memory
@@ -24,10 +25,12 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from agent.prompt_builder import (
+    DEFAULT_LANGUAGE_GUIDANCE,
     DEFAULT_AGENT_IDENTITY,
+    DIVO_FIRST_CLASS_CONNECTOR_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
@@ -56,6 +59,207 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _row_field(row: Mapping[str, Any] | None, *keys: str) -> str:
+    if not row:
+        return ""
+    for key in keys:
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _canonical_platform(value: str) -> str:
+    platform = str(value or "").strip().lower()
+    if platform == "feishu":
+        return "lark"
+    return platform
+
+
+def build_current_divo_user_identity_prompt() -> str:
+    """Return a concise company/user identity block for Divo sessions.
+
+    The block is intentionally best-effort and read-only. It exposes stable
+    routing/identity fields already used by RBAC and connector scoping, but
+    never secrets or OAuth tokens.
+    """
+
+    try:
+        from gateway.session_context import get_session_env
+
+        company_id = str(get_session_env("HERMES_COMPANY_ID") or "").strip()
+        company_user_id = str(get_session_env("HERMES_COMPANY_USER_ID") or "").strip()
+        channel_identity_id = str(get_session_env("HERMES_CHANNEL_IDENTITY_ID") or "").strip()
+        company_role = str(get_session_env("HERMES_COMPANY_ROLE") or "").strip()
+        department_id = str(get_session_env("HERMES_DEPARTMENT_ID") or "").strip()
+        session_platform = str(get_session_env("HERMES_SESSION_PLATFORM") or "").strip()
+        session_user_id = str(get_session_env("HERMES_SESSION_USER_ID") or "").strip()
+        session_user_name = str(get_session_env("HERMES_SESSION_USER_NAME") or "").strip()
+    except Exception:
+        return ""
+
+    if not company_id and not company_user_id and not channel_identity_id:
+        return ""
+
+    user_row: Mapping[str, Any] | None = None
+    channel_rows: list[Mapping[str, Any]] = []
+    try:
+        from gateway.company_identity import get_company_user, list_channel_identities_for_company_user
+
+        if company_user_id:
+            row = get_company_user(company_user_id, company_id=company_id or None)
+            if isinstance(row, Mapping):
+                user_row = row
+            channel_rows = [
+                row
+                for row in list_channel_identities_for_company_user(company_user_id)
+                if isinstance(row, Mapping)
+            ]
+    except Exception:
+        user_row = None
+        channel_rows = []
+
+    display_name = (
+        _row_field(user_row, "display_name", "displayName", "name")
+        or session_user_name
+        or _row_field(user_row, "email")
+    )
+    email = _row_field(user_row, "email")
+    company_role = (
+        company_role
+        or _row_field(user_row, "role", "company_role", "companyRole", "aiRole")
+        or "MEMBER"
+    )
+    department_id = department_id or _row_field(user_row, "department_id", "departmentId")
+    company_id = company_id or _row_field(user_row, "company_id", "companyId")
+    company_user_id = company_user_id or _row_field(user_row, "id", "company_user_id", "companyUserId")
+
+    matching_channel: Mapping[str, Any] | None = None
+    if channel_identity_id:
+        for row in channel_rows:
+            if _row_field(row, "id", "channel_identity_id", "channelIdentityId") == channel_identity_id:
+                matching_channel = row
+                break
+    if matching_channel is None:
+        for row in channel_rows:
+            if _canonical_platform(_row_field(row, "platform", "channel")) == "lark":
+                matching_channel = row
+                break
+    if matching_channel is None and channel_rows:
+        matching_channel = channel_rows[0]
+
+    channel_identity_id = channel_identity_id or _row_field(
+        matching_channel,
+        "id",
+        "channel_identity_id",
+        "channelIdentityId",
+    )
+    channel_platform = (
+        _canonical_platform(_row_field(matching_channel, "platform", "channel"))
+        or _canonical_platform(session_platform)
+    )
+    channel_user_id = (
+        _row_field(matching_channel, "platform_user_id", "externalUserId", "platformUserId")
+        or session_user_id
+    )
+    channel_user_id_alt = _row_field(
+        matching_channel,
+        "platform_user_id_alt",
+        "platformUserIdAlt",
+        "user_id_alt",
+    )
+    lark_open_id = channel_user_id if channel_platform == "lark" else ""
+
+    lines = [
+        "Current Divo user identity:",
+        "Treat first-person references such as 'me', 'my', and 'mine' as this company user when using Divo tools. Use native contact/profile tools if a missing field is needed; do not invent missing identity details.",
+    ]
+    fields = [
+        ("Name", display_name),
+        ("Email", email),
+        ("Company ID", company_id),
+        ("Company user ID", company_user_id),
+        ("Company role", company_role),
+        ("Is super admin", "true" if company_role.upper() in {"SUPER_ADMIN", "OWNER"} else "false"),
+        ("Department ID", department_id),
+        ("Channel platform", channel_platform),
+        ("Channel identity ID", channel_identity_id),
+        ("Channel user ID", channel_user_id),
+        ("Channel alternate user ID", channel_user_id_alt),
+        ("Lark open ID", lark_open_id),
+    ]
+    for label, value in fields:
+        if value:
+            lines.append(f"- {label}: {value}")
+    return "\n".join(lines)
+
+
+def build_active_follow_ups_prompt(limit: int = 5) -> str:
+    """Return active Divo Follow Ups for the current company user.
+
+    This is intentionally best-effort. Missing enterprise identity, database
+    connectivity, or follow-up tables should never block normal agent prompt
+    construction.
+    """
+
+    try:
+        from gateway.session_context import get_session_env
+
+        company_id = str(get_session_env("HERMES_COMPANY_ID") or "").strip()
+        company_user_id = str(get_session_env("HERMES_COMPANY_USER_ID") or "").strip()
+    except Exception:
+        return ""
+    if not company_id or not company_user_id:
+        return ""
+
+    try:
+        from enterprise.db import get_enterprise_connection
+        from enterprise.follow_up_repository import FollowUpRepository
+
+        repo = FollowUpRepository(get_enterprise_connection())
+        rows = repo.list_active(company_id, assignee_company_user_id=company_user_id)
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+
+    lines = [
+        "Active Divo Follow Ups:",
+        "These are active delegated tasks assigned to you in Dex. Keep them in mind while answering and using tools. If work appears complete, summarize what was done and ask whether to mark the follow-up done instead of silently forgetting it.",
+    ]
+    for index, follow_up in enumerate(rows[: max(1, limit)], start=1):
+        created = _follow_up_created_payload(repo, company_id, getattr(follow_up, "id", ""))
+        title = str(created.get("title") or getattr(follow_up, "lark_task_guid", "") or "").strip()
+        due = str(created.get("due_date") or "").strip()
+        parts = [
+            f"{index}. {title or getattr(follow_up, 'id', 'follow-up')}",
+            f"status={getattr(follow_up, 'status', '')}",
+            f"follow_up_id={getattr(follow_up, 'id', '')}",
+            f"lark_task_guid={getattr(follow_up, 'lark_task_guid', '')}",
+        ]
+        if due:
+            parts.append(f"due={due}")
+        active_session_id = str(getattr(follow_up, "active_session_id", "") or "").strip()
+        if active_session_id:
+            parts.append(f"active_session_id={active_session_id}")
+        doc = str(getattr(follow_up, "tracking_doc_url", "") or getattr(follow_up, "tracking_doc_token", "") or "").strip()
+        if doc:
+            parts.append(f"tracking_doc={doc}")
+        lines.append(" - " + "; ".join(parts))
+    return "\n".join(lines)
+
+
+def _follow_up_created_payload(repo: Any, company_id: str, follow_up_id: str) -> dict[str, Any]:
+    try:
+        for event in repo.list_events(company_id, follow_up_id):
+            if str(getattr(event, "event_type", "") or "") == "created":
+                payload = getattr(event, "payload_json", {}) or {}
+                return dict(payload) if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+    return {}
 
 
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
@@ -100,6 +304,28 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    stable_parts.append(DEFAULT_LANGUAGE_GUIDANCE)
+    stable_parts.append(DIVO_FIRST_CLASS_CONNECTOR_GUIDANCE)
+    current_divo_user_identity_prompt = build_current_divo_user_identity_prompt()
+    if current_divo_user_identity_prompt:
+        stable_parts.append(current_divo_user_identity_prompt)
+
+    if agent.valid_tool_names:
+        active_toolsets = {
+            toolset
+            for toolset in (
+                _r.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
+            )
+            if toolset
+        }
+        from agent.prompt_builder import build_active_capability_boundary_prompt
+
+        capability_boundary = build_active_capability_boundary_prompt(
+            available_tools=set(agent.valid_tool_names),
+            available_toolsets=active_toolsets,
+        )
+        if capability_boundary:
+            stable_parts.append(capability_boundary)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -310,6 +536,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             user_block = agent._memory_store.format_for_system_prompt("user")
             if user_block:
                 volatile_parts.append(user_block)
+        # Company-shared knowledge (enterprise/Postgres only; read-only to the
+        # agent). Empty on standalone/file memory, so this is a no-op there.
+        if agent._memory_enabled:
+            company_block = agent._memory_store.format_for_system_prompt("company")
+            if company_block:
+                volatile_parts.append(company_block)
 
     # External memory provider system prompt block (additive to built-in)
     if agent._memory_manager:
@@ -319,6 +551,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 volatile_parts.append(_ext_mem_block)
         except Exception:
             pass
+
+    active_follow_ups_prompt = build_active_follow_ups_prompt()
+    if active_follow_ups_prompt:
+        volatile_parts.append(active_follow_ups_prompt)
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()
@@ -400,6 +636,8 @@ def format_tools_for_system_message(agent: Any) -> str:
 
 __all__ = [
     "build_system_prompt_parts",
+    "build_current_divo_user_identity_prompt",
+    "build_active_follow_ups_prompt",
     "build_system_prompt",
     "invalidate_system_prompt",
     "format_tools_for_system_message",

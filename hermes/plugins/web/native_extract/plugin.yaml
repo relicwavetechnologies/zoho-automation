@@ -1,0 +1,7 @@
+name: web-native-extract
+version: 1.0.0
+description: "Built-in (free) web content extractor — reads page content directly via httpx + trafilatura. No API key required. Provides the extract half of the search → extract flow for free, pairing with any search backend (serper, ddgs, searxng, brave-free)."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - native

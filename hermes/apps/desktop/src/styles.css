@@ -275,8 +275,9 @@
     --radius: 0.5rem;
     --radius-scalar: 0.5;
 
-    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx). */
-    --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
+    /* Fade + clearance between the last message and the docked composer chrome. */
+    --composer-thread-scrim-height: 3.5rem;
+    --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--composer-thread-scrim-height));
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.5rem;
@@ -604,6 +605,39 @@
 
 button {
   -webkit-app-region: no-drag;
+}
+
+/* Pane splitters — subtle always-on line (Cursor-style), brighter on hover/drag. */
+[data-pane-sash] {
+  pointer-events: auto;
+}
+
+[data-pane-sash]::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--ui-stroke-secondary);
+  opacity: 0.72;
+  pointer-events: none;
+  transition:
+    background 120ms ease,
+    opacity 120ms ease;
+}
+
+[data-pane-sash]:hover,
+[data-pane-sash]:focus-visible,
+[data-pane-sash][data-dragging='true'] {
+  background: var(--ui-sash-hover-background);
+}
+
+[data-pane-sash]:hover::before,
+[data-pane-sash]:focus-visible::before,
+[data-pane-sash][data-dragging='true']::before {
+  background: var(--ui-sash-hover-border);
+  opacity: 1;
 }
 
 [data-slot='button'] {
@@ -940,18 +974,18 @@ canvas {
 }
 
 [data-slot='composer-landing'] {
-  --composer-control-size: 2.25rem;
-  --composer-control-primary-size: 2.25rem;
-  --composer-control-gap: 0.8rem;
-  --composer-row-gap: 0.9rem;
-  --composer-surface-radius: 1.1rem;
-  --composer-surface-pad-x: 1rem;
-  --composer-surface-pad-y: 0.7rem;
-  --composer-input-pad-x: 0.3rem;
-  --composer-input-pad-top: 0.15rem;
-  --composer-input-min-height: 3.4rem;
-  --composer-input-max-height: 10rem;
-  --composer-fallback-height: 8.25rem;
+  --composer-control-size: 1.75rem;
+  --composer-control-primary-size: 1.75rem;
+  --composer-control-gap: 0.4rem;
+  --composer-row-gap: 0.45rem;
+  --composer-surface-radius: 0.875rem;
+  --composer-surface-pad-x: 0.625rem;
+  --composer-surface-pad-y: 0.625rem;
+  --composer-input-pad-x: 0.1rem;
+  --composer-input-pad-top: 0.1rem;
+  --composer-input-min-height: 5.5rem;
+  --composer-input-max-height: 12rem;
+  --composer-fallback-height: 8.5rem;
 }
 
 [data-slot='composer-landing'] [data-slot='composer-root'] {
@@ -967,8 +1001,8 @@ canvas {
   border-color: #343434 !important;
   border-radius: var(--composer-surface-radius) !important;
   box-shadow:
-    0 1rem 3.25rem rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.075) !important;
+    0 0.5rem 1.5rem rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 
 [data-slot='composer-landing'] [data-slot='composer-surface'] > [aria-hidden='true'] {
@@ -985,8 +1019,9 @@ canvas {
 
 [data-slot='composer-landing'] [data-slot='composer-rich-input'] {
   color: #c3c3c3;
-  font-size: clamp(0.95rem, 1.5vw, 1.25rem);
-  letter-spacing: -0.025em;
+  font-size: 0.8125rem;
+  line-height: 1.44;
+  letter-spacing: -0.018em;
 }
 
 [data-slot='composer-landing'] [data-slot='composer-rich-input']:empty::before {
@@ -995,24 +1030,24 @@ canvas {
 
 [data-slot='composer-landing'] [aria-label='Model and thinking mode'] {
   max-width: min(28rem, 55vw);
-  padding-inline: 0.15rem;
+  padding-inline: 0.05rem;
   color: #b9b9b9;
-  font-size: clamp(0.9rem, 1.2vw, 1rem);
-  letter-spacing: -0.025em;
+  font-size: 0.75rem;
+  letter-spacing: -0.015em;
 }
 
 [data-slot='composer-landing'] [aria-label='Model and thinking mode'] svg,
 [data-slot='composer-landing'] [aria-label='Add context'] svg {
-  width: 1.05rem;
-  height: 1.05rem;
+  width: 0.8125rem;
+  height: 0.8125rem;
 }
 
 [data-slot='composer-landing'] [data-slot='composer-root'] .codicon {
-  font-size: 1.05rem !important;
+  font-size: 0.8125rem !important;
 }
 
 [data-slot='composer-landing'] [aria-label='Start voice conversation'] .codicon {
-  font-size: 1.15rem !important;
+  font-size: 0.875rem !important;
 }
 
 /* Collapsed (single-line) composer reads as a pill/capsule; once the input
@@ -1029,12 +1064,28 @@ canvas {
   min-height: 0;
 }
 
-[data-slot='composer-root'] > .pointer-events-none {
+[data-slot='composer-root'] > .pointer-events-none:not([data-slot='composer-thread-scrim']) {
   background: linear-gradient(
     to bottom,
     transparent,
     color-mix(in srgb, var(--ui-chat-surface-background) 88%, transparent)
   ) !important;
+}
+
+/* Blurred scrim above the docked composer — chat fades out before the diff bar / input. */
+[data-slot='composer-thread-scrim'] {
+  z-index: 1;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--ui-chat-surface-background) 42%, transparent) 38%,
+    color-mix(in srgb, var(--ui-chat-surface-background) 82%, transparent) 72%,
+    var(--ui-chat-surface-background) 100%
+  );
+  -webkit-backdrop-filter: blur(0.85rem) saturate(1.08);
+  backdrop-filter: blur(0.85rem) saturate(1.08);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgb(0 0 0 / 92%) 28%, #000 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, rgb(0 0 0 / 92%) 28%, #000 100%);
 }
 
 [data-slot='composer-surface'] {
@@ -1068,13 +1119,14 @@ canvas {
 
 @media (max-width: 720px) {
   [data-slot='composer-landing'] {
-    --composer-control-size: 2rem;
-    --composer-control-primary-size: 2rem;
-    --composer-control-gap: 0.55rem;
-    --composer-row-gap: 0.75rem;
-    --composer-surface-radius: 1rem;
-    --composer-input-min-height: 3.6rem;
-    --composer-fallback-height: 7.4rem;
+    --composer-control-size: 1.625rem;
+    --composer-control-primary-size: 1.625rem;
+    --composer-control-gap: 0.4rem;
+    --composer-row-gap: 0.45rem;
+    --composer-surface-radius: 0.8125rem;
+    --composer-surface-pad-y: 1rem;
+    --composer-input-min-height: 4.5rem;
+    --composer-fallback-height: 8rem;
   }
 
   [data-slot='composer-landing-wordmark'] {

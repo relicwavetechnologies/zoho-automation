@@ -2,12 +2,31 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { AlertTriangle, FileText, Loader2, RefreshCw, Settings } from '@/lib/icons'
+import { AlertTriangle, FileText, Loader2, LogIn, RefreshCw, Settings } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { $companyAuth } from '@/store/company-auth'
 import { $desktopOnboarding } from '@/store/onboarding'
 
-type BusyAction = 'configure' | 'retry' | null
+type BusyAction = 'configure' | 'retry' | 'signin' | null
+
+function isOauthBootError(error: null | string | undefined): boolean {
+  return /sign-in|sign in|oauth|auth/i.test(error ?? '')
+}
+
+function loginFailureMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || '')
+  const trimmed = message.trim()
+
+  if (!trimmed) {
+    return 'Sign-in failed. Try again.'
+  }
+
+  if (/closed before authentication completed/i.test(trimmed)) {
+    return 'Sign-in window closed before authentication completed.'
+  }
+
+  return trimmed
+}
 
 // Recovery surface for a hard remote gateway connection failure. Without this
 // the app shell renders dead — "gateway offline", no composer, only a toast —
@@ -41,9 +60,35 @@ export function BootFailureOverlay() {
     return null
   }
 
+  const oauthError = isOauthBootError(boot.error)
+
   const retry = async () => {
     setBusy('retry')
     window.location.reload()
+  }
+
+  const signInAgain = async () => {
+    const baseUrl = companyAuth.baseUrl || (await window.hermesDesktop?.getRemoteAuthStatus?.().then(status => status.baseUrl).catch(() => null))
+
+    if (!baseUrl) {
+      setLogs(lines => [...lines, '\n[hermes] OAuth sign-in could not start: backend URL is unavailable.\n'])
+      return
+    }
+
+    setBusy('signin')
+    try {
+      const result = await window.hermesDesktop?.oauthLoginConnectionConfig(baseUrl)
+      if (!result?.connected) {
+        setLogs(lines => [...lines, '\n[hermes] OAuth sign-in did not complete. Try again.\n'])
+        return
+      }
+
+      window.location.reload()
+    } catch (error) {
+      setLogs(lines => [...lines, `\n[hermes] ${loginFailureMessage(error)}\n`])
+    } finally {
+      setBusy(null)
+    }
   }
 
   const configureGateway = async () => {
@@ -97,6 +142,12 @@ export function BootFailureOverlay() {
 
           <div className="grid gap-2">
             <div className="flex flex-wrap gap-2">
+              {oauthError ? (
+                <Button disabled={Boolean(busy)} onClick={() => void signInAgain()}>
+                  {busy === 'signin' ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
+                  Sign in again
+                </Button>
+              ) : null}
               <Button disabled={Boolean(busy)} onClick={() => void retry()}>
                 {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 Retry

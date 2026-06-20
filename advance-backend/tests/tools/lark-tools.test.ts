@@ -15,6 +15,7 @@ import { makeAllowedPerm, makeDeniedPerm, makeCtx } from './tool-test.helpers.ts
 
 import { createLarkTaskTool }     from '../../src/application/orchestration/tools/families/lark-task.tool.ts';
 import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
+import { createLarkContactsTool }  from '../../src/application/orchestration/tools/families/lark-contacts.tool.ts';
 import { createLarkCalendarTool }  from '../../src/application/orchestration/tools/families/lark-calendar.tool.ts';
 import { createLarkDocTool }       from '../../src/application/orchestration/tools/families/lark-doc.tool.ts';
 import { createLarkBaseTool }      from '../../src/application/orchestration/tools/families/lark-base.tool.ts';
@@ -253,6 +254,68 @@ describe('larkMessaging tool', () => {
   });
 });
 
+// ─── lark-contacts ───────────────────────────────────────────────────────────
+
+describe('larkContacts tool', () => {
+  const peopleResolver = {
+    resolve: async () => ({
+      resolved: [{ openId: 'ou_1', displayName: 'Anish Suman', email: 'anish@example.com' }],
+      ambiguous: [],
+      notFound: [],
+    }),
+  };
+  const contactsClient = {
+    searchUsers: async () => [{
+      openId: 'ou_1',
+      displayName: 'Anish Suman',
+      enterpriseEmail: 'anish@example.com',
+      department: 'Engineering',
+    }],
+    searchDepartments: async () => [{ departmentId: 'od_1', name: 'Engineering' }],
+    listDepartmentMembers: async () => [{ openId: 'ou_1', displayName: 'Anish Suman' }],
+  };
+
+  describe('permissionCheck', () => {
+    it('returns "read" for lookup', () => {
+      const tool = createLarkContactsTool({ peopleResolver, contactsClient });
+      const r = tool.permissionCheck({ op: 'lookup', query: 'anish' }, makeAllowedPerm('larkContacts', ['read']));
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value, 'read');
+    });
+
+    it('denies when read is not allowed', () => {
+      const tool = createLarkContactsTool({ peopleResolver, contactsClient });
+      const r = tool.permissionCheck({ op: 'search', query: 'anish' }, makeDeniedPerm());
+      assert.equal(r.ok, false);
+    });
+  });
+
+  describe('execute', () => {
+    const ctx = makeCtx('larkContacts', ['read']);
+
+    it('lookup: returns found contacts from resolver', async () => {
+      const tool = createLarkContactsTool({ peopleResolver, contactsClient });
+      const r = await tool.execute({ op: 'lookup', query: 'anish' }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.data.found[0].openId, 'ou_1');
+    });
+
+    it('search: returns live users', async () => {
+      const tool = createLarkContactsTool({ peopleResolver, contactsClient });
+      const r = await tool.execute({ op: 'search', query: 'anish', excludeExternalUsers: true }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.data.users[0].department, 'Engineering');
+    });
+
+    it('get: requires openIds', async () => {
+      const tool = createLarkContactsTool({ peopleResolver, contactsClient });
+      const r = await tool.execute({ op: 'get' }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+    });
+  });
+});
+
 // ─── lark-calendar ────────────────────────────────────────────────────────────
 
 describe('larkCalendar tool', () => {
@@ -327,8 +390,10 @@ describe('larkCalendar tool', () => {
 describe('larkDoc tool', () => {
   const fakeClient = {
     getDoc:       async () => ({ title: 'Doc', content: '...' }),
-    createDoc:    async () => ({ docToken: 'doc-abc' }),
+    createDoc:    async () => ({ docToken: 'doc-abc', url: 'https://tenant.larksuite.com/docx/doc-abc', docUrl: 'https://tenant.larksuite.com/docx/doc-abc' }),
+    createMarkdownDoc: async () => ({ docToken: 'doc-md', url: 'https://tenant.larksuite.com/docx/doc-md', docUrl: 'https://tenant.larksuite.com/docx/doc-md' }),
     appendBlock:  async () => {},
+    appendMarkdown: async () => {},
     listBlocks:   async () => [{ type: 'text', content: 'hello' }],
   };
 
@@ -378,6 +443,15 @@ describe('larkDoc tool', () => {
       const r = await tool.execute({ op: 'create', title: 'New Doc' }, ctx);
       assert.equal(r.ok, true);
       assert.equal((r as any).value.docToken, 'doc-abc');
+      assert.equal((r as any).value.url, 'https://tenant.larksuite.com/docx/doc-abc');
+    });
+
+    it('create_markdown: ok with docToken and URL', async () => {
+      const tool = createLarkDocTool({ client: fakeClient });
+      const r = await tool.execute({ op: 'create_markdown', title: 'New Doc', content: '# Heading\n\nBody' }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.docToken, 'doc-md');
+      assert.equal((r as any).value.docUrl, 'https://tenant.larksuite.com/docx/doc-md');
     });
 
     it('create: bad_args when title missing', async () => {
@@ -389,6 +463,12 @@ describe('larkDoc tool', () => {
     it('append_block: bad_args when docToken missing', async () => {
       const tool = createLarkDocTool({ client: fakeClient });
       const r = await tool.execute({ op: 'append_block', content: 'hello' }, ctx);
+      assert.equal(r.ok, false);
+    });
+
+    it('append_markdown: bad_args when content missing', async () => {
+      const tool = createLarkDocTool({ client: fakeClient });
+      const r = await tool.execute({ op: 'append_markdown', docToken: 'doc-abc' }, ctx);
       assert.equal(r.ok, false);
     });
 

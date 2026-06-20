@@ -55,6 +55,7 @@ describe('external link helpers', () => {
   it('filters out local/non-http targets for title fetches', () => {
     expect(isTitleFetchable('https://www.expedia.com/things-to-do/foo')).toBe(true)
     expect(isTitleFetchable('http://localhost:5174')).toBe(false)
+    expect(isTitleFetchable('https://emia/')).toBe(false)
     expect(isTitleFetchable('file:///tmp/demo.html')).toBe(false)
     expect(isTitleFetchable('mailto:hello@example.com')).toBe(false)
   })

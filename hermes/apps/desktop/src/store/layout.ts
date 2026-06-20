@@ -25,12 +25,18 @@ const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
+export const TODAY_PANEL_PANE_ID = 'today-panel'
 export const RIGHT_RAIL_PREVIEW_TAB_ID = 'preview'
+
+export const TODAY_PANEL_DEFAULT_WIDTH = 420
+export const TODAY_PANEL_MIN_WIDTH = 300
+export const TODAY_PANEL_MAX_WIDTH = 800
 
 export type RightRailTabId = typeof RIGHT_RAIL_PREVIEW_TAB_ID | `file:${string}`
 
 ensurePaneRegistered(CHAT_SIDEBAR_PANE_ID, { open: true })
 ensurePaneRegistered(FILE_BROWSER_PANE_ID, { open: false })
+ensurePaneRegistered(TODAY_PANEL_PANE_ID, { open: true })
 
 export const $sidebarOpen: ReadableAtom<boolean> = computed(
   $paneStates,
@@ -42,12 +48,23 @@ export const $fileBrowserOpen: ReadableAtom<boolean> = computed(
   states => states[FILE_BROWSER_PANE_ID]?.open ?? false
 )
 
+export const $todayPanelOpen: ReadableAtom<boolean> = computed(
+  $paneStates,
+  states => states[TODAY_PANEL_PANE_ID]?.open ?? true
+)
+
 export const $rightRailActiveTabId = atom<RightRailTabId>(RIGHT_RAIL_PREVIEW_TAB_ID)
 
 export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states => {
   const override = states[CHAT_SIDEBAR_PANE_ID]?.widthOverride
 
   return typeof override === 'number' ? override : SIDEBAR_DEFAULT_WIDTH
+})
+
+export const $todayPanelWidth: ReadableAtom<number> = computed($paneStates, states => {
+  const override = states[TODAY_PANEL_PANE_ID]?.widthOverride
+
+  return typeof override === 'number' ? override : TODAY_PANEL_DEFAULT_WIDTH
 })
 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
@@ -79,6 +96,19 @@ export function toggleSidebarOpen() {
 
 export function toggleFileBrowserOpen() {
   togglePane(FILE_BROWSER_PANE_ID)
+}
+
+export function toggleTodayPanelOpen() {
+  togglePane(TODAY_PANEL_PANE_ID)
+}
+
+export function setTodayPanelOpen(open: boolean) {
+  setPaneOpen(TODAY_PANEL_PANE_ID, open)
+}
+
+export function setTodayPanelWidth(width: number) {
+  const bounded = Math.min(TODAY_PANEL_MAX_WIDTH, Math.max(TODAY_PANEL_MIN_WIDTH, width))
+  setPaneWidthOverride(TODAY_PANEL_PANE_ID, bounded)
 }
 
 export function togglePanesFlipped() {

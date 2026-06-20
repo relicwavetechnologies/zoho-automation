@@ -812,6 +812,39 @@ def _home_thread_env_var(platform_name: str) -> str:
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
 
 
+def _company_home_context() -> dict[str, str]:
+    """Return current company actor context, if the active turn has one."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return {}
+    context = {
+        "company_id": get_session_env("HERMES_COMPANY_ID", "").strip(),
+        "company_user_id": get_session_env("HERMES_COMPANY_USER_ID", "").strip(),
+        "channel_identity_id": get_session_env("HERMES_CHANNEL_IDENTITY_ID", "").strip(),
+    }
+    return {key: value for key, value in context.items() if value}
+
+
+def _current_company_user_home_channel(platform_name: str) -> Optional[dict]:
+    context = _company_home_context()
+    company_id = context.get("company_id")
+    company_user_id = context.get("company_user_id")
+    if not company_id or not company_user_id:
+        return None
+    try:
+        from gateway.company_identity import get_company_user_home_channel
+
+        return get_company_user_home_channel(
+            company_id=company_id,
+            company_user_id=company_user_id,
+            platform=platform_name,
+        )
+    except Exception as exc:
+        logger.debug("Failed to read company user home channel: %s", exc, exc_info=True)
+        return None
+
+
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
     return (_hermes_home / ".restart_notify.json").exists()
@@ -9390,8 +9423,12 @@ class GatewayRunner:
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
-            env_key = _home_target_env_var(platform_name)
-            if not os.getenv(env_key):
+            company_context = _company_home_context()
+            has_home_channel = bool(_current_company_user_home_channel(platform_name))
+            if not company_context:
+                env_key = _home_target_env_var(platform_name)
+                has_home_channel = bool(os.getenv(env_key))
+            if not has_home_channel:
                 # Slack dispatches all Hermes commands through a single
                 # parent slash command `/hermes`; bare `/sethome` is not
                 # registered and would fail with "app did not respond".
@@ -11905,10 +11942,34 @@ class GatewayRunner:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
+        thread_id = source.thread_id
+
+        company_context = _company_home_context()
+        if company_context.get("company_id") and company_context.get("company_user_id"):
+            try:
+                from gateway.company_identity import upsert_company_user_home_channel
+
+                upsert_company_user_home_channel(
+                    company_id=company_context["company_id"],
+                    company_user_id=company_context["company_user_id"],
+                    platform=platform_name,
+                    chat_id=str(chat_id),
+                    chat_name=str(chat_name or ""),
+                    thread_id=str(thread_id) if thread_id else None,
+                    channel_identity_id=company_context.get("channel_identity_id") or None,
+                    metadata={
+                        "source": "sethome_command",
+                        "platform": platform_name,
+                        "user_id": str(source.user_id or ""),
+                        "user_name": str(source.user_name or ""),
+                    },
+                )
+            except Exception as e:
+                return t("gateway.set_home.save_failed", error=e)
+            return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
         env_key = _home_target_env_var(platform_name)
         thread_env_key = _home_thread_env_var(platform_name)
-        thread_id = source.thread_id
 
         # Save to .env so it persists across restarts
         try:
@@ -16234,6 +16295,18 @@ class GatewayRunner:
 
         _cache_keys_sorted = sorted((cache_keys or {}).items())
 
+        connector_fp = ""
+        try:
+            from gateway.session_context import get_session_env
+            from tools.google_scope import google_capabilities_fingerprint
+
+            company_id = get_session_env("HERMES_COMPANY_ID", "")
+            company_user_id = get_session_env("HERMES_COMPANY_USER_ID", "")
+            if company_id and company_user_id:
+                connector_fp = google_capabilities_fingerprint(company_id, company_user_id)
+        except Exception:  # noqa: BLE001
+            connector_fp = ""
+
         blob = _j.dumps(
             [
                 model,
@@ -16248,6 +16321,7 @@ class GatewayRunner:
                 _cache_keys_sorted,
                 str(user_id or ""),
                 str(user_id_alt or ""),
+                connector_fp,
             ],
             sort_keys=True,
             default=str,
@@ -16470,6 +16544,22 @@ class GatewayRunner:
         if interrupt_depth == 0:
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
+            try:
+                from model_tools import get_tool_definitions
+
+                enabled = getattr(agent, "enabled_toolsets", None)
+                disabled = getattr(agent, "disabled_toolsets", None)
+                fresh_defs = get_tool_definitions(
+                    enabled_toolsets=enabled,
+                    disabled_toolsets=disabled,
+                    quiet_mode=True,
+                )
+                agent.tools = fresh_defs
+                agent.valid_tool_names = {
+                    t["function"]["name"] for t in fresh_defs
+                } if fresh_defs else set()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed to refresh cached agent tools: %s", exc)
         agent._api_call_count = 0
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:

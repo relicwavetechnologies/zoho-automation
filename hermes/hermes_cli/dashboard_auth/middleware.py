@@ -20,13 +20,14 @@ import logging
 from typing import Awaitable, Callable
 
 from fastapi import Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from hermes_cli.dashboard_auth import list_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
 from hermes_cli.dashboard_auth.cookies import read_session_cookies
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS, is_public_api_path
 
 _log = logging.getLogger(__name__)
 
@@ -66,6 +67,8 @@ def _path_is_public(path: str) -> bool:
     * :data:`_GATE_PUBLIC_PREFIXES` — static mounts. Prefix-matched so
       ``/assets/foo.css`` lights up via ``/assets/``.
     """
+    if is_public_api_path(path):
+        return True
     if path in PUBLIC_API_PATHS:
         return True
     if path in _GATE_PUBLIC_EXACT:
@@ -278,7 +281,7 @@ async def gated_auth_middleware(
         unreachable_provider: str | None = None
         for provider in list_providers():
             try:
-                session = provider.verify_session(access_token=at)
+                session = await run_in_threadpool(provider.verify_session, access_token=at)
             except ProviderError as e:
                 _log.warning(
                     "dashboard-auth: provider %r unreachable during verify: %s",
@@ -310,13 +313,19 @@ async def gated_auth_middleware(
         # one). On success we re-set the rotated cookies on the response and
         # serve the request transparently; on RefreshExpiredError (RT dead /
         # revoked / reuse-detected) we fall through to clear-and-relogin.
-        refreshed = _attempt_refresh(request, refresh_token=_rt)
+        refreshed = await _attempt_refresh(request, refresh_token=_rt)
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
             request.state.session = new_session
             gate_response = _company_user_gate_response(request, new_session)
             if gate_response is not None:
                 return gate_response
+            try:
+                from hermes_cli.dashboard_auth.lark_tool_link import sync_lark_tool_auth
+
+                sync_lark_tool_auth(new_session)
+            except Exception:
+                pass
             response = await call_next(request)
             # Persist the ROTATED tokens. Portal rotates the refresh token on
             # every refresh and runs reuse-detection, so writing the new RT
@@ -383,7 +392,7 @@ def _expires_in_seconds(session) -> int:
     return max(60, int(session.expires_at) - int(time.time()))
 
 
-def _attempt_refresh(request: Request, *, refresh_token):
+async def _attempt_refresh(request: Request, *, refresh_token):
     """Try to rotate an expired session via the refresh token.
 
     Returns ``(new_session, provider_name)`` on success, or ``None`` if
@@ -399,7 +408,7 @@ def _attempt_refresh(request: Request, *, refresh_token):
         return None
     for provider in list_providers():
         try:
-            new_session = provider.refresh_session(refresh_token=refresh_token)
+            new_session = await run_in_threadpool(provider.refresh_session, refresh_token=refresh_token)
         except RefreshExpiredError:
             # This provider owns the RT but it's dead — stop trying others
             # (an RT belongs to exactly one provider) and force re-login.

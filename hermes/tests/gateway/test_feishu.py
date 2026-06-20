@@ -2580,6 +2580,101 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_markdown_tables_render_as_interactive_card_tables(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = (
+            "Here's the breakdown:\n\n"
+            "## Best Harley-Davidson Bikes in India\n\n"
+            "### By Budget & Use Case\n\n"
+            "| Model | Ex-Showroom Price | Best For |\n"
+            "|---|---|---|\n"
+            "| **X440** | **₹2.35L – ₹2.59L** | City + highway |\n"
+            "| **Sportster S** | **₹16.70L – ₹18.05L** | Performance roadster |\n"
+        )
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+        card = json.loads(payload)
+        elements = card["body"]["elements"]
+        table = next(element for element in elements if element["tag"] == "table")
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertEqual(card["header"]["title"]["content"], "Divo Dex")
+        self.assertEqual(
+            [column["display_name"] for column in table["columns"]],
+            ["Model", "Ex-Showroom Price", "Best For"],
+        )
+        self.assertEqual(table["rows"][0]["model"], "X440")
+        self.assertEqual(table["rows"][0]["exshowroom_price"], "₹2.35L – ₹2.59L")
+        self.assertEqual(table["rows"][1]["best_for"], "Performance roadster")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_card_for_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="| Model | Price |\n|---|---|\n| **X440** | **₹2.35L** |",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        card = json.loads(captured["request"].request_body.content)
+        self.assertEqual(card["body"]["elements"][0]["tag"], "table")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_cron_markdown_table_delivery_renders_as_interactive_card(self):
+        from cron.scheduler import _format_cron_delivery_content
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = _format_cron_delivery_content(
+            {"id": "job-42", "name": "Daily Finance Digest"},
+            "| Invoice | Balance |\n|---|---|\n| INV21421 | ₹23,600 |",
+            platform_name="feishu",
+        )
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+        card = json.loads(payload)
+        elements = card["body"]["elements"]
+        table = next(element for element in elements if element["tag"] == "table")
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertEqual(card["header"]["title"]["content"], "Divo Dex")
+        self.assertEqual(card["header"]["subtitle"]["content"], "Daily Finance Digest")
+        self.assertEqual(table["rows"][0]["invoice"], "INV21421")
+        self.assertEqual(table["rows"][0]["balance"], "₹23,600")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

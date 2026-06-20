@@ -34,6 +34,47 @@ from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
+_REMOTE_MESSAGE_PLATFORMS = frozenset({
+    "bluebubbles",
+    "dingtalk",
+    "discord",
+    "email",
+    "feishu",
+    "lark",
+    "mattermost",
+    "matrix",
+    "qqbot",
+    "signal",
+    "slack",
+    "telegram",
+    "webhook",
+    "weixin",
+    "whatsapp",
+})
+
+_SERVER_LOCAL_EXECUTION_TOOLS = frozenset({
+    "terminal",
+    "process",
+    "execute_code",
+    "read_file",
+    "write_file",
+    "patch",
+    "search_files",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_back",
+    "browser_press",
+    "browser_get_images",
+    "browser_vision",
+    "browser_console",
+    "browser_cdp",
+    "browser_dialog",
+    "computer_use",
+})
+
 
 # =============================================================================
 # Async Bridging  (single source of truth -- used by registry.dispatch too)
@@ -240,8 +281,10 @@ _LEGACY_TOOLSET_MAP = {
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
 
-# Module-level memoization for get_tool_definitions(). Keyed on
-# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation).
+# Module-level memoization for get_tool_definitions(). Keyed on requested
+# toolsets, registry generation, config fingerprint, and session identity /
+# platform. Platform is part of the key because desktop and remote messaging
+# sessions intentionally expose different local-execution surfaces.
 # Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
 # with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
 # filtering + check_fn probing per call. Only active when quiet_mode=True
@@ -252,6 +295,68 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+
+
+def _tool_identity_fingerprint() -> tuple:
+    """Identity + connector state for per-user tool schema caching."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:  # noqa: BLE001
+        return ("", "", "", "", "", "")
+
+    session_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    company_id = get_session_env("HERMES_COMPANY_ID", "")
+    company_user_id = get_session_env("HERMES_COMPANY_USER_ID", "")
+    channel_identity_id = get_session_env("HERMES_CHANNEL_IDENTITY_ID", "")
+    company_role = get_session_env("HERMES_COMPANY_ROLE", "")
+
+    connector_fp = ""
+    if company_id and company_user_id:
+        try:
+            from tools.google_scope import google_capabilities_fingerprint
+
+            connector_fp = google_capabilities_fingerprint(company_id, company_user_id)
+        except Exception:  # noqa: BLE001
+            connector_fp = ""
+
+    return (
+        session_platform,
+        company_id,
+        company_user_id,
+        channel_identity_id,
+        company_role,
+        connector_fp,
+    )
+
+
+def _current_session_platform() -> str:
+    """Return the normalized platform used for tool-boundary decisions."""
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    except Exception:  # noqa: BLE001
+        platform = os.environ.get("HERMES_SESSION_PLATFORM", "")
+    return str(platform or "").strip().lower()
+
+
+def _server_local_tools_blocked_for_current_session() -> frozenset[str]:
+    """Tools that must never be exposed to remote messaging channels.
+
+    Lark/Feishu and other server-side messaging integrations run in the
+    gateway process. Exposing terminal, filesystem, browser, code execution,
+    or computer-control tools there would operate on the server host, not the
+    employee's desktop. Desktop/client channels can still receive these tools.
+    """
+    platform = _current_session_platform()
+    if platform in _REMOTE_MESSAGE_PLATFORMS:
+        return _SERVER_LOCAL_EXECUTION_TOOLS
+    return frozenset()
+
+
+def invalidate_tool_defs_cache() -> None:
+    """Public hook to drop memoized tool definition lists."""
+    _clear_tool_defs_cache()
 
 
 def _clear_tool_defs_cache() -> None:
@@ -308,6 +413,7 @@ def get_tool_definitions(
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
             bool(skip_tool_search_assembly),
+            _tool_identity_fingerprint(),
         )
         cached = _tool_defs_cache.get(cache_key)
         if cached is not None:
@@ -390,6 +496,17 @@ def _compute_tool_definitions(
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
+
+    blocked_tools = _server_local_tools_blocked_for_current_session()
+    if blocked_tools:
+        removed_tools = tools_to_include & blocked_tools
+        tools_to_include.difference_update(blocked_tools)
+        if removed_tools and not quiet_mode:
+            platform = _current_session_platform()
+            print(
+                "🚫 Server-local execution tools disabled for "
+                f"{platform or 'remote'} session: {', '.join(sorted(removed_tools))}"
+            )
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()

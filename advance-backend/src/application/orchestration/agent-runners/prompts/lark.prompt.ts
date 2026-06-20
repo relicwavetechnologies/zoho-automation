@@ -7,6 +7,7 @@ CRITICAL ROUTING — these are the most common mistakes, read first:
 - "schedule / book / set up / arrange a meeting / call" → larkCalendar (NEVER larkTask)
 - "create task / todo / follow-up / reminder / action item" → larkTask (NEVER larkCalendar)
 - "create doc / document / page / notes / write up" → larkDoc (NEVER larkTask)
+- "find / search / who is / resolve someone in Lark" → larkContacts
 - "today's calendar / events / what's on" → larkCalendar list (NEVER lookup a single meeting)
 - "my open tasks / show my tasks / pending" → larkTask listOpenMine
 - "approvals waiting on me / pending approvals" → larkApproval
@@ -18,6 +19,12 @@ TASK CREATION RULES:
 - "me", "my DM", "send to me", "remind me" → the requester. Use assignToMe=true. Never look up the requester by name.
 - When no assignee is given, the task self-assigns to the requester by default.
 - dueDate: only when a specific date/time is mentioned. Always ISO 8601 with IST offset (+05:30).
+
+CONTACT RESOLUTION RULES:
+- For side-effect actions by human name (DM, task assignment, meeting attendees, mentions), let the target tool resolve names with assigneeNames/attendeeNames/recipientName/mentionNames. Do not ask the user for open_id.
+- Use larkContacts lookup/search when the user explicitly asks to find a person, when you need to disambiguate, or when a prior tool reports ambiguous/not found.
+- Same-name users are ambiguity, not permission to guess. Return the candidate names/departments/emails and ask which one.
+- "me", "myself", "send to me", "assign to me" means the requester from run context, not a directory search.
 
 CALENDAR / MEETING RULES:
 - Default duration: 30 minutes if not stated.
@@ -52,7 +59,8 @@ TASK — NEW OPS:
 - "Show subtasks of task X" → list_subtasks with taskId.
 
 DOC RULES:
-- Create docs only when asked. Return the doc title and docToken.
+- Create docs only when asked. Prefer create_markdown for multi-section/polished docs.
+- Return the doc title and the URL/docUrl if the tool returns one; otherwise return the docToken and say the Lark metadata API did not return a URL.
 - "Edit block X" → list_blocks first to get blockId, then update_block with content.
 - "Delete block X" → delete_block with blockId.
 - "Add a table" → insert_table with rows + cols (and optional headers).
@@ -81,6 +89,7 @@ REPLY STYLE:
 export const LARK_TOOL_IDS = new Set([
   'larkTask',
   'larkMessaging',
+  'larkContacts',
   'larkCalendar',
   'larkDoc',
   'larkBase',

@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Divo Dex — Your Day (preview)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#0e0e0e; --bg2:#141414; --card:#181818; --card2:#1c1c1c;
+    --line:#262626; --line2:#2e2e2e;
+    --fg:#d4d4d4; --fg-dim:#9a9a9a; --fg-faint:#6b6b6b;
+    --salmon:#cd9883; --salmon-strong:#d8a78f;
+    --red:#e0697a; --red-dot:#b75464;
+    --amber:#eab064; --green:#6fc08a; --blue:#7fa9cf;
+    --radius:14px;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+    --mono:"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(120% 80% at 50% -10%, #161616 0%, var(--bg) 55%);
+    color:var(--fg); font-family:var(--sans); -webkit-font-smoothing:antialiased;
+    display:flex; justify-content:center; padding:40px 20px 80px;
+  }
+  .stage{width:100%; max-width:700px}
+
+  /* ---- context (faded, just to show placement) ---- */
+  .context{opacity:.5; pointer-events:none; user-select:none; margin-bottom:30px}
+  .wordmark{
+    font-family:"Playfair Display",Georgia,serif; font-weight:800;
+    text-align:center; letter-spacing:.06em; font-size:58px; margin:6px 0 18px;
+    color:#cfcfcf;
+  }
+  .composer{
+    border:1px solid var(--line); border-radius:18px; background:#161616;
+    padding:16px 16px 12px;
+  }
+  .composer .ph{color:#666; font-size:15px; padding:2px 4px 18px}
+  .composer .row{display:flex; align-items:center; gap:10px}
+  .composer .plus{width:34px;height:34px;border-radius:999px;background:#242424;display:grid;place-items:center;color:#aaa;font-size:18px}
+  .composer .model{color:#cfcfcf;font-size:13px;font-weight:600;margin-right:auto}
+  .composer .mic{width:34px;height:34px;border-radius:999px;background:#e6e6e6;display:grid;place-items:center}
+  .plan-pill{display:inline-flex;align-items:center;gap:8px;margin-top:14px;border:1px solid var(--line);border-radius:999px;padding:8px 14px;font-size:13px;color:var(--fg-dim)}
+
+  /* ---- THE PANEL ---- */
+  .myday{
+    border:1px solid var(--line); border-radius:var(--radius);
+    background:linear-gradient(180deg,#151515,#121212);
+    overflow:hidden;
+    box-shadow:0 1px 0 rgba(255,255,255,.02), 0 12px 40px rgba(0,0,0,.35);
+    animation:rise .5s cubic-bezier(.22,1,.36,1) both;
+  }
+  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+  .head{display:flex;align-items:center;gap:12px;padding:16px 18px 12px}
+  .head .t{font-size:15px;font-weight:650;color:#e6e6e6;letter-spacing:.01em}
+  .head .t .date{color:var(--fg-faint);font-weight:500}
+  .sync{
+    margin-left:auto;display:inline-flex;align-items:center;gap:7px;
+    border:1px solid var(--line);border-radius:999px;background:transparent;
+    color:var(--fg-dim);font-size:12px;padding:6px 11px;cursor:pointer;font-family:var(--sans);
+    transition:.15s;
+  }
+  .sync:hover{color:var(--fg);border-color:var(--line2);background:#1a1a1a}
+  .sync svg{transition:transform .6s ease}
+  .sync.spin svg{transform:rotate(360deg)}
+
+  .stats{display:flex;gap:10px;padding:2px 18px 14px}
+  .stat{
+    flex:1;display:flex;flex-direction:column;gap:3px;align-items:flex-start;
+    border:1px solid var(--line);border-radius:11px;background:#171717;
+    padding:11px 13px;cursor:pointer;font-family:var(--sans);transition:.15s;text-align:left;
+  }
+  .stat:hover{border-color:var(--line2);background:#1b1b1b}
+  .stat.active{border-color:color-mix(in srgb,var(--salmon) 50%,transparent);background:#1d1a18}
+  .stat b{font-size:20px;font-weight:700;line-height:1}
+  .stat span{font-size:12px;color:var(--fg-dim)}
+  .stat.overdue b{color:var(--red)}
+  .stat.today b{color:var(--amber)}
+  .stat.meetings b{color:var(--blue)}
+
+  .grid{display:grid;grid-template-columns:1.25fr 1fr;gap:0}
+  @media(max-width:620px){.grid{grid-template-columns:1fr}}
+  .col{padding:6px 18px 16px}
+  .col.tasks{border-right:1px solid var(--line)}
+  @media(max-width:620px){.col.tasks{border-right:0;border-bottom:1px solid var(--line)}}
+  .col-h{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-faint);padding:8px 2px}
+
+  .group-h{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--fg-dim);margin:10px 0 4px;font-weight:600}
+  .dot{width:6px;height:6px;border-radius:999px;flex:0 0 auto}
+  .dot.red{background:var(--red-dot)} .dot.amber{background:var(--amber)} .dot.gray{background:#4a4a4a}
+
+  .task{display:flex;align-items:flex-start;gap:10px;padding:7px 4px;border-radius:8px;cursor:default;transition:.12s}
+  .task:hover{background:#191919}
+  .task.dim{opacity:.32}
+  .check{width:16px;height:16px;border-radius:999px;border:1.5px solid #3a3a3a;flex:0 0 auto;margin-top:2px;cursor:pointer;transition:.15s}
+  .check:hover{border-color:var(--salmon)}
+  .task.done .check{background:var(--green);border-color:var(--green)}
+  .task .body{min-width:0}
+  .task .ttl{font-size:13.5px;color:#dcdcdc;line-height:1.35}
+  .task.done .ttl{text-decoration:line-through;color:var(--fg-faint)}
+  .task .meta{font-size:11.5px;color:var(--fg-faint);margin-top:1px;display:flex;gap:8px;flex-wrap:wrap}
+  .tag{border:1px solid var(--line2);border-radius:5px;padding:0 5px;font-size:10.5px;color:var(--fg-dim)}
+  .meta .late{color:var(--red)}
+
+  .mtg{display:flex;gap:11px;padding:8px 4px;border-radius:8px;transition:.12s}
+  .mtg:hover{background:#191919}
+  .mtg .time{font-variant-numeric:tabular-nums;font-size:12.5px;color:#bcbcbc;width:46px;flex:0 0 auto;font-weight:600}
+  .mtg .info .m-ttl{font-size:13px;color:#dcdcdc}
+  .mtg .info .m-sub{font-size:11.5px;color:var(--fg-faint);margin-top:1px}
+  .mtg .now{color:var(--green);font-size:10px;border:1px solid color-mix(in srgb,var(--green) 40%,transparent);border-radius:5px;padding:0 5px;align-self:flex-start;margin-top:2px}
+
+  .cta-row{display:flex;gap:10px;align-items:center;padding:14px 18px;border-top:1px solid var(--line);background:#131313}
+  .cta{font-family:var(--sans);font-size:13px;border-radius:10px;padding:10px 16px;cursor:pointer;border:1px solid transparent;transition:.15s;font-weight:600}
+  .cta.primary{background:var(--salmon);color:#1a120e;flex:0 0 auto}
+  .cta.primary:hover{background:var(--salmon-strong)}
+  .cta.ghost{background:transparent;border-color:var(--line2);color:var(--fg-dim)}
+  .cta.ghost:hover{color:var(--fg);background:#1b1b1b}
+  .cta .hint{font-weight:400;opacity:.6;margin-left:6px}
+  .cta-note{margin-left:auto;font-size:11.5px;color:var(--fg-faint)}
+
+  /* ---- prompt preview ---- */
+  .preview{max-height:0;overflow:hidden;transition:max-height .45s cubic-bezier(.22,1,.36,1);border-top:1px solid transparent}
+  .preview.open{max-height:520px;border-top-color:var(--line)}
+  .preview-inner{padding:14px 18px 16px}
+  .preview-h{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--fg-dim);margin-bottom:9px}
+  .preview-h .label{display:inline-flex;align-items:center;gap:6px}
+  .preview-h .spark{color:var(--salmon)}
+  .prompt{
+    background:#0f0f0f;border:1px solid var(--line);border-radius:10px;
+    padding:13px 14px;font-family:var(--mono);font-size:12px;line-height:1.6;
+    color:#c7c7c7;white-space:pre-wrap;min-height:60px;
+  }
+  .prompt .k{color:var(--salmon)} .prompt .r{color:var(--red)} .prompt .a{color:var(--amber)}
+  .preview-actions{display:flex;gap:9px;margin-top:11px}
+  .send{background:var(--salmon);color:#1a120e;border:0;border-radius:9px;padding:9px 15px;font-size:12.5px;font-weight:650;cursor:pointer;font-family:var(--sans);display:inline-flex;align-items:center;gap:7px}
+  .send:hover{background:var(--salmon-strong)}
+  .copy{background:transparent;border:1px solid var(--line2);color:var(--fg-dim);border-radius:9px;padding:9px 14px;font-size:12.5px;cursor:pointer;font-family:var(--sans)}
+  .copy:hover{color:var(--fg)}
+
+  .toast{
+    position:fixed;left:50%;bottom:28px;transform:translate(-50%,20px);
+    background:#1d1d1d;border:1px solid var(--line2);color:#e2e2e2;
+    padding:11px 16px;border-radius:11px;font-size:13px;display:flex;align-items:center;gap:9px;
+    opacity:0;pointer-events:none;transition:.3s;box-shadow:0 10px 30px rgba(0,0,0,.4);z-index:50;
+  }
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+  .toast .d{width:7px;height:7px;border-radius:999px;background:var(--green);box-shadow:0 0 8px var(--green)}
+  .caption{text-align:center;color:#555;font-size:11px;margin-top:20px}
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <!-- context (faded) -->
+  <div class="context">
+    <div class="wordmark">DIVO DEX</div>
+    <div class="composer">
+      <div class="ph">Plan, Build, / for skills, @ for context</div>
+      <div class="row">
+        <div class="plus">+</div>
+        <div class="model">Deepseek V4 Flash ⌄</div>
+        <div class="mic">🎙️</div>
+      </div>
+    </div>
+    <div class="plan-pill">Plan New Idea&nbsp;&nbsp;⇧Tab</div>
+  </div>
+
+  <!-- ===== YOUR DAY ===== -->
+  <section class="myday">
+    <div class="head">
+      <div class="t">Your day <span class="date">· Mon, Jun 15</span></div>
+      <button class="sync" id="sync">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg>
+        Synced from Lark
+      </button>
+    </div>
+
+    <div class="stats">
+      <button class="stat overdue" data-filter="overdue"><b>2</b><span>Overdue</span></button>
+      <button class="stat today" data-filter="today"><b>3</b><span>Due today</span></button>
+      <button class="stat meetings" data-filter="meetings"><b>4</b><span>Meetings</span></button>
+    </div>
+
+    <div class="grid">
+      <!-- tasks -->
+      <div class="col tasks" id="taskCol">
+        <div class="col-h">Tasks</div>
+
+        <div class="group" data-group="overdue">
+          <div class="group-h"><span class="dot red"></span> Overdue</div>
+          <div class="task"><div class="check"></div><div class="body"><div class="ttl">Send Q2 finance report to Aaron</div><div class="meta"><span class="late">2 days late</span><span class="tag">Finance</span></div></div></div>
+          <div class="task"><div class="check"></div><div class="body"><div class="ttl">Review vendor contract — Zoho renewal</div><div class="meta"><span class="late">Yesterday</span><span class="tag">Ops</span></div></div></div>
+        </div>
+
+        <div class="group" data-group="today">
+          <div class="group-h"><span class="dot amber"></span> Due today</div>
+          <div class="task"><div class="check"></div><div class="body"><div class="ttl">Finalize Divo memory design doc</div><div class="meta"><span>5:00 PM</span><span class="tag">Divo</span></div></div></div>
+          <div class="task"><div class="check"></div><div class="body"><div class="ttl">Reply to Aaron re: gateway rollout</div><div class="meta"><span>EOD</span><span class="tag">Divo</span></div></div></div>
+          <div class="task"><div class="check"></div><div class="body"><div class="ttl">Approve design tokens PR</div><div class="meta"><span>EOD</span><span class="tag">Design</span></div></div></div>
+        </div>
+
+        <div class="group" data-group="upcoming">
+          <div class="group-h"><span class="dot gray"></span> Upcoming</div>
+          <div class="task"><div class="check"></div><div class="body"><div class="ttl">Prep client demo deck</div><div class="meta"><span>Tomorrow</span><span class="tag">Sales</span></div></div></div>
+        </div>
+      </div>
+
+      <!-- meetings -->
+      <div class="col meetings-col" id="mtgCol">
+        <div class="col-h">Meetings · Today</div>
+        <div class="mtg"><div class="time">10:30</div><div class="info"><div class="m-ttl">Eng standup</div><div class="m-sub">15m · Lark Meet</div></div></div>
+        <div class="mtg"><div class="time">14:00</div><div class="info"><div class="m-ttl">Design review</div><div class="m-sub">45m · 4 guests</div></div></div>
+        <div class="mtg"><div class="time">16:30</div><div class="info"><div class="m-ttl">1:1 with Aaron</div><div class="m-sub">30m</div></div><div class="now">soon</div></div>
+        <div class="mtg"><div class="time">18:00</div><div class="info"><div class="m-ttl">Client demo — Acme</div><div class="m-sub">45m · 6 guests</div></div></div>
+      </div>
+    </div>
+
+    <div class="cta-row">
+      <button class="cta primary" id="planBtn">✦ Summarize &amp; plan my day <span class="hint">→</span></button>
+      <button class="cta ghost" id="overdueBtn">Just the overdue</button>
+      <span class="cta-note">opens a new session</span>
+    </div>
+
+    <!-- prompt preview -->
+    <div class="preview" id="preview">
+      <div class="preview-inner">
+        <div class="preview-h">
+          <span class="label"><span class="spark">✦</span> This prompt will be sent to a new session</span>
+        </div>
+        <div class="prompt" id="prompt"></div>
+        <div class="preview-actions">
+          <button class="send" id="send">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            Send to new session
+          </button>
+          <button class="copy" id="copy">Copy</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="caption">Preview mock · data is illustrative · interactions are simulated</div>
+</div>
+
+<div class="toast" id="toast"><span class="d"></span><span id="toastMsg">Opening new session…</span></div>
+
+<script>
+const PROMPT_FULL =
+`Here's my day from Lark — help me run it.
+
+[OVERDUE · 2]
+- Send Q2 finance report to Aaron — 2 days late
+- Review vendor contract (Zoho renewal) — due yesterday
+
+[DUE TODAY · 3]
+- Finalize Divo memory design doc — 5:00 PM
+- Reply to Aaron re: gateway rollout — EOD
+- Approve design tokens PR — EOD
+
+[MEETINGS · 4]
+- 10:30 Eng standup (15m)
+- 14:00 Design review (45m)
+- 16:30 1:1 with Aaron (30m)
+- 18:00 Client demo — Acme (45m)
+
+Please:
+1. Order what I should tackle first, around the meetings.
+2. Flag anything that collides with a meeting or won't fit before EOD.
+3. Draft a 2-line reply for anything I'm blocking (esp. Aaron).`;
+
+const PROMPT_OVERDUE =
+`I have 2 overdue Lark tasks — help me clear them fast.
+
+[OVERDUE]
+- Send Q2 finance report to Aaron — 2 days late
+- Review vendor contract (Zoho renewal) — due yesterday
+
+For each: tell me the single fastest next action, and draft any message I need to send.`;
+
+const $ = s => document.querySelector(s);
+const preview = $('#preview'), promptEl = $('#prompt');
+let typing = null;
+
+function colorize(t){
+  return t
+    .replace(/\[OVERDUE[^\]]*\]/g,m=>`<span class="r">${m}</span>`)
+    .replace(/\[DUE TODAY[^\]]*\]/g,m=>`<span class="a">${m}</span>`)
+    .replace(/\[MEETINGS[^\]]*\]/g,m=>`<span class="k">${m}</span>`);
+}
+function typewrite(text){
+  clearInterval(typing);
+  preview.classList.add('open');
+  promptEl.textContent=''; let i=0;
+  const step=Math.max(2,Math.round(text.length/120));
+  typing=setInterval(()=>{
+    i+=step;
+    promptEl.innerHTML=colorize(text.slice(0,i))+(i<text.length?'<span style="opacity:.5">▋</span>':'');
+    if(i>=text.length){clearInterval(typing); promptEl.innerHTML=colorize(text);}
+    preview.scrollIntoView({behavior:'smooth',block:'nearest'});
+  },16);
+}
+$('#planBtn').onclick=()=>typewrite(PROMPT_FULL);
+$('#overdueBtn').onclick=()=>typewrite(PROMPT_OVERDUE);
+
+function toast(msg){const t=$('#toast');$('#toastMsg').textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200);}
+$('#send').onclick=()=>{toast('Opening new session with your day…'); preview.classList.remove('open');};
+$('#copy').onclick=()=>{navigator.clipboard?.writeText(promptEl.textContent);toast('Prompt copied');};
+
+// sync spin
+$('#sync').onclick=function(){this.classList.add('spin');setTimeout(()=>this.classList.remove('spin'),650);toast('Refreshed from Lark');};
+
+// stat filters
+let active=null;
+document.querySelectorAll('.stat').forEach(s=>{
+  s.onclick=()=>{
+    const f=s.dataset.filter;
+    if(active===f){active=null;clearFilter();s.classList.remove('active');return;}
+    document.querySelectorAll('.stat').forEach(x=>x.classList.remove('active'));
+    s.classList.add('active'); active=f; applyFilter(f);
+  };
+});
+function applyFilter(f){
+  const mtg=document.getElementById('mtgCol');
+  mtg.style.opacity = (f==='meetings')?'1':'.32';
+  document.querySelectorAll('.group').forEach(g=>{
+    const show = (f==='meetings') ? false : g.dataset.group===f;
+    g.querySelectorAll('.task').forEach(t=>t.classList.toggle('dim',!show && f!=='meetings'));
+    g.style.display = (f==='meetings') ? 'none' : '';
+  });
+  if(f==='meetings'){document.getElementById('taskCol').style.opacity='.32';}
+  else{document.getElementById('taskCol').style.opacity='1';}
+}
+function clearFilter(){
+  document.getElementById('mtgCol').style.opacity='1';
+  document.getElementById('taskCol').style.opacity='1';
+  document.querySelectorAll('.group').forEach(g=>g.style.display='');
+  document.querySelectorAll('.task').forEach(t=>t.classList.remove('dim'));
+}
+
+// task checkboxes
+document.querySelectorAll('.task .check').forEach(c=>{
+  c.onclick=()=>c.closest('.task').classList.toggle('done');
+});
+</script>
+</body>
+</html>

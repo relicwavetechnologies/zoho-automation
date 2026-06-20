@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,8 @@ class Session:
     expires_at: int  # unix seconds; the access_token's exp claim
     access_token: str
     refresh_token: str
+    user_id_alt: str = ""
+    auth_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -39,6 +39,10 @@ import type {
   ToolsetConfig,
   ToolsetInfo
 } from '@/types/hermes'
+import type {
+  IntegrationPluginOAuthStartResponse,
+  IntegrationPluginsResponse
+} from '@/types/integration-plugins'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 
@@ -590,5 +594,17 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
 export function getElevenLabsVoices(): Promise<ElevenLabsVoicesResponse> {
   return window.hermesDesktop.api<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices'
+  })
+}
+
+export function getIntegrationPlugins(): Promise<IntegrationPluginsResponse> {
+  return window.hermesDesktop.api<IntegrationPluginsResponse>({
+    path: '/api/company/integration-plugins'
+  })
+}
+
+export function startIntegrationPluginOAuth(pluginId: string): Promise<IntegrationPluginOAuthStartResponse> {
+  return window.hermesDesktop.api<IntegrationPluginOAuthStartResponse>({
+    path: `/api/company/integration-plugins/${encodeURIComponent(pluginId)}/oauth/start`
   })
 }

@@ -10,7 +10,8 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef
+  useRef,
+  useState
 } from 'react'
 
 import { cn } from '@/lib/utils'
@@ -201,6 +202,7 @@ export function Pane({
   const ctx = useContext(PaneShellContext)
   const registered = useRef(false)
   const paneRef = useRef<HTMLDivElement | null>(null)
+  const [resizing, setResizing] = useState(false)
 
   useEffect(() => {
     if (registered.current) {
@@ -237,6 +239,7 @@ export function Pane({
       handle.setPointerCapture?.(pointerId)
       document.body.style.cursor = 'col-resize'
       document.body.style.userSelect = 'none'
+      setResizing(true)
 
       const onMove = (e: PointerEvent) => {
         const next = paneWidth + (e.clientX - startX) * dir
@@ -247,6 +250,7 @@ export function Pane({
         document.body.style.cursor = restoreCursor
         document.body.style.userSelect = restoreSelect
         handle.releasePointerCapture?.(pointerId)
+        setResizing(false)
         window.removeEventListener('pointermove', onMove, true)
         window.removeEventListener('pointerup', cleanup, true)
         window.removeEventListener('pointercancel', cleanup, true)
@@ -283,22 +287,22 @@ export function Pane({
       ref={paneRef}
       style={{ gridColumn: `${slot.column} / ${slot.column + 1}` }}
     >
+      {children}
       {canResize && (
         <div
           aria-label={`Resize ${id}`}
           aria-orientation="vertical"
           className={cn(
-            'group absolute bottom-0 top-0 z-20 w-1 cursor-col-resize [-webkit-app-region:no-drag]',
+            'absolute bottom-0 top-0 z-30 w-[5px] cursor-col-resize [-webkit-app-region:no-drag]',
             slot.side === 'left' ? 'right-0 translate-x-1/2' : 'left-0 -translate-x-1/2'
           )}
+          data-dragging={resizing ? 'true' : undefined}
+          data-pane-sash=""
           onPointerDown={startResize}
           role="separator"
           tabIndex={0}
-        >
-          <span className="absolute inset-y-0 left-1/2 w-(--vscode-sash-hover-size,0.25rem) -translate-x-1/2 bg-(--ui-sash-hover-border) opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-visible:opacity-100" />
-        </div>
+        />
       )}
-      {children}
     </div>
   )
 }

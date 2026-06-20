@@ -7,7 +7,17 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _bind_cron_company_session
+from cron.scheduler import (
+    _resolve_origin,
+    _resolve_delivery_target,
+    _deliver_result,
+    _send_media_via_adapter,
+    run_job,
+    SILENT_MARKER,
+    _build_job_prompt,
+    _bind_cron_company_session,
+    _format_cron_delivery_content,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -506,6 +516,100 @@ class TestRoutingIntents:
 
         assert _resolve_delivery_targets({"deliver": "all", "origin": None}) == []
 
+    def test_company_user_home_channel_resolves_specific_platform(self, monkeypatch):
+        """A company user's Lark home target is used without global FEISHU_HOME_CHANNEL."""
+        from cron.scheduler import _resolve_delivery_targets
+        import gateway.company_identity as company_identity
+
+        monkeypatch.delenv("FEISHU_HOME_CHANNEL", raising=False)
+
+        def _fake_get_home_channel(*, company_id, company_user_id, platform, db=None):
+            assert company_id == "company_alpha"
+            assert company_user_id == "cu_alice"
+            assert platform == "feishu"
+            return {
+                "platform": "lark",
+                "chat_id": "oc_alice",
+                "thread_id": "thread-a",
+            }
+
+        monkeypatch.setattr(company_identity, "get_company_user_home_channel", _fake_get_home_channel)
+
+        targets = _resolve_delivery_targets(
+            {
+                "deliver": "feishu",
+                "origin": None,
+                "company_id": "company_alpha",
+                "company_user_id": "cu_alice",
+            }
+        )
+
+        assert targets == [
+            {
+                "platform": "feishu",
+                "chat_id": "oc_alice",
+                "thread_id": "thread-a",
+            }
+        ]
+
+    def test_all_expands_company_user_home_channels_without_global_env(self, monkeypatch):
+        from cron.scheduler import _resolve_delivery_targets
+        import gateway.company_identity as company_identity
+
+        for var in ("FEISHU_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL"):
+            monkeypatch.delenv(var, raising=False)
+
+        monkeypatch.setattr(
+            company_identity,
+            "list_company_user_home_channels",
+            lambda *, company_id, company_user_id, db=None: [
+                {"platform": "lark", "chat_id": "oc_alice", "thread_id": None}
+            ],
+        )
+        monkeypatch.setattr(
+            company_identity,
+            "get_company_user_home_channel",
+            lambda *, company_id, company_user_id, platform, db=None: {
+                "platform": "lark",
+                "chat_id": "oc_alice",
+                "thread_id": None,
+            },
+        )
+
+        targets = _resolve_delivery_targets(
+            {
+                "deliver": "all",
+                "origin": None,
+                "company_id": "company_alpha",
+                "company_user_id": "cu_alice",
+            }
+        )
+
+        assert targets == [{"platform": "feishu", "chat_id": "oc_alice", "thread_id": None}]
+
+    def test_all_does_not_route_desktop_home_through_messaging_adapters(self, monkeypatch):
+        from cron.scheduler import _resolve_delivery_targets
+        import gateway.company_identity as company_identity
+
+        monkeypatch.setattr(
+            company_identity,
+            "list_company_user_home_channels",
+            lambda *, company_id, company_user_id, db=None: [
+                {"platform": "desktop", "chat_id": "desktop:device-1", "thread_id": None}
+            ],
+        )
+
+        targets = _resolve_delivery_targets(
+            {
+                "deliver": "all",
+                "origin": None,
+                "company_id": "company_alpha",
+                "company_user_id": "cu_alice",
+            }
+        )
+
+        assert targets == []
+
     def test_origin_comma_all_preserves_origin_first(self, monkeypatch):
         """'origin,all' delivers to the origin platform plus every other home channel."""
         from cron.scheduler import _resolve_delivery_targets
@@ -580,6 +684,46 @@ class TestDeliverResultWrapping:
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
+
+    def test_feishu_delivery_uses_markdown_first_wrapper(self):
+        """Lark/Feishu cron delivery should render like a first-class assistant reply."""
+        content = _format_cron_delivery_content(
+            {"id": "job-42", "name": "Daily Finance Digest"},
+            "| Invoice | Balance |\n|---|---|\n| INV21421 | ₹23,600 |",
+            platform_name="feishu",
+        )
+
+        assert content.startswith("# Daily Finance Digest\n\n")
+        assert "**Scheduled task result** · `job_id: job-42`" in content
+        assert "| Invoice | Balance |" in content
+        assert "_To stop or manage this job" in content
+        assert "Cronjob Response" not in content
+
+    def test_feishu_delivery_sends_markdown_wrapper_to_send_helper(self):
+        """The scheduler should pass Feishu cron output through the normal rich renderer path."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.FEISHU: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "job-42",
+                "name": "Daily Finance Digest",
+                "deliver": "origin",
+                "origin": {"platform": "feishu", "chat_id": "oc_home"},
+            }
+            _deliver_result(job, "| Invoice | Balance |\n|---|---|\n| INV21421 | ₹23,600 |")
+
+        send_mock.assert_called_once()
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content.startswith("# Daily Finance Digest\n\n")
+        assert "**Scheduled task result** · `job_id: job-42`" in sent_content
+        assert "| Invoice | Balance |" in sent_content
+        assert "Cronjob Response" not in sent_content
 
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""

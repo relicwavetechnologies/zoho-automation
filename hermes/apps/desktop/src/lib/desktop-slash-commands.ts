@@ -35,6 +35,7 @@ const DESKTOP_COMMAND_META = [
   ['/resume', 'Resume a saved session'],
   ['/retry', 'Retry the last user message'],
   ['/rollback', 'List or restore filesystem checkpoints'],
+  ['/sethome', 'Set this desktop as your home channel'],
   ['/skin', 'Switch desktop theme or cycle to the next one'],
   ['/status', 'Show current session status'],
   ['/steer', 'Steer the current run after the next tool call'],
@@ -55,6 +56,7 @@ const DESKTOP_ALIASES = new Map([
   ['/reload_mcp', '/reload-mcp'],
   ['/reload_skills', '/reload-skills'],
   ['/reset', '/new'],
+  ['/set-home', '/sethome'],
   ['/tasks', '/agents']
 ])
 
@@ -90,8 +92,6 @@ const TERMINAL_ONLY_COMMANDS = new Set([
   '/restart',
   '/save',
   '/sb',
-  '/set-home',
-  '/sethome',
   '/snap',
   '/snapshot',
   '/statusbar',

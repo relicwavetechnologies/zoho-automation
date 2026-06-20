@@ -320,6 +320,46 @@ class TestBuiltinDiscovery:
         assert imported == ["tools.alpha"]
         mock_import.assert_called_once_with("tools.alpha")
 
+    def test_discovers_top_level_loop_registrations(self, tmp_path):
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "registry.py").write_text("", encoding="utf-8")
+        (tools_dir / "looped.py").write_text(
+            "\n".join(
+                [
+                    "from tools.registry import registry",
+                    "TOOLS = (('alpha', {}),)",
+                    "for name, schema in TOOLS:",
+                    "    registry.register(name=name, toolset='x', schema=schema, handler=lambda *_a, **_k: '{}')",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("tools.registry.importlib.import_module") as mock_import:
+            imported = discover_builtin_tools(tools_dir)
+
+        assert imported == ["tools.looped"]
+        mock_import.assert_called_once_with("tools.looped")
+
+    def test_skips_function_local_registrations(self, tmp_path):
+        module_path = tmp_path / "helper.py"
+        module_path.write_text(
+            "\n".join(
+                [
+                    "from tools.registry import registry",
+                    "def install():",
+                    "    registry.register(name='hidden', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        assert _module_registers_tools(module_path) is False
+
     def test_skips_mcp_tool_even_if_it_registers(self, tmp_path):
         tools_dir = tmp_path / "tools"
         tools_dir.mkdir()

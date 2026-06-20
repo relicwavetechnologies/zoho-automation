@@ -11,9 +11,11 @@ import {
   $fileBrowserOpen,
   $panesFlipped,
   $sidebarOpen,
+  $todayPanelOpen,
   toggleFileBrowserOpen,
   togglePanesFlipped,
-  toggleSidebarOpen
+  toggleSidebarOpen,
+  toggleTodayPanelOpen
 } from '@/store/layout'
 
 import { appViewForPath, DESKTOP_SETTINGS_ENABLED, isOverlayView } from '../routes'
@@ -49,6 +51,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
+  const todayPanelOpen = useStore($todayPanelOpen)
   const panesFlipped = useStore($panesFlipped)
 
   const toggleHaptics = () => {
@@ -70,7 +73,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const fileBrowserEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
   const sessionsEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
   const leftEdge = panesFlipped ? fileBrowserEdge : sessionsEdge
-  const rightEdge = panesFlipped ? sessionsEdge : fileBrowserEdge
 
   const leftToolbarTools: TitlebarTool[] = [
     {
@@ -92,16 +94,29 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       },
       title: 'Swap the sessions and file browser sides'
     },
+    ...(!panesFlipped
+      ? [
+          {
+            icon: <Codicon name="folder-opened" />,
+            id: 'file-browser',
+            label: `${fileBrowserOpen ? 'Hide' : 'Show'} file browser`,
+            onSelect: () => {
+              triggerHaptic('tap')
+              toggleFileBrowserOpen()
+            }
+          } satisfies TitlebarTool
+        ]
+      : []),
     ...leftTools
   ]
 
   const rightSidebarTool: TitlebarTool = {
     icon: <Codicon name="layout-sidebar-right" />,
-    id: 'right-sidebar',
-    label: `${rightEdge.open ? 'Hide' : 'Show'} right sidebar`,
+    id: 'today-panel',
+    label: `${todayPanelOpen ? 'Hide' : 'Show'} your day panel`,
     onSelect: () => {
       triggerHaptic('tap')
-      rightEdge.toggle()
+      toggleTodayPanelOpen()
     }
   }
 

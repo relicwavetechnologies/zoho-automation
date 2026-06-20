@@ -131,10 +131,12 @@ def test_dashboard_member_updates_preserve_admin_role_and_disabled_status_on_log
             company_id="company_alpha",
             role="COMPANY_ADMIN",
             status="disabled",
+            department_id="dept_finance",
         )
         assert updated is not None
         assert updated["role"] == "COMPANY_ADMIN"
         assert updated["status"] == "disabled"
+        assert updated["department_id"] == "dept_finance"
 
         login_upsert = db.upsert_dashboard_member(
             provider="lark",
@@ -184,5 +186,113 @@ def test_feishu_channel_reuses_existing_lark_dashboard_identity(tmp_path):
         company_user = db.get_company_user(member["id"])
         assert company_user is not None
         assert company_user["email"] == "anish@emiactech.com"
+    finally:
+        db.close()
+
+
+def test_dashboard_member_merges_old_lark_union_duplicate(tmp_path):
+    db = CompanyIdentityDB(tmp_path / "company.db")
+    try:
+        canonical = db.upsert_dashboard_member(
+            provider="lark",
+            provider_user_id="ou_abhishek",
+            display_name="Abhishek Verma",
+            email="abhishek@emiactech.com",
+            company_id="company_relicwave",
+            role="SUPER_ADMIN",
+        )
+        event_identity = db.resolve_channel_identity(
+            platform="feishu",
+            chat_id="oc_chat",
+            user_id="beac9a13",
+            user_id_alt="on_union_abhishek",
+            user_name="Abhishek Verma",
+            company_id="company_relicwave",
+        )
+        assert event_identity.company_user_id != canonical["id"]
+
+        merged = db.upsert_dashboard_member(
+            provider="lark",
+            provider_user_id="ou_abhishek",
+            provider_user_id_alt="on_union_abhishek",
+            display_name="Abhishek Verma",
+            email="abhishek@emiactech.com",
+            company_id="company_relicwave",
+            role="SUPER_ADMIN",
+        )
+
+        assert merged["id"] == canonical["id"]
+        rows = db.list_company_users(company_id="company_relicwave")
+        assert [row["id"] for row in rows] == [canonical["id"]]
+
+        channels = db.list_channel_identities_for_company_user(canonical["id"])
+        by_user_id = {row["platform_user_id"]: row for row in channels}
+        assert by_user_id["ou_abhishek"]["platform_user_id_alt"] == "on_union_abhishek"
+        assert by_user_id["beac9a13"]["platform_user_id_alt"] == "on_union_abhishek"
+
+        resolved_again = db.resolve_channel_identity(
+            platform="feishu",
+            chat_id="oc_chat",
+            user_id="beac9a13",
+            user_id_alt="on_union_abhishek",
+            user_name="Abhishek Verma",
+            company_id="company_relicwave",
+        )
+        assert resolved_again.company_user_id == canonical["id"]
+    finally:
+        db.close()
+
+
+def test_company_user_home_channel_is_scoped_by_company_user(tmp_path):
+    db = CompanyIdentityDB(tmp_path / "company.db")
+    try:
+        alice = db.upsert_dashboard_member(
+            provider="lark",
+            provider_user_id="ou_alice",
+            display_name="Alice",
+            email="alice@example.com",
+            company_id="company_alpha",
+        )
+        bob = db.upsert_dashboard_member(
+            provider="lark",
+            provider_user_id="ou_bob",
+            display_name="Bob",
+            email="bob@example.com",
+            company_id="company_alpha",
+        )
+
+        alice_home = db.upsert_company_user_home_channel(
+            company_id="company_alpha",
+            company_user_id=alice["id"],
+            platform="feishu",
+            chat_id="oc_alice",
+            chat_name="Alice DM",
+            thread_id="thread-a",
+        )
+        db.upsert_company_user_home_channel(
+            company_id="company_alpha",
+            company_user_id=bob["id"],
+            platform="feishu",
+            chat_id="oc_bob",
+            chat_name="Bob DM",
+        )
+
+        assert alice_home["platform"] == "lark"
+        assert alice_home["chat_id"] == "oc_alice"
+
+        fetched = db.get_company_user_home_channel(
+            company_id="company_alpha",
+            company_user_id=alice["id"],
+            platform="lark",
+        )
+        assert fetched is not None
+        assert fetched["chat_id"] == "oc_alice"
+        assert fetched["thread_id"] == "thread-a"
+
+        rows = db.list_company_user_home_channels(
+            company_id="company_alpha",
+            company_user_id=alice["id"],
+        )
+        assert [row["chat_id"] for row in rows] == ["oc_alice"]
     finally:
         db.close()

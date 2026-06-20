@@ -62,4 +62,23 @@ describe('interpretRuntimeReadiness', () => {
     expect(result.source).toBe('fallback')
     expect(result.reason).toBe('setup.runtime_check timeout')
   })
+
+  it('can treat unknown readiness as ready for cached desktop setup', () => {
+    const result = interpretRuntimeReadiness(
+      {
+        setup: null,
+        setupError: 'setup.status timeout',
+        runtime: null,
+        runtimeError: 'setup.runtime_check timeout'
+      },
+      { unknownReady: true }
+    )
+
+    expect(result).toEqual({
+      checksDisagree: false,
+      ready: true,
+      reason: null,
+      source: 'fallback'
+    })
+  })
 })

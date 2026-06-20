@@ -2,14 +2,15 @@ import { desktopSkinSlashCompletions } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { useTheme } from '@/themes/context'
 
-import { COMPLETION_DRAWER_CLASS, COMPLETION_DRAWER_ROW_CLASS, CompletionDrawerEmpty } from './completion-drawer'
+import { COMPLETION_DRAWER_BELOW_CLASS, COMPLETION_DRAWER_CLASS, COMPLETION_DRAWER_ROW_CLASS, CompletionDrawerEmpty } from './completion-drawer'
 
 interface SkinSlashPopoverProps {
   draft: string
   onSelect: (command: string) => void
+  placement?: 'bottom' | 'top'
 }
 
-export function SkinSlashPopover({ draft, onSelect }: SkinSlashPopoverProps) {
+export function SkinSlashPopover({ draft, onSelect, placement = 'bottom' }: SkinSlashPopoverProps) {
   const { availableThemes, themeName } = useTheme()
   const match = draft.match(/^\/skin\s+(\S*)$/i)
 
@@ -19,10 +20,12 @@ export function SkinSlashPopover({ draft, onSelect }: SkinSlashPopoverProps) {
 
   const items = desktopSkinSlashCompletions(availableThemes, themeName, match[1] ?? '')
 
+  const drawerClass = placement === 'bottom' ? COMPLETION_DRAWER_BELOW_CLASS : COMPLETION_DRAWER_CLASS
+
   return (
     <div
       aria-label="Desktop theme suggestions"
-      className={COMPLETION_DRAWER_CLASS}
+      className={drawerClass}
       data-slot="composer-skin-completion-drawer"
       data-state="open"
       role="listbox"

@@ -17,6 +17,8 @@ export interface ResolvedPerson {
   openId:      string;
   displayName: string;
   email?:      string;
+  department?: string;
+  p2pChatId?:  string;
 }
 
 export type ResolveResult =
@@ -60,8 +62,25 @@ interface DirEntry {
   openId:      string;
   displayName: string;
   email?:      string;
+  department?: string;
+  p2pChatId?:  string;
   normName:    string;
   tokens:      Set<string>;
+}
+
+export interface LarkPeopleLiveSearchPort {
+  searchUsers(
+    companyId: string,
+    requesterOpenId: string,
+    query: string,
+  ): Promise<Array<{
+    openId: string;
+    displayName: string;
+    email?: string;
+    enterpriseEmail?: string;
+    department?: string;
+    p2pChatId?: string;
+  }>>;
 }
 
 function matchEntry(query: string, dir: DirEntry[]): ResolveResult {
@@ -96,7 +115,13 @@ function matchEntry(query: string, dir: DirEntry[]): ResolveResult {
 }
 
 function toPerson(e: DirEntry): ResolvedPerson {
-  return { openId: e.openId, displayName: e.displayName, ...(e.email ? { email: e.email } : {}) };
+  return {
+    openId: e.openId,
+    displayName: e.displayName,
+    ...(e.email ? { email: e.email } : {}),
+    ...(e.department ? { department: e.department } : {}),
+    ...(e.p2pChatId ? { p2pChatId: e.p2pChatId } : {}),
+  };
 }
 
 // ── Resolver class ────────────────────────────────────────────────────────────
@@ -104,7 +129,10 @@ function toPerson(e: DirEntry): ResolvedPerson {
 export class LarkPeopleResolver {
   private readonly cache = new Map<string, DirEntry[]>();
 
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly liveSearch?: LarkPeopleLiveSearchPort,
+  ) {}
 
   invalidate(companyId: string): void {
     this.cache.delete(companyId);
@@ -173,13 +201,30 @@ export class LarkPeopleResolver {
       }
 
       const result = matchEntry(q, dir);
-      if (result.kind === 'resolved') {
-        if (!seen.has(result.person.openId)) {
-          seen.add(result.person.openId);
-          resolved.push(result.person);
+      let finalResult = result;
+      if (this.liveSearch && result.kind !== 'resolved') {
+        const liveMatches = await this.liveSearch.searchUsers(companyId, requesterOpenId, q);
+        const livePeople = liveMatches.map(user => ({
+          openId: user.openId,
+          displayName: user.displayName,
+          ...(user.email ?? user.enterpriseEmail ? { email: user.email ?? user.enterpriseEmail } : {}),
+          ...(user.department ? { department: user.department } : {}),
+          ...(user.p2pChatId ? { p2pChatId: user.p2pChatId } : {}),
+        }));
+        if (livePeople.length === 1) {
+          finalResult = { kind: 'resolved', person: livePeople[0]! };
+        } else if (livePeople.length > 1) {
+          finalResult = { kind: 'ambiguous', matches: livePeople };
         }
-      } else if (result.kind === 'ambiguous') {
-        ambiguous.push({ query: q, matches: result.matches });
+      }
+
+      if (finalResult.kind === 'resolved') {
+        if (!seen.has(finalResult.person.openId)) {
+          seen.add(finalResult.person.openId);
+          resolved.push(finalResult.person);
+        }
+      } else if (finalResult.kind === 'ambiguous') {
+        ambiguous.push({ query: q, matches: finalResult.matches });
       } else {
         notFound.push(q);
       }

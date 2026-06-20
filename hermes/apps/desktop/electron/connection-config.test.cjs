@@ -22,6 +22,8 @@ const {
   cookiesHaveSession,
   cookiesHaveSessionMaterial,
   isOauthLoginRequiredError,
+  isUnauthorizedApiError,
+  oauthApiUnauthorizedResponse,
   normalizeRemoteBaseUrl,
   RT_COOKIE_VARIANTS,
   resolveEnvAuthMode,
@@ -39,6 +41,11 @@ test('normalizeRemoteBaseUrl strips trailing slashes, hash, and query', () => {
 
 test('normalizeRemoteBaseUrl preserves a path prefix', () => {
   assert.equal(normalizeRemoteBaseUrl('https://host/hermes'), 'https://host/hermes')
+})
+
+test('normalizeRemoteBaseUrl canonicalizes local gateway hosts for cookie reuse', () => {
+  assert.equal(normalizeRemoteBaseUrl('http://0.0.0.0:9119'), 'http://127.0.0.1:9119')
+  assert.equal(normalizeRemoteBaseUrl('http://localhost:9120/hermes'), 'http://127.0.0.1:9120/hermes')
 })
 
 test('normalizeRemoteBaseUrl rejects empty input', () => {
@@ -208,4 +215,15 @@ test('isOauthLoginRequiredError detects tagged errors from main process', () => 
   assert.equal(isOauthLoginRequiredError({ needsOauthLogin: false }), false)
   assert.equal(isOauthLoginRequiredError(null), false)
   assert.equal(isOauthLoginRequiredError('sign-in required'), false)
+})
+
+test('oauthApiUnauthorizedResponse tags REST 401 for renderer reauth', () => {
+  const response = oauthApiUnauthorizedResponse({ statusCode: 401, message: '401: unauthorized' })
+  assert.equal(response.needsOauthLogin, true)
+  assert.equal(response.error, 'unauthenticated')
+})
+
+test('isUnauthorizedApiError detects fetchJsonViaOauthSession rejections', () => {
+  assert.equal(isUnauthorizedApiError({ statusCode: 401 }), true)
+  assert.equal(isUnauthorizedApiError({ statusCode: 503 }), false)
 })

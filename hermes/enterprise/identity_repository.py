@@ -248,15 +248,27 @@ class EnterpriseIdentityRepository:
             return None
         return self._fetchone(
             """
-            SELECT "id", "companyUserId", "displayName", "email", "aiRole"
-            FROM "ChannelIdentity"
-            WHERE "companyId" = %s
+            SELECT ci."id",
+                   ci."companyUserId",
+                   ci."displayName",
+                   COALESCE(cu."email", ci."email") AS "email",
+                   COALESCE(cu."role", ci."aiRole") AS "aiRole"
+            FROM "ChannelIdentity" ci
+            LEFT JOIN "CompanyUser" cu
+              ON cu."id" = ci."companyUserId" AND cu."companyId" = ci."companyId"
+            WHERE ci."companyId" = %s
               AND (
-                ("channel" = %s AND ("identityKey" = %s OR "externalUserId" = %s))
-                OR "larkOpenId" = %s
-                OR "platformUserIdAlt" = %s
+                (ci."channel" = %s AND (ci."identityKey" = %s OR ci."externalUserId" = %s))
+                OR ci."larkOpenId" = %s
+                OR ci."platformUserIdAlt" = %s
               )
-            ORDER BY "lastSeenAt" DESC NULLS LAST, "updatedAt" DESC NULLS LAST
+            ORDER BY
+              CASE WHEN COALESCE(cu."email", ci."email", '') <> '' THEN 0 ELSE 1 END,
+              CASE WHEN ci."approvedSource" = 'dashboard_auth' THEN 0 ELSE 1 END,
+              CASE WHEN COALESCE(cu."role", '') IN ('SUPER_ADMIN', 'OWNER', 'COMPANY_ADMIN', 'ADMIN') THEN 0 ELSE 1 END,
+              CASE WHEN ci."identityKey" = %s OR ci."externalUserId" = %s OR ci."larkOpenId" = %s THEN 0 ELSE 1 END,
+              ci."lastSeenAt" DESC NULLS LAST,
+              ci."updatedAt" DESC NULLS LAST
             LIMIT 1
             """,
             (
@@ -266,8 +278,210 @@ class EnterpriseIdentityRepository:
                 platform_user_id,
                 platform_user_id,
                 user_id_alt,
+                identity_key,
+                platform_user_id,
+                platform_user_id,
             ),
         )
+
+    def _find_company_user_id_by_channel_alt(
+        self,
+        *,
+        company_id: str,
+        provider: str,
+        provider_user_id_alt: str | None,
+    ) -> str | None:
+        provider_user_id_alt = str(provider_user_id_alt or "").strip()
+        if not provider_user_id_alt:
+            return None
+        row = self._fetchone(
+            """
+            SELECT ci."companyUserId"
+            FROM "ChannelIdentity" ci
+            LEFT JOIN "CompanyUser" cu
+              ON cu."id" = ci."companyUserId" AND cu."companyId" = ci."companyId"
+            WHERE ci."companyId" = %s
+              AND ci."channel" = %s
+              AND ci."platformUserIdAlt" = %s
+              AND NULLIF(ci."companyUserId", '') IS NOT NULL
+            ORDER BY
+              CASE WHEN COALESCE(cu."email", '') <> '' THEN 0 ELSE 1 END,
+              CASE WHEN ci."approvedSource" = 'dashboard_auth' THEN 0 ELSE 1 END,
+              CASE WHEN COALESCE(cu."role", '') IN ('SUPER_ADMIN', 'OWNER', 'COMPANY_ADMIN', 'ADMIN') THEN 0 ELSE 1 END,
+              ci."lastSeenAt" DESC NULLS LAST,
+              ci."updatedAt" DESC NULLS LAST
+            LIMIT 1
+            """,
+            (company_id, provider, provider_user_id_alt),
+        )
+        value = self._row_get(row, "companyUserId")
+        return str(value) if value else None
+
+    def _list_company_user_ids_by_channel_alt(
+        self,
+        *,
+        company_id: str,
+        provider: str,
+        provider_user_id_alt: str | None,
+    ) -> list[str]:
+        provider_user_id_alt = str(provider_user_id_alt or "").strip()
+        if not provider_user_id_alt:
+            return []
+        rows = self._fetchall(
+            """
+            SELECT DISTINCT ci."companyUserId"
+            FROM "ChannelIdentity" ci
+            WHERE ci."companyId" = %s
+              AND ci."channel" = %s
+              AND ci."platformUserIdAlt" = %s
+              AND NULLIF(ci."companyUserId", '') IS NOT NULL
+            """,
+            (company_id, provider, provider_user_id_alt),
+        )
+        result: list[str] = []
+        for row in rows:
+            value = self._row_get(row, "companyUserId")
+            if value:
+                result.append(str(value))
+        return result
+
+    def _merge_channel_alt_to_company_user(
+        self,
+        *,
+        company_id: str,
+        provider: str,
+        provider_user_id_alt: str | None,
+        target_company_user_id: str,
+    ) -> None:
+        source_ids = self._list_company_user_ids_by_channel_alt(
+            company_id=company_id,
+            provider=provider,
+            provider_user_id_alt=provider_user_id_alt,
+        )
+        provider_user_id_alt = str(provider_user_id_alt or "").strip()
+        if provider_user_id_alt:
+            self._execute(
+                """
+                UPDATE "ChannelIdentity"
+                SET "companyUserId" = %s,
+                    "updatedAt" = now()
+                WHERE "companyId" = %s
+                  AND "channel" = %s
+                  AND "platformUserIdAlt" = %s
+                  AND COALESCE("companyUserId", '') <> %s
+                """,
+                (
+                    target_company_user_id,
+                    company_id,
+                    provider,
+                    provider_user_id_alt,
+                    target_company_user_id,
+                ),
+            )
+        self._merge_company_user_refs(
+            company_id=company_id,
+            target_company_user_id=target_company_user_id,
+            source_company_user_ids=source_ids,
+        )
+
+    def _merge_company_user_refs(
+        self,
+        *,
+        company_id: str,
+        target_company_user_id: str,
+        source_company_user_ids: list[str],
+    ) -> None:
+        for source_company_user_id in sorted(set(source_company_user_ids)):
+            if not source_company_user_id or source_company_user_id == target_company_user_id:
+                continue
+            self._execute(
+                """
+                UPDATE "ChannelIdentity"
+                SET "companyUserId" = %s,
+                    "updatedAt" = now()
+                WHERE "companyId" = %s AND "companyUserId" = %s
+                """,
+                (target_company_user_id, company_id, source_company_user_id),
+            )
+            self._execute(
+                """
+                UPDATE "HermesSessionBinding"
+                SET "resolvedUserId" = %s,
+                    "lastSeenAt" = now()
+                WHERE "companyId" = %s AND "resolvedUserId" = %s
+                """,
+                (target_company_user_id, company_id, source_company_user_id),
+            )
+            self._execute(
+                """
+                UPDATE "RuntimeConversation"
+                SET "createdByUserId" = %s,
+                    "updatedAt" = now()
+                WHERE "companyId" = %s AND "createdByUserId" = %s
+                """,
+                (target_company_user_id, company_id, source_company_user_id),
+            )
+            self._execute(
+                """
+                UPDATE "RuntimeConversationMessage" m
+                SET "actingCompanyUserId" = %s
+                FROM "RuntimeConversation" c
+                WHERE m."conversationId" = c."id"
+                  AND c."companyId" = %s
+                  AND m."actingCompanyUserId" = %s
+                """,
+                (target_company_user_id, company_id, source_company_user_id),
+            )
+            self._execute(
+                """
+                DELETE FROM "CompanyUserHomeChannel" source
+                USING "CompanyUserHomeChannel" target
+                WHERE source."companyId" = %s
+                  AND source."companyUserId" = %s
+                  AND target."companyId" = source."companyId"
+                  AND target."companyUserId" = %s
+                  AND target."platform" = source."platform"
+                """,
+                (company_id, source_company_user_id, target_company_user_id),
+            )
+            self._execute(
+                """
+                UPDATE "CompanyUserHomeChannel"
+                SET "companyUserId" = %s,
+                    "updatedAt" = now()
+                WHERE "companyId" = %s AND "companyUserId" = %s
+                """,
+                (target_company_user_id, company_id, source_company_user_id),
+            )
+            self._execute(
+                """
+                DELETE FROM "CompanyUser"
+                WHERE "id" = %s
+                  AND "companyId" = %s
+                  AND NOT EXISTS (
+                    SELECT 1 FROM "ChannelIdentity"
+                    WHERE "companyId" = %s AND "companyUserId" = %s
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM "HermesSessionBinding"
+                    WHERE "companyId" = %s AND "resolvedUserId" = %s
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM "RuntimeConversation"
+                    WHERE "companyId" = %s AND "createdByUserId" = %s
+                  )
+                """,
+                (
+                    source_company_user_id,
+                    company_id,
+                    company_id,
+                    source_company_user_id,
+                    company_id,
+                    source_company_user_id,
+                    company_id,
+                    source_company_user_id,
+                ),
+            )
 
     def bind_session_identity(
         self,
@@ -428,6 +642,7 @@ class EnterpriseIdentityRepository:
         *,
         provider: str,
         provider_user_id: str,
+        provider_user_id_alt: str | None = None,
         display_name: str | None = None,
         email: str | None = None,
         company_id: str | None = None,
@@ -439,6 +654,7 @@ class EnterpriseIdentityRepository:
         self._ensure_company(company_id)
         provider = str(provider or "dashboard").strip() or "dashboard"
         provider_user_id = str(provider_user_id or "").strip()
+        provider_user_id_alt = str(provider_user_id_alt or "").strip() or None
         if not provider_user_id:
             raise ValueError("provider_user_id is required")
 
@@ -455,6 +671,11 @@ class EnterpriseIdentityRepository:
             )
             existing_id = self._row_get(existing, "id")
 
+        existing_id = existing_id or self._find_company_user_id_by_channel_alt(
+            company_id=company_id,
+            provider=provider,
+            provider_user_id_alt=provider_user_id_alt,
+        )
         company_user_id = existing_id or _stable_id(
             "cu", company_id, provider, provider_user_id
         )
@@ -489,7 +710,14 @@ class EnterpriseIdentityRepository:
             company_user_id=company_user_id,
             provider=provider,
             provider_user_id=provider_user_id,
+            provider_user_id_alt=provider_user_id_alt,
             display_name=display_name,
+        )
+        self._merge_channel_alt_to_company_user(
+            company_id=company_id,
+            provider=provider,
+            provider_user_id_alt=provider_user_id_alt,
+            target_company_user_id=company_user_id,
         )
         row = self._fetchone(
             """
@@ -517,13 +745,16 @@ class EnterpriseIdentityRepository:
         company_user_id: str,
         provider: str,
         provider_user_id: str,
+        provider_user_id_alt: str | None = None,
         display_name: str | None = None,
     ) -> None:
         identity_key = f"user:{provider_user_id}"
         channel_identity_id = _stable_id("ci", company_id, provider, identity_key)
+        provider_user_id_alt = str(provider_user_id_alt or "").strip() or None
         raw_payload = {
             "platform": provider,
             "user_id": provider_user_id,
+            "user_id_alt": provider_user_id_alt,
             "user_name": display_name,
             "source": "dashboard_auth",
         }
@@ -553,6 +784,7 @@ class EnterpriseIdentityRepository:
                 "companyUserId" = excluded."companyUserId",
                 "displayName" = COALESCE(excluded."displayName", "ChannelIdentity"."displayName"),
                 "identityKey" = excluded."identityKey",
+                "platformUserIdAlt" = COALESCE(excluded."platformUserIdAlt", "ChannelIdentity"."platformUserIdAlt"),
                 "approvedSource" = excluded."approvedSource",
                 "rawJson" = excluded."rawJson",
                 "lastSeenAt" = now(),
@@ -568,7 +800,7 @@ class EnterpriseIdentityRepository:
                 display_name,
                 "user",
                 identity_key,
-                None,
+                provider_user_id_alt,
                 "",
                 company_id,
                 "dashboard_auth",
@@ -652,6 +884,7 @@ class EnterpriseIdentityRepository:
         company_id: str | None = None,
         role: str | None = None,
         status: str | None = None,
+        department_id: str | None = None,
     ) -> Optional[dict[str, Any]]:
         company_id = company_id or self.ensure_default_company()
         updates: list[str] = []
@@ -662,6 +895,9 @@ class EnterpriseIdentityRepository:
         if status is not None:
             updates.append('"status" = %s')
             args.append(_normalize_text(status, "active"))
+        if department_id is not None:
+            updates.append('"departmentId" = %s')
+            args.append(_normalize_text(department_id, "") or None)
         if not updates:
             return self.get_company_user(company_user_id, company_id=company_id)
 
@@ -792,6 +1028,121 @@ class EnterpriseIdentityRepository:
             )
         return normalized
 
+    def upsert_company_user_home_channel(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str,
+        platform: str,
+        chat_id: str,
+        chat_name: str | None = None,
+        thread_id: str | None = None,
+        channel_identity_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        company_id = _normalize_text(company_id)
+        company_user_id = _normalize_text(company_user_id)
+        platform = _canonical_channel(platform)
+        chat_id = _normalize_text(chat_id)
+        if not company_id or not company_user_id or not platform or not chat_id:
+            raise ValueError("company_id, company_user_id, platform, and chat_id are required")
+
+        self._ensure_company(company_id)
+        row = self._fetchone(
+            """
+            INSERT INTO "CompanyUserHomeChannel" (
+                "id",
+                "companyId",
+                "companyUserId",
+                "platform",
+                "chatId",
+                "chatName",
+                "threadId",
+                "channelIdentityId",
+                "metadataJson",
+                "updatedAt"
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, NULLIF(%s, ''), NULLIF(%s, ''), %s::jsonb, now())
+            ON CONFLICT ("companyId", "companyUserId", "platform") DO UPDATE SET
+                "chatId" = excluded."chatId",
+                "chatName" = excluded."chatName",
+                "threadId" = excluded."threadId",
+                "channelIdentityId" = excluded."channelIdentityId",
+                "metadataJson" = excluded."metadataJson",
+                "updatedAt" = now()
+            RETURNING "id", "companyId", "companyUserId", "platform", "chatId",
+                      "chatName", "threadId", "channelIdentityId", "metadataJson",
+                      "createdAt", "updatedAt"
+            """,
+            (
+                _stable_id("home", company_id, company_user_id, platform),
+                company_id,
+                company_user_id,
+                platform,
+                chat_id,
+                chat_name,
+                thread_id or "",
+                channel_identity_id or "",
+                _json_dumps(metadata or {}),
+            ),
+        )
+        if not isinstance(row, Mapping):
+            raise RuntimeError("company user home channel did not persist")
+        return self._normalize_home_channel_row(row)
+
+    def get_company_user_home_channel(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str,
+        platform: str,
+    ) -> Optional[dict[str, Any]]:
+        row = self._fetchone(
+            """
+            SELECT "id", "companyId", "companyUserId", "platform", "chatId",
+                   "chatName", "threadId", "channelIdentityId", "metadataJson",
+                   "createdAt", "updatedAt"
+            FROM "CompanyUserHomeChannel"
+            WHERE "companyId" = %s AND "companyUserId" = %s AND "platform" = %s
+            """,
+            (company_id, company_user_id, _canonical_channel(platform)),
+        )
+        if not isinstance(row, Mapping):
+            return None
+        return self._normalize_home_channel_row(row)
+
+    def list_company_user_home_channels(
+        self,
+        *,
+        company_id: str,
+        company_user_id: str,
+    ) -> list[dict[str, Any]]:
+        result = self._connection.execute(
+            """
+            SELECT "id", "companyId", "companyUserId", "platform", "chatId",
+                   "chatName", "threadId", "channelIdentityId", "metadataJson",
+                   "createdAt", "updatedAt"
+            FROM "CompanyUserHomeChannel"
+            WHERE "companyId" = %s AND "companyUserId" = %s
+            ORDER BY "platform"
+            """,
+            (company_id, company_user_id),
+        )
+        fetchall = getattr(result, "fetchall", None)
+        try:
+            if fetchall is None:
+                return []
+            rows = fetchall()
+        finally:
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
+        return [
+            self._normalize_home_channel_row(row)
+            for row in rows
+            if isinstance(row, Mapping)
+        ]
+
     def list_company_users(self, *, company_id: str | None = None) -> list[dict[str, Any]]:
         company_id = company_id or self.ensure_default_company()
         result = self._connection.execute(
@@ -815,6 +1166,21 @@ class EnterpriseIdentityRepository:
                 close()
         return [dict(row) if isinstance(row, Mapping) else row for row in rows]
 
+    def _normalize_home_channel_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "id": self._row_get(row, "id"),
+            "company_id": self._row_get(row, "companyId"),
+            "company_user_id": self._row_get(row, "companyUserId"),
+            "platform": self._row_get(row, "platform"),
+            "chat_id": self._row_get(row, "chatId"),
+            "chat_name": self._row_get(row, "chatName"),
+            "thread_id": self._row_get(row, "threadId"),
+            "channel_identity_id": self._row_get(row, "channelIdentityId"),
+            "metadata_json": self._row_get(row, "metadataJson"),
+            "created_at": self._row_get(row, "createdAt"),
+            "updated_at": self._row_get(row, "updatedAt"),
+        }
+
     def _execute(self, sql: str, args: tuple[Any, ...]) -> None:
         result = self._connection.execute(sql, args)
         close = getattr(result, "close", None)
@@ -828,6 +1194,19 @@ class EnterpriseIdentityRepository:
             return None
         try:
             return fetchone()
+        finally:
+            close = getattr(result, "close", None)
+            if close is not None:
+                close()
+
+    def _fetchall(self, sql: str, args: tuple[Any, ...]) -> list[Any]:
+        result = self._connection.execute(sql, args)
+        fetchall = getattr(result, "fetchall", None)
+        if fetchall is None:
+            return []
+        try:
+            rows = fetchall()
+            return list(rows or [])
         finally:
             close = getattr(result, "close", None)
             if close is not None:

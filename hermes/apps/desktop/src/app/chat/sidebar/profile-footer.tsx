@@ -17,6 +17,7 @@ import {
 import { SidebarFooter } from '@/components/ui/sidebar'
 import {
   companyAccountDisplayName,
+  companyAccountHomeReminder,
   companyAccountMetaLine,
   companyAccountProviderLabel,
   fetchCompanyAccount,
@@ -264,10 +265,11 @@ function AccountRow({ baseUrl, leftStatusbarItems, statusbarItems }: { baseUrl: 
   const name = profile ? companyAccountDisplayName(profile) : 'Account'
 
   const meta = profile
-    ? companyAccountMetaLine(profile) || profile.email || 'Signed in'
+    ? companyAccountHomeReminder(profile) || companyAccountMetaLine(profile) || profile.email || 'Signed in'
     : loading
       ? 'Loading…'
       : 'Not signed in'
+  const homeReminder = profile ? companyAccountHomeReminder(profile) : null
 
   return (
     <DropdownMenu>
@@ -311,6 +313,11 @@ function AccountRow({ baseUrl, leftStatusbarItems, statusbarItems }: { baseUrl: 
               <div className="inline-flex rounded-full border border-border px-2 py-0.5 text-[0.68rem] font-medium text-muted-foreground">
                 {companyAccountProviderLabel(profile)}
               </div>
+              {homeReminder ? (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-xs font-normal leading-4 text-amber-200">
+                  {homeReminder}
+                </div>
+              ) : null}
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
           </>

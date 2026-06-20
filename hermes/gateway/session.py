@@ -920,6 +920,7 @@ class SessionStore:
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
+        existing_entry_to_bind = None
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -944,13 +945,15 @@ class SessionStore:
                     # stuck-loop counter handles terminal escalation.
                     entry.updated_at = now
                     self._save()
-                    return entry
+                    existing_entry_to_bind = entry
                 else:
                     reset_reason = self._should_reset(entry, source)
-                if not reset_reason:
+                if existing_entry_to_bind is not None:
+                    pass
+                elif not reset_reason:
                     entry.updated_at = now
                     self._save()
-                    return entry
+                    existing_entry_to_bind = entry
                 else:
                     # Session is being auto-reset.
                     was_auto_reset = True
@@ -963,30 +966,35 @@ class SessionStore:
                 auto_reset_reason = None
                 reset_had_activity = False
 
-            # Create new session
-            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            if existing_entry_to_bind is None:
+                # Create new session
+                session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
-            entry = SessionEntry(
-                session_key=session_key,
-                session_id=session_id,
-                created_at=now,
-                updated_at=now,
-                origin=source,
-                display_name=source.chat_name,
-                platform=source.platform,
-                chat_type=source.chat_type,
-                was_auto_reset=was_auto_reset,
-                auto_reset_reason=auto_reset_reason,
-                reset_had_activity=reset_had_activity,
-            )
+                entry = SessionEntry(
+                    session_key=session_key,
+                    session_id=session_id,
+                    created_at=now,
+                    updated_at=now,
+                    origin=source,
+                    display_name=source.chat_name,
+                    platform=source.platform,
+                    chat_type=source.chat_type,
+                    was_auto_reset=was_auto_reset,
+                    auto_reset_reason=auto_reset_reason,
+                    reset_had_activity=reset_had_activity,
+                )
 
-            self._entries[session_key] = entry
-            self._save()
-            db_create_kwargs = {
-                "session_id": session_id,
-                "source": source.platform.value,
-                "user_id": source.user_id,
-            }
+                self._entries[session_key] = entry
+                self._save()
+                db_create_kwargs = {
+                    "session_id": session_id,
+                    "source": source.platform.value,
+                    "user_id": source.user_id,
+                }
+
+        if existing_entry_to_bind is not None:
+            self._bind_company_identity(existing_entry_to_bind, source)
+            return existing_entry_to_bind
 
         # SQLite operations outside the lock
         if self._db and db_end_session_id:

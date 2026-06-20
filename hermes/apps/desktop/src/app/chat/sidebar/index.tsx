@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
-import { FolderOpen, type IconComponent, MessageCircle, Send, Wrench } from '@/lib/icons'
+import { FolderOpen, type IconComponent, Globe, Send, Wrench } from '@/lib/icons'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
 import {
@@ -62,7 +62,7 @@ import {
   sessionPinId
 } from '@/store/session'
 
-import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { type AppView, INTEGRATIONS_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { StatusbarItem } from '../../shell/statusbar-controls'
 import type { SidebarNavItem } from '../../types'
@@ -100,12 +100,11 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     route: SKILLS_ROUTE
   },
   {
-    id: 'messaging',
-    label: 'Messaging',
-    icon: createThinSidebarIcon(MessageCircle),
-    route: MESSAGING_ROUTE
+    id: 'integrations',
+    label: 'Plugins',
+    icon: createThinSidebarIcon(Globe),
+    route: INTEGRATIONS_ROUTE
   },
-  { id: 'artifacts', label: 'Artifacts', icon: createThinSidebarIcon(FolderOpen), route: ARTIFACTS_ROUTE }
 ]
 
 const WORKSPACE_PAGE = 5
@@ -465,8 +464,7 @@ export function ChatSidebar({
 
                 const active =
                   (item.id === 'skills' && currentView === 'skills') ||
-                  (item.id === 'messaging' && currentView === 'messaging') ||
-                  (item.id === 'artifacts' && currentView === 'artifacts')
+                  (item.id === 'integrations' && currentView === 'integrations')
 
                 return (
                   <SidebarMenuItem key={item.id}>

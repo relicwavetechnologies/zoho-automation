@@ -13,19 +13,38 @@ whether the package is importable; the plugin still registers either way so
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+import os
+from typing import Any, Dict, List
 
 from agent.web_search_provider import WebSearchProvider
 
 logger = logging.getLogger(__name__)
 
+# ``ddgs`` 9.x is a multi-engine metasearcher. Its default ``backend="auto"``
+# probes engines in a slow order (~6-7s/query). We instead try a curated chain
+# of fast, reliable, key-free engines and take the first that returns results.
+# Benchmarked latency (single query): brave ~0.5s, duckduckgo ~1.4s,
+# mojeek/startpage ~2s, vs auto/bing ~6s; google/yahoo frequently empty.
+_DEFAULT_BACKENDS = ("brave", "duckduckgo", "mojeek", "startpage")
+
+
+def _backend_chain() -> List[str]:
+    """Resolved engine fallback order — override via ``HERMES_DDGS_BACKENDS``
+    (comma-separated, e.g. ``"brave,duckduckgo"``)."""
+    raw = os.getenv("HERMES_DDGS_BACKENDS", "").strip()
+    if raw:
+        chain = [b.strip() for b in raw.split(",") if b.strip()]
+        if chain:
+            return chain
+    return list(_DEFAULT_BACKENDS)
+
 
 class DDGSWebSearchProvider(WebSearchProvider):
-    """DuckDuckGo HTML-scrape search provider.
+    """Key-free metasearch via the ``ddgs`` package (brave/ddg/mojeek/startpage).
 
-    No API key needed. Rate limits are enforced server-side by DuckDuckGo;
-    the provider surfaces ``DuckDuckGoSearchException`` and other ddgs errors
-    as ``{"success": False, "error": ...}`` rather than raising.
+    No API key needed. Tries a fast engine fallback chain and returns the first
+    that yields results; surfaces ddgs errors as ``{"success": False, ...}``
+    rather than raising.
     """
 
     @property
@@ -57,7 +76,14 @@ class DDGSWebSearchProvider(WebSearchProvider):
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a DuckDuckGo search and return normalized results."""
+        """Search via the fast engine fallback chain; return normalized results.
+
+        Walks :func:`_backend_chain` in order, querying one engine at a time,
+        and returns the first that yields results. An engine that errors or
+        comes back empty is skipped — so a single slow/blocked engine never
+        sinks the request (this is what makes the free path both fast and
+        reliable). Returns an error only if *every* engine fails.
+        """
         try:
             from ddgs import DDGS  # type: ignore
         except ImportError:
@@ -69,28 +95,53 @@ class DDGSWebSearchProvider(WebSearchProvider):
         # DDGS().text yields at most `max_results` items; we cap defensively
         # in case the package ignores the hint.
         safe_limit = max(1, int(limit))
+        region = os.getenv("HERMES_DDGS_REGION", "us-en").strip() or "us-en"
+        last_error: str = ""
+        reached_engine = False  # at least one engine responded without erroring
 
-        try:
-            web_results = []
-            with DDGS() as client:
-                for i, hit in enumerate(client.text(query, max_results=safe_limit)):
-                    if i >= safe_limit:
-                        break
-                    url = str(hit.get("href") or hit.get("url") or "")
-                    web_results.append(
-                        {
-                            "title": str(hit.get("title", "")),
-                            "url": url,
-                            "description": str(hit.get("body", "")),
-                            "position": i + 1,
-                        }
-                    )
-        except Exception as exc:  # noqa: BLE001 — ddgs raises its own exceptions
-            logger.warning("DDGS search error: %s", exc)
-            return {"success": False, "error": f"DuckDuckGo search failed: {exc}"}
+        for backend in _backend_chain():
+            try:
+                hits = []
+                with DDGS() as client:
+                    for hit in client.text(
+                        query,
+                        region=region,
+                        safesearch="moderate",
+                        max_results=safe_limit,
+                        backend=backend,
+                    ):
+                        hits.append(hit)
+                        if len(hits) >= safe_limit:
+                            break
+            except Exception as exc:  # noqa: BLE001 — try the next engine
+                last_error = f"{backend}: {exc}"
+                logger.debug("ddgs backend %s failed: %s", backend, exc)
+                continue
 
-        logger.info("DDGS search '%s': %d results (limit %d)", query, len(web_results), limit)
-        return {"success": True, "data": {"web": web_results}}
+            reached_engine = True
+            if not hits:
+                continue  # genuinely empty — try the next engine
+
+            web_results = [
+                {
+                    "title": str(hit.get("title", "")),
+                    "url": str(hit.get("href") or hit.get("url") or ""),
+                    "description": str(hit.get("body", "")),
+                    "position": i + 1,
+                }
+                for i, hit in enumerate(hits)
+            ]
+            logger.info("ddgs '%s': %d results via %s", query, len(web_results), backend)
+            return {"success": True, "data": {"web": web_results}, "backend": backend}
+
+        # Reached at least one engine but nobody had results → legitimate empty.
+        if reached_engine:
+            logger.info("ddgs '%s': no results from any engine", query)
+            return {"success": True, "data": {"web": []}}
+
+        # Every engine raised → a real failure.
+        logger.warning("ddgs search '%s' failed on all engines: %s", query, last_error)
+        return {"success": False, "error": f"DuckDuckGo search failed: {last_error}"}
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {

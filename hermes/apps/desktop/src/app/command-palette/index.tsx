@@ -21,7 +21,6 @@ import {
   Info,
   KeyRound,
   MessageCircle,
-  Package,
   Plus,
   Settings,
   Settings2,
@@ -34,12 +33,11 @@ import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from 
 
 import {
   AGENTS_ROUTE,
-  ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
   DESKTOP_OPERATOR_SETTINGS_ENABLED,
   DESKTOP_SETTINGS_ENABLED,
-  MESSAGING_ROUTE,
+  INTEGRATIONS_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
@@ -201,8 +199,13 @@ export function CommandPalette() {
             label: 'Skills & Tools',
             run: go(SKILLS_ROUTE)
           },
-          { icon: MessageCircle, id: 'nav-messaging', label: 'Messaging', run: go(MESSAGING_ROUTE) },
-          { icon: Package, id: 'nav-artifacts', label: 'Artifacts', run: go(ARTIFACTS_ROUTE) },
+          {
+            icon: Globe,
+            id: 'nav-integrations',
+            keywords: ['plugins', 'integrations', 'google', 'oauth'],
+            label: 'Plugins',
+            run: go(INTEGRATIONS_ROUTE)
+          },
           { icon: Clock, id: 'nav-cron', keywords: ['schedule', 'jobs'], label: 'Cron', run: go(CRON_ROUTE) },
           { icon: Users, id: 'nav-profiles', label: 'Profiles', run: go(PROFILES_ROUTE) },
           { icon: Cpu, id: 'nav-agents', label: 'Agents', run: go(AGENTS_ROUTE) }

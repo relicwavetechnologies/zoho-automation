@@ -1,7 +1,9 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
+import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback } from 'react'
 
 import { transcribeAudio } from '@/hermes'
+import { setDesktopHomeChannel } from '@/lib/company-account'
 import { appendTextPart, branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
   attachmentDisplayText,
@@ -77,6 +79,7 @@ interface PromptActionsOptions {
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   handleSkinCommand: (arg: string) => string
+  queryClient: QueryClient
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
@@ -141,6 +144,7 @@ export function usePromptActions({
   branchCurrentSession,
   createBackendSessionForSend,
   handleSkinCommand,
+  queryClient,
   requestGateway,
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
@@ -473,6 +477,20 @@ export function usePromptActions({
           return
         }
 
+        if (normalizedName === 'sethome' || normalizedName === 'set-home') {
+          try {
+            const channel = await setDesktopHomeChannel()
+            await queryClient.invalidateQueries({ queryKey: ['company-account'] })
+            renderSlashOutput(
+              `Desktop home channel set${channel.chat_name ? `: ${channel.chat_name}` : ''}.`
+            )
+          } catch (err) {
+            renderSlashOutput(`error: ${inlineErrorMessage(err, 'Could not set desktop home channel')}`)
+          }
+
+          return
+        }
+
         if (!isDesktopSlashCommand(name)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
 
@@ -555,6 +573,7 @@ export function usePromptActions({
       busyRef,
       createBackendSessionForSend,
       handleSkinCommand,
+      queryClient,
       requestGateway,
       startFreshSessionDraft,
       submitPromptText

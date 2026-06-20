@@ -68,7 +68,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All ten bundled web plugins discover and register correctly."""
 
     def test_all_seven_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
@@ -80,8 +80,10 @@ class TestBundledPluginsRegister:
             "ddgs",
             "exa",
             "firecrawl",
+            "native",
             "parallel",
             "searxng",
+            "serper",
             "tavily",
             "xai",
         ]
@@ -92,10 +94,13 @@ class TestBundledPluginsRegister:
             ("brave-free", True, False),
             ("ddgs", True, False),
             ("searxng", True, False),
+            ("serper", True, False),
             ("exa", True, True),
             ("parallel", True, True),
             ("tavily", True, True),
             ("firecrawl", True, True),
+            # native: free built-in extractor — extract-only.
+            ("native", False, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
         ],
@@ -116,7 +121,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "serper", "exa", "parallel", "tavily", "firecrawl", "native", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +134,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "serper", "exa", "parallel", "tavily", "firecrawl", "native", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -180,6 +185,16 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False
         monkeypatch.setenv("TAVILY_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_serper_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("serper")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("SERPER_API_KEY", "real")
         assert p.is_available() is True
 
     def test_exa_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:

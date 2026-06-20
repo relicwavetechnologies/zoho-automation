@@ -58,7 +58,7 @@ export function ComposerTriggerPopover({
   loading,
   onHover,
   onPick,
-  placement = 'top'
+  placement = 'bottom'
 }: ComposerTriggerPopoverProps) {
   return (
     <div

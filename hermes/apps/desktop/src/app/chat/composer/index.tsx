@@ -15,6 +15,7 @@ import {
 
 import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { chatMessageText } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
@@ -34,10 +35,18 @@ import { $gatewayState, $messages } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 
 import { extractDroppedFiles, HERMES_PATHS_MIME } from '../hooks/use-composer-actions'
+import { LarkContextRefChip, LarkContextRefChipList } from '@/components/today-panel/lark-context-ref-chip'
+import { buildLarkContextBlock } from '@/lib/today-panel'
+import {
+  $todayPanelLandingRefs,
+  setTodayPanelComposerBridge,
+  toggleTodayPanelLandingRef
+} from '@/store/today-panel-bridge'
 
 import { AttachmentList } from './attachments'
 import { ContextMenu } from './context-menu'
 import { ComposerControls } from './controls'
+import { ComposerContextFooter, ComposerDiffBar } from './cursor-chrome'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import {
   type ComposerInsertMode,
@@ -72,8 +81,7 @@ import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 // Anything taller means the text wrapped to a second line.
 const COMPOSER_SINGLE_LINE_MAX_PX = 36
 
-const COMPOSER_FADE_BACKGROUND =
-  'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
+const COMPOSER_THREAD_SCRIM_HEIGHT = '3.5rem'
 
 // Resting composer placeholders. New sessions get open-ended starters; an
 // existing chat gets phrasings that read as a continuation of the thread.
@@ -137,6 +145,7 @@ export function ChatBar({
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const messages = useStore($messages)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   const queuedPrompts = useMemo(
@@ -147,6 +156,12 @@ export function ChatBar({
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
+  const landingScrollRef = useRef<HTMLDivElement | null>(null)
+  const landingRefs = useStore($todayPanelLandingRefs)
+  const referencedTaskIds = useMemo(
+    () => new Set(landingRefs.filter(ref => ref.kind === 'task').map(ref => ref.id)),
+    [landingRefs]
+  )
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
   const drainingQueueRef = useRef(false)
@@ -173,17 +188,43 @@ export function ChatBar({
   const slash = useSlashCompletions({ gateway: gateway ?? null })
 
   const landing = placement === 'landing'
-  const hasComposerPayload = draft.trim().length > 0 || attachments.length > 0
+  const hasComposerPayload =
+    draft.trim().length > 0 || attachments.length > 0 || landingRefs.length > 0
   const canSubmit = busy || hasComposerPayload
   // Collapsed = a single-line capsule (everything inline); expanded = the input
   // gets its own full-width row with the controls beneath, in a rounded card.
-  // Attachments force the expanded card so the pill never wraps awkwardly.
-  const surfaceExpanded = landing || expanded || attachments.length > 0
+  // Attachments and Lark context chips force the expanded card.
+  const surfaceExpanded = landing || expanded || attachments.length > 0 || landingRefs.length > 0
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
   const showHelpHint = draft === '?'
 
   const gatewayState = useStore($gatewayState)
+
+  const generateFollowUpCompletionSummary = useCallback(
+    (task: { title: string }) => {
+      const transcript = messages
+        .filter(message => !message.hidden && (message.role === 'user' || message.role === 'assistant'))
+        .map(message => {
+          const text = chatMessageText(message).replace(/\s+/g, ' ').trim()
+          return text ? `${message.role === 'user' ? 'User' : 'Divo'}: ${text}` : ''
+        })
+        .filter(Boolean)
+        .slice(-8)
+
+      if (!transcript.length) {
+        return `Completed ${task.title}.`
+      }
+
+      return [
+        `Completed ${task.title}.`,
+        '',
+        'Summary from the working chat:',
+        ...transcript.map(line => `- ${line}`)
+      ].join('\n')
+    },
+    [messages]
+  )
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
   // existing ones. Picked once and only re-rolled when we genuinely move to a
@@ -422,6 +463,34 @@ export function ChatBar({
 
     requestMainFocus()
   }
+
+  useEffect(() => {
+    setTodayPanelComposerBridge({
+      activeQueueSessionKey,
+      busy,
+      generateFollowUpCompletionSummary,
+      insertText,
+      landing,
+      messages,
+      referencedTaskIds,
+      requestMainFocus,
+      sessionId
+    })
+
+    return () => {
+      setTodayPanelComposerBridge(null)
+    }
+  }, [
+    activeQueueSessionKey,
+    busy,
+    generateFollowUpCompletionSummary,
+    insertText,
+    landing,
+    messages,
+    referencedTaskIds,
+    requestMainFocus,
+    sessionId
+  ])
 
   const insertInlineRefs = (refs: string[]) => {
     const editor = editorRef.current
@@ -1055,11 +1124,15 @@ export function ChatBar({
       }
     } else if (!hasComposerPayload && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (draft.trim() || attachments.length > 0 || landingRefs.length > 0) {
+      const contextBlock = landingRefs.length > 0 ? buildLarkContextBlock(landingRefs) : ''
+      const submitted = contextBlock ? `${contextBlock}${draft}` : draft
       triggerHaptic('submit')
       clearDraft()
       clearComposerAttachments()
+      if (landingRefs.length > 0) {
+        $todayPanelLandingRefs.set([])
+      }
       void onSubmit(submitted, { attachments })
     }
 
@@ -1272,7 +1345,7 @@ export function ChatBar({
       }}
       ref={composerRef}
     >
-      {showHelpHint && <HelpHint />}
+      {showHelpHint && <HelpHint placement={landing ? 'bottom' : 'top'} />}
       {trigger && (
         <ComposerTriggerPopover
           activeIndex={triggerActive}
@@ -1281,9 +1354,10 @@ export function ChatBar({
           loading={triggerLoading}
           onHover={setTriggerActive}
           onPick={replaceTriggerWithChip}
+          placement={landing ? 'bottom' : 'top'}
         />
       )}
-      <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} />
+      <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} placement={landing ? 'bottom' : 'top'} />
       {activeQueueSessionKey && queuedPrompts.length > 0 && (
         <div className="relative z-6 mb-1 px-0.5">
           <QueuePanel
@@ -1304,10 +1378,13 @@ export function ChatBar({
           thread). The landing composer is a flat uniform card. */}
       {!landing && (
         <div
-          className="pointer-events-none absolute inset-0 rounded-[inherit]"
-          style={{ background: COMPOSER_FADE_BACKGROUND }}
+          aria-hidden
+          className="pointer-events-none absolute right-0 bottom-0 left-0 rounded-[inherit]"
+          data-slot="composer-thread-scrim"
+          style={{ top: `calc(-1 * ${COMPOSER_THREAD_SCRIM_HEIGHT})` }}
         />
       )}
+      {!landing && <ComposerDiffBar />}
       <div className="relative w-full rounded-[inherit]">
         <div
           className={cn(
@@ -1372,6 +1449,17 @@ export function ChatBar({
               </div>
             )}
             {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+            {landingRefs.length > 0 && (
+              <LarkContextRefChipList data-slot="composer-lark-context-refs">
+                {landingRefs.map(ref => (
+                  <LarkContextRefChip
+                    key={ref.id}
+                    onRemove={() => toggleTodayPanelLandingRef(ref)}
+                    ref={ref}
+                  />
+                ))}
+              </LarkContextRefChipList>
+            )}
             {surfaceExpanded ? (
               <div className="flex w-full flex-col gap-(--composer-row-gap)">
                 <div className="min-w-0 w-full">{input}</div>
@@ -1394,6 +1482,7 @@ export function ChatBar({
           </div>
         </div>
       </div>
+      {!landing && <ComposerContextFooter />}
     </ComposerPrimitive.Root>
   )
 
@@ -1402,28 +1491,23 @@ export function ChatBar({
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         {landing ? (
           <div
-            className="absolute left-1/2 top-1/2 z-30 w-[min(43rem,calc(100%-3rem))] max-w-full -translate-x-1/2 -translate-y-1/2"
-            data-slot="composer-landing"
+            className="absolute inset-0 z-30 flex min-h-0 flex-col items-center justify-start overflow-auto px-4 py-4"
+            data-slot="composer-landing-split"
           >
-            <h1
-              aria-label="Divo Dex"
-              className="mb-5 text-center font-['Collapse'] text-[clamp(3.75rem,8.2vw,6.8rem)] font-bold uppercase leading-[0.78] tracking-[0.075em] text-[#bdbdbd] mix-blend-plus-lighter"
-              data-slot="composer-landing-wordmark"
-            >
-              Divo Dex
-            </h1>
-            {composerRoot}
-            <button
-              className="mt-6 inline-flex items-center gap-1.5 rounded-full border border-[#303030] bg-[#161616]/75 px-4 py-2 text-[clamp(0.875rem,1.2vw,1rem)] tracking-[-0.03em] text-[#bdbdbd] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-[#3e3e3e] hover:bg-[#1d1d1d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
-              onClick={() => {
-                insertText('Plan a new idea: ')
-                requestMainFocus()
-              }}
-              type="button"
-            >
-              <span>Plan New Idea</span>
-              <span className="text-[#6d6d6d]">⇧Tab</span>
-            </button>
+            <div className="w-full max-w-[52rem]" data-slot="composer-landing">
+              {composerRoot}
+              <button
+                className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-[#303030] bg-[#161616]/75 px-3 py-1.5 text-xs tracking-[-0.03em] text-[#bdbdbd] hover:border-[#3e3e3e] hover:bg-[#1d1d1d]"
+                onClick={() => {
+                  insertText('Plan a new idea: ')
+                  requestMainFocus()
+                }}
+                type="button"
+              >
+                <span>Plan new idea</span>
+                <span className="text-[#6d6d6d]">⇧Tab</span>
+              </button>
+            </div>
           </div>
         ) : (
           composerRoot

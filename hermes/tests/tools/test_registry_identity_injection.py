@@ -183,8 +183,32 @@ def test_admin_dispatches_default_admin_tool(reg, monkeypatch):
     assert result == {"ok": True}
 
 
+def test_super_admin_dispatches_sensitive_tool(reg):
+    called = False
+
+    def handler(args, **kwargs):
+        nonlocal called
+        called = True
+        return json.dumps({"ok": True})
+
+    reg.register(name="zoho_books", toolset="zoho", schema=_schema("zoho_books"), handler=handler)
+    sc.set_session_vars(
+        company_id="comp_1",
+        company_user_id="cu_1",
+        channel_identity_id="ci_1",
+        company_role="SUPER_ADMIN",
+    )
+
+    result = json.loads(reg.dispatch("zoho_books", {}))
+
+    assert called is True
+    assert result == {"ok": True}
+
+
 def test_get_definitions_hides_unauthorized_admin_tool(reg, monkeypatch):
     monkeypatch.delenv("HERMES_TOOL_ADMIN_TOOLS", raising=False)
+    monkeypatch.setattr("tools.google_runtime.enterprise_enabled", lambda: True)
+    monkeypatch.setattr("tools.google_runtime._get_repository", lambda: None)
 
     def handler(args, **kwargs):
         return json.dumps({"ok": True})
@@ -195,7 +219,13 @@ def test_get_definitions_hides_unauthorized_admin_tool(reg, monkeypatch):
         schema=_schema("skill_manage"),
         handler=handler,
     )
-    reg.register(name="gmail", toolset="google", schema=_schema("gmail"), handler=handler)
+    reg.register(
+        name="gmail",
+        toolset="google",
+        schema=_schema("gmail"),
+        handler=handler,
+        check_fn=lambda: True,
+    )
     sc.set_session_vars(
         company_id="comp_1",
         company_user_id="cu_1",
@@ -206,4 +236,5 @@ def test_get_definitions_hides_unauthorized_admin_tool(reg, monkeypatch):
     definitions = reg.get_definitions({"skill_manage", "gmail"})
     names = {definition["function"]["name"] for definition in definitions}
 
-    assert names == {"gmail"}
+    assert "skill_manage" not in names
+    assert "gmail" in names

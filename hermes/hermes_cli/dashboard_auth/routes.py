@@ -636,9 +636,29 @@ def _sync_company_member(session) -> None:
         row = upsert_dashboard_member(
             provider=session.provider,
             provider_user_id=session.user_id,
+            provider_user_id_alt=getattr(session, "user_id_alt", "") or None,
             display_name=session.display_name or None,
             email=session.email or None,
         )
+        try:
+            from enterprise.policy import bootstrap_super_admin_actor
+            from gateway.company_identity import get_identity_store
+
+            store = get_identity_store()
+            row = bootstrap_super_admin_actor(
+                row,
+                store=store,
+                company_id=store.ensure_default_company(),
+                source="dashboard_login",
+            ) or row
+        except Exception:
+            pass
+        try:
+            from hermes_cli.dashboard_auth.lark_tool_link import sync_lark_tool_auth
+
+            sync_lark_tool_auth(session, company_row=row)
+        except Exception:
+            pass
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=503,

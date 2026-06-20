@@ -42,11 +42,19 @@ export async function runLarkAgent(
   });
 
   try {
+    const identityContext = [
+      `requesterUserId: ${String(ctx.runContext.userId)}`,
+      `requesterCompanyId: ${String(ctx.runContext.companyId)}`,
+      ctx.runContext.userExternalId ? `requesterLarkOpenId: ${ctx.runContext.userExternalId}` : null,
+      ctx.runContext.requesterEmail ? `requesterEmail: ${ctx.runContext.requesterEmail}` : null,
+      ctx.runContext.chatId ? `currentLarkChatId: ${ctx.runContext.chatId}` : null,
+    ].filter(Boolean).join('\n');
+
     const { text, steps } = await runWithCircuitBreaker(
       'gemini', 'lark-runner', GEMINI_CIRCUIT_OPTIONS,
       () => generateText({
         model:       ctx.model,
-        system:      LARK_RUNNER_SYSTEM,
+        system:      `${LARK_RUNNER_SYSTEM}\n\nCURRENT REQUESTER CONTEXT:\n${identityContext}`,
         prompt:      args.task,
         tools,
         stopWhen:    [stepCountIs(10)],

@@ -104,6 +104,7 @@ def upsert_dashboard_member(
     *,
     provider: str,
     provider_user_id: str,
+    provider_user_id_alt: str | None = None,
     display_name: str | None = None,
     email: str | None = None,
     company_id: str | None = None,
@@ -117,6 +118,7 @@ def upsert_dashboard_member(
     return db.upsert_dashboard_member(
         provider=provider,
         provider_user_id=provider_user_id,
+        provider_user_id_alt=provider_user_id_alt,
         display_name=display_name,
         email=email,
         company_id=resolved_company_id,
@@ -157,6 +159,7 @@ def update_company_user(
     company_id: str | None = None,
     role: str | None = None,
     status: str | None = None,
+    department_id: str | None = None,
     db=None,
 ):
     db = db or get_identity_store()
@@ -169,6 +172,7 @@ def update_company_user(
         company_id=resolved_company_id,
         role=role,
         status=status,
+        department_id=department_id,
     )
 
 
@@ -198,6 +202,62 @@ def list_channel_identities_for_company_user(company_user_id: str, db=None):
     return db.list_channel_identities_for_company_user(company_user_id)
 
 
+def upsert_company_user_home_channel(
+    *,
+    company_id: str,
+    company_user_id: str,
+    platform: str,
+    chat_id: str,
+    chat_name: str | None = None,
+    thread_id: str | None = None,
+    channel_identity_id: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    db=None,
+):
+    db = db or get_identity_store()
+    return db.upsert_company_user_home_channel(
+        company_id=company_id,
+        company_user_id=company_user_id,
+        platform=platform,
+        chat_id=chat_id,
+        chat_name=chat_name,
+        thread_id=thread_id,
+        channel_identity_id=channel_identity_id,
+        metadata=metadata,
+    )
+
+
+def get_company_user_home_channel(
+    *,
+    company_id: str,
+    company_user_id: str,
+    platform: str,
+    db=None,
+):
+    db = db or get_identity_store()
+    getter = getattr(db, "get_company_user_home_channel", None)
+    if getter is None:
+        return None
+    return getter(
+        company_id=company_id,
+        company_user_id=company_user_id,
+        platform=platform,
+    )
+
+
+def list_company_user_home_channels(
+    *,
+    company_id: str,
+    company_user_id: str,
+    db=None,
+):
+    db = db or get_identity_store()
+    lister = getattr(db, "list_company_user_home_channels", None)
+    if lister is None:
+        return []
+    return lister(company_id=company_id, company_user_id=company_user_id)
+
+
 def get_session_identity(session_id: str, db=None):
     db = db or get_identity_store()
     getter = getattr(db, "get_session_identity", None)
@@ -218,6 +278,7 @@ def resolve_dashboard_session_identity(
     *,
     provider: str,
     provider_user_id: str,
+    provider_user_id_alt: str | None = None,
     display_name: str | None = None,
     email: str | None = None,
     company_id: str | None = None,
@@ -236,6 +297,7 @@ def resolve_dashboard_session_identity(
     row = upsert_dashboard_member(
         provider=provider,
         provider_user_id=provider_user_id,
+        provider_user_id_alt=provider_user_id_alt,
         display_name=display_name,
         email=email,
         company_id=resolved_company_id,

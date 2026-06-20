@@ -1468,7 +1468,12 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": (
+        "List available procedural/reference skills (name + description). "
+        "Skills are guidance documents, not proof that their backing app, API, "
+        "credential, connector, MCP server, or device is configured. Do not list "
+        "skill names as executable capabilities."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -1483,7 +1488,15 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": (
+        "Load procedural/reference skill content for specific tasks and workflows, "
+        "including linked references, templates, and scripts. A loaded skill is "
+        "instructions only; verify active tools and credentials before claiming "
+        "you can execute the integration or action described by the skill. First "
+        "call returns SKILL.md content plus a 'linked_files' dict showing "
+        "available references/templates/scripts. To access those, call again "
+        "with file_path parameter."
+    ),
     "parameters": {
         "type": "object",
         "properties": {

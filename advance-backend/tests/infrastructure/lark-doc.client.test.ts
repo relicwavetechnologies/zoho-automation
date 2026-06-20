@@ -62,11 +62,11 @@ describe('LarkDocClient', () => {
   // ── createDoc ─────────────────────────────────────────────────────────────
 
   describe('createDoc', () => {
-    it('POSTs to /docx/v1/documents and returns docToken', async () => {
+    it('POSTs to docs_ai documents and returns docToken', async () => {
       const { fetch, calls } = buildMockFetch([
         TOKEN_HANDLER,
         {
-          match: (url, m) => m === 'POST' && url.endsWith('/documents'),
+          match: (url, m) => m === 'POST' && url.endsWith('/docs_ai/v1/documents'),
           response: { code: 0, data: { document: { document_id: 'new-doc-abc', title: 'Q1 Report' } } },
         },
       ]);
@@ -78,11 +78,37 @@ describe('LarkDocClient', () => {
       assert.equal(result.docToken, 'new-doc-abc');
     });
 
+    it('resolves doc URL from Drive metadata with with_url=true', async () => {
+      const { fetch, calls } = buildMockFetch([
+        TOKEN_HANDLER,
+        {
+          match: (url, m) => m === 'POST' && url.endsWith('/docs_ai/v1/documents'),
+          response: { code: 0, data: { document: { document_id: 'doc_url_1', title: 'Q1 Report' } } },
+        },
+        {
+          match: (url, m) => m === 'POST' && url.includes('/drive/v1/metas/batch_query'),
+          response: { code: 0, data: { metas: [{ doc_token: 'doc_url_1', doc_type: 'docx', url: 'https://tenant.larksuite.com/docx/doc_url_1' }] } },
+        },
+      ]);
+      globalThis.fetch = fetch;
+
+      const client = new LarkDocClient(DEPS);
+      const result = await client.createDoc('Q1 Report');
+
+      assert.equal(result.url, 'https://tenant.larksuite.com/docx/doc_url_1');
+      assert.equal(result.docUrl, 'https://tenant.larksuite.com/docx/doc_url_1');
+      const metaCall = calls.find(c => c.method === 'POST' && c.url.includes('/drive/v1/metas/batch_query'));
+      assert.deepEqual(metaCall?.body, {
+        request_docs: [{ doc_token: 'doc_url_1', doc_type: 'docx' }],
+        with_url: true,
+      });
+    });
+
     it('sends title in request body', async () => {
       const { fetch, calls } = buildMockFetch([
         TOKEN_HANDLER,
         {
-          match: (url, m) => m === 'POST' && url.endsWith('/documents'),
+          match: (url, m) => m === 'POST' && url.endsWith('/docs_ai/v1/documents'),
           response: { code: 0, data: { document: { document_id: 'doc1' } } },
         },
       ]);
@@ -91,9 +117,10 @@ describe('LarkDocClient', () => {
       const client = new LarkDocClient(DEPS);
       await client.createDoc('Strategic Plan');
 
-      const apiCall = calls.find(c => c.method === 'POST' && (c.url as string).endsWith('/documents'));
+      const apiCall = calls.find(c => c.method === 'POST' && (c.url as string).endsWith('/docs_ai/v1/documents'));
       const body = apiCall?.body as Record<string, unknown>;
-      assert.equal(body?.['title'], 'Strategic Plan');
+      assert.equal(body?.['content'], '<title>Strategic Plan</title>');
+      assert.equal(body?.['format'], 'xml');
     });
 
     it('throws on API error', async () => {
@@ -198,6 +225,53 @@ describe('LarkDocClient', () => {
       const elements = text?.['elements'] as Array<Record<string, unknown>>;
       const textRun = elements?.[0]?.['text_run'] as Record<string, unknown>;
       assert.equal(textRun?.['content'], 'Important note');
+    });
+  });
+
+  describe('createMarkdownDoc', () => {
+    it('creates one markdown doc through docs_ai and keeps URL from response', async () => {
+      const { fetch, calls } = buildMockFetch([
+        TOKEN_HANDLER,
+        {
+          match: (url, m) => m === 'POST' && url.endsWith('/docs_ai/v1/documents'),
+          response: { code: 0, data: { document: { document_id: DOC_TOKEN, url: 'https://tenant.larksuite.com/docx/doc' } } },
+        },
+      ]);
+      globalThis.fetch = fetch;
+
+      const client = new LarkDocClient(DEPS);
+      const result = await client.createMarkdownDoc('Launch Plan', '# Launch Plan\n\n- Build\n- Ship\n\n```txt\ncode\n```');
+
+      assert.equal(result.docToken, DOC_TOKEN);
+      assert.equal(result.url, 'https://tenant.larksuite.com/docx/doc');
+      const createCall = calls.find(c => c.method === 'POST' && c.url.endsWith('/docs_ai/v1/documents'));
+      const body = createCall?.body as Record<string, unknown>;
+      assert.equal(body?.['format'], 'markdown');
+      assert.match(String(body?.['content']), /^# Launch Plan/);
+      assert.equal(calls.some(c => c.url.includes('/children')), false);
+    });
+
+    it('appends markdown through docs_ai block_insert_after at document end', async () => {
+      const { fetch, calls } = buildMockFetch([
+        TOKEN_HANDLER,
+        {
+          match: (url, m) => m === 'PUT' && url.includes('/docs_ai/v1/documents/'),
+          response: { code: 0, data: { result: 'success' } },
+        },
+      ]);
+      globalThis.fetch = fetch;
+
+      const client = new LarkDocClient(DEPS);
+      await client.appendMarkdown(DOC_TOKEN, '## New Section\n\nBody');
+
+      const updateCall = calls.find(c => c.method === 'PUT' && c.url.includes('/docs_ai/v1/documents/'));
+      assert.deepEqual(updateCall?.body, {
+        block_id: '-1',
+        command: 'block_insert_after',
+        content: '## New Section\n\nBody',
+        format: 'markdown',
+        revision_id: -1,
+      });
     });
   });
 });

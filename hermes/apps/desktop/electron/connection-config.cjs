@@ -57,6 +57,9 @@ function normalizeRemoteBaseUrl(rawUrl) {
   parsed.hash = ''
   parsed.search = ''
   parsed.pathname = parsed.pathname.replace(/\/+$/, '')
+  if (parsed.hostname === '0.0.0.0' || parsed.hostname === 'localhost') {
+    parsed.hostname = '127.0.0.1'
+  }
 
   return parsed.toString().replace(/\/+$/, '')
 }
@@ -161,6 +164,24 @@ function isOauthLoginRequiredError(error) {
   return Boolean(error && typeof error === 'object' && error.needsOauthLogin === true)
 }
 
+/**
+ * Map OAuth REST fetch failures to the same needsOauthLogin shape startHermes()
+ * uses, so renderer IPC callers can open the company sign-in gate instead of
+ * surfacing an opaque "Error invoking remote method" wrapper.
+ */
+function oauthApiUnauthorizedResponse(error) {
+  return {
+    detail: 'Company sign-in required',
+    error: 'unauthenticated',
+    needsOauthLogin: true,
+    cause: error instanceof Error ? error.message : String(error)
+  }
+}
+
+function isUnauthorizedApiError(error) {
+  return Boolean(error && typeof error === 'object' && error.statusCode === 401)
+}
+
 module.exports = {
   AT_COOKIE_VARIANTS,
   DEFAULT_REMOTE_GATEWAY_URL,
@@ -172,7 +193,9 @@ module.exports = {
   cookiesHaveSession,
   cookiesHaveSessionMaterial,
   isOauthLoginRequiredError,
+  isUnauthorizedApiError,
   normalizeRemoteBaseUrl,
+  oauthApiUnauthorizedResponse,
   resolveEnvAuthMode,
   resolveAuthMode,
   tokenPreview

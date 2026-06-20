@@ -1995,6 +1995,20 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
 })
 
 
+def _merge_unique_model_ids(*model_lists: list[str] | tuple[str, ...]) -> list[str]:
+    """Case-insensitive model-id merge that preserves first-seen order."""
+    seen_lower: set[str] = set()
+    merged: list[str] = []
+    for models in model_lists:
+        for mid in models:
+            key = str(mid).lower()
+            if not key or key in seen_lower:
+                continue
+            seen_lower.add(key)
+            merged.append(mid)
+    return merged
+
+
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     """Merge curated list with fresh models.dev entries for a preferred provider.
 
@@ -2014,22 +2028,7 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     if not mdev:
         return list(curated)
 
-    # Case-insensitive dedup while preserving order and curated casing.
-    seen_lower: set[str] = set()
-    merged: list[str] = []
-    for mid in mdev:
-        key = str(mid).lower()
-        if key in seen_lower:
-            continue
-        seen_lower.add(key)
-        merged.append(mid)
-    for mid in curated:
-        key = str(mid).lower()
-        if key in seen_lower:
-            continue
-        seen_lower.add(key)
-        merged.append(mid)
-    return merged
+    return _merge_unique_model_ids(mdev, curated)
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
@@ -2201,6 +2200,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key)
                 if live:
+                    if normalized == "deepseek" and _p.fallback_models:
+                        return _merge_unique_model_ids(list(_p.fallback_models), live)
                     return live
             # Use profile's fallback_models if defined
             if _p.fallback_models:

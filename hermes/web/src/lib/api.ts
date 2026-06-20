@@ -282,6 +282,21 @@ export const api = {
     }),
   getCompanyConnectors: () =>
     fetchJSON<CompanyConnectorsResponse>("/api/company/connectors"),
+  getPolicyMe: () => fetchJSON<PolicyMeResponse>("/api/policy/me"),
+  getPolicyAudit: (limit = 100) =>
+    fetchJSON<PolicyAuditResponse>(`/api/policy/audit?limit=${limit}`),
+  getPolicyBindings: () =>
+    fetchJSON<PolicyBindingsResponse>("/api/policy/bindings"),
+  createPolicyBinding: (body: PolicyBindingUpsertRequest) =>
+    fetchJSON<{ binding: PolicyBinding }>("/api/policy/bindings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deletePolicyBinding: (id: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/policy/bindings/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   upsertCompanyConnector: (
     provider: CompanyConnectorProvider,
     body: CompanyConnectorUpsertRequest,
@@ -981,8 +996,22 @@ export interface CompanyTeamMember {
   provider?: string;
 }
 
+export interface CompanyHomeChannel {
+  id: string;
+  company_id: string;
+  company_user_id: string;
+  platform: string;
+  chat_id: string;
+  chat_name: string | null;
+  thread_id: string | null;
+  channel_identity_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface CompanyAccountProfile extends CompanyTeamMember {
   company_name: string;
+  home_channels?: CompanyHomeChannel[];
 }
 
 export interface CompanyTeamMembersResponse {
@@ -993,6 +1022,7 @@ export interface CompanyTeamMembersResponse {
 export interface CompanyTeamMemberUpdateRequest {
   role?: string;
   status?: string;
+  department_id?: string;
 }
 
 export type CompanyConnectorProvider = "google" | "lark" | "zoho";
@@ -1022,6 +1052,87 @@ export interface CompanyConnectorsResponse {
   connectors: CompanyConnectorSummary[];
 }
 
+export interface PolicyActor {
+  company_id: string;
+  company_user_id: string;
+  email: string;
+  display_name: string;
+  role: string;
+  department_id: string;
+  status: string;
+  is_super_admin: boolean;
+}
+
+export interface PolicyRouteCapability {
+  key: string;
+  capability: string;
+  action: string;
+  resource: string;
+  label: string;
+  admin_only: boolean;
+  allowed: boolean;
+}
+
+export interface PolicyMeResponse {
+  mode: "off" | "shadow" | "enforce" | string;
+  actor: PolicyActor;
+  capabilities: Record<string, boolean>;
+  nav: Record<string, boolean>;
+  routes: PolicyRouteCapability[];
+}
+
+export interface PolicyBinding {
+  id: string;
+  company_id: string;
+  principal_type: "any" | "role" | "company_user" | "department" | string;
+  principal_id: string;
+  resource_type: string;
+  resource_id: string;
+  action: string;
+  effect: "permit" | "forbid" | "approval" | string;
+  context: Record<string, unknown>;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PolicyBindingsResponse {
+  company_id: string;
+  bindings: PolicyBinding[];
+}
+
+export interface PolicyBindingUpsertRequest {
+  principal_type: string;
+  principal_id: string;
+  resource_type: string;
+  resource_id: string;
+  action: string;
+  effect: string;
+  context?: Record<string, unknown>;
+}
+
+export interface PolicyAuditEvent {
+  timestamp?: string;
+  event?: string;
+  mode?: string;
+  principal?: string;
+  company_id?: string;
+  role?: string;
+  action?: string;
+  resource?: string;
+  decision?: string;
+  allowed?: boolean;
+  code?: string;
+  reason?: string;
+  phase?: string;
+  request_id?: string;
+  [key: string]: unknown;
+}
+
+export interface PolicyAuditResponse {
+  events: PolicyAuditEvent[];
+}
+
 export interface CompanyConnectorUpsertRequest {
   scope?: CompanyConnectorScope;
   company_user_id?: string | null;
@@ -1029,6 +1140,11 @@ export interface CompanyConnectorUpsertRequest {
   client_id?: string;
   client_secret?: string;
   refresh_token?: string;
+  access_token?: string;
+  google_email?: string;
+  oauth_scope?: string;
+  token_type?: string;
+  access_token_expires_at?: string;
   organization_id?: string;
   accounts_base_url?: string;
   api_base_url?: string;

@@ -303,6 +303,19 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
 
+        # ddgs is the one keyless provider — clearing env creds doesn't disable
+        # it. Neutralize it so "unconfigured" is deterministic regardless of
+        # whether the ddgs package happens to be installed (and so this test
+        # never makes a live network call). Covers both the _get_backend()
+        # importability probe and the registry's is_available() resolution walk.
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        from agent.web_search_registry import get_provider as _get_provider
+
+        web_tools._ensure_web_plugins_loaded()
+        _ddgs = _get_provider("ddgs")
+        if _ddgs is not None:
+            monkeypatch.setattr(_ddgs, "is_available", lambda: False)
+
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
         # ``Error searching web:`` prefix comes from web_tools' top-level except handler

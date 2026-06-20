@@ -31,7 +31,9 @@ const {
   buildGatewayWsUrlWithTicket,
   cookiesHaveSessionMaterial,
   isOauthLoginRequiredError,
+  isUnauthorizedApiError,
   normalizeRemoteBaseUrl,
+  oauthApiUnauthorizedResponse,
   resolveEnvAuthMode,
   resolveAuthMode,
   tokenPreview
@@ -1439,6 +1441,7 @@ const RENDER_TITLE_BLOCKED_RESOURCES = new Set([
 
 let linkTitleSession = null
 let oauthSession = null
+let quittingAfterOauthFlush = false
 let renderTitleInFlight = 0
 const renderTitleQueue = []
 
@@ -2642,6 +2645,10 @@ async function mintGatewayWsTicket(baseUrl) {
   if (!ticket || typeof ticket !== 'string') {
     throw new Error('Gateway did not return a WS ticket.')
   }
+  // This response can also carry rotated session cookies when the dashboard
+  // refreshed an RT-only session. Persist them immediately so quitting right
+  // after startup/reconnect does not lose the refreshed login.
+  await flushOauthSessionStorage()
   return ticket
 }
 
@@ -2935,6 +2942,13 @@ async function resolveRemoteBackend() {
     try {
       ticket = await mintGatewayWsTicket(target.baseUrl)
     } catch (error) {
+      if (!isUnauthorizedApiError(error)) {
+        const message = error instanceof Error ? error.message : String(error)
+        const err = new Error(`Hermes gateway could not mint an OAuth WebSocket ticket: ${message}`)
+        err.baseUrl = target.baseUrl
+        err.cause = error
+        throw err
+      }
       const err = new Error('Your Hermes sign-in has expired. Sign in again to continue.')
       err.baseUrl = target.baseUrl
       err.needsOauthLogin = true
@@ -3253,19 +3267,14 @@ function createWindow() {
 
   mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
 
-  // Electron always passes the event first. The canonical (Electron 36+) shape
-  // is (event, messageDetails); the deprecated positional shape is
-  // (event, level, message, line, sourceId). Handle both. `level` is numeric
-  // (0..3), where 3 === error.
-  mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
-    const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
-    const level = details ? details.level : detailsOrLevel
+  // Electron 36+ passes console details as a single object. Declaring the old
+  // positional arguments makes Electron print a deprecation warning on startup.
+  mainWindow.webContents.on('console-message', (_event, details) => {
+    if (!details || details.level !== 3) return
 
-    if (level !== 3) return
-
-    const text = details ? details.message : message
-    const src = details ? details.sourceUrl : sourceId
-    const lineNo = details ? details.lineNumber : line
+    const text = details.message
+    const src = details.sourceUrl
+    const lineNo = details.lineNumber
     rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
   })
 
@@ -3375,22 +3384,29 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   const url = `${connection.baseUrl}${request.path}`
-  // OAuth gateways authenticate REST via the HttpOnly session cookie held in
-  // the OAuth partition — route through Electron's net stack bound to that
-  // session so the cookie attaches automatically. Token/local modes keep using
-  // the static session-token header.
-  if (connection.authMode === 'oauth') {
-    return fetchJsonViaOauthSession(url, {
+  try {
+    // OAuth gateways authenticate REST via the HttpOnly session cookie held in
+    // the OAuth partition — route through Electron's net stack bound to that
+    // session so the cookie attaches automatically. Token/local modes keep using
+    // the static session-token header.
+    if (connection.authMode === 'oauth') {
+      return await fetchJsonViaOauthSession(url, {
+        method: request?.method,
+        body: request?.body,
+        timeoutMs
+      })
+    }
+    return await fetchJson(url, connection.token, {
       method: request?.method,
       body: request?.body,
       timeoutMs
     })
+  } catch (error) {
+    if (connection.authMode === 'oauth' && isUnauthorizedApiError(error)) {
+      return oauthApiUnauthorizedResponse(error)
+    }
+    throw error
   }
-  return fetchJson(url, connection.token, {
-    method: request?.method,
-    body: request?.body,
-    timeoutMs
-  })
 })
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
@@ -3893,7 +3909,16 @@ function configureSpellChecker() {
   }
 }
 
-app.on('before-quit', () => {
+app.on('before-quit', event => {
+  if (!quittingAfterOauthFlush && oauthSession) {
+    event.preventDefault()
+    quittingAfterOauthFlush = true
+    flushOauthSessionStorage()
+      .catch(error => rememberLog(`OAuth storage flush before quit failed: ${error.message}`))
+      .finally(() => app.quit())
+    return
+  }
+
   if (desktopLogFlushTimer) {
     clearTimeout(desktopLogFlushTimer)
     desktopLogFlushTimer = null

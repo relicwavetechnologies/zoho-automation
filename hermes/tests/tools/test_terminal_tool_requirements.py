@@ -4,6 +4,7 @@ import importlib
 
 import pytest
 
+from gateway import session_context as sc
 from model_tools import get_tool_definitions
 
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
@@ -64,3 +65,94 @@ class TestTerminalRequirements:
 
         assert "terminal" in names
         assert "execute_code" in names
+
+    def test_remote_lark_session_filters_server_local_execution_tools(self, monkeypatch):
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {"env_type": "local"},
+        )
+        tokens = sc.set_session_vars(platform="feishu")
+        try:
+            tools = get_tool_definitions(
+                enabled_toolsets=["terminal", "file", "code_execution", "browser", "computer_use"],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            names = {tool["function"]["name"] for tool in tools}
+
+            assert names.isdisjoint({
+                "terminal",
+                "process",
+                "execute_code",
+                "read_file",
+                "write_file",
+                "patch",
+                "search_files",
+                "browser_navigate",
+                "browser_snapshot",
+                "browser_click",
+                "browser_type",
+                "browser_scroll",
+                "browser_back",
+                "browser_press",
+                "browser_get_images",
+                "browser_vision",
+                "browser_console",
+                "browser_cdp",
+                "browser_dialog",
+                "computer_use",
+            })
+        finally:
+            sc.clear_session_vars(tokens)
+
+    def test_desktop_session_keeps_server_local_execution_tools(self, monkeypatch):
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {"env_type": "local"},
+        )
+        tokens = sc.set_session_vars(platform="desktop")
+        try:
+            tools = get_tool_definitions(
+                enabled_toolsets=["terminal", "file"],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            names = {tool["function"]["name"] for tool in tools}
+
+            assert "terminal" in names
+            assert {"read_file", "write_file", "patch", "search_files"}.issubset(names)
+        finally:
+            sc.clear_session_vars(tokens)
+
+    def test_tool_definition_cache_is_platform_scoped(self, monkeypatch):
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {"env_type": "local"},
+        )
+        desktop_tokens = sc.set_session_vars(platform="desktop")
+        try:
+            desktop_tools = get_tool_definitions(
+                enabled_toolsets=["terminal"],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            desktop_names = {tool["function"]["name"] for tool in desktop_tools}
+            assert "terminal" in desktop_names
+        finally:
+            sc.clear_session_vars(desktop_tokens)
+
+        feishu_tokens = sc.set_session_vars(platform="feishu")
+        try:
+            feishu_tools = get_tool_definitions(
+                enabled_toolsets=["terminal"],
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+            feishu_names = {tool["function"]["name"] for tool in feishu_tools}
+            assert "terminal" not in feishu_names
+            assert "process" not in feishu_names
+        finally:
+            sc.clear_session_vars(feishu_tokens)

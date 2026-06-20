@@ -122,6 +122,26 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+def _quality_layer_enabled() -> bool:
+    """Return True when the web_search quality layer should run.
+
+    Controlled by ``web.quality.enabled`` in config.yaml (default True). The
+    per-stage toggles (``enrich`` / ``rerank``) and tuning knobs live in
+    :mod:`tools.web_quality`; this is just the master on/off switch so a user
+    can fully bypass the post-processing (and its top-N page fetches) if they
+    want raw provider snippets only.
+    """
+    q = _load_web_config().get("quality", {})
+    if not isinstance(q, dict):
+        return True
+    val = q.get("enabled", True)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() not in {"0", "false", "no", "off"}
+    return True
+
+
 def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
@@ -130,7 +150,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "serper", "searxng", "brave-free", "ddgs", "native", "xai"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -143,6 +163,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("serper", _has_env("SERPER_API_KEY")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
@@ -202,6 +223,11 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "serper":
+        return _has_env("SERPER_API_KEY")
+    if backend == "native":
+        # Free built-in extractor — no credentials; always usable.
+        return True
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
@@ -261,6 +287,7 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "SERPER_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
@@ -766,12 +793,13 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
 
-    This function provides a generic interface for web search that can work
-    with multiple backends (Parallel or Firecrawl).
+    This function provides a generic interface for web search that works with
+    multiple backends (serper, ddgs, searxng, brave-free, tavily, exa, parallel,
+    firecrawl). The quality layer (dedupe + rerank, plus optional content
+    enrichment) runs automatically to improve result ordering. This is step 1
+    of the usual two-step flow: search returns ranked links + snippets, then
+    web_extract reads the full page content of the chosen URLs.
 
-    Note: This function returns search result metadata only (URLs, titles, descriptions).
-    Use web_extract_tool to get full content from specific URLs.
-    
     Args:
         query (str): The search query to look up
         limit (int): Maximum number of results to return (default: 5)
@@ -850,6 +878,19 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 provider.name, query, limit,
             )
             response_data = provider.search(query, limit)
+
+            # Quality layer: dedupe + top-N page-content enrichment + lexical
+            # rerank. Lifts thin SERP snippets to agentic-search quality for
+            # every provider (esp. search-only free backends: ddgs / searxng /
+            # brave-free / serper). Gated by web.quality.enabled (default on);
+            # never fatal — a failure here returns the raw provider response.
+            if _quality_layer_enabled():
+                try:
+                    from tools.web_quality import enhance_search_results
+
+                    response_data = enhance_search_results(query, response_data)
+                except Exception as exc:  # noqa: BLE001 — enhancement is best-effort
+                    logger.warning("Web search quality layer failed: %s", exc)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -963,34 +1004,23 @@ async def web_extract_tool(
 
             provider = _wsp_get_provider(backend) if backend else None
             if provider is None or not provider.supports_extract():
-                # When the configured name IS registered but doesn't support
-                # extract (search-only providers like brave-free / ddgs /
-                # searxng), surface that as a typed "search-only" error
-                # rather than silently switching backends. When the name
-                # isn't registered at all (typo / uninstalled plugin), fall
-                # through to the active-provider walk.
-                if provider is not None and not provider.supports_extract():
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": (
-                                f"{provider.display_name} is a search-only "
-                                "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    )
+                # The resolved backend can't extract — either a search-only
+                # provider (serper / ddgs / searxng / brave-free), a typo, or
+                # an uninstalled plugin. Fall back to the capability-filtered
+                # active extract provider, which resolves to the free built-in
+                # 'native' extractor when no paid extract backend is configured.
+                # This makes the standard two-step flow (search → extract)
+                # always completable, for free, regardless of the search
+                # backend in use.
                 provider = get_active_extract_provider()
                 if provider is None:
                     return json.dumps(
                         {
                             "success": False,
                             "error": (
-                                "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "No web extract provider available. Set "
+                                "web.extract_backend to native (free), "
+                                "firecrawl, tavily, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -1155,11 +1185,11 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "serper", "searxng", "brave-free", "ddgs", "xai"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "serper", "searxng", "brave-free", "ddgs", "xai")
     )
 
 
@@ -1286,7 +1316,7 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+    "description": "Search the web for information. Returns up to 5 ranked, de-duplicated results with titles, URLs, and short descriptions. This is step 1 of the usual two-step flow: search to find the most relevant links, then call web_extract on the URLs you want to read their full page content. Raise `limit` for broader coverage. Supports operators like site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" when the backend supports them.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -13,8 +13,65 @@ class FakeZohoClient:
     def __init__(self):
         self.calls = []
 
+    def _invoice_summary(self, invoice_id="inv-internal-21421", invoice_number="INV21421"):
+        return {
+            "invoice_id": invoice_id,
+            "invoice_number": invoice_number,
+            "customer_id": "cust-digitas",
+            "customer_name": "Digitas",
+            "status": "sent",
+            "date": "2026-06-10",
+            "due_date": "2026-06-25",
+            "total": "23600.00",
+            "balance": "23600.00",
+            "currency_code": "INR",
+        }
+
+    def _invoice_detail(self, invoice_id="inv-internal-21421", invoice_number="INV21421"):
+        invoice = self._invoice_summary(invoice_id, invoice_number)
+        invoice.update(
+            {
+                "sub_total": "20000.00",
+                "tax_total": "3600.00",
+                "payment_made": "0.00",
+                "credits_applied": "0.00",
+                "reference_number": "PO-21421",
+                "email": "finance@example.com",
+                "invoice_url": "https://books.zoho.example/invoice/21421",
+                "line_items": [
+                    {
+                        "item_id": "item-1",
+                        "name": "Consulting",
+                        "description": "Monthly consulting",
+                        "quantity": "1",
+                        "rate": "20000.00",
+                        "item_total": "20000.00",
+                        "tax_name": "IGST",
+                        "tax_percentage": "18",
+                    }
+                ],
+                "taxes": [
+                    {
+                        "tax_name": "IGST",
+                        "tax_percentage": "18",
+                        "tax_amount": "3600.00",
+                    }
+                ],
+            }
+        )
+        return invoice
+
     async def books_list_all_records(self, module_name, **kwargs):
         self.calls.append(("books_list_all_records", module_name, kwargs))
+        if module_name == "invoices":
+            return {
+                "organizationId": kwargs.get("organization_id") or "org-1",
+                "items": [
+                    self._invoice_summary(),
+                    self._invoice_summary("inv-internal-21429", "INV21429"),
+                ],
+                "truncated": False,
+            }
         return {
             "organizationId": kwargs.get("organization_id") or "org-1",
             "items": [
@@ -32,7 +89,15 @@ class FakeZohoClient:
 
     async def books_get_record(self, module_name, record_id, **kwargs):
         self.calls.append(("books_get_record", module_name, record_id, kwargs))
-        return {"invoice_id": record_id, "total": "125.50", "currency_code": "USD"}
+        if module_name == "invoices":
+            number = "INV21421" if record_id == "inv-internal-21421" else "INV21429"
+            return self._invoice_detail(record_id, number)
+        return {
+            "invoice_id": record_id,
+            "invoice_number": "INV21421" if record_id == "inv-internal-21421" else None,
+            "total": "125.50",
+            "currency_code": "USD",
+        }
 
     async def books_create_invoice(self, fields, **kwargs):
         self.calls.append(("books_create_invoice", fields, kwargs))
@@ -60,10 +125,56 @@ class FakeZohoClient:
 
     async def books_get_endpoint(self, path, **kwargs):
         self.calls.append(("books_get_endpoint", path, kwargs))
+        if path == "/customerpayments":
+            return {
+                "customerpayments": [
+                    {
+                        "payment_id": "pay-21421",
+                        "payment_number": "PAY-21421",
+                        "date": "2026-06-15",
+                        "amount": "1000.00",
+                        "invoices": [{"invoice_id": "inv-internal-21421"}],
+                    },
+                    {
+                        "payment_id": "pay-other",
+                        "amount": "50.00",
+                        "invoices": [{"invoice_id": "other-invoice"}],
+                    },
+                ]
+            }
+        if path == "/creditnotes":
+            return {
+                "creditnotes": [
+                    {
+                        "creditnote_id": "cn-21421",
+                        "creditnote_number": "CN-21421",
+                        "date": "2026-06-16",
+                        "total": "500.00",
+                        "invoices": [{"invoice_id": "inv-internal-21421"}],
+                    }
+                ]
+            }
         return {"chartofaccounts": [{"account_id": "acct-1"}]}
 
     async def books_list_records(self, module_name, **kwargs):
         self.calls.append(("books_list_records", module_name, kwargs))
+        if module_name == "invoices":
+            filters = kwargs.get("filters") or {}
+            query = kwargs.get("query")
+            if filters.get("invoice_number") == "INV21421" or query == "INV21421":
+                return {
+                    "items": [self._invoice_summary()],
+                    "hasMore": False,
+                }
+            if query == "Digitas":
+                return {
+                    "items": [
+                        self._invoice_summary(),
+                        self._invoice_summary("inv-internal-21429", "INV21429"),
+                    ],
+                    "hasMore": False,
+                }
+            return {"items": [], "hasMore": False}
         return {"items": [{"account_id": "acct-1"}], "hasMore": False}
 
     async def crm_list_records(self, module, **kwargs):
@@ -158,6 +269,87 @@ async def test_zoho_books_list_uses_daterange_status_filters():
     assert call[2]["filters"]["date_start"] == "2026-01-01"
     assert call[2]["filters"]["date_end"] == "2026-12-31"
     assert call[2]["filters"]["status"] == "partially_paid"
+
+
+@pytest.mark.asyncio
+async def test_zoho_books_get_invoice_by_human_number_resolves_internal_id():
+    client = FakeZohoClient()
+    result = json.loads(
+        await _handle_zoho_books(
+            {"op": "get_invoice_by_number", "invoiceNumber": "INV21421"},
+            client=client,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["lookup"]["invoiceNumber"] == "INV21421"
+    assert result["lookup"]["invoiceId"] == "inv-internal-21421"
+    assert result["data"]["invoice_id"] == "inv-internal-21421"
+    assert result["data"]["lineItems"][0]["name"] == "Consulting"
+    assert result["data"]["linkedTransactions"]["payments"][0]["id"] == "pay-21421"
+    assert result["data"]["linkedTransactions"]["creditNotes"][0]["id"] == "cn-21421"
+    assert [call[0] for call in client.calls] == [
+        "books_list_records",
+        "books_get_record",
+        "books_get_endpoint",
+        "books_get_endpoint",
+    ]
+    assert client.calls[0][2]["filters"]["invoice_number"] == "INV21421"
+
+
+@pytest.mark.asyncio
+async def test_zoho_books_get_invoice_auto_resolves_invoice_number():
+    client = FakeZohoClient()
+    result = json.loads(
+        await _handle_zoho_books(
+            {"op": "get_invoice", "invoiceId": "INV21421"},
+            client=client,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["lookup"]["method"] == "invoice_number"
+    assert result["data"]["invoice_number"] == "INV21421"
+    assert client.calls[0][0] == "books_list_records"
+    assert client.calls[1][0] == "books_get_record"
+
+
+@pytest.mark.asyncio
+async def test_zoho_books_find_invoice_by_number_returns_dossier_with_linked_rows():
+    client = FakeZohoClient()
+    result = json.loads(
+        await _handle_zoho_books(
+            {"op": "find_invoice", "query": "INV21421"},
+            client=client,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["matchCount"] == 1
+    assert result["selected"]["invoiceNumber"] == "INV21421"
+    assert result["selected"]["total"] == 23600.0
+    assert result["selected"]["taxes"][0]["amount"] == 3600.0
+    assert result["selected"]["lineItems"][0]["taxPercentage"] == 18.0
+    payment = result["selected"]["linkedTransactions"]["payments"][0]
+    assert payment["id"] == "pay-21421"
+    assert payment["number"] == "PAY-21421"
+    assert payment["amount"] == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_zoho_books_find_invoice_multiple_matches_returns_candidates():
+    client = FakeZohoClient()
+    result = json.loads(
+        await _handle_zoho_books(
+            {"op": "find_invoice", "query": "Digitas", "customerName": "Digitas"},
+            client=client,
+        )
+    )
+
+    assert result["success"] is True
+    assert result["matchCount"] == 2
+    assert result["selected"] is None
+    assert [item["invoiceNumber"] for item in result["matches"]] == ["INV21421", "INV21429"]
 
 
 @pytest.mark.asyncio

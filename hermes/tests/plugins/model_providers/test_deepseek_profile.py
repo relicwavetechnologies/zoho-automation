@@ -12,6 +12,8 @@ correctly shaped without going live.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 
@@ -107,6 +109,46 @@ class TestDeepSeekThinkingWireShape:
 
 class TestDeepSeekModelGating:
     """V4 family + ``deepseek-reasoner`` get thinking; V3 stays untouched."""
+
+    def test_profile_fallback_catalog_includes_v4_models(self, deepseek_profile):
+        """The desktop /model picker falls back to this profile catalog.
+
+        Regression: the core Hermes catalog listed DeepSeek V4 Pro/Flash, but
+        the provider profile only advertised chat/reasoner, so the picker
+        showed a two-model DeepSeek section when live /models discovery missed.
+        """
+        assert list(deepseek_profile.fallback_models) == [
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ]
+
+    def test_provider_model_ids_merges_live_v4_with_curated_aliases(self, deepseek_profile):
+        """DeepSeek's live /models endpoint can omit chat/reasoner aliases.
+
+        The picker should still show the full curated DeepSeek set, including
+        V4 Pro/Flash plus the stable chat/reasoner IDs.
+        """
+        from hermes_cli.models import provider_model_ids
+
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={
+                "api_key": "test-deepseek-key",
+                "base_url": "https://api.deepseek.com/v1",
+            },
+        ), patch.object(
+            deepseek_profile,
+            "fetch_models",
+            return_value=["deepseek-v4-flash", "deepseek-v4-pro"],
+        ):
+            assert provider_model_ids("deepseek", force_refresh=True) == [
+                "deepseek-v4-pro",
+                "deepseek-v4-flash",
+                "deepseek-chat",
+                "deepseek-reasoner",
+            ]
 
     @pytest.mark.parametrize(
         "model",

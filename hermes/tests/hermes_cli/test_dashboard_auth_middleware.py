@@ -113,6 +113,18 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
         )
 
 
+def test_gated_integration_plugin_oauth_callback_is_public(gated_app):
+    """Google OAuth callback must bypass the gate — system browser has no cookie."""
+    r = gated_app.get(
+        "/api/company/integration-plugins/google-workspace/oauth/callback",
+        params={"code": "unused", "state": "invalid"},
+        follow_redirects=False,
+    )
+    assert r.status_code != 401, r.text
+    if r.status_code == 302:
+        assert "/login" not in r.headers.get("location", "")
+
+
 def test_gated_html_redirects_to_login(gated_app):
     r = gated_app.get("/", follow_redirects=False)
     assert r.status_code == 302

@@ -69,6 +69,7 @@ def resolve_dashboard_company_identity(request: Request) -> DashboardCompanyIden
         identity = resolve_dashboard_session_identity(
             provider=getattr(sess, "provider", "") or "",
             provider_user_id=getattr(sess, "user_id", "") or "",
+            provider_user_id_alt=getattr(sess, "user_id_alt", "") or None,
             display_name=getattr(sess, "display_name", "") or None,
             email=getattr(sess, "email", "") or None,
         )

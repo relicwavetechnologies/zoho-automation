@@ -110,6 +110,21 @@ def test_configurable_toolsets_include_zoho_with_oauth_envs():
     }
 
 
+def test_configurable_toolsets_include_google_workspace():
+    assert any(ts_key == "google" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_first_class_connector_toolsets_are_configurable():
+    from enterprise.policy.catalog import FIRST_CLASS_USER_SCOPED_TOOLSETS
+    from toolsets import TOOLSETS
+
+    configurable = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+
+    for ts_key in FIRST_CLASS_USER_SCOPED_TOOLSETS:
+        assert ts_key in TOOLSETS
+        assert ts_key in configurable
+
+
 def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
     config = {
         "context": {"engine": "lcm"},
@@ -1565,4 +1580,3 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
-

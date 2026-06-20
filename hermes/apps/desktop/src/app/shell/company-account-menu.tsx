@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import {
   companyAccountDisplayName,
+  companyAccountHomeReminder,
   companyAccountInitials,
   companyAccountMetaLine,
   type CompanyAccountProfile,
@@ -74,6 +75,7 @@ export function CompanyAccountMenu({ baseUrl }: CompanyAccountMenuProps) {
 
   const profile = accountQuery.data
   const loading = accountQuery.isLoading && !profile
+  const homeReminder = profile ? companyAccountHomeReminder(profile) : null
 
   const signOut = async () => {
     triggerHaptic('tap')
@@ -131,6 +133,11 @@ export function CompanyAccountMenu({ baseUrl }: CompanyAccountMenuProps) {
               <div className="inline-flex rounded-full border border-border px-2 py-0.5 text-[0.68rem] font-medium text-muted-foreground">
                 {companyAccountProviderLabel(profile)}
               </div>
+              {homeReminder ? (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-xs font-normal leading-4 text-amber-200">
+                  {homeReminder}
+                </div>
+              ) : null}
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
           </>

@@ -137,9 +137,14 @@ function clearPoll() {
 }
 
 async function checkRuntime(ctx: OnboardingContext): Promise<RuntimeReadinessResult> {
+  const cachedConfigured = readCachedConfigured() === true || $desktopOnboarding.get().configured === true
+
   return evaluateRuntimeReadiness(ctx.requestGateway, {
     defaultReason: DEFAULT_ONBOARDING_REASON,
-    unknownReady: false
+    // On relaunch/reconnect the gateway can briefly reject both readiness RPCs
+    // before it is fully open. Do not turn that transient unknown state into a
+    // fresh API-key prompt after the runtime has already been confirmed once.
+    unknownReady: cachedConfigured
   })
 }
 

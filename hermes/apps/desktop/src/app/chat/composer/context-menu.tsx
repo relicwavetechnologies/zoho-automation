@@ -58,6 +58,9 @@ export function ContextMenu({
             aria-label={state.tools.label}
             className={cn(
               GHOST_ICON_BTN,
+              // Cursor-style: the "+" sits in a subtle filled circle (not a bare
+              // ghost icon) until hover/open brightens it.
+              'bg-[color-mix(in_srgb,var(--foreground)_7%,transparent)]',
               'data-[state=open]:bg-(--chrome-action-hover) data-[state=open]:text-foreground'
             )}
             disabled={!state.tools.enabled}

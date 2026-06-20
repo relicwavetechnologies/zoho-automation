@@ -124,9 +124,13 @@ _LEGACY_PREFERENCE = (
     "parallel",
     "tavily",
     "exa",
+    "serper",
     "searxng",
     "brave-free",
     "ddgs",
+    # Free built-in extractor — last, so any configured paid extract backend
+    # wins, but extract still resolves to *something* (for free) otherwise.
+    "native",
 )
 
 

@@ -17,6 +17,9 @@ def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):
 
     registry.deregister("memory")
     monkeypatch.delitem(sys.modules, "tools.memory_tool", raising=False)
+    # File locking (and the fcntl import) now lives in the persistence backend,
+    # which MemoryStore imports lazily — re-import it under the fake too.
+    monkeypatch.delitem(sys.modules, "tools.memory_backends", raising=False)
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
     memory_tool = importlib.import_module("tools.memory_tool")
@@ -26,6 +29,7 @@ def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):
     store.load_from_disk()
     result = store.add("memory", "fact learned during import fallback test")
 
-    assert memory_tool.fcntl is None
+    memory_backends = importlib.import_module("tools.memory_backends")
+    assert memory_backends.fcntl is None
     assert registry.get_entry("memory") is not None
     assert result["success"] is True

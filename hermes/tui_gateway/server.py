@@ -622,6 +622,15 @@ def _transport_auth_identity(transport: Transport | None = None) -> dict[str, An
     return dict(info) if isinstance(info, dict) else {}
 
 
+def _transport_auth_identity_cache_key(info: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(info.get("provider") or "").strip(),
+        str(info.get("user_id") or "").strip(),
+        str(info.get("user_id_alt") or "").strip(),
+        str(info.get("email") or "").strip(),
+    )
+
+
 def _company_identity_payload(identity: Any) -> dict[str, str]:
     if identity is None:
         return {}
@@ -645,13 +654,16 @@ def _resolve_transport_company_identity(
     transport = transport or current_transport()
     if transport is None:
         return None
-    cached = getattr(transport, "_hermes_company_identity_cache", None)
-    if isinstance(cached, dict):
-        return dict(cached)
-    if cached is False:
-        return None
-
     info = _transport_auth_identity(transport)
+    cache_key = _transport_auth_identity_cache_key(info)
+    cached = getattr(transport, "_hermes_company_identity_cache", None)
+    cached_key = getattr(transport, "_hermes_company_identity_cache_key", None)
+    if cached_key == cache_key:
+        if isinstance(cached, dict):
+            return dict(cached)
+        if cached is False:
+            return None
+
     provider = str(info.get("provider") or "").strip()
     user_id = str(info.get("user_id") or "").strip()
     if not provider or not user_id or provider in {
@@ -660,6 +672,7 @@ def _resolve_transport_company_identity(
     }:
         try:
             setattr(transport, "_hermes_company_identity_cache", False)
+            setattr(transport, "_hermes_company_identity_cache_key", cache_key)
         except Exception:
             pass
         return None
@@ -670,6 +683,7 @@ def _resolve_transport_company_identity(
         identity = resolve_dashboard_session_identity(
             provider=provider,
             provider_user_id=user_id,
+            provider_user_id_alt=str(info.get("user_id_alt") or "").strip() or None,
             display_name=str(info.get("display_name") or "").strip() or None,
             email=str(info.get("email") or "").strip() or None,
         )
@@ -680,6 +694,7 @@ def _resolve_transport_company_identity(
 
     try:
         setattr(transport, "_hermes_company_identity_cache", dict(payload))
+        setattr(transport, "_hermes_company_identity_cache_key", cache_key)
     except Exception:
         pass
     return payload
@@ -1987,6 +2002,58 @@ def _session_info(agent, session: dict | None = None) -> dict:
     if warn:
         info["credential_warning"] = warn
     return info
+
+
+def _refresh_agent_tool_schema(agent) -> bool:
+    """Refresh a live agent's tool snapshot under the current session identity.
+
+    Connector-backed tools are gated by credentials and RBAC/ABAC checks. Those
+    inputs can change after the desktop session was created, for example after
+    the user completes Lark OAuth. AIAgent snapshots tools and its system prompt
+    at construction time, so desktop prompts need a small pre-turn refresh to
+    keep the model's visible tool schema aligned with the current identity.
+    """
+    try:
+        from model_tools import get_tool_definitions, invalidate_tool_defs_cache
+        from tools.registry import invalidate_check_fn_cache
+
+        invalidate_check_fn_cache()
+        invalidate_tool_defs_cache()
+        new_defs = get_tool_definitions(
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+            quiet_mode=True,
+        )
+        new_names = {t["function"]["name"] for t in new_defs} if new_defs else set()
+        old_names = set(getattr(agent, "valid_tool_names", set()) or set())
+        if new_names == old_names:
+            return False
+
+        agent.tools = new_defs
+        agent.valid_tool_names = new_names
+        rebuilt_prompt = None
+        try:
+            rebuilt_prompt = agent._build_system_prompt(None)
+            agent._cached_system_prompt = rebuilt_prompt
+        except Exception:
+            agent._cached_system_prompt = None
+        if rebuilt_prompt and getattr(agent, "_session_db", None):
+            try:
+                agent._session_db.update_system_prompt(agent.session_id, rebuilt_prompt)
+            except Exception as prompt_exc:
+                logger.warning(
+                    "Failed to persist refreshed live agent system prompt: %s",
+                    prompt_exc,
+                )
+        logger.info(
+            "refreshed live agent tool schema: %s -> %s",
+            len(old_names),
+            len(new_names),
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Failed to refresh live agent tools: %s", exc)
+        return False
 
 
 def _tool_ctx(name: str, args: dict) -> str:
@@ -4724,6 +4791,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["session_key"],
                 identity=_session_company_identity(session),
             )
+            if _refresh_agent_tool_schema(agent):
+                _emit("session.info", sid, _session_info(agent, session))
             # The sudo password callback is thread-local (tools.terminal_tool
             # _callback_tls), so wiring it on the build thread doesn't reach this
             # turn thread — terminal sudo prompts would fall through to /dev/tty

@@ -1,0 +1,1019 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Divo Dex - Delegation Loop Preview</title>
+<style>
+  :root{
+    --bg:#0e0e0e;
+    --panel:#141414;
+    --panel-2:#171718;
+    --card:#181818;
+    --card-2:#202020;
+    --line:#292929;
+    --line-2:#3a3a3a;
+    --text:#d8d8d8;
+    --muted:#979797;
+    --faint:#676767;
+    --salmon:#cd9883;
+    --salmon-2:#d8a78f;
+    --red:#e0697a;
+    --red-dot:#b75464;
+    --amber:#eab064;
+    --green:#6fc08a;
+    --blue:#7fa9cf;
+    --cyan:#28b7bd;
+    --shadow:0 18px 70px rgba(0,0,0,.46);
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+    --mono:"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;overflow:auto}
+  body{
+    background:
+      radial-gradient(90% 60% at 70% 110%, rgba(70,70,70,.12), transparent 60%),
+      radial-gradient(80% 60% at 20% -20%, rgba(60,60,60,.18), transparent 58%),
+      var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+  }
+  button,input,textarea{font:inherit}
+  button{color:inherit}
+  .window{
+    min-height:100vh;
+    display:grid;
+    grid-template-columns:260px minmax(0,1fr);
+    background:rgba(10,10,10,.64);
+  }
+  .sidebar{
+    border-right:1px solid var(--line);
+    background:#151515;
+    display:flex;
+    flex-direction:column;
+    min-width:0;
+  }
+  .traffic{
+    height:48px;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:0 20px;
+  }
+  .light{width:12px;height:12px;border-radius:50%}
+  .light.red{background:#ff5f57}.light.yellow{background:#febc2e}.light.green{background:#28c840}
+  .nav{padding:10px 18px 16px;border-bottom:1px solid rgba(255,255,255,.04)}
+  .nav button{
+    width:100%;
+    height:30px;
+    border:0;
+    border-radius:7px;
+    background:transparent;
+    color:#bdbdbd;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:0 8px;
+    cursor:pointer;
+    text-align:left;
+  }
+  .nav button:hover,.session.active{background:#242424;color:#ededed}
+  .ico{width:16px;height:16px;display:inline-grid;place-items:center;color:#a5a5a5;flex:0 0 auto}
+  .section-label{color:#868686;font-size:13px;margin:18px 26px 8px}
+  .sessions{padding:0 12px;overflow:auto;min-height:0;flex:1}
+  .session{
+    height:30px;
+    border-radius:7px;
+    padding:0 9px;
+    display:flex;
+    align-items:center;
+    gap:9px;
+    color:#b5b5b5;
+    font-size:14px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .session .dot{width:6px;height:6px;border-radius:50%;background:#777;flex:0 0 auto}
+  .profile{
+    min-height:78px;
+    border-top:1px solid var(--line);
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:12px 18px;
+  }
+  .avatar{
+    width:36px;height:36px;border-radius:50%;
+    background:linear-gradient(145deg,#e2b38c,#60422f);
+    display:grid;place-items:center;
+    color:#211611;font-weight:700;font-size:13px;
+  }
+  .profile b{display:block;font-size:14px;font-weight:650;color:#e1e1e1}
+  .profile span{display:block;color:#888;font-size:12px;margin-top:2px}
+  .main{
+    position:relative;
+    display:flex;
+    flex-direction:column;
+    min-width:0;
+    background:#111;
+  }
+  .topbar{
+    height:54px;
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:0 22px;
+    border-bottom:1px solid rgba(255,255,255,.03);
+  }
+  .title{
+    color:#bdbdbd;
+    font-size:14px;
+    font-weight:650;
+    max-width:620px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .role-switch{
+    margin-left:auto;
+    display:flex;
+    align-items:center;
+    background:#1a1a1a;
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:3px;
+    gap:2px;
+  }
+  .role-switch button{
+    border:0;
+    background:transparent;
+    color:#888;
+    height:28px;
+    border-radius:7px;
+    padding:0 11px;
+    cursor:pointer;
+    font-size:12px;
+    font-weight:650;
+  }
+  .role-switch button.active{background:#2a2a2a;color:#ededed}
+  .top-icons{display:flex;gap:13px;color:#8e8e8e;margin-left:8px}
+  .chat{
+    position:relative;
+    flex:1;
+    overflow:visible;
+    padding:30px 28px 150px;
+  }
+  .thread{
+    width:min(960px,100%);
+    margin:0 auto;
+  }
+  .message{
+    margin:0 0 18px;
+    display:flex;
+    gap:12px;
+    align-items:flex-start;
+  }
+  .message .bubble{
+    max-width:760px;
+    border:1px solid var(--line);
+    background:#191919;
+    border-radius:10px;
+    padding:12px 14px;
+    color:#d4d4d4;
+    font-size:14px;
+    line-height:1.48;
+  }
+  .message.user{justify-content:flex-end}
+  .message.user .bubble{
+    width:min(720px,100%);
+    background:#202020;
+    border-color:#3a3a3a;
+  }
+  .message.manager-only,.message.ag-only{display:none}
+  .is-manager .message.manager-only{display:flex}
+  .is-ag .message.ag-only{display:flex}
+  .mini-card{
+    margin-top:10px;
+    border:1px solid var(--line);
+    background:#141414;
+    border-radius:9px;
+    padding:10px;
+  }
+  .mini-row{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:8px}
+  .mini-title{font-weight:650;color:#eee}
+  .mini-meta{font-size:12px;color:#888;margin-top:2px}
+  .link{
+    color:#d9b09a;
+    text-decoration:none;
+    border-bottom:1px solid rgba(205,152,131,.35);
+    cursor:pointer;
+  }
+  .composer{
+    position:fixed;
+    left:calc(260px + (100vw - 260px)/2);
+    bottom:22px;
+    transform:translateX(-50%);
+    width:min(900px,calc(100vw - 340px));
+    border:1px solid #303030;
+    background:#171717;
+    border-radius:18px;
+    box-shadow:0 12px 42px rgba(0,0,0,.5);
+    padding:13px 14px 12px;
+  }
+  .context-chips{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    margin-bottom:8px;
+    min-height:0;
+  }
+  .chip{
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    height:26px;
+    border:1px solid #343434;
+    background:#202020;
+    color:#c8c8c8;
+    border-radius:999px;
+    padding:0 9px;
+    font-size:12px;
+    animation:chip .18s ease both;
+  }
+  @keyframes chip{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .composer textarea{
+    width:100%;
+    height:44px;
+    resize:none;
+    border:0;
+    outline:0;
+    background:transparent;
+    color:#dcdcdc;
+    font-size:15px;
+  }
+  .composer-foot{
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  .round{
+    width:30px;height:30px;border-radius:50%;
+    border:0;background:#252525;color:#bcbcbc;
+    display:grid;place-items:center;cursor:pointer;
+  }
+  .model{margin-left:auto;color:#ababab;font-size:13px}
+  .mic{width:34px;height:34px;border-radius:50%;border:0;background:#e4e4e4;color:#111;display:grid;place-items:center}
+  .brief{
+    width:min(820px,100%);
+    margin:10px auto 24px;
+    border:1px solid var(--line);
+    border-radius:14px;
+    background:linear-gradient(180deg,#151515,#121212);
+    overflow:hidden;
+    box-shadow:var(--shadow);
+  }
+  .brief-head{
+    display:flex;align-items:center;gap:12px;
+    padding:16px 18px 12px;
+  }
+  .brief-head b{font-size:16px;color:#efefef}
+  .brief-head span{color:#777}
+  .sync{
+    margin-left:auto;
+    display:inline-flex;
+    gap:7px;
+    align-items:center;
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:6px 11px;
+    color:#969696;
+    font-size:12px;
+  }
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:0 18px 14px}
+  .stat{
+    border:1px solid var(--line);
+    border-radius:11px;
+    background:#171717;
+    padding:10px 12px;
+  }
+  .stat b{display:block;font-size:20px;line-height:1}
+  .stat span{font-size:12px;color:#999}
+  .stat.red b{color:var(--red)}.stat.amber b{color:var(--amber)}.stat.blue b{color:var(--blue)}.stat.green b{color:var(--green)}
+  .brief-note{padding:0 18px 12px;color:#888;font-size:13px}
+  .brief-grid{display:grid;grid-template-columns:1.25fr .95fr;border-top:1px solid var(--line)}
+  .brief-col{min-width:0;padding-bottom:14px}
+  .brief-col:first-child{border-right:1px solid var(--line)}
+  .table-head{
+    height:48px;
+    display:flex;align-items:center;gap:10px;
+    padding:0 16px;
+    border-bottom:1px solid var(--line);
+  }
+  .table-head b{font-size:15px;color:#e6e6e6}
+  .seg{
+    margin-left:auto;
+    display:flex;gap:2px;
+    border:1px solid #292929;border-radius:8px;padding:2px;background:#111;
+  }
+  .seg span{font-size:12px;color:#8e8e8e;padding:4px 8px;border-radius:6px}
+  .seg span.on{background:#303030;color:#eee}
+  .col-label{
+    display:flex;justify-content:space-between;
+    padding:10px 16px 8px;
+    color:#777;
+    font-size:11px;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    border-bottom:1px solid var(--line);
+  }
+  .group-h{
+    display:flex;align-items:center;gap:8px;
+    margin:11px 16px 5px;
+    color:#929292;
+    font-weight:650;
+    font-size:13px;
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:#777}
+  .dot.red{background:var(--red-dot)}.dot.amber{background:var(--amber)}.dot.green{background:var(--green)}
+  .task-row{
+    display:grid;
+    grid-template-columns:28px minmax(0,1fr) auto;
+    gap:9px;
+    padding:8px 16px;
+    align-items:start;
+    cursor:pointer;
+    border-left:2px solid transparent;
+  }
+  .task-row:hover{background:#191919}
+  .task-row.selected{
+    background:#1e1b19;
+    border-left-color:var(--salmon);
+  }
+  .circle{
+    width:17px;height:17px;border-radius:50%;
+    border:1.5px solid #3c3c3c;
+    margin-top:2px;
+    display:grid;place-items:center;
+    color:#111;font-size:11px;
+  }
+  .task-row.done .circle{background:var(--green);border-color:var(--green)}
+  .task-title{font-size:14px;color:#dedede;line-height:1.35}
+  .task-row.done .task-title{text-decoration:line-through;color:#888}
+  .task-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:3px;color:#777;font-size:12px}
+  .tag{border:1px solid #333;border-radius:5px;padding:0 5px;color:#8c8c8c}
+  .late{color:var(--red)}
+  .due{color:#aaa;font-size:13px;white-space:nowrap;margin-top:1px}
+  .meeting{
+    display:grid;
+    grid-template-columns:52px minmax(0,1fr) auto;
+    gap:8px;
+    padding:10px 16px;
+    align-items:start;
+  }
+  .time{font-variant-numeric:tabular-nums;color:#c0c0c0;font-weight:650}
+  .meeting-title{font-size:14px;color:#dedede}
+  .meeting-meta{font-size:12px;color:#777;margin-top:2px}
+  .soon{border:1px solid rgba(111,192,138,.45);color:var(--green);font-size:11px;border-radius:5px;padding:1px 6px}
+  .brief-foot{
+    display:flex;align-items:center;gap:10px;
+    padding:14px 18px;
+    border-top:1px solid var(--line);
+    background:#131313;
+  }
+  .primary,.ghost,.small-btn{
+    border-radius:10px;
+    height:40px;
+    padding:0 15px;
+    cursor:pointer;
+    font-weight:650;
+  }
+  .primary{border:0;background:var(--salmon);color:#1d120f}
+  .primary:hover{background:var(--salmon-2)}
+  .ghost{border:1px solid #333;background:transparent;color:#9e9e9e}
+  .ghost:hover{color:#eee;background:#1b1b1b}
+  .small-btn{
+    height:32px;
+    border:1px solid #333;
+    background:#1b1b1b;
+    color:#d0d0d0;
+    font-size:12px;
+    padding:0 10px;
+  }
+  .create-fab{
+    position:absolute;
+    top:74px;
+    right:28px;
+    z-index:7;
+    display:flex;
+    gap:8px;
+  }
+  .active-banner{
+    position:absolute;
+    right:28px;
+    top:118px;
+    width:310px;
+    z-index:8;
+  }
+  .banner-head{
+    border:1px solid #323232;
+    background:#1a1a1a;
+    border-radius:13px;
+    min-height:48px;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:9px 12px;
+    box-shadow:0 10px 40px rgba(0,0,0,.35);
+    cursor:pointer;
+  }
+  .pulse{
+    width:9px;height:9px;border-radius:50%;
+    background:var(--green);
+    box-shadow:0 0 0 0 rgba(111,192,138,.45);
+    animation:pulse 1.6s infinite;
+  }
+  @keyframes pulse{70%{box-shadow:0 0 0 9px rgba(111,192,138,0)}100%{box-shadow:0 0 0 0 rgba(111,192,138,0)}}
+  .banner-title{min-width:0;flex:1}
+  .banner-title b{display:block;font-size:13px;color:#eee}
+  .banner-title span{display:block;font-size:12px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .banner-count{
+    width:26px;height:26px;border-radius:8px;background:#242424;
+    display:grid;place-items:center;color:#d0d0d0;font-size:12px;font-weight:700;
+  }
+  .banner-panel{
+    margin-top:8px;
+    border:1px solid #323232;
+    background:#181818;
+    border-radius:13px;
+    overflow:hidden;
+    box-shadow:0 20px 70px rgba(0,0,0,.42);
+    display:none;
+  }
+  .active-banner.open .banner-panel{display:block;animation:drop .18s ease both}
+  @keyframes drop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+  .banner-item{
+    padding:12px;
+    border-bottom:1px solid #272727;
+    display:grid;
+    grid-template-columns:24px minmax(0,1fr) auto;
+    gap:9px;
+    align-items:start;
+  }
+  .banner-item:last-child{border-bottom:0}
+  .banner-item .task-title{font-size:13px}
+  .banner-actions{display:flex;gap:8px;padding:10px 12px;border-top:1px solid #272727}
+  .banner-actions button{flex:1}
+  .notif-stack{
+    position:absolute;
+    right:28px;
+    bottom:126px;
+    width:330px;
+    z-index:20;
+    display:flex;
+    flex-direction:column;
+    gap:9px;
+    pointer-events:none;
+  }
+  .toast{
+    border:1px solid #343434;
+    background:#1d1d1d;
+    border-radius:12px;
+    padding:12px;
+    box-shadow:0 14px 45px rgba(0,0,0,.5);
+    animation:toast-in .22s ease both;
+  }
+  @keyframes toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .toast b{font-size:13px;color:#eee}
+  .toast p{margin:4px 0 0;font-size:12px;color:#a5a5a5;line-height:1.35}
+  .modal-backdrop{
+    position:absolute;
+    inset:0;
+    z-index:30;
+    background:rgba(0,0,0,.55);
+    display:none;
+    align-items:center;
+    justify-content:center;
+    padding:20px;
+  }
+  .modal-backdrop.show{display:flex}
+  .modal{
+    width:min(820px,calc(100vw - 52px));
+    min-height:560px;
+    background:#292929;
+    border-radius:14px;
+    box-shadow:0 28px 90px rgba(0,0,0,.62);
+    border:1px solid rgba(255,255,255,.04);
+    padding:28px 32px;
+    position:relative;
+  }
+  .close{
+    position:absolute;
+    right:22px;
+    top:18px;
+    width:32px;height:32px;
+    border:0;background:transparent;color:#b8b8b8;
+    cursor:pointer;
+  }
+  .task-input{
+    width:100%;
+    border:0;
+    background:transparent;
+    color:#e7e7e7;
+    font-size:23px;
+    outline:0;
+    margin-bottom:24px;
+  }
+  .task-input::placeholder{color:#a1a1a1}
+  .form-row{
+    display:grid;
+    grid-template-columns:36px minmax(0,1fr);
+    gap:16px;
+    align-items:center;
+    margin:18px 0;
+  }
+  .form-icon{color:#9a9a9a;display:grid;place-items:center}
+  .assignee{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    min-width:0;
+  }
+  .mini-avatar{
+    width:34px;height:34px;border-radius:50%;
+    background:linear-gradient(145deg,#9ec3f2,#284865);
+    color:#102034;
+    display:grid;place-items:center;
+    font-weight:800;
+    font-size:12px;
+  }
+  .divider{width:1px;height:26px;background:#4a4a4a;margin:0 8px}
+  .select-pill,.date-chip{
+    height:38px;
+    border:0;
+    border-radius:8px;
+    background:#363636;
+    color:#e5e5e5;
+    padding:0 12px;
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+  }
+  .date-chip.active{box-shadow:inset 0 0 0 1px rgba(40,183,189,.75);color:#ededed}
+  .form-placeholder{color:#8e8e8e;font-size:17px}
+  .modal-foot{
+    position:absolute;
+    left:32px;right:32px;bottom:24px;
+    display:flex;align-items:center;gap:12px;
+  }
+  .modal-foot .spacer{flex:1}
+  .modal-foot .create{height:40px;border:0;border-radius:9px;background:#cfcfcf;color:#292929;font-weight:700;padding:0 18px;cursor:pointer}
+  .modal-foot .cancel{height:40px;border:1px solid #666;border-radius:9px;background:transparent;color:#eee;padding:0 18px;cursor:pointer}
+  .icon-btn{
+    width:32px;height:32px;border:0;background:transparent;color:#b0b0b0;display:grid;place-items:center;cursor:pointer;
+  }
+  .is-manager .ag-only-ui{display:none}
+  .is-ag .manager-only-ui{display:none}
+  .completion-overlay{
+    position:absolute;
+    inset:54px 0 0;
+    pointer-events:none;
+    display:grid;
+    place-items:center;
+    z-index:6;
+    opacity:0;
+  }
+  .completion-overlay.show{animation:complete .9s ease}
+  @keyframes complete{
+    0%{opacity:0;transform:scale(.95)}
+    20%{opacity:1;transform:scale(1)}
+    78%{opacity:1}
+    100%{opacity:0;transform:scale(1.04)}
+  }
+  .complete-card{
+    border:1px solid rgba(111,192,138,.35);
+    background:rgba(23,33,26,.96);
+    border-radius:14px;
+    padding:18px 22px;
+    box-shadow:0 18px 70px rgba(0,0,0,.5);
+    display:flex;
+    align-items:center;
+    gap:12px;
+  }
+  .check-big{
+    width:28px;height:28px;border-radius:50%;background:var(--green);color:#102015;display:grid;place-items:center;font-weight:900;
+  }
+  @media(max-width:960px){
+    .window{grid-template-columns:1fr}
+    .sidebar{display:none}
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .brief-grid{grid-template-columns:1fr}
+    .brief-col:first-child{border-right:0;border-bottom:1px solid var(--line)}
+    .create-fab,.active-banner{right:14px}
+    .active-banner{width:min(310px,calc(100vw - 28px))}
+    .composer{left:50%;width:calc(100vw - 28px)}
+  }
+</style>
+</head>
+<body class="is-manager">
+<div class="window">
+  <aside class="sidebar">
+    <div class="traffic">
+      <span class="light red"></span><span class="light yellow"></span><span class="light green"></span>
+    </div>
+    <div class="nav">
+      <button><span class="ico">+</span>New session</button>
+      <button><span class="ico">/</span>Skills & Tools</button>
+      <button><span class="ico">@</span>Plugins</button>
+      <button><span class="ico">#</span>Messaging</button>
+      <button><span class="ico">[]</span>Artifacts</button>
+    </div>
+    <div class="section-label">Pinned</div>
+    <div class="sessions">
+      <div class="session active"><span class="dot"></span>Delegation loop preview</div>
+      <div class="session"><span class="dot"></span>make a lark task for Rahul</div>
+      <div class="session"><span class="dot"></span>check latest follow ups</div>
+      <div class="session"><span class="dot"></span>Divo memory design</div>
+      <div class="session"><span class="dot"></span>Zoho renewal plan</div>
+    </div>
+    <div class="profile">
+      <div class="avatar">AV</div>
+      <div><b>Abhishek Verma</b><span>Super Admin - RelicWave</span></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div class="title">Task delegation loop: create, start, track, notify</div>
+      <div class="role-switch" aria-label="Preview role">
+        <button id="managerRole" class="active">Manager</button>
+        <button id="agRole">Assignee</button>
+      </div>
+      <div class="top-icons"><span>sound</span><span>gear</span></div>
+    </div>
+
+    <div class="create-fab">
+      <button class="small-btn manager-only-ui" id="openCreate">Create delegated task</button>
+      <button class="small-btn ag-only-ui" id="focusAssigned">Assigned to me</button>
+    </div>
+
+    <section class="active-banner ag-only-ui" id="activeBanner">
+      <div class="banner-head" id="bannerToggle">
+        <span class="pulse"></span>
+        <div class="banner-title">
+          <b>Active rolling tasks</b>
+          <span id="bannerSubtitle">No task started yet</span>
+        </div>
+        <div class="banner-count" id="bannerCount">0</div>
+      </div>
+      <div class="banner-panel">
+        <div class="banner-item" id="bannerEmpty">
+          <span class="circle"></span>
+          <div><div class="task-title">Start a delegated task to pin it here.</div><div class="task-meta">Divo will keep it in the prompt context.</div></div>
+        </div>
+        <div class="banner-item" id="bannerTask" hidden>
+          <span class="circle" id="bannerCircle"></span>
+          <div>
+            <div class="task-title">Prepare Q3 enterprise rollout brief</div>
+            <div class="task-meta"><span>Tracking doc live</span><span class="tag">Vira</span></div>
+          </div>
+          <button class="small-btn" id="doneFromBanner">Done</button>
+        </div>
+        <div class="banner-actions">
+          <button class="small-btn" id="openDoc">Open doc</button>
+          <button class="small-btn" id="askHelp">Ask Divo</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="notif-stack" id="notifStack"></div>
+    <div class="completion-overlay" id="completionOverlay">
+      <div class="complete-card"><div class="check-big">✓</div><div><b>Manager notified</b><div class="task-meta">Completion, doc link, and Lark task state sent to Vira.</div></div></div>
+    </div>
+
+    <div class="chat" id="chat">
+      <div class="thread" id="thread">
+        <div class="message user manager-only">
+          <div class="bubble">Create a task for Rahul: prepare the Q3 enterprise rollout brief by tomorrow EOD. Attach this conversation as reference and keep me updated when he starts or finishes.</div>
+        </div>
+        <div class="message manager-only">
+          <div class="avatar">DX</div>
+          <div class="bubble">
+            I can create this as a Lark task, assign Rahul, attach you as follower, and open a tracking doc when he starts.
+            <div class="mini-card">
+              <div class="mini-title">Delegated task draft</div>
+              <div class="mini-meta">Assignee Rahul Sharma - Due tomorrow EOD - Delegator Vira - Source: this chat</div>
+              <div class="mini-row">
+                <span class="link">Lark task will be created on confirm</span>
+                <button class="small-btn" id="confirmInline">Confirm</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="message manager-only" id="managerCreatedMsg" style="display:none">
+          <div class="avatar">DX</div>
+          <div class="bubble">
+            Task delegated to Rahul. I will notify you when he starts, keep the tracking doc attached, and send completion status without you chasing.
+            <div class="mini-card">
+              <div class="mini-title">Prepare Q3 enterprise rollout brief</div>
+              <div class="mini-meta">Lark task: LTK-4831 - Tracking doc opens when Rahul starts</div>
+            </div>
+          </div>
+        </div>
+        <div class="message manager-only" id="managerStartedMsg" style="display:none">
+          <div class="avatar">DX</div>
+          <div class="bubble">
+            Rahul has started the delegated task.
+            <div class="mini-card">
+              <div class="mini-title">Prepare Q3 enterprise rollout brief</div>
+              <div class="mini-meta">Status: In progress - Active in Rahul's Dex - <span class="link">Tracking doc</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="message manager-only" id="managerDoneMsg" style="display:none">
+          <div class="avatar">DX</div>
+          <div class="bubble">
+            Rahul marked the task done. The tracking doc is attached for review, with the final summary and subtask checklist.
+            <div class="mini-card">
+              <div class="mini-title">Completed - Prepare Q3 enterprise rollout brief</div>
+              <div class="mini-meta">Lark task complete - <span class="link">Open tracking doc</span> - Done at 5:42 PM</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="brief ag-only">
+          <div class="brief-head">
+            <b>Your day</b><span>- Wed, Jun 17</span>
+            <div class="sync">Synced from Lark</div>
+          </div>
+          <div class="stats">
+            <div class="stat green"><b id="delegatedCount">1</b><span>Delegated to me</span></div>
+            <div class="stat red"><b>2</b><span>Overdue</span></div>
+            <div class="stat amber"><b>3</b><span>Due today</span></div>
+            <div class="stat blue"><b>4</b><span>Meetings</span></div>
+          </div>
+          <div class="brief-note">Tap a task or meeting to add it as context for the chat.</div>
+          <div class="brief-grid">
+            <div class="brief-col">
+              <div class="table-head">
+                <b>Tasks</b><span class="tag">7</span>
+                <div class="seg"><span class="on">List</span><span>Kanban</span></div>
+              </div>
+              <div class="col-label"><span>Task title</span><span>Due</span></div>
+              <div class="group-h"><span class="dot green"></span> Delegated to me - 1</div>
+              <div class="task-row" id="delegatedTask">
+                <span class="circle" id="taskCircle"></span>
+                <div>
+                  <div class="task-title">Prepare Q3 enterprise rollout brief</div>
+                  <div class="task-meta"><span class="tag">From Vira</span><span class="tag">Lark Task</span><span id="taskState">Not started</span></div>
+                </div>
+                <div class="due">Tomorrow EOD</div>
+              </div>
+              <div class="group-h"><span class="dot red"></span> Overdue - 2</div>
+              <div class="task-row"><span class="circle"></span><div><div class="task-title">Send Q2 finance report to Aaron</div><div class="task-meta"><span class="late">2 days late</span><span class="tag">Finance</span></div></div><div class="due">Late</div></div>
+              <div class="task-row"><span class="circle"></span><div><div class="task-title">Review vendor contract - Zoho renewal</div><div class="task-meta"><span class="late">Yesterday</span><span class="tag">Ops</span></div></div><div class="due">Late</div></div>
+              <div class="group-h"><span class="dot amber"></span> Due today - 3</div>
+              <div class="task-row"><span class="circle"></span><div><div class="task-title">Finalize Divo memory design doc</div><div class="task-meta"><span class="tag">Divo</span></div></div><div class="due">5:00 PM</div></div>
+              <div class="task-row"><span class="circle"></span><div><div class="task-title">Reply to Aaron re: gateway rollout</div><div class="task-meta"><span class="tag">Divo</span></div></div><div class="due">EOD</div></div>
+            </div>
+            <div class="brief-col">
+              <div class="table-head">
+                <b>Meetings</b><span class="tag">4</span>
+                <div class="seg"><span class="on">List</span><span>Day</span></div>
+              </div>
+              <div class="col-label"><span>Meeting</span><span>Time</span></div>
+              <div class="meeting"><div class="time">10:30</div><div><div class="meeting-title">Eng standup</div><div class="meeting-meta">15m - Lark Meet</div></div></div>
+              <div class="meeting"><div class="time">14:00</div><div><div class="meeting-title">Design review</div><div class="meeting-meta">45m - 4 guests</div></div></div>
+              <div class="meeting"><div class="time">16:30</div><div><div class="meeting-title">1:1 with Aaron</div><div class="meeting-meta">30m</div></div><div class="soon">soon</div></div>
+              <div class="meeting"><div class="time">18:00</div><div><div class="meeting-title">Client demo - Acme</div><div class="meeting-meta">45m - 6 guests</div></div></div>
+            </div>
+          </div>
+          <div class="brief-foot">
+            <button class="primary" id="startFromBrief">Start selected task</button>
+            <button class="ghost" id="addReference">Add to reference</button>
+            <span class="task-meta">opens in the composer</span>
+          </div>
+        </div>
+
+        <div class="message user ag-only">
+          <div class="bubble">I am starting Vira's rollout brief. Use the delegated task, tracking doc, and source conversation as context.</div>
+        </div>
+        <div class="message ag-only" id="agWorkingMsg" style="display:none">
+          <div class="avatar">DX</div>
+          <div class="bubble">
+            Started. I created a tracking doc, attached it to the Lark task, and told Vira you are working on it.
+            <div class="mini-card">
+              <div class="mini-title">Active task context</div>
+              <div class="mini-meta">Task, source chat, subtasks, and doc link will remain in your prompt context until done.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="context-chips" id="chips"></div>
+      <textarea id="composerText" placeholder="Plan, Build, / for skills, @ for context"></textarea>
+      <div class="composer-foot">
+        <button class="round">+</button>
+        <button class="round">@</button>
+        <span class="model">Deepseek V4 Flash</span>
+        <button class="mic">mic</button>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="modalBackdrop">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Create delegated task">
+        <button class="close" id="closeModal">x</button>
+        <input class="task-input" value="Prepare Q3 enterprise rollout brief" aria-label="Task title" />
+        <div class="form-row">
+          <div class="form-icon">person</div>
+          <div class="assignee">
+            <div class="mini-avatar">RS</div>
+            <div>Rahul Sharma</div>
+            <div class="divider"></div>
+            <button class="select-pill">Divo Delegations</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-icon">date</div>
+          <div class="assignee">
+            <button class="date-chip">Today</button>
+            <button class="date-chip active">Tomorrow</button>
+            <button class="date-chip">Other</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-icon">list</div>
+          <div class="form-placeholder">Add to Task List: Divo Delegations</div>
+        </div>
+        <div class="form-row">
+          <div class="form-icon">text</div>
+          <div class="form-placeholder">Description includes source chat, expected output, and tracking policy.</div>
+        </div>
+        <div class="form-row">
+          <div class="form-icon">bell</div>
+          <div class="form-placeholder">Subscribers: Vira, Divo follow-up agent</div>
+        </div>
+        <div class="modal-foot">
+          <button class="icon-btn">link</button>
+          <button class="icon-btn">clip</button>
+          <div class="divider"></div>
+          <div class="form-placeholder">Attach current chat as reference</div>
+          <div class="spacer"></div>
+          <button class="cancel" id="cancelModal">Cancel</button>
+          <button class="create" id="createTask">Create</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const body = document.body;
+const managerRole = document.getElementById('managerRole');
+const agRole = document.getElementById('agRole');
+const modal = document.getElementById('modalBackdrop');
+const openCreate = document.getElementById('openCreate');
+const confirmInline = document.getElementById('confirmInline');
+const createTask = document.getElementById('createTask');
+const closeModal = document.getElementById('closeModal');
+const cancelModal = document.getElementById('cancelModal');
+const notifStack = document.getElementById('notifStack');
+const chat = document.getElementById('chat');
+const chips = document.getElementById('chips');
+const composerText = document.getElementById('composerText');
+const delegatedTask = document.getElementById('delegatedTask');
+const startFromBrief = document.getElementById('startFromBrief');
+const addReference = document.getElementById('addReference');
+const activeBanner = document.getElementById('activeBanner');
+const bannerToggle = document.getElementById('bannerToggle');
+const bannerSubtitle = document.getElementById('bannerSubtitle');
+const bannerCount = document.getElementById('bannerCount');
+const bannerEmpty = document.getElementById('bannerEmpty');
+const bannerTask = document.getElementById('bannerTask');
+const bannerCircle = document.getElementById('bannerCircle');
+const doneFromBanner = document.getElementById('doneFromBanner');
+const managerCreatedMsg = document.getElementById('managerCreatedMsg');
+const managerStartedMsg = document.getElementById('managerStartedMsg');
+const managerDoneMsg = document.getElementById('managerDoneMsg');
+const agWorkingMsg = document.getElementById('agWorkingMsg');
+const taskState = document.getElementById('taskState');
+const taskCircle = document.getElementById('taskCircle');
+const completionOverlay = document.getElementById('completionOverlay');
+const focusAssigned = document.getElementById('focusAssigned');
+
+let created = false;
+let referenced = false;
+let started = false;
+let completed = false;
+
+function setRole(role){
+  body.classList.toggle('is-manager', role === 'manager');
+  body.classList.toggle('is-ag', role === 'ag');
+  managerRole.classList.toggle('active', role === 'manager');
+  agRole.classList.toggle('active', role === 'ag');
+  setTimeout(() => chat.scrollTo({top:0, behavior:'smooth'}), 20);
+}
+managerRole.addEventListener('click', () => setRole('manager'));
+agRole.addEventListener('click', () => setRole('ag'));
+
+function showModal(){ modal.classList.add('show'); }
+function hideModal(){ modal.classList.remove('show'); }
+openCreate.addEventListener('click', showModal);
+confirmInline.addEventListener('click', showModal);
+closeModal.addEventListener('click', hideModal);
+cancelModal.addEventListener('click', hideModal);
+
+function notify(title, text){
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = '<b>' + title + '</b><p>' + text + '</p>';
+  notifStack.prepend(el);
+  setTimeout(() => el.remove(), 5200);
+}
+
+function reveal(el){
+  if (!el) return;
+  el.style.display = 'flex';
+  setTimeout(() => el.scrollIntoView({behavior:'smooth', block:'center'}), 40);
+}
+
+function createDelegation(){
+  created = true;
+  hideModal();
+  managerCreatedMsg.style.display = 'flex';
+  notify('Task created in Lark', 'Assigned to Rahul. Vira is follower. Divo will watch start and done events.');
+  setTimeout(() => setRole('ag'), 900);
+}
+createTask.addEventListener('click', createDelegation);
+
+function addChip(label){
+  if ([...chips.children].some((c) => c.textContent === label)) return;
+  const chip = document.createElement('span');
+  chip.className = 'chip';
+  chip.textContent = label;
+  chips.appendChild(chip);
+}
+
+function referenceTask(){
+  referenced = true;
+  delegatedTask.classList.add('selected');
+  addChip('Task: Q3 rollout brief');
+  addChip('Source: Vira chat');
+  composerText.value = 'Start working on Vira\'s delegated task. Keep the task, tracking doc, and expected output in context.';
+  notify('Added to context', 'The delegated task and source reference are now attached to the composer.');
+}
+delegatedTask.addEventListener('click', referenceTask);
+addReference.addEventListener('click', referenceTask);
+
+function startWork(){
+  if (!referenced) referenceTask();
+  started = true;
+  completed = false;
+  taskState.textContent = 'In progress';
+  bannerSubtitle.textContent = 'Prepare Q3 enterprise rollout brief';
+  bannerCount.textContent = '1';
+  bannerEmpty.hidden = true;
+  bannerTask.hidden = false;
+  activeBanner.classList.add('open');
+  reveal(agWorkingMsg);
+  managerStartedMsg.style.display = 'flex';
+  addChip('Tracking doc: live');
+  notify('Vira notified', 'Rahul has started. Tracking doc created and attached to the Lark task.');
+}
+startFromBrief.addEventListener('click', startWork);
+bannerToggle.addEventListener('click', () => activeBanner.classList.toggle('open'));
+
+function markDone(){
+  if (!started) startWork();
+  completed = true;
+  taskState.textContent = 'Done';
+  delegatedTask.classList.add('done');
+  taskCircle.textContent = '✓';
+  bannerCircle.textContent = '✓';
+  bannerSubtitle.textContent = 'Completed - manager notified';
+  bannerCount.textContent = '1';
+  managerDoneMsg.style.display = 'flex';
+  notify('Done sent to Vira', 'Divo sent completion, final summary, task link, and tracking doc link.');
+  completionOverlay.classList.remove('show');
+  void completionOverlay.offsetWidth;
+  completionOverlay.classList.add('show');
+}
+doneFromBanner.addEventListener('click', markDone);
+
+document.getElementById('openDoc').addEventListener('click', () => {
+  addChip('Doc: rollout brief notes');
+  notify('Tracking doc opened', 'Mock doc attached to the Lark task and shared with Vira.');
+});
+document.getElementById('askHelp').addEventListener('click', () => {
+  composerText.value = 'Help me finish the rollout brief. Use the active delegated task and tracking doc.';
+  notify('Prompt prepared', 'Active task context remains pinned for Divo.');
+});
+focusAssigned.addEventListener('click', () => delegatedTask.scrollIntoView({behavior:'smooth', block:'center'}));
+
+setTimeout(() => notify('Preview ready', 'Switch Manager and Assignee to watch the delegation loop.'), 500);
+</script>
+</body>
+</html>

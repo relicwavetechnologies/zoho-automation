@@ -85,6 +85,24 @@ class TestRegister:
 
 
 class TestLoginFlow:
+    def test_default_scopes_include_calendar_for_today_panel(self):
+        provider = lark_plugin.LarkDashboardAuthProvider(
+            app_id="cli_app_1",
+            app_secret="secret_1",
+        )
+        login = provider.start_login(
+            redirect_uri="https://hermes.example.com/auth/callback"
+        )
+        parsed = urllib.parse.urlparse(login.redirect_url)
+        scope = urllib.parse.parse_qs(parsed.query)["scope"][0]
+        assert "calendar:calendar:read" in scope
+        assert "calendar:calendar.event:read" in scope
+        assert "calendar:calendar.event:create" in scope
+        assert "calendar:calendar.event:update" in scope
+        assert "calendar:calendar.event:delete" in scope
+        assert "calendar:calendar.free_busy:read" in scope
+        assert "docs:permission.setting:write_only" in scope
+
     def test_start_login_builds_lark_authorize_url(self):
         provider = lark_plugin.LarkDashboardAuthProvider(
             app_id="cli_app_1",
@@ -216,6 +234,66 @@ class TestLoginFlow:
         assert session.user_id == "ou_123"
         assert session.email == "alice@example.com"
         assert session.display_name == "Alice Example"
+        assert provider.verify_session(access_token=session.access_token) is not None
+
+    def test_refresh_session_recovers_when_tools_rotated_lark_refresh_token(self):
+        provider = lark_plugin.LarkDashboardAuthProvider(
+            app_id="cli_app_1",
+            app_secret="secret_1",
+        )
+        refresh_cookie = lark_plugin._sign(
+            {
+                "provider": "lark",
+                "sub": "ou_123",
+                "email": "alice@example.com",
+                "name": "Alice Example",
+                "org_id": "tenant_1",
+                "exp": int(time.time()) + 3600,
+                "rt": "raw_refresh_stale",
+            },
+            provider._session_secret,
+        )
+        stale_response = _mock_response(
+            200,
+            {"code": 99991663, "msg": "refresh token expired"},
+        )
+        rotated_response = _mock_response(
+            200,
+            {
+                "code": 0,
+                "access_token": "u_access_2",
+                "expires_in": 7200,
+                "refresh_token": "u_refresh_2",
+                "refresh_token_expires_in": 604800,
+            },
+        )
+
+        with patch.object(
+            lark_plugin.httpx,
+            "post",
+            side_effect=[stale_response, rotated_response],
+        ) as post:
+            with patch.object(
+                lark_plugin,
+                "_find_synced_refresh_token",
+                return_value="raw_refresh_current_from_tools",
+            ):
+                with patch.object(
+                    lark_plugin.httpx,
+                    "get",
+                    side_effect=ProviderError("userinfo unavailable"),
+                ):
+                    session = provider.refresh_session(refresh_token=refresh_cookie)
+
+        sent_refresh_tokens = [
+            call.kwargs["json"]["refresh_token"]
+            for call in post.call_args_list
+        ]
+        assert sent_refresh_tokens == [
+            "raw_refresh_stale",
+            "raw_refresh_current_from_tools",
+        ]
+        assert session.user_id == "ou_123"
         assert provider.verify_session(access_token=session.access_token) is not None
 
     def test_refresh_session_rejects_invalid_cookie(self):

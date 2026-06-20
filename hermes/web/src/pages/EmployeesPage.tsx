@@ -160,12 +160,14 @@ function EmployeeActionsMenu({
   member,
   onSetRole,
   onSetStatus,
+  onSetDepartment,
   onViewDetails,
 }: {
   busy: boolean;
   member: EmployeeRow;
   onSetRole: (member: EmployeeRow, role: string) => void;
   onSetStatus: (member: EmployeeRow, status: string) => void;
+  onSetDepartment: (member: EmployeeRow) => void;
   onViewDetails: (member: EmployeeRow) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -222,6 +224,19 @@ function EmployeeActionsMenu({
           >
             <Eye className="h-3.5 w-3.5" />
             View details
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={itemClass}
+            disabled={busy}
+            onClick={() => {
+              onSetDepartment(member);
+              setOpen(false);
+            }}
+          >
+            <Building2 className="h-3.5 w-3.5" />
+            Set department
           </button>
           <button
             type="button"
@@ -362,6 +377,8 @@ export default function EmployeesPage() {
   const [departmentFilter, setDepartmentFilter] = useState("all");
   const [sort, setSort] = useState<EmployeeDirectorySort>("last_seen_desc");
   const [detailMember, setDetailMember] = useState<EmployeeRow | null>(null);
+  const [departmentMember, setDepartmentMember] = useState<EmployeeRow | null>(null);
+  const [departmentDraft, setDepartmentDraft] = useState("");
   const [updatingMemberId, setUpdatingMemberId] = useState<string | null>(null);
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd, setTitle } = usePageHeader();
@@ -393,7 +410,7 @@ export default function EmployeesPage() {
   const applyMemberUpdate = useCallback(
     async (
       member: EmployeeRow,
-      updates: { role?: string; status?: string },
+      updates: { role?: string; status?: string; department_id?: string },
     ) => {
       setUpdatingMemberId(member.id);
       try {
@@ -406,16 +423,39 @@ export default function EmployeesPage() {
         setDetailMember((current) =>
           current?.id === updated.id ? updated : current,
         );
+        setDepartmentMember((current) =>
+          current?.id === updated.id ? updated : current,
+        );
         showToast("Employee updated", "success");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         showToast(`Failed to update employee: ${message}`, "error");
+        return false;
       } finally {
         setUpdatingMemberId(null);
       }
+      return true;
     },
     [showToast],
   );
+
+  const openDepartmentDialog = useCallback((member: EmployeeRow) => {
+    setDepartmentMember(member);
+    setDepartmentDraft(member.department_id || "");
+  }, []);
+
+  const saveDepartment = useCallback(async () => {
+    if (!departmentMember) {
+      return;
+    }
+    const saved = await applyMemberUpdate(departmentMember, {
+      department_id: departmentDraft.trim(),
+    });
+    if (saved) {
+      setDepartmentMember(null);
+      setDepartmentDraft("");
+    }
+  }, [applyMemberUpdate, departmentDraft, departmentMember]);
 
   useEffect(() => {
     let cancelled = false;
@@ -525,6 +565,63 @@ export default function EmployeesPage() {
           }
         }}
       />
+      <Dialog
+        open={departmentMember !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDepartmentMember(null);
+            setDepartmentDraft("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Set department</DialogTitle>
+            <DialogDescription>
+              Assign {departmentMember ? employeeDisplayName(departmentMember) : "this employee"} to a department used by policy bindings.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <Label htmlFor="employee-department-id">Department ID</Label>
+            <Input
+              id="employee-department-id"
+              value={departmentDraft}
+              onChange={(event) => setDepartmentDraft(event.target.value)}
+              placeholder="dept_finance"
+            />
+            <div className="rounded border border-border/60 bg-background-base/30 px-3 py-2 text-xs text-muted-foreground">
+              Use stable lowercase IDs like <span className="font-mono">dept_finance</span>. Empty saves as unassigned.
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                ghost
+                size="sm"
+                onClick={() => {
+                  setDepartmentMember(null);
+                  setDepartmentDraft("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="uppercase"
+                disabled={!departmentMember || updatingMemberId === departmentMember.id}
+                onClick={() => void saveDepartment()}
+                prefix={
+                  departmentMember && updatingMemberId === departmentMember.id ? (
+                    <Spinner />
+                  ) : (
+                    <Building2 className="h-4 w-4" />
+                  )
+                }
+              >
+                Save
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {usingFixture ? (
         <Card className="border-warning/40">
@@ -812,6 +909,7 @@ export default function EmployeesPage() {
                                 onSetStatus={(target, status) => {
                                   void applyMemberUpdate(target, { status });
                                 }}
+                                onSetDepartment={openDepartmentDialog}
                                 onViewDetails={setDetailMember}
                               />
                         </td>

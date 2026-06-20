@@ -140,6 +140,122 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "of truth when the two differ."
 )
 
+DEFAULT_LANGUAGE_GUIDANCE = (
+    "Default language: respond in English unless the user explicitly asks for another language. "
+    "Do not answer in Chinese unless the user explicitly requests Chinese."
+)
+
+DIVO_FIRST_CLASS_CONNECTOR_GUIDANCE = (
+    "Divo first-class workspace connectors: Lark and Google Workspace requests must use native Divo connector tools when available. "
+    "For Google Workspace requests such as Gmail/email, Calendar/Meet, Drive, Docs, Sheets, or Slides, do not route to terminal-backed skills or CLIs "
+    "such as himalaya, gws, or google_api.py as a workaround. If the matching native Google tool is not active, say the Google Workspace connector "
+    "or required OAuth scope is missing and ask the user to connect or reconnect Google Workspace from Plugins."
+)
+
+
+def build_active_capability_boundary_prompt(
+    *,
+    available_tools: "set[str] | None" = None,
+    available_toolsets: "set[str] | None" = None,
+) -> str:
+    """Build a compact, session-local capability boundary for self-description.
+
+    The docs describe what Hermes can support in general. This block describes
+    what this agent instance can actually do right now, based on the tools that
+    were loaded into its schema.
+    """
+    tools = sorted(str(name) for name in (available_tools or set()) if str(name).strip())
+    toolsets = sorted(str(name) for name in (available_toolsets or set()) if str(name).strip())
+    if not tools and not toolsets:
+        return ""
+
+    grouped: dict[str, list[str]] = {}
+    try:
+        for tool_name in tools:
+            from tools.registry import registry
+
+            entry = registry.get_entry(tool_name)
+            toolset = str(getattr(entry, "toolset", "") or "").strip()
+            grouped.setdefault(toolset or "unknown", []).append(tool_name)
+    except Exception:
+        grouped = {}
+
+    if not grouped:
+        for tool_name in tools:
+            grouped.setdefault("available", []).append(tool_name)
+
+    lines = [
+        "Current capability boundary:",
+        "The active tool schema is the source of truth for what you can do in this session.",
+        "When the user asks what you can do, what tools you have, or whether you can perform an integration-specific action, answer from the active tool inventory below.",
+        "Do not inspect the codebase, session history, or old transcripts to decide whether an active tool exists; those can be stale. Use only the current active tool schema and toolsets listed in this block.",
+        "Do not claim access to products, APIs, platforms, or actions that are not represented by an active tool name or toolset. If something is not listed, say it is not currently available and may need a toolset, connector, credential, plugin, or code implementation.",
+        "Do not present the skill catalog as executable capability. skills_list and skill_view mean you can inspect procedural instructions; they do not prove the backing app, API, device, credential, MCP server, or connector is available. In capability summaries, do not include a broad 'skills I can load on demand' list.",
+        "If the user asks about a skill-backed integration, say you can look for/load guidance for it, then verify required active tools and credentials before claiming you can perform the action.",
+        "For broad tools such as send_message, describe the tool's check/list action first; do not name specific messaging platforms as available until the tool confirms configured targets.",
+        "Capability answer format: list active tool names or tool families only. Do not include 'etc.' examples, guessed platform names, or integrations copied from tool descriptions. Omit a Skills/System section unless the user specifically asks about skill management; if the user asks not to list skills as capabilities, omit skill tools entirely.",
+    ]
+    if toolsets:
+        lines.append("Active toolsets: " + ", ".join(toolsets))
+    lines.append("Active tools by toolset:")
+    for toolset in sorted(grouped):
+        names = sorted(grouped[toolset])
+        lines.append(f"- {toolset}: {', '.join(names)}")
+
+    google_native = {
+        name
+        for name in tools
+        if name in {
+            "gmail",
+            "google_calendar",
+            "google_drive",
+            "google_docs",
+            "google_sheets",
+            "google_slides",
+        }
+    }
+    if google_native:
+        lines.append(
+            "Google Workspace routing: Google Workspace is a first-class native connector in this session. "
+            "For Gmail/email/inbox/drafts/replies use gmail; for meetings, events, availability, and Google Meet use google_calendar; "
+            "for files, folders, search, upload, download, and sharing use google_drive; for writeups and documents use google_docs; "
+            "for spreadsheets/tables use google_sheets; for decks/presentations use google_slides. "
+            f"Active native Google tools: {', '.join(sorted(google_native))}. "
+            "Use these native tools immediately for Google Workspace requests. "
+            "Do not load or use terminal mail CLIs, himalaya, gws, google_api.py, or google-workspace skill scripts for execution when these tools are active. "
+            "If a needed Google tool is not active, report that the Google Workspace connector or required scope must be connected in Plugins; "
+            "do not web-search or terminal-probe for an alternate Google client."
+        )
+    lark_native = {
+        name
+        for name in tools
+        if name in {
+            "lark_messaging",
+            "lark_doc",
+            "lark_base",
+            "lark_calendar",
+            "lark_contacts",
+            "lark_task",
+            "lark_approval",
+        }
+    }
+    if lark_native:
+        lines.append(
+            "Lark/Feishu routing: use the native Lark tools for workspace actions. "
+            "Unless the user explicitly asks for another language, respond in English only; do not answer in Chinese. "
+            "Resolve people with lark_contacts search/get when a prompt gives a name, email, or partial name; "
+            "do not guess between ambiguous people. Treat 'me' as the current requester when session identity is available. "
+            "Docs/pages/notes/writeups use lark_doc; for polished new documents prefer "
+            "create_markdown with markdown content, and use append_markdown for structured additions; "
+            "when creating or reading docs, return the docToken and url/docUrl from the tool result. "
+            "Meetings/calendar/free-busy use lark_calendar; tasks/todos/reminders/action items use "
+            "lark_task; messages/DMs/group posts use lark_messaging; Base records use lark_base; "
+            "approvals use lark_approval. For detailed workflow guidance you may load the "
+            "lark-ops skill or the matching lark-* family skill, but execute through native Lark tools; do not use terminal "
+            "scripts or skill-backed CLIs for these actions when native Lark tools are active."
+        )
+    return "\n".join(lines)
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "

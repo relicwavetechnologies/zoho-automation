@@ -47,3 +47,21 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
 })
+
+
+def is_integration_plugin_oauth_callback(path: str) -> bool:
+    """True for member Google OAuth callbacks opened in the system browser.
+
+    These requests arrive without dashboard session cookies; trust is
+    carried in the signed ``state`` parameter instead.
+    """
+    clean = "/" + str(path or "").strip().lstrip("/")
+    return clean.startswith("/api/company/integration-plugins/") and clean.endswith("/oauth/callback")
+
+
+def is_public_api_path(path: str) -> bool:
+    """Shared public-path check for both dashboard auth middlewares."""
+    clean = "/" + str(path or "").strip().lstrip("/")
+    if clean in PUBLIC_API_PATHS:
+        return True
+    return is_integration_plugin_oauth_callback(clean)

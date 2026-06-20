@@ -9,9 +9,10 @@ from Postgres. Read-only: tokens refresh in-memory, never written back.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from enterprise.google_token import GoogleClient, GoogleTokenProvider
+from tools.connector_policy import connector_identity_from_kwargs, require_connector_access
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,10 @@ def _get_repository():
 
 
 def resolve_google_client(
-    company_id: Optional[str], user_id: Optional[str] = None
+    company_id: Optional[str],
+    user_id: Optional[str] = None,
+    *,
+    policy_identity: Mapping[str, Any] | None = None,
 ) -> Optional[GoogleClient]:
     """Build (or reuse) a GoogleClient for the company (preferring the user link).
 
@@ -63,6 +67,11 @@ def resolve_google_client(
     company_id = str(company_id or "").strip()
     if not company_id or not enterprise_enabled():
         return None
+    require_connector_access(
+        provider="google",
+        company_id=company_id,
+        identity=policy_identity,
+    )
 
     cache_key = f"{company_id}:{user_id or ''}"
     cached = _clients.get(cache_key)
@@ -99,7 +108,11 @@ def resolve_tool_client(kwargs: dict) -> GoogleClient:
     if explicit is not None:
         return explicit
     company_id = kwargs.get("company_id")
-    client = resolve_google_client(company_id, kwargs.get("company_user_id"))
+    client = resolve_google_client(
+        company_id,
+        kwargs.get("company_user_id"),
+        policy_identity=connector_identity_from_kwargs(kwargs),
+    )
     if client is not None:
         return client
     if enterprise_enabled() and str(company_id or "").strip():
@@ -114,6 +127,40 @@ def resolve_tool_client(kwargs: dict) -> GoogleClient:
     raise GoogleAuthError("Google is not connected (enterprise mode required).")
 
 
+def get_google_connection(
+    company_id: str | None,
+    company_user_id: str | None = None,
+) -> "GoogleConnectionContext | None":
+    """Return decrypted Google connection metadata for schema gating."""
+    from tools.google_scope import GoogleConnectionContext, parse_granted_scopes
+
+    company_id = str(company_id or "").strip()
+    company_user_id = str(company_user_id or "").strip()
+    if not company_id or not enterprise_enabled():
+        return None
+
+    repo = _get_repository()
+    if repo is None:
+        return None
+
+    creds = repo.get_google_credentials(company_id, company_user_id or None)
+    if creds is None:
+        return None
+
+    refresh = str(getattr(creds, "refresh_token", "") or "").strip()
+    if not refresh:
+        return None
+
+    granted = parse_granted_scopes(getattr(creds, "scope", None))
+    return GoogleConnectionContext(
+        company_id=company_id,
+        company_user_id=company_user_id,
+        credentials=creds,
+        granted_scopes=frozenset(granted),
+        account_email=str(getattr(creds, "google_email", "") or "").strip() or None,
+    )
+
+
 def reset_cache() -> None:
     global _connection, _repository
     _clients.clear()
@@ -124,3 +171,15 @@ def reset_cache() -> None:
             pass
     _connection = None
     _repository = None
+    try:
+        from tools.registry import invalidate_check_fn_cache
+
+        invalidate_check_fn_cache()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from model_tools import invalidate_tool_defs_cache
+
+        invalidate_tool_defs_cache()
+    except Exception:  # noqa: BLE001
+        pass

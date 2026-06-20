@@ -47,8 +47,10 @@ type ProviderCopy = {
 
 const PROVIDERS: CompanyConnectorProvider[] = ["zoho", "google", "lark"];
 const DEFAULT_LARK_API_BASE_URL = "https://open.larksuite.com";
-const DEFAULT_ZOHO_ACCOUNTS_BASE_URL = "https://accounts.zoho.com";
-const DEFAULT_ZOHO_API_BASE_URL = "https://www.zohoapis.com";
+const DEFAULT_ZOHO_ACCOUNTS_BASE_URL =
+  import.meta.env.VITE_ZOHO_ACCOUNTS_BASE_URL || "https://accounts.zoho.com";
+const DEFAULT_ZOHO_API_BASE_URL =
+  import.meta.env.VITE_ZOHO_API_BASE_URL || "https://www.zohoapis.com";
 const DEFAULT_ZOHO_SCOPES = "ZohoBooks.fullaccess.all";
 
 type ConnectorSetupDraft = {
@@ -91,9 +93,9 @@ function blankConnector(provider: CompanyConnectorProvider): CompanyConnectorSum
 
 function initialSetupDraft(provider: CompanyConnectorProvider): ConnectorSetupDraft {
   return {
-    accounts_base_url: DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
+    accounts_base_url: "",
     api_base_url:
-      provider === "lark" ? DEFAULT_LARK_API_BASE_URL : DEFAULT_ZOHO_API_BASE_URL,
+      provider === "lark" ? DEFAULT_LARK_API_BASE_URL : "",
     app_id: "",
     app_secret: "",
     client_id: "",
@@ -645,10 +647,9 @@ export default function ConnectorsPage() {
               refresh_token: setupDraft.refresh_token.trim(),
               organization_id: setupDraft.organization_id.trim(),
               accounts_base_url:
-                setupDraft.accounts_base_url.trim() ||
-                DEFAULT_ZOHO_ACCOUNTS_BASE_URL,
+                setupDraft.accounts_base_url.trim() || undefined,
               api_base_url:
-                setupDraft.api_base_url.trim() || DEFAULT_ZOHO_API_BASE_URL,
+                setupDraft.api_base_url.trim() || undefined,
               oauth_scopes:
                 setupDraft.oauth_scopes.trim() || DEFAULT_ZOHO_SCOPES,
               metadata: {
