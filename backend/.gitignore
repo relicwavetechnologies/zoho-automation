@@ -1,6 +1,0 @@
-.env
-node_modules
-dist
-src/generated
-.tsbuildinfo
-.tsbuildinfo.vercel
