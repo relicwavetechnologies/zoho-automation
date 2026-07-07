@@ -71,6 +71,14 @@ type GoogleStatusResponse = {
   message?: string
 }
 
+type DivoSessionStatus = {
+  configured: boolean
+  backendUrl?: string
+  email?: string
+  name?: string
+  expiresAt?: string
+}
+
 type LocalLarkStatus = {
   installed: boolean
   configured: boolean
@@ -107,6 +115,22 @@ type ConnectionState =
   | { status: 'loading'; connections: DivoConnection[]; error?: never }
   | { status: 'ready'; connections: DivoConnection[]; error?: never }
   | { status: 'error'; connections: DivoConnection[]; error: string }
+
+type DivoSessionState =
+  | { status: 'checking'; session?: never; message?: never }
+  | { status: 'connected'; session: DivoSessionStatus; message?: never }
+  | { status: 'disconnected'; session?: never; message?: string }
+
+function isDivoAuthError(error: unknown): boolean {
+  const message = String(error).toLowerCase()
+  return (
+    message.includes('no divo session') ||
+    message.includes('divo session expired') ||
+    message.includes('invalid or expired token') ||
+    message.includes('session expired') ||
+    message.includes('unauthorized')
+  )
+}
 
 function toConnectionModel(connection: GoogleStatusConnection): DivoConnection {
   const account = connection.accountEmail ?? connection.accountName ?? 'Google account'
@@ -189,7 +213,35 @@ function PluginDetailRoute() {
     status: 'loading',
     connections: [],
   })
+  const [divoSession, setDivoSession] = useState<DivoSessionState>({
+    status: 'checking',
+  })
   const plugin = getPlugin(pluginId)
+
+  const refreshDivoSession = useCallback(async (): Promise<DivoSessionState> => {
+    try {
+      const status = await invoke<DivoSessionStatus>('divo_get_session_status')
+      if (!status.configured) {
+        const next: DivoSessionState = {
+          status: 'disconnected',
+          message: 'Connect Divo before managing backend-owned plugins.',
+        }
+        setDivoSession(next)
+        return next
+      }
+
+      const next: DivoSessionState = { status: 'connected', session: status }
+      setDivoSession(next)
+      return next
+    } catch (error) {
+      const next: DivoSessionState = {
+        status: 'disconnected',
+        message: String(error),
+      }
+      setDivoSession(next)
+      return next
+    }
+  }, [])
 
   const loadConnections = useCallback(async () => {
     if (pluginId !== 'google-workspace') {
@@ -198,6 +250,12 @@ function PluginDetailRoute() {
     }
 
     setConnectionState((current) => ({ status: 'loading', connections: current.connections }))
+    const session = await refreshDivoSession()
+    if (session.status !== 'connected') {
+      setConnectionState({ status: 'ready', connections: [] })
+      return
+    }
+
     console.debug('[DivoPlugins] google_status.start')
     try {
       const response = await invoke<GoogleStatusResponse>('divo_google_status')
@@ -212,13 +270,19 @@ function PluginDetailRoute() {
       setConnectionState({ status: 'ready', connections })
     } catch (error) {
       console.error('[DivoPlugins] google_status.failed', error)
+      if (isDivoAuthError(error)) {
+        setDivoSession({
+          status: 'disconnected',
+          message: 'Divo session expired. Reconnect Divo to continue.',
+        })
+      }
       setConnectionState((current) => ({
         status: 'error',
         connections: current.connections,
         error: String(error),
       }))
     }
-  }, [pluginId])
+  }, [pluginId, refreshDivoSession])
 
   useEffect(() => {
     void loadConnections()
@@ -255,6 +319,8 @@ function PluginDetailRoute() {
   const personalCount = connections.filter((connection) => connection.kind === 'personal').length
   const sharedCount = connections.filter((connection) => connection.kind === 'company_shared').length
   const activeCount = connections.filter((connection) => connection.status === 'connected').length
+  const canManageGoogle = divoSession.status === 'connected'
+  const openDivoSettings = () => navigate({ to: route.settings.divo } as any)
 
   return (
     <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
@@ -274,9 +340,12 @@ function PluginDetailRoute() {
                 Manage access
                 <ChevronRight className="size-4" />
               </Button>
-              <Button size="sm" onClick={() => setAddOpen(true)}>
+              <Button
+                size="sm"
+                onClick={() => (canManageGoogle ? setAddOpen(true) : openDivoSettings())}
+              >
                 <Plus className="size-4" />
-                Add connection
+                {canManageGoogle ? 'Add connection' : 'Connect Divo'}
               </Button>
             </div>
           </div>
@@ -325,28 +394,52 @@ function PluginDetailRoute() {
                   <RotateCw className="size-4" />
                   Refresh
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => setAddOpen(true)}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => (canManageGoogle ? setAddOpen(true) : openDivoSettings())}
+                >
                   <Plus className="size-4" />
-                  Add
+                  {canManageGoogle ? 'Add' : 'Connect Divo'}
                 </Button>
               </div>
             </div>
 
             <div className="grid gap-3">
-              {connectionState.status === 'loading' && connections.length === 0 ? (
+              {divoSession.status === 'checking' ? (
+                <ConnectionListState
+                  title="Checking Divo session"
+                  description="Verifying desktop access before loading backend-owned connections."
+                />
+              ) : null}
+              {divoSession.status === 'disconnected' ? (
+                <ConnectionListState
+                  title="Connect Divo to manage Google Workspace"
+                  description={
+                    divoSession.message ??
+                    'Google connections are owned by the Divo backend, so desktop must be signed in first.'
+                  }
+                  action={
+                    <Button size="sm" onClick={openDivoSettings}>
+                      Open Divo Settings
+                    </Button>
+                  }
+                />
+              ) : null}
+              {divoSession.status === 'connected' && connectionState.status === 'loading' && connections.length === 0 ? (
                 <ConnectionListState
                   title="Loading Google connections"
                   description="Checking the Divo backend for accounts available to this desktop session."
                 />
               ) : null}
-              {connectionState.status === 'error' ? (
+              {divoSession.status === 'connected' && connectionState.status === 'error' ? (
                 <ConnectionListState
                   title="Could not load Google connections"
                   description={connectionState.error}
                   action={<Button size="sm" onClick={() => void loadConnections()}>Retry</Button>}
                 />
               ) : null}
-              {connectionState.status === 'ready' && connections.length === 0 ? (
+              {divoSession.status === 'connected' && connectionState.status === 'ready' && connections.length === 0 ? (
                 <ConnectionListState
                   title="No Google connections yet"
                   description="Connect a Google account to make it available to Pi through the Divo backend."
@@ -389,7 +482,9 @@ function PluginDetailRoute() {
 
       <AddConnectionDialog
         open={addOpen}
+        divoSession={divoSession}
         onConnected={() => void loadConnections()}
+        onReconnect={openDivoSettings}
         onOpenChange={setAddOpen}
       />
     </div>
@@ -855,16 +950,28 @@ function PiContextCard({ connections }: { connections: DivoConnection[] }) {
 
 function AddConnectionDialog({
   open,
+  divoSession,
   onConnected,
+  onReconnect,
   onOpenChange,
 }: {
   open: boolean
+  divoSession: DivoSessionState
   onConnected: () => void | Promise<void>
+  onReconnect: () => void
   onOpenChange: (open: boolean) => void
 }) {
   const [isStartingOAuth, setIsStartingOAuth] = useState(false)
 
   const handleContinueWithGoogle = async () => {
+    if (divoSession.status !== 'connected') {
+      toast.error('Connect Divo first', {
+        description: 'Google connections are stored and authorized through the Divo backend.',
+      })
+      onReconnect()
+      return
+    }
+
     setIsStartingOAuth(true)
     console.debug('[DivoPlugins] google_oauth.start')
     try {
@@ -879,6 +986,14 @@ function AddConnectionDialog({
       setTimeout(() => void onConnected(), 1500)
     } catch (error) {
       console.error('[DivoPlugins] google_oauth.failed', error)
+      if (isDivoAuthError(error)) {
+        toast.error('Reconnect Divo to continue', {
+          description: 'Your desktop session expired before Google OAuth could start.',
+        })
+        onOpenChange(false)
+        onReconnect()
+        return
+      }
       toast.error('Google connection failed', {
         description: String(error),
       })
@@ -899,6 +1014,17 @@ function AddConnectionDialog({
         </DialogHeader>
 
         <div className="grid gap-3 py-2">
+          {divoSession.status !== 'connected' ? (
+            <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-3">
+              <div className="flex gap-2">
+                <Lock className="mt-0.5 size-4 shrink-0 text-amber-300" />
+                <p className="text-xs leading-5 text-amber-100">
+                  Connect Divo before starting Google OAuth. The backend needs
+                  your Divo company session to save and authorize this connection.
+                </p>
+              </div>
+            </div>
+          ) : null}
           <ConnectionOption
             icon={User}
             title="Personal account"
@@ -926,7 +1052,11 @@ function AddConnectionDialog({
           </Button>
           <Button onClick={() => void handleContinueWithGoogle()} disabled={isStartingOAuth}>
             <KeyRound className="size-4" />
-            {isStartingOAuth ? 'Opening Google...' : 'Continue with Google'}
+            {divoSession.status !== 'connected'
+              ? 'Connect Divo first'
+              : isStartingOAuth
+                ? 'Opening Google...'
+                : 'Continue with Google'}
             <ExternalLink className="size-4" />
           </Button>
         </DialogFooter>
