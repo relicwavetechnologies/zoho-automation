@@ -1,9 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { invoke } from '@tauri-apps/api/core'
-import { openUrl } from '@tauri-apps/plugin-opener'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { IconExternalLink, IconRefresh, IconTrash } from '@tabler/icons-react'
+import { IconExternalLink, IconFolderOpen, IconRefresh, IconTrash } from '@tabler/icons-react'
 
 import { route } from '@/constants/routes'
 import HeaderPage from '@/containers/HeaderPage'
@@ -12,136 +11,30 @@ import { Card, CardItem } from '@/containers/Card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-
-const DEFAULT_BACKEND_URL = 'http://localhost:3000'
-const BACKEND_URL_STORAGE_KEY = 'divo.backendUrl'
-const AUTH_POLL_INTERVAL_MS = 1500
-const AUTH_POLL_TIMEOUT_MS = 5 * 60 * 1000
-
-type DivoDepartment = {
-  id: string
-  name: string
-}
-
-type DivoSessionStatus = {
-  configured: boolean
-  backendUrl?: string
-  departmentId?: string
-  email?: string
-  name?: string
-  userId?: string
-  companyId?: string
-  expiresAt?: string
-  departments: DivoDepartment[]
-}
-
-type DesktopAuthorizeUrlResponse = {
-  success: boolean
-  message?: string
-  data?: {
-    authorizeUrl: string
-    nonce: string
-  }
-}
-
-type DesktopPollResponse = {
-  success: boolean
-  pending?: boolean
-  message?: string
-  data?: {
-    code: string
-    state: string
-  }
-}
-
-type DesktopExchangeResponse = {
-  success: boolean
-  message?: string
-  data?: {
-    token: string
-    session: {
-      userId: string
-      companyId: string
-      role: string
-      expiresAt: string
-      email?: string
-      name?: string
-      departments?: DivoDepartment[]
-    }
-  }
-}
+import {
+  DEFAULT_DIVO_BACKEND_URL,
+  type DivoSessionStatus,
+  getDivoSessionStatus,
+  getStoredDivoBackendUrl,
+  normalizeDivoBackendUrl,
+  normalizeDivoSessionStatus,
+  signInDivoWithLark,
+  storeDivoBackendUrl,
+} from '@/lib/divo-auth'
+import {
+  type DivoWorkspaceStatus,
+  clearPiWorkspacePath,
+  getPiWorkspaceStatus,
+  setPiWorkspacePath,
+} from '@/lib/pi-workspace'
 
 export const Route = createFileRoute(route.settings.divo as any)({
   component: DivoSettings,
 })
 
-function normalizeBackendUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, '')
-  if (!trimmed) return DEFAULT_BACKEND_URL
-  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
-  return new URL(withProtocol).toString().replace(/\/+$/, '')
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
-}
-
-function normalizeStatus(status: DivoSessionStatus): DivoSessionStatus {
-  return { ...status, departments: status.departments ?? [] }
-}
-
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init?.headers,
-    },
-  })
-  const body = await response.json().catch(() => null) as T | null
-  if (!response.ok) {
-    const message = body && typeof body === 'object' && 'message' in body
-      ? String((body as { message?: unknown }).message)
-      : `HTTP ${response.status}`
-    throw new Error(message)
-  }
-  if (!body) throw new Error('Backend returned an empty response')
-  return body
-}
-
-async function openAuthorizeUrl(url: string): Promise<void> {
-  if (IS_TAURI) {
-    await openUrl(url)
-    return
-  }
-  window.open(url, '_blank', 'noopener,noreferrer')
-}
-
-async function pollForLarkCallback(
-  backendUrl: string,
-  nonce: string,
-): Promise<{ code: string; state: string }> {
-  const deadline = Date.now() + AUTH_POLL_TIMEOUT_MS
-  while (Date.now() < deadline) {
-    await sleep(AUTH_POLL_INTERVAL_MS)
-    const body = await fetchJson<DesktopPollResponse>(
-      `${backendUrl}/api/desktop/auth/lark/poll?nonce=${encodeURIComponent(nonce)}`,
-    )
-    if (body.success && body.data?.code && body.data.state) {
-      return body.data
-    }
-    if (!body.pending && body.message) {
-      throw new Error(body.message)
-    }
-  }
-  throw new Error('Lark sign-in timed out')
-}
-
 function DivoSettings() {
-  const [backendUrl, setBackendUrl] = useState(() =>
-    localStorage.getItem(BACKEND_URL_STORAGE_KEY) ?? DEFAULT_BACKEND_URL
-  )
+  const [backendUrl, setBackendUrl] = useState(getStoredDivoBackendUrl)
+  const [workspace, setWorkspace] = useState<DivoWorkspaceStatus | null>(null)
   const [status, setStatus] = useState<DivoSessionStatus>({
     configured: false,
     departments: [],
@@ -154,11 +47,15 @@ function DivoSettings() {
   const refreshStatus = async () => {
     setIsLoadingStatus(true)
     try {
-      const next = await invoke<DivoSessionStatus>('divo_get_session_status')
-      setStatus(normalizeStatus(next))
+      const [next, workspaceStatus] = await Promise.all([
+        getDivoSessionStatus(),
+        getPiWorkspaceStatus(),
+      ])
+      setStatus(normalizeDivoSessionStatus(next))
+      setWorkspace(workspaceStatus)
       if (next.backendUrl) {
         setBackendUrl(next.backendUrl)
-        localStorage.setItem(BACKEND_URL_STORAGE_KEY, next.backendUrl)
+        storeDivoBackendUrl(next.backendUrl)
       }
     } catch (error) {
       toast.error('Failed to read Divo session', { description: String(error) })
@@ -174,52 +71,52 @@ function DivoSettings() {
   const handleConnect = async () => {
     setIsConnecting(true)
     try {
-      const normalizedBackendUrl = normalizeBackendUrl(backendUrl)
+      const normalizedBackendUrl = normalizeDivoBackendUrl(backendUrl)
       setBackendUrl(normalizedBackendUrl)
-      localStorage.setItem(BACKEND_URL_STORAGE_KEY, normalizedBackendUrl)
+      storeDivoBackendUrl(normalizedBackendUrl)
 
-      const authorize = await fetchJson<DesktopAuthorizeUrlResponse>(
-        `${normalizedBackendUrl}/api/desktop/auth/lark/authorize-url`,
-      )
-      if (!authorize.success || !authorize.data?.authorizeUrl || !authorize.data.nonce) {
-        throw new Error(authorize.message ?? 'Failed to start Lark sign-in')
-      }
-
-      await openAuthorizeUrl(authorize.data.authorizeUrl)
-      const callback = await pollForLarkCallback(normalizedBackendUrl, authorize.data.nonce)
-      const exchanged = await fetchJson<DesktopExchangeResponse>(
-        `${normalizedBackendUrl}/api/desktop/auth/lark/exchange`,
-        {
-          method: 'POST',
-          body: JSON.stringify(callback),
-        },
-      )
-
-      if (!exchanged.success || !exchanged.data?.token) {
-        throw new Error(exchanged.message ?? 'Failed to exchange Lark session')
-      }
-
-      const session = exchanged.data.session
-      const departments = session.departments ?? []
-      const departmentId = departments[0]?.id
-
-      const next = await invoke<DivoSessionStatus>('divo_set_session', {
-        backendUrl: normalizedBackendUrl,
-        memberToken: exchanged.data.token,
-        departmentId,
-        email: session.email,
-        name: session.name,
-        userId: session.userId,
-        companyId: session.companyId,
-        expiresAt: session.expiresAt,
-        departments,
-      })
-      setStatus(normalizeStatus(next))
+      const next = await signInDivoWithLark(normalizedBackendUrl)
+      setStatus(normalizeDivoSessionStatus(next))
       toast.success('Divo connected')
     } catch (error) {
       toast.error('Divo connection failed', { description: String(error) })
     } finally {
       setIsConnecting(false)
+    }
+  }
+
+  const restartPiForWorkspaceChange = async () => {
+    await invoke('pi_stop').catch(() => undefined)
+  }
+
+  const handleChooseWorkspace = async () => {
+    try {
+      const selected = await invoke<string | string[] | null>('open_dialog', {
+        options: {
+          directory: true,
+          multiple: false,
+        },
+      })
+      const nextPath = Array.isArray(selected) ? selected[0] : selected
+      if (!nextPath) return
+
+      const next = await setPiWorkspacePath(nextPath)
+      setWorkspace(next)
+      await restartPiForWorkspaceChange()
+      toast.success('Pi workspace updated')
+    } catch (error) {
+      toast.error('Failed to choose workspace', { description: String(error) })
+    }
+  }
+
+  const handleClearWorkspace = async () => {
+    try {
+      const next = await clearPiWorkspacePath()
+      setWorkspace(next)
+      await restartPiForWorkspaceChange()
+      toast.success('Using default Divo workspace')
+    } catch (error) {
+      toast.error('Failed to clear workspace', { description: String(error) })
     }
   }
 
@@ -242,7 +139,7 @@ function DivoSettings() {
       const next = await invoke<DivoSessionStatus>('divo_set_department', {
         departmentId: departmentId || null,
       })
-      setStatus(normalizeStatus(next))
+      setStatus(normalizeDivoSessionStatus(next))
       toast.success('Divo department updated')
     } catch (error) {
       toast.error('Failed to update department', { description: String(error) })
@@ -254,6 +151,11 @@ function DivoSettings() {
   const selectedDepartmentName =
     status.departments.find((dept) => dept.id === status.departmentId)?.name ??
     status.departmentId
+  const selectedWorkspacePath = workspace?.selectedWorkspacePath
+  const effectiveWorkspacePath = workspace?.effectiveWorkspacePath ?? ''
+  const workspaceDescription = selectedWorkspacePath
+    ? 'Pi starts in the selected workspace folder.'
+    : 'Pi starts in the default Divo workspace.'
 
   return (
     <div className="flex flex-col h-svh w-full">
@@ -285,7 +187,7 @@ function DivoSettings() {
                   <Input
                     value={backendUrl}
                     onChange={(event) => setBackendUrl(event.target.value)}
-                    placeholder={DEFAULT_BACKEND_URL}
+                    placeholder={DEFAULT_DIVO_BACKEND_URL}
                     disabled={isConnecting}
                     className="w-80"
                   />
@@ -321,6 +223,65 @@ function DivoSettings() {
                     </Button>
                   )
                 }
+              />
+            </Card>
+
+            <Card title="Agent Workspace">
+              <CardItem
+                title="Workspace Folder"
+                description={workspaceDescription}
+                column
+                align="start"
+                actions={
+                  <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center">
+                    <Input
+                      value={effectiveWorkspacePath}
+                      readOnly
+                      placeholder="Resolving Divo workspace..."
+                      className="min-w-0 flex-1"
+                    />
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={handleChooseWorkspace}
+                      >
+                        <IconFolderOpen size={14} />
+                        Choose
+                      </Button>
+                      {selectedWorkspacePath && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleClearWorkspace}
+                        >
+                          <IconTrash size={14} />
+                          Clear
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                }
+              />
+              <CardItem
+                title="Divo Home"
+                description={workspace?.homePath ?? 'Not resolved yet'}
+              />
+              <CardItem
+                title="Divo Workspace State"
+                description={workspace?.divoPath ?? 'Not resolved yet'}
+              />
+              <CardItem
+                title="Divo Scratch"
+                description={workspace?.divoTmpPath ?? 'Not resolved yet'}
+              />
+              <CardItem
+                title="Company Skills"
+                description={workspace?.companySkillsPath ?? 'Not resolved yet'}
+              />
+              <CardItem
+                title="User Skills"
+                description={workspace?.userSkillsPath ?? 'Not resolved yet'}
               />
             </Card>
 

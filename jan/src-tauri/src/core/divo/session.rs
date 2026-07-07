@@ -28,6 +28,8 @@ pub struct DivoSession {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub departments: Vec<DivoDepartment>,
@@ -38,7 +40,9 @@ pub fn load_divo_session<R: Runtime>(app: &AppHandle<R>) -> Result<Option<DivoSe
     let Some(value) = store.get(SESSION_KEY) else {
         return Ok(None);
     };
-    serde_json::from_value(value).map(Some).map_err(|e| e.to_string())
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(|e| e.to_string())
 }
 
 pub fn save_divo_session<R: Runtime>(

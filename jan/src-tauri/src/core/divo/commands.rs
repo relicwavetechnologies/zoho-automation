@@ -66,6 +66,8 @@ pub struct DivoSessionStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
     pub departments: Vec<DivoDepartment>,
 }
@@ -81,6 +83,7 @@ pub async fn divo_set_session<R: Runtime>(
     name: Option<String>,
     user_id: Option<String>,
     company_id: Option<String>,
+    role: Option<String>,
     expires_at: Option<String>,
     departments: Option<Vec<DivoDepartment>>,
 ) -> Result<DivoSessionStatus, String> {
@@ -96,6 +99,7 @@ pub async fn divo_set_session<R: Runtime>(
         name: name.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         user_id,
         company_id,
+        role: role.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         expires_at,
         departments: departments.unwrap_or_default(),
     };
@@ -115,6 +119,7 @@ pub async fn divo_set_session<R: Runtime>(
         name: session.name,
         user_id: session.user_id,
         company_id: session.company_id,
+        role: session.role,
         expires_at: session.expires_at,
         departments: session.departments,
     })
@@ -142,6 +147,7 @@ pub async fn divo_get_session_status<R: Runtime>(
             name: s.name,
             user_id: s.user_id,
             company_id: s.company_id,
+            role: s.role,
             expires_at: s.expires_at,
             departments: s.departments,
         },
@@ -153,6 +159,7 @@ pub async fn divo_get_session_status<R: Runtime>(
             name: None,
             user_id: None,
             company_id: None,
+            role: None,
             expires_at: None,
             departments: Vec::new(),
         },
@@ -192,6 +199,7 @@ pub async fn divo_set_department<R: Runtime>(
         name: session.name,
         user_id: session.user_id,
         company_id: session.company_id,
+        role: session.role,
         expires_at: session.expires_at,
         departments: session.departments,
     })

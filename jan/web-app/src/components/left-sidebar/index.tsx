@@ -3,16 +3,66 @@ import { NavChats } from './NavChats'
 import { NavMain } from './NavMain'
 import { NavProjects } from './NavProjects'
 import { useLeftPanel } from '@/hooks/useLeftPanel'
+import { useEffect, useState } from 'react'
+import { UserRound } from 'lucide-react'
 
 import {
   Sidebar,
   SidebarContent,
   SidebarTrigger,
   SidebarHeader,
+  SidebarFooter,
   SidebarRail,
 } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 import { useTitlebarLayout } from '@/stores/titlebar-layout-store'
+import {
+  type DivoSessionStatus,
+  getDivoSessionStatus,
+} from '@/lib/divo-auth'
+
+function DivoProfileFooter() {
+  const [status, setStatus] = useState<DivoSessionStatus | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void getDivoSessionStatus()
+      .then((next) => {
+        if (!cancelled) setStatus(next.configured ? next : null)
+      })
+      .catch(() => {
+        if (!cancelled) setStatus(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (!status) return null
+
+  const name = status.name || status.email || 'Divo user'
+  const role = status.role?.replace(/_/g, ' ').toLowerCase() || 'member'
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('') || 'D'
+
+  return (
+    <SidebarFooter className="border-t border-sidebar-border/70 p-2">
+      <div className="group-data-[collapsible=icon]:hidden flex min-w-0 items-center gap-2 rounded-lg border border-sidebar-border/70 bg-sidebar-accent/30 p-2">
+        <div className="grid size-9 shrink-0 place-items-center rounded-md border border-sidebar-border bg-sidebar-accent text-xs font-medium">
+          {initials || <UserRound className="size-4" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{name}</p>
+          <p className="truncate text-xs capitalize text-muted-foreground">{role}</p>
+        </div>
+      </div>
+    </SidebarFooter>
+  )
+}
 
 export function LeftSidebar() {
   const { open: isLeftPanelOpen } = useLeftPanel()
@@ -41,6 +91,7 @@ export function LeftSidebar() {
           <NavProjects />
           <NavChats />
         </SidebarContent>
+        <DivoProfileFooter />
         <SidebarRail />
       </Sidebar>
     </div>
