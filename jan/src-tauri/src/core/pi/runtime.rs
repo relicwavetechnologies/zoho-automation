@@ -7,14 +7,12 @@ use super::browser::{
     build_chrome_devtools_mcp_server, current_browser_cdp_fingerprint,
     mcp_config_needs_browser_upgrade, resolve_browser_user_data_dir,
 };
-use crate::core::divo::home::DivoHomeLayout;
 
 const PI_AGENT_DIR_NAME: &str = "pi-agent";
 const BUNDLED_CLI_REL: &str =
     "resources/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
 const AGENT_TEMPLATE_REL: &str = "resources/pi/agent-template";
 const BUNDLED_EXTENSIONS_REL: &str = "resources/pi-extensions";
-const BUNDLED_SKILLS_REL: &str = "resources/pi-skills";
 const BUNDLED_AGENT_NPM_REL: &str = "resources/pi/agent-npm";
 const BUNDLED_BRIDGE_REL: &str = "resources/pi/pi-chrome-devtools-bridge.mjs";
 
@@ -25,7 +23,6 @@ pub struct PiRuntimePaths {
     pub bun: PathBuf,
     pub cli_js: PathBuf,
     pub agent_dir: PathBuf,
-    pub skill_dirs: Vec<PathBuf>,
     /// CDP WebSocket fingerprint — changes when the browser restarts debugging.
     pub browser_cdp_fingerprint: Option<String>,
 }
@@ -54,13 +51,11 @@ impl PiRuntimePaths {
 
         let agent_dir = data_folder.join(PI_AGENT_DIR_NAME);
         bootstrap_agent_dir(&resource_dir, &agent_dir, &bun)?;
-        let skill_dirs = bootstrap_divo_skill_dirs(&resource_dir)?;
 
         Ok(PiRuntimePaths {
             bun,
             cli_js,
             agent_dir,
-            skill_dirs,
             browser_cdp_fingerprint: current_browser_cdp_fingerprint(),
         })
     }
@@ -81,7 +76,10 @@ fn resolve_bundled_bun(resource_dir: &Path) -> Option<PathBuf> {
     }
 
     // Dev: resource_dir is often `target/debug/resources`
-    if resource_dir.file_name().is_some_and(|n| n == "resources") {
+    if resource_dir
+        .file_name()
+        .is_some_and(|n| n == "resources")
+    {
         if let Some(parent) = resource_dir.parent() {
             candidates.push(parent.join("bun"));
         }
@@ -107,7 +105,8 @@ fn default_pi_settings_json() -> &'static str {
 /// Patch older pi-agent settings (provider defaults + pi-mcp-adapter package).
 fn ensure_pi_settings(settings_path: &Path) -> Result<(), String> {
     let raw = fs::read_to_string(settings_path).map_err(|e| e.to_string())?;
-    let mut value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     let Some(obj) = value.as_object_mut() else {
         return Ok(());
     };
@@ -132,7 +131,9 @@ fn ensure_pi_settings(settings_path: &Path) -> Result<(), String> {
         .entry("packages")
         .or_insert_with(|| serde_json::json!([]));
     if let Some(arr) = packages.as_array_mut() {
-        let has_adapter = arr.iter().any(|v| v.as_str() == Some("npm:pi-mcp-adapter"));
+        let has_adapter = arr.iter().any(|v| {
+            v.as_str() == Some("npm:pi-mcp-adapter")
+        });
         if !has_adapter {
             arr.push(serde_json::Value::String("npm:pi-mcp-adapter".to_string()));
             changed = true;
@@ -149,7 +150,11 @@ fn ensure_pi_settings(settings_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn bootstrap_agent_dir(resource_dir: &Path, agent_dir: &Path, bun: &Path) -> Result<(), String> {
+fn bootstrap_agent_dir(
+    resource_dir: &Path,
+    agent_dir: &Path,
+    bun: &Path,
+) -> Result<(), String> {
     fs::create_dir_all(agent_dir).map_err(|e| e.to_string())?;
 
     let template_dir = resource_dir.join(AGENT_TEMPLATE_REL);
@@ -160,9 +165,16 @@ fn bootstrap_agent_dir(resource_dir: &Path, agent_dir: &Path, bun: &Path) -> Res
     let mcp_path = agent_dir.join("mcp.json");
     if !settings_path.exists() {
         if template_dir.join("settings.json").exists() {
-            copy_file(&template_dir.join("settings.json"), &settings_path)?;
+            copy_file(
+                &template_dir.join("settings.json"),
+                &settings_path,
+            )?;
         } else {
-            fs::write(&settings_path, default_pi_settings_json()).map_err(|e| e.to_string())?;
+            fs::write(
+                &settings_path,
+                default_pi_settings_json(),
+            )
+            .map_err(|e| e.to_string())?;
         }
     } else {
         ensure_pi_settings(&settings_path)?;
@@ -191,34 +203,11 @@ fn bootstrap_agent_dir(resource_dir: &Path, agent_dir: &Path, bun: &Path) -> Res
     Ok(())
 }
 
-fn bootstrap_divo_skill_dirs(resource_dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let layout = DivoHomeLayout::resolve()?;
-    layout.ensure()?;
-
-    if let Some(skills_src) = resolve_bundled_skills_dir(resource_dir) {
-        sync_dir_contents(&skills_src, &layout.company_skills_dir)?;
-    }
-
-    Ok(vec![layout.company_skills_dir, layout.user_skills_dir])
-}
-
-fn resolve_bundled_skills_dir(resource_dir: &Path) -> Option<PathBuf> {
-    let bundled = resource_dir.join(BUNDLED_SKILLS_REL);
-    if bundled.exists() {
-        return Some(bundled);
-    }
-
-    std::env::var("CARGO_MANIFEST_DIR")
-        .ok()
-        .and_then(|manifest| {
-            PathBuf::from(manifest)
-                .parent()
-                .map(|p| p.join("pi-skills"))
-        })
-        .filter(|path| path.exists())
-}
-
-fn ensure_mcp_json(mcp_path: &Path, bun: &Path, resource_dir: &Path) -> Result<(), String> {
+fn ensure_mcp_json(
+    mcp_path: &Path,
+    bun: &Path,
+    resource_dir: &Path,
+) -> Result<(), String> {
     let chrome_mcp = resolve_chrome_devtools_mcp(resource_dir)?;
     let bridge = resolve_chrome_devtools_bridge(resource_dir)?;
 
@@ -275,7 +264,9 @@ fn resolve_chrome_devtools_bridge(resource_dir: &Path) -> Result<PathBuf, String
         }
     }
 
-    Err("Bundled pi-chrome-devtools-bridge.mjs not found. Run: yarn vendor:pi".into())
+    Err(
+        "Bundled pi-chrome-devtools-bridge.mjs not found. Run: yarn vendor:pi".into(),
+    )
 }
 
 fn resolve_chrome_devtools_mcp(resource_dir: &Path) -> Result<PathBuf, String> {
@@ -306,9 +297,11 @@ fn sync_dir_contents(src: &Path, dest: &Path) -> Result<(), String> {
             sync_dir_contents(&src_path, &dest_path)?;
         } else {
             let should_copy = match fs::metadata(&dest_path) {
-                Ok(meta) => fs::metadata(&src_path)
-                    .map(|s| s.len() != meta.len())
-                    .unwrap_or(true),
+                Ok(meta) => {
+                    fs::metadata(&src_path)
+                        .map(|s| s.len() != meta.len())
+                        .unwrap_or(true)
+                }
                 Err(_) => true,
             };
             if should_copy {
@@ -353,19 +346,6 @@ mod tests {
 
         let found = resolve_bundled_bun(&debug_dir);
         assert_eq!(found.as_deref(), Some(bun_path.as_path()));
-
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn resolve_bundled_skills_dir_finds_packaged_resources() {
-        let tmp = std::env::temp_dir().join(format!("jan-pi-skills-test-{}", std::process::id()));
-        let skills_dir = tmp.join(BUNDLED_SKILLS_REL);
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&skills_dir).unwrap();
-
-        let found = resolve_bundled_skills_dir(&tmp);
-        assert_eq!(found.as_deref(), Some(skills_dir.as_path()));
 
         let _ = fs::remove_dir_all(&tmp);
     }
