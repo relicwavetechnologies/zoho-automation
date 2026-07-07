@@ -4,6 +4,10 @@ ottomator-agents/
 .DS_Store
 **/.DS_Store
 **/node_modules/
+*.tsbuildinfo
+**/*.tsbuildinfo
+pi-bridge/
+advance-backend/pnpm-workspace.yaml
 
 # graphify knowledge graph (local only, never commit)
 graphify-out/
