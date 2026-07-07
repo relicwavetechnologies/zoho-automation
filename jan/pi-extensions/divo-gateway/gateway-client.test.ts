@@ -48,6 +48,31 @@ describe("formatGatewayResponse", () => {
 		assert.match(result.text, /not allowed/);
 	});
 
+	it("renders unauthorized as a sign-in problem", () => {
+		const result = formatGatewayResponse({
+			ok: false,
+			status: "unauthorized",
+			error: { code: "unauthorized", message: "session expired" },
+		});
+		assert.equal(result.isError, true);
+		assert.match(result.text, /unauthorized/i);
+		assert.match(result.text, /sign in again/i);
+		assert.match(result.text, /session expired/);
+	});
+
+	it("renders request contract failures without calling them tool errors", () => {
+		for (const status of ["bad_request", "unknown_op", "unknown_tool", "invalid_args"]) {
+			const result = formatGatewayResponse({
+				ok: false,
+				status,
+				error: { code: status, message: `${status} message` },
+			});
+			assert.equal(result.isError, true);
+			assert.match(result.text, /request rejected/i);
+			assert.match(result.text, new RegExp(`${status} message`));
+		}
+	});
+
 	it("renders approval_required", () => {
 		const result = formatGatewayResponse({
 			ok: false,
@@ -60,6 +85,20 @@ describe("formatGatewayResponse", () => {
 		assert.equal(result.isError, true);
 		assert.match(result.text, /approval required/i);
 		assert.match(result.text, /ap-1/);
+	});
+
+	it("renders approval_misconfigured", () => {
+		const result = formatGatewayResponse({
+			ok: false,
+			status: "approval_misconfigured",
+			error: {
+				code: "approval_misconfigured",
+				message: "no manager configured",
+			},
+		});
+		assert.equal(result.isError, true);
+		assert.match(result.text, /approval misconfigured/i);
+		assert.match(result.text, /no manager configured/);
 	});
 
 	it("renders tool_error", () => {

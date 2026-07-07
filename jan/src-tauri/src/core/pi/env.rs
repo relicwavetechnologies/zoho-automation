@@ -80,18 +80,30 @@ pub fn write_divo_env_file(
     department_id: Option<&str>,
 ) -> Result<(), String> {
     fs::create_dir_all(agent_dir).map_err(|e| e.to_string())?;
+    let backend_url = clean_env_value("DIVO_BACKEND_URL", backend_url)?
+        .trim_end_matches('/')
+        .to_string();
+    let member_token = clean_env_value("DIVO_MEMBER_TOKEN", member_token)?;
     let mut lines = vec![
-        format!("DIVO_BACKEND_URL={}", backend_url.trim().trim_end_matches('/')),
-        format!("DIVO_MEMBER_TOKEN={}", member_token.trim()),
+        format!("DIVO_BACKEND_URL={backend_url}"),
+        format!("DIVO_MEMBER_TOKEN={member_token}"),
     ];
     if let Some(dept) = department_id {
-        let trimmed = dept.trim();
+        let trimmed = clean_env_value("DIVO_DEPARTMENT_ID", dept)?;
         if !trimmed.is_empty() {
             lines.push(format!("DIVO_DEPARTMENT_ID={trimmed}"));
         }
     }
     fs::write(agent_dir.join("divo.env"), lines.join("\n") + "\n")
         .map_err(|e| e.to_string())
+}
+
+fn clean_env_value(key: &str, value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.contains('\n') || trimmed.contains('\r') {
+        return Err(format!("{key} must be a single-line value"));
+    }
+    Ok(trimmed.to_string())
 }
 
 /// Apply Pi provider credentials to a child process.
@@ -199,6 +211,26 @@ mod tests {
         assert!(raw.contains("DIVO_BACKEND_URL=http://localhost:3000"));
         assert!(raw.contains("DIVO_MEMBER_TOKEN=jwt-abc"));
         assert!(raw.contains("DIVO_DEPARTMENT_ID=dept-1"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_divo_env_file_rejects_multiline_values() {
+        let tmp = std::env::temp_dir().join(format!("jan-divo-env-multiline-test-{}", std::process::id()));
+        let agent_dir = tmp.join("pi-agent");
+        let _ = fs::remove_dir_all(&tmp);
+
+        let err = write_divo_env_file(
+            &agent_dir,
+            "http://localhost:3000",
+            "jwt-abc\nDIVO_BACKEND_URL=http://evil",
+            None,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("DIVO_MEMBER_TOKEN"));
+        assert!(!agent_dir.join("divo.env").exists());
 
         let _ = fs::remove_dir_all(&tmp);
     }

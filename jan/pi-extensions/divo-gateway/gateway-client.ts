@@ -68,6 +68,32 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 		};
 	}
 
+	if (body.status === "unauthorized") {
+		const message =
+			body.error?.message ??
+			"Your desktop session is invalid or expired.";
+		return {
+			text: `Divo gateway: unauthorized.\n\n${message}\n\nAsk the user to sign in again through Jan/Desktop. Do not retry with guessed credentials.`,
+			isError: true,
+		};
+	}
+
+	if (
+		body.status === "bad_request" ||
+		body.status === "unknown_op" ||
+		body.status === "unknown_tool" ||
+		body.status === "invalid_args"
+	) {
+		const code = body.error?.code ?? body.status;
+		const message =
+			body.error?.message ??
+			"The gateway rejected the request shape or target.";
+		return {
+			text: `Divo gateway: request rejected (${code}).\n\n${message}\n\nCheck the operation, tool id, and args against tools.list or skills.get before retrying.`,
+			isError: true,
+		};
+	}
+
 	if (body.status === "permission_denied") {
 		const message =
 			body.error?.message ??
@@ -85,6 +111,16 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			"Manager approval is required before this action can run.";
 		return {
 			text: `Divo gateway: approval required.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user approval is pending in Lark. Do not claim the action completed.`,
+			isError: true,
+		};
+	}
+
+	if (body.status === "approval_misconfigured") {
+		const message =
+			body.error?.message ??
+			"Manager approval is required, but the approver configuration is incomplete.";
+		return {
+			text: `Divo gateway: approval misconfigured.\n\n${message}\n\nDo not claim the action completed. Ask the user to contact an admin.`,
 			isError: true,
 		};
 	}
