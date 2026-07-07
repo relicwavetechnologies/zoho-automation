@@ -39,6 +39,7 @@ import { encodeVideoSentinel, parseVideoDataUrl } from '@/lib/video-sentinel'
 import { extractFilesFromPrompt, type FileMetadata } from '@/lib/fileMetadata'
 import { isPredefinedRemoteProvider, getProviderApiType } from '@/lib/providerCaps'
 import { createPiMessageStream } from './pi-stream'
+import { paramsSettings } from '@/lib/predefinedParams'
 
 export type TokenUsageCallback = (
   usage: LanguageModelUsage,

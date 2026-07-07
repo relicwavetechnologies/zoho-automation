@@ -40,9 +40,10 @@ export const PiTraceTimeline = memo(
     const lastPartIndex = lastStep?.partIndex ?? -1
     const traceIsActive =
       isStreaming &&
-      (lastStep?.kind === 'tool'
-        ? hasPendingToolCall
-        : lastPartIndex >= 0)
+      (awaitingApproval ||
+        (lastStep?.kind === 'tool'
+          ? hasPendingToolCall
+          : lastPartIndex >= 0))
 
     const currentStepIsTool =
       lastStep?.kind === 'tool' && hasPendingToolCall
@@ -61,7 +62,9 @@ export const PiTraceTimeline = memo(
       >
         <ChainOfThoughtHeader
           streamingLabel={
-            currentStepIsTool ? 'Using tools...' : 'Reasoning...'
+            awaitingApproval
+              ? 'Waiting for approval...'
+              : currentStepIsTool ? 'Using tools...' : 'Reasoning...'
           }
           completedVerb={hasTools ? 'Worked' : 'Thought'}
         />
