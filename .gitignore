@@ -1,5 +1,10 @@
 ottomator-agents/
 
+# OS / dependency noise
+.DS_Store
+**/.DS_Store
+**/node_modules/
+
 # graphify knowledge graph (local only, never commit)
 graphify-out/
 
