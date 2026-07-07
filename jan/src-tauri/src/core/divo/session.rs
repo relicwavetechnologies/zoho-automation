@@ -7,17 +7,30 @@ const SESSION_KEY: &str = "member_session";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DivoDepartment {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DivoSession {
     pub backend_url: String,
     pub member_token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub department_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub departments: Vec<DivoDepartment>,
 }
 
 pub fn load_divo_session<R: Runtime>(app: &AppHandle<R>) -> Result<Option<DivoSession>, String> {

@@ -16,6 +16,7 @@ import {
   IconCpu,
   IconWorld,
   IconPaperclip,
+  IconPlugConnected,
 } from '@tabler/icons-react'
 import { useMatches, useNavigate } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
@@ -208,6 +209,11 @@ const SettingsMenu = () => {
   ]
 
   const integrationSettings = [
+    {
+      title: 'Divo',
+      route: route.settings.divo,
+      icon: IconPlugConnected,
+    },
     {
       title: 'common:mcp-servers',
       route: route.settings.mcp_servers,
