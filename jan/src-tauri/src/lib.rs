@@ -1,6 +1,5 @@
 pub mod core;
 
-
 #[cfg(not(feature = "cli"))]
 use core::{
     app::commands::get_jan_data_folder_path,
@@ -124,6 +123,9 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_get_session_status,
         core::divo::commands::divo_set_department,
         core::divo::commands::divo_sync_pi_env,
+        core::divo::commands::divo_get_workspace_status,
+        core::divo::commands::divo_set_workspace_path,
+        core::divo::commands::divo_clear_workspace_path,
         $(
             $extra,
         )*
@@ -465,7 +467,6 @@ pub fn run() {
                             log::info!("MLX processes cleaned up successfully");
                         }
                     }
-
 
                     log::info!("App cleanup completed");
                 });
