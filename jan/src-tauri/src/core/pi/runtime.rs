@@ -373,4 +373,17 @@ mod tests {
 
         let _ = fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn resolve_bundled_skills_dir_finds_packaged_resources() {
+        let tmp = std::env::temp_dir().join(format!("jan-pi-skills-test-{}", std::process::id()));
+        let skills_dir = tmp.join(BUNDLED_SKILLS_REL);
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        let found = resolve_bundled_skills_dir(&tmp);
+        assert_eq!(found.as_deref(), Some(skills_dir.as_path()));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
