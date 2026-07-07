@@ -9,12 +9,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Mutex};
 
 use super::browser::{current_browser_cdp_fingerprint, kill_orphan_chrome_devtools_mcp};
-use super::env::{
-    apply_divo_gateway_env, apply_divo_workspace_env, apply_local_lark_env, apply_provider_env,
-};
+use super::env::{apply_divo_gateway_env, apply_provider_env};
 use super::runtime::PiRuntimePaths;
-use super::session::{ensure_session_workspace_cwd, resolve_session_path};
-use crate::core::divo::workspace::{prepare_workspace_run_layout, DivoWorkspaceRunLayout};
+use super::session::resolve_session_path;
 use crate::core::threads::utils::ensure_thread_dir_exists;
 
 struct PiProcess {
@@ -26,8 +23,6 @@ struct SharedState {
     process: Option<PiProcess>,
     data_folder: Option<PathBuf>,
     scratch_dir: Option<PathBuf>,
-    workspace_dir: Option<PathBuf>,
-    run_thread_id: Option<String>,
     active_thread_id: Option<String>,
     browser_cdp_fingerprint: Option<String>,
     pending: HashMap<String, oneshot::Sender<Result<serde_json::Value, String>>>,
@@ -56,8 +51,6 @@ impl PiManager {
             process: None,
             data_folder: None,
             scratch_dir: None,
-            workspace_dir: None,
-            run_thread_id: None,
             active_thread_id: None,
             browser_cdp_fingerprint: None,
             pending: HashMap::new(),
@@ -121,10 +114,7 @@ impl PiManager {
 
     async fn wait_until_ready(&self) -> Result<(), String> {
         for attempt in 1..=30 {
-            match self
-                .send_rpc(serde_json::json!({ "type": "get_state" }))
-                .await
-            {
+            match self.send_rpc(serde_json::json!({ "type": "get_state" })).await {
                 Ok(_) => return Ok(()),
                 Err(_) if attempt < 30 => {
                     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -135,33 +125,11 @@ impl PiManager {
         Err("Pi RPC failed to become ready".into())
     }
 
-    fn divo_workspace_system_prompt(
-        workspace_dir: &std::path::Path,
-        layout: &DivoWorkspaceRunLayout,
-    ) -> String {
-        format!(
-            "\
-Divo workspace policy:
-- The selected workspace root is: {workspace}
-- The active Jan thread id for this run is: {thread_id}
-- Divo-owned scratch state for this run is: {run_dir}
-- Put temporary helper scripts, scratch notes, downloaded intermediate files, logs, and generated analysis artifacts under DIVO_RUN_DIR or the matching DIVO_* directory.
-- Do not create temporary scripts or scratch files in the workspace root or project folders.
-- Only create or edit files outside .divo when they are real project files required by the user's task.
-- Do not store credentials, backend tokens, or SaaS tokens in workspace files.",
-            workspace = workspace_dir.display(),
-            thread_id = layout.thread_id,
-            run_dir = layout.run_dir.display(),
-        )
-    }
-
     pub async fn start(
         &self,
         app: AppHandle,
         data_folder: PathBuf,
         scratch_dir: PathBuf,
-        workspace_dir: PathBuf,
-        initial_thread_id: Option<String>,
     ) -> Result<(), String> {
         {
             let mut app_guard = self.app.lock().await;
@@ -174,18 +142,9 @@ Divo workspace policy:
         {
             let mut guard = self.inner.lock().unwrap();
             if guard.process.is_some() {
-                let workspace_changed = guard
-                    .workspace_dir
-                    .as_ref()
-                    .map(|current| current != &workspace_dir)
-                    .unwrap_or(true);
-                let run_thread_changed = initial_thread_id
-                    .as_ref()
-                    .map(|thread_id| guard.run_thread_id.as_ref() != Some(thread_id))
-                    .unwrap_or(false);
-                let stale =
-                    new_fingerprint.is_some() && new_fingerprint != guard.browser_cdp_fingerprint;
-                if !stale && !workspace_changed && !run_thread_changed {
+                let stale = new_fingerprint.is_some()
+                    && new_fingerprint != guard.browser_cdp_fingerprint;
+                if !stale {
                     return Ok(());
                 }
                 if let Some(mut pi) = guard.process.take() {
@@ -200,19 +159,14 @@ Divo workspace policy:
 
         kill_orphan_chrome_devtools_mcp();
 
-        let (stdout, stderr, child_pid) = {
+        let (stdout, stderr) = {
             let mut guard = self.inner.lock().unwrap();
 
             std::fs::create_dir_all(&scratch_dir)
                 .map_err(|e| format!("Failed to create Pi scratch dir: {}", e))?;
-            let run_thread_id = initial_thread_id
-                .clone()
-                .unwrap_or_else(|| "__process__".to_string());
-            let divo_layout = prepare_workspace_run_layout(&workspace_dir, &run_thread_id)?;
 
             let scratch_dir_str = scratch_dir.to_string_lossy().to_string();
             let agent_dir_str = runtime.agent_dir.to_string_lossy().to_string();
-            let divo_prompt = Self::divo_workspace_system_prompt(&workspace_dir, &divo_layout);
 
             let mut cmd = Command::new(&runtime.bun);
             cmd.arg(&runtime.cli_js)
@@ -220,28 +174,19 @@ Divo workspace policy:
                 .arg("rpc")
                 .arg("--session-dir")
                 .arg(&scratch_dir_str)
-                .arg("--append-system-prompt")
-                .arg(divo_prompt)
                 .env("PI_CODING_AGENT_DIR", &agent_dir_str)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            for skill_dir in &runtime.skill_dirs {
-                cmd.arg("--skill").arg(skill_dir);
-            }
-            cmd.current_dir(&workspace_dir);
             apply_provider_env(&mut cmd, &runtime.agent_dir);
             apply_divo_gateway_env(&mut cmd, &runtime.agent_dir);
-            apply_divo_workspace_env(&mut cmd, &workspace_dir, &divo_layout);
-            apply_local_lark_env(&mut cmd, runtime.lark_cli_wrapper.as_deref());
             let mut child = cmd.spawn().map_err(|e| {
-                format!(
-                    "Failed to spawn bundled Pi (bun={} cli={}): {e}",
-                    runtime.bun.display(),
-                    runtime.cli_js.display()
-                )
-            })?;
-            let child_pid = child.id();
+                    format!(
+                        "Failed to spawn bundled Pi (bun={} cli={}): {e}",
+                        runtime.bun.display(),
+                        runtime.cli_js.display()
+                    )
+                })?;
 
             let stdin = child.stdin.take().ok_or("Failed to capture pi stdin")?;
             let stdout = child.stdout.take().ok_or("Failed to capture pi stdout")?;
@@ -249,10 +194,8 @@ Divo workspace policy:
 
             guard.data_folder = Some(data_folder);
             guard.scratch_dir = Some(scratch_dir);
-            guard.workspace_dir = Some(workspace_dir);
-            guard.run_thread_id = Some(run_thread_id);
             guard.process = Some(PiProcess { child, stdin });
-            (stdout, stderr, child_pid)
+            (stdout, stderr)
         };
 
         let inner_reader = self.inner.clone();
@@ -284,27 +227,20 @@ Divo workspace policy:
                             lines
                         };
                         for line in lines {
-                            Self::handle_line(&inner_reader, &app_reader, &cmd_tx_reader, &line);
+                            Self::handle_line(
+                                &inner_reader,
+                                &app_reader,
+                                &cmd_tx_reader,
+                                &line,
+                            );
                         }
                     }
                     Err(_) => break,
                 }
             }
-            let should_emit_exit = {
-                let mut guard = inner_reader.lock().unwrap();
-                let is_current_process = guard
-                    .process
-                    .as_ref()
-                    .map(|pi| pi.child.id() == child_pid)
-                    .unwrap_or(false);
-                if is_current_process {
-                    guard.process = None;
-                }
-                is_current_process
-            };
-            if !should_emit_exit {
-                return;
-            }
+            let mut guard = inner_reader.lock().unwrap();
+            guard.process = None;
+            drop(guard);
             let thread_id = inner_reader
                 .lock()
                 .unwrap()
@@ -329,7 +265,10 @@ Divo workspace policy:
                 match stderr.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        eprintln!("[pi stderr] {}", String::from_utf8_lossy(&buf[..n]).trim());
+                        eprintln!(
+                            "[pi stderr] {}",
+                            String::from_utf8_lossy(&buf[..n]).trim()
+                        );
                     }
                     Err(_) => break,
                 }
@@ -368,15 +307,9 @@ Divo workspace policy:
             if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
                 let mut guard = inner.lock().unwrap();
                 if let Some(tx) = guard.pending.remove(id) {
-                    let success = value
-                        .get("success")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
+                    let success = value.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
                     let result = if success {
-                        Ok(value
-                            .get("data")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null))
+                        Ok(value.get("data").cloned().unwrap_or(serde_json::Value::Null))
                     } else {
                         Err(value
                             .get("error")
@@ -390,10 +323,7 @@ Divo workspace policy:
 
             if value.get("command").and_then(|v| v.as_str()) == Some("prompt") {
                 let thread_id = Self::active_thread_id(inner);
-                let success = value
-                    .get("success")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let success = value.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
                 if success {
                     let request_id = value
                         .get("id")
@@ -499,22 +429,17 @@ Divo workspace policy:
             }
         }
 
-        let (data_folder, session_path, workspace_dir) = {
+        let (data_folder, session_path) = {
             let guard = self.inner.lock().unwrap();
             let data_folder = guard
                 .data_folder
                 .clone()
                 .ok_or("Pi process is not running")?;
-            let workspace_dir = guard
-                .workspace_dir
-                .clone()
-                .ok_or("Pi workspace is not configured")?;
             let session_path = resolve_session_path(&data_folder, &thread_id);
-            (data_folder, session_path, workspace_dir)
+            (data_folder, session_path)
         };
 
         ensure_thread_dir_exists(&data_folder, &thread_id)?;
-        ensure_session_workspace_cwd(&session_path, &workspace_dir)?;
 
         let resp = self
             .send_rpc(serde_json::json!({
@@ -540,9 +465,12 @@ Divo workspace policy:
             .await
     }
 
-    async fn restart_if_browser_cdp_changed(&self, app: &AppHandle) -> Result<(), String> {
+    async fn restart_if_browser_cdp_changed(
+        &self,
+        app: &AppHandle,
+    ) -> Result<(), String> {
         let fingerprint = current_browser_cdp_fingerprint();
-        let (needs_restart, data_folder, scratch_dir, workspace_dir, run_thread_id) = {
+        let (needs_restart, data_folder, scratch_dir) = {
             let guard = self.inner.lock().unwrap();
             let needs = guard.process.is_some()
                 && fingerprint.is_some()
@@ -551,8 +479,6 @@ Divo workspace policy:
                 needs,
                 guard.data_folder.clone(),
                 guard.scratch_dir.clone(),
-                guard.workspace_dir.clone(),
-                guard.run_thread_id.clone(),
             )
         };
 
@@ -563,20 +489,12 @@ Divo workspace policy:
         self.stop().await;
         kill_orphan_chrome_devtools_mcp();
 
-        let (data_folder, scratch_dir, workspace_dir) =
-            match (data_folder, scratch_dir, workspace_dir) {
-                (Some(d), Some(s), Some(w)) => (d, s, w),
-                _ => return Ok(()),
-            };
+        let (data_folder, scratch_dir) = match (data_folder, scratch_dir) {
+            (Some(d), Some(s)) => (d, s),
+            _ => return Ok(()),
+        };
 
-        self.start(
-            app.clone(),
-            data_folder,
-            scratch_dir,
-            workspace_dir,
-            run_thread_id,
-        )
-        .await
+        self.start(app.clone(), data_folder, scratch_dir).await
     }
 
     pub async fn prompt(&self, thread_id: String, message: String) -> Result<(), String> {
@@ -604,7 +522,6 @@ Divo workspace policy:
             let _ = pi.child.kill();
         }
         guard.active_thread_id = None;
-        guard.run_thread_id = None;
         guard.browser_cdp_fingerprint = None;
         guard.pending.clear();
     }

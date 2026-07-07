@@ -89,7 +89,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.error?.message ??
 			"The gateway rejected the request shape or target.";
 		return {
-			text: `Divo gateway: request rejected (${code}).\n\n${message}\n\nCheck the request against skills.search, skills.get, tools.list, or the returned skill recipe before retrying.`,
+			text: `Divo gateway: request rejected (${code}).\n\n${message}\n\nCheck the operation, tool id, and args against tools.list or skills.get before retrying.`,
 			isError: true,
 		};
 	}

@@ -1,4 +1,4 @@
-import { LucideIcon, Puzzle } from 'lucide-react'
+import { LucideIcon } from 'lucide-react'
 import { route } from '@/constants/routes'
 
 import {
@@ -127,11 +127,6 @@ const getNavMainItems = (
     title: 'common:hub',
     url: route.hub.index,
     animatedIcon: BlocksIcon,
-  },
-  {
-    title: 'common:plugins',
-    url: route.plugins.index,
-    icon: Puzzle,
   },
   {
     title: 'common:settings',
