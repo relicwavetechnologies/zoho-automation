@@ -15,7 +15,10 @@ const versions = JSON.parse(
 
 const resourcesPi = path.join(janRoot, 'src-tauri/resources/pi')
 const resourcesExtensions = path.join(janRoot, 'src-tauri/resources/pi-extensions')
+const resourcesSkills = path.join(janRoot, 'src-tauri/resources/pi-skills')
+const resourcesLarkCli = path.join(janRoot, 'src-tauri/resources/lark-cli')
 const sourceExtensions = path.join(janRoot, 'pi-extensions')
+const sourceSkills = path.join(janRoot, 'pi-skills')
 
 function rmrf(dir) {
   if (fs.existsSync(dir)) {
@@ -115,5 +118,48 @@ for (const name of fs.readdirSync(resourcesExtensions)) {
   })
 }
 
+// Copy Jan-owned Pi skills. Runtime installs these into ~/.divo/skills/company.
+rmrf(resourcesSkills)
+fs.mkdirSync(resourcesSkills, { recursive: true })
+if (fs.existsSync(sourceSkills)) {
+  for (const name of fs.readdirSync(sourceSkills)) {
+    copyDir(path.join(sourceSkills, name), path.join(resourcesSkills, name))
+  }
+}
+fs.writeFileSync(path.join(resourcesSkills, '.gitkeep'), '')
+
 console.log('Pi vendored successfully.')
 console.log(`  CLI: ${cliJs}`)
+
+console.log('Vendoring Lark CLI into src-tauri/resources/lark-cli ...')
+
+rmrf(resourcesLarkCli)
+fs.mkdirSync(resourcesLarkCli, { recursive: true })
+
+const larkPkg = {
+  name: 'jan-bundled-lark-cli',
+  private: true,
+  dependencies: {
+    '@larksuite/cli': versions.larkCli,
+  },
+}
+fs.writeFileSync(
+  path.join(resourcesLarkCli, 'package.json'),
+  JSON.stringify(larkPkg, null, 2)
+)
+
+execSync('npm install --omit=dev --no-package-lock', {
+  cwd: resourcesLarkCli,
+  stdio: 'inherit',
+})
+
+const larkCli = path.join(
+  resourcesLarkCli,
+  'node_modules/@larksuite/cli/bin/lark-cli'
+)
+if (!fs.existsSync(larkCli)) {
+  throw new Error(`Lark CLI missing after install: ${larkCli}`)
+}
+
+console.log('Lark CLI vendored successfully.')
+console.log(`  CLI: ${larkCli}`)

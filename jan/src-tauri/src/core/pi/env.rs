@@ -3,6 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::core::divo::local_lark::resolve_lark_cli_home;
+use crate::core::divo::workspace::DivoWorkspaceRunLayout;
+
 /// Divo gateway config forwarded to bundled Pi (desktop-managed; never from prompts).
 pub const DIVO_GATEWAY_ENV_VARS: &[&str] = &[
     "DIVO_BACKEND_URL",
@@ -72,6 +75,44 @@ pub fn apply_divo_gateway_env(cmd: &mut Command, agent_dir: &Path) {
     }
 }
 
+pub fn apply_divo_workspace_env(
+    cmd: &mut Command,
+    workspace_dir: &Path,
+    layout: &DivoWorkspaceRunLayout,
+) {
+    // These paths are guidance for scratch placement, not permission inputs.
+    cmd.env("DIVO_WORKSPACE_DIR", workspace_dir)
+        .env("DIVO_INTERNAL_DIR", &layout.divo_dir)
+        .env("DIVO_RUN_ID", &layout.run_id)
+        .env("DIVO_RUN_DIR", &layout.run_dir)
+        .env("DIVO_SCRATCH_DIR", &layout.tmp_dir)
+        .env("DIVO_SCRIPTS_DIR", &layout.scripts_dir)
+        .env("DIVO_ARTIFACTS_DIR", &layout.artifacts_dir)
+        .env("DIVO_LOGS_DIR", &layout.logs_dir);
+}
+
+pub fn apply_local_lark_env(cmd: &mut Command, wrapper_path: Option<&Path>) {
+    let Some(wrapper_path) = wrapper_path else {
+        return;
+    };
+    cmd.env("DIVO_LARK_CLI", wrapper_path);
+    if let Ok(home_path) = resolve_lark_cli_home() {
+        cmd.env("DIVO_LARK_CLI_HOME", home_path);
+    }
+    if let Some(bin_dir) = wrapper_path.parent() {
+        prepend_path(cmd, bin_dir);
+    }
+}
+
+fn prepend_path(cmd: &mut Command, bin_dir: &Path) {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![bin_dir.to_path_buf()];
+    paths.extend(std::env::split_paths(&current));
+    if let Ok(joined) = std::env::join_paths(paths) {
+        cmd.env("PATH", joined);
+    }
+}
+
 /// Write `pi-agent/divo.env` from desktop session fields (called after login).
 pub fn write_divo_env_file(
     agent_dir: &Path,
@@ -94,8 +135,7 @@ pub fn write_divo_env_file(
             lines.push(format!("DIVO_DEPARTMENT_ID={trimmed}"));
         }
     }
-    fs::write(agent_dir.join("divo.env"), lines.join("\n") + "\n")
-        .map_err(|e| e.to_string())
+    fs::write(agent_dir.join("divo.env"), lines.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
 fn clean_env_value(key: &str, value: &str) -> Result<String, String> {
@@ -113,7 +153,11 @@ pub fn apply_provider_env(cmd: &mut Command, agent_dir: &Path) {
     if let Some(jan_env) = resolve_jan_dotenv() {
         merge_env_file_keys(&mut from_files, &jan_env, PI_PROVIDER_ENV_VARS);
     }
-    merge_env_file_keys(&mut from_files, &agent_dir.join("provider.env"), PI_PROVIDER_ENV_VARS);
+    merge_env_file_keys(
+        &mut from_files,
+        &agent_dir.join("provider.env"),
+        PI_PROVIDER_ENV_VARS,
+    );
 
     for key in PI_PROVIDER_ENV_VARS {
         if let Ok(val) = std::env::var(key) {
@@ -132,9 +176,7 @@ pub fn apply_provider_env(cmd: &mut Command, agent_dir: &Path) {
 
 fn resolve_jan_dotenv() -> Option<PathBuf> {
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        let candidate = PathBuf::from(manifest)
-            .parent()?
-            .join(".env");
+        let candidate = PathBuf::from(manifest).parent()?.join(".env");
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -142,11 +184,7 @@ fn resolve_jan_dotenv() -> Option<PathBuf> {
     None
 }
 
-fn merge_env_file_keys(
-    into: &mut HashMap<String, String>,
-    path: &Path,
-    allowed_keys: &[&str],
-) {
+fn merge_env_file_keys(into: &mut HashMap<String, String>, path: &Path, allowed_keys: &[&str]) {
     let Ok(raw) = fs::read_to_string(path) else {
         return;
     };
@@ -187,7 +225,10 @@ mod tests {
 
         let mut map = HashMap::new();
         merge_env_file_keys(&mut map, &env_path, PI_PROVIDER_ENV_VARS);
-        assert_eq!(map.get("DEEPSEEK_API_KEY").map(String::as_str), Some("sk-test"));
+        assert_eq!(
+            map.get("DEEPSEEK_API_KEY").map(String::as_str),
+            Some("sk-test")
+        );
         assert!(!map.contains_key("IGNORED"));
 
         let _ = fs::remove_dir_all(&tmp);
@@ -217,7 +258,10 @@ mod tests {
 
     #[test]
     fn write_divo_env_file_rejects_multiline_values() {
-        let tmp = std::env::temp_dir().join(format!("jan-divo-env-multiline-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!(
+            "jan-divo-env-multiline-test-{}",
+            std::process::id()
+        ));
         let agent_dir = tmp.join("pi-agent");
         let _ = fs::remove_dir_all(&tmp);
 
@@ -233,5 +277,19 @@ mod tests {
         assert!(!agent_dir.join("divo.env").exists());
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn prepend_path_adds_local_tools_first() {
+        let mut cmd = Command::new("env");
+        let bin_dir = PathBuf::from("/tmp/divo-local-tools");
+        prepend_path(&mut cmd, &bin_dir);
+
+        let path = cmd
+            .get_envs()
+            .find_map(|(key, value)| (key == "PATH").then_some(value.unwrap()))
+            .unwrap();
+        let first = std::env::split_paths(path).next().unwrap();
+        assert_eq!(first, bin_dir);
     }
 }

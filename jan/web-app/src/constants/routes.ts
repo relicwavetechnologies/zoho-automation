@@ -4,6 +4,10 @@ export const route = {
   appLogs: '/logs',
   project: '/project',
   projectDetail: '/project/$projectId',
+  plugins: {
+    index: '/plugins/',
+    detail: '/plugins/$pluginId',
+  },
   settings: {
     index: '/settings',
     model_providers: '/settings/providers',

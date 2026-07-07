@@ -1,6 +1,5 @@
 pub mod core;
 
-
 #[cfg(not(feature = "cli"))]
 use core::{
     app::commands::get_jan_data_folder_path,
@@ -123,7 +122,19 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_clear_session,
         core::divo::commands::divo_get_session_status,
         core::divo::commands::divo_set_department,
+        core::divo::commands::divo_gateway_request,
+        core::divo::commands::divo_google_authorize_url,
+        core::divo::commands::divo_google_status,
         core::divo::commands::divo_sync_pi_env,
+        core::divo::commands::divo_get_workspace_status,
+        core::divo::commands::divo_set_workspace_path,
+        core::divo::commands::divo_clear_workspace_path,
+        core::divo::local_lark::divo_lark_local_status,
+        core::divo::local_lark::divo_lark_local_setup_start,
+        core::divo::local_lark::divo_lark_local_setup_status,
+        core::divo::local_lark::divo_lark_local_auth_start,
+        core::divo::local_lark::divo_lark_local_auth_complete,
+        core::divo::local_lark::divo_lark_local_disconnect,
         $(
             $extra,
         )*
@@ -465,7 +476,6 @@ pub fn run() {
                             log::info!("MLX processes cleaned up successfully");
                         }
                     }
-
 
                     log::info!("App cleanup completed");
                 });
