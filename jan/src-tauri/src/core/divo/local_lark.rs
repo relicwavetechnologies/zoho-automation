@@ -362,8 +362,6 @@ fn find_url_field(value: &Value) -> Option<String> {
             "authorizeUrl",
             "verification_uri_complete",
             "verificationUriComplete",
-            "verification_url",
-            "verificationUrl",
             "verification_uri",
             "verificationUri",
             "url",
@@ -374,66 +372,19 @@ fn find_url_field(value: &Value) -> Option<String> {
 }
 
 fn account_label(value: &Value) -> Option<String> {
-    user_identity(value)
-        .and_then(|user| {
-            find_string_field(
-                user,
-                &[
-                    "email",
-                    "userEmail",
-                    "name",
-                    "userName",
-                    "tenant",
-                    "tenantName",
-                    "account",
-                ],
-            )
-        })
-        .or_else(|| {
-            find_string_field(
-                value,
-                &[
-                    "email",
-                    "userEmail",
-                    "name",
-                    "userName",
-                    "tenant",
-                    "tenantName",
-                    "account",
-                ],
-            )
-        })
-        .map(str::to_string)
-}
-
-fn user_identity(value: &Value) -> Option<&Value> {
-    value
-        .get("identities")
-        .and_then(|identities| identities.get("user"))
-}
-
-fn user_identity_available(value: &Value) -> bool {
-    user_identity(value)
-        .and_then(|user| user.get("available"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn status_message(value: &Value) -> Option<String> {
-    user_identity(value)
-        .and_then(|user| {
-            user.get("message")
-                .and_then(Value::as_str)
-                .or_else(|| user.get("status").and_then(Value::as_str))
-        })
-        .or_else(|| {
-            value
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| find_string_field(value, &["status", "message"]))
-        .map(str::to_string)
+    find_string_field(
+        value,
+        &[
+            "email",
+            "userEmail",
+            "name",
+            "userName",
+            "tenant",
+            "tenantName",
+            "account",
+        ],
+    )
+    .map(str::to_string)
 }
 
 #[tauri::command]
@@ -482,14 +433,19 @@ pub async fn divo_lark_local_status<R: Runtime>(
         .and_then(|e| e.get("subtype"))
         .and_then(Value::as_str);
     let configured = error_subtype != Some("not_configured") && error_type != Some("config");
-    let user_connected = user_identity_available(&raw);
+    let ok = raw.get("ok").and_then(Value::as_bool).unwrap_or(code == 0);
 
     Ok(LocalLarkStatus {
         installed: true,
         configured,
-        connected: configured && user_connected,
+        connected: configured && ok,
         account_label: account_label(&raw),
-        status_text: status_message(&raw),
+        status_text: raw
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .or_else(|| find_string_field(&raw, &["status", "message"]))
+            .map(str::to_string),
         cli_path: Some(cli_path.display().to_string()),
         home_path: home_path.display().to_string(),
         uses_configured_app: load_lark_app_credentials().is_some(),
@@ -687,42 +643,5 @@ mod tests {
     fn shell_quote_escapes_single_quotes() {
         let path = PathBuf::from("/tmp/a'b");
         assert_eq!(shell_quote(&path), "'/tmp/a'\\''b'");
-    }
-
-    #[test]
-    fn user_identity_missing_is_not_connected() {
-        let status = serde_json::json!({
-            "identities": {
-                "bot": {
-                    "status": "ready",
-                    "available": true
-                },
-                "user": {
-                    "status": "missing",
-                    "available": false,
-                    "message": "User identity: missing (no user logged in)"
-                }
-            },
-            "identity": "bot"
-        });
-
-        assert!(!user_identity_available(&status));
-        assert_eq!(
-            status_message(&status).as_deref(),
-            Some("User identity: missing (no user logged in)")
-        );
-    }
-
-    #[test]
-    fn auth_start_accepts_lark_verification_url() {
-        let response = serde_json::json!({
-            "device_code": "device-1",
-            "verification_url": "https://accounts.larksuite.com/oauth/v1/device/verify?flow_id=abc&user_code=HTZ2-48CG"
-        });
-
-        assert_eq!(
-            find_url_field(&response).as_deref(),
-            Some("https://accounts.larksuite.com/oauth/v1/device/verify?flow_id=abc&user_code=HTZ2-48CG")
-        );
     }
 }
