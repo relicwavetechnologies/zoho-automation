@@ -29,6 +29,7 @@ import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
 import { createDesktopThreadsRoutes } from './http/desktop/desktop-threads.routes';
 import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { createAirnoteRoutes } from './http/airnote/airnote.routes';
+import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
 
 export const createServer = (c: Container) => {
@@ -271,6 +272,15 @@ export const createServer = (c: Container) => {
     jwtSecret: c.env.MEMBER_JWT_SECRET,
     logger:    c.logger,
   });
+  app.use(
+    '/api/gateway',
+    memberAuth,
+    createGatewayRoutes({
+      dispatcher: c.gatewayDispatcher,
+      logger:     c.logger,
+    }),
+  );
+
   app.use(
     '/api/files',
     memberAuth,

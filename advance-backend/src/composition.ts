@@ -128,6 +128,8 @@ import { createContextSearchTool } from './application/orchestration/tools/famil
 import { createWebSearchTool } from './application/orchestration/tools/families/web-search.tool';
 import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
+import { ToolExecutor } from './application/gateway/tool-executor';
+import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
 
 // AI model
 import { createOpenAI } from '@ai-sdk/openai';
@@ -220,6 +222,8 @@ export interface Container {
   chatContextService: LarkChatContextService;
   // Lark contacts (for directory sync)
   larkContactsClient: LarkContactsClient;
+  // Pi/Desktop capability gateway
+  gatewayDispatcher: GatewayDispatcher;
 }
 
 export async function buildContainer(env: TypedEnv): Promise<Container> {
@@ -950,6 +954,21 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'approval-card-handler' }),
   );
 
+  const gatewayToolExecutor = new ToolExecutor({
+    toolRegistry,
+    permissions,
+    approvalGate,
+    logger: logger.child({ service: 'gateway-tool-executor' }),
+    clock:  systemClock,
+  });
+  const gatewayDispatcher = new GatewayDispatcher({
+    permissions,
+    toolRegistry,
+    skillRegistry,
+    toolExecutor: gatewayToolExecutor,
+    logger: logger.child({ service: 'gateway-dispatcher' }),
+  });
+
   // ── Knowledge Share ────────────────────────────────────────────────────
   const knowledgeShareService = new KnowledgeShareService(
     prisma,
@@ -1025,6 +1044,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     chatContextService,
     // Lark contacts (for directory sync)
     larkContactsClient,
+    // Pi/Desktop capability gateway
+    gatewayDispatcher,
     // LLM model
     model,
     // Scheduled workflow executor
