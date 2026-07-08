@@ -120,7 +120,7 @@ const fakeMembershipForDirectory = {
   ...fakeMembership,
   user: {
     ...fakeMembership.user,
-    googleAuthLinks:       [],
+    ownedIntegrationConnections: [],
     departmentMemberships: [],
   },
 };
@@ -156,7 +156,7 @@ function makePrisma(overrides: {
   createdInvite?:     any;
   zohoConn?:          any;
   larkBinding?:       any;
-  googleLink?:        any;
+  googleConnection?:  any;
   user?:              any;
   larkUserAuthLink?:  any;
   channelIdentity?:   any;
@@ -187,8 +187,9 @@ function makePrisma(overrides: {
     larkUserAuthLink: {
       findUnique: async () => overrides.larkUserAuthLink ?? null,
     },
-    companyGoogleAuthLink: {
-      findFirst: async () => overrides.googleLink ?? null,
+    integrationConnection: {
+      findFirst: async () => overrides.googleConnection ?? null,
+      updateMany: async () => ({ count: 1 }),
     },
     toolPermission: {
       findMany: async () => overrides.toolPerms ?? [fakeToolPerm],
@@ -317,7 +318,7 @@ describe('GET /directory', () => {
         ...fakeMembershipForDirectory,
         user: {
           ...fakeMembershipForDirectory.user,
-          googleAuthLinks: [{ id: 'ga-1', revokedAt: null }],
+          ownedIntegrationConnections: [{ id: 'conn-1' }],
         },
       }],
     });
@@ -601,9 +602,9 @@ describe('GET /onboarding/status', () => {
     assert.equal(lark.details.tenantKey, 'tk_abc');
   });
 
-  it('marks google connected when link exists', async () => {
+  it('marks google connected when company connection exists', async () => {
     const router = makeRouter({
-      googleLink: { googleEmail: 'admin@company.com', linkedAt: new Date('2025-01-01') },
+      googleConnection: { accountEmail: 'admin@company.com', connectedAt: new Date('2025-01-01') },
     });
     const { body } = await callRoute(router, 'GET', '/onboarding/status');
     const google = (body as any).data.find((p: any) => p.provider === 'google');

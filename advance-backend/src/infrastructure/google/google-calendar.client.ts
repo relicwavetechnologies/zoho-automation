@@ -1,149 +1,146 @@
 /**
- * GoogleCalendarClient — Google Calendar REST API client.
- *
- * Implements GoogleCalendarClientPort (defined in google-calendar.tool.ts).
- * Takes a pre-resolved access token.
- *
- * API base: https://www.googleapis.com/calendar/v3
+ * GoogleCalendarClient — Google Calendar client backed by @googleapis/calendar.
  */
 
+import { calendar } from '@googleapis/calendar';
+import { OAuth2Client } from 'google-auth-library';
 import type { GoogleCalendarClientPort } from '../../application/orchestration/tools/families/google-calendar.tool';
 
-const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
+const DEFAULT_EVENT_TYPES = ['default', 'outOfOffice', 'workingLocation', 'focusTime', 'birthday'];
 
-const asRec = (v: unknown): Record<string, unknown> =>
-  v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+type CalendarEventMetadata = {
+  readonly eventId?: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly status?: string;
+  readonly webUrl?: string;
+  readonly startTime: string;
+  readonly endTime: string;
+  readonly attendees: string[];
+};
 
-export class GoogleCalendarClient implements GoogleCalendarClientPort {
-  constructor(private readonly accessToken: string) {}
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
 
-  private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const res = await fetch(`${CALENDAR_BASE}${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${this.accessToken}`,
-        'Content-Type': 'application/json',
-        ...(init.headers ?? {}),
-      },
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Calendar API ${res.status}: ${text.slice(0, 200)}`);
-    }
-    return res.json() as Promise<T>;
+function getEventDate(value: unknown): string {
+  const record = asRecord(value);
+  if (typeof record['dateTime'] === 'string') return record['dateTime'];
+  if (typeof record['date'] === 'string') return record['date'];
+  return '';
+}
+
+function toEventPatch(params: object): Record<string, unknown> {
+  const input = params as Record<string, unknown>;
+  const body: Record<string, unknown> = {};
+
+  if (typeof input['title'] === 'string') body['summary'] = input['title'];
+  if (typeof input['description'] === 'string') body['description'] = input['description'];
+  if (typeof input['startTime'] === 'string') body['start'] = { dateTime: input['startTime'], timeZone: 'UTC' };
+  if (typeof input['endTime'] === 'string') body['end'] = { dateTime: input['endTime'], timeZone: 'UTC' };
+  if (Array.isArray(input['attendeeEmails'])) {
+    body['attendees'] = input['attendeeEmails']
+      .filter((email): email is string => typeof email === 'string' && email.trim().length > 0)
+      .map(email => ({ email }));
   }
 
-  private normalizeEvent(e: unknown): Record<string, unknown> {
-    const r = asRec(e);
-    const start = asRec(r['start']);
-    const end   = asRec(r['end']);
+  return body;
+}
 
-    return {
-      ...(typeof r['id']          === 'string' ? { eventId:     r['id'] }          : {}),
-      ...(typeof r['summary']     === 'string' ? { title:       r['summary'] }      : {}),
-      ...(typeof r['description'] === 'string' ? { description: r['description'] }  : {}),
-      ...(typeof r['status']      === 'string' ? { status:      r['status'] }       : {}),
-      ...(typeof r['htmlLink']    === 'string' ? { webUrl:      r['htmlLink'] }     : {}),
-      startTime: typeof start['dateTime'] === 'string' ? start['dateTime']
-               : typeof start['date']     === 'string' ? start['date']
-               : '',
-      endTime:   typeof end['dateTime'] === 'string' ? end['dateTime']
-               : typeof end['date']     === 'string' ? end['date']
-               : '',
-      attendees: Array.isArray(r['attendees'])
-        ? (r['attendees'] as unknown[]).map(a => {
-            const ar = asRec(a);
-            return typeof ar['email'] === 'string' ? ar['email'] : '';
-          }).filter(Boolean)
-        : [],
+function isHttpStatus(error: unknown, status: number): boolean {
+  const record = asRecord(error);
+  if (record['code'] === status) return true;
+  const response = asRecord(record['response']);
+  return response['status'] === status;
+}
+
+function toOAuth2Client(auth: OAuth2Client | string): OAuth2Client {
+  if (typeof auth !== 'string') return auth;
+  const client = new OAuth2Client();
+  client.setCredentials({ access_token: auth });
+  return client;
+}
+
+export class GoogleCalendarClient implements GoogleCalendarClientPort {
+  private readonly client;
+
+  constructor(auth: OAuth2Client | string) {
+    this.client = calendar({ version: 'v3', auth: toOAuth2Client(auth) });
+  }
+
+  private normalizeEvent(event: Record<string, unknown>): CalendarEventMetadata {
+    const attendees = Array.isArray(event['attendees'])
+      ? event['attendees']
+          .map(attendee => asRecord(attendee)['email'])
+          .filter((email): email is string => typeof email === 'string' && email.length > 0)
+      : [];
+
+    const out: {
+      eventId?: string;
+      title?: string;
+      description?: string;
+      status?: string;
+      webUrl?: string;
+      startTime: string;
+      endTime: string;
+      attendees: string[];
+    } = {
+      startTime: getEventDate(event['start']),
+      endTime: getEventDate(event['end']),
+      attendees,
     };
+
+    if (typeof event['id'] === 'string') out.eventId = event['id'];
+    if (typeof event['summary'] === 'string') out.title = event['summary'];
+    if (typeof event['description'] === 'string') out.description = event['description'];
+    if (typeof event['status'] === 'string') out.status = event['status'];
+    if (typeof event['htmlLink'] === 'string') out.webUrl = event['htmlLink'];
+    return out;
   }
 
   async listEvents(calendarId: string, limit = 20): Promise<unknown[]> {
-    const params = new URLSearchParams({
-      maxResults:   String(Math.min(limit, 250)),
-      orderBy:      'startTime',
-      singleEvents: 'true',
-      timeMin:      new Date().toISOString(),
+    const res = await this.client.events.list({
+      calendarId,
+      maxResults: Math.min(limit, 250),
+      orderBy: 'startTime',
+      singleEvents: true,
+      timeMin: new Date().toISOString(),
+      eventTypes: DEFAULT_EVENT_TYPES,
     });
-    const data = await this.call<Record<string, unknown>>(
-      `/calendars/${encodeURIComponent(calendarId)}/events?${params}`,
-    );
-    const items = Array.isArray(data['items']) ? data['items'] : [];
-    return items.map(e => this.normalizeEvent(e));
+    return (res.data.items ?? []).map(event => this.normalizeEvent(event as Record<string, unknown>));
   }
 
   async getEvent(calendarId: string, eventId: string): Promise<unknown> {
-    const data = await this.call<Record<string, unknown>>(
-      `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-    );
-    return this.normalizeEvent(data);
+    const res = await this.client.events.get({ calendarId, eventId });
+    return this.normalizeEvent(res.data as Record<string, unknown>);
   }
 
-  async createEvent(
-    calendarId: string,
-    params: object,
-  ): Promise<{ eventId: string }> {
-    const p = params as Record<string, unknown>;
-
-    const body: Record<string, unknown> = {
-      ...(typeof p['title'] === 'string' ? { summary: p['title'] } : {}),
-      ...(typeof p['description'] === 'string' ? { description: p['description'] } : {}),
-    };
-
-    if (typeof p['startTime'] === 'string') {
-      body['start'] = { dateTime: p['startTime'], timeZone: 'UTC' };
-    }
-    if (typeof p['endTime'] === 'string') {
-      body['end'] = { dateTime: p['endTime'], timeZone: 'UTC' };
-    }
-    if (Array.isArray(p['attendeeEmails'])) {
-      body['attendees'] = (p['attendeeEmails'] as string[]).map(email => ({ email }));
-    }
-
-    const data = await this.call<Record<string, unknown>>(
-      `/calendars/${encodeURIComponent(calendarId)}/events`,
-      { method: 'POST', body: JSON.stringify(body) },
-    );
-
-    const eventId = typeof data['id'] === 'string' ? data['id'] : '';
+  async createEvent(calendarId: string, params: object): Promise<{ eventId: string }> {
+    const res = await this.client.events.insert({
+      calendarId,
+      requestBody: toEventPatch(params),
+    });
+    const eventId = res.data.id ?? '';
     if (!eventId) throw new Error('Calendar createEvent: response missing event id');
     return { eventId };
   }
 
-  async updateEvent(
-    calendarId: string,
-    eventId:    string,
-    params:     object,
-  ): Promise<void> {
-    const p    = params as Record<string, unknown>;
-    const body: Record<string, unknown> = {};
-
-    if (typeof p['title']       === 'string') body['summary']     = p['title'];
-    if (typeof p['description'] === 'string') body['description'] = p['description'];
-    if (typeof p['startTime']   === 'string') body['start'] = { dateTime: p['startTime'], timeZone: 'UTC' };
-    if (typeof p['endTime']     === 'string') body['end']   = { dateTime: p['endTime'],   timeZone: 'UTC' };
-    if (Array.isArray(p['attendeeEmails'])) {
-      body['attendees'] = (p['attendeeEmails'] as string[]).map(email => ({ email }));
-    }
-
-    await this.call(
-      `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-      { method: 'PATCH', body: JSON.stringify(body) },
-    );
+  async updateEvent(calendarId: string, eventId: string, params: object): Promise<void> {
+    await this.client.events.patch({
+      calendarId,
+      eventId,
+      requestBody: toEventPatch(params),
+    });
   }
 
   async deleteEvent(calendarId: string, eventId: string): Promise<void> {
-    const res = await fetch(
-      `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-      {
-        method:  'DELETE',
-        headers: { Authorization: `Bearer ${this.accessToken}` },
-      },
-    );
-    if (!res.ok && res.status !== 204 && res.status !== 404) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Calendar deleteEvent ${res.status}: ${text.slice(0, 200)}`);
+    try {
+      await this.client.events.delete({ calendarId, eventId });
+    } catch (error) {
+      if (isHttpStatus(error, 404)) return;
+      throw error;
     }
   }
 }

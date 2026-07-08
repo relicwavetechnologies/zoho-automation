@@ -20,6 +20,11 @@ import type { Logger } from '../../shared/logger';
 import type { CachePort } from '../../shared/cache';
 import type { TypedEnv } from '../../config/env';
 import type { ZohoConnectionRepository } from './zoho-connection.repository';
+import type {
+  DecryptedIntegrationConnection,
+  IntegrationConnectionRepository,
+  IntegrationGrantAccess,
+} from '../persistence/integration-connection.repository';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -44,10 +49,19 @@ interface CachedZohoToken {
   expiresAtMs: number;
 }
 
+interface ZohoClientCredentials {
+  clientId:        string;
+  clientSecret:    string;
+  redirectUri?:    string;
+  accountsBaseUrl: string;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const connKey    = (companyId: string, env: string) => `${companyId}:${env}`;
+const integrationConnKey = (connectionId: string) => `integration:${connectionId}`;
 const redisKey   = (companyId: string, env: string) => `zoho:token:${companyId}:${env}`;
+const integrationRedisKey = (connectionId: string) => `zoho:token:integration:${connectionId}`;
 
 function toNumber(v: number | string | undefined): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -77,6 +91,7 @@ export class ZohoTokenService {
     private readonly cache:          CachePort,
     private readonly env:            TypedEnv,
     logger:                          Logger,
+    private readonly integrationConnectionRepo?: IntegrationConnectionRepository,
   ) {
     this.log = logger.child({ service: 'zoho-token' });
   }
@@ -87,9 +102,54 @@ export class ZohoTokenService {
     return Boolean(this.env.ZOHO_CLIENT_ID && this.env.ZOHO_CLIENT_SECRET);
   }
 
+  async getAuthorizeConfig(companyId: string): Promise<{ clientId: string; accountsBaseUrl: string }> {
+    const credentials = await this.resolveCredentials(companyId);
+    return {
+      clientId:        credentials.clientId,
+      accountsBaseUrl: credentials.accountsBaseUrl,
+    };
+  }
+
   private get clientId():     string { return (this.env.ZOHO_CLIENT_ID     ?? '').trim(); }
   private get clientSecret(): string { return (this.env.ZOHO_CLIENT_SECRET ?? '').trim(); }
   private get accountsBase(): string { return this.env.ZOHO_ACCOUNTS_BASE_URL.trim(); }
+
+  private envCredentials(): ZohoClientCredentials | null {
+    if (!this.clientId || !this.clientSecret) return null;
+    return {
+      clientId:        this.clientId,
+      clientSecret:    this.clientSecret,
+      ...(this.env.ZOHO_REDIRECT_URI ? { redirectUri: this.env.ZOHO_REDIRECT_URI.trim() } : {}),
+      accountsBaseUrl: this.accountsBase,
+    };
+  }
+
+  private async resolveCredentials(companyId: string): Promise<ZohoClientCredentials> {
+    const repoWithConfig = this.connectionRepo as ZohoConnectionRepository & {
+      findOAuthCredentials?: ZohoConnectionRepository['findOAuthCredentials'];
+    };
+
+    if (typeof repoWithConfig.findOAuthCredentials === 'function') {
+      const configResult = await repoWithConfig.findOAuthCredentials(companyId);
+      if (!configResult.ok) {
+        this.log.warn('zoho.oauth_config.lookup_failed', { companyId, reason: configResult.error.message });
+      } else if (configResult.value) {
+        const cfg = configResult.value;
+        if (cfg.clientId.trim() && cfg.clientSecret.trim()) {
+          return {
+            clientId:        cfg.clientId.trim(),
+            clientSecret:    cfg.clientSecret.trim(),
+            redirectUri:     cfg.redirectUri.trim(),
+            accountsBaseUrl: cfg.accountsBaseUrl.trim() || this.accountsBase,
+          };
+        }
+      }
+    }
+
+    const envCredentials = this.envCredentials();
+    if (!envCredentials) throw new Error('Zoho OAuth credentials not configured');
+    return envCredentials;
+  }
 
   // ── Public API ────────────────────────────────────────────────────────────
 
@@ -133,25 +193,64 @@ export class ZohoTokenService {
     return this.forceRefresh(companyId, environment);
   }
 
+  async getValidTokenForConnection(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: IntegrationGrantAccess;
+  }): Promise<string> {
+    if (!this.integrationConnectionRepo) {
+      throw new Error('Zoho integration connection repository not configured');
+    }
+
+    const now = Date.now();
+    const key = integrationConnKey(input.connectionId);
+
+    const mem = this.memCache.get(key);
+    if (mem && now + REFRESH_BUFFER_MS < mem.expiresAtMs) {
+      return mem.token;
+    }
+
+    const redisResult = await this.cache.get<CachedZohoToken>(integrationRedisKey(input.connectionId));
+    if (redisResult.ok && redisResult.value) {
+      const r = redisResult.value;
+      if (typeof r.token === 'string' && r.token && typeof r.expiresAtMs === 'number' && now + REFRESH_BUFFER_MS < r.expiresAtMs) {
+        this.memCache.set(key, r);
+        return r.token;
+      }
+    }
+
+    const connResult = await this.integrationConnectionRepo.findAccessibleZohoConnection(input);
+    if (!connResult.ok) throw new Error('Zoho connection lookup failed');
+    const conn = connResult.value;
+    if (!conn) throw new Error('Zoho connection not found or access denied');
+
+    if (conn.accessToken && conn.accessTokenExpiresAt && now + REFRESH_BUFFER_MS < conn.accessTokenExpiresAt.getTime()) {
+      const expiresAtMs = conn.accessTokenExpiresAt.getTime();
+      await this.storeIntegrationInCache(input.connectionId, conn.accessToken, expiresAtMs);
+      return conn.accessToken;
+    }
+
+    return this.forceRefreshIntegrationConnection(conn);
+  }
+
   /** Exchange an authorization code for tokens and store them. Returns scopes + expiry. */
   async exchangeAuthorizationCode(opts: {
     companyId:         string;
     environment:       string;
     authorizationCode: string;
     redirectUri?:      string;
-  }): Promise<{ accessToken: string; refreshToken?: string; expiresIn: number; scopes: string[] }> {
-    if (!this.clientId || !this.clientSecret) {
-      throw new Error('Zoho OAuth credentials not configured');
-    }
-    const redirectUri = (opts.redirectUri ?? this.env.ZOHO_REDIRECT_URI ?? '').trim();
+  }): Promise<{ accessToken: string; refreshToken?: string; expiresIn: number; scopes: string[]; apiDomain?: string; tokenType?: string }> {
+    const credentials = await this.resolveCredentials(opts.companyId);
+    const redirectUri = (opts.redirectUri ?? credentials.redirectUri ?? '').trim();
 
-    const res = await fetch(`${this.accountsBase}/oauth/v2/token`, {
+    const res = await fetch(`${credentials.accountsBaseUrl}/oauth/v2/token`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body:    new URLSearchParams({
         grant_type:    'authorization_code',
-        client_id:     this.clientId,
-        client_secret: this.clientSecret,
+        client_id:     credentials.clientId,
+        client_secret: credentials.clientSecret,
         redirect_uri:  redirectUri,
         code:          opts.authorizationCode.trim(),
       }),
@@ -168,6 +267,8 @@ export class ZohoTokenService {
       ...(payload.refresh_token ? { refreshToken: payload.refresh_token } : {}),
       expiresIn,
       scopes: (payload.scope ?? '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean),
+      ...(payload.api_domain ? { apiDomain: payload.api_domain } : {}),
+      ...(payload.token_type ? { tokenType: payload.token_type } : {}),
     };
   }
 
@@ -185,6 +286,82 @@ export class ZohoTokenService {
     return promise;
   }
 
+  private forceRefreshIntegrationConnection(conn: DecryptedIntegrationConnection): Promise<string> {
+    const key = integrationConnKey(conn.id);
+    const existing = this.inFlight.get(key);
+    if (existing) return existing;
+
+    const promise = this.doRefreshIntegrationConnection(conn).finally(() => {
+      this.inFlight.delete(key);
+    });
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  private async doRefreshIntegrationConnection(conn: DecryptedIntegrationConnection): Promise<string> {
+    if (!this.integrationConnectionRepo) {
+      throw new Error('Zoho integration connection repository not configured');
+    }
+    if (!conn.refreshToken) {
+      throw new Error(`Zoho connection has no refresh token for connection ${conn.id}`);
+    }
+
+    const credentials = await this.resolveCredentials(conn.companyId);
+    const meta = conn.tokenMetadata ?? {};
+    const accountsBaseUrl = typeof meta['accountsBaseUrl'] === 'string'
+      ? meta['accountsBaseUrl']
+      : credentials.accountsBaseUrl;
+
+    let payload: ZohoTokenResponse;
+    try {
+      const res = await fetch(`${accountsBaseUrl}/oauth/v2/token`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body:    new URLSearchParams({
+          grant_type:    'refresh_token',
+          client_id:     credentials.clientId,
+          client_secret: credentials.clientSecret,
+          refresh_token: conn.refreshToken,
+        }),
+      });
+      payload = (await tryJson(res)) as ZohoTokenResponse;
+      if (!res.ok || !payload.access_token) {
+        throw new Error(payload.error_description ?? payload.error ?? 'Zoho token refresh failed');
+      }
+    } catch (e) {
+      this.log.error('zoho.integration_token.refresh.failed', {
+        companyId: conn.companyId,
+        connectionId: conn.id,
+        reason: String(e),
+      });
+      throw e;
+    }
+
+    const expiresIn = toNumber(payload.expires_in) ?? 3600;
+    const expiresAtMs = Date.now() + expiresIn * 1000;
+    const accessToken = payload.access_token;
+    const nextMeta: Record<string, unknown> = {
+      ...meta,
+      ...(payload.api_domain ? { apiDomain: payload.api_domain } : {}),
+      ...(payload.token_type ? { tokenType: payload.token_type } : {}),
+    };
+
+    const update = await this.integrationConnectionRepo.updateZohoTokens({
+      companyId: conn.companyId,
+      connectionId: conn.id,
+      accessToken,
+      ...(payload.refresh_token ? { refreshToken: payload.refresh_token } : {}),
+      accessTokenExpiresAt: new Date(expiresAtMs),
+      ...(payload.scope ? { scopes: payload.scope.split(/[\s,]+/).map(s => s.trim()).filter(Boolean) } : {}),
+      tokenMetadata: nextMeta,
+    });
+    if (!update.ok) throw new Error(update.error.message);
+
+    await this.storeIntegrationInCache(conn.id, accessToken, expiresAtMs);
+    this.log.info('zoho.integration_token.refreshed', { companyId: conn.companyId, connectionId: conn.id, expiresIn });
+    return accessToken;
+  }
+
   private async doRefresh(companyId: string, environment: string): Promise<string> {
     const connResult = await this.connectionRepo.findActive(companyId, environment);
     if (!connResult.ok) throw new Error('Zoho connection lookup failed during refresh');
@@ -193,22 +370,20 @@ export class ZohoTokenService {
       throw new Error(`Zoho connection has no refresh token for company ${companyId}`);
     }
 
-    if (!this.clientId || !this.clientSecret) {
-      throw new Error('Zoho client credentials not configured');
-    }
+    const credentials = await this.resolveCredentials(companyId);
 
     let payload: ZohoTokenResponse;
     try {
       const apiBase = conn.apiDomain ?? this.env.ZOHO_API_BASE_URL;
       void apiBase; // reserved for multi-domain routing
 
-      const res = await fetch(`${this.accountsBase}/oauth/v2/token`, {
+      const res = await fetch(`${credentials.accountsBaseUrl}/oauth/v2/token`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body:    new URLSearchParams({
           grant_type:    'refresh_token',
-          client_id:     this.clientId,
-          client_secret: this.clientSecret,
+          client_id:     credentials.clientId,
+          client_secret: credentials.clientSecret,
           refresh_token: conn.refreshToken,
         }),
       });
@@ -262,5 +437,17 @@ export class ZohoTokenService {
     const ttlSeconds = Math.max(60, Math.floor((expiresAtMs - Date.now() - REFRESH_BUFFER_MS) / 1000));
     const cached: CachedZohoToken = { token, expiresAtMs };
     await this.cache.set(redisKey(companyId, environment), cached, ttlSeconds);
+  }
+
+  private async storeIntegrationInCache(
+    connectionId: string,
+    token: string,
+    expiresAtMs: number,
+  ): Promise<void> {
+    const key = integrationConnKey(connectionId);
+    this.memCache.set(key, { token, expiresAtMs });
+    const ttlSeconds = Math.max(60, Math.floor((expiresAtMs - Date.now() - REFRESH_BUFFER_MS) / 1000));
+    const cached: CachedZohoToken = { token, expiresAtMs };
+    await this.cache.set(integrationRedisKey(connectionId), cached, ttlSeconds);
   }
 }

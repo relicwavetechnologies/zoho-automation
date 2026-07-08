@@ -8,6 +8,7 @@ import type { ToolActionGroup } from '../../../../domain/permissions/tool-action
 import { asToolId } from '../../../../shared/ids';
 
 const Schema = z.object({
+  connectionId: z.string().min(1),
   op: z.enum(['list', 'get', 'create', 'update', 'delete']),
   eventId: z.string().optional(),
   calendarId: z.string().optional(),
@@ -30,12 +31,17 @@ export interface GoogleCalendarClientPort {
   deleteEvent(calendarId: string, eventId: string): Promise<void>;
 }
 
-export const createGoogleCalendarTool = (deps: { getClient: (companyId: string, userId: string) => Promise<GoogleCalendarClientPort | null> }): Tool<Args, Res> => ({
+export const createGoogleCalendarTool = (deps: { getClient: (input: {
+  readonly companyId: string;
+  readonly userId: string;
+  readonly connectionId: string;
+  readonly minimumAccess: 'read_only' | 'read_write';
+}) => Promise<GoogleCalendarClientPort | null> }): Tool<Args, Res> => ({
   id: asToolId('googleCalendar'), family: 'google',
   actionGroups: new Set(['read', 'create', 'update', 'delete']),
   argsSchema: Schema, resultSchema: ResultSchema,
   description: 'List, read, create, update, or delete Google Calendar events.',
-  parameterDocs: 'op: list|get|create|update|delete. calendarId, eventId, title, startTime, endTime, attendeeEmails.',
+  parameterDocs: 'connectionId: required backend connection id from connections.list. op: list|get|create|update|delete. calendarId, eventId, title, startTime, endTime, attendeeEmails.',
   permissionCheck(args, perm) {
     const op = args.op;
     const action: ToolActionGroup = op === 'list' || op === 'get' ? 'read'
@@ -44,8 +50,14 @@ export const createGoogleCalendarTool = (deps: { getClient: (companyId: string, 
     return allowed ? ok(action) : err(new PermissionError({ toolId: 'googleCalendar', action, reason: 'not_allowed' }));
   },
   async execute(args, ctx): Promise<Result<Res, ToolError>> {
-    const client = await deps.getClient(ctx.runContext.companyId, ctx.runContext.userId);
-    if (!client) return err(new ToolError({ toolId: 'googleCalendar', reason: 'unrecoverable', message: 'Google Calendar not connected' }));
+    const writeOp = args.op === 'create' || args.op === 'update' || args.op === 'delete';
+    const client = await deps.getClient({
+      companyId:     ctx.runContext.companyId,
+      userId:        ctx.runContext.userId,
+      connectionId:  args.connectionId,
+      minimumAccess: writeOp ? 'read_write' : 'read_only',
+    });
+    if (!client) return err(new ToolError({ toolId: 'googleCalendar', reason: 'unrecoverable', message: 'Google Calendar connection is unavailable or not allowed for this operation' }));
     const calId = args.calendarId ?? 'primary';
     try {
       switch (args.op) {
@@ -65,7 +77,13 @@ export const createGoogleCalendarTool = (deps: { getClient: (companyId: string, 
         }
         case 'update': {
           if (!args.eventId) return err(new ToolError({ toolId: 'googleCalendar', reason: 'bad_args', message: 'eventId required' }));
-          await client.updateEvent(calId, args.eventId, { title: args.title, startTime: args.startTime, endTime: args.endTime });
+          await client.updateEvent(calId, args.eventId, {
+            title: args.title,
+            startTime: args.startTime,
+            endTime: args.endTime,
+            attendeeEmails: args.attendeeEmails,
+            description: args.description,
+          });
           return ok({ success: true, message: 'Event updated' });
         }
         case 'delete': {

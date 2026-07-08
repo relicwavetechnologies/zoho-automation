@@ -7,6 +7,7 @@ ottomator-agents/
 *.tsbuildinfo
 **/*.tsbuildinfo
 pi-bridge/
+t3-code/
 advance-backend/pnpm-workspace.yaml
 
 # graphify knowledge graph (local only, never commit)

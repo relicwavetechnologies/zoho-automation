@@ -1,5 +1,10 @@
 import type { Skill } from './skill.types';
 
+export interface SkillSearchResult {
+  readonly skill: Skill;
+  readonly score: number;
+}
+
 export class SkillRegistry {
   private readonly skills: ReadonlyMap<string, Skill>;
 
@@ -18,40 +23,21 @@ export class SkillRegistry {
     return `Available skills:\n${lines.join('\n')}`;
   }
 
+  search(query: string, opts: { limit?: number; skills?: readonly Skill[] } = {}): SkillSearchResult[] {
+    const words = tokenize(query);
+    if (words.length === 0) return [];
+
+    const candidates = opts.skills ?? Array.from(this.skills.values());
+    const results = candidates
+      .map((skill) => ({ skill, score: scoreSkill(skill, words) }))
+      .filter((result) => result.score > 0)
+      .sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name));
+
+    return results.slice(0, opts.limit ?? 5);
+  }
+
   discover(query: string): Skill | null {
-    const words = query
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 1);
-
-    if (words.length === 0) return null;
-
-    let bestSkill: Skill | null = null;
-    let bestScore = 0;
-
-    for (const skill of this.skills.values()) {
-      const haystack = [
-        skill.id,
-        skill.name,
-        skill.description,
-        skill.instructions,
-        ...skill.toolIds,
-      ]
-        .join(' ')
-        .toLowerCase();
-
-      let score = 0;
-      for (const word of words) {
-        if (haystack.includes(word)) score++;
-      }
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestSkill = skill;
-      }
-    }
-
-    return bestScore > 0 ? bestSkill : null;
+    return this.search(query, { limit: 1 })[0]?.skill ?? null;
   }
 
   getById(id: string): Skill | null {
@@ -69,4 +55,30 @@ export class SkillRegistry {
     }
     return ids;
   }
+}
+
+function tokenize(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9._-]+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length > 1);
+}
+
+function scoreSkill(skill: Skill, words: readonly string[]): number {
+  const strong = [
+    skill.id,
+    skill.name,
+    skill.description,
+    ...skill.toolIds,
+  ].join(' ').toLowerCase();
+  const full = `${strong} ${skill.instructions}`.toLowerCase();
+
+  let score = 0;
+  for (const word of words) {
+    if (strong.includes(word)) score += 3;
+    else if (full.includes(word)) score += 1;
+  }
+
+  return score;
 }

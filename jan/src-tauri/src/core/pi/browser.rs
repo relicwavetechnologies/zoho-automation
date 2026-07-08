@@ -16,8 +16,7 @@ fn browser_profile_candidates(home: &Path) -> Vec<BrowserProfile> {
         return vec![
             BrowserProfile {
                 _name: "Brave",
-                path: home
-                    .join("Library/Application Support/BraveSoftware/Brave-Browser"),
+                path: home.join("Library/Application Support/BraveSoftware/Brave-Browser"),
             },
             BrowserProfile {
                 _name: "Chrome",
@@ -201,7 +200,11 @@ mod tests {
         for args in [
             vec!["run", "/mcp.js", "--browserUrl=http://127.0.0.1:9222"],
             vec!["run", "/mcp.js", "--user-data-dir=/tmp/brave"],
-            vec!["run", "/mcp.js", "--wsEndpoint=ws://127.0.0.1:9222/devtools/browser/x"],
+            vec![
+                "run",
+                "/mcp.js",
+                "--wsEndpoint=ws://127.0.0.1:9222/devtools/browser/x",
+            ],
         ] {
             let cfg = serde_json::json!({
                 "mcpServers": { "chrome-devtools": { "args": args } }

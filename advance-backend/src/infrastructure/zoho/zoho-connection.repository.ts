@@ -31,6 +31,14 @@ export interface ActiveZohoConnection {
   readonly apiDomain?:          string;
 }
 
+export interface ZohoOAuthCredentials {
+  readonly clientId:        string;
+  readonly clientSecret:    string;
+  readonly redirectUri:     string;
+  readonly accountsBaseUrl: string;
+  readonly apiBaseUrl:      string;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function extractApiDomain(meta: unknown): string | undefined {
@@ -161,6 +169,33 @@ export class ZohoConnectionRepository {
         data:  { tokenFailureCode: code },
       });
     } catch { /* best-effort */ }
+  }
+
+  /** Find company-specific Zoho OAuth credentials, if configured. */
+  async findOAuthCredentials(companyId: string): Promise<Result<ZohoOAuthCredentials | null, InfraError>> {
+    try {
+      const record = await this.db.zohoOAuthConfig.findUnique({
+        where:  { companyId },
+        select: {
+          clientId:              true,
+          clientSecretEncrypted: true,
+          redirectUri:           true,
+          accountsBaseUrl:       true,
+          apiBaseUrl:            true,
+        },
+      });
+      if (!record) return ok(null);
+
+      return ok({
+        clientId:        record.clientId,
+        clientSecret:    decryptToken(record.clientSecretEncrypted, this.cryptoKey),
+        redirectUri:     record.redirectUri,
+        accountsBaseUrl: record.accountsBaseUrl,
+        apiBaseUrl:      record.apiBaseUrl,
+      });
+    } catch (e) {
+      return err(wrapInfra('prisma', 'ZohoOAuthConfig.findUnique', e));
+    }
   }
 
   /**

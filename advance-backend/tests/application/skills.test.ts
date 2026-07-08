@@ -19,6 +19,7 @@ import { SkillsService }   from '../../src/application/context-search/skills.ser
 import type { SkillRepoPort, SkillRow } from '../../src/infrastructure/persistence/skill.repository.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import type { InfraError } from '../../src/shared/errors.ts';
+import { SkillRegistry } from '../../src/application/skills/skill-registry.ts';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -47,6 +48,53 @@ function fakeRow(overrides: Partial<SkillRow> = {}): SkillRow {
 }
 
 // ─── SkillRepository ──────────────────────────────────────────────────────────
+
+describe('SkillRegistry', () => {
+  it('returns ranked search results and preserves discover compatibility', () => {
+    const registry = new SkillRegistry([
+      {
+        id: 'google',
+        name: 'Google Workspace',
+        description: 'Gmail Drive Calendar',
+        instructions: 'Use Gmail for inbox and mail tasks.',
+        toolIds: ['googleGmail'],
+      },
+      {
+        id: 'zoho',
+        name: 'Zoho',
+        description: 'CRM and Books',
+        instructions: 'Use for leads and invoices.',
+        toolIds: ['zohoCrm'],
+      },
+    ]);
+
+    const results = registry.search('list my gmail inbox', { limit: 2 });
+    assert.equal(results[0]!.skill.id, 'google');
+    assert.ok(results[0]!.score > 0);
+    assert.equal(registry.discover('gmail inbox')?.id, 'google');
+  });
+
+  it('can search over a filtered skill subset', () => {
+    const google = {
+      id: 'google',
+      name: 'Google Workspace',
+      description: 'Gmail',
+      instructions: 'mail',
+      toolIds: ['googleGmail'],
+    };
+    const zoho = {
+      id: 'zoho',
+      name: 'Zoho',
+      description: 'CRM',
+      instructions: 'mail invoices',
+      toolIds: ['zohoCrm'],
+    };
+    const registry = new SkillRegistry([google, zoho]);
+
+    const results = registry.search('mail', { skills: [zoho] });
+    assert.deepEqual(results.map((r) => r.skill.id), ['zoho']);
+  });
+});
 
 describe('SkillRepository', () => {
   describe('search()', () => {

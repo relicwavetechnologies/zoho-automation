@@ -1,5 +1,6 @@
 use std::fs::{self, File};
 use std::io::Write;
+use std::path::Path;
 use tauri::Runtime;
 use uuid::Uuid;
 
@@ -13,10 +14,12 @@ use super::{
     constants::THREADS_FILE,
     utils::{
         ensure_data_dirs, ensure_thread_dir_exists, get_data_dir, get_messages_path,
-        get_thread_dir, get_thread_metadata_path,
+        get_pi_session_path, get_thread_dir, get_thread_metadata_path,
     },
 };
 use crate::core::app::commands::get_jan_data_folder_path;
+use crate::core::divo::workspace::cleanup_workspace_thread_layout;
+use crate::core::pi::session::read_session_workspace_cwd;
 
 /// Lists all threads by reading their metadata from the threads directory or database.
 /// Returns a vector of thread metadata as JSON values.
@@ -128,12 +131,30 @@ pub async fn delete_thread<R: Runtime>(
     }
 
     // Use file-based storage on desktop
-    let data_folder = get_jan_data_folder_path(app_handle);
+    let data_folder = get_jan_data_folder_path(app_handle.clone());
+    cleanup_divo_thread_state(&data_folder, &thread_id);
+
     let thread_dir = get_thread_dir(&data_folder, &thread_id);
     if thread_dir.exists() {
         let _ = fs::remove_dir_all(thread_dir);
     }
     Ok(())
+}
+
+fn cleanup_divo_thread_state(data_folder: &Path, thread_id: &str) {
+    let session_path = get_pi_session_path(data_folder, thread_id);
+    let workspace_dir = match read_session_workspace_cwd(&session_path) {
+        Ok(Some(path)) => path,
+        Ok(None) => return,
+        Err(err) => {
+            log::warn!("Divo cleanup skipped session cwd read for thread {thread_id}: {err}");
+            return;
+        }
+    };
+
+    if let Err(err) = cleanup_workspace_thread_layout(&workspace_dir, thread_id) {
+        log::warn!("Divo cleanup failed for deleted thread {thread_id}: {err}");
+    }
 }
 
 /// Lists all messages for a given thread by reading and parsing its messages.jsonl file.
@@ -190,7 +211,10 @@ pub async fn create_message<R: Runtime>(
         ensure_thread_dir_exists(&data_folder, &thread_id)?;
 
         // Dedupe against a modify_message upsert that landed first.
-        let message_id = message.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let message_id = message
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         if let Some(ref id) = message_id {
             let existing = read_messages_from_file(&data_folder, &thread_id)?;
             if existing

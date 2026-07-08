@@ -9,6 +9,7 @@ describe('GoogleDriveAttachmentAdapter', () => {
       searchFiles: async () => [],
       createFolder: async () => ({ fileId: 'folder' }),
       getFile: async () => ({ name: 'report.pdf', mimeType: 'application/pdf', sizeBytes: 3 }),
+      readFile: async () => ({ content: 'abc' }),
       downloadFile: async (fileId: string) => {
         assert.equal(fileId, 'f1');
         return Buffer.from('abc');
@@ -34,6 +35,7 @@ describe('GoogleDriveAttachmentAdapter', () => {
       searchFiles: async () => [],
       createFolder: async () => ({ fileId: 'folder' }),
       getFile: async () => ({ name: 'Sheet', mimeType: 'application/vnd.google-apps.spreadsheet' }),
+      readFile: async () => ({ content: 'xlsx' }),
       downloadFile: async () => Buffer.alloc(0),
       exportFile: async (_fileId: string, mimeType: string) => {
         calls.push(mimeType);

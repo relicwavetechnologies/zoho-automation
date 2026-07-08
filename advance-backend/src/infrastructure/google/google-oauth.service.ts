@@ -13,9 +13,12 @@
  *   TTL:  (expiresIn - 60) seconds (60s safety buffer)
  *   Stored value: { token: string; expiresAtMs: number }
  *
- * No googleapis SDK — pure fetch calls.
+ * Token exchange/refresh stays as direct HTTP. Runtime Google clients receive a
+ * google-auth-library OAuth2Client so SDK-backed tools can refresh safely.
  */
 
+import { OAuth2Client } from 'google-auth-library';
+import type { Credentials } from 'google-auth-library';
 import type { Logger } from '../../shared/logger';
 import type { CachePort } from '../../shared/cache';
 import type { TypedEnv } from '../../config/env';
@@ -108,6 +111,23 @@ export class GoogleOAuthService {
 
   getScopes(): string[] {
     return [...DEFAULT_SCOPES];
+  }
+
+  createOAuth2Client(input: {
+    readonly refreshToken: string;
+    readonly accessToken?: string;
+    readonly accessTokenExpiresAt?: Date;
+    readonly tokenType?: string;
+  }): OAuth2Client {
+    this.assertConfigured('createOAuth2Client');
+
+    const client = new OAuth2Client(this.clientId, this.clientSecret, this.redirectUri);
+    const credentials: Credentials = { refresh_token: input.refreshToken };
+    if (input.accessToken) credentials.access_token = input.accessToken;
+    if (input.accessTokenExpiresAt) credentials.expiry_date = input.accessTokenExpiresAt.getTime();
+    if (input.tokenType) credentials.token_type = input.tokenType;
+    client.setCredentials(credentials);
+    return client;
   }
 
   private resolveRedirectUri(env: TypedEnv): string {

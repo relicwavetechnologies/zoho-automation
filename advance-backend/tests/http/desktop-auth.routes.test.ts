@@ -23,7 +23,7 @@ function makeDeps() {
     ),
     googleOAuthService: {} as any,
     larkUserAuthLinkRepo: {} as any,
-    googleUserAuthLinkRepo: {} as any,
+    connectionRepo: {} as any,
     logger: noopLogger,
     memberJwtSecret: 'test-member-secret-32-bytes-long',
     backendPublicUrl: 'https://backend.example.com',

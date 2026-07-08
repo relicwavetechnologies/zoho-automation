@@ -6,6 +6,8 @@ import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/id
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { PermissionResult } from '../permissions/permission.types';
 import type { ToolExecutor } from './tool-executor';
+import { mediaImageOcrPayloadSchema, type MediaOcrService } from './media-ocr.service';
+import type { ConnectionRegistryPort } from '../connections/connection-registry.port';
 import type {
   GatewayMemberContext,
   GatewayRequest,
@@ -14,8 +16,10 @@ import type {
 import {
   gatewayFailure,
   gatewaySuccess,
+  connectionsListPayloadSchema,
   isGatewayOp,
   skillsGetPayloadSchema,
+  skillsSearchPayloadSchema,
   toolsInvokePayloadSchema,
 } from './gateway.types';
 
@@ -24,6 +28,8 @@ export interface GatewayDispatcherDeps {
   readonly toolRegistry: ToolRegistry;
   readonly skillRegistry: SkillRegistry;
   readonly toolExecutor: ToolExecutor;
+  readonly connectionRegistry?: ConnectionRegistryPort;
+  readonly mediaOcr?: MediaOcrService;
   readonly logger: Logger;
 }
 
@@ -44,8 +50,14 @@ export class GatewayDispatcher {
         return this.handleToolsList(member, departmentId);
       case 'skills.list':
         return this.handleSkillsList(member, departmentId);
+      case 'skills.search':
+        return this.handleSkillsSearch(member, departmentId, request.payload);
       case 'skills.get':
         return this.handleSkillsGet(member, departmentId, request.payload);
+      case 'connections.list':
+        return this.handleConnectionsList(member, departmentId, request.payload);
+      case 'media.image_ocr':
+        return this.handleMediaImageOcr(member, departmentId, request.payload);
       case 'tools.invoke':
         return this.handleToolsInvoke(member, departmentId, request.payload);
       default:
@@ -157,6 +169,43 @@ export class GatewayDispatcher {
     return gatewaySuccess({ skills });
   }
 
+  private async handleSkillsSearch(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload: Record<string, unknown> | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = skillsSearchPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid skills.search payload — ${issues}`);
+    }
+
+    const perm = await this.resolvePerm(member, departmentId);
+    if (!perm) {
+      return this.permissionDenied('Permission resolution failed');
+    }
+
+    const allowedSkills = this.filterSkills(perm);
+    const results = this.deps.skillRegistry.search(parsed.data.query, {
+      limit: parsed.data.limit ?? 3,
+      skills: allowedSkills,
+    });
+
+    return gatewaySuccess({
+      query: parsed.data.query,
+      nextStep: 'Call skills.get with the selected skillId before invoking backend tools.',
+      skills: results.map((result) => ({
+        id: result.skill.id,
+        name: result.skill.name,
+        description: result.skill.description,
+        score: result.score,
+        toolIds: [...result.skill.toolIds],
+      })),
+    });
+  }
+
   private async handleSkillsGet(
     member: GatewayMemberContext,
     departmentId: string | undefined,
@@ -227,5 +276,105 @@ export class GatewayDispatcher {
       toolId: parsed.data.toolId,
       args: parsed.data.args,
     });
+  }
+
+  private async handleConnectionsList(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload: Record<string, unknown> | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = connectionsListPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid connections.list payload — ${issues}`);
+    }
+
+    const perm = await this.resolvePerm(member, departmentId);
+    if (!perm) {
+      return this.permissionDenied('Permission resolution failed');
+    }
+
+    if (!this.deps.connectionRegistry) {
+      return gatewayFailure('tool_error', 'Connection registry is not configured');
+    }
+
+    const provider = parsed.data.provider ?? 'google_workspace';
+    const canUseGoogle = ['googleGmail', 'googleDrive', 'googleCalendar'].some((toolId) =>
+      perm.allowedToolIds.has(asToolId(toolId)),
+    );
+    const canUseZoho = ['zohoCrm', 'zohoBooks'].some((toolId) =>
+      perm.allowedToolIds.has(asToolId(toolId)),
+    );
+    if (provider === 'google_workspace' && !canUseGoogle) {
+      return gatewaySuccess({ connections: [] });
+    }
+    if (provider === 'zoho' && !canUseZoho) {
+      return gatewaySuccess({ connections: [] });
+    }
+
+    const result = provider === 'zoho'
+      ? await this.deps.connectionRegistry.listAccessibleZohoConnections({
+        companyId: member.companyId,
+        userId:    member.userId,
+      })
+      : await this.deps.connectionRegistry.listAccessibleGoogleConnections({
+      companyId: member.companyId,
+      userId:    member.userId,
+      });
+    if (!result.ok) {
+      return gatewayFailure('tool_error', result.error.message);
+    }
+
+    return gatewaySuccess({
+      connections: result.value.map(connection => ({
+        connectionId: connection.connectionId,
+        provider:     connection.provider,
+        label:        connection.label,
+        accountEmail: connection.accountEmail ?? null,
+        accountName:  connection.accountName ?? null,
+        ownerType:    connection.ownerType,
+        ownerUserId:  connection.ownerUserId ?? null,
+        access:       connection.access,
+        scopes:       connection.scopes,
+        connectedAt:  connection.connectedAt.toISOString(),
+        lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
+      })),
+    });
+  }
+
+  private async handleMediaImageOcr(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload: Record<string, unknown> | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = mediaImageOcrPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid media.image_ocr payload — ${issues}`);
+    }
+
+    const perm = await this.resolvePerm(member, departmentId);
+    if (!perm) {
+      return this.permissionDenied('Permission resolution failed');
+    }
+
+    if (!this.deps.mediaOcr) {
+      return gatewayFailure('tool_error', 'Media OCR is not configured');
+    }
+
+    this.deps.logger.info('gateway.media.image_ocr', {
+      userId: member.userId,
+      companyId: member.companyId,
+      departmentId: departmentId ?? null,
+      mimeType: parsed.data.mimeType,
+      fileName: parsed.data.fileName ?? null,
+    });
+
+    const result = await this.deps.mediaOcr.extractImage(parsed.data);
+    return gatewaySuccess({ media: result });
   }
 }

@@ -581,6 +581,7 @@ describe('googleDrive tool', () => {
   const fakeDriveClient = {
     listFiles:    async () => [{ fileId: 'f1', name: 'Budget.xlsx' }],
     getFile:      async () => ({ fileId: 'f1', name: 'Budget.xlsx' }),
+    readFile:     async () => ({ file: { fileId: 'f1', name: 'Budget.xlsx' }, content: 'Budget content', encoding: 'utf8' }),
     searchFiles:  async () => [{ fileId: 'f2', name: 'Q1.csv' }],
     createFolder: async () => ({ fileId: 'folder-1' }),
   };
@@ -633,6 +634,19 @@ describe('googleDrive tool', () => {
     it('get: bad_args when fileId missing', async () => {
       const tool = createGoogleDriveTool({ getClient: yesClient });
       const r = await tool.execute({ op: 'get' }, ctx);
+      assert.equal(r.ok, false);
+    });
+
+    it('read: ok with file content', async () => {
+      const tool = createGoogleDriveTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'read', fileId: 'f1' }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.data.content, 'Budget content');
+    });
+
+    it('read: bad_args when fileId missing', async () => {
+      const tool = createGoogleDriveTool({ getClient: yesClient });
+      const r = await tool.execute({ op: 'read' }, ctx);
       assert.equal(r.ok, false);
     });
 

@@ -167,6 +167,8 @@ export class ZohoFinanceOps {
    */
   async buildOverdueReport(input: {
     companyId:        string;
+    userId?:          string;
+    connectionId?:    string;
     organizationId?:  string;
     asOfDate?:        string;
     minOverdueDays?:  number;
@@ -187,6 +189,8 @@ export class ZohoFinanceOps {
     // ── 1. Exhaust all overdue invoice pages ─────────────────────────────────
     const { organizationId, items: rawInvoices, truncated } = await this.booksClient.listAllRecords({
       companyId:  input.companyId,
+      ...(input.userId ? { userId: input.userId } : {}),
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       moduleName: 'invoices',
       filters:    { status: 'overdue' },
       ...(input.organizationId !== undefined ? { organizationId: input.organizationId } : {}),

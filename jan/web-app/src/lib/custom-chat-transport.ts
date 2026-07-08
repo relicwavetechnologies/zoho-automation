@@ -39,6 +39,7 @@ import { encodeVideoSentinel, parseVideoDataUrl } from '@/lib/video-sentinel'
 import { extractFilesFromPrompt, type FileMetadata } from '@/lib/fileMetadata'
 import { isPredefinedRemoteProvider, getProviderApiType } from '@/lib/providerCaps'
 import { createPiMessageStream } from './pi-stream'
+import { buildDivoMediaContextForPi } from './divo-media-ocr'
 import { paramsSettings } from '@/lib/predefinedParams'
 
 export type TokenUsageCallback = (
@@ -875,7 +876,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     this.lastUserMessage = extractLatestUserText(options.messages)
 
     if (providerId === 'pi') {
-      const userMessage = this.lastUserMessage.trim()
+      const mediaContext = await buildDivoMediaContextForPi(options.messages)
+      const userMessage = [mediaContext, this.lastUserMessage.trim()]
+        .filter((part) => part.length > 0)
+        .join('\n\n')
       if (!userMessage) {
         throw new Error('No user message to send to Pi.')
       }

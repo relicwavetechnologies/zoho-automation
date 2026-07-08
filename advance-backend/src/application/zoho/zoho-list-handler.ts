@@ -26,6 +26,8 @@ export interface ListHandlerResult<T extends Record<string, unknown> = Record<st
 
 export interface HandleZohoListInput<T extends Record<string, unknown> = Record<string, unknown>> {
   readonly companyId: string;
+  readonly userId?: string;
+  readonly connectionId?: string;
   readonly organizationId?: string;
   readonly moduleName: ZohoBooksModule;
   readonly moduleLabel: string;
@@ -130,6 +132,8 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
 
   const firstPage = await input.booksClient.listRecords({
     companyId:  input.companyId,
+    ...(input.userId ? { userId: input.userId } : {}),
+    ...(input.connectionId ? { connectionId: input.connectionId } : {}),
     moduleName: input.moduleName,
     ...(input.organizationId ? { organizationId: input.organizationId } : {}),
     ...(input.filters ? { filters: input.filters } : {}),
@@ -166,6 +170,8 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
   const exhausted = shouldExhaust
     ? await input.booksClient.listAllRecords({
       companyId:  input.companyId,
+      ...(input.userId ? { userId: input.userId } : {}),
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       moduleName: input.moduleName,
       ...(input.organizationId ? { organizationId: input.organizationId } : {}),
       ...(input.filters ? { filters: input.filters } : {}),

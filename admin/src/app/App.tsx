@@ -10,6 +10,7 @@ import { DepartmentsPage } from "@/pages/DepartmentsPage"
 import { LoginPage } from "@/pages/LoginPage"
 import { MemberInviteAcceptPage } from "@/pages/MemberInviteAcceptPage"
 import { MemberLoginPage } from "@/pages/MemberLoginPage"
+import { MemberDetailPage } from "@/pages/MemberDetailPage"
 import { MembersPage } from "@/pages/MembersPage"
 import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { OverviewPage } from "@/pages/OverviewPage"
@@ -70,6 +71,7 @@ export function App() {
           <Route path="overview" element={<Navigate to="/home" replace />} />
           <Route path="workspaces" element={<SettingsPage />} />
           <Route path="people" element={<MembersPage />} />
+          <Route path="people/:userId" element={<MemberDetailPage />} />
           <Route path="members" element={<Navigate to="/people" replace />} />
           <Route path="departments" element={<DepartmentsPage />} />
           <Route path="ai-ops" element={<AiOpsPage />} />

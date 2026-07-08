@@ -206,8 +206,7 @@ export const createServer = (c: Container) => {
     '/api/google/auth',
     createGoogleAuthRoutes({
       googleOAuthService:    c.googleOAuthService,
-      googleUserLinkRepo:    c.googleUserLinkRepo,
-      companyGoogleAuthRepo: c.companyGoogleLinkRepo,
+      connectionRepo:        c.integrationConnectionRepo,
       cache:                 c.memoryCache,   // nonces → REDIS_MEMORY_URL
       logger:                c.logger,
       frontendBaseUrl:       c.env.APP_BASE_URL,
@@ -302,9 +301,12 @@ export const createServer = (c: Container) => {
       prisma:                 c.prisma,
       larkOAuthService:       c.larkOAuthService,
       googleOAuthService:     c.googleOAuthService,
+      zohoTokenService:       c.zohoTokenService,
+      zohoConnectionRepo:     c.zohoConnectionRepo,
       larkUserAuthLinkRepo:   c.larkUserAuthLinkRepo,
-      googleUserAuthLinkRepo: c.googleUserLinkRepo,
+      connectionRepo:         c.integrationConnectionRepo,
       logger:                 c.logger,
+      env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
       backendPublicUrl:       c.env.BACKEND_PUBLIC_URL,
       sessionTtlMinutes:      480,

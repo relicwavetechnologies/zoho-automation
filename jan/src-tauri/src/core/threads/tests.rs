@@ -9,6 +9,7 @@ use super::utils::{
     get_pi_session_path, get_thread_dir, get_thread_metadata_path,
 };
 use crate::core::app::commands::get_jan_data_folder_path;
+use crate::core::divo::workspace::prepare_workspace_run_layout;
 use futures_util::future;
 use serde_json::json;
 use std::fs;
@@ -280,6 +281,22 @@ async fn test_modify_and_delete_thread() {
         .await
         .unwrap();
     let thread_id = created["id"].as_str().unwrap().to_string();
+    let workspace_root =
+        std::env::temp_dir().join(format!("jan-delete-divo-workspace-{}", std::process::id()));
+    let workspace_dir = workspace_root.join("workspace");
+    let _ = fs::remove_dir_all(&workspace_root);
+    fs::create_dir_all(&workspace_dir).unwrap();
+    let divo_layout = prepare_workspace_run_layout(&workspace_dir, &thread_id).unwrap();
+    let session_header = serde_json::json!({
+        "type": "session",
+        "id": "session-1",
+        "cwd": workspace_dir.to_string_lossy(),
+    });
+    fs::write(
+        get_pi_session_path(&data_dir, &thread_id),
+        format!("{session_header}\n"),
+    )
+    .unwrap();
 
     // Modify the thread
     let mut modified_thread = created.clone();
@@ -303,11 +320,20 @@ async fn test_modify_and_delete_thread() {
     // Verify deletion
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let thread_dir = data_dir.join(&thread_id);
+        let thread_dir = get_thread_dir(&data_dir, &thread_id);
         assert!(!thread_dir.exists(), "Thread directory should be deleted");
+        assert!(
+            !divo_layout.thread_dir.exists(),
+            "Divo thread state should be deleted with the thread"
+        );
+        assert!(
+            workspace_dir.join(".divo").exists(),
+            "Divo workspace state root should remain"
+        );
     }
 
     // Clean up
+    let _ = fs::remove_dir_all(&workspace_root);
 }
 
 #[tokio::test]
@@ -411,7 +437,6 @@ async fn test_modify_thread_assistant() {
         .await
         .unwrap();
     assert_eq!(retrieved["assistant_name"], "Modified Assistant");
-
 }
 
 #[tokio::test]
@@ -438,7 +463,6 @@ async fn test_thread_not_found_errors() {
             .await
             .is_err()
     );
-
 }
 
 #[tokio::test]
@@ -455,7 +479,6 @@ async fn test_message_without_id_gets_generated() {
     let created_msg = create_message(app_handle, message).await.unwrap();
 
     assert!(created_msg["id"].as_str().is_some_and(|id| !id.is_empty()));
-
 }
 
 #[tokio::test]
@@ -485,7 +508,6 @@ async fn test_concurrent_message_operations() {
 
     let messages = list_messages(app_handle, thread_id).await.unwrap();
     assert_eq!(messages.len(), 5);
-
 }
 
 #[tokio::test]
@@ -512,7 +534,6 @@ async fn test_empty_message_list() {
         .await
         .unwrap();
     assert_eq!(messages.len(), 0);
-
 }
 
 // ---------- constants.rs ----------

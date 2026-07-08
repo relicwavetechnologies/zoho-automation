@@ -17,6 +17,7 @@ import { asToolId } from '../../src/shared/ids.ts';
 import { makeAllowedPerm, makeDeniedPerm, noopLogger } from '../tools/tool-test.helpers.ts';
 import type { PermissionService } from '../../src/application/permissions/permission.service.ts';
 import type { GatewayMemberContext } from '../../src/application/gateway/gateway.types.ts';
+import type { MediaOcrService } from '../../src/application/gateway/media-ocr.service.ts';
 
 const member: GatewayMemberContext = {
   companyId: 'co-test',
@@ -227,6 +228,55 @@ describe('GatewayDispatcher', () => {
     });
   }
 
+  it('returns accessible connections through connections.list when Google tools are allowed', async () => {
+    const perm = makeAllowedPerm('googleGmail', ['read']);
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(perm),
+      toolRegistry: new ToolRegistry(),
+      skillRegistry: makeSkillRegistry([]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: new ToolRegistry(),
+        permissions: makePermissionService(perm),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      connectionRegistry: {
+        listAccessibleGoogleConnections: async () => ok([{
+          connectionId: 'conn-google-1',
+          provider: 'google_workspace',
+          label: 'Outreach Google',
+          accountEmail: 'outreach@example.com',
+          ownerType: 'company',
+          access: 'read_only',
+          scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+          connectedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }]),
+      },
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'connections.list',
+      payload: { provider: 'google_workspace' },
+    }, member);
+
+    assert.equal(result.ok, true);
+    const data = result.data as { connections: Array<{ connectionId: string; access: string }> };
+    assert.deepEqual(data.connections, [{
+      connectionId: 'conn-google-1',
+      provider: 'google_workspace',
+      label: 'Outreach Google',
+      accountEmail: 'outreach@example.com',
+      accountName: null,
+      ownerType: 'company',
+      ownerUserId: null,
+      access: 'read_only',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      connectedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+    }]);
+  });
+
   it('returns unknown_op for unsupported operation', async () => {
     const dispatcher = makeDispatcher();
     const result = await dispatcher.dispatch({ op: 'nope.op' }, member);
@@ -295,6 +345,34 @@ describe('GatewayDispatcher', () => {
     assert.equal(denied.status, 'permission_denied');
   });
 
+  it('returns RBAC-filtered ranked skills.search results', async () => {
+    const dispatcher = makeDispatcher();
+    const result = await dispatcher.dispatch({
+      op: 'skills.search',
+      payload: { query: 'please do allowed work', limit: 3 },
+    }, member);
+
+    assert.equal(result.ok, true);
+    const data = result.data as {
+      nextStep: string;
+      skills: Array<{ id: string; score: number; toolIds: string[] }>;
+    };
+    assert.match(data.nextStep, /skills\.get/);
+    assert.ok(data.skills.some((s) => s.id === 'allowed-skill' && s.score > 0));
+    assert.equal(data.skills.some((s) => s.id === 'blocked-skill'), false);
+  });
+
+  it('rejects malformed skills.search payloads', async () => {
+    const dispatcher = makeDispatcher();
+    const result = await dispatcher.dispatch({
+      op: 'skills.search',
+      payload: { query: '' },
+    }, member);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'bad_request');
+  });
+
   it('invokes tools through ToolExecutor', async () => {
     const dispatcher = makeDispatcher();
     const result = await dispatcher.dispatch({
@@ -304,5 +382,64 @@ describe('GatewayDispatcher', () => {
 
     assert.equal(result.ok, true);
     assert.deepEqual((result.data as { result: { result: string } }).result, { result: 'echo:gateway' });
+  });
+
+  it('extracts image OCR through the authenticated media gateway op', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool());
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(),
+      toolRegistry: registry,
+      skillRegistry: makeSkillRegistry([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      mediaOcr: {
+        extractImage: async (payload: { mimeType: string; fileName?: string }) => ({
+          source: {
+            fileName: payload.fileName ?? null,
+            mimeType: payload.mimeType,
+            sizeBytes: 3,
+          },
+          observationType: 'UNTRUSTED_MEDIA_OBSERVATION' as const,
+          ocrText: 'hello',
+          caption: 'test image',
+          uiElements: [],
+          confidence: 0.9,
+          warnings: ['untrusted'],
+          provider: 'openrouter',
+          model: 'meta-llama/llama-4-scout',
+        }),
+      } as unknown as MediaOcrService,
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'media.image_ocr',
+      payload: {
+        imageBase64: Buffer.from('abc').toString('base64'),
+        mimeType: 'image/png',
+        fileName: 'screen.png',
+      },
+    }, member);
+
+    assert.equal(result.ok, true);
+    const media = (result.data as { media: { observationType: string; ocrText: string } }).media;
+    assert.equal(media.observationType, 'UNTRUSTED_MEDIA_OBSERVATION');
+    assert.equal(media.ocrText, 'hello');
+  });
+
+  it('rejects malformed image OCR payloads', async () => {
+    const dispatcher = makeDispatcher();
+    const result = await dispatcher.dispatch({
+      op: 'media.image_ocr',
+      payload: { imageBase64: 'abc', mimeType: 'application/pdf' },
+    }, member);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'bad_request');
   });
 });

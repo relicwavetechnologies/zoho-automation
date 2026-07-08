@@ -42,10 +42,12 @@ export class GoogleDriveAttachmentAdapter implements AttachmentSourceAdapter {
   readonly source = 'google_drive' as const;
 
   constructor(
-    private readonly getClient: (
-      companyId: string,
-      userId: string,
-    ) => Promise<GoogleDriveAttachmentClient | null>,
+    private readonly getClient: (input: {
+      readonly companyId: string;
+      readonly userId: string;
+      readonly connectionId: string;
+      readonly minimumAccess: 'read_only';
+    }) => Promise<GoogleDriveAttachmentClient | null>,
   ) {}
 
   async resolve(ref: AttachmentRef, ctx: AttachmentResolveContext): Promise<ResolvedAttachment> {
@@ -53,8 +55,13 @@ export class GoogleDriveAttachmentAdapter implements AttachmentSourceAdapter {
       throw new Error('GoogleDriveAttachmentAdapter received an incompatible attachment ref');
     }
 
-    const client = await this.getClient(ctx.companyId, ctx.userId);
-    if (!client) throw new Error('Google Drive is not connected for this user');
+    const client = await this.getClient({
+      companyId: ctx.companyId,
+      userId: ctx.userId,
+      connectionId: ref.connectionId,
+      minimumAccess: 'read_only',
+    });
+    if (!client) throw new Error('Google Drive connection is unavailable for this user');
 
     const metadata = normalizeDriveMetadata(await client.getFile(ref.fileId));
     const exportInfo = defaultExportFor(metadata.mimeType, ref.exportMimeType);

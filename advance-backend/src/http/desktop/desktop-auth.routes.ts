@@ -3,18 +3,24 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { PrismaClient } from '../../generated/prisma';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
 import type { GoogleOAuthService } from '../../infrastructure/google/google-oauth.service';
+import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
+import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
 import type { LarkUserAuthLinkRepository } from '../../infrastructure/persistence/lark-user-auth-link.repository';
-import type { GoogleUserAuthLinkRepository } from '../../infrastructure/google/google-user-auth-link.repository';
+import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import type { Logger } from '../../shared/logger';
+import type { TypedEnv } from '../../config/env';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 
 export interface DesktopAuthRoutesDeps {
   prisma:                 PrismaClient;
   larkOAuthService:       LarkOAuthService;
   googleOAuthService:     GoogleOAuthService;
+  zohoTokenService:       ZohoTokenService;
+  zohoConnectionRepo:     ZohoConnectionRepository;
   larkUserAuthLinkRepo:   LarkUserAuthLinkRepository;
-  googleUserAuthLinkRepo: GoogleUserAuthLinkRepository;
+  connectionRepo:         IntegrationConnectionRepository;
   logger:                 Logger;
+  env:                    TypedEnv;
   memberJwtSecret:        string;
   backendPublicUrl:       string;
   sessionTtlMinutes:      number;
@@ -31,6 +37,17 @@ interface StatePayload {
 
 const DESKTOP_PROTOCOL = 'cursorr';
 const HANDOFF_TTL_MS   = 5 * 60 * 1000;
+const GOOGLE_GRANT_ACCESSES = new Set(['read_only', 'read_write', 'admin']);
+const GOOGLE_GRANTEE_TYPES = new Set(['user', 'department', 'role', 'company']);
+const COMPANY_ADMIN_ROLES = new Set(['COMPANY_ADMIN', 'SUPER_ADMIN']);
+const DEFAULT_ZOHO_SCOPES = [
+  'ZohoCRM.modules.ALL',
+  'ZohoCRM.settings.ALL',
+  'ZohoBooks.fullaccess.all',
+  'ZohoBooks.contacts.all',
+  'ZohoBooks.invoices.all',
+  'ZohoBooks.expenses.all',
+];
 
 const pendingCallbacks = new Map<string, { code: string; state: string; createdAt: number }>();
 const pendingCallbackCleanup = setInterval(() => {
@@ -108,6 +125,194 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     jwtSecret: deps.memberJwtSecret,
     logger:    deps.logger,
   });
+
+  const buildGoogleConnectionManagePayload = async (
+    connectionId: string,
+    userId: string,
+    companyId: string,
+    role: string,
+    provider: 'google_workspace' | 'zoho' = 'google_workspace',
+  ) => {
+    const accessible = provider === 'zoho'
+      ? await deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId })
+      : await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
+    if (!accessible.ok) throw new Error(accessible.error.message);
+    const summary = accessible.value.find(connection => connection.connectionId === connectionId);
+
+    const connection = await deps.prisma.integrationConnection.findFirst({
+      where: {
+        id:        connectionId,
+        companyId,
+        provider,
+        revokedAt: null,
+        status:    'connected',
+      },
+      include: {
+        ownerUser: { select: { id: true, email: true, name: true } },
+        grants: {
+          where:   { revokedAt: null },
+          orderBy: { grantedAt: 'desc' },
+          include: {
+            grantedByUser: { select: { id: true, email: true, name: true } },
+          },
+        },
+      },
+    });
+    if (!connection || !summary) return null;
+
+    const canManage =
+      connection.ownerUserId === userId ||
+      connection.createdBy === userId ||
+      summary.access === 'admin' ||
+      COMPANY_ADMIN_ROLES.has(role);
+    if (!canManage) return { forbidden: true as const };
+
+    const [memberships, departments, departmentRoles, company] = await Promise.all([
+      deps.prisma.adminMembership.findMany({
+        where: { companyId, isActive: true },
+        include: {
+          user: { select: { id: true, email: true, name: true } },
+        },
+        orderBy: [{ role: 'asc' }, { updatedAt: 'desc' }],
+      }),
+      deps.prisma.department.findMany({
+        where:   { companyId, status: 'active' },
+        select:  { id: true, name: true, slug: true },
+        orderBy: { name: 'asc' },
+      }),
+      deps.prisma.departmentRole.findMany({
+        where: {
+          department: { companyId, status: 'active' },
+        },
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          department: { select: { id: true, name: true } },
+        },
+        orderBy: [{ department: { name: 'asc' } }, { name: 'asc' }],
+      }),
+      deps.prisma.company.findUnique({
+        where:  { id: companyId },
+        select: { id: true, name: true },
+      }),
+    ]);
+
+    const users = memberships.map(membership => ({
+      id:    membership.user.id,
+      name:  membership.user.name,
+      email: membership.user.email,
+      role:  membership.role,
+    }));
+    const usersById = new Map(users.map(user => [user.id, user]));
+    const departmentsById = new Map(departments.map(department => [department.id, department]));
+    const departmentRolesById = new Map(departmentRoles.map(departmentRole => [departmentRole.id, departmentRole]));
+    const companyRoles = ['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'].map(companyRole => ({
+      id:   companyRole,
+      name: companyRole.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()),
+    }));
+    const companyRolesById = new Map(companyRoles.map(companyRole => [companyRole.id, companyRole]));
+
+    return {
+      connection: {
+        connectionId: connection.id,
+        label:        connection.label,
+        accountEmail: connection.accountEmail ?? null,
+        accountName:  connection.accountName ?? null,
+        ownerType:    connection.ownerType,
+        ownerUser:    connection.ownerUser ?? null,
+        access:       summary.access,
+        scopes:       connection.scopes,
+        connectedAt:  connection.connectedAt.toISOString(),
+      },
+      grants: connection.grants.map(grant => {
+        const user = grant.granteeType === 'user' ? usersById.get(grant.granteeId) : undefined;
+        const department = grant.granteeType === 'department' ? departmentsById.get(grant.granteeId) : undefined;
+        const departmentRole = grant.granteeType === 'role' ? departmentRolesById.get(grant.granteeId) : undefined;
+        const companyRole = grant.granteeType === 'role' ? companyRolesById.get(grant.granteeId) : undefined;
+        const granteeLabel =
+          user?.name || user?.email ||
+          department?.name ||
+          (departmentRole ? `${departmentRole.department.name} / ${departmentRole.name}` : undefined) ||
+          companyRole?.name ||
+          company?.name ||
+          grant.granteeId;
+
+        return {
+          id:          grant.id,
+          granteeType: grant.granteeType,
+          granteeId:   grant.granteeId,
+          granteeLabel,
+          granteeDetail: user?.email ?? departmentRole?.department.name ?? null,
+          access:      grant.access,
+          grantedAt:   grant.grantedAt.toISOString(),
+          grantedBy:   grant.grantedByUser
+            ? { id: grant.grantedByUser.id, email: grant.grantedByUser.email, name: grant.grantedByUser.name }
+            : null,
+        };
+      }),
+      candidates: {
+        users,
+        departments,
+        roles: [
+          ...companyRoles.map(companyRole => ({ ...companyRole, kind: 'company' })),
+          ...departmentRoles.map(departmentRole => ({
+            id:           departmentRole.id,
+            name:         departmentRole.name,
+            slug:         departmentRole.slug,
+            kind:         'department',
+            departmentId: departmentRole.department.id,
+            department:   departmentRole.department.name,
+          })),
+        ],
+        company: company ? { id: company.id, name: company.name } : null,
+      },
+      accessLevels: [
+        {
+          value: 'read_only',
+          label: 'Read-only',
+          description: provider === 'zoho'
+            ? 'Can read Zoho CRM and Books data allowed by Zoho scopes.'
+            : 'Can read Gmail, Drive, and Calendar data allowed by Google scopes.',
+        },
+        {
+          value: 'read_write',
+          label: 'Read/write',
+          description: provider === 'zoho'
+            ? 'Can read plus create, update, send, or delete through approved Zoho tools.'
+            : 'Can read plus create, update, send, or delete through approved Google tools.',
+        },
+        { value: 'admin', label: 'Admin', description: 'Can use the connection and manage who else has access.' },
+      ],
+    };
+  };
+
+  const fetchZohoAccountSummary = async (accessToken: string, apiBaseUrl: string) => {
+    try {
+      const res = await fetch(`${apiBaseUrl.replace(/\/$/, '')}/books/v3/organizations`, {
+        headers: { Authorization: `Zoho-oauthtoken ${accessToken}` },
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        organizations?: Array<{
+          organization_id?: string;
+          organizationId?: string;
+          name?: string;
+          is_default_org?: boolean;
+          is_default?: boolean;
+        }>;
+      };
+      if (!res.ok || !Array.isArray(payload.organizations)) return null;
+      const org = payload.organizations.find(item => item.is_default_org === true || item.is_default === true)
+        ?? payload.organizations[0];
+      if (!org) return null;
+      return {
+        externalAccountId: org.organization_id ?? org.organizationId,
+        accountName: org.name,
+      };
+    } catch {
+      return null;
+    }
+  };
 
   // ── Lark OAuth (no auth) ──────────────────────────────────────────────────
 
@@ -419,10 +624,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         where: { userId, companyId, revokedAt: null },
         select: { larkOpenId: true, larkUserId: true, larkEmail: true, larkName: true, larkTenantKey: true },
       });
-      const googleLink = await deps.prisma.googleUserAuthLink.findFirst({
-        where: { userId, companyId, revokedAt: null },
-        select: { googleEmail: true, googleName: true },
-      });
+      const googleConnections = await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
 
       res.json({
         success: true,
@@ -433,7 +635,17 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           name:  user?.name,
           departments,
           lark:   larkLink ?? null,
-          google: googleLink ?? null,
+          google: googleConnections.ok ? {
+            connected:   googleConnections.value.length > 0,
+            connections: googleConnections.value.map(connection => ({
+              connectionId: connection.connectionId,
+              label:        connection.label,
+              accountEmail: connection.accountEmail ?? null,
+              accountName:  connection.accountName ?? null,
+              ownerType:    connection.ownerType,
+              access:       connection.access,
+            })),
+          } : null,
         },
       });
     } catch (e) {
@@ -499,19 +711,21 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         ? new Date(Date.now() + tokenBundle.expiresIn * 1000)
         : new Date(Date.now() + 3600 * 1000);
 
-      const googleUpsertInput = {
-        userId:     payload.userId,
+      const upsertResult = await deps.connectionRepo.upsertGoogleConnection({
         companyId:  payload.companyId,
+        ownerType: 'user',
+        ownerUserId: payload.userId,
+        createdBy: payload.userId,
         googleUserId: userInfo.sub,
-        googleEmail:  userInfo.email ?? '',
-        googleName:   userInfo.name ?? '',
         scope:        tokenBundle.scope ?? '',
         accessToken:  tokenBundle.accessToken,
         tokenType:    tokenBundle.tokenType ?? 'Bearer',
         accessTokenExpiresAt: expiresAt,
-      };
-      if (tokenBundle.refreshToken) (googleUpsertInput as Record<string, unknown>)['refreshToken'] = tokenBundle.refreshToken;
-      const upsertResult = await deps.googleUserAuthLinkRepo.upsert(googleUpsertInput);
+        initialAccess: 'admin',
+        ...(userInfo.email ? { googleEmail: userInfo.email } : {}),
+        ...(userInfo.name ? { googleName: userInfo.name } : {}),
+        ...(tokenBundle.refreshToken ? { refreshToken: tokenBundle.refreshToken } : {}),
+      });
       if (!upsertResult.ok) {
         log.error('google.callback.upsert_failed', { error: String(upsertResult.error) });
       }
@@ -532,11 +746,477 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
   router.get('/google/status', memberAuth, async (_req: Request, res: Response) => {
     const userId    = res.locals['userId'] as string;
     const companyId = res.locals['companyId'] as string;
-    const link = await deps.prisma.googleUserAuthLink.findFirst({
-      where: { userId, companyId, revokedAt: null },
-      select: { googleEmail: true, googleName: true, linkedAt: true, scope: true },
+    const connections = await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
+    if (!connections.ok) {
+      res.status(500).json({ success: false, message: connections.error.message });
+      return;
+    }
+    res.json({
+      success: true,
+      data: {
+        connected: connections.value.length > 0,
+        connections: connections.value.map(connection => ({
+          connectionId: connection.connectionId,
+          label:        connection.label,
+          accountEmail: connection.accountEmail ?? null,
+          accountName:  connection.accountName ?? null,
+          ownerType:    connection.ownerType,
+          access:       connection.access,
+          scopes:       connection.scopes,
+          connectedAt:  connection.connectedAt.toISOString(),
+          lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
+        })),
+      },
     });
-    res.json({ success: true, data: { connected: !!link, ...(link ?? {}) } });
+  });
+
+  router.get('/google/connections/:connectionId/manage', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      if (!connectionId) {
+        res.status(400).json({ success: false, message: 'connectionId is required' });
+        return;
+      }
+
+      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      if (!payload) {
+        res.status(404).json({ success: false, message: 'Google connection not found' });
+        return;
+      }
+      if ('forbidden' in payload) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Google connection' });
+        return;
+      }
+      res.json({ success: true, data: payload });
+    } catch (e) {
+      log.error('google.manage.read.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.post('/google/connections/:connectionId/grants', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const body = req.body as { granteeType?: string; granteeId?: string; access?: string };
+
+      const granteeType = body.granteeType?.trim();
+      const granteeId = body.granteeId?.trim();
+      const access = body.access?.trim();
+      if (!connectionId || !granteeType || !granteeId || !access) {
+        res.status(400).json({ success: false, message: 'connectionId, granteeType, granteeId, and access are required' });
+        return;
+      }
+      if (!GOOGLE_GRANTEE_TYPES.has(granteeType) || !GOOGLE_GRANT_ACCESSES.has(access)) {
+        res.status(400).json({ success: false, message: 'Invalid grantee type or access level' });
+        return;
+      }
+
+      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Google connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Google connection' });
+        return;
+      }
+
+      const candidates = manageable.candidates;
+      const isKnownGrantee =
+        (granteeType === 'user' && candidates.users.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'department' && candidates.departments.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'role' && candidates.roles.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'company' && candidates.company?.id === granteeId);
+      if (!isKnownGrantee) {
+        res.status(400).json({ success: false, message: 'Selected grantee is not part of this company' });
+        return;
+      }
+
+      const result = await deps.connectionRepo.grantConnection({
+        companyId,
+        connectionId,
+        granteeType: granteeType as 'user' | 'department' | 'role' | 'company',
+        granteeId,
+        access: access as 'read_only' | 'read_write' | 'admin',
+        grantedBy: userId,
+      });
+      if (!result.ok) {
+        res.status(500).json({ success: false, message: result.error.message });
+        return;
+      }
+
+      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('google.manage.grant.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.delete('/google/connections/:connectionId/grants/:grantId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const grantId = String(req.params['grantId'] ?? '');
+      if (!connectionId || !grantId) {
+        res.status(400).json({ success: false, message: 'connectionId and grantId are required' });
+        return;
+      }
+
+      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Google connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Google connection' });
+        return;
+      }
+
+      const result = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId });
+      if (!result.ok) {
+        res.status(500).json({ success: false, message: result.error.message });
+        return;
+      }
+
+      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('google.manage.revoke.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.get('/zoho/authorize-url', memberAuth, async (_req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      if (!COMPANY_ADMIN_ROLES.has(role)) {
+        res.status(403).json({ success: false, message: 'Only company admins can connect Zoho for the company' });
+        return;
+      }
+      if (!deps.zohoTokenService.isConfigured()) {
+        res.status(503).json({ success: false, message: 'Zoho OAuth not configured' });
+        return;
+      }
+
+      const redirectUri = `${deps.backendPublicUrl}/api/desktop/auth/zoho/callback`;
+      const authorizeConfig = await deps.zohoTokenService.getAuthorizeConfig(companyId);
+
+      const state = signJwt(
+        { kind: 'desktop_zoho_connect', nonce: randomBytes(16).toString('hex'), userId, companyId },
+        deps.memberJwtSecret,
+        600,
+      );
+      const authorizeUrl = new URL(`${authorizeConfig.accountsBaseUrl.replace(/\/$/, '')}/oauth/v2/auth`);
+      authorizeUrl.searchParams.set('client_id', authorizeConfig.clientId);
+      authorizeUrl.searchParams.set('response_type', 'code');
+      authorizeUrl.searchParams.set('scope', DEFAULT_ZOHO_SCOPES.join(' '));
+      authorizeUrl.searchParams.set('redirect_uri', redirectUri);
+      authorizeUrl.searchParams.set('access_type', 'offline');
+      authorizeUrl.searchParams.set('prompt', 'consent');
+      authorizeUrl.searchParams.set('state', state);
+
+      res.json({ success: true, data: { authorizeUrl: authorizeUrl.toString(), redirectUri } });
+    } catch (e) {
+      log.error('zoho.authorize-url.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.get('/zoho/callback', async (req: Request, res: Response) => {
+    try {
+      const { code, state, error: oauthError } = req.query;
+      if (oauthError) {
+        res.send('<html><body><h2>Zoho connection cancelled</h2><p>You can close this window.</p></body></html>');
+        return;
+      }
+      if (!code || !state) {
+        res.status(400).send('<html><body><h2>Missing code or state</h2></body></html>');
+        return;
+      }
+
+      const payload = verifyJwt(String(state), deps.memberJwtSecret);
+      if (!payload || payload.kind !== 'desktop_zoho_connect' || !payload.userId || !payload.companyId) {
+        res.status(400).send('<html><body><h2>Invalid or expired state</h2></body></html>');
+        return;
+      }
+
+      const redirectUri = `${deps.backendPublicUrl}/api/desktop/auth/zoho/callback`;
+      const tokens = await deps.zohoTokenService.exchangeAuthorizationCode({
+        companyId:         payload.companyId,
+        environment:       'prod',
+        authorizationCode: String(code),
+        redirectUri,
+      });
+      const apiBaseUrl = tokens.apiDomain ?? deps.env.ZOHO_API_BASE_URL;
+      const accountSummary = await fetchZohoAccountSummary(tokens.accessToken, apiBaseUrl);
+      const expiresAt = new Date(Date.now() + tokens.expiresIn * 1000);
+
+      const upsertResult = await deps.zohoConnectionRepo.upsertFromExchange({
+        companyId:   payload.companyId,
+        environment: 'prod',
+        accessToken: tokens.accessToken,
+        ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+        expiresIn:   tokens.expiresIn,
+        scopes:      tokens.scopes.length ? tokens.scopes : DEFAULT_ZOHO_SCOPES,
+      });
+      if (!upsertResult.ok) throw new Error(upsertResult.error.message);
+
+      const integrationResult = await deps.connectionRepo.upsertZohoConnection({
+        companyId:    payload.companyId,
+        ownerType:    'user',
+        ownerUserId:  payload.userId,
+        createdBy:    payload.userId,
+        label:        accountSummary?.accountName ? `${accountSummary.accountName} Zoho` : 'Zoho connection',
+        ...(accountSummary?.accountName ? { accountName: accountSummary.accountName } : {}),
+        externalAccountId: accountSummary?.externalAccountId ?? payload.userId,
+        accessToken:  tokens.accessToken,
+        ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+        ...(tokens.tokenType ? { tokenType: tokens.tokenType } : {}),
+        accessTokenExpiresAt: expiresAt,
+        scopes: tokens.scopes.length ? tokens.scopes : DEFAULT_ZOHO_SCOPES,
+        ...(tokens.apiDomain ? { apiDomain: tokens.apiDomain } : {}),
+        accountsBaseUrl: deps.env.ZOHO_ACCOUNTS_BASE_URL,
+        apiBaseUrl,
+        environment: 'prod',
+        initialAccess: 'admin',
+      });
+      if (!integrationResult.ok) throw new Error(integrationResult.error.message);
+
+      log.info('zoho.callback.success', {
+        userId: payload.userId,
+        companyId: payload.companyId,
+        connectionId: integrationResult.value.id,
+      });
+      res.send(`<!DOCTYPE html><html><body>
+<h2>Zoho connected successfully!</h2>
+<p>You can close this window and return to Divo Desktop.</p>
+<script>setTimeout(()=>window.close(),3000);</script>
+</body></html>`);
+    } catch (e) {
+      log.error('zoho.callback.error', { error: String(e) });
+      res.send(`<html><body><h2>Zoho connection failed</h2><p>${String(e)}</p></body></html>`);
+    }
+  });
+
+  router.get('/zoho/status', memberAuth, async (_req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connections = await deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId });
+      if (!connections.ok) {
+        res.status(500).json({ success: false, message: connections.error.message });
+        return;
+      }
+      const legacyRecord = await deps.prisma.zohoConnection.findUnique({
+        where: {
+          companyId_environment: { companyId, environment: 'prod' },
+        },
+        select: {
+          id: true,
+          environment: true,
+          providerMode: true,
+          status: true,
+          connectedAt: true,
+          scopes: true,
+          lastSyncAt: true,
+          accessTokenExpiresAt: true,
+          tokenFailureCode: true,
+        },
+      });
+      const legacyConnected = Boolean(legacyRecord && legacyRecord.status === 'CONNECTED');
+      res.json({
+        success: true,
+        data: {
+          connected: connections.value.length > 0 || legacyConnected,
+          canManage: COMPANY_ADMIN_ROLES.has(role),
+          connections: connections.value.map(connection => ({
+            connectionId: connection.connectionId,
+            label:        connection.label,
+            accountEmail: connection.accountEmail ?? null,
+            accountName:  connection.accountName ?? null,
+            ownerType:    connection.ownerType,
+            access:       connection.access,
+            scopes:       connection.scopes,
+            connectedAt:  connection.connectedAt.toISOString(),
+            lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
+          })),
+          legacyConnection: legacyRecord ? {
+            connectionId: legacyRecord.id,
+            environment: legacyRecord.environment,
+            providerMode: legacyRecord.providerMode,
+            status: legacyRecord.status,
+            scopes: legacyRecord.scopes,
+            connectedAt: legacyRecord.connectedAt.toISOString(),
+            lastSyncAt: legacyRecord.lastSyncAt?.toISOString() ?? null,
+            accessTokenExpiresAt: legacyRecord.accessTokenExpiresAt?.toISOString() ?? null,
+            tokenFailureCode: legacyRecord.tokenFailureCode ?? null,
+          } : null,
+        },
+      });
+    } catch (e) {
+      log.error('zoho.status.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.get('/zoho/connections/:connectionId/manage', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      if (!connectionId) {
+        res.status(400).json({ success: false, message: 'connectionId is required' });
+        return;
+      }
+
+      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      if (!payload) {
+        res.status(404).json({ success: false, message: 'Zoho connection not found' });
+        return;
+      }
+      if ('forbidden' in payload) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Zoho connection' });
+        return;
+      }
+      res.json({ success: true, data: payload });
+    } catch (e) {
+      log.error('zoho.manage.read.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.post('/zoho/connections/:connectionId/grants', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const body = req.body as { granteeType?: string; granteeId?: string; access?: string };
+
+      const granteeType = body.granteeType?.trim();
+      const granteeId = body.granteeId?.trim();
+      const access = body.access?.trim();
+      if (!connectionId || !granteeType || !granteeId || !access) {
+        res.status(400).json({ success: false, message: 'connectionId, granteeType, granteeId, and access are required' });
+        return;
+      }
+      if (!GOOGLE_GRANTEE_TYPES.has(granteeType) || !GOOGLE_GRANT_ACCESSES.has(access)) {
+        res.status(400).json({ success: false, message: 'Invalid grantee type or access level' });
+        return;
+      }
+
+      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Zoho connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Zoho connection' });
+        return;
+      }
+
+      const candidates = manageable.candidates;
+      const isKnownGrantee =
+        (granteeType === 'user' && candidates.users.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'department' && candidates.departments.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'role' && candidates.roles.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'company' && candidates.company?.id === granteeId);
+      if (!isKnownGrantee) {
+        res.status(400).json({ success: false, message: 'Selected grantee is not part of this company' });
+        return;
+      }
+
+      const result = await deps.connectionRepo.grantConnection({
+        companyId,
+        connectionId,
+        granteeType: granteeType as 'user' | 'department' | 'role' | 'company',
+        granteeId,
+        access: access as 'read_only' | 'read_write' | 'admin',
+        grantedBy: userId,
+      });
+      if (!result.ok) {
+        res.status(500).json({ success: false, message: result.error.message });
+        return;
+      }
+
+      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('zoho.manage.grant.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.delete('/zoho/connections/:connectionId/grants/:grantId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const grantId = String(req.params['grantId'] ?? '');
+      if (!connectionId || !grantId) {
+        res.status(400).json({ success: false, message: 'connectionId and grantId are required' });
+        return;
+      }
+
+      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Zoho connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Zoho connection' });
+        return;
+      }
+
+      const result = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId });
+      if (!result.ok) {
+        res.status(500).json({ success: false, message: result.error.message });
+        return;
+      }
+
+      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('zoho.manage.revoke.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.post('/zoho/unlink', memberAuth, async (_req: Request, res: Response) => {
+    try {
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      if (!COMPANY_ADMIN_ROLES.has(role)) {
+        res.status(403).json({ success: false, message: 'Only company admins can disconnect Zoho' });
+        return;
+      }
+      await deps.prisma.zohoConnection.updateMany({
+        where: { companyId, environment: 'prod', status: 'CONNECTED' },
+        data:  { status: 'REVOKED', tokenFailureCode: null },
+      });
+      await deps.prisma.integrationConnection.updateMany({
+        where: { companyId, provider: 'zoho', status: 'connected', revokedAt: null },
+        data:  { status: 'revoked', revokedAt: new Date() },
+      });
+      res.json({ success: true, message: 'Zoho disconnected' });
+    } catch (e) {
+      log.error('zoho.unlink.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
   });
 
   router.get('/usage', memberAuth, async (_req: Request, res: Response) => {
@@ -591,10 +1271,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     try {
       const userId    = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
-      await deps.prisma.googleUserAuthLink.updateMany({
-        where: { userId, companyId, revokedAt: null },
-        data:  { revokedAt: new Date() },
-      });
+      await deps.connectionRepo.revokeGoogleConnectionsForUser(companyId, userId);
       res.json({ success: true, message: 'Google account unlinked' });
     } catch (e) {
       res.status(500).json({ success: false, message: String(e) });

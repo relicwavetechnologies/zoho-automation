@@ -3,7 +3,11 @@ import { extractDocxText }    from './docx.extractor';
 import { extractXlsxText }    from './xlsx.extractor';
 import { extractTabularText } from './tabular.extractor';
 import { decodeTextBuffer }   from './text-decode';
-import { extractImageText }   from './image-ocr.extractor';
+import {
+  extractImageText,
+  extractImageTextWithProvider,
+  type ExtractImageTextOptions,
+} from './image-ocr.extractor';
 
 export type FileModality = 'text' | 'image';
 
@@ -49,12 +53,15 @@ export async function extractFromBuffer(
   maxWords = 100_000,
   fileName?: string,
   visionModel?: string,
+  imageOcrOptions?: ExtractImageTextOptions,
 ): Promise<ExtractedContent> {
   const mime = mimeType.toLowerCase().split(';')[0]?.trim() ?? '';
   const lowerName = (fileName ?? '').toLowerCase();
 
   if (IMAGE_MIMES.has(mime)) {
-    const { ocrText, caption } = await extractImageText(buf, mime, geminiApiKey, visionModel);
+    const { ocrText, caption } = imageOcrOptions
+      ? await extractImageTextWithProvider(buf, mime, imageOcrOptions)
+      : await extractImageText(buf, mime, geminiApiKey, visionModel);
     return {
       modality:    'image',
       text:        ocrText,

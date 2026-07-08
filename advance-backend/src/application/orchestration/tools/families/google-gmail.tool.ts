@@ -49,12 +49,13 @@ const DivoTemplateIdSchema = z.enum([
 const AttachmentArgSchema = z.discriminatedUnion('source', [
   z.object({ source: z.literal('file_asset'), fileAssetId: z.string() }),
   z.object({ source: z.literal('outbound_artifact'), artifactId: z.string() }),
-  z.object({ source: z.literal('google_drive'), fileId: z.string(), exportMimeType: z.string().optional() }),
+  z.object({ source: z.literal('google_drive'), connectionId: z.string().min(1), fileId: z.string(), exportMimeType: z.string().optional() }),
   z.object({ source: z.literal('lark'), messageId: z.string(), fileKey: z.string(), fileName: z.string().optional() }),
   z.object({ source: z.literal('cloudinary'), publicId: z.string(), fileName: z.string().optional(), resourceType: z.string().optional() }),
 ]);
 
 const GmailArgsSchema = z.object({
+  connectionId: z.string().min(1),
   op: GmailOpSchema,
   messageId: z.string().optional(),
   messageIds: z.array(z.string()).optional(),
@@ -233,7 +234,12 @@ const inferAction = (op: GmailArgs['op']): ToolActionGroup => {
 };
 
 export const createGoogleGmailTool = (deps: {
-  getClient: (companyId: string, userId: string) => Promise<GmailClientPort | null>;
+  getClient: (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: 'read_only' | 'read_write';
+  }) => Promise<GmailClientPort | null>;
   resolveAttachments?: (
     refs: readonly AttachmentRef[],
     ctx: { readonly companyId: string; readonly userId: string },
@@ -247,6 +253,7 @@ export const createGoogleGmailTool = (deps: {
   description: 'List, read, search, draft, send, reply, reply-all, forward, thread, label, organize Gmail messages, and attach resolved files.',
   parameterDocs: `
 - op: list | get | search | send | reply | reply_all | forward | thread_list | thread_get | draft_create | draft_get | draft_update | draft_delete | draft_send | label_list | label_apply | label_remove | archive | mark_read | mark_unread | star | unstar | trash | untrash
+- connectionId: Required backend connection id from connections.list. Select the personal or shared Google account explicitly.
 - messageId: Gmail message ID for get/reply/reply_all/forward or single-message mailbox actions
 - messageIds: Gmail message IDs for batch mailbox actions
 - threadId: Gmail thread ID for thread_get or legacy reply/send threading
@@ -259,7 +266,7 @@ export const createGoogleGmailTool = (deps: {
 - body/bodyText: Well-structured plain text. Divo wraps it in the T1 HTML template (multipart plain+HTML) with sections parsed from ALL CAPS headings and bullet lines. Use clear paragraphs, greet by name, sign off professionally. body is a legacy alias.
 - bodyHtml: Optional raw HTML body; skips the Divo template when provided.
 - templateId/templateData: Optional structured template (divo-standard-v1, divo-finance-v1, divo-proposal-v1, divo-executive-v1, divo-follow-up-v1, divo-report-v1). When omitted, bodyText is auto-formatted into the HTML template.
-- attachments: Optional files to attach for send/draft/reply/forward. Sources: file_asset{fileAssetId}, outbound_artifact{artifactId}, google_drive{fileId, exportMimeType?}, lark{messageId,fileKey,fileName?}, cloudinary{publicId, fileName?, resourceType?}. When a previous tool call returns csvPublicId (from Zoho/data-processor exports), use source=cloudinary with that publicId to attach the CSV. Limits: 10 files, 10 MB each, 18 MB total; executable/script/macro file extensions are blocked.
+- attachments: Optional files to attach for send/draft/reply/forward. Sources: file_asset{fileAssetId}, outbound_artifact{artifactId}, google_drive{connectionId,fileId,exportMimeType?}, lark{messageId,fileKey,fileName?}, cloudinary{publicId, fileName?, resourceType?}. When a previous tool call returns csvPublicId (from Zoho/data-processor exports), use source=cloudinary with that publicId to attach the CSV. Limits: 10 files, 10 MB each, 18 MB total; executable/script/macro file extensions are blocked.
 - query: Gmail search query string for search/thread_list/list
 - labelIds/labelNames: Labels for label apply/remove flows
 - includeOriginal: For forward, include original message metadata/body unless false
@@ -275,9 +282,15 @@ export const createGoogleGmailTool = (deps: {
   },
 
   async execute(args: GmailArgs, ctx: ToolExecutionContext): Promise<Result<GmailResult, ToolError>> {
-    const client = await deps.getClient(ctx.runContext.companyId, ctx.runContext.userId);
+    const action = inferAction(args.op);
+    const client = await deps.getClient({
+      companyId:     ctx.runContext.companyId,
+      userId:        ctx.runContext.userId,
+      connectionId:  args.connectionId,
+      minimumAccess: action === 'read' ? 'read_only' : 'read_write',
+    });
     if (!client) {
-      return err(new ToolError({ toolId: 'googleGmail', reason: 'unrecoverable', message: 'Google account not connected for this user' }));
+      return err(new ToolError({ toolId: 'googleGmail', reason: 'unrecoverable', message: 'Google connection is unavailable or not allowed for this operation' }));
     }
 
     try {
@@ -496,6 +509,7 @@ function toAttachmentRefs(attachments: NonNullable<GmailArgs['attachments']>): A
       case 'google_drive':
         return {
           source: 'google_drive',
+          connectionId: attachment.connectionId,
           fileId: attachment.fileId,
           ...(attachment.exportMimeType ? { exportMimeType: attachment.exportMimeType } : {}),
         };

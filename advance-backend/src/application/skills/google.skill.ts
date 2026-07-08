@@ -3,17 +3,33 @@ import type { Skill } from './skill.types';
 export const googleSkill: Skill = {
   id: 'google',
   name: 'Google Workspace',
-  description: 'Gmail (send/search/draft), Google Drive, Google Calendar',
+  description: 'Use connected Google Workspace accounts for Gmail, Drive, and Calendar.',
   toolIds: ['googleGmail', 'googleDrive', 'googleCalendar'],
-  instructions: `GMAIL — TOOL SELECTION:
-- "check inbox", "latest emails" → list inbox (NEVER search)
-- "search emails from X", "find email about Y" → search
-- "send email to X" → send (requires human approval)
-- "draft email to X" → draft_create
-- "reply to this email" → reply with messageId
-- "reply all" → reply_all with messageId
-- "forward this email to X" → forward with messageId and to
-- "archive/mark read/star/trash" → matching mailbox operation; never permanently delete
+  instructions: `GOOGLE WORKSPACE EXECUTION METHOD:
+- Always start by resolving available Google accounts. Call divo_gateway with op="connections.list" and payload={"provider":"google_workspace"} before Gmail, Drive, or Calendar.
+- If no connections are returned, tell the user to connect Google Workspace from the desktop Plugins page.
+- If exactly one connection is returned, use that connectionId.
+- If multiple connections are returned, choose by explicit user intent: account email, label, personal/shared ownership, access level, or task purpose.
+- If multiple connections are plausible and the user did not specify, ask one short account-choice question. Do not guess.
+- Never use an email address, label, or guessed value as connectionId. Use only the backend connectionId from connections.list.
+- Invoke tools with divo_gateway op="tools.invoke" and payload={"toolId":"googleGmail"|"googleDrive"|"googleCalendar","args":{...,"connectionId":"selected id"}}.
+- For mixed requests, reuse the same selected connection unless the user clearly asks for a different Google account.
+
+PRODUCT ROUTING:
+- Email, inbox, drafts, replies, forwarding, labels, archive/read/star/trash -> googleGmail.
+- Files, folders, documents, spreadsheets, slides, PDFs, Drive search, file summaries -> googleDrive.
+- Meetings, events, schedule, availability, calendar lookup, create/update/delete event -> googleCalendar.
+- If the user asks a broad Google question, route to the specific product needed by the task. Do not call all tools without reason.
+
+GMAIL RECIPES:
+- Latest inbox / check mail: googleGmail op="list" with limit, no query unless user provided a filter.
+- Search mail: googleGmail op="search" with Gmail query string. Use from:, to:, subject:, newer_than:, older_than:, has:attachment when useful.
+- Read a specific email after list/search: googleGmail op="get" with messageId from the previous result.
+- Thread view: googleGmail op="thread_get" with threadId when conversation context matters.
+- Draft email: googleGmail op="draft_create".
+- Send email: googleGmail op="send" only when recipient and body are grounded; backend approval may be required.
+- Reply: googleGmail op="reply" with messageId. Reply all: op="reply_all". Forward: op="forward" with messageId and to.
+- Organize mailbox: archive, mark_read, mark_unread, star, unstar, trash, untrash, label_apply, label_remove. Never permanently delete.
 
 EMAIL COMPOSITION:
 - Always provide a clear subject unless user explicitly says to leave it blank.
@@ -31,18 +47,40 @@ APPROVAL DISCIPLINE:
 - If user gave a clear send instruction with resolved recipient and grounded body, just send (routes through approval). Don't ask for extra confirmation.
 - If user asks to review first, use draft_create instead.
 
-DRIVE:
-- Search/list when user asks about documents, spreadsheets, or files.
-- Return file name, link, last-modified date — max 10 items.
+DRIVE RECIPES:
+- Recent files: googleDrive op="list" with limit.
+- Find files: googleDrive op="search" with query and limit.
+- File metadata only: googleDrive op="get" with fileId.
+- File content / deep dive / summarize docs: first list/search, then googleDrive op="read" with fileId for each relevant file.
+- op="get" is metadata only and does not return content. Use op="read" for content.
+- For Google Docs/Sheets/Slides, op="read" exports before reading. Pass exportMimeType only when a custom format is needed.
+- Return grounded summaries with file name, link, last-modified date, and what was read. Do not pretend unread files were inspected.
+- If search returns too many plausible files, read the most relevant few first and state the basis for selection.
 
-CALENDAR:
-- Create events with clear title and ISO 8601 start/end in IST (+05:30).
-- Default duration: 30 min. Add attendees only when explicitly named.
+CALENDAR RECIPES:
+- Upcoming schedule: googleCalendar op="list" with calendarId="primary" unless user names another calendar.
+- Read event details: googleCalendar op="get" with eventId.
+- Create event: googleCalendar op="create" with title, startTime, endTime, optional description and attendeeEmails.
+- Update event: googleCalendar op="update" with eventId and changed fields only.
+- Delete/cancel event: googleCalendar op="delete" with eventId.
+- Use ISO 8601 times. For India/default user context, use IST (+05:30) when the user gives local times.
+- Default duration is 30 minutes if the user gives only a start time. Add attendees only when explicitly named or resolved to real emails.
+
+MULTI-STEP BEHAVIOR:
+- For "catch me up" style requests, use Gmail list/search plus Calendar list; include Drive only if files/docs are mentioned.
+- For "deep dive my Drive" requests, Drive search/list is not enough. Always follow with Drive read on selected files.
+- For "email a summary of Drive files", read Drive content first, then draft/send via Gmail using the same selected connection unless user says otherwise.
+- For "schedule from email", read the email first, extract grounded details, then create/update Calendar event.
 
 ERROR HANDLING:
-- Missing recipient → "Cannot send: recipient email address not provided."
-- Gmail not connected → tell user to connect Google Workspace in settings.
-- Tool fail → retry once, then return exact reason.
+- Missing recipient -> "Cannot send: recipient email address not provided."
+- Google not connected -> tell user to connect Google Workspace from the desktop Plugins page.
+- Permission denied -> say the selected connection or role does not allow that action.
+- Tool fail -> retry once only if a better argument can be inferred, then return the exact reason.
 
-NEVER: expose tool names/raw IDs, use filler phrases, claim action without tool success.`,
+NEVER:
+- Never expose backend credentials or tokens.
+- Never guess connectionId, messageId, fileId, eventId, or recipient email.
+- Never claim email sent, draft created, file read, or event changed unless the tool succeeded.
+- Never use filler phrases or raw API dumps in the final answer.`,
 };

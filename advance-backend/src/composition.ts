@@ -42,8 +42,7 @@ import { ContextSearchBroker } from './application/context-search/context-search
 import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
 import { LarkUserAuthLinkRepository } from './infrastructure/persistence/lark-user-auth-link.repository';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
-import { GoogleUserAuthLinkRepository } from './infrastructure/google/google-user-auth-link.repository';
-import { CompanyGoogleAuthLinkRepository } from './infrastructure/google/company-google-auth-link.repository';
+import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
 import { GmailClient } from './infrastructure/google/google-gmail.client';
 import { GoogleDriveClient } from './infrastructure/google/google-drive.client';
 import { GoogleCalendarClient } from './infrastructure/google/google-calendar.client';
@@ -130,12 +129,14 @@ import { createDataProcessorTool } from './application/orchestration/tools/famil
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
 import { ToolExecutor } from './application/gateway/tool-executor';
 import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
+import { MediaOcrService } from './application/gateway/media-ocr.service';
 
 // AI model
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import type { LanguageModel } from 'ai';
+import type { OAuth2Client } from 'google-auth-library';
 import { withFallback } from './shared/model-fallback';
 import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
 import { decryptToken, TokenCryptoError } from './infrastructure/shared/token.crypto';
@@ -193,8 +194,7 @@ export interface Container {
   larkUserAuthLinkRepo: LarkUserAuthLinkRepository;
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
-  googleUserLinkRepo: GoogleUserAuthLinkRepository;
-  companyGoogleLinkRepo: CompanyGoogleAuthLinkRepository;
+  integrationConnectionRepo: IntegrationConnectionRepository;
   zohoTokenService: ZohoTokenService;
   zohoConnectionRepo: ZohoConnectionRepository;
   // Observability
@@ -487,55 +487,80 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '',
   );
 
-  // ── Google OAuth + repositories ──────────────────────────────────────────
-  const googleUserLinkRepo    = new GoogleUserAuthLinkRepository(prisma, env);
-  const companyGoogleLinkRepo = new CompanyGoogleAuthLinkRepository(prisma, env);
-  const googleOAuthService    = new GoogleOAuthService({ env, cache, logger: logger.child({ service: 'google-oauth' }) });
+  // ── Google OAuth + connection registry ───────────────────────────────────
+  const integrationConnectionRepo = new IntegrationConnectionRepository(prisma, env);
+  const googleOAuthService        = new GoogleOAuthService({ env, cache, logger: logger.child({ service: 'google-oauth' }) });
 
-  /**
-   * Factory: returns a typed Google client for the user, or null when not connected.
-   * Resolution: user-level link → company-level link (Google Workspace admin OAuth).
-   * Token is refreshed via Redis cache before being passed to the client.
-   */
-  async function resolveGoogleToken(companyId: string, userId: string): Promise<string | null> {
+  async function resolveGoogleAuthClient(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: 'read_only' | 'read_write';
+  }): Promise<OAuth2Client | null> {
     if (!googleOAuthService.isConfigured()) return null;
 
-    // 1. Try per-user link
-    const userLink = await googleUserLinkRepo.findActiveByUser(userId, companyId);
-    if (userLink.ok && userLink.value?.refreshToken) {
-      try {
-        return await googleOAuthService.getValidAccessToken({
-          companyId, userId, refreshToken: userLink.value.refreshToken,
-        });
-      } catch { /* fall through to company link */ }
-    }
+    const connection = await integrationConnectionRepo.findAccessibleGoogleConnection(input);
+    if (!connection.ok || !connection.value?.refreshToken) return null;
 
-    // 2. Fall back to company-level Workspace link (use companyId as userId key)
-    const companyLink = await companyGoogleLinkRepo.findActiveByCompany(companyId);
-    if (companyLink.ok && companyLink.value?.refreshToken) {
-      try {
-        return await googleOAuthService.getValidAccessToken({
-          companyId, userId: `company:${companyId}`, refreshToken: companyLink.value.refreshToken,
+    try {
+      const token = await googleOAuthService.getValidAccessToken({
+        companyId:    input.companyId,
+        userId:       `connection:${input.connectionId}`,
+        refreshToken: connection.value.refreshToken,
+      });
+      await integrationConnectionRepo.touchLastUsed(input.connectionId);
+      const auth = googleOAuthService.createOAuth2Client({
+        refreshToken: connection.value.refreshToken,
+        accessToken:  token,
+      });
+      auth.on('tokens', (tokens) => {
+        const accessTokenExpiresAt = typeof tokens.expiry_date === 'number'
+          ? new Date(tokens.expiry_date)
+          : undefined;
+        void integrationConnectionRepo.updateGoogleTokens({
+          companyId:    input.companyId,
+          connectionId: input.connectionId,
+          ...(tokens.access_token ? { accessToken: tokens.access_token } : {}),
+          ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
+          ...(tokens.token_type ? { tokenType: tokens.token_type } : {}),
+          ...(tokens.scope ? { scope: tokens.scope } : {}),
+          ...(accessTokenExpiresAt ? { accessTokenExpiresAt } : {}),
         });
-      } catch { /* not connected */ }
+      });
+      return auth;
+    } catch {
+      return null;
     }
-
-    return null;
   }
 
-  const getGmailClient = async (companyId: string, userId: string) => {
-    const token = await resolveGoogleToken(companyId, userId);
-    return token ? new GmailClient(token) : null;
+  const getGmailClient = async (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: 'read_only' | 'read_write';
+  }) => {
+    const auth = await resolveGoogleAuthClient(input);
+    return auth ? new GmailClient(auth) : null;
   };
 
-  const getDriveClient = async (companyId: string, userId: string) => {
-    const token = await resolveGoogleToken(companyId, userId);
-    return token ? new GoogleDriveClient(token) : null;
+  const getDriveClient = async (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: 'read_only' | 'read_write';
+  }) => {
+    const auth = await resolveGoogleAuthClient(input);
+    return auth ? new GoogleDriveClient(auth) : null;
   };
 
-  const getCalendarClient = async (companyId: string, userId: string) => {
-    const token = await resolveGoogleToken(companyId, userId);
-    return token ? new GoogleCalendarClient(token) : null;
+  const getCalendarClient = async (input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: 'read_only' | 'read_write';
+  }) => {
+    const auth = await resolveGoogleAuthClient(input);
+    return auth ? new GoogleCalendarClient(auth) : null;
   };
 
   // ── Zoho OAuth + connection ───────────────────────────────────────────────
@@ -545,16 +570,24 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     cache,
     env,
     logger.child({ service: 'zoho-token' }),
+    integrationConnectionRepo,
   );
 
-  async function resolveZohoToken(companyId: string): Promise<string | null> {
+  async function resolveZohoToken(
+    companyId: string,
+    userId?: string,
+    connectionId?: string,
+    minimumAccess: 'read_only' | 'read_write' = 'read_only',
+  ): Promise<string | null> {
     if (!zohoTokenService.isConfigured()) {
       logger.warn('zoho.token.not_configured', { companyId });
       return null;
     }
     try {
-      const token = await zohoTokenService.getValidToken(companyId);
-      logger.info('zoho.token.resolved', { companyId, hasToken: !!token });
+      const token = connectionId && userId
+        ? await zohoTokenService.getValidTokenForConnection({ companyId, userId, connectionId, minimumAccess })
+        : await zohoTokenService.getValidToken(companyId);
+      logger.info('zoho.token.resolved', { companyId, connectionId, hasToken: !!token });
       return token;
     } catch (e) {
       logger.error('zoho.token.resolve_failed', { companyId, error: e instanceof Error ? e.message : String(e) });
@@ -613,13 +646,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     }
   }
 
-  const getZohoCrmClient = async (companyId: string, _userId: string) => {
-    const token = await resolveZohoToken(companyId);
+  const getZohoCrmClient = async (companyId: string, userId: string, connectionId?: string) => {
+    const token = await resolveZohoToken(companyId, userId, connectionId);
     return token ? new ZohoCrmClient(token, env.ZOHO_API_BASE_URL) : null;
   };
 
-  const getZohoBooksClient = async (companyId: string, _userId: string) => {
-    const token = await resolveZohoToken(companyId);
+  const getZohoBooksClient = async (
+    companyId: string,
+    userId: string,
+    connectionId?: string,
+    minimumAccess: 'read_only' | 'read_write' = 'read_only',
+  ) => {
+    const token = await resolveZohoToken(companyId, userId, connectionId, minimumAccess);
     if (!token) return null;
     const organizationId = await resolveZohoBooksOrganizationId(companyId, token);
     return organizationId ? new ZohoBooksClient(token, organizationId, env.ZOHO_API_BASE_URL) : null;
@@ -961,11 +999,14 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'gateway-tool-executor' }),
     clock:  systemClock,
   });
+  const mediaOcr = new MediaOcrService(env, logger);
   const gatewayDispatcher = new GatewayDispatcher({
     permissions,
     toolRegistry,
     skillRegistry,
     toolExecutor: gatewayToolExecutor,
+    connectionRegistry: integrationConnectionRepo,
+    mediaOcr,
     logger: logger.child({ service: 'gateway-dispatcher' }),
   });
 
@@ -1014,8 +1055,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     larkUserAuthLinkRepo,
     // OAuth surfaces
     googleOAuthService,
-    googleUserLinkRepo,
-    companyGoogleLinkRepo,
+    integrationConnectionRepo,
     zohoConnectionRepo,
     zohoTokenService,
     // Observability

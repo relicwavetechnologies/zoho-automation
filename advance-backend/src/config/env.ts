@@ -48,7 +48,11 @@ const EnvSchema = z.object({
   MODEL_ID:       z.string().default('gemini-3.1-flash-lite'),
 
   /** Image OCR + caption during file ingestion (defaults to GA flash-lite). */
+  IMAGE_OCR_PROVIDER: z.enum(['gemini', 'openrouter']).default('gemini'),
   GEMINI_VISION_MODEL: z.string().default('gemini-3.1-flash-lite'),
+  OPENROUTER_API_KEY: z.string().optional(),
+  OPENROUTER_VISION_MODEL: z.string().default('meta-llama/llama-4-scout'),
+  OPENROUTER_PROVIDER_ORDER: z.string().default('Groq'),
 
   // ── OpenAI ────────────────────────────────────────────────────────────────
   OPENAI_API_KEY:        z.string().min(1),

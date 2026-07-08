@@ -98,6 +98,15 @@ export class IngestionService {
         this.env.DOC_EXTRACT_MAX_WORDS,
         fileName,
         this.env.GEMINI_VISION_MODEL,
+        {
+          provider: this.env.IMAGE_OCR_PROVIDER,
+          geminiApiKey: this.env.GEMINI_API_KEY ?? this.env.GOOGLE_GENERATIVE_AI_API_KEY,
+          openrouterApiKey: this.env.OPENROUTER_API_KEY,
+          visionModel: this.env.IMAGE_OCR_PROVIDER === 'openrouter'
+            ? this.env.OPENROUTER_VISION_MODEL
+            : this.env.GEMINI_VISION_MODEL,
+          openrouterProviderOrder: this.env.OPENROUTER_PROVIDER_ORDER,
+        },
       );
 
       // 4. Choose chunking plan

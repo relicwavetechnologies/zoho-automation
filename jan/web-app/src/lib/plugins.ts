@@ -51,6 +51,7 @@ export type DivoConnection = {
   piAlias: string
   recommendedFor: string
   lastUsedAt: string
+  connectedAt?: string
 }
 
 export type DivoPluginSkill = {
@@ -80,6 +81,16 @@ export const divoPlugins: DivoPlugin[] = [
     description: 'Connect Gmail, Drive, and Calendar accounts.',
     icon: Mail,
     accentClassName: 'text-rose-400 bg-rose-400/10 border-rose-400/20',
+    featured: true,
+    enabled: true,
+  },
+  {
+    id: 'zoho',
+    name: 'Zoho',
+    category: 'connector',
+    description: 'Connect Zoho CRM and Books through Divo backend.',
+    icon: FileSpreadsheet,
+    accentClassName: 'text-emerald-300 bg-emerald-300/10 border-emerald-300/20',
     featured: true,
     enabled: true,
   },

@@ -30,6 +30,7 @@ import {
   IconLoader2,
   IconWorld,
   IconBrandChrome,
+  IconFolderOpen,
 } from '@tabler/icons-react'
 import { generateId } from 'ai'
 import { useMessageQueue } from '@/stores/message-queue-store'
@@ -88,6 +89,11 @@ import {
 import JanBrowserExtensionDialog from '@/containers/dialogs/JanBrowserExtensionDialog'
 import { useJanBrowserExtension } from '@/hooks/useJanBrowserExtension'
 import { useAgentMode } from '@/hooks/useAgentMode'
+import { PI_PROVIDER_ID } from '@/lib/pi'
+import {
+  getPiWorkspaceStatus,
+  setPiWorkspacePath,
+} from '@/lib/pi-workspace'
 
 type ChatInputProps = {
   className?: string
@@ -187,6 +193,7 @@ const ChatInput = memo(function ChatInput({
 
   const selectedModel = useModelProvider((state) => state.selectedModel)
   const selectedProvider = useModelProvider((state) => state.selectedProvider)
+  const isPiProvider = selectedProvider === PI_PROVIDER_ID
   const selectModelProvider = useModelProvider(
     (state) => state.selectModelProvider
   )
@@ -198,6 +205,8 @@ const ChatInput = memo(function ChatInput({
   >(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [hasMmproj, setHasMmproj] = useState(false)
+  const [piWorkspacePath, setLocalPiWorkspacePath] = useState('')
+  const [piWorkspaceIsDefault, setPiWorkspaceIsDefault] = useState(true)
   const activeModels = useAppState(useShallow((state) => state.activeModels))
   // Check if selected model is currently loaded/active
   const isModelActive = selectedModel?.id ? activeModels.includes(selectedModel.id) : false
@@ -346,7 +355,6 @@ const ChatInput = memo(function ChatInput({
       toast.info('Please wait for attachments to finish processing')
       return
     }
-
     setMessage('')
     addToHistory(prompt)
 
@@ -491,6 +499,50 @@ const ChatInput = memo(function ChatInput({
     }
   }
 
+  const handleChoosePiWorkspace = useCallback(async () => {
+    try {
+      const selected = await serviceHub.dialog().open({
+        directory: true,
+        multiple: false,
+      })
+      const nextPath = Array.isArray(selected) ? selected[0] : selected
+      if (!nextPath) return undefined
+
+      const status = await setPiWorkspacePath(nextPath)
+      setLocalPiWorkspacePath(status.effectiveWorkspacePath)
+      setPiWorkspaceIsDefault(!status.selectedWorkspacePath)
+      await invoke('pi_stop').catch(() => undefined)
+      toast.success('Pi workspace selected')
+      return status.effectiveWorkspacePath
+    } catch (error) {
+      toast.error('Failed to choose workspace', { description: String(error) })
+      return undefined
+    }
+  }, [serviceHub])
+
+  useEffect(() => {
+    if (!isPiProvider) return
+
+    let cancelled = false
+    getPiWorkspaceStatus()
+      .then((status) => {
+        if (cancelled) return
+        setLocalPiWorkspacePath(status.effectiveWorkspacePath)
+        setPiWorkspaceIsDefault(!status.selectedWorkspacePath)
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          toast.error('Failed to resolve Pi workspace', {
+            description: String(error),
+          })
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isPiProvider])
+
   useEffect(() => {
     const handleFocusIn = () => {
       if (document.activeElement === textareaRef.current) {
@@ -571,6 +623,7 @@ const ChatInput = memo(function ChatInput({
   const audioSupported = !!selectedModel?.capabilities?.includes('audio')
   const videoInputRef = useRef<HTMLInputElement>(null)
   const videoSupported = !!selectedModel?.capabilities?.includes('video')
+  const imageAttachmentsSupported = hasMmproj || isPiProvider
 
   const processNewDocumentAttachments = useCallback(
     async (docs: Attachment[]) => {
@@ -1498,7 +1551,8 @@ const ChatInput = memo(function ChatInput({
     }
   }, [serviceHub, processImageFiles])
 
-  const dropAcceptsAnything = hasMmproj || audioSupported || videoSupported
+  const dropAcceptsAnything =
+    imageAttachmentsSupported || audioSupported || videoSupported
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault()
@@ -1564,7 +1618,7 @@ const ChatInput = memo(function ChatInput({
       (f) => !audioOnes.includes(f) && !videoOnes.includes(f)
     )
 
-    if (otherOnes.length > 0 && hasMmproj) {
+    if (otherOnes.length > 0 && imageAttachmentsSupported) {
       const dt = new DataTransfer()
       otherOnes.forEach((f) => dt.items.add(f))
       const syntheticEvent = {
@@ -1604,7 +1658,7 @@ const ChatInput = memo(function ChatInput({
       }
     }
 
-    if (hasMmproj) {
+    if (imageAttachmentsSupported) {
       const clipboardItems = e.clipboardData?.items
       let hasProcessedImage = false
 
@@ -1704,7 +1758,7 @@ const ChatInput = memo(function ChatInput({
         'No image data found in clipboard, allowing normal text paste'
       )
     }
-    // If hasMmproj is false or no images found, allow normal text pasting to continue
+    // If image attachments are unsupported or no images are found, allow normal text pasting to continue.
   }
 
   const isStreaming = chatStatus === 'submitted' || chatStatus === 'streaming'
@@ -1872,6 +1926,36 @@ const ChatInput = memo(function ChatInput({
                 ))}
               </div>
             )}
+            {isPiProvider && (
+              <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-0 text-xs">
+                <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
+                  <IconFolderOpen size={14} className="shrink-0" />
+                  <span className="shrink-0 font-medium text-foreground">
+                    Workspace
+                  </span>
+                  <span
+                    className="truncate"
+                    title={piWorkspacePath || undefined}
+                  >
+                    {piWorkspacePath || 'Resolving workspace...'}
+                  </span>
+                  {piWorkspaceIsDefault && piWorkspacePath && (
+                    <span className="shrink-0 text-muted-foreground">
+                      Default
+                    </span>
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 shrink-0"
+                  onClick={handleChoosePiWorkspace}
+                >
+                  <IconFolderOpen size={14} />
+                  Choose
+                </Button>
+              </div>
+            )}
             <TextareaAutosize
               dir="auto"
               ref={textareaRef}
@@ -1955,7 +2039,7 @@ const ChatInput = memo(function ChatInput({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start">
-                    {hasMmproj && (
+                    {imageAttachmentsSupported && (
                       <DropdownMenuItem onClick={() => void openImagePicker()}>
                         <IconPhoto size={18} className="text-muted-foreground" />
                         <span>Add Images</span>

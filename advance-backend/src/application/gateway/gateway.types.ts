@@ -4,7 +4,10 @@ export const GATEWAY_OPS = [
   'capabilities.get',
   'tools.list',
   'skills.list',
+  'skills.search',
   'skills.get',
+  'connections.list',
+  'media.image_ocr',
   'tools.invoke',
 ] as const;
 
@@ -42,6 +45,16 @@ export type ToolsInvokePayload = z.infer<typeof toolsInvokePayloadSchema>;
 
 export const skillsGetPayloadSchema = z.object({
   skillId: z.string().min(1),
+});
+
+export const skillsSearchPayloadSchema = z.object({
+  query: z.string().min(1),
+  limit: z.number().int().min(1).max(5).optional(),
+  context: z.record(z.unknown()).optional(),
+});
+
+export const connectionsListPayloadSchema = z.object({
+  provider: z.enum(['google_workspace', 'zoho']).optional(),
 });
 
 export interface GatewayErrorBody {

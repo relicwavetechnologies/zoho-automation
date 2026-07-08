@@ -61,9 +61,16 @@ async function extractImageContext(
   fileName: string,
   env:      TypedEnv,
 ): Promise<InlineContextResult> {
-  const { extractImageText } = await import('../../../application/ingestion/text-extraction/image-ocr.extractor');
-  const geminiApiKey = env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY ?? '';
-  const { ocrText, caption } = await extractImageText(buf, mimeType, geminiApiKey);
+  const { extractImageTextWithProvider } = await import('../../../application/ingestion/text-extraction/image-ocr.extractor');
+  const { ocrText, caption } = await extractImageTextWithProvider(buf, mimeType, {
+    provider: env.IMAGE_OCR_PROVIDER,
+    geminiApiKey: env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY,
+    openrouterApiKey: env.OPENROUTER_API_KEY,
+    visionModel: env.IMAGE_OCR_PROVIDER === 'openrouter'
+      ? env.OPENROUTER_VISION_MODEL
+      : env.GEMINI_VISION_MODEL,
+    openrouterProviderOrder: env.OPENROUTER_PROVIDER_ORDER,
+  });
 
   const parts: string[] = [];
   if (caption) parts.push(`Description: ${caption.split(/\s+/).slice(0, IMG_WORD_CAP).join(' ')}`);

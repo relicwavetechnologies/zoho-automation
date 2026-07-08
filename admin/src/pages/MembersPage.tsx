@@ -1,5 +1,6 @@
 import { FormEvent, useMemo, useState } from "react"
 import { Loader2, Plus, RefreshCw } from "lucide-react"
+import { useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 import { DataTable } from "@/components/admin/data-table"
 import { PageHeader } from "@/components/admin/page-header"
@@ -13,6 +14,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { api } from "@/lib/api"
+import { connectionSummaryForEmail } from "@/lib/admin-user-connections"
 import { useLarkSync } from "@/lib/use-lark-sync"
 import type { JsonRecord } from "@/components/admin/types"
 
@@ -28,6 +30,7 @@ const withQuery = (path: string, params: Record<string, string | undefined>) => 
 }
 
 export function MembersPage() {
+  const navigate = useNavigate()
   const { token, session } = useAdminAuth()
   const [open, setOpen] = useState(false)
   const [email, setEmail] = useState("")
@@ -44,6 +47,12 @@ export function MembersPage() {
   }
 
   const larkSync = useLarkSync(() => void refreshAll())
+
+  const openMember = (row: JsonRecord) => {
+    const routeId = String(row.email ?? row.id ?? row.userId ?? "")
+    if (!routeId) return
+    navigate(`/people/${encodeURIComponent(routeId)}`)
+  }
 
   const createInvite = async (event: FormEvent) => {
     event.preventDefault()
@@ -143,12 +152,26 @@ export function MembersPage() {
           <DataTable
             rows={directory.data}
             loading={directory.loading}
+            onRowClick={openMember}
             emptyTitle="No members found"
             emptyDescription="Members will appear after directory sync or invite acceptance."
             columns={[
               { key: "email", header: "Email" },
               { key: "name", header: "Name" },
               { key: "role", header: "Role" },
+              {
+                key: "connections",
+                header: "Connections",
+                render: (row) => {
+                  const summary = connectionSummaryForEmail(String(row.email ?? ""))
+                  if (!summary.total) return <span className="text-muted-foreground">-</span>
+                  return (
+                    <span className="text-[12px] font-medium">
+                      {summary.total} total · {summary.personal} personal · {summary.shared} shared
+                    </span>
+                  )
+                },
+              },
               { key: "status", header: "Status", render: (row) => <StatusBadge value={String(row.status ?? "active")} /> },
             ]}
           />

@@ -49,6 +49,53 @@ fn expired_session_message() -> String {
     "Divo session expired. Reconnect Divo in Settings > Divo, then retry.".to_string()
 }
 
+async fn divo_desktop_json_request<R: Runtime>(
+    app: &AppHandle<R>,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+    label: &str,
+) -> Result<Value, String> {
+    let session =
+        load_divo_session(app)?.ok_or_else(|| "No Divo session configured".to_string())?;
+    let url = format!(
+        "{}/api/desktop/auth{}",
+        session.backend_url.trim_end_matches('/'),
+        path
+    );
+    log::info!("divo.desktop_request.start label={label}");
+
+    let client = reqwest::Client::new();
+    let mut request = client.request(method, url).bearer_auth(&session.member_token);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("{label} request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("{label} response read failed: {e}"))?;
+    log::debug!("divo.desktop_request.response label={label} status={status}");
+
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("{label} returned non-JSON (HTTP {status}): {e}"))?;
+
+    if !status.is_success() {
+        if status.as_u16() == 401 {
+            clear_expired_session(app)?;
+            return Err(expired_session_message());
+        }
+        return Err(format!("{label} returned HTTP {status}: {parsed}"));
+    }
+
+    Ok(parsed)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivoSessionStatus {
@@ -380,4 +427,196 @@ pub async fn divo_google_status<R: Runtime>(app: AppHandle<R>) -> Result<Value, 
 
     log::info!("divo.google_status.ok");
     Ok(parsed)
+}
+
+/// Read users/departments/roles and active grants for one Google connection.
+#[tauri::command]
+pub async fn divo_google_manage_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        &format!("/google/connections/{connection_id}/manage"),
+        None,
+        "Google manage access",
+    )
+    .await
+}
+
+/// Grant a user, department, role, or company access to a Google connection.
+#[tauri::command]
+pub async fn divo_google_grant_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grantee_type: String,
+    grantee_id: String,
+    access: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        &format!("/google/connections/{connection_id}/grants"),
+        Some(json!({
+            "granteeType": grantee_type,
+            "granteeId": grantee_id,
+            "access": access,
+        })),
+        "Google grant access",
+    )
+    .await
+}
+
+/// Revoke a grant from a Google connection.
+#[tauri::command]
+pub async fn divo_google_revoke_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grant_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    let grant_id = grant_id.trim();
+    if connection_id.is_empty() || grant_id.is_empty() {
+        return Err("connectionId and grantId are required".into());
+    }
+
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/google/connections/{connection_id}/grants/{grant_id}"),
+        None,
+        "Google revoke access",
+    )
+    .await
+}
+
+/// Start Zoho OAuth for the stored Divo member session.
+#[tauri::command]
+pub async fn divo_zoho_authorize_url<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    let parsed = divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/zoho/authorize-url",
+        None,
+        "Zoho authorize URL",
+    )
+    .await?;
+
+    let authorize_url = parsed
+        .get("data")
+        .and_then(|data| data.get("authorizeUrl"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("Zoho authorize URL response missing data.authorizeUrl: {parsed}"))?;
+
+    Ok(authorize_url.to_string())
+}
+
+/// Read Zoho connection status for the stored Divo member session.
+#[tauri::command]
+pub async fn divo_zoho_status<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/zoho/status",
+        None,
+        "Zoho status",
+    )
+    .await
+}
+
+/// Disconnect the company Zoho connection.
+#[tauri::command]
+pub async fn divo_zoho_unlink<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        "/zoho/unlink",
+        None,
+        "Zoho unlink",
+    )
+    .await
+}
+
+/// Read users/departments/roles and active grants for one Zoho connection.
+#[tauri::command]
+pub async fn divo_zoho_manage_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        &format!("/zoho/connections/{connection_id}/manage"),
+        None,
+        "Zoho manage access",
+    )
+    .await
+}
+
+/// Grant a user, department, role, or company access to a Zoho connection.
+#[tauri::command]
+pub async fn divo_zoho_grant_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grantee_type: String,
+    grantee_id: String,
+    access: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        &format!("/zoho/connections/{connection_id}/grants"),
+        Some(json!({
+            "granteeType": grantee_type,
+            "granteeId": grantee_id,
+            "access": access,
+        })),
+        "Zoho grant access",
+    )
+    .await
+}
+
+/// Revoke a grant from a Zoho connection.
+#[tauri::command]
+pub async fn divo_zoho_revoke_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grant_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    let grant_id = grant_id.trim();
+    if connection_id.is_empty() || grant_id.is_empty() {
+        return Err("connectionId and grantId are required".into());
+    }
+
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/zoho/connections/{connection_id}/grants/{grant_id}"),
+        None,
+        "Zoho revoke access",
+    )
+    .await
 }

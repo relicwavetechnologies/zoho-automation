@@ -1,10 +1,9 @@
 /**
- * GmailClient — Gmail REST API client.
- *
- * API base: https://gmail.googleapis.com/gmail/v1/users/me
- * Auth: Authorization: Bearer {accessToken}
+ * GmailClient — Gmail client backed by @googleapis/gmail.
  */
 
+import { gmail } from '@googleapis/gmail';
+import { OAuth2Client } from 'google-auth-library';
 import { EmailComposerService } from '../../application/email/email-composer.service';
 import type { EmailAddress, DivoEmailTemplateData } from '../../application/email/email.types';
 import type { ResolvedAttachment } from '../../application/email/attachment.types';
@@ -115,50 +114,50 @@ function messageIdHeader(headers: unknown[]): string | undefined {
   return value ? value.trim() : undefined;
 }
 
+function toOAuth2Client(auth: OAuth2Client | string): OAuth2Client {
+  if (typeof auth !== 'string') return auth;
+  const client = new OAuth2Client();
+  client.setCredentials({ access_token: auth });
+  return client;
+}
+
 export class GmailClient implements GmailClientPort {
+  private readonly client;
+
   constructor(
-    private readonly accessToken: string,
+    auth: string | OAuth2Client,
     private readonly composer = new EmailComposerService(),
-  ) {}
-
-  private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const res = await fetch(`${GMAIL_BASE}${path}`, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${this.accessToken}`,
-        'Content-Type': 'application/json',
-        ...(init.headers ?? {}),
-      },
-    });
-
-    const text = await res.text().catch(() => '');
-    if (!res.ok) throw new Error(`Gmail API ${res.status}: ${text.slice(0, 500)}`);
-    if (!text) return undefined as T;
-    return JSON.parse(text) as T;
+  ) {
+    this.client = gmail({ version: 'v1', auth: toOAuth2Client(auth) });
   }
 
   async listMessages(limit = 10, query?: string): Promise<GmailMessageListItem[]> {
-    const params = new URLSearchParams({ maxResults: String(Math.min(limit, 50)) });
-    if (query) params.set('q', query);
-
-    const list = await this.call<Record<string, unknown>>(`/messages?${params}`);
-    const msgs = Array.isArray(list['messages']) ? (list['messages'] as Array<Record<string, unknown>>) : [];
+    const list = await this.client.users.messages.list({
+      userId: 'me',
+      maxResults: Math.min(limit, 50),
+      ...(query ? { q: query } : {}),
+    });
+    const msgs = list.data.messages ?? [];
     const results = await Promise.allSettled(msgs.map(async m => {
-      const id = typeof m['id'] === 'string' ? m['id'] : '';
+      const id = m.id ?? '';
       if (!id) return null;
-      const msg = await this.call<Record<string, unknown>>(
-        `/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`,
-      );
-      const payload = asRec(msg['payload']);
+      const msg = await this.client.users.messages.get({
+        userId: 'me',
+        id,
+        format: 'metadata',
+        metadataHeaders: ['Subject', 'From'],
+      });
+      const data = msg.data as Record<string, unknown>;
+      const payload = asRec(data['payload']);
       const headers = Array.isArray(payload['headers']) ? (payload['headers'] as unknown[]) : [];
-      const labels = Array.isArray(msg['labelIds']) ? (msg['labelIds'] as string[]) : [];
+      const labels = Array.isArray(data['labelIds']) ? (data['labelIds'] as string[]) : [];
       return {
         messageId: id,
-        threadId: typeof msg['threadId'] === 'string' ? msg['threadId'] : '',
+        threadId: typeof data['threadId'] === 'string' ? data['threadId'] : '',
         subject: getHeader(headers, 'Subject') || '(no subject)',
         from: getHeader(headers, 'From'),
-        snippet: typeof msg['snippet'] === 'string' ? msg['snippet'] : '',
-        timestamp: internalDateToIso(msg['internalDate']),
+        snippet: typeof data['snippet'] === 'string' ? data['snippet'] : '',
+        timestamp: internalDateToIso(data['internalDate']),
         isUnread: labels.includes('UNREAD'),
       };
     }));
@@ -171,8 +170,8 @@ export class GmailClient implements GmailClientPort {
   }
 
   async getMessage(messageId: string): Promise<GmailMessageDetail> {
-    const msg = await this.call<Record<string, unknown>>(`/messages/${messageId}?format=full`);
-    return this.toMessageDetail(msg, messageId);
+    const msg = await this.client.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
+    return this.toMessageDetail(msg.data as Record<string, unknown>, messageId);
   }
 
   async searchMessages(query: string, limit = 10): Promise<GmailMessageListItem[]> {
@@ -196,16 +195,16 @@ export class GmailClient implements GmailClientPort {
     const body: Record<string, unknown> = { raw: built.encodedRaw };
     if (params.threadId) body['threadId'] = params.threadId;
 
-    const sent = await this.call<Record<string, unknown>>('/messages/send', {
-      method: 'POST',
-      body: JSON.stringify(body),
+    const sent = await this.client.users.messages.send({
+      userId: 'me',
+      requestBody: body,
     });
 
-    const messageId = typeof sent['id'] === 'string' ? sent['id'] : '';
+    const messageId = sent.data.id ?? '';
     if (!messageId) throw new Error('Gmail send: response missing message id');
     return {
       messageId,
-      ...(typeof sent['threadId'] === 'string' ? { threadId: sent['threadId'] } : {}),
+      ...(sent.data.threadId ? { threadId: sent.data.threadId } : {}),
     };
   }
 
@@ -223,16 +222,21 @@ export class GmailClient implements GmailClientPort {
     attachments?: readonly ResolvedAttachment[];
   }): Promise<{ draftId: string; messageId?: string; threadId?: string }> {
     const built = this.buildRawMessage(params);
-    const draft = await this.call<Record<string, unknown>>('/drafts', {
-      method: 'POST',
-      body: JSON.stringify({ message: { raw: built.encodedRaw, ...(params.threadId ? { threadId: params.threadId } : {}) } }),
+    const draft = await this.client.users.drafts.create({
+      userId: 'me',
+      requestBody: {
+        message: {
+          raw: built.encodedRaw,
+          ...(params.threadId ? { threadId: params.threadId } : {}),
+        },
+      },
     });
-    return this.toDraftIds(draft, 'create');
+    return this.toDraftIds(draft.data as Record<string, unknown>, 'create');
   }
 
   async getDraft(draftId: string): Promise<GmailDraftDetail> {
-    const draft = await this.call<Record<string, unknown>>(`/drafts/${encodeURIComponent(draftId)}?format=full`);
-    return this.toDraftDetail(draft, draftId);
+    const draft = await this.client.users.drafts.get({ userId: 'me', id: draftId, format: 'full' });
+    return this.toDraftDetail(draft.data as Record<string, unknown>, draftId);
   }
 
   async updateDraft(draftId: string, params: {
@@ -249,38 +253,46 @@ export class GmailClient implements GmailClientPort {
     attachments?: readonly ResolvedAttachment[];
   }): Promise<{ draftId: string; messageId?: string; threadId?: string }> {
     const built = this.buildRawMessage(params);
-    const draft = await this.call<Record<string, unknown>>(`/drafts/${encodeURIComponent(draftId)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ id: draftId, message: { raw: built.encodedRaw, ...(params.threadId ? { threadId: params.threadId } : {}) } }),
+    const draft = await this.client.users.drafts.update({
+      userId: 'me',
+      id: draftId,
+      requestBody: {
+        id: draftId,
+        message: {
+          raw: built.encodedRaw,
+          ...(params.threadId ? { threadId: params.threadId } : {}),
+        },
+      },
     });
-    return this.toDraftIds(draft, 'update');
+    return this.toDraftIds(draft.data as Record<string, unknown>, 'update');
   }
 
   async deleteDraft(draftId: string): Promise<void> {
-    await this.call<void>(`/drafts/${encodeURIComponent(draftId)}`, { method: 'DELETE' });
+    await this.client.users.drafts.delete({ userId: 'me', id: draftId });
   }
 
   async sendDraft(draftId: string): Promise<{ messageId: string; threadId?: string }> {
-    const sent = await this.call<Record<string, unknown>>('/drafts/send', {
-      method: 'POST',
-      body: JSON.stringify({ id: draftId }),
+    const sent = await this.client.users.drafts.send({
+      userId: 'me',
+      requestBody: { id: draftId },
     });
-    const messageId = typeof sent['id'] === 'string' ? sent['id'] : '';
+    const messageId = sent.data.id ?? '';
     if (!messageId) throw new Error('Gmail draft send: response missing message id');
     return {
       messageId,
-      ...(typeof sent['threadId'] === 'string' ? { threadId: sent['threadId'] } : {}),
+      ...(sent.data.threadId ? { threadId: sent.data.threadId } : {}),
     };
   }
 
   async listThreads(limit = 10, query?: string): Promise<GmailThreadListItem[]> {
-    const params = new URLSearchParams({ maxResults: String(Math.min(limit, 50)) });
-    if (query) params.set('q', query);
-
-    const list = await this.call<Record<string, unknown>>(`/threads?${params}`);
-    const threads = Array.isArray(list['threads']) ? (list['threads'] as Array<Record<string, unknown>>) : [];
+    const list = await this.client.users.threads.list({
+      userId: 'me',
+      maxResults: Math.min(limit, 50),
+      ...(query ? { q: query } : {}),
+    });
+    const threads = list.data.threads ?? [];
     const results = await Promise.allSettled(threads.map(async t => {
-      const id = typeof t['id'] === 'string' ? t['id'] : '';
+      const id = t.id ?? '';
       if (!id) return null;
       const detail = await this.getThread(id);
       const latest = detail.messages.at(-1);
@@ -303,7 +315,8 @@ export class GmailClient implements GmailClientPort {
   }
 
   async getThread(threadId: string): Promise<GmailThreadDetail> {
-    const thread = await this.call<Record<string, unknown>>(`/threads/${encodeURIComponent(threadId)}?format=full`);
+    const res = await this.client.users.threads.get({ userId: 'me', id: threadId, format: 'full' });
+    const thread = res.data as Record<string, unknown>;
     const messagesRaw = Array.isArray(thread['messages']) ? (thread['messages'] as Record<string, unknown>[]) : [];
     const messages = messagesRaw.map(m => this.toMessageDetail(m));
     const participants = uniqueAddresses(messages.flatMap(m => [m.from, ...m.to, ...m.cc].filter(Boolean)));
@@ -387,12 +400,12 @@ export class GmailClient implements GmailClientPort {
   }
 
   async listLabels(): Promise<GmailLabel[]> {
-    const res = await this.call<Record<string, unknown>>('/labels');
-    const labels = Array.isArray(res['labels']) ? (res['labels'] as Record<string, unknown>[]) : [];
+    const res = await this.client.users.labels.list({ userId: 'me' });
+    const labels = res.data.labels ?? [];
     return labels.map(label => ({
-      id: typeof label['id'] === 'string' ? label['id'] : '',
-      name: typeof label['name'] === 'string' ? label['name'] : '',
-      type: typeof label['type'] === 'string' ? label['type'] : '',
+      id: label.id ?? '',
+      name: label.name ?? '',
+      type: label.type ?? '',
     })).filter(label => label.id && label.name);
   }
 
@@ -434,12 +447,12 @@ export class GmailClient implements GmailClientPort {
   }
 
   async trashMessages(messageIds: string[]): Promise<{ modified: number }> {
-    await Promise.all(messageIds.map(id => this.call<Record<string, unknown>>(`/messages/${encodeURIComponent(id)}/trash`, { method: 'POST' })));
+    await Promise.all(messageIds.map(id => this.client.users.messages.trash({ userId: 'me', id })));
     return { modified: messageIds.length };
   }
 
   async untrashMessages(messageIds: string[]): Promise<{ modified: number }> {
-    await Promise.all(messageIds.map(id => this.call<Record<string, unknown>>(`/messages/${encodeURIComponent(id)}/untrash`, { method: 'POST' })));
+    await Promise.all(messageIds.map(id => this.client.users.messages.untrash({ userId: 'me', id })));
     return { modified: messageIds.length };
   }
 
@@ -516,9 +529,10 @@ export class GmailClient implements GmailClientPort {
   }
 
   private async modifyMessageLabels(messageId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void> {
-    await this.call<Record<string, unknown>>(`/messages/${encodeURIComponent(messageId)}/modify`, {
-      method: 'POST',
-      body: JSON.stringify({ addLabelIds, removeLabelIds }),
+    await this.client.users.messages.modify({
+      userId: 'me',
+      id: messageId,
+      requestBody: { addLabelIds, removeLabelIds },
     });
   }
 
@@ -531,7 +545,7 @@ export class GmailClient implements GmailClientPort {
   }
 
   private async getProfileEmail(): Promise<string> {
-    const profile = await this.call<Record<string, unknown>>('/profile');
-    return typeof profile['emailAddress'] === 'string' ? profile['emailAddress'] : '';
+    const profile = await this.client.users.getProfile({ userId: 'me' });
+    return profile.data.emailAddress ?? '';
   }
 }

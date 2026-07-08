@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   ArrowLeft,
+  Building2,
   CalendarDays,
   Check,
   ChevronRight,
@@ -12,7 +13,9 @@ import {
   Plus,
   RefreshCw,
   RotateCw,
+  Search,
   ShieldCheck,
+  Trash2,
   User,
   Users,
 } from 'lucide-react'
@@ -67,6 +70,88 @@ type GoogleStatusResponse = {
   data?: {
     connected: boolean
     connections: GoogleStatusConnection[]
+  }
+  message?: string
+}
+
+type GoogleManageGranteeType = 'user' | 'department' | 'role' | 'company'
+
+type GoogleManageGrant = {
+  id: string
+  granteeType: GoogleManageGranteeType
+  granteeId: string
+  granteeLabel: string
+  granteeDetail: string | null
+  access: DivoConnectionAccess
+  grantedAt: string
+  grantedBy: { id: string; email: string; name: string | null } | null
+}
+
+type GoogleManageCandidate = {
+  id: string
+  name?: string | null
+  email?: string | null
+  role?: string
+  kind?: 'company' | 'department'
+  department?: string
+}
+
+type GoogleManageData = {
+  connection: {
+    connectionId: string
+    label: string
+    accountEmail: string | null
+    accountName: string | null
+    ownerType: 'user' | 'company'
+    access: DivoConnectionAccess
+    scopes: string[]
+    connectedAt: string
+  }
+  grants: GoogleManageGrant[]
+  candidates: {
+    users: GoogleManageCandidate[]
+    departments: GoogleManageCandidate[]
+    roles: GoogleManageCandidate[]
+    company: { id: string; name: string } | null
+  }
+  accessLevels: Array<{ value: DivoConnectionAccess; label: string; description: string }>
+}
+
+type GoogleManageResponse = {
+  success: boolean
+  data?: GoogleManageData
+  message?: string
+}
+
+type ManageAccessProvider = 'google' | 'zoho'
+
+type ZohoStatusResponse = {
+  success: boolean
+  data?: {
+    connected: boolean
+    canManage: boolean
+    connections: Array<{
+      connectionId: string
+      label: string
+      accountEmail: string | null
+      accountName: string | null
+      ownerType: 'user' | 'company'
+      access: DivoConnectionAccess
+      scopes: string[]
+      connectedAt: string
+      lastUsedAt: string | null
+    }>
+    legacyConnection: {
+      connectionId: string
+      environment: string
+      providerMode: string
+      status: string
+      scopes: string[]
+      connectedAt: string
+      lastSyncAt: string | null
+      accessTokenExpiresAt: string | null
+      tokenFailureCode: string | null
+    } | null
   }
   message?: string
 }
@@ -150,6 +235,31 @@ function toConnectionModel(connection: GoogleStatusConnection): DivoConnection {
     piAlias: connection.label || account,
     recommendedFor: buildConnectionRecommendation(connection.access, scopeLabels),
     lastUsedAt: formatRelativeDate(connection.lastUsedAt),
+    connectedAt: connection.connectedAt,
+  }
+}
+
+function toZohoConnectionModel(connection: NonNullable<ZohoStatusResponse['data']>['connections'][number]): DivoConnection {
+  const account = connection.accountEmail ?? connection.accountName ?? 'Zoho account'
+  const isShared = connection.ownerType === 'company'
+  return {
+    id: connection.connectionId,
+    pluginId: 'zoho',
+    label: connection.label || account,
+    accountEmail: account,
+    kind: isShared ? 'company_shared' : 'personal',
+    status: 'connected',
+    access: connection.access,
+    owner: connection.accountName ?? account,
+    scopes: connection.scopes.length ? connection.scopes : ['Zoho CRM', 'Zoho Books'],
+    piAlias: connection.label || account,
+    recommendedFor: connection.access === 'read_only'
+      ? 'Read-only access for Zoho CRM and Books.'
+      : connection.access === 'admin'
+        ? 'Admin access for Zoho CRM and Books.'
+        : 'Read/write access for Zoho CRM and Books.',
+    lastUsedAt: formatRelativeDate(connection.lastUsedAt),
+    connectedAt: connection.connectedAt,
   }
 }
 
@@ -205,10 +315,30 @@ function formatRelativeDate(value: string | null): string {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(timestamp)
 }
 
+function connectedAtTime(connection: DivoConnection): number {
+  if (!connection.connectedAt) return 0
+  const timestamp = new Date(connection.connectedAt).getTime()
+  return Number.isNaN(timestamp) ? 0 : timestamp
+}
+
+function pickPostOauthManageConnection(
+  previousConnections: DivoConnection[],
+  nextConnections: DivoConnection[]
+): DivoConnection | null {
+  const previousIds = new Set(previousConnections.map((connection) => connection.id))
+  const adminConnections = nextConnections.filter((connection) => connection.access === 'admin')
+  return (
+    adminConnections.find((connection) => !previousIds.has(connection.id)) ??
+    [...adminConnections].sort((a, b) => connectedAtTime(b) - connectedAtTime(a))[0] ??
+    null
+  )
+}
+
 function PluginDetailRoute() {
   const navigate = useNavigate()
   const { pluginId } = Route.useParams()
   const [addOpen, setAddOpen] = useState(false)
+  const [manageConnection, setManageConnection] = useState<DivoConnection | null>(null)
   const [connectionState, setConnectionState] = useState<ConnectionState>({
     status: 'loading',
     connections: [],
@@ -246,14 +376,14 @@ function PluginDetailRoute() {
   const loadConnections = useCallback(async () => {
     if (pluginId !== 'google-workspace') {
       setConnectionState({ status: 'ready', connections: [] })
-      return
+      return []
     }
 
     setConnectionState((current) => ({ status: 'loading', connections: current.connections }))
     const session = await refreshDivoSession()
     if (session.status !== 'connected') {
       setConnectionState({ status: 'ready', connections: [] })
-      return
+      return []
     }
 
     console.debug('[DivoPlugins] google_status.start')
@@ -268,6 +398,7 @@ function PluginDetailRoute() {
         connectionCount: connections.length,
       })
       setConnectionState({ status: 'ready', connections })
+      return connections
     } catch (error) {
       console.error('[DivoPlugins] google_status.failed', error)
       if (isDivoAuthError(error)) {
@@ -281,6 +412,7 @@ function PluginDetailRoute() {
         connections: current.connections,
         error: String(error),
       }))
+      return []
     }
   }, [pluginId, refreshDivoSession])
 
@@ -315,12 +447,39 @@ function PluginDetailRoute() {
       />
     )
   }
+  if (pluginId === 'zoho') {
+    return (
+      <ZohoPluginDetail
+        plugin={plugin}
+        onBack={() => navigate({ to: route.plugins.index } as any)}
+        onReconnectDivo={() => navigate({ to: route.settings.divo } as any)}
+      />
+    )
+  }
 
   const personalCount = connections.filter((connection) => connection.kind === 'personal').length
   const sharedCount = connections.filter((connection) => connection.kind === 'company_shared').length
   const activeCount = connections.filter((connection) => connection.status === 'connected').length
+  const adminConnections = connections.filter((connection) => connection.access === 'admin')
   const canManageGoogle = divoSession.status === 'connected'
   const openDivoSettings = () => navigate({ to: route.settings.divo } as any)
+  const openManageConnection = (connection: DivoConnection) => {
+    if (connection.access !== 'admin') {
+      toast.error('Admin access required', {
+        description: 'Ask the connection owner or a company admin to manage sharing.',
+      })
+      return
+    }
+    setManageConnection(connection)
+  }
+  const openFirstManageableConnection = () => {
+    const connection = adminConnections[0]
+    if (!connection) {
+      toast.error('No admin-managed Google connection')
+      return
+    }
+    openManageConnection(connection)
+  }
 
   return (
     <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
@@ -336,10 +495,16 @@ function PluginDetailRoute() {
               Plugins
             </Button>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm">
-                Manage access
-                <ChevronRight className="size-4" />
-              </Button>
+              {adminConnections.length ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={openFirstManageableConnection}
+                >
+                  Manage access
+                  <ChevronRight className="size-4" />
+                </Button>
+              ) : null}
               <Button
                 size="sm"
                 onClick={() => (canManageGoogle ? setAddOpen(true) : openDivoSettings())}
@@ -447,7 +612,11 @@ function PluginDetailRoute() {
                 />
               ) : null}
               {connections.map((connection) => (
-                <ConnectionCard key={connection.id} connection={connection} />
+                <ConnectionCard
+                  key={connection.id}
+                  connection={connection}
+                  onManage={() => openManageConnection(connection)}
+                />
               ))}
             </div>
           </div>
@@ -483,9 +652,23 @@ function PluginDetailRoute() {
       <AddConnectionDialog
         open={addOpen}
         divoSession={divoSession}
-        onConnected={() => void loadConnections()}
+        onConnected={async () => {
+          const previousConnections = connections
+          const nextConnections = await loadConnections()
+          const connection = pickPostOauthManageConnection(previousConnections, nextConnections)
+          if (connection) {
+            setManageConnection(connection)
+          }
+        }}
         onReconnect={openDivoSettings}
         onOpenChange={setAddOpen}
+      />
+      <ManageAccessDialog
+        connection={manageConnection}
+        onOpenChange={(open) => {
+          if (!open) setManageConnection(null)
+        }}
+        onChanged={() => void loadConnections()}
       />
     </div>
   )
@@ -797,6 +980,280 @@ function LocalLarkPluginDetail({
   )
 }
 
+function ZohoPluginDetail({
+  plugin,
+  onBack,
+  onReconnectDivo,
+}: {
+  plugin: NonNullable<ReturnType<typeof getPlugin>>
+  onBack: () => void
+  onReconnectDivo: () => void
+}) {
+  const Icon = plugin.icon
+  const [divoSession, setDivoSession] = useState<DivoSessionState>({ status: 'checking' })
+  const [status, setStatus] = useState<ZohoStatusResponse['data'] | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [isBusy, setIsBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [manageConnection, setManageConnection] = useState<DivoConnection | null>(null)
+
+  const loadStatus = useCallback(async () => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const session = await invoke<DivoSessionStatus>('divo_get_session_status')
+      if (!session.configured) {
+        setDivoSession({
+          status: 'disconnected',
+          message: 'Connect Divo before managing backend-owned plugins.',
+        })
+        setStatus(null)
+        return
+      }
+      setDivoSession({ status: 'connected', session })
+      const response = await invoke<ZohoStatusResponse>('divo_zoho_status')
+      if (!response.success) {
+        throw new Error(response.message ?? 'Zoho status request failed')
+      }
+      setStatus(response.data ?? null)
+    } catch (loadError) {
+      if (isDivoAuthError(loadError)) {
+        setDivoSession({
+          status: 'disconnected',
+          message: 'Divo session expired. Reconnect Divo to continue.',
+        })
+      }
+      setError(String(loadError))
+    } finally {
+      setIsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadStatus()
+  }, [loadStatus])
+
+  const connectZoho = async () => {
+    if (divoSession.status !== 'connected') {
+      onReconnectDivo()
+      return
+    }
+    setIsBusy(true)
+    try {
+      const authorizeUrl = await invoke<string>('divo_zoho_authorize_url')
+      await openExternalUrl(authorizeUrl)
+      toast.success('Zoho sign-in opened')
+      setTimeout(() => void loadStatus(), 1500)
+    } catch (connectError) {
+      toast.error('Zoho connection failed', { description: String(connectError) })
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  const disconnectZoho = async () => {
+    setIsBusy(true)
+    try {
+      await invoke('divo_zoho_unlink')
+      toast.success('Zoho disconnected')
+      await loadStatus()
+    } catch (disconnectError) {
+      toast.error('Could not disconnect Zoho', { description: String(disconnectError) })
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  const connections = (status?.connections ?? []).map(toZohoConnectionModel)
+  const adminConnections = connections.filter((connection) => connection.access === 'admin')
+  const legacyConnection = status?.legacyConnection ?? null
+  const connected = Boolean(status?.connected)
+  const canManage = Boolean(status?.canManage)
+
+  return (
+    <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
+      <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-6 lg:px-8">
+        <header className="flex flex-col gap-5 rounded-lg border border-border/70 bg-card/30 p-5">
+          <div className="flex items-center justify-between gap-4">
+            <Button variant="ghost" size="sm" onClick={onBack}>
+              <ArrowLeft className="size-4" />
+              Plugins
+            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => void loadStatus()}>
+                <RotateCw className="size-4" />
+                Refresh
+              </Button>
+              {divoSession.status !== 'connected' ? (
+                <Button size="sm" onClick={onReconnectDivo}>
+                  Connect Divo
+                </Button>
+              ) : canManage ? (
+                <>
+                  {adminConnections.length ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setManageConnection(adminConnections[0] ?? null)}
+                    >
+                      Manage access
+                    </Button>
+                  ) : null}
+                  {connected ? (
+                    <Button variant="outline" size="sm" onClick={() => void disconnectZoho()} disabled={isBusy}>
+                      Disconnect all
+                    </Button>
+                  ) : null}
+                  <Button size="sm" onClick={() => void connectZoho()} disabled={isBusy}>
+                    <KeyRound className="size-4" />
+                    Add Zoho
+                    <ExternalLink className="size-4" />
+                  </Button>
+                </>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+            <div className="flex gap-4">
+              <div
+                className={cn(
+                  'flex size-14 items-center justify-center rounded-lg border',
+                  plugin.accentClassName
+                )}
+              >
+                <Icon className="size-7" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-medium tracking-normal">{plugin.name}</h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                  Connect Zoho through Divo backend. Admins can share specific accounts with users,
+                  departments, roles, or the whole company.
+                </p>
+              </div>
+            </div>
+
+            <div className="grid min-w-72 grid-cols-3 gap-2">
+              <Metric value={connected ? 'On' : 'Off'} label="Connection" />
+              <Metric value={connections.length ? String(connections.length) : legacyConnection ? 'Legacy' : '0'} label="Accounts" />
+              <Metric value={canManage ? 'Admin' : 'Member'} label="Access" />
+            </div>
+          </div>
+        </header>
+
+        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="space-y-4">
+            {divoSession.status === 'disconnected' ? (
+              <ConnectionListState
+                title="Connect Divo to manage Zoho"
+                description={divoSession.message ?? 'Zoho is a backend-owned plugin.'}
+                action={<Button size="sm" onClick={onReconnectDivo}>Open Divo Settings</Button>}
+              />
+            ) : isLoading ? (
+              <ConnectionListState
+                title="Checking Zoho"
+                description="Reading the company Zoho connection from Divo backend."
+              />
+            ) : error ? (
+              <ConnectionListState
+                title="Could not load Zoho"
+                description={error}
+                action={<Button size="sm" onClick={() => void loadStatus()}>Retry</Button>}
+              />
+            ) : connections.length ? (
+              connections.map((connection) => (
+                <ConnectionCard
+                  key={connection.id}
+                  connection={connection}
+                  onManage={() => setManageConnection(connection)}
+                />
+              ))
+            ) : connected && legacyConnection ? (
+              <article className="rounded-lg border border-border/70 bg-card/30 p-4">
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <StatusDot status="connected" />
+                      <h2 className="text-sm font-medium">Legacy Zoho company connection</h2>
+                      <Badge tone="amber">Reconnect recommended</Badge>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      This older company connection still exists, but it is not shareable per user yet.
+                      Reconnect Zoho to create a managed account with access grants.
+                    </p>
+                  </div>
+                  {canManage ? (
+                    <Button size="sm" onClick={() => void connectZoho()} disabled={isBusy}>
+                      <KeyRound className="size-4" />
+                      Reconnect Zoho
+                      <ExternalLink className="size-4" />
+                    </Button>
+                  ) : null}
+                </div>
+                <div className="mt-4 grid gap-3 border-t border-border/70 pt-4 md:grid-cols-3">
+                  <ConnectionFact icon={ShieldCheck} label="Environment" value={legacyConnection.environment} />
+                  <ConnectionFact icon={CalendarDays} label="Connected" value={formatRelativeDate(legacyConnection.connectedAt)} />
+                  <ConnectionFact icon={Check} label="Token" value={legacyConnection.tokenFailureCode ?? 'Healthy'} />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {legacyConnection.scopes.slice(0, 8).map((scope) => (
+                    <span
+                      key={scope}
+                      className="rounded-md border border-border/70 bg-muted/30 px-2 py-1 text-xs text-muted-foreground"
+                    >
+                      {scope}
+                    </span>
+                  ))}
+                </div>
+              </article>
+            ) : (
+              <ConnectionListState
+                title="Zoho is not connected"
+                description={
+                  canManage
+                    ? 'Connect Zoho with OAuth to enable CRM and Books tools.'
+                    : 'Ask a company admin to connect Zoho.'
+                }
+                action={
+                  canManage ? (
+                    <Button size="sm" onClick={() => void connectZoho()} disabled={isBusy}>
+                      <KeyRound className="size-4" />
+                      Connect Zoho
+                      <ExternalLink className="size-4" />
+                    </Button>
+                  ) : undefined
+                }
+              />
+            )}
+          </div>
+
+	          <aside className="space-y-4">
+            <div className="rounded-lg border border-border/70 bg-card/30 p-4">
+              <h2 className="text-sm font-medium">Available services</h2>
+              <div className="mt-3 space-y-2 text-xs text-muted-foreground">
+                <p className="rounded-md border border-border/70 bg-background/40 p-2">Zoho CRM modules</p>
+                <p className="rounded-md border border-border/70 bg-background/40 p-2">Zoho Books contacts, invoices, and expenses</p>
+                <p className="rounded-md border border-border/70 bg-background/40 p-2">Backend token refresh and encrypted storage</p>
+              </div>
+	            </div>
+
+	            <PiContextCard connections={connections} />
+	          </aside>
+	        </section>
+	      </main>
+
+	      <ManageAccessDialog
+	        provider="zoho"
+	        connection={manageConnection}
+	        onOpenChange={(open) => {
+	          if (!open) setManageConnection(null)
+	        }}
+	        onChanged={() => void loadStatus()}
+	      />
+	    </div>
+	  )
+	}
+
 function ConnectionListState({
   title,
   description,
@@ -826,7 +1283,13 @@ function Metric({ value, label }: { value: string; label: string }) {
   )
 }
 
-function ConnectionCard({ connection }: { connection: DivoConnection }) {
+function ConnectionCard({
+  connection,
+  onManage,
+}: {
+  connection: DivoConnection
+  onManage: () => void
+}) {
   const isShared = connection.kind === 'company_shared'
   const isReadOnly = connection.access === 'read_only'
 
@@ -858,11 +1321,11 @@ function ConnectionCard({ connection }: { connection: DivoConnection }) {
               <RefreshCw className="size-4" />
               Reconnect
             </Button>
-          ) : (
-            <Button variant="outline" size="sm">
+          ) : connection.access === 'admin' ? (
+            <Button variant="outline" size="sm" onClick={onManage}>
               Manage
             </Button>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -924,7 +1387,7 @@ function PiContextCard({ connections }: { connections: DivoConnection[] }) {
       <h2 className="text-sm font-medium">What Pi will see</h2>
       <p className="mt-2 text-xs leading-5 text-muted-foreground">
         Connection routing will be delivered as skill context. Pi should select
-        by alias, account, grant, and task intent before using Google tools.
+        by alias, account, grant, and task intent before using backend tools.
       </p>
       <div className="mt-3 space-y-2">
         {connections.slice(0, 4).map((connection) => (
@@ -946,6 +1409,356 @@ function PiContextCard({ connections }: { connections: DivoConnection[] }) {
       </div>
     </div>
   )
+}
+
+function ManageAccessDialog({
+  provider = 'google',
+  connection,
+  onOpenChange,
+  onChanged,
+}: {
+  provider?: ManageAccessProvider
+  connection: DivoConnection | null
+  onOpenChange: (open: boolean) => void
+  onChanged: () => void
+}) {
+  const [data, setData] = useState<GoogleManageData | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [granteeType, setGranteeType] = useState<GoogleManageGranteeType>('user')
+  const [granteeId, setGranteeId] = useState('')
+  const [access, setAccess] = useState<DivoConnectionAccess>('read_only')
+  const [query, setQuery] = useState('')
+  const open = Boolean(connection)
+  const providerLabel = provider === 'zoho' ? 'Zoho' : 'Google'
+  const commandNames = provider === 'zoho'
+    ? {
+      manage: 'divo_zoho_manage_access',
+      grant: 'divo_zoho_grant_access',
+      revoke: 'divo_zoho_revoke_access',
+    }
+    : {
+      manage: 'divo_google_manage_access',
+      grant: 'divo_google_grant_access',
+      revoke: 'divo_google_revoke_access',
+    }
+
+  const loadManageData = useCallback(async () => {
+    if (!connection) return
+    setIsLoading(true)
+    setError(null)
+    try {
+      const response = await invoke<GoogleManageResponse>(commandNames.manage, {
+        connectionId: connection.id,
+        connection_id: connection.id,
+      })
+      if (!response.success || !response.data) {
+        throw new Error(response.message ?? 'Could not load access settings')
+      }
+      setData(response.data)
+      setGranteeId('')
+    } catch (loadError) {
+      setError(String(loadError))
+    } finally {
+      setIsLoading(false)
+    }
+  }, [commandNames.manage, connection])
+
+  useEffect(() => {
+    if (connection) {
+      void loadManageData()
+    } else {
+      setData(null)
+      setError(null)
+      setQuery('')
+      setGranteeType('user')
+      setGranteeId('')
+      setAccess('read_only')
+    }
+  }, [connection, loadManageData])
+
+  const candidates = data ? getCandidatesForType(data, granteeType) : []
+  const filteredCandidates = candidates.filter((candidate) => {
+    const haystack = [
+      candidate.name,
+      candidate.email,
+      candidate.role,
+      candidate.department,
+      candidate.id,
+    ].filter(Boolean).join(' ').toLowerCase()
+    return haystack.includes(query.trim().toLowerCase())
+  })
+
+  const grantAccess = async () => {
+    if (!connection || !granteeId) {
+      toast.error('Choose who should get access')
+      return
+    }
+    setIsSaving(true)
+    try {
+      const response = await invoke<GoogleManageResponse>(commandNames.grant, {
+        connectionId: connection.id,
+        connection_id: connection.id,
+        granteeType,
+        grantee_type: granteeType,
+        granteeId,
+        grantee_id: granteeId,
+        access,
+      })
+      if (!response.success || !response.data) {
+        throw new Error(response.message ?? 'Could not grant access')
+      }
+      setData(response.data)
+      setGranteeId(granteeType === 'company' ? response.data.candidates.company?.id ?? '' : '')
+      setQuery('')
+      toast.success('Access updated')
+      onChanged()
+    } catch (saveError) {
+      toast.error('Could not update access', { description: String(saveError) })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const revokeGrant = async (grant: GoogleManageGrant) => {
+    if (!connection) return
+    setIsSaving(true)
+    try {
+      const response = await invoke<GoogleManageResponse>(commandNames.revoke, {
+        connectionId: connection.id,
+        connection_id: connection.id,
+        grantId: grant.id,
+        grant_id: grant.id,
+      })
+      if (!response.success || !response.data) {
+        throw new Error(response.message ?? 'Could not revoke access')
+      }
+      setData(response.data)
+      toast.success('Access removed')
+      onChanged()
+    } catch (revokeError) {
+      toast.error('Could not remove access', { description: String(revokeError) })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[calc(100svh-64px)] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Manage {providerLabel} access</DialogTitle>
+          <DialogDescription>
+            Share this connection with users, departments, roles, or the whole company.
+          </DialogDescription>
+        </DialogHeader>
+
+        {connection ? (
+          <div className="space-y-4 py-2">
+            <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{connection.label}</p>
+                  <p className="mt-1 truncate text-xs text-muted-foreground">
+                    {connection.accountEmail}
+                  </p>
+                </div>
+                <Badge tone={connection.access === 'admin' ? 'green' : 'amber'}>
+                  {formatAccessLabel(connection.access)}
+                </Badge>
+              </div>
+            </div>
+
+            {isLoading ? (
+              <ConnectionListState
+                title="Loading access settings"
+                description="Reading current grants and company members from Divo backend."
+              />
+            ) : null}
+            {error ? (
+              <ConnectionListState
+                title="Could not load access"
+                description={error}
+                action={<Button size="sm" onClick={() => void loadManageData()}>Retry</Button>}
+              />
+            ) : null}
+
+            {data && !error ? (
+              <>
+                <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-medium">Grant access</h3>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                        Read-only maps to read tools. Read/write maps to send, create, update, and delete tools. Admin can manage sharing.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-[160px_minmax(0,1fr)_160px]">
+                    <select
+                      className="h-9 rounded-md border border-border bg-background px-3 text-sm"
+                      value={granteeType}
+                      onChange={(event) => {
+                        const nextType = event.target.value as GoogleManageGranteeType
+                        setGranteeType(nextType)
+                        setQuery('')
+                        setGranteeId(nextType === 'company' ? data.candidates.company?.id ?? '' : '')
+                      }}
+                    >
+                      <option value="user">User</option>
+                      <option value="department">Department</option>
+                      <option value="role">Role</option>
+                      <option value="company">Company</option>
+                    </select>
+
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
+                      <input
+                        className="h-9 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm outline-none"
+                        value={query}
+                        onChange={(event) => setQuery(event.target.value)}
+                        placeholder={`Search ${granteeType}`}
+                        disabled={granteeType === 'company'}
+                      />
+                    </div>
+
+                    <select
+                      className="h-9 rounded-md border border-border bg-background px-3 text-sm"
+                      value={access}
+                      onChange={(event) => setAccess(event.target.value as DivoConnectionAccess)}
+                    >
+                      {data.accessLevels.map((level) => (
+                        <option key={level.value} value={level.value}>
+                          {level.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="mt-3 max-h-44 overflow-y-auto rounded-md border border-border/70">
+                    {filteredCandidates.length ? (
+                      filteredCandidates.map((candidate) => (
+                        <button
+                          key={`${granteeType}:${candidate.id}`}
+                          type="button"
+                          className={cn(
+                            'flex w-full items-center justify-between gap-3 border-b border-border/70 px-3 py-2 text-left last:border-b-0 hover:bg-muted/40',
+                            granteeId === candidate.id && 'bg-muted/50'
+                          )}
+                          onClick={() => setGranteeId(candidate.id)}
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-medium">
+                              {candidateLabel(candidate)}
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {candidateDetail(candidate, granteeType)}
+                            </span>
+                          </span>
+                          {granteeId === candidate.id ? <Check className="size-4 shrink-0" /> : null}
+                        </button>
+                      ))
+                    ) : (
+                      <p className="p-3 text-sm text-muted-foreground">No matches found.</p>
+                    )}
+                  </div>
+
+                  <div className="mt-3 flex justify-end">
+                    <Button size="sm" onClick={() => void grantAccess()} disabled={isSaving || !granteeId}>
+                      <ShieldCheck className="size-4" />
+                      Grant access
+                    </Button>
+                  </div>
+                </section>
+
+                <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+                  <h3 className="text-sm font-medium">Current access</h3>
+                  <div className="mt-3 space-y-2">
+                    {data.grants.length ? (
+                      data.grants.map((grant) => (
+                        <div
+                          key={grant.id}
+                          className="flex flex-col gap-3 rounded-md border border-border/70 bg-background/40 p-3 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+                              <GrantIcon type={grant.granteeType} />
+                            </span>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{grant.granteeLabel}</p>
+                              <p className="truncate text-xs text-muted-foreground">
+                                {grant.granteeType} · {grant.granteeDetail ?? 'Direct grant'}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Badge tone={grant.access === 'admin' ? 'green' : grant.access === 'read_only' ? 'amber' : 'blue'}>
+                              {formatAccessLabel(grant.access)}
+                            </Badge>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => void revokeGrant(grant)}
+                              disabled={isSaving}
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="rounded-md border border-border/70 bg-background/40 p-3 text-sm text-muted-foreground">
+                        No shared grants yet.
+                      </p>
+                    )}
+                  </div>
+                </section>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function getCandidatesForType(data: GoogleManageData, type: GoogleManageGranteeType): GoogleManageCandidate[] {
+  if (type === 'user') return data.candidates.users
+  if (type === 'department') return data.candidates.departments
+  if (type === 'role') return data.candidates.roles
+  return data.candidates.company ? [data.candidates.company] : []
+}
+
+function candidateLabel(candidate: GoogleManageCandidate): string {
+  return candidate.name ?? candidate.email ?? candidate.id
+}
+
+function candidateDetail(candidate: GoogleManageCandidate, type: GoogleManageGranteeType): string {
+  if (type === 'user') return [candidate.email, candidate.role].filter(Boolean).join(' · ') || 'Company user'
+  if (type === 'role') return candidate.department ? `${candidate.department} role` : 'Company role'
+  if (type === 'department') return 'Department'
+  return 'Whole company'
+}
+
+function formatAccessLabel(access: DivoConnectionAccess): string {
+  if (access === 'read_only') return 'Read-only'
+  if (access === 'read_write') return 'Read/write'
+  return 'Admin'
+}
+
+function GrantIcon({ type }: { type: GoogleManageGranteeType }) {
+  if (type === 'user') return <User className="size-4 text-muted-foreground" />
+  if (type === 'department') return <Users className="size-4 text-muted-foreground" />
+  if (type === 'role') return <ShieldCheck className="size-4 text-muted-foreground" />
+  return <Building2 className="size-4 text-muted-foreground" />
 }
 
 function AddConnectionDialog({
@@ -1027,13 +1840,13 @@ function AddConnectionDialog({
           ) : null}
           <ConnectionOption
             icon={User}
-            title="Personal account"
-            description="Connect a Google account only you can use by default."
+            title="Connect account"
+            description="OAuth creates a backend-owned Google connection with admin access for you."
           />
           <ConnectionOption
             icon={Users}
-            title="Company shared account"
-            description="Connect once, then grant users, departments, or roles access."
+            title="Share after connect"
+            description="After OAuth, use Manage to grant users, departments, roles, or the company access."
           />
           <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
             <div className="flex gap-2">
@@ -1075,21 +1888,17 @@ function ConnectionOption({
   description: string
 }) {
   return (
-    <button
-      type="button"
-      className="flex items-center gap-3 rounded-lg border border-border/70 bg-card/30 p-3 text-left transition-colors hover:bg-accent/50"
-    >
+    <div className="flex items-center gap-3 rounded-lg border border-border/70 bg-card/30 p-3 text-left">
       <span className="flex size-10 items-center justify-center rounded-md border border-border/70 bg-muted/40 text-muted-foreground">
         <Icon className="size-5" />
       </span>
-      <span>
+      <span className="min-w-0">
         <span className="block text-sm font-medium">{title}</span>
         <span className="mt-1 block text-sm leading-5 text-muted-foreground">
           {description}
         </span>
       </span>
-      <Check className="ml-auto size-4 text-muted-foreground" />
-    </button>
+    </div>
   )
 }
 

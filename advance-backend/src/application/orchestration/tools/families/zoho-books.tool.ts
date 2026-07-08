@@ -52,6 +52,7 @@ import { runInSandbox, arrayToCsv, SandboxTimeoutError, SandboxScriptError, Sand
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
 const Schema = z.object({
+  connectionId: z.string().min(1).optional(),
   op: z.enum([
     // CRUD
     'list_invoices',
@@ -354,6 +355,7 @@ async function executeScriptMode(
   try {
     fetchResult = await scriptDeps.booksClient.listAllRecords({
       companyId,
+      ...(args.connectionId ? { connectionId: args.connectionId, userId: ctx.runContext.userId } : {}),
       moduleName,
       ...(Object.keys(rawFilters).length > 0 ? { filters: rawFilters } : {}),
     });
@@ -478,7 +480,12 @@ async function executeScriptMode(
 
 export const createZohoBooksTool = (deps: {
   /** Factory for simple per-request CRUD client (token resolved per call). */
-  getClient:    (companyId: string, userId: string) => Promise<ZohoBooksClientPort | null>;
+  getClient:    (
+    companyId: string,
+    userId: string,
+    connectionId?: string,
+    minimumAccess?: 'read_only' | 'read_write',
+  ) => Promise<ZohoBooksClientPort | null>;
   /** Paginated client for module reads and raw Books report endpoints. */
   booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
@@ -530,6 +537,9 @@ export const createZohoBooksTool = (deps: {
 
   async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     const { companyId, userId } = ctx.runContext;
+    const connectionContext = {
+      ...(args.connectionId ? { connectionId: args.connectionId, userId } : {}),
+    };
 
     const zohoReadScope = ctx.perm.department?.zohoReadScope ?? 'show_all';
     const requesterEmail = ctx.runContext.requesterEmail?.trim().toLowerCase();
@@ -544,6 +554,7 @@ export const createZohoBooksTool = (deps: {
       try {
         const report = await deps.financeOps.buildOverdueReport({
           companyId,
+          ...connectionContext,
           ...(args.organizationId  ? { organizationId:  args.organizationId  } : {}),
           ...(args.asOfDate        ? { asOfDate:        singleDateValue(args.asOfDate) } : {}),
           ...(args.minOverdueDays !== undefined ? { minOverdueDays: args.minOverdueDays } : {}),
@@ -599,7 +610,12 @@ export const createZohoBooksTool = (deps: {
 
     // ── CRUD operations (use simple client) ──────────────────────────────────
     ctx.logger.info('zoho_books.tool.get_client', { companyId, userId, op: args.op });
-    const client = await deps.getClient(companyId, userId);
+    const client = await deps.getClient(
+      companyId,
+      userId,
+      args.connectionId,
+      readOps.has(args.op) ? 'read_only' : 'read_write',
+    );
     ctx.logger.info('zoho_books.tool.client_resolved', { companyId, hasClient: !!client, op: args.op });
     if (!client) {
       ctx.logger.warn('zoho_books.tool.no_client', { companyId, userId, op: args.op });
@@ -613,6 +629,7 @@ export const createZohoBooksTool = (deps: {
     const listRecords = async (moduleName: ZohoBooksModule, filters?: Record<string, unknown>, query?: string) =>
       deps.booksClient.listRecords({
         companyId,
+        ...connectionContext,
         moduleName,
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
         filters: { ...scopeFilter, ...filters },
@@ -635,6 +652,7 @@ export const createZohoBooksTool = (deps: {
     ) => {
       const result = await handleZohoList({
         companyId,
+        ...connectionContext,
         moduleName,
         moduleLabel,
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
@@ -811,6 +829,7 @@ export const createZohoBooksTool = (deps: {
         case 'get_chart_of_accounts': {
           const data = await deps.booksClient.getEndpoint({
             companyId,
+            ...connectionContext,
             path: '/chartofaccounts',
             ...(args.organizationId ? { organizationId: args.organizationId } : {}),
           });
@@ -821,6 +840,7 @@ export const createZohoBooksTool = (deps: {
           const data = args.accountId
             ? await deps.booksClient.getEndpoint({
               companyId,
+              ...connectionContext,
               path: `/bankaccounts/${encodeURIComponent(args.accountId)}`,
               ...(args.organizationId ? { organizationId: args.organizationId } : {}),
             })
@@ -865,6 +885,7 @@ export const createZohoBooksTool = (deps: {
         case 'get_tax_summary': {
           const data = await deps.booksClient.getEndpoint({
             companyId,
+            ...connectionContext,
             path: '/reports/taxsummary',
             ...(args.organizationId ? { organizationId: args.organizationId } : {}),
             params: {

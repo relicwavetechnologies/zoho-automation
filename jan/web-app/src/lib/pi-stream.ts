@@ -10,15 +10,13 @@ import {
 
 export type { PiRawEvent } from './pi'
 
-let piProcessStarted = false
-
-async function ensurePiStarted(): Promise<void> {
-  if (piProcessStarted) return
-  const running = await invoke<boolean>('pi_is_running')
-  if (!running) {
-    await invoke('pi_start')
-  }
-  piProcessStarted = true
+async function ensurePiStarted(threadId: string): Promise<void> {
+  await invoke('pi_start', {
+    workspacePath: null,
+    workspace_path: null,
+    threadId,
+    thread_id: threadId,
+  })
 }
 
 export function createPiMessageStream(options: {
@@ -76,7 +74,7 @@ export function createPiMessageStream(options: {
       abortSignal?.addEventListener('abort', onAbort, { once: true })
 
       try {
-        await ensurePiStarted()
+        await ensurePiStarted(threadId)
 
         unlisten = await listen<PiRawEvent>('pi-event', (event) => {
           if (isStale()) return

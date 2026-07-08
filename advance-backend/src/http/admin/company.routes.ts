@@ -242,7 +242,11 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
               name:      true,
               email:     true,
               createdAt: true,
-              googleAuthLinks:       { select: { id: true, revokedAt: true }, take: 1 },
+              ownedIntegrationConnections: {
+                where:  { companyId, provider: 'google_workspace', revokedAt: null },
+                select: { id: true },
+                take:   1,
+              },
               departmentMemberships: {
                 where:   { status: 'active', department: { companyId, status: 'active' } },
                 select:  { department: { select: { name: true } }, role: { select: { slug: true } } },
@@ -277,7 +281,7 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
           email:                  m.user.email,
           companyRole:            m.role,
           larkLinked:             Boolean(lark),
-          googleConnected:        m.user.googleAuthLinks.some(l => l.revokedAt === null),
+          googleConnected:        m.user.ownedIntegrationConnections.length > 0,
           larkOpenId:             lark?.larkOpenId ?? null,
           larkDisplayName:        lark?.displayName ?? null,
           larkSourceRoles:        lark?.sourceRoles ?? [],
@@ -350,9 +354,9 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         where:  { companyId, isActive: true },
         select: { larkTenantKey: true, isActive: true, createdAt: true },
       }),
-      prisma.companyGoogleAuthLink.findFirst({
-        where:   { companyId, revokedAt: null },
-        select:  { googleEmail: true, linkedAt: true },
+      prisma.integrationConnection.findFirst({
+        where:   { companyId, provider: 'google_workspace', ownerType: 'company', revokedAt: null },
+        select:  { accountEmail: true, connectedAt: true },
         orderBy: { updatedAt: 'desc' },
       }),
     ]);
@@ -386,8 +390,8 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         provider:    'google',
         connected:   Boolean(googleLink),
         status:      googleLink ? 'connected' : 'disconnected',
-        connectedAt: googleLink?.linkedAt.toISOString() ?? null,
-        details:     googleLink ? { email: googleLink.googleEmail } : null,
+        connectedAt: googleLink?.connectedAt.toISOString() ?? null,
+        details:     googleLink ? { email: googleLink.accountEmail } : null,
       },
     ];
 
@@ -611,9 +615,9 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         break;
       case 'google':
         if (userId) {
-          await prisma.companyGoogleAuthLink.updateMany({
-            where: { companyId, revokedAt: null },
-            data: { revokedAt: new Date() },
+          await prisma.integrationConnection.updateMany({
+            where: { companyId, provider: 'google_workspace', ownerType: 'company', revokedAt: null },
+            data: { revokedAt: new Date(), status: 'revoked' },
           });
         }
         break;

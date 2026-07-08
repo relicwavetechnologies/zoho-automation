@@ -43,6 +43,7 @@ import { parseDateFilter } from '../../../zoho/zoho-filter.utils';
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
 const Schema = z.object({
+  connectionId: z.string().min(1).optional(),
   op: z.enum([
     'list', 'get', 'search', 'search_text', 'create', 'update', 'delete',
     'build_pipeline_summary', 'build_lead_report', 'build_deal_forecast',
@@ -146,6 +147,7 @@ async function executeScriptMode(
   try {
     fetchResult = await scriptDeps.crmClient.listAllRecords({
       companyId,
+      ...(args.connectionId ? { connectionId: args.connectionId, userId: ctx.runContext.userId } : {}),
       module: moduleName,
       ...(args.sortBy ? { sortBy: args.sortBy } : {}),
       ...(args.sortOrder ? { sortOrder: args.sortOrder } : {}),
@@ -244,7 +246,7 @@ async function executeScriptMode(
 // ─── Tool factory ─────────────────────────────────────────────────────────────
 
 export const createZohoCrmTool = (deps: {
-  getClient:  (companyId: string, userId: string) => Promise<ZohoCrmClientPort | null>;
+  getClient:  (companyId: string, userId: string, connectionId?: string) => Promise<ZohoCrmClientPort | null>;
   crmClient:  ZohoCrmPaginatedClient;
   crmOps:     ZohoCrmOps;
   cloudinary: CloudinaryAdapter;
@@ -308,12 +310,15 @@ export const createZohoCrmTool = (deps: {
 
   async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     const { companyId, userId } = ctx.runContext;
+    const connectionContext = {
+      ...(args.connectionId ? { connectionId: args.connectionId, userId } : {}),
+    };
 
     // ── Report operations ─────────────────────────────────────────────────────
     if (args.op === 'build_pipeline_summary') {
       ctx.onProgress?.('Building CRM pipeline summary…');
       try {
-        const report = await deps.crmOps.buildPipelineSummary({ companyId });
+        const report = await deps.crmOps.buildPipelineSummary({ companyId, ...connectionContext });
         return ok({
           success: true,
           message: report.summary,
@@ -333,7 +338,7 @@ export const createZohoCrmTool = (deps: {
     if (args.op === 'build_lead_report') {
       ctx.onProgress?.('Building CRM lead report…');
       try {
-        const report = await deps.crmOps.buildLeadReport({ companyId });
+        const report = await deps.crmOps.buildLeadReport({ companyId, ...connectionContext });
         return ok({
           success: true,
           message: report.summary,
@@ -357,6 +362,7 @@ export const createZohoCrmTool = (deps: {
         const closingTo   = args.closingTo   ? parseDateFilter(args.closingTo).to     : undefined;
         const report = await deps.crmOps.buildDealForecast({
           companyId,
+          ...connectionContext,
           ...(closingFrom ? { closingFrom } : {}),
           ...(closingTo ? { closingTo } : {}),
         });
@@ -403,7 +409,7 @@ export const createZohoCrmTool = (deps: {
 
           if (args.exportAll) {
             const { items, truncated } = await deps.crmClient.listAllRecords({
-              companyId, module: mod,
+              companyId, ...connectionContext, module: mod,
               ...(args.sortBy ? { sortBy: args.sortBy } : {}),
               ...(args.sortOrder ? { sortOrder: args.sortOrder } : {}),
             });
@@ -450,7 +456,7 @@ export const createZohoCrmTool = (deps: {
           }
 
           const result = await deps.crmClient.listRecords({
-            companyId, module: mod,
+            companyId, ...connectionContext, module: mod,
             perPage: args.limit ?? 25,
             ...(args.sortBy ? { sortBy: args.sortBy } : {}),
             ...(args.sortOrder ? { sortOrder: args.sortOrder } : {}),
@@ -468,7 +474,7 @@ export const createZohoCrmTool = (deps: {
           if (!mod) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'module is required for get' }));
           if (!args.recordId) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'recordId is required for get' }));
           ctx.onProgress?.(`Fetching ${mod} record…`);
-          const record = await deps.crmClient.getRecord({ companyId, module: mod, recordId: args.recordId });
+          const record = await deps.crmClient.getRecord({ companyId, ...connectionContext, module: mod, recordId: args.recordId });
           if (!record) return ok({ success: true, data: null, message: 'Record not found' });
           return ok({ success: true, data: formatCrmResult(record) });
         }
@@ -478,7 +484,7 @@ export const createZohoCrmTool = (deps: {
           if (!args.criteria) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'criteria is required for search' }));
           ctx.onProgress?.(`Searching ${mod}…`);
           const result = await deps.crmClient.searchRecords({
-            companyId, module: mod,
+            companyId, ...connectionContext, module: mod,
             criteria: args.criteria,
             perPage: args.limit ?? 25,
           });
@@ -497,7 +503,7 @@ export const createZohoCrmTool = (deps: {
           if (!args.query) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'query is required for search_text' }));
           ctx.onProgress?.(`Searching ${mod} for "${args.query}"…`);
           const result = await deps.crmClient.searchByText({
-            companyId, module: mod,
+            companyId, ...connectionContext, module: mod,
             query: args.query,
             perPage: args.limit ?? 25,
           });
@@ -515,7 +521,7 @@ export const createZohoCrmTool = (deps: {
           if (!mod) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'module is required for create' }));
           if (!args.fields) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'fields is required for create' }));
           ctx.onProgress?.(`Creating ${mod} record…`);
-          const result = await deps.crmClient.createRecord({ companyId, module: mod, fields: args.fields });
+          const result = await deps.crmClient.createRecord({ companyId, ...connectionContext, module: mod, fields: args.fields });
           return ok({ success: true, recordId: result.id, message: `${mod} record created` });
         }
 
@@ -524,7 +530,7 @@ export const createZohoCrmTool = (deps: {
           if (!args.recordId) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'recordId is required for update' }));
           if (!args.fields) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'fields is required for update' }));
           ctx.onProgress?.(`Updating ${mod} record…`);
-          await deps.crmClient.updateRecord({ companyId, module: mod, recordId: args.recordId, fields: args.fields });
+          await deps.crmClient.updateRecord({ companyId, ...connectionContext, module: mod, recordId: args.recordId, fields: args.fields });
           return ok({ success: true, recordId: args.recordId, message: `${mod} record updated` });
         }
 
@@ -532,7 +538,7 @@ export const createZohoCrmTool = (deps: {
           if (!mod) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'module is required for delete' }));
           if (!args.recordId) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'recordId is required for delete' }));
           ctx.onProgress?.(`Deleting ${mod} record…`);
-          await deps.crmClient.deleteRecord({ companyId, module: mod, recordId: args.recordId });
+          await deps.crmClient.deleteRecord({ companyId, ...connectionContext, module: mod, recordId: args.recordId });
           return ok({ success: true, recordId: args.recordId, message: `${mod} record deleted` });
         }
       }
