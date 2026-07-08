@@ -10,8 +10,7 @@ import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
 import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
 import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
 import { createWebSearchTool } from '../../src/application/orchestration/tools/families/web-search.tool.ts';
-import { SkillRegistry } from '../../src/application/skills/skill-registry.ts';
-import type { Skill } from '../../src/application/skills/skill.types.ts';
+import type { CatalogSkill, SkillCatalogService } from '../../src/application/skills/skill-catalog.service.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import { PermissionError, ToolError } from '../../src/shared/errors.ts';
 import { asToolId } from '../../src/shared/ids.ts';
@@ -59,8 +58,36 @@ function makePermissionService(perm = makeAllowedPerm('fakeTool', ['read'])): Pe
   } as unknown as PermissionService;
 }
 
-function makeSkillRegistry(skills: Skill[]): SkillRegistry {
-  return new SkillRegistry(skills);
+function makeSkillCatalog(skills: CatalogSkill[]): SkillCatalogService {
+  const score = (skill: CatalogSkill, query: string) => {
+    const haystack = [
+      skill.id,
+      skill.slug,
+      skill.name,
+      skill.description,
+      skill.instructions,
+      ...skill.toolIds,
+    ].join(' ').toLowerCase();
+    return query
+      .toLowerCase()
+      .split(/[^a-z0-9._-]+/)
+      .filter(Boolean)
+      .reduce((sum, word) => sum + (haystack.includes(word) ? 1 : 0), 0);
+  };
+
+  return {
+    listVisible: async () => skills.filter((skill) => skill.id !== 'blocked-skill'),
+    searchVisible: async ({ query, limit }: { query: string; limit: number }) =>
+      skills
+        .filter((skill) => skill.id !== 'blocked-skill')
+        .map((skill) => ({ skill, score: score(skill, query) }))
+        .filter((result) => result.score > 0)
+        .slice(0, limit),
+    getVisible: async ({ skillId }: { skillId: string }) =>
+      skills.find((skill) => skill.id === skillId && skill.id !== 'blocked-skill') ?? null,
+    getInScope: async ({ skillId }: { skillId: string }) =>
+      skills.find((skill) => skill.id === skillId) ?? null,
+  } as unknown as SkillCatalogService;
 }
 
 describe('ToolExecutor', () => {
@@ -191,18 +218,57 @@ describe('ToolExecutor', () => {
     assert.equal(result.status, 'tool_error');
     assert.match(result.error?.message ?? '', /upstream down/);
   });
+
+  it('completes an approved execution grant after successful tool invocation', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['send']),
+      permissionCheck: () => ok('send'),
+    }));
+
+    const completed: unknown[] = [];
+    const approvalGate = {
+      check: async () => ({
+        kind: 'allowed',
+        executionGrant: { approvalId: 'approval-1' },
+      }),
+      completeExecution: async (_grant: { approvalId: string }, resultJson: unknown) => {
+        completed.push(resultJson);
+      },
+      failExecution: async () => {},
+    };
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+      approvalGate: approvalGate as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member,
+      departmentId: 'dept-1',
+      toolId: 'fakeTool',
+      args: { query: 'hello' },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(completed, [{ status: 'success', result: { result: 'echo:hello' } }]);
+  });
 });
 
 describe('GatewayDispatcher', () => {
-  const allowedSkill: Skill = {
+  const allowedSkill: CatalogSkill = {
     id: 'allowed-skill',
+    slug: 'allowed-skill',
     name: 'Allowed',
     description: 'Allowed skill',
     instructions: 'Do allowed things',
     toolIds: ['fakeTool'],
   };
-  const blockedSkill: Skill = {
+  const blockedSkill: CatalogSkill = {
     id: 'blocked-skill',
+    slug: 'blocked-skill',
     name: 'Blocked',
     description: 'Blocked skill',
     instructions: 'Do blocked things',
@@ -223,7 +289,7 @@ describe('GatewayDispatcher', () => {
     return new GatewayDispatcher({
       permissions: makePermissionService(perm),
       toolRegistry: registry,
-      skillRegistry: makeSkillRegistry([allowedSkill, blockedSkill]),
+      skillCatalog: makeSkillCatalog([allowedSkill, blockedSkill]),
       toolExecutor,
       logger: noopLogger,
     });
@@ -234,7 +300,7 @@ describe('GatewayDispatcher', () => {
     const dispatcher = new GatewayDispatcher({
       permissions: makePermissionService(perm),
       toolRegistry: new ToolRegistry(),
-      skillRegistry: makeSkillRegistry([]),
+      skillCatalog: makeSkillCatalog([]),
       toolExecutor: new ToolExecutor({
         toolRegistry: new ToolRegistry(),
         permissions: makePermissionService(perm),
@@ -313,7 +379,7 @@ describe('GatewayDispatcher', () => {
     const dispatcher = new GatewayDispatcher({
       permissions: makePermissionService(),
       toolRegistry: registry,
-      skillRegistry: makeSkillRegistry([allowedSkill]),
+      skillCatalog: makeSkillCatalog([allowedSkill]),
       toolExecutor: new ToolExecutor({
         toolRegistry: registry,
         permissions: makePermissionService(),
@@ -401,8 +467,9 @@ describe('GatewayDispatcher', () => {
     const dispatcher = new GatewayDispatcher({
       permissions: makePermissionService(perm),
       toolRegistry: registry,
-      skillRegistry: makeSkillRegistry([{
+      skillCatalog: makeSkillCatalog([{
         id: 'research',
+        slug: 'research',
         name: 'Research',
         description: 'Backend web research',
         instructions: 'Use webSearch through tools.invoke.',
@@ -445,7 +512,7 @@ describe('GatewayDispatcher', () => {
     const dispatcher = new GatewayDispatcher({
       permissions: makePermissionService(),
       toolRegistry: registry,
-      skillRegistry: makeSkillRegistry([allowedSkill]),
+      skillCatalog: makeSkillCatalog([allowedSkill]),
       toolExecutor: new ToolExecutor({
         toolRegistry: registry,
         permissions: makePermissionService(),

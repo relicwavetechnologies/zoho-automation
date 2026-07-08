@@ -38,6 +38,7 @@ function fakeRow(overrides: Partial<SkillRow> = {}): SkillRow {
     name:         'PTO Policy',
     summary:      'How PTO works',
     markdown:     '# PTO Policy\n\nYou get 20 days.',
+    toolIds:      ['contextSearch'],
     scope:        'company',
     status:       'active',
     tags:         ['hr', 'pto'],
@@ -97,6 +98,23 @@ describe('SkillRegistry', () => {
 });
 
 describe('SkillRepository', () => {
+  describe('list()', () => {
+    it('returns visible rows ordered by sort order', async () => {
+      let captured: any = null;
+      const prisma = {
+        skill: { findMany: async (args: any) => { captured = args; return [fakeRow()]; } },
+      } as any;
+      const repo = new SkillRepository(prisma);
+      const result = await repo.list({ companyId: 'co-1', departmentId: 'dept-1', limit: 10 });
+      assert.equal(result.ok, true);
+      assert.equal((result as any).value.length, 1);
+      assert.equal(captured.where.companyId, 'co-1');
+      assert.deepEqual(captured.where.AND, [
+        { OR: [{ scope: { in: ['company', 'global'] }, departmentId: null }, { scope: 'department', departmentId: 'dept-1' }] },
+      ]);
+    });
+  });
+
   describe('search()', () => {
     it('returns ok with rows from Prisma', async () => {
       const prisma = {
@@ -139,25 +157,27 @@ describe('SkillRepository', () => {
       assert.equal(captured.take, 7);
     });
 
-    it('scopes to departmentId OR null when departmentId provided', async () => {
+    it('combines department visibility and text search without overwriting either OR clause', async () => {
       let captured: any = null;
       const prisma = {
         skill: { findMany: async (args: any) => { captured = args; return []; } },
       } as any;
       const repo = new SkillRepository(prisma);
       await repo.search({ companyId: 'co-1', departmentId: 'dept-1', query: 'foo', limit: 5 });
-      // When departmentId is provided, deptFilter becomes { OR: [...] }
-      assert.ok(Array.isArray(captured.where.OR));
+      assert.deepEqual(captured.where.AND[0], {
+        OR: [{ scope: { in: ['company', 'global'] }, departmentId: null }, { scope: 'department', departmentId: 'dept-1' }],
+      });
+      assert.ok(Array.isArray(captured.where.AND[1].OR));
     });
 
-    it('scopes to null departmentId only when no departmentId provided', async () => {
+    it('scopes to company skills only when no departmentId provided', async () => {
       let captured: any = null;
       const prisma = {
         skill: { findMany: async (args: any) => { captured = args; return []; } },
       } as any;
       const repo = new SkillRepository(prisma);
       await repo.search({ companyId: 'co-1', query: 'foo', limit: 5 });
-      assert.equal(captured.where.departmentId, null);
+      assert.deepEqual(captured.where.AND[0], { scope: { in: ['company', 'global'] }, departmentId: null });
     });
 
     it('wraps Prisma error as InfraError', async () => {
@@ -202,14 +222,17 @@ describe('SkillRepository', () => {
       assert.equal((result as any).error.kind, 'infra');
     });
 
-    it('scopes to departmentId OR null when departmentId provided', async () => {
+    it('combines department visibility and id lookup without overwriting either OR clause', async () => {
       let captured: any = null;
       const prisma = {
         skill: { findFirst: async (args: any) => { captured = args; return null; } },
       } as any;
       const repo = new SkillRepository(prisma);
       await repo.findById({ companyId: 'co-1', departmentId: 'dept-2', skillId: 'x' });
-      assert.ok(Array.isArray(captured.where.OR));
+      assert.deepEqual(captured.where.AND[0], {
+        OR: [{ scope: { in: ['company', 'global'] }, departmentId: null }, { scope: 'department', departmentId: 'dept-2' }],
+      });
+      assert.ok(Array.isArray(captured.where.AND[1].OR));
     });
   });
 });
@@ -222,6 +245,7 @@ describe('SkillsService', () => {
   describe('search()', () => {
     it('maps SkillRow[] to SkillRecord[]', async () => {
       const repo: SkillRepoPort = {
+        list:     async () => ok([]),
         search:   async () => ok([row]),
         findById: async () => ok(null),
       };
@@ -236,6 +260,7 @@ describe('SkillsService', () => {
 
     it('excludes internal fields (status, tags, scope, companyId)', async () => {
       const repo: SkillRepoPort = {
+        list:     async () => ok([]),
         search:   async () => ok([row]),
         findById: async () => ok(null),
       };
@@ -249,6 +274,7 @@ describe('SkillsService', () => {
 
     it('returns empty array when repo returns empty', async () => {
       const repo: SkillRepoPort = {
+        list:     async () => ok([]),
         search:   async () => ok([]),
         findById: async () => ok(null),
       };
@@ -260,6 +286,7 @@ describe('SkillsService', () => {
     it('returns empty array when repo returns InfraError', async () => {
       const infraErr: InfraError = { kind: 'infra', layer: 'prisma', op: 'skill.search', message: 'db down', cause: null };
       const repo: SkillRepoPort = {
+        list:     async () => ok([]),
         search:   async () => err(infraErr),
         findById: async () => ok(null),
       };
@@ -272,6 +299,7 @@ describe('SkillsService', () => {
   describe('readById()', () => {
     it('maps SkillRow to SkillRecord', async () => {
       const repo: SkillRepoPort = {
+        list:     async () => ok([]),
         search:   async () => ok([]),
         findById: async () => ok(row),
       };
@@ -284,6 +312,7 @@ describe('SkillsService', () => {
 
     it('returns null when repo returns null', async () => {
       const repo: SkillRepoPort = {
+        list:     async () => ok([]),
         search:   async () => ok([]),
         findById: async () => ok(null),
       };
@@ -295,6 +324,7 @@ describe('SkillsService', () => {
     it('returns null when repo returns InfraError', async () => {
       const infraErr: InfraError = { kind: 'infra', layer: 'prisma', op: 'skill.findById', message: 'db down', cause: null };
       const repo: SkillRepoPort = {
+        list:     async () => ok([]),
         search:   async () => ok([]),
         findById: async () => err(infraErr),
       };

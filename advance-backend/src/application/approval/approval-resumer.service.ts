@@ -163,13 +163,23 @@ export class ApprovalResumerService {
 
     if (!result.ok) {
       this.log.error('resumer.engine_failed', { approvalId, error: result.error.message });
+      if (decision === 'approved') {
+        await this.deps.approvalRepo.failApprovedExecution(approvalId, {
+          status: 'engine_failed',
+          message: result.error.message,
+        });
+      }
     } else {
       this.log.info('resumer.done', { approvalId, decision });
-      // Persist the result for audit
-      await this.deps.approvalRepo.persistResult(approvalId, {
+      const resultJson = {
         replyText:   result.value.finalReply.text.slice(0, 500),
         toolsCalled: result.value.toolsCalled,
-      });
+      };
+      if (decision === 'approved') {
+        await this.deps.approvalRepo.completeApprovedExecution(approvalId, resultJson);
+      } else {
+        await this.deps.approvalRepo.persistResult(approvalId, resultJson);
+      }
     }
   }
 }

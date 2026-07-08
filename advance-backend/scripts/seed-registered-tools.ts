@@ -36,6 +36,7 @@ const TOOLS: ToolSeed[] = [
   { toolId: 'zohoBooks', name: 'Zoho Books', description: 'Read and write invoices, bills and expenses; financial reports.', category: 'finance', domain: 'zoho' },
   { toolId: 'contextSearch', name: 'Context Search', description: 'RAG search over ingested company documents.', category: 'knowledge', domain: 'context' },
   { toolId: 'webSearch', name: 'Web Search', description: 'Search the web for current information.', category: 'knowledge', domain: 'context' },
+  { toolId: 'skillPublishing', name: 'Skill Publishing', description: 'Check sharing authority and publish explicitly shared skills to company or department scope.', category: 'knowledge', domain: 'skills', hitlRequired: true },
   { toolId: 'documentRag', name: 'Document RAG', description: 'Ingest and retrieve uploaded documents.', category: 'knowledge', domain: 'rag' },
   { toolId: 'dataProcessor', name: 'Data Processor', description: 'Transform and process datasets in a sandbox.', category: 'data', domain: 'data' },
   {

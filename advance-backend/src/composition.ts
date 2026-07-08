@@ -65,6 +65,7 @@ import { AuditService } from './application/observability/audit.service';
 import { TokenUsageService } from './application/observability/token-usage.service';
 import { SkillRepository } from './infrastructure/persistence/skill.repository';
 import { SkillsService } from './application/context-search/skills.service';
+import { SkillCatalogService } from './application/skills/skill-catalog.service';
 
 // Application
 import { PermissionServiceImpl } from './application/permissions/permission.service';
@@ -125,6 +126,7 @@ import { createZohoCrmTool } from './application/orchestration/tools/families/zo
 import { createZohoBooksTool } from './application/orchestration/tools/families/zoho-books.tool';
 import { createContextSearchTool } from './application/orchestration/tools/families/context-search.tool';
 import { createWebSearchTool } from './application/orchestration/tools/families/web-search.tool';
+import { createSkillPublishingTool } from './application/orchestration/tools/families/skill-publishing.tool';
 import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
 import { ToolExecutor } from './application/gateway/tool-executor';
@@ -751,6 +753,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     repo:   skillRepo,
     logger: logger.child({ service: 'skills' }),
   });
+  const skillCatalog = new SkillCatalogService({
+    repo: skillRepo,
+    logger,
+  });
 
   // ── Context search broker ─────────────────────────────────────────────────
   const contextSearchBroker = new ContextSearchBroker({
@@ -847,6 +853,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   toolRegistry.register(createContextSearchTool({ broker: contextSearchBroker }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
+  toolRegistry.register(createSkillPublishingTool({ prisma }));
   toolRegistry.register(new DocumentRagTool(documentRagBroker));
   toolRegistry.register(createDataProcessorTool({
     cloudinary:  cloudinaryAdapter,
@@ -883,6 +890,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const departmentAdminService = new DepartmentAdminService({
     prisma,
     logger: logger.child({ service: 'department-admin' }),
+    permissions,
   });
   const todoRepo      = new SupervisorTodoRepository(prisma);
 
@@ -970,11 +978,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // ── HITL Approval ─────────────────────────────────────────────────────
   const approvalRepo     = new RuntimeApprovalRepository(prisma);
   const approvalResolver = new ApprovalResolverService(prisma);
+  const disableManagerSelfBypass = env.NODE_ENV !== 'production' && env.DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS;
+  if (disableManagerSelfBypass) {
+    logger.warn('approval.gate.manager_self_bypass_disabled_for_test');
+  }
   const approvalGate     = new ApprovalGateService(
     approvalRepo,
     approvalResolver,
     larkAdapter,
     logger.child({ service: 'approval-gate' }),
+    { disableManagerSelfBypass },
   );
   const approvalResumer  = new ApprovalResumerService({
     approvalRepo,
@@ -1003,7 +1016,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const gatewayDispatcher = new GatewayDispatcher({
     permissions,
     toolRegistry,
-    skillRegistry,
+    skillCatalog,
     toolExecutor: gatewayToolExecutor,
     connectionRegistry: integrationConnectionRepo,
     mediaOcr,

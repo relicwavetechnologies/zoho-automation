@@ -151,6 +151,12 @@ function makeService(overrides: Partial<DepartmentAdminService> = {}): Departmen
     archiveSkill:        async () => ({ ok: true, value: { id: 'skill-1', status: 'archived' } }),
     updateRolePermission: async () => ({ ok: true, value: fakePerm }),
     updateUserOverride:   async () => ({ ok: true, value: { id: 'ov-1', allowed: true } }),
+    backfillEmptyRolePermissions: async () => ({
+      ok: true,
+      value: { departmentsTouched: 0, rolesSeeded: 0, rowsCreated: 0 },
+    }),
+    getBookModulePermissions: async () => ({ ok: true, value: [] }),
+    updateBookModulePermission: async () => ({ ok: true, value: { roleId: 'role-1', module: 'invoices', enabled: true } }),
     ...overrides,
   } as unknown as DepartmentAdminService;
 }
@@ -502,6 +508,35 @@ describe('POST /:id/skills/:skillId/archive', () => {
       'POST', '/dept-1/skills/skill-missing/archive',
     );
     assert.equal(status, 404);
+  });
+});
+
+// ─── POST /backfill-permissions ───────────────────────────────────────────────
+
+describe('POST /backfill-permissions', () => {
+  it('returns 200 on success', async () => {
+    const { status, body } = await callRoute(makeRouter(), 'POST', '/backfill-permissions', {
+      body: {},
+    });
+    assert.equal(status, 200);
+    assert.equal((body as any).success, true);
+  });
+
+  it('passes optional departmentId to service', async () => {
+    let capturedDeptId: string | undefined;
+    const router = createDepartmentRoutes({
+      deptAdminService: makeService({
+        backfillEmptyRolePermissions: async (_companyId, _updatedBy, departmentId) => {
+          capturedDeptId = departmentId;
+          return { ok: true, value: { departmentsTouched: 1, rolesSeeded: 2, rowsCreated: 10 } };
+        },
+      }),
+      logger: noopLogger,
+    });
+    await callRoute(router, 'POST', '/backfill-permissions', {
+      body: { departmentId: 'dept-finance' },
+    });
+    assert.equal(capturedDeptId, 'dept-finance');
   });
 });
 

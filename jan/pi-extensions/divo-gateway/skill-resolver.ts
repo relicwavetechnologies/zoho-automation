@@ -190,7 +190,30 @@ async function searchBackendSkills(options: {
 	}
 
 	try {
-		const response = await callDivoGateway(
+		const listResponse = await callDivoGateway(
+			config as DivoGatewayConfig,
+			{
+				op: "skills.list",
+				departmentId: options.departmentId,
+			},
+			options.fetchImpl ?? fetch,
+		);
+
+		if (listResponse.body.ok && listResponse.body.status === "success") {
+			const skills = readBackendSkills(listResponse.body.data)
+				.map((skill) => ({
+					...skill,
+					score: scoreBackendSkillSummary(skill, options.query),
+				}))
+				.filter((skill) => skill.score > 0)
+				.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.name.localeCompare(b.name))
+				.slice(0, options.limit);
+
+			return skills.map(toResolvedBackendSkill);
+		}
+
+		options.notes.push(`Backend skills.list returned ${listResponse.body.status}; falling back to skills.search.`);
+		const searchResponse = await callDivoGateway(
 			config as DivoGatewayConfig,
 			{
 				op: "skills.search",
@@ -200,28 +223,36 @@ async function searchBackendSkills(options: {
 			options.fetchImpl ?? fetch,
 		);
 
-		if (!response.body.ok || response.body.status !== "success") {
-			options.notes.push(`Backend skills.search returned ${response.body.status}.`);
+		if (!searchResponse.body.ok || searchResponse.body.status !== "success") {
+			options.notes.push(`Backend skills.search returned ${searchResponse.body.status}.`);
 			return [];
 		}
 
-		const skills = readBackendSkills(response.body.data);
-		return skills.map((skill) => ({
-			source: "backend" as const,
-			id: skill.id,
-			name: skill.name,
-			description: skill.description,
-			score: normalizeBackendScore(skill.score, options.query),
-			confidence: "low" as const,
-			toolIds: skill.toolIds,
-			reason: "Matched RBAC-filtered backend skill search.",
-			nextAction: `Call divo_gateway with op "skills.get" and payload { "skillId": "${skill.id}" }, then follow that skill recipe.`,
-		}));
+		return readBackendSkills(searchResponse.body.data)
+			.map((skill) => ({
+				...skill,
+				score: normalizeBackendScore(skill.score, options.query),
+			}))
+			.map(toResolvedBackendSkill);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		options.notes.push(`Backend skills.search failed: ${message}`);
+		options.notes.push(`Backend skill discovery failed: ${message}`);
 		return [];
 	}
+}
+
+function toResolvedBackendSkill(skill: BackendSkillCandidate): ResolvedSkill {
+	return {
+		source: "backend" as const,
+		id: skill.id,
+		name: skill.name,
+		description: skill.description,
+		score: skill.score ?? 1,
+		confidence: "low" as const,
+		toolIds: skill.toolIds,
+		reason: "Matched RBAC-filtered backend skill catalog.",
+		nextAction: `Call divo_gateway with op "skills.get" and payload { "skillId": "${skill.id}" }, then follow that skill recipe.`,
+	};
 }
 
 function readBackendSkills(data: unknown): BackendSkillCandidate[] {
@@ -379,6 +410,20 @@ function normalizeBackendScore(score: number | undefined, query: string): number
 	const words = tokenize(query);
 	const backendBoost = words.some((word) => BACKEND_TERMS.has(word)) ? 3 : 0;
 	return base + backendBoost;
+}
+
+function scoreBackendSkillSummary(skill: BackendSkillCandidate, query: string): number {
+	const words = tokenize(query);
+	if (words.length === 0) return 0;
+	return normalizeBackendScore(
+		scoreText(words, [
+			skill.id,
+			skill.name,
+			skill.description,
+			...(skill.toolIds ?? []),
+		]),
+		query,
+	);
 }
 
 function scoreText(words: string[], fields: string[]): number {

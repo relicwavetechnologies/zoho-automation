@@ -117,12 +117,12 @@ export class RuntimeApprovalRepository {
     }
   }
 
-  async findByIdempotencyKey(key: string): Promise<Result<RuntimeApprovalRow | null, Error>> {
+  async findActiveByIdempotencyKey(key: string): Promise<Result<RuntimeApprovalRow | null, Error>> {
     try {
       const row = await this.prisma.runtimeApproval.findFirst({
         where: {
           idempotencyKey: key,
-          status: 'pending',
+          status: { in: ['pending', 'approved'] },
           OR: [
             { expiresAt: null },
             { expiresAt: { gt: new Date() } },
@@ -132,7 +132,7 @@ export class RuntimeApprovalRepository {
       });
       return ok(row as unknown as RuntimeApprovalRow | null);
     } catch (e) {
-      return err(wrapInfra('prisma', 'runtime-approval.findByIdempotencyKey', e));
+      return err(wrapInfra('prisma', 'runtime-approval.findActiveByIdempotencyKey', e));
     }
   }
 
@@ -148,6 +148,64 @@ export class RuntimeApprovalRepository {
       return ok(undefined);
     } catch (e) {
       return err(wrapInfra('prisma', 'runtime-approval.markFailed', e));
+    }
+  }
+
+  async claimApprovedExecution(id: string, requestedBy: string): Promise<Result<RuntimeApprovalRow | null, Error>> {
+    try {
+      const now = new Date();
+      const [count, rows] = await this.prisma.$transaction([
+        this.prisma.runtimeApproval.updateMany({
+          where: {
+            id,
+            requestedBy,
+            status: 'approved',
+            OR: [
+              { expiresAt: null },
+              { expiresAt: { gt: now } },
+            ],
+          },
+          data: { status: 'executing' },
+        }),
+        this.prisma.runtimeApproval.findMany({ where: { id } }),
+      ]);
+
+      if (count.count === 0) {
+        return ok(null);
+      }
+      return ok((rows[0] ?? null) as unknown as RuntimeApprovalRow | null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.claimApprovedExecution', e));
+    }
+  }
+
+  async completeApprovedExecution(id: string, resultJson: unknown): Promise<Result<void, Error>> {
+    try {
+      await this.prisma.runtimeApproval.updateMany({
+        where: { id, status: { in: ['approved', 'executing'] } },
+        data: {
+          status: 'consumed',
+          executionResultJson: resultJson as any,
+        },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.completeApprovedExecution', e));
+    }
+  }
+
+  async failApprovedExecution(id: string, resultJson: unknown): Promise<Result<void, Error>> {
+    try {
+      await this.prisma.runtimeApproval.updateMany({
+        where: { id, status: { in: ['approved', 'executing'] } },
+        data: {
+          status: 'failed',
+          executionResultJson: resultJson as any,
+        },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.failApprovedExecution', e));
     }
   }
 

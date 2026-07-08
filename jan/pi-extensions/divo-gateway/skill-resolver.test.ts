@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, it } from "node:test";
+import { clearDivoGatewaySkillCache } from "./gateway-client.ts";
 import {
 	discoverLocalSkills,
 	formatSkillResolveResult,
@@ -44,6 +45,56 @@ describe("discoverLocalSkills", () => {
 });
 
 describe("resolveDivoSkills", () => {
+	it("caches the backend skill catalog and reranks it for later resolves", async () => {
+		clearDivoGatewaySkillCache();
+		let calls = 0;
+		const fetchImpl = async () => {
+			calls += 1;
+			return new Response(
+				JSON.stringify({
+					ok: true,
+					status: "success",
+					data: {
+						skills: [
+							{
+								id: "google-workspace",
+								name: "Google Workspace",
+								description: "Use connected Google Workspace Gmail Drive Calendar accounts.",
+								toolIds: ["googleGmail", "googleDrive", "googleCalendar"],
+							},
+							{
+								id: "zoho",
+								name: "Zoho",
+								description: "Use connected Zoho CRM and Books accounts.",
+								toolIds: ["zohoCrm", "zohoBooks"],
+							},
+						],
+					},
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		};
+		const env = {
+			DIVO_BACKEND_URL: "http://localhost:8000",
+			DIVO_MEMBER_TOKEN: "token-catalog-cache",
+		};
+
+		const first = await resolveDivoSkills({
+			query: "gmail",
+			env,
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+		const second = await resolveDivoSkills({
+			query: "calendar",
+			env,
+			fetchImpl: fetchImpl as typeof fetch,
+		});
+
+		assert.equal(calls, 1);
+		assert.equal(first.selected?.id, "google-workspace");
+		assert.equal(second.selected?.id, "google-workspace");
+	});
+
 	it("merges backend and local skills and prefers backend for connected account work", async () => {
 		const root = mkdtempSync(join(tmpdir(), "divo-skills-"));
 		writeSkill(

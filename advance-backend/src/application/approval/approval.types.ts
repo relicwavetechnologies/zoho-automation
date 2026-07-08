@@ -6,9 +6,13 @@ export type { ApprovalGrant } from '../../domain/orchestration/run-context';
 // ─── Gate decision returned by ApprovalGateService ────────────────────────────
 
 export type ApprovalDecision =
-  | { readonly kind: 'allowed' }
+  | { readonly kind: 'allowed'; readonly executionGrant?: ApprovalExecutionGrant }
   | { readonly kind: 'pending';       readonly approvalId: string; readonly message: string }
   | { readonly kind: 'misconfigured'; readonly message: string };
+
+export interface ApprovalExecutionGrant {
+  readonly approvalId: string;
+}
 
 // ─── managerApprovalJson schema ───────────────────────────────────────────────
 

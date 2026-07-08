@@ -20,6 +20,7 @@
  *   POST   /:id/skills/:skillId/archive           — archive skill
  *   PUT    /:id/role-permissions/:roleId/:toolId/:actionGroup — update role permission
  *   PUT    /:id/user-overrides/:userId/:toolId/:actionGroup   — update user override
+ *   POST   /backfill-permissions                              — seed empty role matrices
  */
 
 import { Router } from 'express';
@@ -133,6 +134,7 @@ const upsertSkillSchema = z.object({
   slug:     z.string().min(1).max(120).optional(),
   summary:  z.string().max(300).optional(),
   markdown: z.string().min(1).max(40000),
+  toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
   tags:     z.array(z.string().min(1).max(60)).max(20).optional(),
   status:   z.enum(['active', 'archived']).optional(),
 });
@@ -141,6 +143,7 @@ const updateSkillSchema = z.object({
   name:     z.string().min(1).max(120).optional(),
   summary:  z.string().max(300).optional(),
   markdown: z.string().max(40000).optional(),
+  toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
   tags:     z.array(z.string().min(1).max(60)).max(20).optional(),
   status:   z.enum(['active', 'archived']).optional(),
 });
@@ -186,6 +189,21 @@ export function createDepartmentRoutes(deps: DepartmentRoutesDeps): Router {
     const result    = await svc.searchCandidates(id, companyId, query);
     if (!result.ok) { resolveServiceError(res, result.error); return; }
     success(res, result.value, 'Department candidates loaded');
+  }));
+
+  // ── Backfill empty role permission matrices ───────────────────────────────
+  // Seeds MEMBER-template grants for roles that currently have zero rows.
+  // Optional body.departmentId limits the backfill to one department.
+  router.post('/backfill-permissions', asyncRoute(async (req, res) => {
+    const payload = z.object({
+      companyId:     z.string().min(1).optional(),
+      departmentId:  z.string().min(1).optional(),
+    }).parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, payload.companyId);
+    const userId    = resolveUserId(res);
+    const result    = await svc.backfillEmptyRolePermissions(companyId, userId, payload.departmentId);
+    if (!result.ok) { resolveServiceError(res, result.error); return; }
+    success(res, result.value, 'Department permissions backfilled');
   }));
 
   // ── Create department ─────────────────────────────────────────────────────

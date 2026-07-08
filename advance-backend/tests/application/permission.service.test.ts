@@ -260,11 +260,9 @@ describe('PermissionService', () => {
       assert.equal(result.error.payload.reason, 'department_access_denied');
     });
 
-    it('THE CRITICAL BUG CASE: MEMBER + dept MANAGER role → larkTask:create allowed via company_default', async () => {
-      // This is the exact bug that the old backend had wrong.
-      // The old code passed deptRoleSlug into a company-role lookup, so it always got {}.
-      // The new code: company axis resolves larkTask for MEMBER (allowed by default),
-      // then the dept overlay finds no explicit permission → falls through to company ceiling → allowed.
+    it('missing dept-role row → default deny (no company inherit)', async () => {
+      // Department context is a grant matrix: no explicit row means not allowed,
+      // even when the company MEMBER default would allow the tool.
       const svc = new PermissionServiceImpl(buildDeps({
         deptRepo: {
           getMembership: async () => ok(membershipRow({
@@ -272,7 +270,7 @@ describe('PermissionService', () => {
             roleId: 'role_mgr_001',
           })),
         },
-        deptToolPermRepo: emptyDeptToolPermRepo(),  // no explicit dept perms
+        deptToolPermRepo: emptyDeptToolPermRepo(),
         deptUserOverrideRepo: emptyUserOverrideRepo(),
       }));
 
@@ -283,13 +281,39 @@ describe('PermissionService', () => {
 
       assert.ok(result.ok, 'should resolve successfully');
       const taskActions = [...(result.value.allowedActionsByTool.get('larkTask' as any) ?? [])];
-      assert.ok(taskActions.includes('create'), 'larkTask:create must be allowed (MEMBER company default)');
+      assert.equal(taskActions.length, 0, 'larkTask must be denied when no dept-role grant exists');
+      assert.equal(result.value.allowedToolIds.size, 0, 'empty dept matrix yields no allowed tools');
+    });
+
+    it('dept-role explicit allow → allowed when under company ceiling', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'larkTask', actionGroup: 'create', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'larkTask', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      const taskActions = [...(result.value.allowedActionsByTool.get('larkTask' as any) ?? [])];
+      assert.ok(taskActions.includes('create'), 'explicit dept allow must grant larkTask:create');
+      assert.ok(taskActions.includes('read'), 'explicit dept allow must grant larkTask:read');
 
       const createDecision = result.value.decisions.find(
         d => String(d.toolId) === 'larkTask' && d.actionGroup === 'create',
       );
-      assert.ok(createDecision, 'should have a decision entry for larkTask:create');
-      assert.equal(createDecision.source, 'company_default', 'source must be company_default, NOT dept role');
+      assert.ok(createDecision);
+      assert.equal(createDecision.source, 'department_role');
     });
 
     it('dept-role explicit allow for larkBase but MEMBER ceiling excludes larkBase → blocked', async () => {
@@ -440,9 +464,16 @@ describe('PermissionService', () => {
       assert.equal(result.value.department.systemPrompt, 'You are a helpful engineering assistant.');
     });
 
-    it('COMPANY_ADMIN + dept: larkBase remains allowed (ADMIN ceiling includes it)', async () => {
+    it('COMPANY_ADMIN + dept: explicit larkBase grant allowed under ADMIN ceiling', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'larkBase', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
       const svc = new PermissionServiceImpl(buildDeps({
         deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
       }));
 
       const result = await svc.resolve(baseQuery({
@@ -452,7 +483,7 @@ describe('PermissionService', () => {
 
       assert.ok(result.ok);
       const ids = [...result.value.allowedToolIds].map(String);
-      assert.ok(ids.includes('larkBase'), 'COMPANY_ADMIN ceiling allows larkBase');
+      assert.ok(ids.includes('larkBase'), 'COMPANY_ADMIN ceiling allows explicit larkBase grant');
     });
 
     it('dept cache: second call with same params does not re-query dept repos', async () => {

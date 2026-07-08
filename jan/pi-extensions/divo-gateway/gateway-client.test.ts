@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import {
 	callDivoGateway,
+	clearDivoGatewaySkillCache,
 	formatGatewayResponse,
 	prepareDivoGatewayRequest,
 	resolveDivoGatewayConfig,
@@ -89,6 +90,8 @@ describe("formatGatewayResponse", () => {
 		assert.equal(result.isError, true);
 		assert.match(result.text, /approval required/i);
 		assert.match(result.text, /ap-1/);
+		assert.match(result.text, /exact same divo_gateway tools\.invoke request/i);
+		assert.match(result.text, /changed args require a fresh approval/i);
 	});
 
 	it("renders approval_misconfigured", () => {
@@ -118,6 +121,64 @@ describe("formatGatewayResponse", () => {
 });
 
 describe("callDivoGateway", () => {
+	it("caches successful skills.get responses by backend, token, department, and skill", async () => {
+		clearDivoGatewaySkillCache();
+		let calls = 0;
+		const fetchImpl = async () => {
+			calls += 1;
+			return new Response(
+				JSON.stringify({
+					ok: true,
+					status: "success",
+					data: { skill: { id: "google", instructions: "Use Gmail" } },
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		};
+
+		const config = {
+			backendUrl: "http://localhost:4000",
+			memberToken: "member-jwt",
+			defaultDepartmentId: "dept-default",
+		};
+		const request = {
+			op: "skills.get",
+			payload: { skillId: "google" },
+		};
+
+		const first = await callDivoGateway(config, request, fetchImpl as typeof fetch);
+		const second = await callDivoGateway(config, request, fetchImpl as typeof fetch);
+
+		assert.equal(calls, 1);
+		assert.deepEqual(second, first);
+	});
+
+	it("does not cache side-effecting gateway calls", async () => {
+		clearDivoGatewaySkillCache();
+		let calls = 0;
+		const fetchImpl = async () => {
+			calls += 1;
+			return new Response(
+				JSON.stringify({ ok: true, status: "success", data: { n: calls } }),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		};
+
+		const config = {
+			backendUrl: "http://localhost:4000",
+			memberToken: "member-jwt",
+		};
+		const request = {
+			op: "tools.invoke",
+			payload: { toolId: "googleGmail", args: { action: "search" } },
+		};
+
+		await callDivoGateway(config, request, fetchImpl as typeof fetch);
+		await callDivoGateway(config, request, fetchImpl as typeof fetch);
+
+		assert.equal(calls, 2);
+	});
+
 	it("POSTs to /api/gateway with bearer auth", async () => {
 		let captured: { url: string; init: RequestInit } | undefined;
 		const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {

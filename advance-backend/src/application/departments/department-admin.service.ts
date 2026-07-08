@@ -2,14 +2,30 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '../../generated/prisma';
 import { Prisma } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
+import type { PermissionService } from '../permissions/permission.service';
 import {
   CANONICAL_TOOL_IDS,
+  TOOL_DEFAULT_PERMISSIONS,
   TOOL_SUPPORTED_ACTIONS,
+  type CanonicalToolId,
 } from '../../domain/tools/tool-id';
 
 export interface DepartmentAdminServiceDeps {
   prisma: PrismaClient;
   logger: Logger;
+  permissions: PermissionService;
+}
+
+/** Sparse MEMBER-template grants used to seed department role matrices. */
+export function memberTemplateGrants(): Array<{ toolId: string; actionGroup: string }> {
+  const grants: Array<{ toolId: string; actionGroup: string }> = [];
+  for (const toolId of CANONICAL_TOOL_IDS) {
+    if (!TOOL_DEFAULT_PERMISSIONS[toolId].MEMBER) continue;
+    for (const actionGroup of TOOL_SUPPORTED_ACTIONS[toolId as CanonicalToolId]) {
+      grants.push({ toolId, actionGroup });
+    }
+  }
+  return grants;
 }
 
 export type DeptServiceError =
@@ -110,6 +126,7 @@ export interface SkillView {
   slug:         string;
   summary:      string;
   markdown:     string;
+  toolIds:      string[];
   tags:         string[];
   status:       string;
   scope:        string;
@@ -288,9 +305,9 @@ export class DepartmentAdminService {
           : Promise.resolve([]),
       ]);
 
-      const mapSkill = (s: { id: string; name: string; slug: string; summary: string; markdown: string; tags: string[]; status: string; scope: string; departmentId: string | null }): SkillView => ({
+      const mapSkill = (s: { id: string; name: string; slug: string; summary: string; markdown: string; toolIds: string[]; tags: string[]; status: string; scope: string; departmentId: string | null }): SkillView => ({
         id: s.id, name: s.name, slug: s.slug, summary: s.summary,
-        markdown: s.markdown, tags: s.tags, status: s.status,
+        markdown: s.markdown, toolIds: s.toolIds, tags: s.tags, status: s.status,
         scope: s.scope, departmentId: s.departmentId,
       });
 
@@ -481,6 +498,25 @@ export class DepartmentAdminService {
         await tx.departmentAgentConfig.create({
           data: { departmentId: created.id, systemPrompt: '', skillsMarkdown: '', isActive: true, createdBy, updatedBy: createdBy },
         });
+
+        // Seed sparse allow rows from MEMBER company defaults for both system roles.
+        // Missing rows are denied at runtime; without this seed new depts would lock all tools.
+        const grants = memberTemplateGrants();
+        if (grants.length > 0) {
+          await tx.departmentToolPermission.createMany({
+            data: [managerRole.id, memberRole.id].flatMap((roleId) =>
+              grants.map((g) => ({
+                departmentId: created.id,
+                roleId,
+                toolId: g.toolId,
+                actionGroup: g.actionGroup,
+                allowed: true,
+                updatedBy: createdBy,
+              })),
+            ),
+          });
+        }
+
         return { created, managerRole, memberRole };
       });
 
@@ -491,6 +527,77 @@ export class DepartmentAdminService {
       }
       this.log.error('dept.create.failed', { companyId, error: String(e) });
       return fail({ kind: 'internal', message: 'Failed to create department' });
+    }
+  }
+
+  /**
+   * Seed MEMBER-template grants for department roles that currently have zero
+   * tool-permission rows. Safe to re-run: roles that already have any rows are skipped.
+   */
+  async backfillEmptyRolePermissions(
+    companyId: string,
+    updatedBy: string,
+    departmentId?: string,
+  ): Promise<ServiceResult<{ departmentsTouched: number; rolesSeeded: number; rowsCreated: number }>> {
+    try {
+      const departments = await this.deps.prisma.department.findMany({
+        where: {
+          companyId,
+          status: 'active',
+          ...(departmentId ? { id: departmentId } : {}),
+        },
+        select: {
+          id: true,
+          roles: { select: { id: true } },
+        },
+      });
+
+      const grants = memberTemplateGrants();
+      let departmentsTouched = 0;
+      let rolesSeeded = 0;
+      let rowsCreated = 0;
+
+      for (const dept of departments) {
+        let deptTouched = false;
+        for (const role of dept.roles) {
+          const existing = await this.deps.prisma.departmentToolPermission.count({
+            where: { departmentId: dept.id, roleId: role.id },
+          });
+          if (existing > 0 || grants.length === 0) continue;
+
+          const created = await this.deps.prisma.departmentToolPermission.createMany({
+            data: grants.map((g) => ({
+              departmentId: dept.id,
+              roleId: role.id,
+              toolId: g.toolId,
+              actionGroup: g.actionGroup,
+              allowed: true,
+              updatedBy,
+            })),
+            skipDuplicates: true,
+          });
+          rolesSeeded += 1;
+          rowsCreated += created.count;
+          deptTouched = true;
+        }
+        if (deptTouched) {
+          departmentsTouched += 1;
+          await this.deps.permissions.invalidateDept(companyId, dept.id);
+        }
+      }
+
+      this.log.info('dept.permissions.backfill.done', {
+        companyId,
+        departmentId: departmentId ?? null,
+        departmentsTouched,
+        rolesSeeded,
+        rowsCreated,
+      });
+
+      return ok({ departmentsTouched, rolesSeeded, rowsCreated });
+    } catch (e) {
+      this.log.error('dept.permissions.backfill.failed', { companyId, departmentId, error: String(e) });
+      return fail({ kind: 'internal', message: 'Failed to backfill department permissions' });
     }
   }
 
@@ -729,6 +836,7 @@ export class DepartmentAdminService {
         update: { allowed, updatedBy },
         create: { departmentId, roleId, toolId, actionGroup, allowed, updatedBy },
       });
+      await this.deps.permissions.invalidateDept(companyId, departmentId);
       return ok({ id: row.id, roleId: row.roleId, toolId: row.toolId, actionGroup: row.actionGroup, allowed: row.allowed });
     } catch (e) {
       return fail({ kind: 'internal', message: 'Failed to update role permission' });
@@ -758,6 +866,7 @@ export class DepartmentAdminService {
         update: { allowed, updatedBy },
         create: { departmentId, userId, toolId, actionGroup, allowed, updatedBy },
       });
+      await this.deps.permissions.invalidateDept(companyId, departmentId);
       return ok({ id: row.id, userId: row.userId, toolId: row.toolId, actionGroup: row.actionGroup, allowed: row.allowed });
     } catch (e) {
       return fail({ kind: 'internal', message: 'Failed to update user override' });
@@ -770,7 +879,7 @@ export class DepartmentAdminService {
     departmentId: string,
     companyId: string,
     createdBy: string,
-    input: { name: string; slug?: string | undefined; summary?: string | undefined; markdown: string; tags?: string[] | undefined; status?: string | undefined },
+    input: { name: string; slug?: string | undefined; summary?: string | undefined; markdown: string; toolIds?: string[] | undefined; tags?: string[] | undefined; status?: string | undefined },
   ): Promise<ServiceResult<SkillView>> {
     const check = await this.assertDepartmentInCompany(departmentId, companyId);
     if (!check.ok) return check as ServiceResult<SkillView>;
@@ -781,11 +890,11 @@ export class DepartmentAdminService {
         data: {
           companyId, departmentId, scope: 'department',
           name: input.name.trim(), slug, summary: input.summary ?? '',
-          markdown: input.markdown, tags: input.tags ?? [],
+          markdown: input.markdown, toolIds: input.toolIds ?? [], tags: input.tags ?? [],
           status: input.status ?? 'active', createdBy, updatedBy: createdBy,
         },
       });
-      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId });
+      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, toolIds: skill.toolIds, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId });
     } catch (e) {
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
         return fail({ kind: 'conflict', message: 'A skill with this slug already exists' });
@@ -799,7 +908,7 @@ export class DepartmentAdminService {
     companyId: string,
     skillId: string,
     updatedBy: string,
-    input: { name?: string | undefined; summary?: string | undefined; markdown?: string | undefined; tags?: string[] | undefined; status?: string | undefined },
+    input: { name?: string | undefined; summary?: string | undefined; markdown?: string | undefined; toolIds?: string[] | undefined; tags?: string[] | undefined; status?: string | undefined },
   ): Promise<ServiceResult<SkillView>> {
     const check = await this.assertDepartmentInCompany(departmentId, companyId);
     if (!check.ok) return check as ServiceResult<SkillView>;
@@ -813,12 +922,13 @@ export class DepartmentAdminService {
           ...(input.name     !== undefined ? { name:     input.name.trim() } : {}),
           ...(input.summary  !== undefined ? { summary:  input.summary }     : {}),
           ...(input.markdown !== undefined ? { markdown: input.markdown }    : {}),
+          ...(input.toolIds  !== undefined ? { toolIds:  input.toolIds }     : {}),
           ...(input.tags     !== undefined ? { tags:     input.tags }        : {}),
           ...(input.status   !== undefined ? { status:   input.status }      : {}),
           updatedBy,
         },
       });
-      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId });
+      return ok({ id: skill.id, name: skill.name, slug: skill.slug, summary: skill.summary, markdown: skill.markdown, toolIds: skill.toolIds, tags: skill.tags, status: skill.status, scope: skill.scope, departmentId: skill.departmentId });
     } catch (e) {
       return fail({ kind: 'internal', message: 'Failed to update skill' });
     }
@@ -889,6 +999,10 @@ export class DepartmentAdminService {
       create: { companyId, departmentRoleId: roleId, module, enabled, updatedBy: actorId },
       update: { enabled, updatedBy: actorId },
     });
+
+    // Books module gates are evaluated at tool runtime; clear dept permission cache
+    // so subsequent resolves do not serve a stale allowed-tool snapshot.
+    await this.deps.permissions.invalidateDept(companyId, departmentId);
 
     return ok({ roleId, module, enabled });
   }

@@ -169,6 +169,11 @@ const EnvSchema = z.object({
   // ── Member session auth ───────────────────────────────────────────────────
   MEMBER_JWT_SECRET: z.string().min(1).default('dev-member-secret-change-me'),
 
+  // ── HITL local testing ────────────────────────────────────────────────────
+  // Non-production only. Forces manager-owned actions through the approval card
+  // path so the Lark approval loop can be smoke-tested with one user.
+  DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: booleanStr.default('false'),
+
   // ── LangSmith tracing (optional) ──────────────────────────────────────────
   LANGSMITH_TRACING:  booleanStr.default('false'),
   LANGSMITH_API_KEY:  z.string().optional(),

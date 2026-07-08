@@ -846,6 +846,7 @@ model Skill {
   slug         String
   summary      String
   markdown     String
+  toolIds      String[]    @default([])
   tags         String[]    @default([])
   status       String      @default("active")
   isSystem     Boolean     @default(false)

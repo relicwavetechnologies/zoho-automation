@@ -135,7 +135,8 @@ export class PermissionServiceImpl implements PermissionService {
       overrideMap.set(`${o.toolId}:${o.actionGroup}`, o.allowed);
     }
 
-    // ── Compose: user-override → dept-role → company ceiling ──────────
+    // ── Compose: user-override → dept-role grant → default deny ───────
+    // Company ceiling still clamps any allow; it is not an inherit source.
     const decisions: PermissionDecision[] = [];
     const allowedActionsByTool = new Map<ToolId, Set<ToolActionGroup>>();
 
@@ -158,11 +159,10 @@ export class PermissionServiceImpl implements PermissionService {
           allowed = deptRoleMap.get(key)!;
           source = 'department_role';
         } else {
-          // LAYER 3: fall through to company ceiling
-          // CRITICAL FIX: use companyCeiling (resolved from companyRole) — not dept role slug
-          const ceilingActions = companyCeiling.allowedActionsByTool.get(toolId);
-          allowed = ceilingActions?.has(action) ?? false;
-          source = allowed ? 'company_default' : 'company_default';
+          // LAYER 3: default deny — no explicit dept-role grant means not allowed.
+          // Company ceiling is a clamp on allows, not an inherit source for missing rows.
+          allowed = false;
+          source = 'department_role';
         }
 
         // Department CANNOT exceed company ceiling

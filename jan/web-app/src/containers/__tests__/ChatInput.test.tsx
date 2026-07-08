@@ -300,6 +300,7 @@ vi.mock('@/lib/platform/utils', () => ({
 
 // Import component AFTER all mocks
 import ChatInput from '../ChatInput'
+import { clearDivoSkillSearchCache } from '@/lib/divo-skill-search'
 
 // Helpers -------------------------------------------------------------------
 
@@ -324,6 +325,7 @@ const resetAll = () => {
   enqueueMock.mockClear()
   clearQueueMock.mockClear()
   tauriCoreMock.invoke.mockReset()
+  clearDivoSkillSearchCache()
   for (const k of Object.keys(queueState)) delete queueState[k]
   getCurrentThreadMock.mockReturnValue(undefined)
 }
@@ -395,7 +397,19 @@ describe('ChatInput', () => {
   })
 
   it('searches Divo skills and adds a selected skill reference chip', async () => {
-    tauriCoreMock.invoke.mockResolvedValue({
+    tauriCoreMock.invoke.mockImplementation(async (command: string) => {
+      if (command === 'divo_get_session_status') {
+        return {
+          configured: true,
+          backendUrl: 'http://localhost:8000',
+          userId: 'user-1',
+          companyId: 'company-1',
+          role: 'member',
+          departmentId: 'dept-1',
+          expiresAt: '2026-07-09T10:00:00Z',
+        }
+      }
+      return {
       ok: true,
       status: 'success',
       data: {
@@ -409,6 +423,7 @@ describe('ChatInput', () => {
           },
         ],
       },
+      }
     })
 
     renderInput()
@@ -426,12 +441,8 @@ describe('ChatInput', () => {
     expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
       'divo_gateway_request',
       {
-        op: 'skills.search',
-        payload: {
-          query: 'google',
-          limit: 5,
-          context: { surface: 'desktop_composer_reference' },
-        },
+        op: 'skills.list',
+        payload: { context: { surface: 'desktop_composer_reference' } },
       }
     )
 
@@ -445,7 +456,19 @@ describe('ChatInput', () => {
   })
 
   it('submits selected skill references as agent context metadata', async () => {
-    tauriCoreMock.invoke.mockResolvedValue({
+    tauriCoreMock.invoke.mockImplementation(async (command: string) => {
+      if (command === 'divo_get_session_status') {
+        return {
+          configured: true,
+          backendUrl: 'http://localhost:8000',
+          userId: 'user-1',
+          companyId: 'company-1',
+          role: 'member',
+          departmentId: 'dept-1',
+          expiresAt: '2026-07-09T10:00:00Z',
+        }
+      }
+      return {
       ok: true,
       status: 'success',
       data: {
@@ -459,6 +482,7 @@ describe('ChatInput', () => {
           },
         ],
       },
+      }
     })
 
     const onSubmit = vi.fn()

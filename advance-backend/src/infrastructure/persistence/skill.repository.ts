@@ -9,6 +9,7 @@ export interface SkillRow {
   readonly name: string;
   readonly summary: string;
   readonly markdown: string;
+  readonly toolIds: string[];
   readonly scope: string;
   readonly status: string;
   readonly tags: string[];
@@ -17,6 +18,12 @@ export interface SkillRow {
 }
 
 export interface SkillRepoPort {
+  list(input: {
+    companyId: string;
+    departmentId?: string;
+    limit: number;
+  }): Promise<Result<SkillRow[], InfraError>>;
+
   search(input: {
     companyId: string;
     departmentId?: string;
@@ -37,6 +44,7 @@ const SELECT = {
   name:         true,
   summary:      true,
   markdown:     true,
+  toolIds:      true,
   scope:        true,
   status:       true,
   tags:         true,
@@ -44,8 +52,39 @@ const SELECT = {
   departmentId: true,
 } as const;
 
+function visibilityWhere(departmentId?: string) {
+  const companyWideScopes = ['company', 'global'];
+  return departmentId
+    ? { OR: [{ scope: { in: companyWideScopes }, departmentId: null as string | null }, { scope: 'department', departmentId }] }
+    : { scope: { in: companyWideScopes }, departmentId: null as string | null };
+}
+
 export class SkillRepository implements SkillRepoPort {
   constructor(private readonly db: PrismaClient) {}
+
+  async list(input: {
+    companyId: string;
+    departmentId?: string;
+    limit: number;
+  }): Promise<Result<SkillRow[], InfraError>> {
+    try {
+      const { companyId, departmentId, limit } = input;
+      const rows = await this.db.skill.findMany({
+        where: {
+          companyId,
+          status: 'active',
+          AND: [visibilityWhere(departmentId)],
+        },
+        select:  SELECT,
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        take:    limit,
+      });
+
+      return ok(rows);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'skill.list', e));
+    }
+  }
 
   async search(input: {
     companyId: string;
@@ -56,21 +95,20 @@ export class SkillRepository implements SkillRepoPort {
     try {
       const { companyId, departmentId, query, limit } = input;
 
-      // Scope: company-wide skills (no dept) OR skills belonging to this department
-      const deptFilter = departmentId
-        ? { OR: [{ departmentId: null as string | null }, { departmentId }] }
-        : { departmentId: null as string | null };
-
       const rows = await this.db.skill.findMany({
         where: {
           companyId,
           status: 'active',
-          ...deptFilter,
-          OR: [
-            { name:     { contains: query, mode: 'insensitive' } },
-            { slug:     { contains: query, mode: 'insensitive' } },
-            { summary:  { contains: query, mode: 'insensitive' } },
-            { markdown: { contains: query, mode: 'insensitive' } },
+          AND: [
+            visibilityWhere(departmentId),
+            {
+              OR: [
+                { name:     { contains: query, mode: 'insensitive' } },
+                { slug:     { contains: query, mode: 'insensitive' } },
+                { summary:  { contains: query, mode: 'insensitive' } },
+                { markdown: { contains: query, mode: 'insensitive' } },
+              ],
+            },
           ],
         },
         select:  SELECT,
@@ -92,16 +130,14 @@ export class SkillRepository implements SkillRepoPort {
     try {
       const { companyId, departmentId, skillId } = input;
 
-      const deptFilter = departmentId
-        ? { OR: [{ departmentId: null as string | null }, { departmentId }] }
-        : { departmentId: null as string | null };
-
       const row = await this.db.skill.findFirst({
         where: {
           companyId,
           status: 'active',
-          ...deptFilter,
-          OR: [{ id: skillId }, { slug: skillId }],
+          AND: [
+            visibilityWhere(departmentId),
+            { OR: [{ id: skillId }, { slug: skillId }] },
+          ],
         },
         select: SELECT,
       });

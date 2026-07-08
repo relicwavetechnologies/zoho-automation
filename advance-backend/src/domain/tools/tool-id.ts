@@ -16,6 +16,7 @@ export const CANONICAL_TOOL_IDS = [
   'zohoBooks',
   'contextSearch',
   'webSearch',
+  'skillPublishing',
   'documentRag',
   'dataProcessor',
   // NOTE: 'runCommand' is intentionally NOT here. The terminal tool runs on the
@@ -26,7 +27,7 @@ export const CANONICAL_TOOL_IDS = [
 
 export type CanonicalToolId = typeof CANONICAL_TOOL_IDS[number];
 
-export type ToolFamily = 'lark' | 'google' | 'zoho' | 'context' | 'rag' | 'data' | 'execution';
+export type ToolFamily = 'lark' | 'google' | 'zoho' | 'context' | 'skills' | 'rag' | 'data' | 'execution';
 
 export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   larkMessaging:  'lark',
@@ -43,6 +44,7 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   zohoBooks:      'zoho',
   contextSearch:  'context',
   webSearch:      'context',
+  skillPublishing: 'skills',
   documentRag:    'rag',
   dataProcessor:  'data',
 };
@@ -63,6 +65,7 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   zohoBooks:      ['read', 'create', 'update', 'delete'],
   contextSearch:  ['read'],
   webSearch:      ['read'],
+  skillPublishing: ['read', 'create', 'update', 'delete'],
   documentRag:    ['read'],
   dataProcessor:  ['read'],
 };
@@ -83,6 +86,7 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   zohoBooks:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   contextSearch:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   webSearch:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
+  skillPublishing: { MEMBER: false, COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   documentRag:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   dataProcessor:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
 };

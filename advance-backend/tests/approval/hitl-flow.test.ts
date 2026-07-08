@@ -125,11 +125,15 @@ function makeApprovalRepo() {
     findById: async (id: string) => {
       return ok(store.get(id) ?? null);
     },
-    findByIdempotencyKey: async (key: string) => {
+    findActiveByIdempotencyKey: async (key: string) => {
       const now = Date.now();
       for (const row of store.values()) {
         const isExpired = row.expiresAt ? row.expiresAt.getTime() <= now : false;
-        if (row.idempotencyKey === key && row.status === 'pending' && !isExpired) return ok(row);
+        if (
+          row.idempotencyKey === key
+          && (row.status === 'pending' || row.status === 'approved')
+          && !isExpired
+        ) return ok(row);
       }
       return ok(null);
     },
@@ -143,6 +147,29 @@ function makeApprovalRepo() {
       if (row) {
         row.status = 'failed';
         row.resolutionReason = reason;
+      }
+      return ok(undefined);
+    },
+    claimApprovedExecution: async (id: string, requestedBy: string) => {
+      const row = store.get(id);
+      if (!row || row.status !== 'approved' || row.requestedBy !== requestedBy) return ok(null);
+      if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) return ok(null);
+      row.status = 'executing';
+      return ok(row);
+    },
+    completeApprovedExecution: async (id: string, resultJson: unknown) => {
+      const row = store.get(id);
+      if (row) {
+        row.status = 'consumed';
+        row.executionResultJson = resultJson;
+      }
+      return ok(undefined);
+    },
+    failApprovedExecution: async (id: string, resultJson: unknown) => {
+      const row = store.get(id);
+      if (row) {
+        row.status = 'failed';
+        row.executionResultJson = resultJson;
       }
       return ok(undefined);
     },
@@ -435,6 +462,124 @@ describe('ApprovalGateService', () => {
     assert.equal((result as any).approvalId, 'approval-2');
   });
 
+  it('claims an approved exact-match approval grant and allows execution', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+
+    const args = { op: 'send', to: ['x@y.com'], subject: 'Approved' };
+    const argsHash = computeArgsHash(args);
+    const idemKey = computeIdempotencyKey(CHAT_ID, String(TOOL_ID), 'send', argsHash);
+    const approvalResult = await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'approved approval',
+      payloadJson: { toolId: String(TOOL_ID), action: 'send', args, argsHash },
+      metadataJson: {
+        requesterId: String(REQUESTER),
+        requesterLarkOpenId: REQUESTER_OID,
+        departmentId: null,
+        chatId: CHAT_ID,
+        resolvedManagerOpenId: MANAGER_OID,
+      },
+      channel: 'lark',
+      requestedBy: String(REQUESTER),
+      idempotencyKey: idemKey,
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+    assert.equal(approvalResult.ok, true);
+    await repo.atomicResolve('approval-1', 'approved', MANAGER_OID);
+
+    const result = await gate.check({
+      toolId: String(TOOL_ID),
+      action: 'send',
+      args,
+      perm: makePermission(),
+      runContext: makeRunContext(),
+      chatId: CHAT_ID,
+      argsSummary: 'Send approved email',
+    });
+
+    assert.equal(result.kind, 'allowed');
+    assert.equal(result.executionGrant?.approvalId, 'approval-1');
+    assert.equal(repo.store.get('approval-1')!.status, 'executing');
+  });
+
+  it('marks a claimed approval grant consumed after successful execution', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+
+    await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'approved approval',
+      payloadJson: {},
+      metadataJson: {},
+      channel: 'lark',
+      requestedBy: String(REQUESTER),
+      idempotencyKey: 'idem-consume',
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+
+    repo.store.get('approval-1')!.status = 'executing';
+    await gate.completeExecution({ approvalId: 'approval-1' }, { status: 'success' });
+
+    const approval = repo.store.get('approval-1')!;
+    assert.equal(approval.status, 'consumed');
+    assert.deepEqual(approval.executionResultJson, { status: 'success' });
+  });
+
+  it('rejects an approved grant when stored metadata does not match requester', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+
+    const args = { op: 'send', to: ['x@y.com'], subject: 'Mismatch' };
+    const argsHash = computeArgsHash(args);
+    const idemKey = computeIdempotencyKey(CHAT_ID, String(TOOL_ID), 'send', argsHash);
+    await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'mismatched approval',
+      payloadJson: { toolId: String(TOOL_ID), action: 'send', args, argsHash },
+      metadataJson: {
+        requesterId: 'different-user',
+        departmentId: null,
+        chatId: CHAT_ID,
+        resolvedManagerOpenId: MANAGER_OID,
+      },
+      channel: 'lark',
+      requestedBy: String(REQUESTER),
+      idempotencyKey: idemKey,
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+    await repo.atomicResolve('approval-1', 'approved', MANAGER_OID);
+
+    const result = await gate.check({
+      toolId: String(TOOL_ID),
+      action: 'send',
+      args,
+      perm: makePermission(),
+      runContext: makeRunContext(),
+      chatId: CHAT_ID,
+      argsSummary: 'Send mismatched email',
+    });
+
+    assert.equal(result.kind, 'misconfigured');
+    assert.match(result.message, /no longer matches/i);
+    assert.equal(repo.store.get('approval-1')!.status, 'approved');
+  });
+
   it('returns misconfigured when approval config is malformed', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
@@ -493,6 +638,33 @@ describe('ApprovalGateService', () => {
 
     assert.equal(result.kind, 'allowed');
     assert.equal(repo.store.size, 0);
+  });
+
+  it('can disable manager self-bypass for local approval-card smoke tests', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const gate = new ApprovalGateService(
+      repo as any,
+      makeResolver() as any,
+      lark as any,
+      makeLogger(),
+      { disableManagerSelfBypass: true },
+    );
+
+    const result = await gate.check({
+      toolId: String(TOOL_ID),
+      action: 'send',
+      args: { op: 'send', to: ['x@y.com'], subject: 'Self approval smoke' },
+      perm: makePermission(),
+      runContext: makeRunContext({ userId: MANAGER }),
+      chatId: CHAT_ID,
+      argsSummary: 'Manager sending own email',
+    });
+
+    assert.equal(result.kind, 'pending');
+    assert.equal(repo.store.size, 1);
+    assert.equal(lark.sentCards.length, 1);
+    assert.equal(lark.sentCards[0].openId, MANAGER_OID);
   });
 
   it('returns misconfigured when no manager resolved', async () => {

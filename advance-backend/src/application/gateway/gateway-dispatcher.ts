@@ -1,6 +1,6 @@
 import type { ToolRegistry } from '../orchestration/tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
-import type { SkillRegistry } from '../skills/skill-registry';
+import type { SkillCatalogService } from '../skills/skill-catalog.service';
 import type { Logger } from '../../shared/logger';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
@@ -26,7 +26,7 @@ import {
 export interface GatewayDispatcherDeps {
   readonly permissions: PermissionService;
   readonly toolRegistry: ToolRegistry;
-  readonly skillRegistry: SkillRegistry;
+  readonly skillCatalog: SkillCatalogService;
   readonly toolExecutor: ToolExecutor;
   readonly connectionRegistry?: ConnectionRegistryPort;
   readonly mediaOcr?: MediaOcrService;
@@ -88,12 +88,6 @@ export class GatewayDispatcher {
     return gatewayFailure('permission_denied', message);
   }
 
-  private filterSkills(perm: PermissionResult) {
-    return this.deps.skillRegistry.all().filter((skill) =>
-      skill.toolIds.some((toolId) => perm.allowedToolIds.has(asToolId(toolId))),
-    );
-  }
-
   private async handleCapabilitiesGet(
     member: GatewayMemberContext,
     departmentId?: string,
@@ -104,7 +98,11 @@ export class GatewayDispatcher {
     }
 
     const perm = permOrError;
-    const allowedSkills = this.filterSkills(perm);
+    const allowedSkills = await this.deps.skillCatalog.listVisible({
+      companyId: member.companyId,
+      ...(departmentId ? { departmentId } : {}),
+      permission: perm,
+    });
 
     return gatewaySuccess({
       user: {
@@ -121,6 +119,7 @@ export class GatewayDispatcher {
       })),
       skills: allowedSkills.map((skill) => ({
         id: skill.id,
+        slug: skill.slug,
         name: skill.name,
         description: skill.description,
       })),
@@ -159,8 +158,13 @@ export class GatewayDispatcher {
       return this.permissionDenied('Permission resolution failed');
     }
 
-    const skills = this.filterSkills(perm).map((skill) => ({
+    const skills = (await this.deps.skillCatalog.listVisible({
+      companyId: member.companyId,
+      ...(departmentId ? { departmentId } : {}),
+      permission: perm,
+    })).map((skill) => ({
       id: skill.id,
+      slug: skill.slug,
       name: skill.name,
       description: skill.description,
       toolIds: [...skill.toolIds],
@@ -187,10 +191,12 @@ export class GatewayDispatcher {
       return this.permissionDenied('Permission resolution failed');
     }
 
-    const allowedSkills = this.filterSkills(perm);
-    const results = this.deps.skillRegistry.search(parsed.data.query, {
+    const results = await this.deps.skillCatalog.searchVisible({
+      companyId: member.companyId,
+      ...(departmentId ? { departmentId } : {}),
+      permission: perm,
+      query: parsed.data.query,
       limit: parsed.data.limit ?? 3,
-      skills: allowedSkills,
     });
 
     return gatewaySuccess({
@@ -198,6 +204,7 @@ export class GatewayDispatcher {
       nextStep: 'Call skills.get with the selected skillId before invoking backend tools.',
       skills: results.map((result) => ({
         id: result.skill.id,
+        slug: result.skill.slug,
         name: result.skill.name,
         description: result.skill.description,
         score: result.score,
@@ -224,7 +231,11 @@ export class GatewayDispatcher {
       return this.permissionDenied('Permission resolution failed');
     }
 
-    const skill = this.deps.skillRegistry.getById(parsed.data.skillId);
+    const skill = await this.deps.skillCatalog.getInScope({
+      companyId: member.companyId,
+      ...(departmentId ? { departmentId } : {}),
+      skillId: parsed.data.skillId,
+    });
     if (!skill) {
       return gatewayFailure('bad_request', `Unknown skillId "${parsed.data.skillId}"`);
     }
@@ -242,6 +253,7 @@ export class GatewayDispatcher {
     return gatewaySuccess({
       skill: {
         id: skill.id,
+        slug: skill.slug,
         name: skill.name,
         description: skill.description,
         instructions: skill.instructions,

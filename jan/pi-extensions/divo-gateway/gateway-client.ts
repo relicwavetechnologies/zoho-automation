@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { basename, extname } from "node:path";
 
 export interface DivoGatewayConfig {
@@ -32,6 +33,7 @@ export interface GatewayResponseBody {
 }
 
 const MAX_INLINE_IMAGE_BYTES = 1_250_000;
+const SKILL_CACHE_TTL_MS = 35 * 60 * 1000;
 
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
 	".gif": "image/gif",
@@ -42,6 +44,18 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
 };
 
 const SUPPORTED_IMAGE_OCR_MIME_TYPES = new Set(Object.values(IMAGE_MIME_BY_EXTENSION));
+
+type CachedGatewayResponse = {
+	body: GatewayResponseBody;
+	httpStatus: number;
+	expiresAt: number;
+};
+
+const skillResponseCache = new Map<string, CachedGatewayResponse>();
+
+export function clearDivoGatewaySkillCache(): void {
+	skillResponseCache.clear();
+}
 
 export function resolveDivoGatewayConfig(
 	env: NodeJS.ProcessEnv = process.env,
@@ -125,7 +139,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.approval?.message ??
 			"Manager approval is required before this action can run.";
 		return {
-			text: `Divo gateway: approval required.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user approval is pending in Lark. Do not claim the action completed.`,
+			text: `Divo gateway: approval required.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user approval is pending in Lark. Do not claim the action completed. After the manager approves, retry the exact same divo_gateway tools.invoke request with the same departmentId, toolId, and args. Do not change or enrich the args; changed args require a fresh approval.`,
 			isError: true,
 		};
 	}
@@ -162,6 +176,12 @@ export async function callDivoGateway(
 ): Promise<{ body: GatewayResponseBody; httpStatus: number }> {
 	const preparedRequest = await prepareDivoGatewayRequest(request);
 	const departmentId = request.departmentId ?? config.defaultDepartmentId;
+	const cacheKey = skillCacheKey(config, preparedRequest, departmentId);
+	if (cacheKey) {
+		const cached = readSkillResponseCache(cacheKey);
+		if (cached) return cached;
+	}
+
 	const payload: GatewayRequestBody = {
 		op: preparedRequest.op,
 		payload: preparedRequest.payload,
@@ -207,7 +227,69 @@ export async function callDivoGateway(
 		};
 	}
 
+	if (cacheKey && body.ok && body.status === "success") {
+		writeSkillResponseCache(cacheKey, { body, httpStatus: response.status });
+	}
+
 	return { body, httpStatus: response.status };
+}
+
+function readSkillResponseCache(
+	key: string,
+	now = Date.now(),
+): { body: GatewayResponseBody; httpStatus: number } | null {
+	const cached = skillResponseCache.get(key);
+	if (!cached) return null;
+	if (cached.expiresAt <= now) {
+		skillResponseCache.delete(key);
+		return null;
+	}
+	return { body: cached.body, httpStatus: cached.httpStatus };
+}
+
+function writeSkillResponseCache(
+	key: string,
+	value: { body: GatewayResponseBody; httpStatus: number },
+	now = Date.now(),
+): void {
+	skillResponseCache.set(key, {
+		...value,
+		expiresAt: now + SKILL_CACHE_TTL_MS,
+	});
+}
+
+function skillCacheKey(
+	config: DivoGatewayConfig,
+	request: GatewayRequestBody,
+	departmentId: string | undefined,
+): string | null {
+	if (request.op === "skills.list") {
+		return [
+			"skills.list",
+			config.backendUrl,
+			tokenCacheKey(config.memberToken),
+			departmentId ?? "",
+		].join("|");
+	}
+
+	if (request.op === "skills.get") {
+		const payload = asRecord(request.payload);
+		const skillId = getString(payload?.skillId);
+		if (!skillId) return null;
+		return [
+			"skills.get",
+			config.backendUrl,
+			tokenCacheKey(config.memberToken),
+			departmentId ?? "",
+			skillId,
+		].join("|");
+	}
+
+	return null;
+}
+
+function tokenCacheKey(token: string): string {
+	return createHash("sha256").update(token).digest("hex").slice(0, 16);
 }
 
 export async function prepareDivoGatewayRequest(

@@ -80,6 +80,7 @@ export class ToolExecutor {
     const action = permCheck.value;
 
     const runContext = this.buildRunContext(member, departmentId, perm.department?.zohoReadScope, input.requestId);
+    let executionGrant: { approvalId: string } | undefined;
 
     if (this.deps.approvalGate && departmentId) {
       const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
@@ -102,6 +103,8 @@ export class ToolExecutor {
       if (decision.kind === 'misconfigured') {
         return gatewayFailure('approval_misconfigured', decision.message);
       }
+
+      executionGrant = decision.executionGrant;
     }
 
     const execCtx: ToolExecutionContext = {
@@ -114,7 +117,20 @@ export class ToolExecutor {
 
     const result = await tool.execute(validatedArgs, execCtx);
     if (!result.ok) {
+      if (executionGrant) {
+        await this.deps.approvalGate?.failExecution(executionGrant, {
+          status: 'tool_error',
+          message: result.error.message,
+        });
+      }
       return gatewayFailure('tool_error', result.error.message);
+    }
+
+    if (executionGrant) {
+      await this.deps.approvalGate?.completeExecution(executionGrant, {
+        status: 'success',
+        result: result.value,
+      });
     }
 
     return gatewaySuccess({ toolId: tool.id, action, result: result.value });
