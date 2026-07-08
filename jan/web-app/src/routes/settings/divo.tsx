@@ -124,6 +124,7 @@ function DivoSettings() {
     setIsDisconnecting(true)
     try {
       await invoke('divo_clear_session')
+      await invoke('pi_stop').catch(() => undefined)
       setStatus({ configured: false, departments: [] })
       toast.success('Divo disconnected')
     } catch (error) {

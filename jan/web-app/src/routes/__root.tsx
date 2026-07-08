@@ -1,7 +1,9 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router'
 // import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import DialogAppUpdater from '@/containers/dialogs/AppUpdater'
 import BackendUpdater from '@/containers/dialogs/BackendUpdater'
 import { Fragment } from 'react/jsx-runtime'
@@ -121,7 +123,7 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const refreshSession = async () => {
+  const refreshSession = useCallback(async () => {
     setIsChecking(true)
     try {
       const next = await getDivoSessionStatus()
@@ -135,11 +137,38 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
     } finally {
       setIsChecking(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     void refreshSession()
-  }, [])
+  }, [refreshSession])
+
+  useEffect(() => {
+    if (!IS_TAURI) return
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+
+    void listen<{ configured?: boolean }>('divo-session-changed', (event) => {
+      if (event.payload?.configured) {
+        void refreshSession()
+        return
+      }
+      setSession(null)
+      setIsChecking(false)
+      void invoke('pi_stop').catch(() => undefined)
+    }).then((dispose) => {
+      if (cancelled) {
+        dispose()
+        return
+      }
+      unlisten = dispose
+    })
+
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [refreshSession])
 
   const signIn = async () => {
     setIsSigningIn(true)

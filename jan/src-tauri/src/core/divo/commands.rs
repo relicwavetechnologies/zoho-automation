@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::core::app::commands::get_jan_data_folder_path;
 use crate::core::pi::env::write_divo_env_file;
@@ -17,6 +17,7 @@ use super::workspace::{
 };
 
 const PI_AGENT_DIR: &str = "pi-agent";
+const DIVO_SESSION_CHANGED_EVENT: &str = "divo-session-changed";
 
 fn pi_agent_dir(data_folder: &std::path::Path) -> PathBuf {
     data_folder.join(PI_AGENT_DIR)
@@ -42,11 +43,49 @@ fn sync_pi_divo_env<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
 fn clear_expired_session<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     clear_divo_session(app)?;
-    sync_pi_divo_env(app)
+    sync_pi_divo_env(app)?;
+    emit_divo_session_changed(app, false);
+    Ok(())
 }
 
 fn expired_session_message() -> String {
     "Divo session expired. Reconnect Divo in Settings > Divo, then retry.".to_string()
+}
+
+fn emit_divo_session_changed<R: Runtime>(app: &AppHandle<R>, configured: bool) {
+    if let Err(err) = app.emit(
+        DIVO_SESSION_CHANGED_EVENT,
+        json!({
+            "configured": configured,
+        }),
+    ) {
+        log::warn!("divo.session_changed.emit_failed error={err}");
+    }
+}
+
+async fn best_effort_backend_logout<R: Runtime>(app: &AppHandle<R>) {
+    let Ok(Some(session)) = load_divo_session(app) else {
+        return;
+    };
+    let url = format!(
+        "{}/api/desktop/auth/logout",
+        session.backend_url.trim_end_matches('/')
+    );
+
+    match reqwest::Client::new()
+        .post(url)
+        .bearer_auth(&session.member_token)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() || response.status().as_u16() == 401 => {}
+        Ok(response) => {
+            log::warn!("divo.logout.backend_failed status={}", response.status());
+        }
+        Err(err) => {
+            log::warn!("divo.logout.backend_failed error={err}");
+        }
+    }
 }
 
 async fn divo_desktop_json_request<R: Runtime>(
@@ -66,7 +105,9 @@ async fn divo_desktop_json_request<R: Runtime>(
     log::info!("divo.desktop_request.start label={label}");
 
     let client = reqwest::Client::new();
-    let mut request = client.request(method, url).bearer_auth(&session.member_token);
+    let mut request = client
+        .request(method, url)
+        .bearer_auth(&session.member_token);
     if let Some(body) = body {
         request = request.json(&body);
     }
@@ -157,6 +198,7 @@ pub async fn divo_set_session<R: Runtime>(
 
     save_divo_session(&app, &session)?;
     sync_pi_divo_env(&app)?;
+    emit_divo_session_changed(&app, true);
 
     Ok(DivoSessionStatus {
         configured: true,
@@ -175,8 +217,11 @@ pub async fn divo_set_session<R: Runtime>(
 /// Clear stored member session and remove Pi gateway env file.
 #[tauri::command]
 pub async fn divo_clear_session<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    best_effort_backend_logout(&app).await;
     clear_divo_session(&app)?;
-    sync_pi_divo_env(&app)
+    sync_pi_divo_env(&app)?;
+    emit_divo_session_changed(&app, false);
+    Ok(())
 }
 
 /// Return whether a backend session is configured (token is never returned).
@@ -237,6 +282,7 @@ pub async fn divo_set_department<R: Runtime>(
     session.department_id = next_department_id;
     save_divo_session(&app, &session)?;
     sync_pi_divo_env(&app)?;
+    emit_divo_session_changed(&app, true);
 
     Ok(DivoSessionStatus {
         configured: true,
@@ -518,7 +564,9 @@ pub async fn divo_zoho_authorize_url<R: Runtime>(app: AppHandle<R>) -> Result<St
         .and_then(|data| data.get("authorizeUrl"))
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("Zoho authorize URL response missing data.authorizeUrl: {parsed}"))?;
+        .ok_or_else(|| {
+            format!("Zoho authorize URL response missing data.authorizeUrl: {parsed}")
+        })?;
 
     Ok(authorize_url.to_string())
 }
