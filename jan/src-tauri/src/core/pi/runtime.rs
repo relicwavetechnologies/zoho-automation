@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 use super::browser::{
-    build_chrome_devtools_mcp_server, current_browser_cdp_fingerprint,
+    build_chrome_devtools_mcp_server, chrome_devtools_enabled, current_browser_cdp_fingerprint,
     mcp_config_needs_browser_upgrade, resolve_browser_user_data_dir,
 };
 use crate::core::divo::home::DivoHomeLayout;
@@ -176,7 +176,7 @@ fn bootstrap_agent_dir(resource_dir: &Path, agent_dir: &Path, bun: &Path) -> Res
 
     let extensions_dest = agent_dir.join("extensions");
     if extensions_src.exists() {
-        sync_dir_contents(&extensions_src, &extensions_dest)?;
+        sync_bundled_extensions(&extensions_src, &extensions_dest)?;
     }
 
     let npm_dest = agent_dir.join("npm");
@@ -223,6 +223,11 @@ fn resolve_bundled_skills_dir(resource_dir: &Path) -> Option<PathBuf> {
 }
 
 fn ensure_mcp_json(mcp_path: &Path, bun: &Path, resource_dir: &Path) -> Result<(), String> {
+    if !chrome_devtools_enabled() {
+        remove_chrome_devtools_mcp_server(mcp_path)?;
+        return Ok(());
+    }
+
     let chrome_mcp = resolve_chrome_devtools_mcp(resource_dir)?;
     let bridge = resolve_chrome_devtools_bridge(resource_dir)?;
 
@@ -263,6 +268,47 @@ fn ensure_mcp_json(mcp_path: &Path, bun: &Path, resource_dir: &Path) -> Result<(
     Ok(())
 }
 
+fn remove_chrome_devtools_mcp_server(mcp_path: &Path) -> Result<(), String> {
+    if !mcp_path.exists() {
+        return Ok(());
+    }
+
+    let raw = fs::read_to_string(mcp_path).map_err(|e| e.to_string())?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({ "mcpServers": {} }));
+
+    let Some(root) = value.as_object_mut() else {
+        value = serde_json::json!({ "mcpServers": {} });
+        fs::write(
+            mcp_path,
+            serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+
+    let servers = root
+        .entry("mcpServers".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let changed = match servers.as_object_mut() {
+        Some(servers_obj) => servers_obj.remove("chrome-devtools").is_some(),
+        None => {
+            *servers = serde_json::json!({});
+            true
+        }
+    };
+
+    if changed {
+        fs::write(
+            mcp_path,
+            serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 fn resolve_chrome_devtools_bridge(resource_dir: &Path) -> Result<PathBuf, String> {
     let bundled = resource_dir.join(BUNDLED_BRIDGE_REL);
     if bundled.is_file() {
@@ -292,6 +338,18 @@ fn resolve_chrome_devtools_mcp(resource_dir: &Path) -> Result<PathBuf, String> {
         "Bundled chrome-devtools-mcp not found at {}. Run: yarn vendor:pi",
         resolved.display()
     ))
+}
+
+fn sync_bundled_extensions(src: &Path, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        fs::remove_dir_all(dest).map_err(|e| {
+            format!(
+                "Failed to clear bundled Pi extensions at {}: {e}",
+                dest.display()
+            )
+        })?;
+    }
+    sync_dir_contents(src, dest)
 }
 
 /// Copy missing / updated files from src into dest (recursive). Never deletes extra files in dest.
@@ -347,19 +405,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_bundled_skills_dir_finds_packaged_resources() {
-        let tmp = std::env::temp_dir().join(format!("jan-pi-skills-test-{}", std::process::id()));
-        let skills_dir = tmp.join(BUNDLED_SKILLS_REL);
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&skills_dir).unwrap();
-
-        let found = resolve_bundled_skills_dir(&tmp);
-        assert_eq!(found.as_deref(), Some(skills_dir.as_path()));
-
-        let _ = fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
     fn resolve_bundled_bun_finds_dev_sidecar_layout() {
         let tmp = std::env::temp_dir().join(format!("jan-pi-bun-test-{}", std::process::id()));
         let debug_dir = tmp.join("target/debug");
@@ -383,6 +428,64 @@ mod tests {
 
         let found = resolve_bundled_skills_dir(&tmp);
         assert_eq!(found.as_deref(), Some(skills_dir.as_path()));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn remove_chrome_devtools_mcp_server_preserves_other_servers() {
+        let tmp = std::env::temp_dir().join(format!("jan-pi-mcp-test-{}", std::process::id()));
+        let mcp_path = tmp.join("mcp.json");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(
+            &mcp_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "mcpServers": {
+                    "chrome-devtools": { "command": "bun" },
+                    "other": { "command": "node" }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        remove_chrome_devtools_mcp_server(&mcp_path).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        let servers = value
+            .get("mcpServers")
+            .and_then(|servers| servers.as_object())
+            .unwrap();
+        assert!(!servers.contains_key("chrome-devtools"));
+        assert!(servers.contains_key("other"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sync_bundled_extensions_mirrors_source_directory() {
+        let tmp = std::env::temp_dir().join(format!(
+            "jan-pi-extension-mirror-test-{}",
+            std::process::id()
+        ));
+        let src = tmp.join("src");
+        let dest = tmp.join("dest");
+        let _ = fs::remove_dir_all(&tmp);
+
+        fs::create_dir_all(src.join("divo-gateway")).unwrap();
+        fs::write(src.join("divo-gateway/index.ts"), b"gateway").unwrap();
+        fs::create_dir_all(dest.join("stale-extension")).unwrap();
+        fs::write(dest.join("stale-extension/index.ts"), b"stale").unwrap();
+        fs::create_dir_all(dest.join("old-managed")).unwrap();
+        fs::write(dest.join("old-managed/index.ts"), b"old").unwrap();
+
+        sync_bundled_extensions(&src, &dest).unwrap();
+
+        assert!(dest.join("divo-gateway/index.ts").is_file());
+        assert!(!dest.join("stale-extension").exists());
+        assert!(!dest.join("old-managed").exists());
 
         let _ = fs::remove_dir_all(&tmp);
     }

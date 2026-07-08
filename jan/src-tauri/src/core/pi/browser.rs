@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 /// Override with an absolute path to a Chromium profile directory (Brave/Chrome/Edge).
 pub const PI_BROWSER_USER_DATA_DIR_ENV: &str = "PI_BROWSER_USER_DATA_DIR";
+pub const DIVO_ENABLE_CHROME_DEVTOOLS_ENV: &str = "DIVO_ENABLE_CHROME_DEVTOOLS";
 
 struct BrowserProfile {
     _name: &'static str,
@@ -83,6 +84,18 @@ fn home_dir() -> Option<PathBuf> {
     }
 }
 
+pub fn chrome_devtools_enabled() -> bool {
+    std::env::var(DIVO_ENABLE_CHROME_DEVTOOLS_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Profile dir with active remote debugging (DevToolsActivePort present).
 pub fn resolve_browser_user_data_dir() -> Option<PathBuf> {
     if let Ok(override_dir) = std::env::var(PI_BROWSER_USER_DATA_DIR_ENV) {
@@ -125,6 +138,10 @@ pub fn read_devtools_ws_endpoint(profile_dir: &Path) -> Option<String> {
 
 /// Changes when the browser restarts remote debugging (UUID rotates).
 pub fn current_browser_cdp_fingerprint() -> Option<String> {
+    if !chrome_devtools_enabled() {
+        return None;
+    }
+
     resolve_browser_user_data_dir().and_then(|dir| read_devtools_ws_endpoint(&dir))
 }
 

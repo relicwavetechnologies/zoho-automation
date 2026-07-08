@@ -372,6 +372,126 @@ describe('ChatInput', () => {
     expect(setPromptMock).toHaveBeenCalledWith('abc')
   })
 
+  it('opens the skill reference drawer and focuses search on slash command', async () => {
+    renderInput()
+    fireEvent.change(getTextarea(), { target: { value: '/' } })
+
+    expect(setPromptMock).toHaveBeenCalledWith('/')
+    expect(
+      await screen.findByTestId('skill-reference-drawer')
+    ).toBeInTheDocument()
+
+    const search = screen.getByTestId(
+      'skill-reference-search'
+    ) as HTMLInputElement
+    await waitFor(() => expect(document.activeElement).toBe(search))
+  })
+
+  it('does not open the skill reference drawer for normal input', () => {
+    renderInput()
+    fireEvent.change(getTextarea(), { target: { value: 'abc' } })
+
+    expect(screen.queryByTestId('skill-reference-drawer')).toBeNull()
+  })
+
+  it('searches Divo skills and adds a selected skill reference chip', async () => {
+    tauriCoreMock.invoke.mockResolvedValue({
+      ok: true,
+      status: 'success',
+      data: {
+        skills: [
+          {
+            id: 'google-workspace',
+            name: 'Google Workspace',
+            description: 'Find the right Gmail, Drive, and Calendar action.',
+            score: 3,
+            toolIds: ['googleGmail', 'googleDrive', 'googleCalendar'],
+          },
+        ],
+      },
+    })
+
+    renderInput()
+    fireEvent.change(getTextarea(), { target: { value: '/' } })
+
+    const search = (await screen.findByTestId(
+      'skill-reference-search'
+    )) as HTMLInputElement
+    fireEvent.change(search, { target: { value: 'google' } })
+
+    const result = await screen.findByTestId(
+      'skill-reference-result-google-workspace'
+    )
+    expect(result).toHaveTextContent('Google Workspace')
+    expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+      'divo_gateway_request',
+      {
+        op: 'skills.search',
+        payload: {
+          query: 'google',
+          limit: 5,
+          context: { surface: 'desktop_composer_reference' },
+        },
+      }
+    )
+
+    fireEvent.click(result)
+
+    expect(await screen.findByTestId('skill-reference-chips')).toHaveTextContent(
+      '/Google Workspace'
+    )
+    expect(screen.queryByTestId('skill-reference-drawer')).toBeNull()
+    expect(setPromptMock).toHaveBeenCalledWith('')
+  })
+
+  it('submits selected skill references as agent context metadata', async () => {
+    tauriCoreMock.invoke.mockResolvedValue({
+      ok: true,
+      status: 'success',
+      data: {
+        skills: [
+          {
+            id: 'google',
+            name: 'Google Workspace',
+            description: 'Gmail, Drive, and Calendar workflows.',
+            score: 3,
+            toolIds: ['googleGmail'],
+          },
+        ],
+      },
+    })
+
+    const onSubmit = vi.fn()
+    const view = renderInput({ onSubmit })
+    fireEvent.change(getTextarea(), { target: { value: '/' } })
+
+    const search = (await screen.findByTestId(
+      'skill-reference-search'
+    )) as HTMLInputElement
+    fireEvent.change(search, { target: { value: 'google' } })
+    fireEvent.click(await screen.findByTestId('skill-reference-result-google'))
+
+    promptState = 'list my unread mails'
+    view.rerender(<ChatInput onSubmit={onSubmit} />)
+    fireEvent.keyDown(getTextarea(), { key: 'Enter' })
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      'list my unread mails',
+      undefined,
+      {
+        skillReferences: [
+          expect.objectContaining({
+            id: 'google',
+            name: 'Google Workspace',
+            description: 'Gmail, Drive, and Calendar workflows.',
+            category: 'Google',
+            toolIds: ['googleGmail'],
+          }),
+        ],
+      }
+    )
+  })
+
   it('submits via onSubmit prop when Enter is pressed', () => {
     promptState = 'hello world'
     const onSubmit = vi.fn()
@@ -676,13 +796,13 @@ describe('ChatInput', () => {
     }
   })
 
-  it('normalizes dragged unsupported image formats before storing Pi attachments', async () => {
+  it('normalizes dragged images before storing Pi attachments', async () => {
     selectedProviderOverride = 'pi'
     isTauriPlatform = true
     tauriCoreMock.invoke.mockResolvedValue({
-      path: '/Users/test/.divo/ocr-images/receipt.png',
-      fileName: 'receipt.png',
-      mimeType: 'image/png',
+      path: '/Users/test/.divo/ocr-images/receipt.jpg',
+      fileName: 'receipt.jpg',
+      mimeType: 'image/jpeg',
       size: 1024,
       normalized: true,
     })
@@ -733,8 +853,8 @@ describe('ChatInput', () => {
             expect.objectContaining({
               type: 'image',
               name: 'receipt.bmp',
-              mimeType: 'image/png',
-              path: '/Users/test/.divo/ocr-images/receipt.png',
+              mimeType: 'image/jpeg',
+              path: '/Users/test/.divo/ocr-images/receipt.jpg',
             }),
           ])
         )

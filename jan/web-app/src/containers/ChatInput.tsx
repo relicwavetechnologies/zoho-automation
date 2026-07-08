@@ -30,7 +30,6 @@ import {
   IconLoader2,
   IconWorld,
   IconBrandChrome,
-  IconFolderOpen,
 } from '@tabler/icons-react'
 import { generateId } from 'ai'
 import { useMessageQueue } from '@/stores/message-queue-store'
@@ -54,7 +53,6 @@ import {
 } from '@/constants/chat'
 import { defaultModel } from '@/lib/models'
 import { useAssistant } from '@/hooks/useAssistant'
-import { AssistantSwitcher } from '@/containers/AssistantSwitcher'
 import DropdownToolsAvailable from '@/containers/DropdownToolsAvailable'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { useTools } from '@/hooks/useTools'
@@ -90,9 +88,17 @@ import { useJanBrowserExtension } from '@/hooks/useJanBrowserExtension'
 import { useAgentMode } from '@/hooks/useAgentMode'
 import { PI_PROVIDER_ID } from '@/lib/pi'
 import {
-  getPiWorkspaceStatus,
-  setPiWorkspacePath,
-} from '@/lib/pi-workspace'
+  SkillReferenceChips,
+  SkillReferenceDrawer,
+} from './SkillReferenceDrawer'
+import {
+  searchDivoSkills,
+  type DivoSkillSearchResult,
+} from '@/lib/divo-skill-search'
+import {
+  normalizeDivoSkillReferences,
+  type DivoSkillReferenceSubmitOptions,
+} from '@/lib/divo-skill-reference-context'
 
 type ChatInputProps = {
   className?: string
@@ -102,7 +108,8 @@ type ChatInputProps = {
   projectId?: string
   onSubmit?: (
     text: string,
-    files?: Array<{ type: string; mediaType: string; url: string }>
+    files?: Array<{ type: string; mediaType: string; url: string }>,
+    options?: DivoSkillReferenceSubmitOptions
   ) => void
   onStop?: () => void
   chatStatus?: ChatStatus
@@ -321,8 +328,23 @@ const ChatInput = memo(function ChatInput({
   chatStatus,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const skillReferenceSearchRef = useRef<HTMLInputElement>(null)
+  const skillReferenceSearchRequestRef = useRef(0)
   const [isFocused, setIsFocused] = useState(false)
   const [rows, setRows] = useState(1)
+  const [skillReferenceDrawerOpen, setSkillReferenceDrawerOpen] =
+    useState(false)
+  const [skillReferenceSearch, setSkillReferenceSearch] = useState('')
+  const [skillReferenceLoading, setSkillReferenceLoading] = useState(false)
+  const [skillReferenceResults, setSkillReferenceResults] = useState<
+    DivoSkillSearchResult[]
+  >([])
+  const [selectedSkillReferences, setSelectedSkillReferences] = useState<
+    DivoSkillSearchResult[]
+  >([])
+  const [skillReferenceError, setSkillReferenceError] = useState<string | null>(
+    null
+  )
   const serviceHub = useServiceHub()
   const abortControllers = useAppState((state) => state.abortControllers)
   const tools = useAppState((state) => state.tools)
@@ -332,10 +354,6 @@ const ChatInput = memo(function ChatInput({
   const addToHistory = usePrompt((state) => state.addToHistory)
   const navigateHistory = usePrompt((state) => state.navigateHistory)
   const currentThreadId = useThreads((state) => state.currentThreadId)
-  const currentThread = useThreads((state) => state.getCurrentThread())
-  const updateCurrentThreadAssistant = useThreads(
-    (state) => state.updateCurrentThreadAssistant
-  )
   const { t } = useTranslation()
   const spellCheckChatInput = useGeneralSetting(
     (state) => state.spellCheckChatInput
@@ -382,12 +400,10 @@ const ChatInput = memo(function ChatInput({
   const [message, setMessage] = useState('')
   const [dropdownToolsAvailable, setDropdownToolsAvailable] = useState(false)
   const [tooltipShown, setTooltipShown] = useState<
-    'tools' | 'assistants' | false
+    'tools' | false
   >(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [hasMmproj, setHasMmproj] = useState(false)
-  const [piWorkspacePath, setLocalPiWorkspacePath] = useState('')
-  const [piWorkspaceIsDefault, setPiWorkspaceIsDefault] = useState(true)
   const activeModels = useAppState(useShallow((state) => state.activeModels))
   // Check if selected model is currently loaded/active
   const isModelActive = selectedModel?.id ? activeModels.includes(selectedModel.id) : false
@@ -526,6 +542,14 @@ const ChatInput = memo(function ChatInput({
   const MCPToolComponent = mcpExtension?.getToolComponent?.()
 
   const handleSendMessage = async (prompt: string) => {
+    const skillReferencesForSend = normalizeDivoSkillReferences(
+      selectedSkillReferences
+    )
+    const submitOptions =
+      skillReferencesForSend.length > 0
+        ? { skillReferences: skillReferencesForSend }
+        : undefined
+
     if (!selectedModel) {
       setMessage('Please select a model to start chatting.')
       return
@@ -548,8 +572,10 @@ const ChatInput = memo(function ChatInput({
           id: generateId(),
           text: prompt,
           createdAt: Date.now(),
+          skillReferences: skillReferencesForSend,
         })
         setPrompt('')
+        setSelectedSkillReferences([])
         return
       }
 
@@ -576,8 +602,13 @@ const ChatInput = memo(function ChatInput({
         }))
       const files = isPiProvider ? [] : [...imageFiles, ...audioFiles, ...videoFiles]
 
-      onSubmit(prompt, files.length > 0 ? files : undefined)
+      if (submitOptions) {
+        onSubmit(prompt, files.length > 0 ? files : undefined, submitOptions)
+      } else {
+        onSubmit(prompt, files.length > 0 ? files : undefined)
+      }
       setPrompt('')
+      setSelectedSkillReferences([])
       setAttachmentsForThread(attachmentsKey, (prev) =>
         isPiProvider
           ? prev
@@ -597,6 +628,7 @@ const ChatInput = memo(function ChatInput({
       const messagePayload = {
         text: prompt,
         files: [] as Array<{ type: string; mediaType: string; url: string }>,
+        skillReferences: skillReferencesForSend,
       }
 
       if (isTemporaryChat) {
@@ -677,6 +709,7 @@ const ChatInput = memo(function ChatInput({
       }
 
       setPrompt('')
+      setSelectedSkillReferences([])
       // Don't clear attachments here — document attachments stored under
       // NEW_THREAD_ATTACHMENT_KEY need to survive until the thread detail
       // page transfers and processes them.  The thread detail page's
@@ -685,59 +718,21 @@ const ChatInput = memo(function ChatInput({
     }
   }
 
-  const handleChoosePiWorkspace = useCallback(async () => {
-    try {
-      const selected = await serviceHub.dialog().open({
-        directory: true,
-        multiple: false,
-      })
-      const nextPath = Array.isArray(selected) ? selected[0] : selected
-      if (!nextPath) return undefined
-
-      const status = await setPiWorkspacePath(nextPath)
-      setLocalPiWorkspacePath(status.effectiveWorkspacePath)
-      setPiWorkspaceIsDefault(!status.selectedWorkspacePath)
-      await invoke('pi_stop').catch(() => undefined)
-      toast.success('Divo workspace selected')
-      return status.effectiveWorkspacePath
-    } catch (error) {
-      toast.error('Failed to choose workspace', { description: String(error) })
-      return undefined
-    }
-  }, [serviceHub])
-
-  useEffect(() => {
-    if (!isPiProvider) return
-
-    let cancelled = false
-    getPiWorkspaceStatus()
-      .then((status) => {
-        if (cancelled) return
-        setLocalPiWorkspacePath(status.effectiveWorkspacePath)
-        setPiWorkspaceIsDefault(!status.selectedWorkspacePath)
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          toast.error('Failed to resolve Divo workspace', {
-            description: String(error),
-          })
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [isPiProvider])
-
   useEffect(() => {
     const handleFocusIn = () => {
-      if (document.activeElement === textareaRef.current) {
+      if (
+        document.activeElement === textareaRef.current ||
+        document.activeElement === skillReferenceSearchRef.current
+      ) {
         setIsFocused(true)
       }
     }
 
     const handleFocusOut = () => {
-      if (document.activeElement !== textareaRef.current) {
+      if (
+        document.activeElement !== textareaRef.current &&
+        document.activeElement !== skillReferenceSearchRef.current
+      ) {
         setIsFocused(false)
       }
     }
@@ -750,6 +745,55 @@ const ChatInput = memo(function ChatInput({
       document.removeEventListener('focusout', handleFocusOut)
     }
   }, [])
+
+  useEffect(() => {
+    if (!skillReferenceDrawerOpen) return
+
+    const frame = window.requestAnimationFrame(() => {
+      skillReferenceSearchRef.current?.focus()
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [skillReferenceDrawerOpen])
+
+  useEffect(() => {
+    if (!skillReferenceDrawerOpen) {
+      return
+    }
+
+    const query = skillReferenceSearch.trim()
+    if (!query) {
+      skillReferenceSearchRequestRef.current += 1
+      setSkillReferenceLoading(false)
+      setSkillReferenceError(null)
+      setSkillReferenceResults([])
+      return
+    }
+
+    setSkillReferenceLoading(true)
+    setSkillReferenceError(null)
+    const requestId = skillReferenceSearchRequestRef.current + 1
+    skillReferenceSearchRequestRef.current = requestId
+
+    const timeout = window.setTimeout(() => {
+      searchDivoSkills(query, 5)
+        .then((results) => {
+          if (skillReferenceSearchRequestRef.current !== requestId) return
+          setSkillReferenceResults(results)
+          setSkillReferenceLoading(false)
+        })
+        .catch((error) => {
+          if (skillReferenceSearchRequestRef.current !== requestId) return
+          setSkillReferenceResults([])
+          setSkillReferenceError(
+            error instanceof Error ? error.message : String(error)
+          )
+          setSkillReferenceLoading(false)
+        })
+    }, 180)
+
+    return () => window.clearTimeout(timeout)
+  }, [skillReferenceDrawerOpen, skillReferenceSearch])
 
   // Focus when component mounts
   useEffect(() => {
@@ -2153,6 +2197,7 @@ const ChatInput = memo(function ChatInput({
                     onEdit={(queued) => {
                       // Put the text back in the input for editing, remove from queue
                       setPrompt(queued.text)
+                      setSelectedSkillReferences(queued.skillReferences ?? [])
                       removeQueuedMessage(queued.id)
                       textareaRef.current?.focus()
                     }}
@@ -2161,36 +2206,44 @@ const ChatInput = memo(function ChatInput({
                 ))}
               </div>
             )}
-            {isPiProvider && (
-              <div className="flex items-center justify-between gap-2 px-3 pt-3 pb-0 text-xs">
-                <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
-                  <IconFolderOpen size={14} className="shrink-0" />
-                  <span className="shrink-0 font-medium text-foreground">
-                    Workspace
-                  </span>
-                  <span
-                    className="truncate"
-                    title={piWorkspacePath || undefined}
-                  >
-                    {piWorkspacePath || 'Resolving workspace...'}
-                  </span>
-                  {piWorkspaceIsDefault && piWorkspacePath && (
-                    <span className="shrink-0 text-muted-foreground">
-                      Default
-                    </span>
-                  )}
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 shrink-0"
-                  onClick={handleChoosePiWorkspace}
-                >
-                  <IconFolderOpen size={14} />
-                  Choose
-                </Button>
-              </div>
+            {skillReferenceDrawerOpen && (
+              <SkillReferenceDrawer
+                searchInputRef={skillReferenceSearchRef}
+                search={skillReferenceSearch}
+                loading={skillReferenceLoading}
+                error={skillReferenceError}
+                results={skillReferenceResults}
+                onSearchChange={setSkillReferenceSearch}
+                onClose={() => {
+                  setSkillReferenceDrawerOpen(false)
+                  setSkillReferenceSearch('')
+                  setSkillReferenceError(null)
+                  setSkillReferenceResults([])
+                  textareaRef.current?.focus()
+                }}
+                onSelect={(skill) => {
+                  setSelectedSkillReferences((current) =>
+                    current.some((item) => item.id === skill.id)
+                      ? current
+                      : [...current, skill]
+                  )
+                  setSkillReferenceDrawerOpen(false)
+                  setSkillReferenceSearch('')
+                  setSkillReferenceError(null)
+                  setSkillReferenceResults([])
+                  setPrompt('')
+                  textareaRef.current?.focus()
+                }}
+              />
             )}
+            <SkillReferenceChips
+              skills={selectedSkillReferences}
+              onRemove={(skillId) =>
+                setSelectedSkillReferences((current) =>
+                  current.filter((item) => item.id !== skillId)
+                )
+              }
+            />
             <TextareaAutosize
               dir="auto"
               ref={textareaRef}
@@ -2200,9 +2253,20 @@ const ChatInput = memo(function ChatInput({
               value={prompt}
               data-testid={'chat-input'}
               onChange={(e) => {
-                setPrompt(e.target.value)
+                const nextPrompt = e.target.value
+                setPrompt(nextPrompt)
+                const slashSearch = nextPrompt.match(/^\/([^\n]*)$/)
+                if (slashSearch) {
+                  setSkillReferenceDrawerOpen(true)
+                  setSkillReferenceSearch(slashSearch[1] ?? '')
+                } else if (skillReferenceDrawerOpen) {
+                  setSkillReferenceDrawerOpen(false)
+                  setSkillReferenceSearch('')
+                  setSkillReferenceError(null)
+                  setSkillReferenceResults([])
+                }
                 // Count the number of newlines to estimate rows
-                const newRows = (e.target.value.match(/\n/g) || []).length + 1
+                const newRows = (nextPrompt.match(/\n/g) || []).length + 1
                 setRows(Math.min(newRows, maxRows))
               }}
               onKeyDown={(e) => {
@@ -2338,31 +2402,9 @@ const ChatInput = memo(function ChatInput({
                     </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                {/* {model?.provider === 'llamacpp' && loadingModel ? (
-                  <ModelLoader />
-                ) : (
-                  <DropdownModelProvider
-                    model={model}
-                    useLastUsedModel={initialMessage}
-                  />
-                )} */}
-                <AssistantSwitcher
-                  assistants={assistants}
-                  currentThread={currentThread}
-                  selectedAssistantId={selectedAssistantId}
-                  setSelectedAssistantId={setSelectedAssistantId}
-                  updateCurrentThreadAssistant={updateCurrentThreadAssistant}
-                />
                 <SamplerPopover
                   providerId={selectedProvider}
                   modelId={selectedModel?.id}
-                  assistantSwitcher={{
-                    assistants,
-                    currentThread,
-                    selectedAssistantId,
-                    setSelectedAssistantId,
-                    updateCurrentThreadAssistant,
-                  }}
                 />
                 {!effectiveAgentMode && hasJanBrowserMCPConfig && modelSupportsBrowser && (
                   <Tooltip>

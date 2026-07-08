@@ -5,7 +5,7 @@ description: Use when the user asks for Divo/company capabilities, Zoho, Lark, G
 
 # Divo Gateway
 
-Use `divo_skill_resolve` before choosing a backend skill or local domain skill. Use the `divo_gateway` tool for every company-owned capability. Do not call SaaS APIs directly, invent company data, ask the user for backend tokens, or bypass approval/RBAC decisions.
+Use `divo_skill_resolve` before choosing a backend skill or local domain skill. Use the `divo_gateway` tool for every company-owned capability and backend-owned research capability, including public web search and deep research. Do not call SaaS APIs directly, invent company data, ask the user for backend tokens, use local Serper credentials, or bypass approval/RBAC decisions.
 
 The backend is the authority for identity, departments, RBAC, approvals, audit, SaaS credentials, and tool execution. Pi is only the local reasoning/runtime layer.
 
@@ -43,16 +43,22 @@ Supported operations are:
 - `connections.list`: list backend-visible personal/shared integration connections, e.g. Google Workspace accounts.
 - `tools.invoke`: execute a backend tool with `payload: { "toolId": "...", "args": { ... } }`.
 
+Backend web search is available through gateway skills and tools when RBAC allows it:
+
+- For normal public web lookup, resolve/fetch the backend `research` skill, then invoke `tools.invoke` with `toolId: "webSearch"` and args like `{ "query": "...", "limit": 5 }` when the skill recipe calls for web results.
+- For multi-round deep research, resolve/fetch the backend `deepResearch` skill and follow its search strategy using the backend `webSearch` tool.
+- Do not use local `web_search` tools, local browser search hacks, or any local Serper/OpenRouter key for web search. Backend owns credentials, audit, RBAC, and result execution.
+
 Use the department id only when the user has selected or implied a department context. Otherwise omit it and let desktop/backend defaults apply.
 
 ## Workflow
 
 1. Distinguish local-only work from Divo/company work.
    - If the request is clearly local-only, use local tools.
-   - If the request involves Divo, company data, plugins, connected accounts, SaaS apps, CRM, Books, email, calendar, Drive, approvals, departments, shared workspaces, or ambiguous company context, use Divo.
+   - If the request involves Divo, company data, plugins, connected accounts, SaaS apps, CRM, Books, email, calendar, Drive, approvals, departments, shared workspaces, public web search, deep research, or ambiguous company context, use Divo.
 2. For attached local image OCR or screenshot understanding, call `divo_gateway` directly:
    `divo_gateway({ "op": "media.image_ocr", "payload": { "filePath": "<attached image path>", "mimeType": "<attached image MIME type>", "fileName": "<attached image name>" } })`.
-   Desktop normalizes unsupported image formats before attachment metadata is sent to Pi, so do not convert the image yourself first.
+   Desktop normalizes unsupported image formats and compresses oversized images before attachment metadata is sent to Pi, so do not convert or compress the image yourself first.
    The gateway tool converts `filePath` into the backend payload. Do this before `Read`, shell OCR, local image skills, or `divo_skill_resolve`.
 3. For Divo-relevant, plugin, SaaS, non-image file-processing, document, or ambiguous skill-guided requests, first call `divo_skill_resolve` with the original user request.
 4. If the resolver selects a backend skill, call `skills.get` for that skill before acting. If multiple backend skills are plausible, read the top 2-3 backend skills before acting.

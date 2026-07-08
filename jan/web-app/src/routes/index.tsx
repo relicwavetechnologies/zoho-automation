@@ -22,7 +22,7 @@ type SearchParams = {
 }
 import { useEffect } from 'react'
 import { useThreads } from '@/hooks/useThreads'
-import DropdownModelProvider from '@/containers/DropdownModelProvider'
+import DivoWorkspaceSelector from '@/containers/DivoWorkspaceSelector'
 
 export const Route = createFileRoute(route.home as any)({
   component: Index,
@@ -76,7 +76,7 @@ function Index() {
     <div className="flex h-full flex-col justify-center">
       <HeaderPage>
         <div className="flex items-center gap-2 w-full">
-          <DropdownModelProvider model={threadModel} />
+          <DivoWorkspaceSelector />
         </div>
       </HeaderPage>
       <div

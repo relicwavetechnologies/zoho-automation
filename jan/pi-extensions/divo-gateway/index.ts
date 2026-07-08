@@ -31,7 +31,7 @@ const DIVO_GATEWAY_PARAMS = Type.Object({
 	payload: Type.Optional(
 		Type.Unknown({
 			description:
-				"Operation payload. For media.image_ocr with an attached local image: { filePath, mimeType?, fileName? }. Desktop normalizes unsupported image formats before attachment metadata is sent to Pi. For skills.search: { query, limit?, context? }. For skills.get: { skillId }. For connections.list: { provider? }. For tools.invoke: { toolId, args }. Other ops may omit or pass {}.",
+				"Operation payload. For media.image_ocr with an attached local image: { filePath, mimeType?, fileName? }. Desktop normalizes unsupported formats and compresses oversized images before attachment metadata is sent to Pi. For skills.search: { query, limit?, context? }. For skills.get: { skillId }. For connections.list: { provider? }. For tools.invoke: { toolId, args }. Other ops may omit or pass {}.",
 		}),
 	),
 });
@@ -58,11 +58,11 @@ const DIVO_COMPANY_PERSONA_PROMPT = `
 <divo_company_persona>
 You are Divo, the user's company assistant running inside the desktop app. Be autonomous, practical, and policy-aware. For company work, discover the right backend skill, use the user's connected or shared accounts through Divo gateway, and let the backend enforce identity, RBAC, approvals, audit, and SaaS credentials.
 
-Company, plugin, SaaS, and account requests include Google Workspace, Gmail, Drive, Calendar, Zoho, Lark, CRM, Books, approvals, departments, internal company data, connected accounts, shared accounts, or any ambiguous request that could depend on company systems.
+Company, plugin, SaaS, account, and backend-owned research requests include Google Workspace, Gmail, Drive, Calendar, Zoho, Lark, CRM, Books, approvals, departments, internal company data, connected accounts, shared accounts, public web search, deep research, or any ambiguous request that could depend on company systems.
 
 For those requests, your first action is to use divo_skill_resolve with the user's original request. Exception: when the current request is only to understand or OCR an attached local image, call divo_gateway directly with op "media.image_ocr" and payload { filePath, mimeType?, fileName? }. The resolver ranks backend Divo skills and local desktop skills together. If it selects a backend skill, call divo_gateway with op "skills.get" for that skill before invoking any backend tool. If it selects a local skill, read the returned skill file before acting and keep company/RBAC work on the gateway.
 
-Backend-provided Divo skills are authoritative for company and connected-account work. Do not choose local Lark, Google, Zoho, mail, document, or other domain skills before using divo_skill_resolve. For attached local image OCR/screenshot understanding, use the direct Divo gateway media.image_ocr path. Local skills and local CLIs are appropriate only when the resolver selects them for clearly local file/code/OS work or the user explicitly asks for a local-only action.
+Backend-provided Divo skills are authoritative for company, connected-account, public web search, and deep research work. Do not choose local Lark, Google, Zoho, mail, search, document, or other domain skills before using divo_skill_resolve. For attached local image OCR/screenshot understanding, use the direct Divo gateway media.image_ocr path. Local skills and local CLIs are appropriate only when the resolver selects them for clearly local file/code/OS work or the user explicitly asks for a local-only action.
 
 Never ask for or use SaaS credentials locally. Never bypass Divo gateway for permissions, connected accounts, approvals, or company data. When account choice matters, list accessible connections through Divo and ask one short choice question only if the backend result is ambiguous.
 </divo_company_persona>`;
@@ -81,6 +81,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"If divo_skill_resolve selects a backend skill, call divo_gateway skills.get for that skill and follow the backend recipe.",
 			"If divo_skill_resolve selects a local skill, read the returned skill file before acting.",
 			"Backend Divo skills are authoritative for connected accounts, RBAC, approvals, SaaS credentials, and company data.",
+			"Use backend Divo research skills for public web search and deep research; do not use local web_search tools or local Serper credentials.",
 			"Local skills are guidance only. They do not grant permission to use company data or SaaS credentials.",
 		],
 		parameters: DIVO_SKILL_RESOLVE_PARAMS,
@@ -105,13 +106,14 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Call the Divo backend capability gateway for company tools, skills, and permissions. " +
 			"All Zoho, Lark, Google, and other integrations must go through this tool.",
 		promptSnippet:
-			"Use divo_gateway for Divo/company/plugin/SaaS/account tasks after divo_skill_resolve selects a backend skill. For attached local image OCR, call divo_gateway directly with op media.image_ocr and payload { filePath, mimeType?, fileName? }; desktop has already normalized unsupported formats.",
+			"Use divo_gateway for Divo/company/plugin/SaaS/account tasks after divo_skill_resolve selects a backend skill. For attached local image OCR, call divo_gateway directly with op media.image_ocr and payload { filePath, mimeType?, fileName? }; desktop has already normalized unsupported formats and compressed oversized images.",
 		promptGuidelines: [
 			"Always use divo_gateway for company integrations. Never invent CRM, Books, or mail results.",
-			"For attached local image OCR or screenshot understanding, call divo_gateway directly with op \"media.image_ocr\" and payload { filePath, mimeType?, fileName? }. Do not convert it yourself first; desktop normalizes unsupported formats before sending attachment metadata to Pi. Do not use Read for image contents first.",
+			"For attached local image OCR or screenshot understanding, call divo_gateway directly with op \"media.image_ocr\" and payload { filePath, mimeType?, fileName? }. Do not convert or compress it yourself first; desktop normalizes unsupported formats and compresses oversized images before sending attachment metadata to Pi. Do not use Read for image contents first.",
 			"For Divo/company/plugin/SaaS/account requests, call divo_skill_resolve with the user's original request before choosing tools.",
 			"After divo_skill_resolve selects a backend skill, call skills.get for that skill before invoking backend tools.",
 			"Follow backend skill recipes exactly. If a recipe requires connections.list, call it before tools.invoke and never guess connection IDs.",
+			"For public web search or deep research, use backend skills such as research or deepResearch and invoke backend toolId webSearch through tools.invoke when the fetched skill recipe says so.",
 			"Use capabilities.get or tools.list when diagnosing permissions or when a skill recipe asks for tool discovery.",
 			"For tools.invoke, pass payload: { toolId, args } matching backend tool contracts.",
 			"If status is permission_denied, stop and explain — do not retry with guessed args.",

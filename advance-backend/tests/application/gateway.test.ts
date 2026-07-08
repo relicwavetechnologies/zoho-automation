@@ -9,6 +9,7 @@ import { GatewayDispatcher } from '../../src/application/gateway/gateway-dispatc
 import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
 import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
 import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
+import { createWebSearchTool } from '../../src/application/orchestration/tools/families/web-search.tool.ts';
 import { SkillRegistry } from '../../src/application/skills/skill-registry.ts';
 import type { Skill } from '../../src/application/skills/skill.types.ts';
 import { ok, err } from '../../src/shared/result.ts';
@@ -382,6 +383,60 @@ describe('GatewayDispatcher', () => {
 
     assert.equal(result.ok, true);
     assert.deepEqual((result.data as { result: { result: string } }).result, { result: 'echo:gateway' });
+  });
+
+  it('exposes and invokes webSearch through the backend gateway when RBAC allows it', async () => {
+    const registry = new ToolRegistry();
+    registry.register(createWebSearchTool({
+      client: {
+        search: async (query: string, limit = 5) => [{
+          title: `Result for ${query}`,
+          url: 'https://example.com/search-result',
+          snippet: `limit=${limit}`,
+        }],
+      },
+    }));
+    const perm = makeAllowedPerm('webSearch', ['read']);
+
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(perm),
+      toolRegistry: registry,
+      skillRegistry: makeSkillRegistry([{
+        id: 'research',
+        name: 'Research',
+        description: 'Backend web research',
+        instructions: 'Use webSearch through tools.invoke.',
+        toolIds: ['webSearch'],
+      }]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(perm),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      logger: noopLogger,
+    });
+
+    const listed = await dispatcher.dispatch({ op: 'tools.list' }, member);
+    assert.equal(listed.ok, true);
+    const tools = (listed.data as { tools: Array<{ id: string }> }).tools;
+    assert.ok(tools.some((tool) => tool.id === 'webSearch'));
+
+    const invoked = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { toolId: 'webSearch', args: { query: 'Divo gateway search', limit: 1 } },
+    }, member);
+
+    assert.equal(invoked.ok, true);
+    assert.deepEqual((invoked.data as { result: unknown }).result, {
+      success: true,
+      results: [{
+        title: 'Result for Divo gateway search',
+        url: 'https://example.com/search-result',
+        snippet: 'limit=1',
+      }],
+      message: 'Found 1 results',
+    });
   });
 
   it('extracts image OCR through the authenticated media gateway op', async () => {

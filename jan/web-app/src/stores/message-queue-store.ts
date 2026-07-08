@@ -1,9 +1,11 @@
+import type { DivoSkillReference } from '@/lib/divo-skill-reference-context'
 import { create } from 'zustand'
 
 export type QueuedMessage = {
   id: string
   text: string
   createdAt: number
+  skillReferences?: DivoSkillReference[]
 }
 
 // Stable reference for empty queues so selectors don't trigger unnecessary re-renders

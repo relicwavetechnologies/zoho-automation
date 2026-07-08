@@ -178,10 +178,8 @@ vi.mock('@/containers/HeaderPage', () => ({
   default: ({ children }: any) => <div data-testid="header-page">{children}</div>,
 }))
 
-vi.mock('@/containers/DropdownModelProvider', () => ({
-  default: ({ model }: any) => (
-    <div data-testid="model-dropdown">{model ? model.id : 'no-model'}</div>
-  ),
+vi.mock('@/containers/DivoWorkspaceSelector', () => ({
+  default: () => <div data-testid="workspace-selector" />,
 }))
 
 vi.mock('@/containers/ChatInput', () => ({
@@ -460,10 +458,10 @@ describe('ThreadDetail route', () => {
     expect(result.threadModel).toBeUndefined()
   })
 
-  it('renders header, model dropdown, and chat input', () => {
+  it('renders header, workspace selector, and chat input', () => {
     renderComponent()
     expect(screen.getByTestId('header-page')).toBeInTheDocument()
-    expect(screen.getByTestId('model-dropdown')).toHaveTextContent('gpt-x')
+    expect(screen.getByTestId('workspace-selector')).toBeInTheDocument()
     expect(screen.getByTestId('chat-input')).toBeInTheDocument()
     expect(screen.getByTestId('chat-status')).toHaveTextContent('ready')
   })

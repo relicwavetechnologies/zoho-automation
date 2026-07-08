@@ -123,12 +123,11 @@ fs.writeFileSync(
 )
 // mcp.json is generated at runtime into ~/Library/.../Jan/pi-agent/mcp.json
 
-// Copy Jan Pi extensions (browser-brave is replaced by bundled MCP).
+// Copy Jan Pi extensions.
 rmrf(resourcesExtensions)
 fs.mkdirSync(resourcesExtensions, { recursive: true })
 if (fs.existsSync(sourceExtensions)) {
   for (const name of fs.readdirSync(sourceExtensions)) {
-    if (name === 'browser-brave') continue
     copyDir(path.join(sourceExtensions, name), path.join(resourcesExtensions, name))
   }
 }

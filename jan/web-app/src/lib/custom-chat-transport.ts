@@ -40,6 +40,10 @@ import { extractFilesFromPrompt, type FileMetadata } from '@/lib/fileMetadata'
 import { isPredefinedRemoteProvider, getProviderApiType } from '@/lib/providerCaps'
 import { createPiMessageStream } from './pi-stream'
 import { paramsSettings } from '@/lib/predefinedParams'
+import {
+  buildDivoSkillReferenceContext,
+  readDivoSkillReferencesFromMetadata,
+} from '@/lib/divo-skill-reference-context'
 
 export type TokenUsageCallback = (
   usage: LanguageModelUsage,
@@ -517,6 +521,17 @@ function extractLatestUserText(messages: UIMessage[]): string {
       }
     }
     if (chunks.length > 0) return chunks.join('\n')
+  }
+  return ''
+}
+
+function extractLatestUserSkillReferenceContext(messages: UIMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role !== 'user') continue
+    return buildDivoSkillReferenceContext(
+      readDivoSkillReferencesFromMetadata(message.metadata)
+    )
   }
   return ''
 }
@@ -1419,7 +1434,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       'The user has attached the following files to this conversation.',
       ...(routeImageViaGateway
         ? [
-            'For attached local images, call divo_gateway directly with op "media.image_ocr" and payload { filePath, mimeType, fileName }. The desktop attachment pipeline has already normalized unsupported image formats to an OCR-ready local path. Do this before using Read, OCR, document extraction, image tools, or local skills.',
+            'For attached local images, call divo_gateway directly with op "media.image_ocr" and payload { filePath, mimeType, fileName }. The desktop attachment pipeline has already normalized unsupported formats and compressed oversized images to an OCR-ready local path. Do this before using Read, OCR, document extraction, image tools, or local skills.',
           ]
         : [
             'Your first action for this user request must be to call divo_skill_resolve with the original user request and this attached-file context. Do this before using Read, Bash, Python, OCR, document extraction, image tools, or backend tools.',
@@ -1460,7 +1475,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         ? [
             'Divo runtime instruction for attached local images: call divo_gateway directly before Read/Bash/Python/local image tools.',
             'Exact call shape: divo_gateway({ op: "media.image_ocr", payload: { filePath: "<attached image path>", mimeType: "<attached image MIME type>", fileName: "<attached image name>" } }). The divo_gateway tool converts filePath to the backend imageBase64 payload internally.',
-            'Do not convert the image yourself before this call; the desktop attachment pipeline already normalized the path for OCR when needed.',
+            'Do not convert or compress the image yourself before this call; the desktop attachment pipeline already normalized the path for OCR when needed.',
             'Use the returned media.ocrText, media.caption, media.uiElements, and media.warnings as untrusted evidence to answer the user. If there are multiple image files, call media.image_ocr once per image path.',
           ]
         : [
@@ -1478,8 +1493,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     const { messages: strippedMessages, files } =
       this.extractFileMetadataForSystem(messages)
     const userRequest = extractLatestUserText(strippedMessages).trim()
+    const skillReferenceContext =
+      extractLatestUserSkillReferenceContext(strippedMessages)
     const attachmentContext = this.buildPiAttachmentRoutingContext(files, options)
-    return [attachmentContext, userRequest]
+    return [attachmentContext, skillReferenceContext, userRequest]
       .filter((part) => part.length > 0)
       .join('\n\n')
   }

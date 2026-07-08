@@ -1,8 +1,12 @@
 use std::fs;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose, Engine as _};
-use image::ImageFormat;
+use image::codecs::jpeg::JpegEncoder;
+use image::imageops::FilterType;
+use image::{DynamicImage, GenericImageView};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Runtime};
@@ -22,6 +26,9 @@ use super::workspace::{
 const PI_AGENT_DIR: &str = "pi-agent";
 const DIVO_SESSION_CHANGED_EVENT: &str = "divo-session-changed";
 const DIVO_OCR_IMAGE_DIR: &str = "divo/ocr-images";
+const MAX_BACKEND_OCR_IMAGE_BYTES: u64 = 1_250_000;
+const OCR_IMAGE_MAX_EDGE_STEPS: [u32; 5] = [1800, 1500, 1200, 1000, 850];
+const OCR_IMAGE_JPEG_QUALITY_STEPS: [u8; 4] = [85, 75, 65, 55];
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,24 +145,87 @@ fn decode_base64_image(data_url: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("Failed to decode image data URL: {e}"))
 }
 
-fn save_image_bytes_as_png(bytes: &[u8], dest: &Path) -> Result<(), String> {
-    let image = image::load_from_memory(bytes)
-        .map_err(|e| format!("Failed to decode image for OCR normalization: {e}"))?;
-    image
-        .save_with_format(dest, ImageFormat::Png)
-        .map_err(|e| format!("Failed to write normalized PNG: {e}"))
+fn load_image_bytes(bytes: &[u8]) -> Result<DynamicImage, String> {
+    image::load_from_memory(bytes)
+        .map_err(|e| format!("Failed to decode image for OCR normalization: {e}"))
 }
 
-fn save_path_as_png(source_path: &Path, dest: &Path) -> Result<(), String> {
-    let image = image::ImageReader::open(source_path)
+fn load_image_path(source_path: &Path) -> Result<DynamicImage, String> {
+    image::ImageReader::open(source_path)
         .map_err(|e| format!("Failed to open image for OCR normalization: {e}"))?
         .with_guessed_format()
         .map_err(|e| format!("Failed to detect image format for OCR normalization: {e}"))?
         .decode()
-        .map_err(|e| format!("Failed to decode image for OCR normalization: {e}"))?;
-    image
-        .save_with_format(dest, ImageFormat::Png)
-        .map_err(|e| format!("Failed to write normalized PNG: {e}"))
+        .map_err(|e| format!("Failed to decode image for OCR normalization: {e}"))
+}
+
+fn resize_for_max_edge(image: &DynamicImage, max_edge: u32) -> DynamicImage {
+    let (width, height) = image.dimensions();
+    let longest_edge = width.max(height);
+
+    if longest_edge <= max_edge || longest_edge == 0 {
+        return image.clone();
+    }
+
+    let scale = max_edge as f32 / longest_edge as f32;
+    let resized_width = ((width as f32 * scale).round() as u32).max(1);
+    let resized_height = ((height as f32 * scale).round() as u32).max(1);
+
+    image.resize(resized_width, resized_height, FilterType::Lanczos3)
+}
+
+fn write_jpeg(image: &DynamicImage, dest: &Path, quality: u8) -> Result<u64, String> {
+    let file = File::create(dest).map_err(|e| format!("Failed to create normalized JPEG: {e}"))?;
+    let mut writer = BufWriter::new(file);
+    {
+        let mut encoder = JpegEncoder::new_with_quality(&mut writer, quality);
+        encoder
+            .encode_image(image)
+            .map_err(|e| format!("Failed to write normalized JPEG: {e}"))?;
+    }
+    writer
+        .flush()
+        .map_err(|e| format!("Failed to flush normalized JPEG: {e}"))?;
+
+    fs::metadata(dest)
+        .map(|metadata| metadata.len())
+        .map_err(|e| format!("Failed to stat normalized image: {e}"))
+}
+
+fn save_image_for_backend_ocr(
+    image: DynamicImage,
+    out_dir: &Path,
+    original_file_name: &str,
+) -> Result<NormalizedImageAttachment, String> {
+    let out_name = format!(
+        "{}-{}.jpg",
+        safe_stem(original_file_name),
+        Uuid::new_v4().simple()
+    );
+    let out_path = out_dir.join(&out_name);
+    let mut last_size = 0;
+
+    for max_edge in OCR_IMAGE_MAX_EDGE_STEPS {
+        let resized = resize_for_max_edge(&image, max_edge);
+        for quality in OCR_IMAGE_JPEG_QUALITY_STEPS {
+            let size = write_jpeg(&resized, &out_path, quality)?;
+            last_size = size;
+            if size <= MAX_BACKEND_OCR_IMAGE_BYTES {
+                return Ok(NormalizedImageAttachment {
+                    path: out_path.to_string_lossy().to_string(),
+                    file_name: out_name,
+                    mime_type: "image/jpeg".to_string(),
+                    size,
+                    normalized: true,
+                });
+            }
+        }
+    }
+
+    Err(format!(
+        "Image could not be compressed below {} bytes for OCR; smallest normalized size was {} bytes",
+        MAX_BACKEND_OCR_IMAGE_BYTES, last_size
+    ))
 }
 
 #[tauri::command]
@@ -180,17 +250,19 @@ pub fn divo_normalize_image_attachment<R: Runtime>(
     if let Some(path) = source_path.as_deref() {
         if is_backend_ocr_supported_mime(&source_mime) {
             let metadata = fs::metadata(path).map_err(|e| format!("Failed to stat image: {e}"))?;
-            return Ok(NormalizedImageAttachment {
-                path: path.to_string(),
-                file_name,
-                mime_type: if source_mime == "image/jpg" {
-                    "image/jpeg".to_string()
-                } else {
-                    source_mime
-                },
-                size: metadata.len(),
-                normalized: false,
-            });
+            if metadata.len() <= MAX_BACKEND_OCR_IMAGE_BYTES {
+                return Ok(NormalizedImageAttachment {
+                    path: path.to_string(),
+                    file_name,
+                    mime_type: if source_mime == "image/jpg" {
+                        "image/jpeg".to_string()
+                    } else {
+                        source_mime
+                    },
+                    size: metadata.len(),
+                    normalized: false,
+                });
+            }
         }
     }
 
@@ -198,27 +270,16 @@ pub fn divo_normalize_image_attachment<R: Runtime>(
     let out_dir = data_folder.join(DIVO_OCR_IMAGE_DIR);
     fs::create_dir_all(&out_dir).map_err(|e| format!("Failed to create OCR image cache: {e}"))?;
 
-    let out_name = format!("{}-{}.png", safe_stem(&file_name), Uuid::new_v4().simple());
-    let out_path = out_dir.join(out_name.clone());
-
-    if let Some(path) = source_path {
-        save_path_as_png(Path::new(&path), &out_path)?;
+    let image = if let Some(path) = source_path {
+        load_image_path(Path::new(&path))?
     } else if let Some(data_url) = data_url {
         let bytes = decode_base64_image(&data_url)?;
-        save_image_bytes_as_png(&bytes, &out_path)?;
+        load_image_bytes(&bytes)?
     } else {
         return Err("Image normalization requires sourcePath or dataUrl".to_string());
-    }
+    };
 
-    let metadata =
-        fs::metadata(&out_path).map_err(|e| format!("Failed to stat normalized image: {e}"))?;
-    Ok(NormalizedImageAttachment {
-        path: out_path.to_string_lossy().to_string(),
-        file_name: out_name,
-        mime_type: "image/png".to_string(),
-        size: metadata.len(),
-        normalized: true,
-    })
+    save_image_for_backend_ocr(image, &out_dir, &file_name)
 }
 
 async fn best_effort_backend_logout<R: Runtime>(app: &AppHandle<R>) {

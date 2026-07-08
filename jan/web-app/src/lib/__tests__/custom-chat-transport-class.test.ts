@@ -141,12 +141,45 @@ describe('CustomChatTransport', () => {
     expect(result).toContain('op: "media.image_ocr"')
     expect(result).toContain('payload: { filePath')
     expect(result).toContain('desktop attachment pipeline already normalized')
-    expect(result).toContain('Do not convert the image yourself')
+    expect(result).toContain('compressed oversized images')
+    expect(result).toContain('Do not convert or compress the image yourself')
     expect(result).toContain('before Read/Bash/Python/local image tools')
     expect(result).toContain('current selected model does not support native image input')
     expect(result).toContain('path: /Users/test/screenshot.png')
     expect(result).toContain('Tell me what is in this image.')
     expect(result.match(/\[ATTACHED_FILES\]/g)).toHaveLength(1)
+  })
+
+  it('buildPiUserMessage injects selected Divo skill references before the user request', () => {
+    const result = transport.buildPiUserMessage([
+      {
+        id: 'u1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'list my unread mails' }],
+        metadata: {
+          divoSkillReferences: [
+            {
+              id: 'google',
+              name: 'Google Workspace',
+              description: 'Gmail, Drive, and Calendar workflows.',
+              category: 'Google',
+              toolIds: ['googleGmail'],
+            },
+          ],
+        },
+      } as any,
+    ])
+
+    expect(result).toContain('[DIVO_SKILL_REFERENCES]')
+    expect(result).toContain('You must load the selected skill recipe')
+    expect(result).toContain('divo_gateway({')
+    expect(result).toContain('"op": "skills.get"')
+    expect(result).toContain('"skillId": "<skillId>"')
+    expect(result).toContain('skillId: google')
+    expect(result).toContain('list my unread mails')
+    expect(result.indexOf('[DIVO_SKILL_REFERENCES]')).toBeLessThan(
+      result.indexOf('list my unread mails')
+    )
   })
 
   it('setContinueFromContent sets content', () => {

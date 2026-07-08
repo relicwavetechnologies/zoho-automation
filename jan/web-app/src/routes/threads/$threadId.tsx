@@ -71,13 +71,19 @@ import { useTranslation } from '@/i18n/react-i18next-compat'
 import { Button } from '@/components/ui/button'
 import { IconAlertCircle, IconRefresh, IconLoader2 } from '@tabler/icons-react'
 import { useToolApproval } from '@/hooks/useToolApproval'
-import DropdownModelProvider from '@/containers/DropdownModelProvider'
+import DivoWorkspaceSelector from '@/containers/DivoWorkspaceSelector'
 import { ExtensionTypeEnum, VectorDBExtension } from '@janhq/core'
 import { ExtensionManager } from '@/lib/extension'
 import { Shimmer } from '@/components/ai-elements/shimmer'
 import { useMessageQueue } from '@/stores/message-queue-store'
 import { generateThreadTitle } from '@/lib/thread-title-summarizer'
 import { useAutoScroll } from '@/hooks/useAutoScroll'
+import {
+  DIVO_SKILL_REFERENCES_METADATA_KEY,
+  normalizeDivoSkillReferences,
+  type DivoSkillReference,
+  type DivoSkillReferenceSubmitOptions,
+} from '@/lib/divo-skill-reference-context'
 
 const CHAT_STATUS = {
   STREAMING: 'streaming',
@@ -778,8 +784,17 @@ function ThreadDetail() {
   const processAndSendMessage = useCallback(
     async (
       text: string,
-      files?: Array<{ type: string; mediaType: string; url: string }>
+      files?: Array<{ type: string; mediaType: string; url: string }>,
+      options?: DivoSkillReferenceSubmitOptions
     ) => {
+      const skillReferences = normalizeDivoSkillReferences(
+        options?.skillReferences
+      )
+      const skillReferenceMetadata =
+        skillReferences.length > 0
+          ? { [DIVO_SKILL_REFERENCES_METADATA_KEY]: skillReferences }
+          : {}
+
       // Cancel any in-flight title summarization so it doesn't compete with this request
       titleAbortRef.current?.abort()
       titleAbortRef.current = null
@@ -856,6 +871,10 @@ function ThreadDetail() {
           combinedAttachments,
           messageId
         )
+        previewMessage.metadata = {
+          ...(previewMessage.metadata ?? {}),
+          ...skillReferenceMetadata,
+        }
         const previewUI =
           convertThreadMessagesToUIMessages([previewMessage])
         setChatMessages((prev) => [...prev, ...previewUI])
@@ -925,6 +944,10 @@ function ThreadDetail() {
         processedAttachments,
         messageId
       )
+      baseUserMessage.metadata = {
+        ...(baseUserMessage.metadata ?? {}),
+        ...skillReferenceMetadata,
+      }
       // Once a thread has branches, link new turns into the active path so the
       // assistant reply attaches to this message. Legacy threads stay linear.
       const branchedMessages = useMessages.getState().getMessages(threadId)
@@ -991,9 +1014,20 @@ function ThreadDetail() {
   // Sends a text-only queued message, bypassing attachment processing entirely.
   // This prevents stale or new attachments from leaking into auto-sent queue items.
   const sendQueuedMessage = useCallback(
-    async (text: string) => {
+    async (text: string, skillReferencesInput?: DivoSkillReference[]) => {
+      const skillReferences = normalizeDivoSkillReferences(
+        skillReferencesInput
+      )
+      const skillReferenceMetadata =
+        skillReferences.length > 0
+          ? { [DIVO_SKILL_REFERENCES_METADATA_KEY]: skillReferences }
+          : {}
       const messageId = generateId()
       const userMessage = newUserThreadContent(threadId, text, [], messageId)
+      userMessage.metadata = {
+        ...(userMessage.metadata ?? {}),
+        ...skillReferenceMetadata,
+      }
       addMessage(userMessage)
 
       sendMessage({
@@ -1027,9 +1061,12 @@ function ThreadDetail() {
           const message = JSON.parse(storedMessage) as {
             text: string
             files?: Array<{ type: string; mediaType: string; url: string }>
+            skillReferences?: DivoSkillReference[]
           }
 
-          await processAndSendMessage(message.text, message.files)
+          await processAndSendMessage(message.text, message.files, {
+            skillReferences: message.skillReferences,
+          })
         } catch (error) {
           console.error('Failed to parse initial message:', error)
         }
@@ -1078,10 +1115,11 @@ function ThreadDetail() {
   const handleSubmit = useCallback(
     async (
       text: string,
-      files?: Array<{ type: string; mediaType: string; url: string }>
+      files?: Array<{ type: string; mediaType: string; url: string }>,
+      options?: DivoSkillReferenceSubmitOptions
     ) => {
       clearBannerErrors()
-      await processAndSendMessage(text, files)
+      await processAndSendMessage(text, files, options)
     },
     [processAndSendMessage, clearBannerErrors]
   )
@@ -1407,7 +1445,7 @@ function ThreadDetail() {
     if (!next) return
 
     processingQueueRef.current = true
-    sendQueuedMessage(next.text)
+    sendQueuedMessage(next.text, next.skillReferences)
       .catch((err) => {
         console.error('Failed to send queued message:', err)
       })
@@ -1519,7 +1557,7 @@ function ThreadDetail() {
     <div className="flex flex-col h-[calc(100dvh-(env(safe-area-inset-bottom)+env(safe-area-inset-top)))]">
       <HeaderPage>
         <div className="flex items-center justify-between w-full pr-2">
-          <DropdownModelProvider model={threadModel} />
+          <DivoWorkspaceSelector />
         </div>
       </HeaderPage>
       <div className="flex flex-1 flex-col h-full overflow-hidden">
