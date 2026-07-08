@@ -17,6 +17,7 @@ export interface ApprovalCheckResult {
   readonly existingGrant?: ApprovalGrant;
   readonly isSelfBypass:   boolean;
   readonly managerId?:     string;   // userId of dept manager (for later resolution)
+  readonly misconfigured?: string;
 }
 
 export function computeArgsHash(args: unknown): string {
@@ -50,7 +51,15 @@ export function checkApprovalPolicy(input: ApprovalCheckInput): ApprovalCheckRes
   }
 
   const configParsed = ManagerApprovalConfigSchema.safeParse(deptMeta.managerApprovalJson);
-  if (!configParsed.success || !configParsed.data.enabled) {
+  if (!configParsed.success) {
+    return {
+      required:     false,
+      isSelfBypass: false,
+      misconfigured: 'Invalid manager approval configuration. Please contact your administrator.',
+    };
+  }
+
+  if (!configParsed.data.enabled) {
     return { required: false, isSelfBypass: false };
   }
 

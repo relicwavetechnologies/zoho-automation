@@ -120,12 +120,34 @@ export class RuntimeApprovalRepository {
   async findByIdempotencyKey(key: string): Promise<Result<RuntimeApprovalRow | null, Error>> {
     try {
       const row = await this.prisma.runtimeApproval.findFirst({
-        where: { idempotencyKey: key, status: 'pending' },
+        where: {
+          idempotencyKey: key,
+          status: 'pending',
+          OR: [
+            { expiresAt: null },
+            { expiresAt: { gt: new Date() } },
+          ],
+        },
         orderBy: { createdAt: 'desc' },
       });
       return ok(row as unknown as RuntimeApprovalRow | null);
     } catch (e) {
       return err(wrapInfra('prisma', 'runtime-approval.findByIdempotencyKey', e));
+    }
+  }
+
+  async markFailed(id: string, reason: string): Promise<Result<void, Error>> {
+    try {
+      await this.prisma.runtimeApproval.update({
+        where: { id },
+        data: {
+          status: 'failed',
+          resolutionReason: reason,
+        },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.markFailed', e));
     }
   }
 
@@ -160,7 +182,14 @@ export class RuntimeApprovalRepository {
 
       const [count, rows] = await this.prisma.$transaction([
         this.prisma.runtimeApproval.updateMany({
-          where: { id, status: 'pending' },
+          where: {
+            id,
+            status: 'pending',
+            OR: [
+              { expiresAt: null },
+              { expiresAt: { gt: now } },
+            ],
+          },
           data:  updateData,
         }),
         this.prisma.runtimeApproval.findMany({ where: { id } }),

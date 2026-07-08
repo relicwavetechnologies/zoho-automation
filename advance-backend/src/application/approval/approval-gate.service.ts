@@ -34,6 +34,11 @@ export class ApprovalGateService {
 
     const policyResult = checkApprovalPolicy({ toolId, action, args, perm, runContext });
 
+    if (policyResult.misconfigured) {
+      this.logger.warn('approval.gate.policy_misconfigured', { toolId, action });
+      return { kind: 'misconfigured', message: policyResult.misconfigured };
+    }
+
     if (!policyResult.required) {
       return { kind: 'allowed' };
     }
@@ -125,15 +130,26 @@ export class ApprovalGateService {
     });
 
     const sendResult = await this.larkAdapter.sendDirectCard(manager.larkOpenId, cardContent);
-    if (sendResult.ok) {
-      // Persist the card message ID so the webhook can update it later
-      await this.approvalRepo.setDecisionMessageId(approval.id, sendResult.value.messageId);
-    } else {
+    if (!sendResult.ok) {
       this.logger.warn('approval.gate.card_send_failed', {
         approvalId: approval.id,
         error:      sendResult.error.message,
       });
+      const markFailed = await this.approvalRepo.markFailed(approval.id, `card_send_failed:${sendResult.error.message}`);
+      if (!markFailed.ok) {
+        this.logger.error('approval.gate.mark_failed_failed', {
+          approvalId: approval.id,
+          error:      markFailed.error.message,
+        });
+      }
+      return {
+        kind:    'misconfigured',
+        message: 'This action requires manager approval, but the approval card could not be delivered. Please try again or contact your administrator.',
+      };
     }
+
+    // Persist the card message ID so the webhook can update it later.
+    await this.approvalRepo.setDecisionMessageId(approval.id, sendResult.value.messageId);
 
     this.logger.info('approval.gate.pending_created', {
       approvalId: approval.id,

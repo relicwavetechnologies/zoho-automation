@@ -126,8 +126,10 @@ function makeApprovalRepo() {
       return ok(store.get(id) ?? null);
     },
     findByIdempotencyKey: async (key: string) => {
+      const now = Date.now();
       for (const row of store.values()) {
-        if (row.idempotencyKey === key && row.status === 'pending') return ok(row);
+        const isExpired = row.expiresAt ? row.expiresAt.getTime() <= now : false;
+        if (row.idempotencyKey === key && row.status === 'pending' && !isExpired) return ok(row);
       }
       return ok(null);
     },
@@ -136,9 +138,18 @@ function makeApprovalRepo() {
       if (row) row.decisionMessageId = messageId;
       return ok(undefined);
     },
+    markFailed: async (id: string, reason: string) => {
+      const row = store.get(id);
+      if (row) {
+        row.status = 'failed';
+        row.resolutionReason = reason;
+      }
+      return ok(undefined);
+    },
     atomicResolve: async (id: string, decision: 'approved' | 'rejected', resolvedBy: string) => {
       const row = store.get(id);
       if (!row || row.status !== 'pending') return ok(null);
+      if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) return ok(null);
       row.status = decision;
       row.approvedBy = resolvedBy;
       if (decision === 'approved') row.approvedAt = new Date();
@@ -168,6 +179,13 @@ function makeLarkAdapter() {
     },
     getStatusMessageId: (_traceId: string) => undefined,
     restoreStatusCoordinator: () => {},
+  };
+}
+
+function makeFailingLarkAdapter() {
+  return {
+    ...makeLarkAdapter(),
+    sendDirectCard: async () => err(new Error('lark dm unavailable')),
   };
 }
 
@@ -219,6 +237,18 @@ describe('checkApprovalPolicy (pure)', () => {
       runContext: makeRunContext(),
     });
     assert.equal(result.required, false);
+  });
+
+  it('fails closed when approval config is malformed', () => {
+    const result = checkApprovalPolicy({
+      toolId: String(TOOL_ID),
+      action: 'send',
+      args: { op: 'send' },
+      perm: makePermission({ managerApprovalJson: { enabled: true, requiredActionGroups: 'send' } }),
+      runContext: makeRunContext(),
+    });
+    assert.equal(result.required, false);
+    assert.match(result.misconfigured ?? '', /Invalid manager approval/i);
   });
 
   it('returns required=false when no department metadata at all', () => {
@@ -365,6 +395,85 @@ describe('ApprovalGateService', () => {
       (first as any).approvalId,
       (second as any).approvalId,
     );
+  });
+
+  it('creates a fresh approval when the matching pending approval is expired', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+
+    const args = { op: 'send', to: ['x@y.com'], subject: 'Expired' };
+    const argsHash = computeArgsHash(args);
+    const idemKey = computeIdempotencyKey(CHAT_ID, String(TOOL_ID), 'send', argsHash);
+    await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'expired approval',
+      payloadJson: { toolId: String(TOOL_ID), action: 'send', args, argsHash },
+      metadataJson: { resolvedManagerOpenId: MANAGER_OID },
+      channel: 'lark',
+      requestedBy: String(REQUESTER),
+      idempotencyKey: idemKey,
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+
+    const result = await gate.check({
+      toolId: String(TOOL_ID),
+      action: 'send',
+      args,
+      perm: makePermission(),
+      runContext: makeRunContext(),
+      chatId: CHAT_ID,
+      argsSummary: 'Send expired email',
+    });
+
+    assert.equal(result.kind, 'pending');
+    assert.equal(repo.store.size, 2);
+    assert.equal((result as any).approvalId, 'approval-2');
+  });
+
+  it('returns misconfigured when approval config is malformed', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+
+    const result = await gate.check({
+      toolId: String(TOOL_ID),
+      action: 'send',
+      args: { op: 'send' },
+      perm: makePermission({ managerApprovalJson: { enabled: true, requiredActionGroups: 'send' } }),
+      runContext: makeRunContext(),
+      chatId: CHAT_ID,
+      argsSummary: 'Malformed config',
+    });
+
+    assert.equal(result.kind, 'misconfigured');
+    assert.equal(repo.store.size, 0);
+    assert.equal(lark.sentCards.length, 0);
+  });
+
+  it('fails closed when manager approval card cannot be sent', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeFailingLarkAdapter();
+    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+
+    const result = await gate.check({
+      toolId: String(TOOL_ID),
+      action: 'send',
+      args: { op: 'send' },
+      perm: makePermission(),
+      runContext: makeRunContext(),
+      chatId: CHAT_ID,
+      argsSummary: 'Send email',
+    });
+
+    assert.equal(result.kind, 'misconfigured');
+    const approval = repo.store.get('approval-1')!;
+    assert.equal(approval.status, 'failed');
+    assert.match(approval.resolutionReason ?? '', /card_send_failed/);
   });
 
   it('self-bypass: manager triggering their own action is allowed', async () => {
@@ -528,6 +637,76 @@ describe('LarkApprovalCardHandler', () => {
     // Approval NOT resolved
     const approval = repo.store.get('approval-1')!;
     assert.equal(approval.status, 'pending');
+  });
+
+  it('rejects approval clicks when manager metadata is missing', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const resumer = { resume: async () => {} };
+
+    await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'test',
+      payloadJson: {},
+      metadataJson: {},
+      channel: 'lark',
+      idempotencyKey: 'idem-missing-manager',
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+
+    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+
+    const result = await handler.handle({
+      action: {
+        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
+        tag: 'button',
+      },
+      operator: { open_id: MANAGER_OID },
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal((result.responseBody as any).toast.type, 'error');
+    assert.match((result.responseBody as any).toast.content, /approval metadata/i);
+    assert.equal(repo.store.get('approval-1')!.status, 'pending');
+  });
+
+  it('rejects approval clicks after approval expiry', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const resumer = { resume: async () => {} };
+
+    await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'test',
+      payloadJson: {},
+      metadataJson: { resolvedManagerOpenId: MANAGER_OID },
+      channel: 'lark',
+      idempotencyKey: 'idem-expired-click',
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+
+    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+
+    const result = await handler.handle({
+      action: {
+        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
+        tag: 'button',
+      },
+      operator: { open_id: MANAGER_OID },
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal((result.responseBody as any).toast.type, 'error');
+    assert.match((result.responseBody as any).toast.content, /expired/i);
+    assert.equal(repo.store.get('approval-1')!.status, 'pending');
   });
 
   it('returns already resolved for double-click', async () => {

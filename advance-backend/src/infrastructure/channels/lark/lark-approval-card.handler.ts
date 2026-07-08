@@ -125,10 +125,30 @@ export class LarkApprovalCardHandler {
       };
     }
 
-    const meta = approval.metadataJson as Record<string, unknown>;
-    const resolvedManagerOpenId = meta['resolvedManagerOpenId'] as string | undefined;
+    if (approval.expiresAt && approval.expiresAt.getTime() <= Date.now()) {
+      this.log.warn('approval_card.expired', { approvalId, expiresAt: approval.expiresAt.toISOString() });
+      return {
+        handled: true,
+        responseBody: {
+          toast: { type: 'error', content: 'This approval request has expired. Please ask the requester to try again.' },
+        },
+      };
+    }
 
-    if (resolvedManagerOpenId && actorOpenId !== resolvedManagerOpenId) {
+    const meta = approval.metadataJson;
+    const resolvedManagerOpenId = isRecord(meta) ? meta['resolvedManagerOpenId'] : undefined;
+
+    if (typeof resolvedManagerOpenId !== 'string' || resolvedManagerOpenId.length === 0) {
+      this.log.error('approval_card.missing_manager_metadata', { approvalId });
+      return {
+        handled: true,
+        responseBody: {
+          toast: { type: 'error', content: 'Approval metadata is missing. Please ask the requester to try again.' },
+        },
+      };
+    }
+
+    if (actorOpenId !== resolvedManagerOpenId) {
       this.log.warn('approval_card.unauthorized_actor', { approvalId, actorOpenId, resolvedManagerOpenId });
       return {
         handled: true,
@@ -181,4 +201,8 @@ export class LarkApprovalCardHandler {
       responseBody: { toast: { type: 'success', content: toastContent } },
     };
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
