@@ -33,7 +33,7 @@ function PluginsRoute() {
           <div>
             <h1 className="text-xl font-medium tracking-normal">Plugins</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Connect accounts, shared workspaces, and reusable skills for Pi.
+              Connect accounts, shared workspaces, and reusable skills for Divo.
             </p>
           </div>
           <div className="flex items-center gap-2">

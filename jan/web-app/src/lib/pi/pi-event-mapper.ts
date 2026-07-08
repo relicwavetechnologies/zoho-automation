@@ -237,7 +237,7 @@ function handleAssistantMessageEvent(
 
     case 'error': {
       const err = ame.error
-      let errorText = 'Pi stream error'
+      let errorText = 'Divo stream error'
       if (typeof err === 'string') {
         errorText = err
       } else if (err && typeof err === 'object') {
@@ -377,7 +377,7 @@ export function mapPiEventToUiChunks(
       const message =
         typeof payload.message === 'string'
           ? payload.message
-          : 'Pi agent error'
+          : 'Divo agent error'
       controller.enqueue({ type: 'error', errorText: message })
       finishStream('error')
       break

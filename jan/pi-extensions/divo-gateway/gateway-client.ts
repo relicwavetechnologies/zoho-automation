@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { basename, extname } from "node:path";
+
 export interface DivoGatewayConfig {
 	backendUrl: string;
 	memberToken: string;
@@ -27,6 +30,18 @@ export interface GatewayResponseBody {
 	error?: GatewayErrorBody;
 	approval?: GatewayApprovalBody;
 }
+
+const MAX_INLINE_IMAGE_BYTES = 1_250_000;
+
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+	".gif": "image/gif",
+	".jpeg": "image/jpeg",
+	".jpg": "image/jpeg",
+	".png": "image/png",
+	".webp": "image/webp",
+};
+
+const SUPPORTED_IMAGE_OCR_MIME_TYPES = new Set(Object.values(IMAGE_MIME_BY_EXTENSION));
 
 export function resolveDivoGatewayConfig(
 	env: NodeJS.ProcessEnv = process.env,
@@ -145,10 +160,11 @@ export async function callDivoGateway(
 	request: GatewayRequestBody,
 	fetchImpl: typeof fetch = fetch,
 ): Promise<{ body: GatewayResponseBody; httpStatus: number }> {
+	const preparedRequest = await prepareDivoGatewayRequest(request);
 	const departmentId = request.departmentId ?? config.defaultDepartmentId;
 	const payload: GatewayRequestBody = {
-		op: request.op,
-		payload: request.payload,
+		op: preparedRequest.op,
+		payload: preparedRequest.payload,
 	};
 	if (departmentId) {
 		payload.departmentId = departmentId;
@@ -192,4 +208,74 @@ export async function callDivoGateway(
 	}
 
 	return { body, httpStatus: response.status };
+}
+
+export async function prepareDivoGatewayRequest(
+	request: GatewayRequestBody,
+): Promise<GatewayRequestBody> {
+	if (request.op !== "media.image_ocr") return request;
+
+	const payload = asRecord(request.payload);
+	if (!payload) {
+		throw new Error(
+			"media.image_ocr requires payload { filePath, mimeType?, fileName? } or { imageBase64, mimeType, fileName? }",
+		);
+	}
+
+	if (typeof payload.imageBase64 === "string" && typeof payload.mimeType === "string") {
+		assertSupportedImageOcrMimeType(payload.mimeType);
+		return request;
+	}
+
+	const filePath = getString(payload.filePath) ?? getString(payload.path);
+	if (!filePath) {
+		throw new Error(
+			"media.image_ocr requires a local filePath for attached images when imageBase64 is not provided",
+		);
+	}
+
+	const bytes = await readFile(filePath);
+	if (bytes.byteLength > MAX_INLINE_IMAGE_BYTES) {
+		throw new Error(
+			`media.image_ocr image is too large (${bytes.byteLength} bytes; max ${MAX_INLINE_IMAGE_BYTES})`,
+		);
+	}
+
+	const mimeType = getString(payload.mimeType) ?? inferImageMimeType(filePath);
+	if (!mimeType) {
+		throw new Error(
+			"media.image_ocr supports PNG, JPEG, WebP, or GIF. Could not infer MIME type; convert the image to PNG first or pass mimeType such as image/png or image/jpeg.",
+		);
+	}
+	assertSupportedImageOcrMimeType(mimeType);
+
+	return {
+		...request,
+		payload: {
+			imageBase64: Buffer.from(bytes).toString("base64"),
+			mimeType,
+			fileName: getString(payload.fileName) ?? basename(filePath),
+		},
+	};
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: null;
+}
+
+function getString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function inferImageMimeType(filePath: string): string | undefined {
+	return IMAGE_MIME_BY_EXTENSION[extname(filePath).toLowerCase()];
+}
+
+function assertSupportedImageOcrMimeType(mimeType: string): void {
+	if (SUPPORTED_IMAGE_OCR_MIME_TYPES.has(mimeType.toLowerCase())) return;
+	throw new Error(
+		`media.image_ocr supports PNG, JPEG, WebP, or GIF only. Convert this image to PNG first, then call media.image_ocr with mimeType image/png. Received ${mimeType}.`,
+	);
 }

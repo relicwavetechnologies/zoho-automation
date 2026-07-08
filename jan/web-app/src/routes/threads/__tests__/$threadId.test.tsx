@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import React from 'react'
+import { processAttachmentsForSend } from '@/lib/attachmentProcessing'
 
 // -----------------------------------------------------------------------------
 // Hoisted shared state + mocks (needed because vi.mock factory runs first)
@@ -438,6 +439,8 @@ describe('ThreadDetail route', () => {
     h.messagesState.deleteMessage = vi.fn()
     h.messagesState.setMessages = vi.fn()
     h.chatSessionsState.getSessionData = vi.fn(() => ({ tools: [] }))
+    h.attachmentsState.getAttachments = vi.fn(() => [])
+    h.attachmentsState.clearAttachments = vi.fn()
     h.messageQueueState.dequeue = vi.fn(() => null)
     h.messageQueueState.clearQueue = vi.fn()
     h.agentModeState.agentThreads = {}
@@ -491,6 +494,29 @@ describe('ThreadDetail route', () => {
       expect(h.mockSendMessage).toHaveBeenCalled()
     })
     expect(h.messagesState.addMessage).toHaveBeenCalled()
+  })
+
+  it('sends Pi document references without legacy attachment ingestion', async () => {
+    h.modelProviderState.selectedProvider = 'pi'
+    h.attachmentsState.getAttachments = vi.fn(() => [
+      {
+        type: 'document',
+        name: 'brief.pdf',
+        path: '/Users/test/brief.pdf',
+        fileType: 'pdf',
+      },
+    ])
+
+    renderComponent()
+    await act(async () => {
+      screen.getByTestId('chat-send').click()
+    })
+
+    await waitFor(() => {
+      expect(h.mockSendMessage).toHaveBeenCalled()
+    })
+    expect(processAttachmentsForSend).not.toHaveBeenCalled()
+    expect(h.attachmentsState.clearAttachments).toHaveBeenCalledWith('thread-1')
   })
 
   it('invokes stop when ChatInput calls onStop', () => {

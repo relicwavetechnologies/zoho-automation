@@ -103,7 +103,7 @@ function DivoSettings() {
       const next = await setPiWorkspacePath(nextPath)
       setWorkspace(next)
       await restartPiForWorkspaceChange()
-      toast.success('Pi workspace updated')
+      toast.success('Divo workspace updated')
     } catch (error) {
       toast.error('Failed to choose workspace', { description: String(error) })
     }
@@ -155,8 +155,8 @@ function DivoSettings() {
   const selectedWorkspacePath = workspace?.selectedWorkspacePath
   const effectiveWorkspacePath = workspace?.effectiveWorkspacePath ?? ''
   const workspaceDescription = selectedWorkspacePath
-    ? 'Pi starts in the selected workspace folder.'
-    : 'Pi starts in the default Divo workspace.'
+    ? 'Divo starts in the selected workspace folder.'
+    : 'Divo starts in the default workspace.'
 
   return (
     <div className="flex flex-col h-svh w-full">

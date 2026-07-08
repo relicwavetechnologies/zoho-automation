@@ -43,6 +43,7 @@ export function createImageAttachment(data: {
   dataUrl: string
   mimeType: string
   size: number
+  path?: string
 }): Attachment {
   return {
     ...data,

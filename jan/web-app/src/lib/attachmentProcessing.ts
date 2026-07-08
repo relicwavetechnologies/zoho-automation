@@ -14,7 +14,6 @@ type AttachmentProcessingOptions = {
   threadId: string
   projectId?: string
   serviceHub: ServiceHub
-  selectedProvider?: string
   contextThreshold?: number
   estimateTokens?: (text: string) => Promise<number | undefined>
   parsePreference: 'auto' | 'inline' | 'embeddings' | 'prompt'

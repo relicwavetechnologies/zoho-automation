@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, it } from "node:test";
 import {
 	callDivoGateway,
 	formatGatewayResponse,
+	prepareDivoGatewayRequest,
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
 
@@ -154,5 +158,56 @@ describe("callDivoGateway", () => {
 			args: { op: "search" },
 		});
 		assert.equal(result.body.status, "success");
+	});
+});
+
+describe("prepareDivoGatewayRequest", () => {
+	it("materializes media.image_ocr filePath payloads to backend imageBase64 payloads", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "divo-gateway-"));
+		const filePath = join(dir, "screen.png");
+		await writeFile(filePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+		const result = await prepareDivoGatewayRequest({
+			op: "media.image_ocr",
+			payload: {
+				filePath,
+				mimeType: "image/png",
+				fileName: "screen.png",
+			},
+		});
+
+		assert.equal(result.op, "media.image_ocr");
+		assert.deepEqual(result.payload, {
+			imageBase64: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64"),
+			mimeType: "image/png",
+			fileName: "screen.png",
+		});
+	});
+
+	it("leaves already materialized media.image_ocr payloads unchanged", async () => {
+		const request = {
+			op: "media.image_ocr",
+			payload: {
+				imageBase64: "abc",
+				mimeType: "image/png",
+				fileName: "screen.png",
+			},
+		};
+
+		assert.equal(await prepareDivoGatewayRequest(request), request);
+	});
+
+	it("rejects unsupported image OCR MIME types before calling the backend", async () => {
+		await assert.rejects(
+			prepareDivoGatewayRequest({
+				op: "media.image_ocr",
+				payload: {
+					imageBase64: "abc",
+					mimeType: "image/heic",
+					fileName: "photo.heic",
+				},
+			}),
+			/Convert this image to PNG first/,
+		);
 	});
 });

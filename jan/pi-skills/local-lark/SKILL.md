@@ -1,6 +1,7 @@
 ---
 name: local-lark
 description: Use only when the user explicitly asks to use their personal/local Lark account on this desktop. Company, shared, admin, RBAC, approval, or ambiguous Lark work must use the Divo gateway first.
+disable-model-invocation: true
 ---
 
 # Local Lark

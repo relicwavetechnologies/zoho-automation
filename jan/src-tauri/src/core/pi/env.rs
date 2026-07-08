@@ -91,6 +91,12 @@ pub fn apply_divo_workspace_env(
         .env("DIVO_LOGS_DIR", &layout.logs_dir);
 }
 
+pub fn apply_divo_skill_env(cmd: &mut Command, skill_dirs: &[PathBuf]) {
+    if let Ok(joined) = std::env::join_paths(skill_dirs) {
+        cmd.env("DIVO_SKILL_DIRS", joined);
+    }
+}
+
 pub fn apply_local_lark_env(cmd: &mut Command, wrapper_path: Option<&Path>) {
     let Some(wrapper_path) = wrapper_path else {
         return;

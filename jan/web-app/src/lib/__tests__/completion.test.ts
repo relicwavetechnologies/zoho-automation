@@ -4,6 +4,57 @@ import { newUserThreadContent } from '../completion'
 import type { Attachment } from '@/types/attachment'
 
 describe('newUserThreadContent — audio attachments', () => {
+  it('injects document paths into the user text for Pi skills', () => {
+    const document: Attachment = {
+      name: 'brief.pdf',
+      type: 'document',
+      path: '/Users/test/brief.pdf',
+      fileType: 'pdf',
+      size: 1234,
+    }
+    const msg = newUserThreadContent('t1', 'analyze this', [document], 'm1')
+    const textPart = msg.content.find((c) => c.type === ContentType.Text) as any
+
+    expect(textPart.text.value).toContain('[ATTACHED_FILES]')
+    expect(textPart.text.value).toContain('name: brief.pdf')
+    expect(textPart.text.value).toContain('path: /Users/test/brief.pdf')
+  })
+
+  it('injects image paths into the user text for local OCR skills', () => {
+    const image: Attachment = {
+      name: 'receipt.png',
+      type: 'image',
+      path: '/Users/test/receipt.png',
+      base64: 'AAA',
+      mimeType: 'image/png',
+      dataUrl: 'data:image/png;base64,AAA',
+      size: 100,
+    }
+    const msg = newUserThreadContent('t1', 'analyze this image', [image], 'm1')
+    const textPart = msg.content.find((c) => c.type === ContentType.Text) as any
+
+    expect(textPart.text.value).toContain('[ATTACHED_FILES]')
+    expect(textPart.text.value).toContain('name: receipt.png')
+    expect(textPart.text.value).toContain('path: /Users/test/receipt.png')
+    expect(textPart.text.value).toContain('type: image/png')
+  })
+
+  it('does not inject image metadata when an image has no local path', () => {
+    const image: Attachment = {
+      name: 'clipboard.png',
+      type: 'image',
+      base64: 'AAA',
+      mimeType: 'image/png',
+      dataUrl: 'data:image/png;base64,AAA',
+      size: 100,
+    }
+    const msg = newUserThreadContent('t1', 'analyze clipboard image', [image], 'm1')
+    const textPart = msg.content.find((c) => c.type === ContentType.Text) as any
+
+    expect(textPart.text.value).not.toContain('[ATTACHED_FILES]')
+    expect(msg.content.map((c) => c.type)).toContain(ContentType.Image)
+  })
+
   it('emits an input_audio content part for wav audio', () => {
     const audio: Attachment = {
       name: 'clip.wav',

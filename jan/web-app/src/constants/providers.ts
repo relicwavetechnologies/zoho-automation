@@ -61,10 +61,10 @@ export const predefinedProviders = [
     models: [
       {
         id: 'pi-agent',
-        name: 'Pi Agent',
+        name: 'Divo',
         version: '1.0',
         description:
-          'Pi coding agent via native RPC (stateful sessions, tools, orchestration).',
+          'Divo desktop agent via native RPC with stateful sessions, tools, and orchestration.',
         capabilities: ['completion', 'tools'],
       },
     ],

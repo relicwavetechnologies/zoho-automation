@@ -176,7 +176,7 @@ export const pluginSkills: DivoPluginSkill[] = [
   {
     id: 'sheet-context-builder',
     name: 'sheet-context-builder',
-    description: 'Turn spreadsheet ranges into structured context for Pi.',
+    description: 'Turn spreadsheet ranges into structured context for Divo.',
     icon: FileSpreadsheet,
   },
   {

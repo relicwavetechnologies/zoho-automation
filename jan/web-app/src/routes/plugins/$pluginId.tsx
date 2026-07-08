@@ -530,7 +530,7 @@ function PluginDetailRoute() {
                   {plugin.name}
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Connect multiple Google accounts, expose the right account to Pi,
+                  Connect multiple Google accounts, expose the right account to Divo,
                   and keep shared company access controlled by backend grants.
                 </p>
               </div>
@@ -550,7 +550,7 @@ function PluginDetailRoute() {
               <div>
                 <h2 className="text-lg font-medium">Connections</h2>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Pi sees these accounts as separate choices with account, purpose,
+                  Divo sees these accounts as separate choices with account, purpose,
                   and access level.
                 </p>
               </div>
@@ -607,7 +607,7 @@ function PluginDetailRoute() {
               {divoSession.status === 'connected' && connectionState.status === 'ready' && connections.length === 0 ? (
                 <ConnectionListState
                   title="No Google connections yet"
-                  description="Connect a Google account to make it available to Pi through the Divo backend."
+                  description="Connect a Google account to make it available to Divo through the backend."
                   action={<Button size="sm" onClick={() => setAddOpen(true)}>Add connection</Button>}
                 />
               ) : null}
@@ -840,7 +840,7 @@ function LocalLarkPluginDetail({
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
                   Connect a personal Lark account to the bundled desktop CLI. This stays local to
-                  this device and is exposed to Pi as an isolated `lark-cli` command.
+                  this device and is exposed to Divo as an isolated `lark-cli` command.
                 </p>
               </div>
             </div>
@@ -893,7 +893,7 @@ function LocalLarkPluginDetail({
                     </div>
                     <p className="mt-2 text-sm leading-6 text-muted-foreground">
                       {status?.statusText ??
-                        'Available to Pi through the desktop-local lark-cli wrapper.'}
+                        'Available to Divo through the desktop-local lark-cli wrapper.'}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -959,9 +959,9 @@ function LocalLarkPluginDetail({
 
           <aside className="space-y-4">
             <div className="rounded-lg border border-border/70 bg-card/30 p-4">
-              <h2 className="text-sm font-medium">Pi orchestration</h2>
+              <h2 className="text-sm font-medium">Divo orchestration</h2>
               <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                Pi receives `DIVO_LARK_CLI`, `DIVO_LARK_CLI_HOME`, and a first-in-PATH wrapper.
+                Divo receives `DIVO_LARK_CLI`, `DIVO_LARK_CLI_HOME`, and a first-in-PATH wrapper.
                 Lark tasks can call `lark-cli` directly without using your global shell install.
               </p>
               <div className="mt-3 space-y-2 text-xs text-muted-foreground">
@@ -1337,7 +1337,7 @@ function ConnectionCard({
         />
         <ConnectionFact
           icon={ShieldCheck}
-          label="Pi alias"
+          label="Divo alias"
           value={connection.piAlias}
         />
         <ConnectionFact
@@ -1384,9 +1384,9 @@ function ConnectionFact({
 function PiContextCard({ connections }: { connections: DivoConnection[] }) {
   return (
     <div className="rounded-lg border border-border/70 bg-card/30 p-4">
-      <h2 className="text-sm font-medium">What Pi will see</h2>
+      <h2 className="text-sm font-medium">What Divo will see</h2>
       <p className="mt-2 text-xs leading-5 text-muted-foreground">
-        Connection routing will be delivered as skill context. Pi should select
+        Connection routing will be delivered as skill context. Divo should select
         by alias, account, grant, and task intent before using backend tools.
       </p>
       <div className="mt-3 space-y-2">

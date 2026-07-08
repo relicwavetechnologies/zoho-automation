@@ -36,7 +36,6 @@ import { generateId } from 'ai'
 import { useMessageQueue } from '@/stores/message-queue-store'
 import { QueuedMessageChip } from '@/containers/QueuedMessageBubble'
 import { SamplerPopover } from '@/containers/SamplerPopover'
-import { BotIcon } from 'lucide-react'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { useGeneralSetting } from '@/hooks/useGeneralSetting'
 import { useModelProvider } from '@/hooks/useModelProvider'
@@ -109,8 +108,160 @@ type ChatInputProps = {
   chatStatus?: ChatStatus
 }
 
+type TauriDragDropPayload = {
+  paths?: string[]
+}
+
+type NormalizedImageAttachment = {
+  path: string
+  fileName: string
+  mimeType: string
+  size: number
+  normalized: boolean
+}
+
+const getFileNameFromPath = (path: string, fallback: string) =>
+  path.split(/[\\/]/).filter(Boolean).pop() || fallback
+
+const getFileExtension = (nameOrPath: string) =>
+  getFileNameFromPath(nameOrPath, nameOrPath).toLowerCase().split('.').pop()
+
+const IMAGE_EXTS = [
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'gif',
+  'bmp',
+  'tif',
+  'tiff',
+  'heic',
+  'heif',
+]
+const AUDIO_EXTS = ['wav', 'mp3']
 // Video containers llama-server can decode via ffmpeg/ffprobe into frames.
 const VIDEO_EXTS = ['mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v']
+const DOCUMENT_EXTS = [
+  'pdf',
+  'docx',
+  'txt',
+  'md',
+  'csv',
+  'xlsx',
+  'xls',
+  'ods',
+  'pptx',
+  'html',
+  'htm',
+  'js',
+  'mjs',
+  'cjs',
+  'ts',
+  'mts',
+  'cts',
+  'jsx',
+  'tsx',
+  'py',
+  'pyw',
+  'pyi',
+  'c',
+  'h',
+  'cpp',
+  'cc',
+  'cxx',
+  'hpp',
+  'hh',
+  'rs',
+  'go',
+  'swift',
+  'zig',
+  'java',
+  'kt',
+  'kts',
+  'scala',
+  'groovy',
+  'rb',
+  'php',
+  'lua',
+  'pl',
+  'r',
+  'jl',
+  'cs',
+  'fs',
+  'vb',
+  'xaml',
+  'csproj',
+  'sln',
+  'cu',
+  'cuh',
+  'hlsl',
+  'glsl',
+  'cg',
+  'shader',
+  'sh',
+  'bash',
+  'zsh',
+  'fish',
+  'ps1',
+  'bat',
+  'cmd',
+  'vbs',
+  'asm',
+  's',
+  'm',
+  'mm',
+  'pas',
+  'pp',
+  'erl',
+  'hrl',
+  'ex',
+  'exs',
+  'clj',
+  'cljs',
+  'hs',
+  'lhs',
+  'ml',
+  'mli',
+  'f',
+  'f90',
+  'css',
+  'scss',
+  'sass',
+  'less',
+  'vue',
+  'svelte',
+  'astro',
+  'asp',
+  'aspx',
+  'jsp',
+  'json',
+  'jsonc',
+  'yaml',
+  'yml',
+  'toml',
+  'xml',
+  'ini',
+  'cfg',
+  'conf',
+  'env',
+  'properties',
+  'dockerfile',
+  'makefile',
+  'cmake',
+  'lock',
+  'sql',
+  'graphql',
+  'gql',
+  'tex',
+  'rst',
+  'adoc',
+  'textile',
+  'log',
+  'diff',
+  'patch',
+  'gitignore',
+]
+
 const videoMimeForExt = (ext: string | undefined): string => {
   switch (ext) {
     case 'mov':
@@ -123,6 +274,41 @@ const videoMimeForExt = (ext: string | undefined): string => {
       return 'video/x-msvideo'
     default:
       return 'video/mp4'
+  }
+}
+
+const isImageFileName = (name: string) => IMAGE_EXTS.includes(getFileExtension(name) ?? '')
+const isAudioFileName = (name: string) => AUDIO_EXTS.includes(getFileExtension(name) ?? '')
+const isVideoFileName = (name: string) => VIDEO_EXTS.includes(getFileExtension(name) ?? '')
+const getDroppedFilePath = (file: File): string | undefined => {
+  const maybePath = (file as File & { path?: unknown }).path
+  return typeof maybePath === 'string' && maybePath.length > 0
+    ? maybePath
+    : undefined
+}
+
+const imageMimeForExt = (ext: string | undefined): string => {
+  switch (ext) {
+    case 'gif':
+      return 'image/gif'
+    case 'jpeg':
+    case 'jpg':
+      return 'image/jpeg'
+    case 'png':
+      return 'image/png'
+    case 'webp':
+      return 'image/webp'
+    case 'bmp':
+      return 'image/bmp'
+    case 'tif':
+    case 'tiff':
+      return 'image/tiff'
+    case 'heic':
+      return 'image/heic'
+    case 'heif':
+      return 'image/heif'
+    default:
+      return ''
   }
 }
 
@@ -175,11 +361,6 @@ const ChatInput = memo(function ChatInput({
   )
   // When projectId is present, treat as normal chat (disable agent mode UI)
   const effectiveAgentMode = isAgentMode && !projectId
-  const toggleAgentMode = useAgentMode((state) => state.toggleAgentMode)
-
-  const handleAgentToggle = useCallback(() => {
-    toggleAgentMode(agentModeKey)
-  }, [agentModeKey, toggleAgentMode])
 
   // Get current thread messages for token counting
   const threadMessages = useMessages(
@@ -265,9 +446,6 @@ const ChatInput = memo(function ChatInput({
   const setAttachmentsForThread = useChatAttachments(
     (state) => state.setAttachments
   )
-  const clearAttachmentsForThread = useChatAttachments(
-    (state) => state.clearAttachments
-  )
   const transferAttachments = useChatAttachments(
     (state) => state.transferAttachments
   )
@@ -282,6 +460,10 @@ const ChatInput = memo(function ChatInput({
       (a.type === 'image' || a.type === 'audio' || a.type === 'video') &&
       !!a.dataUrl
   )
+  const hasSendableDocuments = attachments.some(
+    (a) => a.type === 'document' && !!a.path
+  )
+  const hasSendableAttachments = hasSendableMedia || hasSendableDocuments
 
   const [, setFileIngestProgress] = useState<{
     completed: number
@@ -348,7 +530,7 @@ const ChatInput = memo(function ChatInput({
       setMessage('Please select a model to start chatting.')
       return
     }
-    if (!prompt.trim() && !hasSendableMedia) {
+    if (!prompt.trim() && !hasSendableAttachments) {
       return
     }
     if (ingestingAny) {
@@ -392,11 +574,15 @@ const ChatInput = memo(function ChatInput({
           mediaType: att.mimeType ?? 'video/mp4',
           url: att.dataUrl!,
         }))
-      const files = [...imageFiles, ...audioFiles, ...videoFiles]
+      const files = isPiProvider ? [] : [...imageFiles, ...audioFiles, ...videoFiles]
 
       onSubmit(prompt, files.length > 0 ? files : undefined)
       setPrompt('')
-      clearAttachmentsForThread(attachmentsKey)
+      setAttachmentsForThread(attachmentsKey, (prev) =>
+        isPiProvider
+          ? prev
+          : prev.filter((att) => att.type === 'document')
+      )
     } else {
       // No onSubmit provided - create a new thread and navigate to it.
       // Media attachments (image/audio/video) are NOT serialized into
@@ -512,7 +698,7 @@ const ChatInput = memo(function ChatInput({
       setLocalPiWorkspacePath(status.effectiveWorkspacePath)
       setPiWorkspaceIsDefault(!status.selectedWorkspacePath)
       await invoke('pi_stop').catch(() => undefined)
-      toast.success('Pi workspace selected')
+      toast.success('Divo workspace selected')
       return status.effectiveWorkspacePath
     } catch (error) {
       toast.error('Failed to choose workspace', { description: String(error) })
@@ -532,7 +718,7 @@ const ChatInput = memo(function ChatInput({
       })
       .catch((error) => {
         if (!cancelled) {
-          toast.error('Failed to resolve Pi workspace', {
+          toast.error('Failed to resolve Divo workspace', {
             description: String(error),
           })
         }
@@ -628,6 +814,7 @@ const ChatInput = memo(function ChatInput({
   const processNewDocumentAttachments = useCallback(
     async (docs: Attachment[]) => {
       if (!docs.length) return
+      if (isPiProvider) return
 
       // Only collect the user's inline-vs-embeddings preference via the
       // dialog.  Actual ingestion is always deferred to send time
@@ -684,189 +871,38 @@ const ChatInput = memo(function ChatInput({
     [
       ATTACHMENT_AUTO_INLINE_FALLBACK_BYTES,
       attachmentsKey,
+      isPiProvider,
       parsePreference,
       setAttachmentsForThread,
     ]
   )
 
-  const handleAttachDocsIngest = async () => {
-    try {
+  const attachDocumentPaths = useCallback(
+    async (paths: string[]) => {
+      if (!paths.length) return
       if (!attachmentsEnabled) {
         toast.info('Attachments are disabled in Settings')
         return
       }
-      const selection = await serviceHub.dialog().open({
-        multiple: true,
-        filters: [
-          {
-            name: 'Documents & Code',
-            extensions: [
-              // Documents
-              'pdf',
-              'docx',
-              'txt',
-              'md',
-              'csv',
-              'xlsx',
-              'xls',
-              'ods',
-              'pptx',
-              'html',
-              'htm',
-              // JavaScript / TypeScript
-              'js',
-              'mjs',
-              'cjs',
-              'ts',
-              'mts',
-              'cts',
-              'jsx',
-              'tsx',
-              // Python
-              'py',
-              'pyw',
-              'pyi',
-              // C / C++
-              'c',
-              'h',
-              'cpp',
-              'cc',
-              'cxx',
-              'hpp',
-              'hh',
-              // Systems languages
-              'rs',
-              'go',
-              'swift',
-              'zig',
-              // JVM languages
-              'java',
-              'kt',
-              'kts',
-              'scala',
-              'groovy',
-              // Scripting languages
-              'rb',
-              'php',
-              'lua',
-              'pl',
-              'r',
-              'jl',
-              // .NET
-              'cs',
-              'fs',
-              'vb',
-              'xaml',
-              'csproj',
-              'sln',
-              // CUDA
-              'cu',
-              'cuh',
-              // Shaders
-              'hlsl',
-              'glsl',
-              'cg',
-              'shader',
-              // Shell
-              'sh',
-              'bash',
-              'zsh',
-              'fish',
-              'ps1',
-              'bat',
-              'cmd',
-              'vbs',
-              // More languages
-              'asm',
-              's',
-              'm',
-              'mm',
-              'pas',
-              'pp',
-              'erl',
-              'hrl',
-              'ex',
-              'exs',
-              'clj',
-              'cljs',
-              'hs',
-              'lhs',
-              'ml',
-              'mli',
-              'f',
-              'f90',
-              // Web
-              'css',
-              'scss',
-              'sass',
-              'less',
-              'vue',
-              'svelte',
-              'astro',
-              'php',
-              'asp',
-              'aspx',
-              'jsp',
-              // Data / config formats
-              'json',
-              'jsonc',
-              'yaml',
-              'yml',
-              'toml',
-              'xml',
-              'ini',
-              'cfg',
-              'conf',
-              'env',
-              'properties',
-              'dockerfile',
-              'makefile',
-              'cmake',
-              'lock',
-              // Query / markup
-              'sql',
-              'graphql',
-              'gql',
-              'tex',
-              'rst',
-              'adoc',
-              'textile',
-              // Misc text
-              'log',
-              'diff',
-              'patch',
-              'gitignore',
-            ],
-          },
-          {
-            name: 'All Files',
-            extensions: ['*'],
-          },
-        ],
-      })
-      if (!selection) return
-      const paths = Array.isArray(selection) ? selection : [selection]
-      if (!paths.length) return
 
-      // Prepare attachments with file sizes
       const preparedAttachments: Attachment[] = []
-      for (const p of paths) {
-        const name = p.split(/[\\/]/).pop() || p
-        const fileType = name.split('.').pop()?.toLowerCase()
-        let size: number | undefined = undefined
+      for (const path of paths) {
+        const name = getFileNameFromPath(path, path)
+        const fileType = getFileExtension(name)
+        let size: number | undefined
         try {
-          const stat = await fs.fileStat(p)
+          const stat = await fs.fileStat(path)
           size = stat?.size ? Number(stat.size) : undefined
-        } catch (e) {
-          console.warn('Failed to read file size for', p, e)
+        } catch (error) {
+          console.warn('Failed to read file size for', path, error)
         }
         preparedAttachments.push(
           createDocumentAttachment({
             name,
-            path: p,
+            path,
             fileType,
             size,
-            parseMode: parsePreference,
+            parseMode: isPiProvider ? 'prompt' : parsePreference,
           })
         )
       }
@@ -877,10 +913,10 @@ const ChatInput = memo(function ChatInput({
           : undefined
 
       if (maxFileSizeBytes !== undefined) {
-        const hasOversized = preparedAttachments.some(
+        const oversized = preparedAttachments.filter(
           (att) => typeof att.size === 'number' && att.size > maxFileSizeBytes
         )
-        if (hasOversized) {
+        if (oversized.length > 0) {
           toast.error('File too large', {
             description: `One or more files exceed the ${maxFileSizeMB}MB limit`,
           })
@@ -902,7 +938,7 @@ const ChatInput = memo(function ChatInput({
         newDocAttachments = []
 
         for (const att of preparedAttachments) {
-          if (existingPaths.has(att.path)) {
+          if (att.path && existingPaths.has(att.path)) {
             duplicates.push(att.name)
             continue
           }
@@ -923,6 +959,37 @@ const ChatInput = memo(function ChatInput({
       if (newDocAttachments.length > 0) {
         await processNewDocumentAttachments(newDocAttachments)
       }
+    },
+    [
+      attachmentsEnabled,
+      attachmentsKey,
+      isPiProvider,
+      maxFileSizeMB,
+      parsePreference,
+      processNewDocumentAttachments,
+      setAttachmentsForThread,
+    ]
+  )
+
+  const handleAttachDocsIngest = async () => {
+    try {
+      const selection = await serviceHub.dialog().open({
+        multiple: true,
+        filters: [
+          {
+            name: 'Documents & Code',
+            extensions: DOCUMENT_EXTS,
+          },
+          {
+            name: 'All Files',
+            extensions: ['*'],
+          },
+        ],
+      })
+      if (!selection) return
+      const paths = Array.isArray(selection) ? selection : [selection]
+      if (!paths.length) return
+      await attachDocumentPaths(paths)
     } catch (e) {
       console.error('Failed to attach documents:', e)
       const desc = e instanceof Error ? e.message : JSON.stringify(e)
@@ -963,16 +1030,7 @@ const ChatInput = memo(function ChatInput({
   }
 
   const getFileTypeFromExtension = (fileName: string): string => {
-    const extension = fileName.toLowerCase().split('.').pop()
-    switch (extension) {
-      case 'jpg':
-      case 'jpeg':
-        return 'image/jpeg'
-      case 'png':
-        return 'image/png'
-      default:
-        return ''
-    }
+    return imageMimeForExt(getFileExtension(fileName))
   }
 
   const hashBase64 = async (base64: string): Promise<string> => {
@@ -984,12 +1042,46 @@ const ChatInput = memo(function ChatInput({
     return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('')
   }
 
+  const readImageDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = reader.result
+        if (typeof result === 'string') {
+          resolve(result)
+        } else {
+          reject(new Error('Failed to read image as data URL'))
+        }
+      }
+      reader.onerror = () =>
+        reject(reader.error ?? new Error('Failed to read image as data URL'))
+      reader.readAsDataURL(file)
+    })
+
+  const normalizeImageForOcr = useCallback(
+    async (
+      file: File,
+      dataUrl: string,
+      fallbackMimeType: string
+    ): Promise<NormalizedImageAttachment | null> => {
+      if (!isPlatformTauri()) return null
+
+      return invoke<NormalizedImageAttachment>('divo_normalize_image_attachment', {
+        sourcePath: getDroppedFilePath(file) ?? null,
+        dataUrl,
+        fileName: file.name,
+        mimeType: fallbackMimeType || file.type || null,
+      })
+    },
+    []
+  )
+
   const processImageFiles = useCallback(async (files: File[]) => {
     const maxSize = 10 * 1024 * 1024 // 10MB in bytes
     const oversizedFiles: string[] = []
     const invalidTypeFiles: string[] = []
+    const normalizationErrors: string[] = []
 
-    const allowedTypes = ['image/jpg', 'image/jpeg', 'image/png']
     const validFiles: File[] = []
 
     // First pass: validate file size and type (no duplicate check yet)
@@ -1005,7 +1097,7 @@ const ChatInput = memo(function ChatInput({
       const actualType = getFileTypeFromExtension(file.name) || detectedType
 
       // Check file type - images only
-      if (!allowedTypes.includes(actualType)) {
+      if (!actualType.startsWith('image/')) {
         invalidTypeFiles.push(file.name)
         return
       }
@@ -1019,25 +1111,28 @@ const ChatInput = memo(function ChatInput({
       const detectedType = file.type || getFileTypeFromExtension(file.name)
       const actualType = getFileTypeFromExtension(file.name) || detectedType
 
-      const reader = new FileReader()
-      await new Promise<void>((resolve) => {
-        reader.onload = () => {
-          const result = reader.result
-          if (typeof result === 'string') {
-            const base64String = result.split(',')[1]
-            const att = createImageAttachment({
-              name: file.name,
-              size: file.size,
-              mimeType: actualType,
-              base64: base64String,
-              dataUrl: result,
-            })
-            preparedFiles.push(att)
-          }
-          resolve()
-        }
-        reader.readAsDataURL(file)
+      const result = await readImageDataUrl(file)
+      const base64String = result.split(',')[1] ?? ''
+      let normalized: NormalizedImageAttachment | null = null
+      try {
+        normalized = await normalizeImageForOcr(file, result, actualType)
+      } catch (error) {
+        console.error('Failed to normalize image for OCR:', error)
+        normalizationErrors.push(
+          `${file.name}: ${error instanceof Error ? error.message : String(error)}`
+        )
+        continue
+      }
+
+      const att = createImageAttachment({
+        name: file.name,
+        size: normalized?.size ?? file.size,
+        mimeType: normalized?.mimeType ?? actualType,
+        base64: base64String,
+        dataUrl: result,
+        path: normalized?.path ?? getDroppedFilePath(file),
       })
+      preparedFiles.push(att)
     }
 
     // Compute content hashes for deduplication (allows different images with same filename)
@@ -1165,8 +1260,12 @@ const ChatInput = memo(function ChatInput({
 
     if (invalidTypeFiles.length > 0) {
       errors.push(
-        `Invalid file type${invalidTypeFiles.length > 1 ? 's' : ''} (only JPEG, JPG, PNG allowed): ${invalidTypeFiles.join(', ')}`
+        `Invalid image type${invalidTypeFiles.length > 1 ? 's' : ''}: ${invalidTypeFiles.join(', ')}`
       )
+    }
+
+    if (normalizationErrors.length > 0) {
+      errors.push(`Could not prepare image for OCR: ${normalizationErrors.join('; ')}`)
     }
 
     if (errors.length > 0) {
@@ -1178,7 +1277,68 @@ const ChatInput = memo(function ChatInput({
     } else {
       setMessage('')
     }
-  }, [attachmentsKey, currentThreadId, setAttachmentsForThread, serviceHub, setFileIngestProgress])
+  }, [
+    attachmentsKey,
+    currentThreadId,
+    normalizeImageForOcr,
+    setAttachmentsForThread,
+    serviceHub,
+    setFileIngestProgress,
+  ])
+
+  const readFilesFromPaths = useCallback(
+    async (
+      paths: string[],
+      options: {
+        fallbackName: string
+        getMimeType: (fileName: string) => string
+        errorTitle: string
+      }
+    ) => {
+      const files: File[] = []
+
+      for (const path of paths) {
+        try {
+          const fileUrl = serviceHub.core().convertFileSrc(path)
+          const response = await fetch(fileUrl)
+          if (!response.ok) {
+            throw new Error(`Failed to fetch file: ${response.statusText}`)
+          }
+
+          const blob = await response.blob()
+          const fileName = getFileNameFromPath(path, options.fallbackName)
+          const file = new File([blob], fileName, {
+            type: options.getMimeType(fileName),
+          })
+          Object.defineProperty(file, 'path', {
+            configurable: true,
+            value: path,
+          })
+          files.push(file)
+        } catch (error) {
+          console.error(`${options.errorTitle}:`, error)
+          toast.error(options.errorTitle, {
+            description:
+              error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+
+      return files
+    },
+    [serviceHub]
+  )
+
+  const readImageFilesFromPaths = useCallback(
+    async (paths: string[]) =>
+      readFilesFromPaths(paths, {
+        fallbackName: 'image',
+        getMimeType: (fileName) =>
+          imageMimeForExt(fileName.toLowerCase().split('.').pop()),
+        errorTitle: 'Failed to read image file',
+      }),
+    [readFilesFromPaths]
+  )
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
@@ -1310,6 +1470,19 @@ const ChatInput = memo(function ChatInput({
     if (textareaRef.current) textareaRef.current.focus()
   }
 
+  const readAudioFilesFromPaths = useCallback(
+    async (paths: string[]) =>
+      readFilesFromPaths(paths, {
+        fallbackName: 'audio',
+        getMimeType: (fileName) => {
+          const ext = fileName.toLowerCase().split('.').pop()
+          return ext === 'mp3' ? 'audio/mpeg' : ext === 'wav' ? 'audio/wav' : ''
+        },
+        errorTitle: 'Failed to read audio file',
+      }),
+    [readFilesFromPaths]
+  )
+
   const openAudioPicker = useCallback(async () => {
     if (isPlatformTauri()) {
       try {
@@ -1319,25 +1492,7 @@ const ChatInput = memo(function ChatInput({
         })
         if (selected) {
           const paths = Array.isArray(selected) ? selected : [selected]
-          const files: File[] = []
-          for (const path of paths) {
-            try {
-              const { convertFileSrc } = await import('@tauri-apps/api/core')
-              const fileUrl = convertFileSrc(path)
-              const response = await fetch(fileUrl)
-              if (!response.ok) throw new Error(response.statusText)
-              const blob = await response.blob()
-              const fileName = path.split(/[\\/]/).filter(Boolean).pop() || 'audio'
-              const ext = fileName.toLowerCase().split('.').pop()
-              const mimeType = ext === 'mp3' ? 'audio/mpeg' : 'audio/wav'
-              files.push(new File([blob], fileName, { type: mimeType }))
-            } catch (error) {
-              console.error('Failed to read audio file:', error)
-              toast.error('Failed to read audio file', {
-                description: error instanceof Error ? error.message : String(error),
-              })
-            }
-          }
+          const files = await readAudioFilesFromPaths(paths)
           if (files.length > 0) await processAudioFiles(files)
         }
       } catch (error) {
@@ -1347,7 +1502,7 @@ const ChatInput = memo(function ChatInput({
     } else {
       audioInputRef.current?.click()
     }
-  }, [serviceHub, processAudioFiles])
+  }, [serviceHub, processAudioFiles, readAudioFilesFromPaths])
 
   const processVideoFiles = useCallback(
     async (files: File[]) => {
@@ -1444,6 +1599,17 @@ const ChatInput = memo(function ChatInput({
     if (textareaRef.current) textareaRef.current.focus()
   }
 
+  const readVideoFilesFromPaths = useCallback(
+    async (paths: string[]) =>
+      readFilesFromPaths(paths, {
+        fallbackName: 'video',
+        getMimeType: (fileName) =>
+          videoMimeForExt(fileName.toLowerCase().split('.').pop()),
+        errorTitle: 'Failed to read video file',
+      }),
+    [readFilesFromPaths]
+  )
+
   const openVideoPicker = useCallback(async () => {
     if (isPlatformTauri()) {
       try {
@@ -1453,24 +1619,7 @@ const ChatInput = memo(function ChatInput({
         })
         if (selected) {
           const paths = Array.isArray(selected) ? selected : [selected]
-          const files: File[] = []
-          for (const path of paths) {
-            try {
-              const { convertFileSrc } = await import('@tauri-apps/api/core')
-              const fileUrl = convertFileSrc(path)
-              const response = await fetch(fileUrl)
-              if (!response.ok) throw new Error(response.statusText)
-              const blob = await response.blob()
-              const fileName = path.split(/[\\/]/).filter(Boolean).pop() || 'video'
-              const ext = fileName.toLowerCase().split('.').pop()
-              files.push(new File([blob], fileName, { type: videoMimeForExt(ext) }))
-            } catch (error) {
-              console.error('Failed to read video file:', error)
-              toast.error('Failed to read video file', {
-                description: error instanceof Error ? error.message : String(error),
-              })
-            }
-          }
+          const files = await readVideoFilesFromPaths(paths)
           if (files.length > 0) await processVideoFiles(files)
         }
       } catch (error) {
@@ -1480,7 +1629,7 @@ const ChatInput = memo(function ChatInput({
     } else {
       videoInputRef.current?.click()
     }
-  }, [serviceHub, processVideoFiles])
+  }, [serviceHub, processVideoFiles, readVideoFilesFromPaths])
 
   // Open the image picker dialog (extracted for reuse)
   const openImagePicker = useCallback(async () => {
@@ -1491,49 +1640,14 @@ const ChatInput = memo(function ChatInput({
           filters: [
             {
               name: 'Images',
-              extensions: ['jpg', 'jpeg', 'png'],
+              extensions: IMAGE_EXTS,
             },
           ],
         })
 
         if (selected) {
           const paths = Array.isArray(selected) ? selected : [selected]
-          const files: File[] = []
-
-          for (const path of paths) {
-            try {
-              // Use Tauri's convertFileSrc to create a valid URL for the file
-              const { convertFileSrc } = await import('@tauri-apps/api/core')
-              const fileUrl = convertFileSrc(path)
-
-              // Fetch the file as blob
-              const response = await fetch(fileUrl)
-              if (!response.ok) {
-                throw new Error(`Failed to fetch file: ${response.statusText}`)
-              }
-
-              const blob = await response.blob()
-              const fileName =
-                path.split(/[\\/]/).filter(Boolean).pop() || 'image'
-              const ext = fileName.toLowerCase().split('.').pop()
-              const mimeType =
-                ext === 'png'
-                  ? 'image/png'
-                  : ext === 'jpg' || ext === 'jpeg'
-                    ? 'image/jpeg'
-                    : 'image/jpeg'
-
-              const file = new File([blob], fileName, { type: mimeType })
-              files.push(file)
-            } catch (error) {
-              console.error('Failed to read file:', error)
-              toast.error('Failed to read file', {
-                description:
-                  error instanceof Error ? error.message : String(error),
-              })
-            }
-          }
-
+          const files = await readImageFilesFromPaths(paths)
           if (files.length > 0) {
             await processImageFiles(files)
           }
@@ -1549,10 +1663,118 @@ const ChatInput = memo(function ChatInput({
       // Fallback to input click for web
       fileInputRef.current?.click()
     }
-  }, [serviceHub, processImageFiles])
+  }, [serviceHub, processImageFiles, readImageFilesFromPaths])
 
   const dropAcceptsAnything =
-    imageAttachmentsSupported || audioSupported || videoSupported
+    attachmentsEnabled ||
+    imageAttachmentsSupported ||
+    audioSupported ||
+    videoSupported
+
+  useEffect(() => {
+    if (!isPlatformTauri() || !dropAcceptsAnything) return
+
+    let cancelled = false
+    const unlisteners: Array<() => void> = []
+    const addUnlistener = (unlisten: () => void) => {
+      if (cancelled) {
+        unlisten()
+      } else {
+        unlisteners.push(unlisten)
+      }
+    }
+
+    serviceHub
+      .events()
+      .listen('tauri://drag-enter', () => {
+        setIsDragOver(true)
+      })
+      .then(addUnlistener)
+
+    serviceHub
+      .events()
+      .listen('tauri://drag-over', () => {
+        setIsDragOver(true)
+      })
+      .then(addUnlistener)
+
+    serviceHub
+      .events()
+      .listen('tauri://drag-leave', () => {
+        setIsDragOver(false)
+      })
+      .then(addUnlistener)
+
+    serviceHub
+      .events()
+      .listen<TauriDragDropPayload>('tauri://drag-drop', async (event) => {
+        setIsDragOver(false)
+
+        const paths = event.payload.paths ?? []
+        if (paths.length === 0) return
+
+        const audioPaths = audioSupported ? paths.filter(isAudioFileName) : []
+        const videoPaths = videoSupported ? paths.filter(isVideoFileName) : []
+        const imagePaths = imageAttachmentsSupported
+          ? paths.filter(
+              (path) =>
+                isImageFileName(path) &&
+                !audioPaths.includes(path) &&
+                !videoPaths.includes(path)
+            )
+          : []
+        const documentPaths = attachmentsEnabled
+          ? paths.filter(
+              (path) =>
+                !audioPaths.includes(path) &&
+                !videoPaths.includes(path) &&
+                !imagePaths.includes(path)
+            )
+          : []
+
+        if (documentPaths.length > 0) {
+          await attachDocumentPaths(documentPaths)
+        }
+        if (imagePaths.length > 0 && imageAttachmentsSupported) {
+          const files = await readImageFilesFromPaths(imagePaths)
+          if (files.length > 0) {
+            await processImageFiles(files)
+          }
+        }
+        if (audioPaths.length > 0) {
+          const files = await readAudioFilesFromPaths(audioPaths)
+          if (files.length > 0) {
+            await processAudioFiles(files)
+          }
+        }
+        if (videoPaths.length > 0) {
+          const files = await readVideoFilesFromPaths(videoPaths)
+          if (files.length > 0) {
+            await processVideoFiles(files)
+          }
+        }
+      })
+      .then(addUnlistener)
+
+    return () => {
+      cancelled = true
+      unlisteners.forEach((unlisten) => unlisten())
+    }
+  }, [
+    dropAcceptsAnything,
+    attachDocumentPaths,
+    attachmentsEnabled,
+    imageAttachmentsSupported,
+    audioSupported,
+    videoSupported,
+    processAudioFiles,
+    processImageFiles,
+    processVideoFiles,
+    readAudioFilesFromPaths,
+    readImageFilesFromPaths,
+    readVideoFilesFromPaths,
+    serviceHub,
+  ])
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault()
@@ -1595,36 +1817,49 @@ const ChatInput = memo(function ChatInput({
     const dropped = Array.from(e.dataTransfer.files ?? [])
     if (dropped.length === 0) return
 
-    const isAudioFile = (f: File) => {
-      const ext = f.name.toLowerCase().split('.').pop()
-      return (
-        f.type === 'audio/wav' ||
-        f.type === 'audio/x-wav' ||
-        f.type === 'audio/mpeg' ||
-        f.type === 'audio/mp3' ||
-        ext === 'wav' ||
-        ext === 'mp3'
-      )
-    }
-
-    const isVideoFile = (f: File) => {
-      const ext = f.name.toLowerCase().split('.').pop()
-      return f.type.startsWith('video/') || VIDEO_EXTS.includes(ext ?? '')
-    }
+    const isAudioFile = (file: File) =>
+      file.type === 'audio/wav' ||
+      file.type === 'audio/x-wav' ||
+      file.type === 'audio/mpeg' ||
+      file.type === 'audio/mp3' ||
+      isAudioFileName(file.name)
+    const isVideoFile = (file: File) =>
+      file.type.startsWith('video/') || isVideoFileName(file.name)
+    const isImageFile = (file: File) =>
+      file.type.startsWith('image/') || isImageFileName(file.name)
 
     const audioOnes = audioSupported ? dropped.filter(isAudioFile) : []
     const videoOnes = videoSupported ? dropped.filter(isVideoFile) : []
-    const otherOnes = dropped.filter(
-      (f) => !audioOnes.includes(f) && !videoOnes.includes(f)
-    )
+    const imageOnes = imageAttachmentsSupported
+      ? dropped.filter(
+          (file) =>
+            isImageFile(file) &&
+            !audioOnes.includes(file) &&
+            !videoOnes.includes(file)
+        )
+      : []
+    const documentOnes = attachmentsEnabled
+      ? dropped.filter(
+          (file) =>
+            !audioOnes.includes(file) &&
+            !videoOnes.includes(file) &&
+            !imageOnes.includes(file)
+        )
+      : []
+    const documentPaths = documentOnes
+      .map(getDroppedFilePath)
+      .filter((path): path is string => !!path)
 
-    if (otherOnes.length > 0 && imageAttachmentsSupported) {
-      const dt = new DataTransfer()
-      otherOnes.forEach((f) => dt.items.add(f))
-      const syntheticEvent = {
-        target: { files: dt.files },
-      } as React.ChangeEvent<HTMLInputElement>
-      handleFileChange(syntheticEvent)
+    if (documentPaths.length > 0) {
+      void attachDocumentPaths(documentPaths)
+    }
+    if (documentOnes.length > documentPaths.length) {
+      toast.error('Drop from Finder or use Add documents', {
+        description: 'Document analysis needs a local file path for Divo skills.',
+      })
+    }
+    if (imageOnes.length > 0) {
+      void processImageFiles(imageOnes)
     }
     if (audioOnes.length > 0) {
       void processAudioFiles(audioOnes)
@@ -1978,7 +2213,7 @@ const ChatInput = memo(function ChatInput({
                   e.preventDefault()
                   // Submit prompt when Enter is pressed without Shift and prompt is not empty.
                   // If streaming, handleSendMessage will queue the message automatically.
-                  if ((prompt.trim() || hasSendableMedia) && !ingestingAny) {
+                  if ((prompt.trim() || hasSendableAttachments) && !ingestingAny) {
                     handleSendMessage(prompt)
                   }
                   // When Shift+Enter is pressed, a new line is added (default behavior)
@@ -2030,8 +2265,7 @@ const ChatInput = memo(function ChatInput({
                   isStreaming && 'opacity-50 pointer-events-none'
                 )}
               >
-                {/* Dropdown for attachments — hidden in agent mode */}
-                {!effectiveAgentMode && (
+                {/* Attachments are first-class Divo inputs. */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="secondary" size="icon-sm" className='rounded-full mr-2 mb-1'>
@@ -2080,10 +2314,10 @@ const ChatInput = memo(function ChatInput({
                         />
                       </DropdownMenuItem>
                     )}
-                    {/* RAG document attachments - desktop-only via dialog; shown when feature enabled */}
+                    {/* Local file references for Divo document and OCR skills. */}
                     <DropdownMenuItem
                       onClick={handleAttachDocsIngest}
-                      disabled={!selectedModel?.capabilities?.includes('tools')}
+                      disabled={ingestingDocs}
                     >
                       {ingestingDocs ? (
                         <IconLoader2
@@ -2104,7 +2338,6 @@ const ChatInput = memo(function ChatInput({
                     </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                )}
                 {/* {model?.provider === 'llamacpp' && loadingModel ? (
                   <ModelLoader />
                 ) : (
@@ -2256,37 +2489,6 @@ const ChatInput = memo(function ChatInput({
                       </TooltipContent>
                     </Tooltip>
                   ))}
-
-                {/* Agent mode toggle hidden — kept as dead code for future use */}
-                {false && !projectId && isAgentMode && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant={isAgentMode ? "default" : "ghost"}
-                        size="icon-xs"
-                        onClick={currentThreadId ? handleAgentToggle : undefined}
-                        className={cn(
-                          isAgentMode && 'text-primary bg-primary/10 hover:bg-primary/10 items-center',
-                          !currentThreadId && 'cursor-default pointer-events-none'
-                        )}
-                      >
-                        <BotIcon
-                          className={cn(
-                            'text-muted-foreground -mt-0.5',
-                            isAgentMode && 'text-primary'
-                          )}
-                        />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>
-                        {isAgentMode
-                          ? 'Agent mode active'
-                          : 'Enable agent mode'}
-                      </p>
-                    </TooltipContent>
-                  </Tooltip>
-                )}
 
                 {!effectiveAgentMode && selectedModel?.capabilities?.includes('web_search') && (
                   <Tooltip>
@@ -2460,7 +2662,9 @@ const ChatInput = memo(function ChatInput({
                 <Button
                   variant="default"
                   size="icon-sm"
-                  disabled={(!prompt.trim() && !hasSendableMedia) || ingestingAny}
+                  disabled={
+                    (!prompt.trim() && !hasSendableAttachments) || ingestingAny
+                  }
                   data-test-id="send-message-button"
                   onClick={() => handleSendMessage(prompt)}
                   className="rounded-full mr-1 mb-1"

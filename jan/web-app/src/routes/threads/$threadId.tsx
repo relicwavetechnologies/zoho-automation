@@ -868,7 +868,9 @@ function ThreadDetail() {
       // Process attachments (ingest images, parse/index documents)
       let processedAttachments = combinedAttachments
       const projectId = thread?.metadata?.project?.id
-      if (combinedAttachments.length > 0) {
+      const shouldProcessAttachments =
+        combinedAttachments.length > 0 && selectedProvider !== 'pi'
+      if (shouldProcessAttachments) {
         if (hasEmbeddingDocuments) {
           useAppState.getState().setThreadEmbedding(threadId, true)
           useAppState.getState().setThreadBusy(threadId, true)
@@ -880,7 +882,6 @@ function ThreadDetail() {
             threadId,
             projectId,
             serviceHub,
-            selectedProvider,
             parsePreference,
           })
           processedAttachments = result.processedAttachments

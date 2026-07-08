@@ -1,9 +1,12 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use base64::{engine::general_purpose, Engine as _};
+use image::ImageFormat;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Runtime};
+use uuid::Uuid;
 
 use crate::core::app::commands::get_jan_data_folder_path;
 use crate::core::pi::env::write_divo_env_file;
@@ -18,6 +21,17 @@ use super::workspace::{
 
 const PI_AGENT_DIR: &str = "pi-agent";
 const DIVO_SESSION_CHANGED_EVENT: &str = "divo-session-changed";
+const DIVO_OCR_IMAGE_DIR: &str = "divo/ocr-images";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedImageAttachment {
+    path: String,
+    file_name: String,
+    mime_type: String,
+    size: u64,
+    normalized: bool,
+}
 
 fn pi_agent_dir(data_folder: &std::path::Path) -> PathBuf {
     data_folder.join(PI_AGENT_DIR)
@@ -61,6 +75,150 @@ fn emit_divo_session_changed<R: Runtime>(app: &AppHandle<R>, configured: bool) {
     ) {
         log::warn!("divo.session_changed.emit_failed error={err}");
     }
+}
+
+fn image_mime_from_name(name: &str) -> Option<&'static str> {
+    match Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("gif") => Some("image/gif"),
+        Some("jpeg") | Some("jpg") => Some("image/jpeg"),
+        Some("png") => Some("image/png"),
+        Some("webp") => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn is_backend_ocr_supported_mime(mime_type: &str) -> bool {
+    matches!(
+        mime_type.to_ascii_lowercase().as_str(),
+        "image/png" | "image/jpeg" | "image/jpg" | "image/webp" | "image/gif"
+    )
+}
+
+fn safe_stem(file_name: &str) -> String {
+    let stem = Path::new(file_name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("image");
+    let cleaned: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    cleaned
+        .trim_matches('-')
+        .chars()
+        .take(60)
+        .collect::<String>()
+}
+
+fn parse_data_url(data_url: &str) -> Result<(&str, &[u8]), String> {
+    let (header, encoded) = data_url
+        .split_once(',')
+        .ok_or_else(|| "Invalid image data URL".to_string())?;
+    if !header.starts_with("data:image/") || !header.ends_with(";base64") {
+        return Err("Image data URL must be base64 encoded image data".to_string());
+    }
+    Ok((header, encoded.as_bytes()))
+}
+
+fn decode_base64_image(data_url: &str) -> Result<Vec<u8>, String> {
+    let (_, encoded) = parse_data_url(data_url)?;
+    general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| format!("Failed to decode image data URL: {e}"))
+}
+
+fn save_image_bytes_as_png(bytes: &[u8], dest: &Path) -> Result<(), String> {
+    let image = image::load_from_memory(bytes)
+        .map_err(|e| format!("Failed to decode image for OCR normalization: {e}"))?;
+    image
+        .save_with_format(dest, ImageFormat::Png)
+        .map_err(|e| format!("Failed to write normalized PNG: {e}"))
+}
+
+fn save_path_as_png(source_path: &Path, dest: &Path) -> Result<(), String> {
+    let image = image::ImageReader::open(source_path)
+        .map_err(|e| format!("Failed to open image for OCR normalization: {e}"))?
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to detect image format for OCR normalization: {e}"))?
+        .decode()
+        .map_err(|e| format!("Failed to decode image for OCR normalization: {e}"))?;
+    image
+        .save_with_format(dest, ImageFormat::Png)
+        .map_err(|e| format!("Failed to write normalized PNG: {e}"))
+}
+
+#[tauri::command]
+pub fn divo_normalize_image_attachment<R: Runtime>(
+    app: AppHandle<R>,
+    source_path: Option<String>,
+    data_url: Option<String>,
+    file_name: String,
+    mime_type: Option<String>,
+) -> Result<NormalizedImageAttachment, String> {
+    let source_path = source_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    let source_mime = mime_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .or_else(|| image_mime_from_name(&file_name))
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    if let Some(path) = source_path.as_deref() {
+        if is_backend_ocr_supported_mime(&source_mime) {
+            let metadata = fs::metadata(path).map_err(|e| format!("Failed to stat image: {e}"))?;
+            return Ok(NormalizedImageAttachment {
+                path: path.to_string(),
+                file_name,
+                mime_type: if source_mime == "image/jpg" {
+                    "image/jpeg".to_string()
+                } else {
+                    source_mime
+                },
+                size: metadata.len(),
+                normalized: false,
+            });
+        }
+    }
+
+    let data_folder = get_jan_data_folder_path(app);
+    let out_dir = data_folder.join(DIVO_OCR_IMAGE_DIR);
+    fs::create_dir_all(&out_dir).map_err(|e| format!("Failed to create OCR image cache: {e}"))?;
+
+    let out_name = format!("{}-{}.png", safe_stem(&file_name), Uuid::new_v4().simple());
+    let out_path = out_dir.join(out_name.clone());
+
+    if let Some(path) = source_path {
+        save_path_as_png(Path::new(&path), &out_path)?;
+    } else if let Some(data_url) = data_url {
+        let bytes = decode_base64_image(&data_url)?;
+        save_image_bytes_as_png(&bytes, &out_path)?;
+    } else {
+        return Err("Image normalization requires sourcePath or dataUrl".to_string());
+    }
+
+    let metadata =
+        fs::metadata(&out_path).map_err(|e| format!("Failed to stat normalized image: {e}"))?;
+    Ok(NormalizedImageAttachment {
+        path: out_path.to_string_lossy().to_string(),
+        file_name: out_name,
+        mime_type: "image/png".to_string(),
+        size: metadata.len(),
+        normalized: true,
+    })
 }
 
 async fn best_effort_backend_logout<R: Runtime>(app: &AppHandle<R>) {

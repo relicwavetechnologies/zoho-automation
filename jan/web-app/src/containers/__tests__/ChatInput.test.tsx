@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 // --- Module mocks (must be declared before component import) ---------------
@@ -67,12 +67,13 @@ let selectedModelOverride: any = {
   capabilities: ['tools'],
   provider: 'llamacpp',
 }
+let selectedProviderOverride: any = 'llamacpp'
 const getProviderByNameMock = vi.fn()
 vi.mock('@/hooks/useModelProvider', () => ({
   useModelProvider: (selector: any) =>
     selector({
       selectedModel: selectedModelOverride,
-      selectedProvider: { provider: 'llamacpp' },
+      selectedProvider: selectedProviderOverride,
       providers: [],
       selectModelProvider: vi.fn(),
       updateProvider: vi.fn(),
@@ -119,18 +120,29 @@ vi.mock('@/hooks/useAttachments', () => ({
 }))
 
 let attachmentsList: any[] = []
-const setAttachmentsMock = vi.fn()
+const setAttachmentsMock = vi.fn((_threadId: string, updater: any) => {
+  attachmentsList =
+    typeof updater === 'function' ? updater(attachmentsList) : updater
+})
 const clearAttachmentsMock = vi.fn()
 const transferAttachmentsMock = vi.fn()
+function useChatAttachmentsMock(selector: any) {
+  return selector({
+    getAttachments: () => attachmentsList,
+    setAttachments: setAttachmentsMock,
+    clearAttachments: clearAttachmentsMock,
+    transferAttachments: transferAttachmentsMock,
+  })
+}
+;(useChatAttachmentsMock as any).getState = () => ({
+  getAttachments: () => attachmentsList,
+  setAttachments: setAttachmentsMock,
+  clearAttachments: clearAttachmentsMock,
+  transferAttachments: transferAttachmentsMock,
+})
 vi.mock('@/hooks/useChatAttachments', () => ({
   NEW_THREAD_ATTACHMENT_KEY: '__new_thread__',
-  useChatAttachments: (selector: any) =>
-    selector({
-      getAttachments: () => attachmentsList,
-      setAttachments: setAttachmentsMock,
-      clearAttachments: clearAttachmentsMock,
-      transferAttachments: transferAttachmentsMock,
-    }),
+  useChatAttachments: useChatAttachmentsMock,
 }))
 
 vi.mock('@/hooks/useJanBrowserExtension', () => ({
@@ -185,6 +197,7 @@ vi.mock('@/lib/extension', () => ({
   ExtensionManager: {
     getInstance: () => ({
       get: () => undefined,
+      getByName: () => undefined,
     }),
   },
 }))
@@ -197,6 +210,7 @@ vi.mock('@janhq/core', () => ({
     existsSync: vi.fn().mockResolvedValue(false),
     readFile: vi.fn().mockResolvedValue(''),
     writeFile: vi.fn().mockResolvedValue(undefined),
+    fileStat: vi.fn().mockResolvedValue({ size: 2048 }),
   },
 }))
 
@@ -210,10 +224,17 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
 }))
 
 vi.mock('sonner', () => ({
-  toast: { info: vi.fn(), error: vi.fn(), success: vi.fn() },
+  toast: { info: vi.fn(), error: vi.fn(), success: vi.fn(), warning: vi.fn() },
 }))
 
 vi.mock('ai', () => ({ generateId: () => 'gen-id-1' }))
+
+const tauriCoreMock = vi.hoisted(() => ({
+  invoke: vi.fn(),
+}))
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: tauriCoreMock.invoke,
+}))
 
 // Stub heavy children
 vi.mock('@/containers/QueuedMessageBubble', () => ({
@@ -272,8 +293,9 @@ vi.mock('@/components/ui/tooltip', () => {
   }
 })
 
+let isTauriPlatform = false
 vi.mock('@/lib/platform/utils', () => ({
-  isPlatformTauri: () => false,
+  isPlatformTauri: () => isTauriPlatform,
 }))
 
 // Import component AFTER all mocks
@@ -286,16 +308,22 @@ const resetAll = () => {
   appStateOverrides = {}
   attachmentsList = []
   agentModeOn = false
+  isTauriPlatform = false
   selectedModelOverride = {
     id: 'model-a',
     capabilities: ['tools'],
     provider: 'llamacpp',
   }
+  selectedProviderOverride = 'llamacpp'
   setPromptMock.mockClear()
   addToHistoryMock.mockClear()
   navigateHistoryMock.mockClear()
+  setAttachmentsMock.mockClear()
+  clearAttachmentsMock.mockClear()
+  transferAttachmentsMock.mockClear()
   enqueueMock.mockClear()
   clearQueueMock.mockClear()
+  tauriCoreMock.invoke.mockReset()
   for (const k of Object.keys(queueState)) delete queueState[k]
   getCurrentThreadMock.mockReturnValue(undefined)
 }
@@ -490,7 +518,234 @@ describe('ChatInput', () => {
         }),
       ])
     )
-    expect(clearAttachmentsMock).toHaveBeenCalled()
+    expect(attachmentsList).toEqual([])
+  })
+
+  it('submits when only a document is attached', () => {
+    promptState = ''
+    selectedProviderOverride = 'pi'
+    attachmentsList = [
+      {
+        type: 'document',
+        name: 'brief.pdf',
+        path: '/Users/test/brief.pdf',
+        fileType: 'pdf',
+      },
+    ]
+
+    const onSubmit = vi.fn()
+    renderInput({ onSubmit })
+    fireEvent.keyDown(getTextarea(), { key: 'Enter' })
+
+    expect(onSubmit).toHaveBeenCalledWith('', undefined)
+    expect(attachmentsList).toEqual([
+      expect.objectContaining({
+        type: 'document',
+        path: '/Users/test/brief.pdf',
+      }),
+    ])
+  })
+
+  it('keeps Pi image attachments in the store so local paths reach the thread route', () => {
+    promptState = 'read this image'
+    selectedProviderOverride = 'pi'
+    attachmentsList = [
+      {
+        type: 'image',
+        name: 'receipt.png',
+        path: '/Users/test/receipt.png',
+        dataUrl: 'data:image/png;base64,xxx',
+        base64: 'xxx',
+        mimeType: 'image/png',
+        size: 123,
+      },
+    ]
+
+    const onSubmit = vi.fn()
+    renderInput({ onSubmit })
+    fireEvent.keyDown(getTextarea(), { key: 'Enter' })
+
+    expect(onSubmit).toHaveBeenCalledWith('read this image', undefined)
+    expect(attachmentsList).toEqual([
+      expect.objectContaining({
+        type: 'image',
+        path: '/Users/test/receipt.png',
+      }),
+    ])
+  })
+
+  it('adds dragged document files as local Pi references', async () => {
+    selectedProviderOverride = 'pi'
+
+    renderInput({ onSubmit: vi.fn() })
+    const dropZone = document.querySelector(
+      '[data-drop-zone="true"]'
+    ) as HTMLElement
+    expect(dropZone).toBeTruthy()
+
+    const file = new File(['%PDF'], 'report.pdf', {
+      type: 'application/pdf',
+    })
+    Object.defineProperty(file, 'path', {
+      configurable: true,
+      value: '/Users/test/report.pdf',
+    })
+
+    fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+
+    await waitFor(() => {
+      expect(attachmentsList).toEqual([
+        expect.objectContaining({
+          type: 'document',
+          name: 'report.pdf',
+          path: '/Users/test/report.pdf',
+          fileType: 'pdf',
+          parseMode: 'prompt',
+        }),
+      ])
+    })
+  })
+
+  it('adds dragged image files without relying on DataTransfer construction', async () => {
+    selectedProviderOverride = 'pi'
+
+    const originalDataTransfer = globalThis.DataTransfer
+    const originalFileReader = globalThis.FileReader
+
+    class TestFileReader {
+      result: string | ArrayBuffer | null = null
+      onload: null | (() => void) = null
+
+      readAsDataURL(file: File) {
+        this.result = `data:${file.type};base64,ZmFrZS1pbWFnZQ==`
+        queueMicrotask(() => this.onload?.())
+      }
+    }
+
+    Object.defineProperty(globalThis, 'DataTransfer', {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    })
+    Object.defineProperty(globalThis, 'FileReader', {
+      configurable: true,
+      writable: true,
+      value: TestFileReader,
+    })
+
+    try {
+      renderInput({ onSubmit: vi.fn() })
+      const dropZone = document.querySelector(
+        '[data-drop-zone="true"]'
+      ) as HTMLElement
+      expect(dropZone).toBeTruthy()
+
+      const file = new File(['fake image'], 'receipt.png', {
+        type: 'image/png',
+      })
+      Object.defineProperty(file, 'path', {
+        configurable: true,
+        value: '/Users/test/receipt.png',
+      })
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+
+      await waitFor(() => {
+        expect(attachmentsList).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'image',
+              name: 'receipt.png',
+              mimeType: 'image/png',
+              dataUrl: 'data:image/png;base64,ZmFrZS1pbWFnZQ==',
+              path: '/Users/test/receipt.png',
+            }),
+          ])
+        )
+      })
+    } finally {
+      Object.defineProperty(globalThis, 'DataTransfer', {
+        configurable: true,
+        writable: true,
+        value: originalDataTransfer,
+      })
+      Object.defineProperty(globalThis, 'FileReader', {
+        configurable: true,
+        writable: true,
+        value: originalFileReader,
+      })
+    }
+  })
+
+  it('normalizes dragged unsupported image formats before storing Pi attachments', async () => {
+    selectedProviderOverride = 'pi'
+    isTauriPlatform = true
+    tauriCoreMock.invoke.mockResolvedValue({
+      path: '/Users/test/.divo/ocr-images/receipt.png',
+      fileName: 'receipt.png',
+      mimeType: 'image/png',
+      size: 1024,
+      normalized: true,
+    })
+
+    const originalFileReader = globalThis.FileReader
+    class TestFileReader {
+      result: string | ArrayBuffer | null = null
+      onload: null | (() => void) = null
+
+      readAsDataURL(file: File) {
+        this.result = `data:${file.type};base64,ZmFrZS1iaXRtYXA=`
+        queueMicrotask(() => this.onload?.())
+      }
+    }
+    Object.defineProperty(globalThis, 'FileReader', {
+      configurable: true,
+      writable: true,
+      value: TestFileReader,
+    })
+
+    try {
+      renderInput({ onSubmit: vi.fn() })
+      const dropZone = document.querySelector(
+        '[data-drop-zone="true"]'
+      ) as HTMLElement
+      expect(dropZone).toBeTruthy()
+
+      const file = new File(['fake bitmap'], 'receipt.bmp', {
+        type: 'image/bmp',
+      })
+      Object.defineProperty(file, 'path', {
+        configurable: true,
+        value: '/Users/test/receipt.bmp',
+      })
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } })
+
+      await waitFor(() => {
+        expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+          'divo_normalize_image_attachment',
+          expect.objectContaining({
+            sourcePath: '/Users/test/receipt.bmp',
+            fileName: 'receipt.bmp',
+            mimeType: 'image/bmp',
+          })
+        )
+        expect(attachmentsList).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'image',
+              name: 'receipt.bmp',
+              mimeType: 'image/png',
+              path: '/Users/test/.divo/ocr-images/receipt.png',
+            }),
+          ])
+        )
+      })
+    } finally {
+      Object.defineProperty(globalThis, 'FileReader', {
+        configurable: true,
+        writable: true,
+        value: originalFileReader,
+      })
+    }
   })
 
   it('shows the queued-message chips from the message queue', () => {

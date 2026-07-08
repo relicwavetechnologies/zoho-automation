@@ -110,6 +110,9 @@ const mockServiceHub = {
     save: vi.fn().mockResolvedValue('/path/to/file'),
     message: vi.fn().mockResolvedValue(undefined),
   }),
+  uploads: () => ({
+    ingestImage: vi.fn().mockResolvedValue({ id: 'test-image-upload' }),
+  }),
   opener: vi.fn().mockReturnValue({
     open: vi.fn().mockResolvedValue(undefined),
     revealItemInDir: vi.fn().mockResolvedValue(undefined),
@@ -130,6 +133,7 @@ const mockServiceHub = {
     startCore: vi.fn().mockResolvedValue(undefined),
     stopCore: vi.fn().mockResolvedValue(undefined),
     getCoreStatus: vi.fn().mockResolvedValue('stopped'),
+    convertFileSrc: vi.fn((filePath: string) => filePath),
   }),
   deeplink: () => ({ // cspell: disable-line
     register: vi.fn().mockResolvedValue(undefined),

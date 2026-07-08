@@ -31,6 +31,32 @@ function copyDir(src, dest) {
   fs.cpSync(src, dest, { recursive: true })
 }
 
+function patchBundledPiReadTool(resourcesPiDir) {
+  const readToolPath = path.join(
+    resourcesPiDir,
+    'node_modules/@earendil-works/pi-coding-agent/dist/core/tools/read.js'
+  )
+  const originalDescription =
+    'description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,'
+  const patchedDescription =
+    'description: `Read the contents of a text file. Do not use this tool to understand image contents unless the current model explicitly supports native image input. For non-vision models, image reading is unsupported; use local image/OCR helper scripts instead. Text output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,'
+  const originalGuidelines =
+    'promptGuidelines: ["Use read to examine files instead of cat or sed."],'
+  const patchedGuidelines = `promptGuidelines: [
+            "Use read to examine text files instead of cat or sed.",
+            "For non-vision models, do not use read for images; use local image/OCR helper scripts instead.",
+        ],`
+
+  let source = fs.readFileSync(readToolPath, 'utf8')
+  if (!source.includes(originalDescription) && !source.includes(patchedDescription)) {
+    throw new Error(`Unexpected Pi read tool description format: ${readToolPath}`)
+  }
+  source = source
+    .replace(originalDescription, patchedDescription)
+    .replace(originalGuidelines, patchedGuidelines)
+  fs.writeFileSync(readToolPath, source)
+}
+
 console.log('Vendoring Pi into src-tauri/resources/pi ...')
 
 rmrf(resourcesPi)
@@ -63,6 +89,7 @@ const cliJs = path.join(
 if (!fs.existsSync(cliJs)) {
   throw new Error(`Pi CLI missing after install: ${cliJs}`)
 }
+patchBundledPiReadTool(resourcesPi)
 
 // Stage pi-mcp-adapter where Pi's package manager expects it under the agent dir.
 const agentNpmDir = path.join(resourcesPi, 'agent-npm')

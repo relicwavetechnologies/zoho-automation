@@ -138,6 +138,7 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_get_workspace_status,
         core::divo::commands::divo_set_workspace_path,
         core::divo::commands::divo_clear_workspace_path,
+        core::divo::commands::divo_normalize_image_attachment,
         core::divo::local_lark::divo_lark_local_status,
         core::divo::local_lark::divo_lark_local_setup_start,
         core::divo::local_lark::divo_lark_local_setup_status,

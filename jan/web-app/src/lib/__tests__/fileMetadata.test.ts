@@ -28,6 +28,7 @@ describe('injectFilesIntoPrompt', () => {
       {
         id: 'f1',
         name: 'doc.pdf',
+        path: '/Users/test/doc.pdf',
         type: 'application/pdf',
         size: 1024,
         chunkCount: 5,
@@ -35,6 +36,7 @@ describe('injectFilesIntoPrompt', () => {
       },
     ]
     const result = injectFilesIntoPrompt('hello', files)
+    expect(result).toContain('path: /Users/test/doc.pdf')
     expect(result).toContain('type: application/pdf')
     expect(result).toContain('size: 1024')
     expect(result).toContain('chunks: 5')
@@ -61,13 +63,22 @@ describe('extractFilesFromPrompt', () => {
 
   it('extracts files from injected prompt', () => {
     const prompt = injectFilesIntoPrompt('hello', [
-      { id: 'f1', name: 'doc.pdf', type: 'pdf', size: 100, chunkCount: 3, injectionMode: 'inline' },
+      {
+        id: 'f1',
+        name: 'doc.pdf',
+        path: '/Users/test/doc.pdf',
+        type: 'pdf',
+        size: 100,
+        chunkCount: 3,
+        injectionMode: 'inline',
+      },
     ])
     const result = extractFilesFromPrompt(prompt)
     expect(result.cleanPrompt).toBe('hello')
     expect(result.files).toHaveLength(1)
     expect(result.files[0].id).toBe('f1')
     expect(result.files[0].name).toBe('doc.pdf')
+    expect(result.files[0].path).toBe('/Users/test/doc.pdf')
     expect(result.files[0].type).toBe('pdf')
     expect(result.files[0].size).toBe(100)
     expect(result.files[0].chunkCount).toBe(3)

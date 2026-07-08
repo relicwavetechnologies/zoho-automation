@@ -5,6 +5,7 @@
 export interface FileMetadata {
   id: string
   name: string
+  path?: string
   type?: string
   size?: number
   chunkCount?: number
@@ -29,6 +30,7 @@ export function injectFilesIntoPrompt(
   const fileLines = files
     .map((file) => {
       const parts = [`file_id: ${file.id}`, `name: ${file.name}`]
+      if (file.path) parts.push(`path: ${file.path}`)
       if (file.type) parts.push(`type: ${file.type}`)
       if (typeof file.size === 'number') parts.push(`size: ${file.size}`)
       if (typeof file.chunkCount === 'number') parts.push(`chunks: ${file.chunkCount}`)
@@ -84,9 +86,13 @@ export function extractFilesFromPrompt(prompt: string): {
     const name = map['name']
     if (!id || !name) continue
     const type = map['type']
+    const path = map['path']
     const size = map['size'] ? Number(map['size']) : undefined
     const chunkCount = map['chunks'] ? Number(map['chunks']) : undefined
     const fileObj: FileMetadata = { id, name };
+    if (path) {
+      fileObj.path = path;
+    }
     if (type) {
       fileObj.type = type;
     }

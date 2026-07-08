@@ -10,7 +10,8 @@ use tokio::sync::{oneshot, Mutex};
 
 use super::browser::{current_browser_cdp_fingerprint, kill_orphan_chrome_devtools_mcp};
 use super::env::{
-    apply_divo_gateway_env, apply_divo_workspace_env, apply_local_lark_env, apply_provider_env,
+    apply_divo_gateway_env, apply_divo_skill_env, apply_divo_workspace_env, apply_local_lark_env,
+    apply_provider_env,
 };
 use super::runtime::PiRuntimePaths;
 use super::session::{ensure_session_workspace_cwd, resolve_session_path};
@@ -232,6 +233,7 @@ Divo workspace policy:
             cmd.current_dir(&workspace_dir);
             apply_provider_env(&mut cmd, &runtime.agent_dir);
             apply_divo_gateway_env(&mut cmd, &runtime.agent_dir);
+            apply_divo_skill_env(&mut cmd, &runtime.skill_dirs);
             apply_divo_workspace_env(&mut cmd, &workspace_dir, &divo_layout);
             apply_local_lark_env(&mut cmd, runtime.lark_cli_wrapper.as_deref());
             let mut child = cmd.spawn().map_err(|e| {

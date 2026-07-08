@@ -217,7 +217,7 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
               Work through your company context, tools, and permissions.
             </h1>
             <p className="mt-5 max-w-lg text-base leading-7 text-white/60">
-              Sign in once, then Divo can route Pi through backend-owned skills,
+              Sign in once, then Divo can route work through backend-owned skills,
               connected accounts, RBAC, and approvals.
             </p>
           </div>

@@ -82,6 +82,73 @@ describe('CustomChatTransport', () => {
     expect(true).toBe(true)
   })
 
+  it('buildFilesSystemAddendum routes attached files through Divo skill resolver first', () => {
+    const result = transport.buildFilesSystemAddendum(
+      [
+        {
+          id: 'img-1',
+          name: 'screen.png',
+          path: '/Users/test/screen.png',
+          type: 'image/png',
+          size: 100,
+        },
+        {
+          id: 'doc-1',
+          name: 'brief.pdf',
+          path: '/Users/test/brief.pdf',
+          type: 'pdf',
+        },
+      ],
+      { modelSupportsVision: false }
+    )
+
+    expect(result).toContain('Your first action for this user request must be to call divo_skill_resolve')
+    expect(result).toContain('before using Read, Bash, Python, OCR')
+    expect(result).toContain('original user request')
+    expect(result).toContain('current selected model does not support native image input')
+    expect(result).toContain('do not use the Read tool')
+    expect(result).toContain('[ATTACHED_FILES]')
+    expect(result).toContain('name: screen.png')
+    expect(result).toContain('path: /Users/test/brief.pdf')
+    expect(result).not.toContain('media.image_ocr')
+  })
+
+  it('buildPiUserMessage strips raw attachment metadata and prepends Divo routing', () => {
+    const result = transport.buildPiUserMessage(
+      [
+        {
+          id: 'u1',
+          role: 'user',
+          parts: [
+            {
+              type: 'text',
+              text: [
+                'Tell me what is in this image.',
+                '',
+                '[ATTACHED_FILES]',
+                '- file_id: img-1, name: screenshot.png, path: /Users/test/screenshot.png, type: image/png, size: 100',
+                '[/ATTACHED_FILES]',
+              ].join('\n'),
+            },
+          ],
+        } as any,
+      ],
+      { modelSupportsVision: false }
+    )
+
+    expect(result).toContain('[DIVO_ATTACHMENT_ROUTING]')
+    expect(result).toContain('call divo_gateway directly')
+    expect(result).toContain('op: "media.image_ocr"')
+    expect(result).toContain('payload: { filePath')
+    expect(result).toContain('desktop attachment pipeline already normalized')
+    expect(result).toContain('Do not convert the image yourself')
+    expect(result).toContain('before Read/Bash/Python/local image tools')
+    expect(result).toContain('current selected model does not support native image input')
+    expect(result).toContain('path: /Users/test/screenshot.png')
+    expect(result).toContain('Tell me what is in this image.')
+    expect(result.match(/\[ATTACHED_FILES\]/g)).toHaveLength(1)
+  })
+
   it('setContinueFromContent sets content', () => {
     transport.setContinueFromContent('partial content')
     expect(true).toBe(true)

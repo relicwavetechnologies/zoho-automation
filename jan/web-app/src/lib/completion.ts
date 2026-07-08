@@ -33,19 +33,30 @@ export const newUserThreadContent = (
     (doc) => doc.injectionMode === 'inline' && doc.inlineContent
   )
 
-  // Inject document metadata into the text content (id, name, fileType only - no path)
+  // Include local file references so Pi can route them to file/OCR skills.
+  const imageMetadata = images
+    .filter((img) => img.path)
+    .map((img) => ({
+      id: img.id ?? img.name,
+      name: img.name,
+      path: img.path,
+      type: img.mimeType,
+      size: typeof img.size === 'number' ? img.size : undefined,
+    }))
   const docMetadata = documents
     .map((doc) => ({
       id: doc.id ?? doc.name,
       name: doc.name,
+      path: doc.path,
       type: doc.fileType,
       size: typeof doc.size === 'number' ? doc.size : undefined,
       chunkCount: typeof doc.chunkCount === 'number' ? doc.chunkCount : undefined,
       injectionMode: doc.injectionMode,
     }))
+  const fileMetadata = [...imageMetadata, ...docMetadata]
 
   const textWithFiles =
-    docMetadata.length > 0 ? injectFilesIntoPrompt(content, docMetadata) : content
+    fileMetadata.length > 0 ? injectFilesIntoPrompt(content, fileMetadata) : content
 
   const contentParts = [
     {
