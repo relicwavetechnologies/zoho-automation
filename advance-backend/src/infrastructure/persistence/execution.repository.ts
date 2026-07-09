@@ -114,6 +114,32 @@ export class ExecutionRepository {
   }
 
   /**
+   * Find an ExecutionRun by its external run id (stored as the unique
+   * requestId), or create it. Used by the desktop/PI trace ingest path, where
+   * PI mints the run id and streams events in batches. Returns the run's id.
+   */
+  async findOrCreateByRequestId(input: CreateRunInput & { requestId: string }): Promise<string> {
+    const run = await this.prisma.executionRun.upsert({
+      where:  { requestId: input.requestId },
+      update: {},
+      create: {
+        companyId:   input.companyId,
+        channel:     input.channel,
+        entrypoint:  input.entrypoint,
+        requestId:   input.requestId,
+        status:      'running',
+        ...(input.userId      ? { userId:      input.userId }      : {}),
+        ...(input.threadId    ? { threadId:    input.threadId }    : {}),
+        ...(input.chatId      ? { chatId:      input.chatId }      : {}),
+        ...(input.messageId   ? { messageId:   input.messageId }   : {}),
+        ...(input.agentTarget ? { agentTarget: input.agentTarget } : {}),
+      },
+      select: { id: true },
+    });
+    return run.id;
+  }
+
+  /**
    * Append a structured event to the run's event stream.
    * Sequence numbers are managed by the caller (OrchestrationTracer).
    */

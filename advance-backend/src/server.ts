@@ -27,6 +27,7 @@ import { createAnalyticsRoutes } from './http/admin/analytics.routes';
 import { createTokenUsageRoutes } from './http/admin/token-usage.routes';
 import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
 import { createDesktopThreadsRoutes } from './http/desktop/desktop-threads.routes';
+import { createTraceIngestRoutes } from './http/desktop/trace-ingest.routes';
 import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
@@ -320,6 +321,16 @@ export const createServer = (c: Container) => {
       prisma:          c.prisma,
       logger:          c.logger,
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+    }),
+  );
+
+  // Desktop/PI run-trace ingest (Track A — member auth)
+  app.use(
+    '/api/desktop/trace',
+    memberAuth,
+    createTraceIngestRoutes({
+      prisma: c.prisma,
+      logger: c.logger,
     }),
   );
 

@@ -16,6 +16,7 @@ import {
 	formatSkillResolveResult,
 	resolveDivoSkills,
 } from "./skill-resolver.ts";
+import { registerTraceCapture } from "./trace.ts";
 
 const DIVO_GATEWAY_PARAMS = Type.Object({
 	op: Type.String({
@@ -186,6 +187,10 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			systemPrompt: `${event.systemPrompt}\n\n${DIVO_COMPANY_PERSONA_PROMPT}`,
 		};
 	});
+
+	// Capture a detailed trace of every desktop run (tool + model calls) and
+	// stream it to the backend. Fire-and-forget; adds no user-facing latency.
+	registerTraceCapture(pi);
 
 	pi.on("session_start", (_event, ctx) => {
 		const resolved = resolveDivoGatewayConfig();
