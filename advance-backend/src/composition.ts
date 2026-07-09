@@ -46,6 +46,7 @@ import { IntegrationConnectionRepository } from './infrastructure/persistence/in
 import { GmailClient } from './infrastructure/google/google-gmail.client';
 import { GoogleDriveClient } from './infrastructure/google/google-drive.client';
 import { GoogleCalendarClient } from './infrastructure/google/google-calendar.client';
+import { hasAnyGoogleScope } from './application/google/google-scope-policy';
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
 import { ZohoCrmClient } from './infrastructure/zoho/zoho-crm.client';
@@ -498,11 +499,21 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     readonly userId: string;
     readonly connectionId: string;
     readonly minimumAccess: 'read_only' | 'read_write';
+    readonly requiredScopes?: readonly string[];
   }): Promise<OAuth2Client | null> {
     if (!googleOAuthService.isConfigured()) return null;
 
     const connection = await integrationConnectionRepo.findAccessibleGoogleConnection(input);
     if (!connection.ok || !connection.value?.refreshToken) return null;
+    if (!hasAnyGoogleScope(connection.value.scopes, input.requiredScopes ?? [])) {
+      logger.warn('google.connection.missing_required_scope', {
+        companyId: input.companyId,
+        userId: input.userId,
+        connectionId: input.connectionId,
+        requiredScopes: input.requiredScopes ?? [],
+      });
+      return null;
+    }
 
     try {
       const token = await googleOAuthService.getValidAccessToken({
@@ -540,6 +551,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     readonly userId: string;
     readonly connectionId: string;
     readonly minimumAccess: 'read_only' | 'read_write';
+    readonly requiredScopes: readonly string[];
   }) => {
     const auth = await resolveGoogleAuthClient(input);
     return auth ? new GmailClient(auth) : null;
@@ -550,6 +562,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     readonly userId: string;
     readonly connectionId: string;
     readonly minimumAccess: 'read_only' | 'read_write';
+    readonly requiredScopes: readonly string[];
   }) => {
     const auth = await resolveGoogleAuthClient(input);
     return auth ? new GoogleDriveClient(auth) : null;
@@ -560,6 +573,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     readonly userId: string;
     readonly connectionId: string;
     readonly minimumAccess: 'read_only' | 'read_write';
+    readonly requiredScopes: readonly string[];
   }) => {
     const auth = await resolveGoogleAuthClient(input);
     return auth ? new GoogleCalendarClient(auth) : null;

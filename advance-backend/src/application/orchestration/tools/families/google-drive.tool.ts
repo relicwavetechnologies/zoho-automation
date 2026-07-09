@@ -6,6 +6,7 @@ import { PermissionError, ToolError } from '../../../../shared/errors';
 import type { PermissionResult } from '../../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../../shared/ids';
+import { DRIVE_READ_SCOPES, DRIVE_WRITE_SCOPES } from '../../../google/google-scope-policy';
 
 const Schema = z.object({
   connectionId: z.string().min(1),
@@ -35,6 +36,7 @@ export const createGoogleDriveTool = (deps: { getClient: (input: {
   readonly userId: string;
   readonly connectionId: string;
   readonly minimumAccess: 'read_only' | 'read_write';
+  readonly requiredScopes: readonly string[];
 }) => Promise<GoogleDriveClientPort | null> }): Tool<Args, Res> => ({
   id: asToolId('googleDrive'), family: 'google',
   actionGroups: new Set(['read', 'create', 'update']),
@@ -52,6 +54,7 @@ export const createGoogleDriveTool = (deps: { getClient: (input: {
       userId:        ctx.runContext.userId,
       connectionId:  args.connectionId,
       minimumAccess: args.op === 'create_folder' ? 'read_write' : 'read_only',
+      requiredScopes: args.op === 'create_folder' ? DRIVE_WRITE_SCOPES : DRIVE_READ_SCOPES,
     });
     if (!client) return err(new ToolError({ toolId: 'googleDrive', reason: 'unrecoverable', message: 'Google Drive connection is unavailable or not allowed for this operation' }));
     try {

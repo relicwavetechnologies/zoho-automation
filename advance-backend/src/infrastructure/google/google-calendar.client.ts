@@ -100,15 +100,29 @@ export class GoogleCalendarClient implements GoogleCalendarClientPort {
     return out;
   }
 
-  async listEvents(calendarId: string, limit = 20): Promise<unknown[]> {
-    const res = await this.client.events.list({
+  async listEvents(
+    calendarId: string,
+    params: { limit?: number; startTime?: string; endTime?: string } = {},
+  ): Promise<unknown[]> {
+    const listParams: {
+      calendarId: string;
+      maxResults: number;
+      orderBy: 'startTime';
+      singleEvents: true;
+      timeMin: string;
+      timeMax?: string;
+      eventTypes: string[];
+    } = {
       calendarId,
-      maxResults: Math.min(limit, 250),
+      maxResults: Math.min(params.limit ?? 20, 250),
       orderBy: 'startTime',
       singleEvents: true,
-      timeMin: new Date().toISOString(),
+      timeMin: params.startTime ?? new Date().toISOString(),
       eventTypes: DEFAULT_EVENT_TYPES,
-    });
+    };
+    if (params.endTime !== undefined) listParams.timeMax = params.endTime;
+
+    const res = await this.client.events.list(listParams);
     return (res.data.items ?? []).map(event => this.normalizeEvent(event as Record<string, unknown>));
   }
 

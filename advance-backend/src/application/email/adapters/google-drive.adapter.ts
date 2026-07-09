@@ -1,4 +1,5 @@
 import type { GoogleDriveClientPort } from '../../orchestration/tools/families/google-drive.tool';
+import { DRIVE_READ_SCOPES } from '../../google/google-scope-policy';
 import type {
   AttachmentRef,
   AttachmentResolveContext,
@@ -47,6 +48,7 @@ export class GoogleDriveAttachmentAdapter implements AttachmentSourceAdapter {
       readonly userId: string;
       readonly connectionId: string;
       readonly minimumAccess: 'read_only';
+      readonly requiredScopes: readonly string[];
     }) => Promise<GoogleDriveAttachmentClient | null>,
   ) {}
 
@@ -60,6 +62,7 @@ export class GoogleDriveAttachmentAdapter implements AttachmentSourceAdapter {
       userId: ctx.userId,
       connectionId: ref.connectionId,
       minimumAccess: 'read_only',
+      requiredScopes: DRIVE_READ_SCOPES,
     });
     if (!client) throw new Error('Google Drive connection is unavailable for this user');
 

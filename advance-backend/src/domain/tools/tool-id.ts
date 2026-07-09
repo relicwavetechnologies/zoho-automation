@@ -58,7 +58,7 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   larkDoc:        ['read', 'create', 'update'],
   larkBase:       ['read', 'create', 'update', 'delete'],
   larkApproval:   ['read', 'create'],
-  googleGmail:    ['read', 'create', 'update', 'delete', 'send'],
+  googleGmail:    ['read', 'send', 'update'],
   googleDrive:    ['read', 'create', 'update'],
   googleCalendar: ['read', 'create', 'update', 'delete'],
   zohoCrm:        ['read', 'create', 'update', 'delete'],

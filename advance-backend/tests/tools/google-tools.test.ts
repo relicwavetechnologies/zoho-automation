@@ -17,6 +17,24 @@ import { createGoogleGmailTool }    from '../../src/application/orchestration/to
 import { createGoogleDriveTool }    from '../../src/application/orchestration/tools/families/google-drive.tool.ts';
 import { createGoogleCalendarTool } from '../../src/application/orchestration/tools/families/google-calendar.tool.ts';
 import { buildArgsSummary }         from '../../src/application/orchestration/tools/ai-sdk-adapter.ts';
+import {
+  CALENDAR_READ_SCOPES,
+  CALENDAR_WRITE_SCOPES,
+  DRIVE_READ_SCOPES,
+  DRIVE_WRITE_SCOPES,
+  GMAIL_MODIFY_SCOPES,
+  GMAIL_READ_SCOPES,
+  GMAIL_SEND_SCOPES,
+  GOOGLE_SCOPE,
+  hasAnyGoogleScope,
+} from '../../src/application/google/google-scope-policy.ts';
+
+describe('google scope policy', () => {
+  it('accepts any matching required Google scope and normalizes shorthand names', () => {
+    assert.equal(hasAnyGoogleScope(['gmail.send'], GMAIL_SEND_SCOPES), true);
+    assert.equal(hasAnyGoogleScope([GOOGLE_SCOPE.gmailReadonly], GMAIL_SEND_SCOPES), false);
+  });
+});
 
 // ─── gmail ────────────────────────────────────────────────────────────────────
 
@@ -77,11 +95,13 @@ describe('googleGmail tool', () => {
       assert.equal((r as any).value, 'send');
     });
 
-    it('maps draft and mailbox ops to create/update/delete actions', () => {
+    it('maps draft lifecycle to send and mailbox organization to update', () => {
       const tool = createGoogleGmailTool({ getClient: noClient });
-      assert.equal((tool.permissionCheck({ op: 'draft_create' }, makeAllowedPerm('googleGmail', ['create'])) as any).value, 'create');
+      assert.equal((tool.permissionCheck({ op: 'draft_create' }, makeAllowedPerm('googleGmail', ['send'])) as any).value, 'send');
+      assert.equal((tool.permissionCheck({ op: 'draft_update' }, makeAllowedPerm('googleGmail', ['send'])) as any).value, 'send');
+      assert.equal((tool.permissionCheck({ op: 'draft_delete', draftId: 'd1' }, makeAllowedPerm('googleGmail', ['send'])) as any).value, 'send');
       assert.equal((tool.permissionCheck({ op: 'archive', messageId: 'm1' }, makeAllowedPerm('googleGmail', ['update'])) as any).value, 'update');
-      assert.equal((tool.permissionCheck({ op: 'draft_delete', draftId: 'd1' }, makeAllowedPerm('googleGmail', ['delete'])) as any).value, 'delete');
+      assert.equal(tool.permissionCheck({ op: 'draft_create' }, makeAllowedPerm('googleGmail', ['read'])).ok, false);
     });
   });
 
@@ -100,6 +120,27 @@ describe('googleGmail tool', () => {
       const r = await tool.execute({ op: 'list' }, ctx);
       assert.equal(r.ok, true);
       assert.ok(Array.isArray((r as any).value.data));
+    });
+
+    it('passes required Gmail scopes by operation family', async () => {
+      const calls: any[] = [];
+      const tool = createGoogleGmailTool({
+        getClient: async (input: any) => {
+          calls.push(input);
+          return fakeGmailClient;
+        },
+      });
+
+      assert.equal((await tool.execute({ op: 'list' }, ctx)).ok, true);
+      assert.equal((await tool.execute({ op: 'draft_create', to: ['b@c.com'], subject: 'Draft', bodyText: 'Hello' }, ctx)).ok, true);
+      assert.equal((await tool.execute({ op: 'archive', messageId: 'm1' }, ctx)).ok, true);
+
+      assert.equal(calls[0].minimumAccess, 'read_only');
+      assert.deepEqual(calls[0].requiredScopes, GMAIL_READ_SCOPES);
+      assert.equal(calls[1].minimumAccess, 'read_write');
+      assert.deepEqual(calls[1].requiredScopes, GMAIL_SEND_SCOPES);
+      assert.equal(calls[2].minimumAccess, 'read_write');
+      assert.deepEqual(calls[2].requiredScopes, GMAIL_MODIFY_SCOPES);
     });
 
     it('get: ok with message data', async () => {
@@ -625,6 +666,24 @@ describe('googleDrive tool', () => {
       assert.equal(r.ok, true);
     });
 
+    it('passes required Drive scopes by operation family', async () => {
+      const calls: any[] = [];
+      const tool = createGoogleDriveTool({
+        getClient: async (input: any) => {
+          calls.push(input);
+          return fakeDriveClient;
+        },
+      });
+
+      assert.equal((await tool.execute({ op: 'list' }, ctx)).ok, true);
+      assert.equal((await tool.execute({ op: 'create_folder', name: 'Reports' }, ctx)).ok, true);
+
+      assert.equal(calls[0].minimumAccess, 'read_only');
+      assert.deepEqual(calls[0].requiredScopes, DRIVE_READ_SCOPES);
+      assert.equal(calls[1].minimumAccess, 'read_write');
+      assert.deepEqual(calls[1].requiredScopes, DRIVE_WRITE_SCOPES);
+    });
+
     it('get: ok with file', async () => {
       const tool = createGoogleDriveTool({ getClient: yesClient });
       const r = await tool.execute({ op: 'get', fileId: 'f1' }, ctx);
@@ -682,8 +741,12 @@ describe('googleDrive tool', () => {
 // ─── google-calendar ──────────────────────────────────────────────────────────
 
 describe('googleCalendar tool', () => {
+  let lastListParams: unknown;
   const fakeCalClient = {
-    listEvents:   async () => [{ eventId: 'ev-1' }],
+    listEvents:   async (_calendarId: string, params?: unknown) => {
+      lastListParams = params;
+      return [{ eventId: 'ev-1' }];
+    },
     getEvent:     async () => ({ eventId: 'ev-1', title: 'Sync' }),
     createEvent:  async () => ({ eventId: 'ev-new' }),
     updateEvent:  async () => {},
@@ -739,6 +802,51 @@ describe('googleCalendar tool', () => {
       const tool = createGoogleCalendarTool({ getClient: yesClient });
       const r = await tool.execute({ op: 'list' }, ctx);
       assert.equal(r.ok, true);
+    });
+
+    it('passes required Calendar scopes by operation family', async () => {
+      const calls: any[] = [];
+      const tool = createGoogleCalendarTool({
+        getClient: async (input: any) => {
+          calls.push(input);
+          return fakeCalClient;
+        },
+      });
+
+      assert.equal((await tool.execute({ op: 'list' }, ctx)).ok, true);
+      assert.equal((await tool.execute({ op: 'create', title: 'Sprint Review', startTime: '2026-07-09T10:00:00Z', endTime: '2026-07-09T11:00:00Z' }, ctx)).ok, true);
+
+      assert.equal(calls[0].minimumAccess, 'read_only');
+      assert.deepEqual(calls[0].requiredScopes, CALENDAR_READ_SCOPES);
+      assert.equal(calls[1].minimumAccess, 'read_write');
+      assert.deepEqual(calls[1].requiredScopes, CALENDAR_WRITE_SCOPES);
+    });
+
+    it('list: forwards optional date window', async () => {
+      const tool = createGoogleCalendarTool({ getClient: yesClient });
+      const r = await tool.execute({
+        op: 'list',
+        startTime: '2026-07-09T00:00:00+05:30',
+        endTime: '2026-07-16T00:00:00+05:30',
+        limit: 30,
+      }, ctx);
+      assert.equal(r.ok, true);
+      assert.deepEqual(lastListParams, {
+        startTime: '2026-07-09T00:00:00+05:30',
+        endTime: '2026-07-16T00:00:00+05:30',
+        limit: 30,
+      });
+    });
+
+    it('list: rejects date window without timezone', async () => {
+      const tool = createGoogleCalendarTool({ getClient: yesClient });
+      const r = await tool.execute({
+        op: 'list',
+        startTime: '2026-07-09T00:00:00',
+        endTime: '2026-07-16T00:00:00',
+      }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
     });
 
     it('get: bad_args when eventId missing', async () => {

@@ -9,6 +9,7 @@ import { asToolId } from '../../../../shared/ids';
 import type { DivoEmailTemplateData, DivoEmailTemplateVariant } from '../../../email/email.types';
 import { buildTemplateFromPlainText } from '../../../email/plain-text-to-template';
 import type { AttachmentPolicyViolation, AttachmentRef, ResolvedAttachment } from '../../../email/attachment.types';
+import { GMAIL_DRAFT_READ_SCOPES, GMAIL_MODIFY_SCOPES, GMAIL_READ_SCOPES, GMAIL_SEND_SCOPES } from '../../../google/google-scope-policy';
 
 const GmailOpSchema = z.enum([
   'list',
@@ -222,15 +223,28 @@ export interface GmailClientPort {
 }
 
 const inferAction = (op: GmailArgs['op']): ToolActionGroup => {
-  if (op === 'send' || op === 'reply' || op === 'reply_all' || op === 'forward' || op === 'draft_send') return 'send';
-  if (op === 'draft_create') return 'create';
   if (
-    op === 'draft_update' || op === 'label_apply' || op === 'label_remove' ||
-    op === 'archive' || op === 'mark_read' || op === 'mark_unread' ||
+    op === 'send' || op === 'reply' || op === 'reply_all' || op === 'forward' ||
+    op === 'draft_create' || op === 'draft_update' || op === 'draft_delete' || op === 'draft_send'
+  ) return 'send';
+  if (
+    op === 'label_apply' || op === 'label_remove' || op === 'archive' || op === 'mark_read' || op === 'mark_unread' ||
     op === 'star' || op === 'unstar' || op === 'trash' || op === 'untrash'
   ) return 'update';
-  if (op === 'draft_delete') return 'delete';
   return 'read';
+};
+
+const requiredScopesForOp = (op: GmailArgs['op']): readonly string[] => {
+  if (
+    op === 'send' || op === 'reply' || op === 'reply_all' || op === 'forward' ||
+    op === 'draft_create' || op === 'draft_update' || op === 'draft_delete' || op === 'draft_send'
+  ) return GMAIL_SEND_SCOPES;
+  if (
+    op === 'label_apply' || op === 'label_remove' || op === 'archive' || op === 'mark_read' || op === 'mark_unread' ||
+    op === 'star' || op === 'unstar' || op === 'trash' || op === 'untrash'
+  ) return GMAIL_MODIFY_SCOPES;
+  if (op === 'draft_get') return GMAIL_DRAFT_READ_SCOPES;
+  return GMAIL_READ_SCOPES;
 };
 
 export const createGoogleGmailTool = (deps: {
@@ -239,6 +253,7 @@ export const createGoogleGmailTool = (deps: {
     readonly userId: string;
     readonly connectionId: string;
     readonly minimumAccess: 'read_only' | 'read_write';
+    readonly requiredScopes: readonly string[];
   }) => Promise<GmailClientPort | null>;
   resolveAttachments?: (
     refs: readonly AttachmentRef[],
@@ -247,7 +262,7 @@ export const createGoogleGmailTool = (deps: {
 }): Tool<GmailArgs, GmailResult> => ({
   id: asToolId('googleGmail'),
   family: 'google',
-  actionGroups: new Set(['read', 'send', 'create', 'update', 'delete']),
+  actionGroups: new Set(['read', 'send', 'update']),
   argsSchema: GmailArgsSchema,
   resultSchema: GmailResultSchema,
   description: 'List, read, search, draft, send, reply, reply-all, forward, thread, label, organize Gmail messages, and attach resolved files.',
@@ -288,6 +303,7 @@ export const createGoogleGmailTool = (deps: {
       userId:        ctx.runContext.userId,
       connectionId:  args.connectionId,
       minimumAccess: action === 'read' ? 'read_only' : 'read_write',
+      requiredScopes: requiredScopesForOp(args.op),
     });
     if (!client) {
       return err(new ToolError({ toolId: 'googleGmail', reason: 'unrecoverable', message: 'Google connection is unavailable or not allowed for this operation' }));

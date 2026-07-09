@@ -6,6 +6,7 @@ import { PermissionError, ToolError } from '../../../../shared/errors';
 import type { PermissionResult } from '../../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../../shared/ids';
+import { CALENDAR_READ_SCOPES, CALENDAR_WRITE_SCOPES } from '../../../google/google-scope-policy';
 
 const Schema = z.object({
   connectionId: z.string().min(1),
@@ -23,8 +24,29 @@ type Args = z.infer<typeof Schema>;
 const ResultSchema = z.object({ success: z.boolean(), data: z.unknown().optional(), eventId: z.string().optional(), message: z.string().optional() });
 type Res = z.infer<typeof ResultSchema>;
 
+function hasTimezone(value: string): boolean {
+  return /(?:Z|[+-]\d{2}:\d{2})$/.test(value);
+}
+
+function validateListDateBounds(args: Args): string | null {
+  for (const field of ['startTime', 'endTime'] as const) {
+    const value = args[field];
+    if (value && !hasTimezone(value)) {
+      return `${field} must include a timezone offset or Z, e.g. 2026-07-09T00:00:00+05:30`;
+    }
+  }
+  if (args.startTime && args.endTime) {
+    const start = Date.parse(args.startTime);
+    const end = Date.parse(args.endTime);
+    if (Number.isNaN(start)) return 'startTime must be a valid ISO 8601 timestamp';
+    if (Number.isNaN(end)) return 'endTime must be a valid ISO 8601 timestamp';
+    if (end <= start) return 'endTime must be after startTime';
+  }
+  return null;
+}
+
 export interface GoogleCalendarClientPort {
-  listEvents(calendarId: string, limit?: number): Promise<unknown[]>;
+  listEvents(calendarId: string, params?: { limit?: number; startTime?: string; endTime?: string }): Promise<unknown[]>;
   getEvent(calendarId: string, eventId: string): Promise<unknown>;
   createEvent(calendarId: string, params: object): Promise<{ eventId: string }>;
   updateEvent(calendarId: string, eventId: string, params: object): Promise<void>;
@@ -36,12 +58,13 @@ export const createGoogleCalendarTool = (deps: { getClient: (input: {
   readonly userId: string;
   readonly connectionId: string;
   readonly minimumAccess: 'read_only' | 'read_write';
+  readonly requiredScopes: readonly string[];
 }) => Promise<GoogleCalendarClientPort | null> }): Tool<Args, Res> => ({
   id: asToolId('googleCalendar'), family: 'google',
   actionGroups: new Set(['read', 'create', 'update', 'delete']),
   argsSchema: Schema, resultSchema: ResultSchema,
   description: 'List, read, create, update, or delete Google Calendar events.',
-  parameterDocs: 'connectionId: required backend connection id from connections.list. op: list|get|create|update|delete. calendarId, eventId, title, startTime, endTime, attendeeEmails.',
+  parameterDocs: 'connectionId: required backend connection id from connections.list. op: list|get|create|update|delete. Use key op, never action. calendarId, eventId, title, startTime, endTime, attendeeEmails. For list, startTime/endTime are optional ISO 8601 bounds; pass both for date-window requests such as today, tomorrow, this week, or next 7 days. Calendar timestamps must include a timezone offset or Z.',
   permissionCheck(args, perm) {
     const op = args.op;
     const action: ToolActionGroup = op === 'list' || op === 'get' ? 'read'
@@ -56,14 +79,21 @@ export const createGoogleCalendarTool = (deps: { getClient: (input: {
       userId:        ctx.runContext.userId,
       connectionId:  args.connectionId,
       minimumAccess: writeOp ? 'read_write' : 'read_only',
+      requiredScopes: writeOp ? CALENDAR_WRITE_SCOPES : CALENDAR_READ_SCOPES,
     });
     if (!client) return err(new ToolError({ toolId: 'googleCalendar', reason: 'unrecoverable', message: 'Google Calendar connection is unavailable or not allowed for this operation' }));
     const calId = args.calendarId ?? 'primary';
     try {
       switch (args.op) {
         case 'list': {
+          const dateBoundsError = validateListDateBounds(args);
+          if (dateBoundsError) return err(new ToolError({ toolId: 'googleCalendar', reason: 'bad_args', message: dateBoundsError }));
           ctx.onProgress?.('Checking Google Calendar…');
-          return ok({ success: true, data: await client.listEvents(calId, args.limit) });
+          const listParams: { limit?: number; startTime?: string; endTime?: string } = {};
+          if (args.limit !== undefined) listParams.limit = args.limit;
+          if (args.startTime !== undefined) listParams.startTime = args.startTime;
+          if (args.endTime !== undefined) listParams.endTime = args.endTime;
+          return ok({ success: true, data: await client.listEvents(calId, listParams) });
         }
         case 'get': {
           if (!args.eventId) return err(new ToolError({ toolId: 'googleCalendar', reason: 'bad_args', message: 'eventId required' }));

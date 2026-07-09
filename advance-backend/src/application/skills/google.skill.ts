@@ -59,6 +59,10 @@ DRIVE RECIPES:
 
 CALENDAR RECIPES:
 - Upcoming schedule: googleCalendar op="list" with calendarId="primary" unless user names another calendar.
+- Date-window schedule: for "today", "tomorrow", "this week", "next 7 days", or similar, call googleCalendar op="list" with startTime and endTime as ISO 8601 bounds.
+- Use half-open local ranges for day windows: startTime is the local start of the first day; endTime is the local start after the last included day. For "next 7 days", include today plus the following 6 local days: start at today 00:00 local time and end at 00:00 local time 7 days later. Describe the displayed range as the included dates, not the exclusive end date.
+- Calendar args use key op, never action. Calendar startTime/endTime must include a timezone offset or Z; do not send timezone-less timestamps.
+- Keep the final answer's displayed date range consistent with the exact startTime/endTime window you passed.
 - Read event details: googleCalendar op="get" with eventId.
 - Create event: googleCalendar op="create" with title, startTime, endTime, optional description and attendeeEmails.
 - Update event: googleCalendar op="update" with eventId and changed fields only.
