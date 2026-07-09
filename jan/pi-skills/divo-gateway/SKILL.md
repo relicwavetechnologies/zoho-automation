@@ -89,6 +89,11 @@ Use the department id only when the user has selected or implied a department co
    - If multiple connections are plausible and the user did not specify, ask one short account-choice question.
    - Never guess connection IDs, tool IDs, permissions, or SaaS credentials.
 8. For execution, call `tools.invoke` with the exact `toolId` and args contract described by the backend skill/tool docs.
+   - Tool args must match the backend docs exactly. For Calendar tools, use `op`, never `action`.
+   - For calendar list/read requests with relative windows like "today", "tomorrow", "this week", or "next 7 days", pass explicit ISO `startTime` and `endTime` bounds when the calendar tool supports them.
+   - Use half-open local-day ranges: `startTime` is the local start of the first included day; `endTime` is the local start after the last included day. For "next 7 days", include today plus the following 6 local days.
+   - Calendar `startTime` and `endTime` must include a timezone offset or `Z`; do not send timezone-less timestamps like `2026-07-09T00:00:00`.
+   - The final answer must describe the same included date range used in the tool call. Do not include the exclusive `endTime` date as an included day.
 9. For local skill creation, write private skills under `.divo/skills/`. Ask about backend sharing only after creation when the user is admin/manager or `skillPublishing` says a sharing scope is available.
 10. Treat backend responses as authoritative.
 11. If a tool returns structured JSON, preserve the important fields in your answer instead of flattening everything into vague prose.
