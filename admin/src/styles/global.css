@@ -1,84 +1,121 @@
+@import "./font.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Theme ported from the jan desktop app (jan/web-app/src/index.css).
+  jan authors in oklch (Tailwind v4); admin is Tailwind v3 + hsl(var(--x)),
+  so the neutral grays and coral accent below are the hsl equivalents of
+  jan's tokens. The look = fully neutral (zero-chroma) surfaces layered by
+  lightness, translucent-feeling borders, and a single coral accent shared
+  across light and dark.
+*/
+
 @layer base {
   :root {
-    --background: 24 14% 89%;
-    --foreground: 222 34% 11%;
-    --mat: 30 22% 96%;
-    --mat-foreground: 222 34% 11%;
+    /* shell → content → card, layered by lightness */
+    --background: 0 0% 100%;
+    --foreground: 0 0% 3.9%;
+    --mat: 0 0% 98%;
+    --mat-foreground: 0 0% 3.9%;
     --card: 0 0% 100%;
-    --card-foreground: 222 34% 11%;
+    --card-foreground: 0 0% 3.9%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222 34% 11%;
-    --primary: 350 72% 36%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 30 14% 90%;
-    --secondary-foreground: 222 34% 14%;
-    --muted: 30 16% 92%;
-    --muted-foreground: 220 9% 46%;
-    --accent: 350 72% 36%;
-    --accent-foreground: 0 0% 100%;
+    --popover-foreground: 0 0% 3.9%;
+
+    /* coral accent (jan: oklch(0.7003 0.1611 35.09)).
+       admin treats primary === accent as one brand hue, so both are coral. */
+    --primary: 12 85% 64%;
+    --primary-foreground: 0 0% 98%;
+    --accent: 12 85% 64%;
+    --accent-foreground: 0 0% 98%;
+
+    /* neutral hover / fill surfaces */
+    --secondary: 0 0% 96.1%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 45.1%;
+
     --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 0% 98%;
     --success: 142 64% 38%;
     --success-foreground: 0 0% 100%;
     --warning: 38 92% 50%;
-    --warning-foreground: 222 34% 11%;
-    --emphasis: 222 34% 11%;
-    --emphasis-foreground: 0 0% 100%;
-    --border: 30 12% 86%;
-    --input: 30 12% 86%;
-    --ring: 350 72% 36%;
-    --radius: 0.5rem;
-    --shadow-soft: 0 1px 2px 0 hsl(222 30% 10% / 0.04), 0 4px 12px -4px hsl(222 30% 10% / 0.06);
-    --shadow-elevated: 0 6px 16px -4px hsl(222 30% 10% / 0.08), 0 12px 32px -8px hsl(222 30% 10% / 0.08);
+    --warning-foreground: 0 0% 9%;
+    --emphasis: 0 0% 9%;
+    --emphasis-foreground: 0 0% 98%;
+
+    --border: 0 0% 89.8%;
+    --input: 0 0% 89.8%;
+    --ring: 0 0% 63.9%;
+    --radius: 0.625rem;
+
+    /* light mode leans on borders, not shadows (jan-style) */
+    --shadow-soft: 0 1px 2px 0 hsl(0 0% 0% / 0.04), 0 4px 12px -4px hsl(0 0% 0% / 0.06);
+    --shadow-elevated: 0 6px 16px -4px hsl(0 0% 0% / 0.08), 0 12px 32px -8px hsl(0 0% 0% / 0.08);
     --sidebar-width: 240px;
     --sidebar-width-collapsed: 76px;
-    --chart-1: 350 72% 36%;
+
+    --chart-1: 12 85% 64%;
     --chart-2: 142 64% 50%;
     --chart-3: 253 82% 70%;
     --chart-4: 212 70% 58%;
-    --chart-5: 222 34% 11%;
+    --chart-5: 0 0% 45%;
   }
 
   .dark {
-    --background: 222 32% 5%;
-    --foreground: 210 28% 94%;
-    --mat: 222 28% 9%;
-    --mat-foreground: 210 28% 94%;
-    --card: 222 22% 13%;
-    --card-foreground: 210 28% 94%;
-    --popover: 222 22% 13%;
-    --popover-foreground: 210 28% 94%;
-    --primary: 350 70% 52%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 222 18% 18%;
-    --secondary-foreground: 210 28% 94%;
-    --muted: 222 18% 16%;
-    --muted-foreground: 214 14% 62%;
-    --accent: 350 70% 52%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 62% 52%;
-    --destructive-foreground: 0 0% 100%;
+    /* jan dark: soft near-black bg, each surface one step lighter */
+    --background: 0 0% 7%;
+    --foreground: 0 0% 98%;
+    --mat: 0 0% 9.5%;
+    --mat-foreground: 0 0% 98%;
+    --card: 0 0% 11%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 11%;
+    --popover-foreground: 0 0% 98%;
+
+    /* same coral in both modes; jan uses dark text on the accent in dark mode */
+    --primary: 12 85% 64%;
+    --primary-foreground: 0 0% 11%;
+    --accent: 12 85% 64%;
+    --accent-foreground: 0 0% 11%;
+
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 63%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 98%;
     --success: 142 56% 50%;
-    --success-foreground: 222 34% 8%;
+    --success-foreground: 0 0% 9%;
     --warning: 38 92% 58%;
-    --warning-foreground: 222 34% 8%;
-    --emphasis: 222 35% 3%;
-    --emphasis-foreground: 0 0% 100%;
-    --border: 222 18% 18%;
-    --input: 222 18% 18%;
-    --ring: 350 70% 52%;
-    --shadow-soft: 0 0 0 1px hsl(222 18% 24% / 0.5), 0 2px 6px -2px hsl(0 0% 0% / 0.4);
-    --shadow-elevated: 0 0 0 1px hsl(222 18% 26% / 0.6), 0 8px 24px -6px hsl(0 0% 0% / 0.5);
+    --warning-foreground: 0 0% 9%;
+    --emphasis: 0 0% 98%;
+    --emphasis-foreground: 0 0% 9%;
+
+    /* solid equivalents of jan's translucent-white borders over near-black */
+    --border: 0 0% 17%;
+    --input: 0 0% 22%;
+    --ring: 0 0% 45%;
+
+    --shadow-soft: 0 0 0 1px hsl(0 0% 100% / 0.06), 0 2px 6px -2px hsl(0 0% 0% / 0.5);
+    --shadow-elevated: 0 0 0 1px hsl(0 0% 100% / 0.08), 0 8px 24px -6px hsl(0 0% 0% / 0.6);
+
+    --chart-1: 12 85% 64%;
+    --chart-2: 142 56% 55%;
+    --chart-3: 253 82% 75%;
+    --chart-4: 212 70% 62%;
+    --chart-5: 0 0% 63%;
   }
 }
 
 @layer base {
   * {
     @apply border-border;
+    caret-color: hsl(var(--foreground));
   }
 
   html,
@@ -91,7 +128,7 @@
 
   body {
     @apply bg-background text-foreground antialiased;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 
@@ -101,6 +138,11 @@
 
   :focus-visible {
     @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  /* jan renders crisp, uniformly-weighted lucide icons */
+  svg {
+    stroke-width: 2;
   }
 }
 
@@ -113,6 +155,7 @@
   }
 }
 
+/* Thin, translucent, theme-aware scrollbars (ported from jan) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -123,6 +166,27 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--border));
-  border-radius: 999px;
+  background: hsl(0 0% 63% / 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(0 0% 63% / 0.5);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: hsl(0 0% 100% / 0.2);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: hsl(0 0% 100% / 0.35);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(0 0% 63% / 0.3) transparent;
+}
+
+.dark * {
+  scrollbar-color: hsl(0 0% 100% / 0.2) transparent;
 }

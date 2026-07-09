@@ -12,7 +12,7 @@ export function LogoMark({ collapsed }: LogoMarkProps) {
       </div>
       {!collapsed ? (
         <div className="min-w-0">
-          <p className="text-sm font-bold uppercase tracking-[0.2em]">Divo</p>
+          <p className="font-studio text-sm font-bold uppercase tracking-[0.2em]">Divo</p>
           <p className="text-xs text-muted-foreground">Admin Console</p>
         </div>
       ) : null}
