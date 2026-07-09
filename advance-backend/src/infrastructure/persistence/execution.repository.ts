@@ -116,27 +116,46 @@ export class ExecutionRepository {
   /**
    * Find an ExecutionRun by its external run id (stored as the unique
    * requestId), or create it. Used by the desktop/PI trace ingest path, where
-   * PI mints the run id and streams events in batches. Returns the run's id.
+   * PI mints the run id and streams batches per turn — several batches for the
+   * same run can arrive concurrently. Prisma's upsert isn't atomic, so racing
+   * creates violate the unique requestId; we fast-path the lookup and, on a
+   * unique-violation (P2002), re-fetch the row the winning create inserted.
    */
   async findOrCreateByRequestId(input: CreateRunInput & { requestId: string }): Promise<string> {
-    const run = await this.prisma.executionRun.upsert({
+    const existing = await this.prisma.executionRun.findUnique({
       where:  { requestId: input.requestId },
-      update: {},
-      create: {
-        companyId:   input.companyId,
-        channel:     input.channel,
-        entrypoint:  input.entrypoint,
-        requestId:   input.requestId,
-        status:      'running',
-        ...(input.userId      ? { userId:      input.userId }      : {}),
-        ...(input.threadId    ? { threadId:    input.threadId }    : {}),
-        ...(input.chatId      ? { chatId:      input.chatId }      : {}),
-        ...(input.messageId   ? { messageId:   input.messageId }   : {}),
-        ...(input.agentTarget ? { agentTarget: input.agentTarget } : {}),
-      },
       select: { id: true },
     });
-    return run.id;
+    if (existing) return existing.id;
+
+    try {
+      const run = await this.prisma.executionRun.create({
+        data: {
+          companyId:   input.companyId,
+          channel:     input.channel,
+          entrypoint:  input.entrypoint,
+          requestId:   input.requestId,
+          status:      'running',
+          ...(input.userId      ? { userId:      input.userId }      : {}),
+          ...(input.threadId    ? { threadId:    input.threadId }    : {}),
+          ...(input.chatId      ? { chatId:      input.chatId }      : {}),
+          ...(input.messageId   ? { messageId:   input.messageId }   : {}),
+          ...(input.agentTarget ? { agentTarget: input.agentTarget } : {}),
+        },
+        select: { id: true },
+      });
+      return run.id;
+    } catch (e) {
+      // A concurrent batch created the run first — fetch the winner.
+      if ((e as { code?: string }).code === 'P2002') {
+        const row = await this.prisma.executionRun.findUnique({
+          where:  { requestId: input.requestId },
+          select: { id: true },
+        });
+        if (row) return row.id;
+      }
+      throw e;
+    }
   }
 
   /**
