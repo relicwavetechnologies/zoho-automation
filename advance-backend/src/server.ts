@@ -28,6 +28,7 @@ import { createTokenUsageRoutes } from './http/admin/token-usage.routes';
 import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
 import { createDesktopThreadsRoutes } from './http/desktop/desktop-threads.routes';
 import { createTraceIngestRoutes } from './http/desktop/trace-ingest.routes';
+import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
 import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
@@ -81,6 +82,34 @@ export const createServer = (c: Container) => {
     c.env.CLOUDINARY_TEMP_EXPORT_CLEANUP_INTERVAL_SECONDS * 1000,
   );
   cloudinaryCleanupTimer.unref?.();
+
+  // Run-trace retention (Track A): prune detailed ExecutionEvent + StepResult
+  // payloads past the window; AiTokenUsage (cost history) is never pruned.
+  const executionRepoForRetention = new ExecutionRepository(c.prisma);
+  const runTraceRetention = () => {
+    const cutoff = new Date(Date.now() - c.env.TRACE_RETENTION_DAYS * 86_400_000);
+    void executionRepoForRetention.pruneExpiredDetail(cutoff)
+      .then((pruned) => {
+        if (pruned.events > 0 || pruned.steps > 0) {
+          c.logger.info('trace.retention.pruned', {
+            events: pruned.events,
+            steps:  pruned.steps,
+            cutoff: cutoff.toISOString(),
+          });
+        }
+      })
+      .catch((error) => {
+        c.logger.warn('trace.retention.failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+  runTraceRetention();
+  const traceRetentionTimer = setInterval(
+    runTraceRetention,
+    c.env.TRACE_RETENTION_INTERVAL_HOURS * 3_600_000,
+  );
+  traceRetentionTimer.unref?.();
 
   app.use((req, res, next) => {
     const origin = req.headers.origin;

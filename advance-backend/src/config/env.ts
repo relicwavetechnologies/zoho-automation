@@ -138,6 +138,13 @@ const EnvSchema = z.object({
   /** How often to scan Cloudinary for expired temp exports. */
   CLOUDINARY_TEMP_EXPORT_CLEANUP_INTERVAL_SECONDS: positiveInt(21_600),
 
+  // ── Run-trace retention (Track A) ─────────────────────────────────────────
+  /** Detailed trace payloads (ExecutionEvent + StepResult) older than this are
+   *  pruned. AiTokenUsage is never pruned (cost/spend history is long-lived). */
+  TRACE_RETENTION_DAYS: positiveInt(7),
+  /** How often the trace-retention prune runs, in hours. */
+  TRACE_RETENTION_INTERVAL_HOURS: positiveInt(24),
+
   // ── Admin auth ────────────────────────────────────────────────────────────
   /** HS256 secret for signing admin JWTs. Required in production. */
   ADMIN_JWT_SECRET: z.string().min(1).default('dev-secret-change-me'),

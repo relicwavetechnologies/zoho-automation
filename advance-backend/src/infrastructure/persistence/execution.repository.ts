@@ -184,6 +184,20 @@ export class ExecutionRepository {
     });
   }
 
+  /**
+   * Retention (Track A): delete detailed trace payloads older than `cutoff`.
+   * Removes ExecutionEvent + StepResult rows; leaves ExecutionRun headers (a
+   * cheap long-lived index) and AiTokenUsage (cost/spend history) untouched.
+   * Returns how many rows were removed from each table.
+   */
+  async pruneExpiredDetail(cutoff: Date): Promise<{ events: number; steps: number }> {
+    const [events, steps] = await this.prisma.$transaction([
+      this.prisma.executionEvent.deleteMany({ where: { createdAt: { lt: cutoff } } }),
+      this.prisma.stepResult.deleteMany({ where: { createdAt: { lt: cutoff } } }),
+    ]);
+    return { events: events.count, steps: steps.count };
+  }
+
   /** Mark a run as completed successfully. */
   async complete(executionId: string, latestSummary?: string): Promise<void> {
     await this.prisma.executionRun.update({

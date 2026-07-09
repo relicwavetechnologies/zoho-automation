@@ -1434,6 +1434,7 @@ model StepResult {
 
   @@unique([executionId, sequence])
   @@index([executionId, createdAt])
+  @@index([createdAt])
 }
 
 model RuntimeConversation {
