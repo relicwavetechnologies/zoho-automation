@@ -6,6 +6,7 @@
  * Failures become string envelopes:
  *   - permission_denied: <reason>
  *   - approval_pending: <reason>   (HITL gate fired, manager notified)
+ *   - approval_rejected: <reason>
  *   - approval_misconfigured: <reason>
  *   - error: <reason>
  *
@@ -90,6 +91,15 @@ export function toAISdkTool(
             approvalId: decision.approvalId,
           });
           return `approval_pending: ${decision.message}`;
+        }
+
+        if (decision.kind === 'rejected') {
+          adapterCtx.logger.info('ai_sdk_adapter.approval_rejected', {
+            toolId:     t.id,
+            action,
+            approvalId: decision.approvalId,
+          });
+          return `approval_rejected: ${decision.message}`;
         }
 
         if (decision.kind === 'misconfigured') {

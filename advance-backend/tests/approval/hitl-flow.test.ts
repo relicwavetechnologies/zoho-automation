@@ -131,7 +131,7 @@ function makeApprovalRepo() {
         const isExpired = row.expiresAt ? row.expiresAt.getTime() <= now : false;
         if (
           row.idempotencyKey === key
-          && (row.status === 'pending' || row.status === 'approved')
+          && (row.status === 'pending' || row.status === 'approved' || row.status === 'rejected')
           && !isExpired
         ) return ok(row);
       }
@@ -506,6 +506,50 @@ describe('ApprovalGateService', () => {
     assert.equal(result.kind, 'allowed');
     assert.equal(result.executionGrant?.approvalId, 'approval-1');
     assert.equal(repo.store.get('approval-1')!.status, 'executing');
+  });
+
+  it('returns rejected for an exact request after the manager rejects it', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+
+    const args = { op: 'send', to: ['x@y.com'], subject: 'Rejected' };
+    const argsHash = computeArgsHash(args);
+    const idemKey = computeIdempotencyKey(CHAT_ID, String(TOOL_ID), 'send', argsHash);
+    await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'rejected approval',
+      payloadJson: { toolId: String(TOOL_ID), action: 'send', args, argsHash },
+      metadataJson: {
+        requesterId: String(REQUESTER),
+        requesterLarkOpenId: REQUESTER_OID,
+        departmentId: null,
+        chatId: CHAT_ID,
+        resolvedManagerOpenId: MANAGER_OID,
+      },
+      channel: 'lark',
+      requestedBy: String(REQUESTER),
+      idempotencyKey: idemKey,
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+    await repo.atomicResolve('approval-1', 'rejected', MANAGER_OID);
+
+    const result = await gate.check({
+      toolId: String(TOOL_ID),
+      action: 'send',
+      args,
+      perm: makePermission(),
+      runContext: makeRunContext(),
+      chatId: CHAT_ID,
+      argsSummary: 'Send rejected email',
+    });
+
+    assert.equal(result.kind, 'rejected');
+    assert.equal((result as any).approvalId, 'approval-1');
   });
 
   it('marks a claimed approval grant consumed after successful execution', async () => {
@@ -957,6 +1001,52 @@ describe('LarkApprovalCardHandler', () => {
 
     await new Promise(r => setTimeout(r, 50));
     assert.equal(resumeDecision, 'rejected');
+  });
+
+  it('does not auto-resume gateway-origin approvals', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    let resumeCalled = false;
+    const resumer = { resume: async () => { resumeCalled = true; } };
+
+    await repo.create({
+      chatId: 'gateway:sess-test',
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'test gateway approval',
+      payloadJson: {},
+      metadataJson: {
+        approvalOrigin: 'gateway',
+        chatId: 'gateway:sess-test',
+        resolvedManagerOpenId: MANAGER_OID,
+        requesterId: String(REQUESTER),
+      },
+      channel: 'lark',
+      requestedBy: String(REQUESTER),
+      idempotencyKey: 'idem-gateway',
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+    await repo.setDecisionMessageId('approval-1', 'msg-gateway-1');
+
+    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+
+    const result = await handler.handle({
+      action: {
+        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
+        tag: 'button',
+      },
+      operator: { open_id: MANAGER_OID, name: 'Abhishek' },
+    });
+
+    assert.equal(result.handled, true);
+    assert.match((result.responseBody as any).toast.content, /retry the exact desktop action/i);
+    assert.equal(repo.store.get('approval-1')!.status, 'approved');
+    assert.equal(lark.updatedMessages.length, 1);
+
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(resumeCalled, false);
   });
 
   it('parses double-encoded JSON value', async () => {

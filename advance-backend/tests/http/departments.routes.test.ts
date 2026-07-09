@@ -28,6 +28,7 @@ import assert from 'node:assert/strict';
 import type { Request, Response } from 'express';
 import { createDepartmentRoutes } from '../../src/http/admin/departments.routes.ts';
 import type { DepartmentAdminService } from '../../src/application/departments/department-admin.service.ts';
+import { SKILL_SUMMARY_MAX_CHARS } from '../../src/application/skills/skill-limits.ts';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -456,6 +457,26 @@ describe('POST /:id/skills', () => {
   it('returns 201 on success', async () => {
     const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', { body: validSkill });
     assert.equal(status, 201);
+  });
+
+  it('accepts skill summaries up to the shared skill summary limit', async () => {
+    const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', {
+      body: {
+        ...validSkill,
+        summary: 'x'.repeat(SKILL_SUMMARY_MAX_CHARS),
+      },
+    });
+    assert.equal(status, 201);
+  });
+
+  it('returns 400 when skill summary exceeds the shared skill summary limit', async () => {
+    const { status } = await callRoute(makeRouter(), 'POST', '/dept-1/skills', {
+      body: {
+        ...validSkill,
+        summary: 'x'.repeat(SKILL_SUMMARY_MAX_CHARS + 1),
+      },
+    });
+    assert.equal(status, 400);
   });
 
   it('returns 400 when name is missing', async () => {

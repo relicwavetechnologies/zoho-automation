@@ -8,6 +8,7 @@ export type { ApprovalGrant } from '../../domain/orchestration/run-context';
 export type ApprovalDecision =
   | { readonly kind: 'allowed'; readonly executionGrant?: ApprovalExecutionGrant }
   | { readonly kind: 'pending';       readonly approvalId: string; readonly message: string }
+  | { readonly kind: 'rejected';      readonly approvalId: string; readonly message: string }
   | { readonly kind: 'misconfigured'; readonly message: string };
 
 export interface ApprovalExecutionGrant {

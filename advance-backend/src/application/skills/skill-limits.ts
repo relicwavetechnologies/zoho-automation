@@ -1,0 +1,1 @@
+export const SKILL_SUMMARY_MAX_CHARS = 1024;

@@ -3,6 +3,7 @@ import type { RuntimeApprovalRepository } from '../../persistence/runtime-approv
 import type { ApprovalResumerService } from '../../../application/approval/approval-resumer.service';
 import type { LarkChannelAdapter } from './lark.adapter';
 import { buildApprovalResolutionCard } from '../../../application/approval/approval-card-builder';
+import { isGatewayApprovalMetadata } from '../../../application/approval/approval-origin';
 
 interface CardActionPayload {
   kind:       string;
@@ -185,16 +186,25 @@ export class LarkApprovalCardHandler {
         .catch(e => this.log.warn('approval_card.update_failed', { error: String(e) }));
     }
 
-    // Kick off engine resume asynchronously (must not block the HTTP response)
-    void this.resumer.resume(approvalId, decision as 'approved' | 'rejected')
-      .catch(e => this.log.error('approval_card.resume_failed', { approvalId, error: String(e) }));
+    const isGatewayApproval = isGatewayApprovalMetadata(approval.metadataJson);
+    if (!isGatewayApproval) {
+      // Kick off engine resume asynchronously (must not block the HTTP response).
+      void this.resumer.resume(approvalId, decision as 'approved' | 'rejected')
+        .catch(e => this.log.error('approval_card.resume_failed', { approvalId, error: String(e) }));
+    } else {
+      this.log.info('approval_card.gateway_no_auto_resume', { approvalId, decision });
+    }
 
-    this.log.info('approval_card.handled', { approvalId, decision });
+    this.log.info('approval_card.handled', { approvalId, decision, isGatewayApproval });
 
     // Return a toast notification to the manager
-    const toastContent = decision === 'approved'
-      ? '✅ Approved — the action will now be executed.'
-      : '❌ Rejected — the requester will be notified.';
+    const toastContent = isGatewayApproval
+      ? (decision === 'approved'
+          ? 'Approved — the requester can now retry the exact desktop action.'
+          : 'Rejected — the exact desktop action will remain blocked.')
+      : (decision === 'approved'
+          ? '✅ Approved — the action will now be executed.'
+          : '❌ Rejected — the requester will be notified.');
 
     return {
       handled: true,

@@ -203,4 +203,28 @@ describe("resolveDivoSkills", () => {
 		assert.equal(result.selected?.source, "local");
 		assert.equal(result.selected?.name, "image-analysis");
 	});
+
+	it("selects the local skill maker for reusable skill creation when backend is unavailable", async () => {
+		const root = mkdtempSync(join(tmpdir(), "divo-skills-"));
+		writeSkill(
+			root,
+			"skill-maker",
+			[
+				"name: skill-maker",
+				"description: Create save update package reusable local Divo Pi skill from chat learning workflow instructions and optionally share through backend skillPublishing",
+			].join("\n"),
+			"Create private skills under the writable user skill directory before checking backend sharing authority.",
+		);
+
+		const result = await resolveDivoSkills({
+			query: "turn this chat learning into a reusable skill and save it locally",
+			env: {
+				DIVO_SKILL_DIRS: root,
+			},
+		});
+
+		assert.equal(result.selected?.source, "local");
+		assert.equal(result.selected?.name, "skill-maker");
+		assert.match(result.selected?.nextAction ?? "", /Read .*SKILL\.md/);
+	});
 });

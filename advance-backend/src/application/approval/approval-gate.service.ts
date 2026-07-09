@@ -8,6 +8,7 @@ import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark
 import type { ApprovalDecision, ApprovalExecutionGrant } from './approval.types';
 import { checkApprovalPolicy, computeArgsHash, computeIdempotencyKey } from './approval-policy';
 import { buildApprovalCard } from './approval-card-builder';
+import { approvalOriginFromChatId } from './approval-origin';
 
 export interface ApprovalGateInput {
   toolId:         string;
@@ -74,6 +75,14 @@ export class ApprovalGateService {
           message:    `This action is still waiting for manager approval (id: ${existing.id}). The request has already been sent — please wait.`,
         };
       }
+
+      if (existing.status === 'rejected') {
+        return {
+          kind:       'rejected',
+          approvalId: existing.id,
+          message:    `This action was rejected by the manager (id: ${existing.id}). Change the request before asking for approval again.`,
+        };
+      }
     }
 
     // Resolve the dept manager
@@ -117,6 +126,7 @@ export class ApprovalGateService {
         requesterId:            String(runContext.userId),
         requesterLarkOpenId:    runContext.userExternalId ? String(runContext.userExternalId) : null,
         departmentId:           runContext.departmentId ? String(runContext.departmentId) : null,
+        approvalOrigin:         approvalOriginFromChatId(chatId),
         statusMessageId:        statusMessageId ?? null,
         chatId,
         resolvedManagerOpenId:  manager.larkOpenId,

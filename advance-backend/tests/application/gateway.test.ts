@@ -10,12 +10,14 @@ import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
 import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
 import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
 import { createWebSearchTool } from '../../src/application/orchestration/tools/families/web-search.tool.ts';
+import { createSkillPublishingTool } from '../../src/application/orchestration/tools/families/skill-publishing.tool.ts';
 import type { CatalogSkill, SkillCatalogService } from '../../src/application/skills/skill-catalog.service.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import { PermissionError, ToolError } from '../../src/shared/errors.ts';
-import { asToolId } from '../../src/shared/ids.ts';
+import { asDepartmentId, asToolId } from '../../src/shared/ids.ts';
 import { makeAllowedPerm, makeDeniedPerm, noopLogger } from '../tools/tool-test.helpers.ts';
 import type { PermissionService } from '../../src/application/permissions/permission.service.ts';
+import type { PermissionQuery, PermissionResult } from '../../src/application/permissions/permission.types.ts';
 import type { GatewayMemberContext } from '../../src/application/gateway/gateway.types.ts';
 import type { MediaOcrService } from '../../src/application/gateway/media-ocr.service.ts';
 
@@ -56,6 +58,44 @@ function makePermissionService(perm = makeAllowedPerm('fakeTool', ['read'])): Pe
     invalidateCompany: async () => {},
     invalidateDept: async () => {},
   } as unknown as PermissionService;
+}
+
+function makeScopedPermissionService(
+  resolve: (query: PermissionQuery) => PermissionResult,
+  queries: PermissionQuery[] = [],
+): PermissionService {
+  return {
+    resolve: async (query: PermissionQuery) => {
+      queries.push(query);
+      return ok(resolve(query));
+    },
+    canInvoke: async () => ok(true),
+    invalidateCompany: async () => {},
+    invalidateDept: async () => {},
+  } as unknown as PermissionService;
+}
+
+function makeSkillPublishingPrisma() {
+  const creates: unknown[] = [];
+  const prisma = {
+    skill: {
+      findFirst: async () => null,
+      create: async (args: { data: Record<string, unknown> }) => {
+        creates.push(args.data);
+        return {
+          id: 'skill-1',
+          slug: args.data.slug,
+          name: args.data.name,
+          scope: args.data.scope,
+          departmentId: args.data.departmentId,
+          toolIds: args.data.toolIds,
+          status: 'active',
+        };
+      },
+    },
+  };
+
+  return { prisma: prisma as never, creates };
 }
 
 function makeSkillCatalog(skills: CatalogSkill[]): SkillCatalogService {
@@ -193,6 +233,154 @@ describe('ToolExecutor', () => {
       action: 'read',
       result: { result: 'echo:hello' },
     });
+  });
+
+  it('reports company and department skill-publishing authority for company admin in a department context', async () => {
+    const registry = new ToolRegistry();
+    const { prisma } = makeSkillPublishingPrisma();
+    registry.register(createSkillPublishingTool({ prisma }));
+
+    const companyPerm = makeAllowedPerm('skillPublishing', ['read', 'create']);
+    const departmentPerm: PermissionResult = {
+      ...makeDeniedPerm(),
+      department: {
+        id: asDepartmentId('dept-1'),
+        name: 'Finance',
+        roleSlug: 'MANAGER' as never,
+        zohoReadScope: 'personalized',
+      },
+    };
+    const queries: PermissionQuery[] = [];
+    const permissions = makeScopedPermissionService(
+      (query) => query.departmentId ? departmentPerm : companyPerm,
+      queries,
+    );
+
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member: { ...member, aiRole: 'COMPANY_ADMIN' },
+      departmentId: 'dept-1',
+      toolId: 'skillPublishing',
+      args: { operation: 'check_authority' },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual((result as any).data.result, {
+      operation: 'check_authority',
+      canPublishCompany: true,
+      canPublishDepartment: true,
+      departmentId: 'dept-1',
+    });
+    assert.deepEqual(queries.map((query) => query.departmentId ? String(query.departmentId) : null), [
+      'dept-1',
+      null,
+    ]);
+  });
+
+  it('uses company permissions for company-scope skill publishing even when a department is active', async () => {
+    const registry = new ToolRegistry();
+    const { prisma, creates } = makeSkillPublishingPrisma();
+    registry.register(createSkillPublishingTool({ prisma }));
+
+    const companyPerm = makeAllowedPerm('skillPublishing', ['read', 'create']);
+    const departmentPerm: PermissionResult = {
+      ...makeDeniedPerm(),
+      department: {
+        id: asDepartmentId('dept-1'),
+        name: 'Finance',
+        roleSlug: 'MEMBER' as never,
+        zohoReadScope: 'personalized',
+      },
+    };
+    const queries: PermissionQuery[] = [];
+    let approvalChecks = 0;
+    const permissions = makeScopedPermissionService(
+      (query) => query.departmentId ? departmentPerm : companyPerm,
+      queries,
+    );
+
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      approvalGate: {
+        check: async () => {
+          approvalChecks++;
+          return { kind: 'allowed' };
+        },
+        completeExecution: async () => {},
+        failExecution: async () => {},
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member: { ...member, aiRole: 'COMPANY_ADMIN' },
+      departmentId: 'dept-1',
+      toolId: 'skillPublishing',
+      args: {
+        operation: 'publish',
+        scope: 'company',
+        name: 'Company Finance Brief',
+        markdown: '# Company Finance Brief',
+        toolIds: ['webSearch'],
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal((result as any).data.result.skill.scope, 'global');
+    assert.deepEqual(queries.map((query) => query.departmentId ? String(query.departmentId) : null), [null]);
+    assert.equal(approvalChecks, 0);
+    assert.equal((creates[0] as any).departmentId, null);
+  });
+
+  it('returns approval_rejected when an exact gateway action was rejected by the manager', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      permissionCheck: () => ok('create'),
+    }));
+    const permissions = makePermissionService({
+      ...makeAllowedPerm('fakeTool', ['create']),
+      department: {
+        id: asDepartmentId('dept-1'),
+        name: 'Finance',
+        roleSlug: 'MEMBER' as never,
+        zohoReadScope: 'personalized',
+      },
+    });
+
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      approvalGate: {
+        check: async () => ({
+          kind: 'rejected',
+          approvalId: 'approval-1',
+          message: 'This action was rejected by the manager.',
+        }),
+        completeExecution: async () => {},
+        failExecution: async () => {},
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member,
+      departmentId: 'dept-1',
+      toolId: 'fakeTool',
+      args: { query: 'gateway' },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'approval_rejected');
+    assert.equal(result.approval?.approvalId, 'approval-1');
   });
 
   it('returns tool_error when execute fails', async () => {
@@ -394,6 +582,47 @@ describe('GatewayDispatcher', () => {
     const tools = (result.data as { tools: Array<{ id: string }> }).tools;
     assert.ok(tools.some((t) => t.id === 'fakeTool'));
     assert.equal(tools.some((t) => t.id === 'runCommand'), false);
+  });
+
+  it('exposes skillPublishing to department managers even without explicit RBAC rows', async () => {
+    const registry = new ToolRegistry();
+    const { prisma } = makeSkillPublishingPrisma();
+    registry.register(createSkillPublishingTool({ prisma }));
+
+    const managerPerm: PermissionResult = {
+      ...makeDeniedPerm(),
+      department: {
+        id: asDepartmentId('dept-1'),
+        name: 'Finance',
+        roleSlug: 'MANAGER' as never,
+        zohoReadScope: 'personalized',
+      },
+    };
+    const permissions = makePermissionService(managerPerm);
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      logger: noopLogger,
+    });
+
+    const listed = await dispatcher.dispatch({ op: 'tools.list', departmentId: 'dept-1' }, member);
+    assert.equal(listed.ok, true);
+    const skillPublishingTool = (listed.data as any).tools.find((tool: { id: string }) => tool.id === 'skillPublishing');
+    assert.ok(skillPublishingTool);
+    assert.deepEqual(skillPublishingTool.allowedActions, ['read', 'create']);
+
+    const capabilities = await dispatcher.dispatch({ op: 'capabilities.get', departmentId: 'dept-1' }, member);
+    assert.equal(capabilities.ok, true);
+    const capabilityTool = (capabilities.data as any).tools.find((tool: { toolId: string }) => tool.toolId === 'skillPublishing');
+    assert.ok(capabilityTool);
+    assert.deepEqual(capabilityTool.allowedActions, ['read', 'create']);
   });
 
   it('returns skills.get with permission check', async () => {

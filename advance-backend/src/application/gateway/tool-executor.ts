@@ -1,13 +1,15 @@
 import type { ToolRegistry } from '../orchestration/tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
+import type { PermissionResult } from '../permissions/permission.types';
 import type { ApprovalGateService } from '../approval/approval-gate.service';
 import { buildArgsSummary } from '../orchestration/tools/ai-sdk-adapter';
 import type { ToolExecutionContext } from '../orchestration/tools/tool.contract';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import type { Logger } from '../../shared/logger';
 import type { Clock } from '../../shared/clock';
-import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
+import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
+import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
 import type {
   GatewayMemberContext,
   GatewayResponse,
@@ -57,14 +59,40 @@ export class ToolExecutor {
     }
 
     const validatedArgs = argsParse.data;
+    const skillPublishingDepartmentId = skillPublishingScopedDepartmentId(toolId, validatedArgs, departmentId);
+    const companyScopedSkillPublishing = isCompanyScopedSkillPublishingInvocation(toolId, validatedArgs);
+    const effectiveDepartmentId = companyScopedSkillPublishing ? undefined : skillPublishingDepartmentId;
 
-    const permResult = await this.deps.permissions.resolve({
+    const basePermissionQuery = {
       companyId: asCompanyId(member.companyId),
       userId: asUserId(member.userId),
       companyRole: asCompanyRoleSlug(member.aiRole),
-      ...(departmentId ? { departmentId: asDepartmentId(departmentId) } : {}),
       channel: 'desktop',
+    } as const;
+
+    let permResult = await this.deps.permissions.resolve({
+      ...basePermissionQuery,
+      ...(effectiveDepartmentId ? { departmentId: asDepartmentId(effectiveDepartmentId) } : {}),
     });
+
+    if (
+      isSkillPublishingAuthorityCheck(toolId, validatedArgs)
+      && skillPublishingDepartmentId
+    ) {
+      const companyPermResult = await this.deps.permissions.resolve(basePermissionQuery);
+      if (!companyPermResult.ok) {
+        return gatewayFailure('permission_denied', companyPermResult.error.message);
+      }
+
+      if (!permResult.ok) {
+        return gatewayFailure('permission_denied', permResult.error.message);
+      }
+
+      permResult = {
+        ok: true,
+        value: mergeSkillPublishingAuthority(companyPermResult.value, permResult.value),
+      };
+    }
 
     if (!permResult.ok) {
       return gatewayFailure('permission_denied', permResult.error.message);
@@ -79,10 +107,10 @@ export class ToolExecutor {
 
     const action = permCheck.value;
 
-    const runContext = this.buildRunContext(member, departmentId, perm.department?.zohoReadScope, input.requestId);
+    const runContext = this.buildRunContext(member, effectiveDepartmentId, perm.department?.zohoReadScope, input.requestId);
     let executionGrant: { approvalId: string } | undefined;
 
-    if (this.deps.approvalGate && departmentId) {
+    if (this.deps.approvalGate && effectiveDepartmentId) {
       const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
       const decision = await this.deps.approvalGate.check({
         toolId: tool.id,
@@ -96,6 +124,12 @@ export class ToolExecutor {
 
       if (decision.kind === 'pending') {
         return gatewayFailure('approval_required', decision.message, {
+          approval: { approvalId: decision.approvalId, message: decision.message },
+        });
+      }
+
+      if (decision.kind === 'rejected') {
+        return gatewayFailure('approval_rejected', decision.message, {
           approval: { approvalId: decision.approvalId, message: decision.message },
         });
       }
@@ -156,4 +190,66 @@ export class ToolExecutor {
       chatId: `gateway:${member.sessionId}`,
     };
   }
+}
+
+function isSkillPublishingAuthorityCheck(toolId: string, args: unknown): boolean {
+  return toolId === 'skillPublishing'
+    && typeof args === 'object'
+    && args !== null
+    && (args as { operation?: unknown }).operation === 'check_authority';
+}
+
+function isCompanyScopedSkillPublishingInvocation(toolId: string, args: unknown): boolean {
+  return toolId === 'skillPublishing'
+    && typeof args === 'object'
+    && args !== null
+    && (args as { operation?: unknown }).operation === 'publish'
+    && (args as { scope?: unknown }).scope === 'company';
+}
+
+function skillPublishingScopedDepartmentId(
+  toolId: string,
+  args: unknown,
+  gatewayDepartmentId: string | undefined,
+): string | undefined {
+  if (
+    toolId === 'skillPublishing'
+    && typeof args === 'object'
+    && args !== null
+    && typeof (args as { departmentId?: unknown }).departmentId === 'string'
+  ) {
+    return (args as { departmentId: string }).departmentId;
+  }
+
+  return gatewayDepartmentId;
+}
+
+function mergeSkillPublishingAuthority(
+  companyPerm: PermissionResult,
+  departmentPerm: PermissionResult,
+): PermissionResult {
+  const allowedActionsByTool = new Map(companyPerm.allowedActionsByTool);
+  for (const [toolId, actions] of departmentPerm.allowedActionsByTool) {
+    const mergedActions = new Set<ToolActionGroup>(allowedActionsByTool.get(toolId) ?? []);
+    for (const action of actions) mergedActions.add(action);
+    allowedActionsByTool.set(toolId, mergedActions);
+  }
+
+  const skillPublishingToolId = asToolId('skillPublishing');
+  const skillPublishingActions = new Set<ToolActionGroup>(
+    allowedActionsByTool.get(skillPublishingToolId) ?? [],
+  );
+  for (const action of companyPerm.allowedActionsByTool.get(skillPublishingToolId) ?? []) {
+    skillPublishingActions.add(action);
+  }
+  if (skillPublishingActions.size > 0) {
+    allowedActionsByTool.set(skillPublishingToolId, skillPublishingActions);
+  }
+
+  return {
+    allowedToolIds: new Set(allowedActionsByTool.keys()),
+    allowedActionsByTool,
+    decisions: [...companyPerm.decisions, ...departmentPerm.decisions],
+    ...(departmentPerm.department ? { department: departmentPerm.department } : {}),
+  };
 }

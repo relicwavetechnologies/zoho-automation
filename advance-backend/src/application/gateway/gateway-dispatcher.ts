@@ -5,6 +5,7 @@ import type { Logger } from '../../shared/logger';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { PermissionResult } from '../permissions/permission.types';
+import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
 import type { ToolExecutor } from './tool-executor';
 import { mediaImageOcrPayloadSchema, type MediaOcrService } from './media-ocr.service';
 import type { ConnectionRegistryPort } from '../connections/connection-registry.port';
@@ -97,7 +98,7 @@ export class GatewayDispatcher {
       return this.permissionDenied('Permission resolution failed');
     }
 
-    const perm = permOrError;
+    const perm = withGatewayDiscoveryPermissions(permOrError);
     const allowedSkills = await this.deps.skillCatalog.listVisible({
       companyId: member.companyId,
       ...(departmentId ? { departmentId } : {}),
@@ -135,15 +136,16 @@ export class GatewayDispatcher {
       return this.permissionDenied('Permission resolution failed');
     }
 
+    const discoveryPerm = withGatewayDiscoveryPermissions(perm);
     const tools = this.deps.toolRegistry
-      .forRuntime(perm)
+      .forRuntime(discoveryPerm)
       .filter((tool) => tool.id !== 'runCommand')
       .map((tool) => ({
         id: tool.id,
         family: tool.family,
         description: tool.description,
         parameterDocs: tool.parameterDocs,
-        allowedActions: [...(perm.allowedActionsByTool.get(asToolId(tool.id)) ?? [])],
+        allowedActions: [...(discoveryPerm.allowedActionsByTool.get(asToolId(tool.id)) ?? [])],
       }));
 
     return gatewaySuccess({ tools });
@@ -158,10 +160,11 @@ export class GatewayDispatcher {
       return this.permissionDenied('Permission resolution failed');
     }
 
+    const discoveryPerm = withGatewayDiscoveryPermissions(perm);
     const skills = (await this.deps.skillCatalog.listVisible({
       companyId: member.companyId,
       ...(departmentId ? { departmentId } : {}),
-      permission: perm,
+      permission: discoveryPerm,
     })).map((skill) => ({
       id: skill.id,
       slug: skill.slug,
@@ -191,10 +194,11 @@ export class GatewayDispatcher {
       return this.permissionDenied('Permission resolution failed');
     }
 
+    const discoveryPerm = withGatewayDiscoveryPermissions(perm);
     const results = await this.deps.skillCatalog.searchVisible({
       companyId: member.companyId,
       ...(departmentId ? { departmentId } : {}),
-      permission: perm,
+      permission: discoveryPerm,
       query: parsed.data.query,
       limit: parsed.data.limit ?? 3,
     });
@@ -230,6 +234,7 @@ export class GatewayDispatcher {
     if (!perm) {
       return this.permissionDenied('Permission resolution failed');
     }
+    const discoveryPerm = withGatewayDiscoveryPermissions(perm);
 
     const skill = await this.deps.skillCatalog.getInScope({
       companyId: member.companyId,
@@ -241,7 +246,7 @@ export class GatewayDispatcher {
     }
 
     const allowed = skill.toolIds.some((toolId) =>
-      perm.allowedToolIds.has(asToolId(toolId)),
+      discoveryPerm.allowedToolIds.has(asToolId(toolId)),
     );
     if (!allowed) {
       return gatewayFailure(
@@ -389,4 +394,24 @@ export class GatewayDispatcher {
     const result = await this.deps.mediaOcr.extractImage(parsed.data);
     return gatewaySuccess({ media: result });
   }
+}
+
+function withGatewayDiscoveryPermissions(perm: PermissionResult): PermissionResult {
+  if (perm.department?.roleSlug !== 'MANAGER') return perm;
+
+  const skillPublishingToolId = asToolId('skillPublishing');
+  const existingActions = perm.allowedActionsByTool.get(skillPublishingToolId);
+  if (existingActions?.has('read') && existingActions.has('create')) return perm;
+
+  const allowedActionsByTool = new Map(perm.allowedActionsByTool);
+  const actions = new Set<ToolActionGroup>(existingActions ?? []);
+  actions.add('read');
+  actions.add('create');
+  allowedActionsByTool.set(skillPublishingToolId, actions);
+
+  return {
+    ...perm,
+    allowedToolIds: new Set([...perm.allowedToolIds, skillPublishingToolId]),
+    allowedActionsByTool,
+  };
 }

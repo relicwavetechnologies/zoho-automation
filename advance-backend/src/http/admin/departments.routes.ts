@@ -27,6 +27,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { DepartmentAdminService } from '../../application/departments/department-admin.service';
+import { SKILL_SUMMARY_MAX_CHARS } from '../../application/skills/skill-limits';
 import type { Logger } from '../../shared/logger';
 
 export interface DepartmentRoutesDeps {
@@ -132,7 +133,7 @@ const upsertMembershipSchema = z.object({
 const upsertSkillSchema = z.object({
   name:     z.string().min(1).max(120),
   slug:     z.string().min(1).max(120).optional(),
-  summary:  z.string().max(300).optional(),
+  summary:  z.string().max(SKILL_SUMMARY_MAX_CHARS).optional(),
   markdown: z.string().min(1).max(40000),
   toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
   tags:     z.array(z.string().min(1).max(60)).max(20).optional(),
@@ -141,7 +142,7 @@ const upsertSkillSchema = z.object({
 
 const updateSkillSchema = z.object({
   name:     z.string().min(1).max(120).optional(),
-  summary:  z.string().max(300).optional(),
+  summary:  z.string().max(SKILL_SUMMARY_MAX_CHARS).optional(),
   markdown: z.string().max(40000).optional(),
   toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
   tags:     z.array(z.string().min(1).max(60)).max(20).optional(),

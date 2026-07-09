@@ -7,6 +7,8 @@ import { PermissionError, ToolError } from '../../../../shared/errors';
 import type { PermissionResult } from '../../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../../shared/ids';
+import { SKILL_SUMMARY_MAX_CHARS } from '../../../skills/skill-limits';
+import { unknownSkillToolIds } from '../../../skills/skill-tool-validation';
 
 const toolIdsSchema = z.array(z.string().min(1).max(120)).min(1).max(50);
 
@@ -21,7 +23,7 @@ const Schema = z.discriminatedUnion('operation', [
     departmentId: z.string().min(1).optional(),
     name: z.string().min(1).max(120),
     slug: z.string().min(1).max(120).optional(),
-    summary: z.string().max(300).optional(),
+    summary: z.string().max(SKILL_SUMMARY_MAX_CHARS).optional(),
     markdown: z.string().min(1).max(40000),
     toolIds: toolIdsSchema,
     tags: z.array(z.string().min(1).max(60)).max(20).optional(),
@@ -110,6 +112,15 @@ export const createSkillPublishingTool = (deps: {
       const authority = assertPublishAuthority(args, ctx);
       if (!authority.ok) return err(authority.error);
 
+      const unknownToolIds = unknownSkillToolIds(args.toolIds);
+      if (unknownToolIds.length > 0) {
+        return err(new ToolError({
+          toolId: 'skillPublishing',
+          reason: 'bad_args',
+          message: `Unknown skill toolIds: ${unknownToolIds.join(', ')}`,
+        }));
+      }
+
       const slug = normalizeSlug(args.slug ?? args.name);
       if (!slug) {
         return err(new ToolError({ toolId: 'skillPublishing', reason: 'bad_args', message: 'Skill slug could not be derived.' }));
@@ -194,8 +205,14 @@ function canPublishCompany(ctx: ToolExecutionContext): boolean {
 function canPublishDepartment(departmentId: string | undefined, ctx: ToolExecutionContext): boolean {
   const targetDepartmentId = resolveDepartmentId(departmentId, ctx);
   if (!targetDepartmentId) return false;
-  const hasRbac = ctx.perm.allowedActionsByTool.get(asToolId('skillPublishing'))?.has('create') ?? false;
-  return hasRbac || ctx.perm.department?.roleSlug === 'MANAGER';
+  return hasDepartmentCreateGrant(ctx.perm) || ctx.perm.department?.roleSlug === 'MANAGER';
+}
+
+function hasDepartmentCreateGrant(perm: PermissionResult): boolean {
+  return perm.decisions.some((decision) =>
+    String(decision.toolId) === 'skillPublishing'
+    && decision.actionGroup === 'create'
+    && (decision.source === 'department_role' || decision.source === 'department_user_override'));
 }
 
 function assertPublishAuthority(args: Extract<Args, { operation: 'publish' }>, ctx: ToolExecutionContext): Result<true, ToolError> {

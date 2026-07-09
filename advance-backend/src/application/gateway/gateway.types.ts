@@ -22,6 +22,7 @@ export const GATEWAY_STATUSES = [
   'invalid_args',
   'permission_denied',
   'approval_required',
+  'approval_rejected',
   'approval_misconfigured',
   'tool_error',
 ] as const;

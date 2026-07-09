@@ -90,6 +90,7 @@ Use the department id only when the user has selected or implied a department co
 
 - `permission_denied`: stop. Explain that access is denied and do not retry with guessed arguments.
 - `approval_required`: tell the user approval is pending in Lark. Do not claim the action completed. After approval, retry the exact same `tools.invoke` call; changed args require fresh approval.
+- `approval_rejected`: tell the user the manager rejected the exact action. Do not retry the same args; ask what should change before trying again.
 - `approval_misconfigured`: tell the user an admin/manager configuration is missing.
 - `unauthorized`: ask the user to sign in again through the desktop app.
 - `unknown_op`, `unknown_tool`, `invalid_args`, or `bad_request`: inspect `skills.search`, `skills.get`, `tools.list`, or `capabilities.get` before retrying.

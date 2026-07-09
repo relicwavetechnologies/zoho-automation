@@ -97,6 +97,15 @@ export function createCallToolTool(
           return `approval_pending: ${decision.message}`;
         }
 
+        if (decision.kind === 'rejected') {
+          adapterCtx.logger.info('call_tool.approval_rejected', {
+            toolId,
+            action,
+            approvalId: decision.approvalId,
+          });
+          return `approval_rejected: ${decision.message}`;
+        }
+
         if (decision.kind === 'misconfigured') {
           adapterCtx.logger.warn('call_tool.approval_misconfigured', {
             toolId,

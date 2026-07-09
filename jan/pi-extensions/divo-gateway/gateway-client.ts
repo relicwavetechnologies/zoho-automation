@@ -144,6 +144,18 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 		};
 	}
 
+	if (body.status === "approval_rejected") {
+		const approvalId = body.approval?.approvalId ?? "unknown";
+		const message =
+			body.approval?.message ??
+			body.error?.message ??
+			"The manager rejected this action.";
+		return {
+			text: `Divo gateway: approval rejected.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user the manager rejected this exact action. Do not retry the same args; ask what they want to change before trying again.`,
+			isError: true,
+		};
+	}
+
 	if (body.status === "approval_misconfigured") {
 		const message =
 			body.error?.message ??

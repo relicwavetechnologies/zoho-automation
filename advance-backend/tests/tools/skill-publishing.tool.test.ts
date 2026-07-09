@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSkillPublishingTool } from '../../src/application/orchestration/tools/families/skill-publishing.tool.ts';
+import { SKILL_SUMMARY_MAX_CHARS } from '../../src/application/skills/skill-limits.ts';
 import { asCompanyRoleSlug } from '../../src/domain/permissions/company-role.ts';
 import { asDepartmentId } from '../../src/shared/ids.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
@@ -28,6 +29,31 @@ function makePrisma(existing: { id: string } | null = null) {
 }
 
 describe('skillPublishing tool', () => {
+  it('allows skill summaries up to the Agent Skills description limit', () => {
+    const { prisma } = makePrisma();
+    const tool = createSkillPublishingTool({ prisma });
+
+    const accepted = tool.argsSchema.safeParse({
+      operation: 'publish',
+      scope: 'company',
+      name: 'Long Summary Skill',
+      summary: 'x'.repeat(SKILL_SUMMARY_MAX_CHARS),
+      markdown: '# Long Summary Skill',
+      toolIds: ['webSearch'],
+    });
+    const rejected = tool.argsSchema.safeParse({
+      operation: 'publish',
+      scope: 'company',
+      name: 'Too Long Summary Skill',
+      summary: 'x'.repeat(SKILL_SUMMARY_MAX_CHARS + 1),
+      markdown: '# Too Long Summary Skill',
+      toolIds: ['webSearch'],
+    });
+
+    assert.equal(accepted.success, true);
+    assert.equal(rejected.success, false);
+  });
+
   it('publishes company-scope skills for company admins with create permission', async () => {
     const { prisma, getCreated } = makePrisma();
     const tool = createSkillPublishingTool({ prisma });
@@ -111,6 +137,23 @@ describe('skillPublishing tool', () => {
 
     const result = await tool.execute(args, makeCtx('skillPublishing', ['create']));
     assert.equal(result.ok, false);
+  });
+
+  it('rejects non-canonical toolIds before publishing', async () => {
+    const { prisma, getCreated } = makePrisma();
+    const tool = createSkillPublishingTool({ prisma });
+
+    const result = await tool.execute({
+      operation: 'publish',
+      scope: 'company',
+      name: 'Broken Tool Skill',
+      markdown: '# Broken Tool Skill',
+      toolIds: ['webSearch', 'notARealTool'],
+    }, makeCtx('skillPublishing', ['create'], { companyRole: asCompanyRoleSlug('COMPANY_ADMIN') }));
+
+    assert.equal(result.ok, false);
+    assert.match((result as any).error.message, /Unknown skill toolIds: notARealTool/);
+    assert.equal(getCreated(), null);
   });
 
   it('reports duplicate slugs as bad args', async () => {

@@ -9,6 +9,7 @@ import {
   TOOL_SUPPORTED_ACTIONS,
   type CanonicalToolId,
 } from '../../domain/tools/tool-id';
+import { unknownSkillToolIds } from '../skills/skill-tool-validation';
 
 export interface DepartmentAdminServiceDeps {
   prisma: PrismaClient;
@@ -885,6 +886,11 @@ export class DepartmentAdminService {
     if (!check.ok) return check as ServiceResult<SkillView>;
 
     const slug = input.slug ? normalizeSlug(input.slug) : normalizeSlug(input.name);
+    const unknownToolIds = unknownSkillToolIds(input.toolIds);
+    if (unknownToolIds.length > 0) {
+      return fail({ kind: 'validation', message: `Unknown skill toolIds: ${unknownToolIds.join(', ')}` });
+    }
+
     try {
       const skill = await this.deps.prisma.skill.create({
         data: {
@@ -915,6 +921,11 @@ export class DepartmentAdminService {
 
     const existing = await this.deps.prisma.skill.findFirst({ where: { id: skillId, departmentId } });
     if (!existing) return fail({ kind: 'not_found', message: 'Skill not found' });
+    const unknownToolIds = unknownSkillToolIds(input.toolIds);
+    if (unknownToolIds.length > 0) {
+      return fail({ kind: 'validation', message: `Unknown skill toolIds: ${unknownToolIds.join(', ')}` });
+    }
+
     try {
       const skill = await this.deps.prisma.skill.update({
         where: { id: skillId },

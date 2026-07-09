@@ -122,7 +122,7 @@ export class RuntimeApprovalRepository {
       const row = await this.prisma.runtimeApproval.findFirst({
         where: {
           idempotencyKey: key,
-          status: { in: ['pending', 'approved'] },
+          status: { in: ['pending', 'approved', 'rejected'] },
           OR: [
             { expiresAt: null },
             { expiresAt: { gt: new Date() } },
