@@ -92,7 +92,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 					? body.data
 					: JSON.stringify(body.data, null, 2);
 		return {
-			text: `Divo gateway succeeded.\n\n${dataText}`,
+			text: `Request succeeded.\n\n${dataText}`,
 			isError: false,
 		};
 	}
@@ -102,7 +102,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.error?.message ??
 			"Your desktop session is invalid or expired.";
 		return {
-			text: `Divo gateway: unauthorized.\n\n${message}\n\nAsk the user to sign in again through Jan/Desktop. Do not retry with guessed credentials.`,
+			text: `Request unauthorized.\n\n${message}\n\nAsk the user to sign in again through Jan/Desktop. Do not retry with guessed credentials.`,
 			isError: true,
 		};
 	}
@@ -118,7 +118,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.error?.message ??
 			"The gateway rejected the request shape or target.";
 		return {
-			text: `Divo gateway: request rejected (${code}).\n\n${message}\n\nCheck the request against skills.search, skills.get, tools.list, or the returned skill recipe before retrying.`,
+			text: `Request rejected (${code}).\n\n${message}\n\nCheck the request against skills.search, skills.get, tools.list, or the returned skill recipe before retrying.`,
 			isError: true,
 		};
 	}
@@ -128,7 +128,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.error?.message ??
 			"You do not have permission to perform this action.";
 		return {
-			text: `Divo gateway: permission denied.\n\n${message}\n\nDo not retry or invent results. Ask the user to request access or choose a different action.`,
+			text: `Permission denied.\n\n${message}\n\nDo not retry or invent results. Ask the user to request access or choose a different action.`,
 			isError: true,
 		};
 	}
@@ -139,7 +139,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.approval?.message ??
 			"Manager approval is required before this action can run.";
 		return {
-			text: `Divo gateway: approval required.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user approval is pending in Lark. Do not claim the action completed. After the manager approves, retry the exact same divo_gateway tools.invoke request with the same departmentId, toolId, and args. Do not change or enrich the args; changed args require a fresh approval.`,
+			text: `Approval required.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user approval is pending in Lark. Do not claim the action completed. After the manager approves, retry the exact same tools.invoke request with the same departmentId, toolId, and args. Do not change or enrich the args; changed args require a fresh approval.`,
 			isError: true,
 		};
 	}
@@ -151,7 +151,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.error?.message ??
 			"The manager rejected this action.";
 		return {
-			text: `Divo gateway: approval rejected.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user the manager rejected this exact action. Do not retry the same args; ask what they want to change before trying again.`,
+			text: `Approval rejected.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user the manager rejected this exact action. Do not retry the same args; ask what they want to change before trying again.`,
 			isError: true,
 		};
 	}
@@ -161,7 +161,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.error?.message ??
 			"Manager approval is required, but the approver configuration is incomplete.";
 		return {
-			text: `Divo gateway: approval misconfigured.\n\n${message}\n\nDo not claim the action completed. Ask the user to contact an admin.`,
+			text: `Approval misconfigured.\n\n${message}\n\nDo not claim the action completed. Ask the user to contact an admin.`,
 			isError: true,
 		};
 	}
@@ -170,13 +170,13 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 		const code = body.error?.code ?? body.status;
 		const message = body.error?.message ?? "The backend tool returned an error.";
 		return {
-			text: `Divo gateway: tool error (${code}).\n\n${message}`,
+			text: `Tool error (${code}).\n\n${message}`,
 			isError: true,
 		};
 	}
 
 	return {
-		text: `Divo gateway returned status "${body.status}".\n\n${JSON.stringify(body, null, 2)}`,
+		text: `Request returned status "${body.status}".\n\n${JSON.stringify(body, null, 2)}`,
 		isError: true,
 	};
 }

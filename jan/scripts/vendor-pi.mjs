@@ -114,7 +114,7 @@ fs.writeFileSync(
     {
       packages: ['npm:pi-mcp-adapter'],
       defaultProvider: 'deepseek',
-      defaultModel: 'deepseek-v4-pro',
+      defaultModel: 'deepseek-v4-flash',
       defaultThinkingLevel: 'medium',
     },
     null,

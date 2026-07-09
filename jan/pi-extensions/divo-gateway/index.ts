@@ -31,7 +31,7 @@ const DIVO_GATEWAY_PARAMS = Type.Object({
 	payload: Type.Optional(
 		Type.Unknown({
 			description:
-				"Operation payload. For media.image_ocr with an attached local image: { filePath, mimeType?, fileName? }. Desktop normalizes unsupported formats and compresses oversized images before attachment metadata is sent to Pi. For skills.search: { query, limit?, context? }. For skills.get: { skillId }. For connections.list: { provider? }. For tools.invoke: { toolId, args }. Other ops may omit or pass {}.",
+				"Operation payload. For media.image_ocr with an attached local image: { filePath, mimeType?, fileName? }. Desktop normalizes unsupported formats and compresses oversized images before attachment metadata is sent to Pi. For skills.search: { query, limit?, context? }. For skills.get: { skillId }. For connections.list: { provider? } where provider must be exact backend enum google_workspace for Gmail/Drive/Calendar or zoho for Zoho CRM/Books; never use google. For tools.invoke: { toolId, args }. Other ops may omit or pass {}.",
 		}),
 	),
 });
@@ -65,6 +65,10 @@ For those requests, your first action is to use divo_skill_resolve with the user
 Backend-provided Divo skills are authoritative for company, connected-account, public web search, and deep research work. Do not choose local Lark, Google, Zoho, mail, search, document, or other domain skills before using divo_skill_resolve. For attached local image OCR/screenshot understanding, use the direct Divo gateway media.image_ocr path. Local skills and local CLIs are appropriate only when the resolver selects them for clearly local file/code/OS work or the user explicitly asks for a local-only action.
 
 Never ask for or use SaaS credentials locally. Never bypass Divo gateway for permissions, connected accounts, approvals, or company data. When account choice matters, list accessible connections through Divo and ask one short choice question only if the backend result is ambiguous.
+
+For connections.list provider ids, use exact backend enums: google_workspace for Gmail, Drive, and Calendar; zoho for Zoho CRM and Books. Never use google.
+
+Do not mention resolver, routing, gateway, backend, OAuth tokens, local credentials, tool IDs, tool selection, backend enums, or other internal plumbing to the user unless they explicitly ask how Divo is wired or secured. If divo_skill_resolve does not return an exact useful backend skill, silently continue with divo_gateway discovery calls such as capabilities.get, tools.list, skills.list, or connections.list. When calling Divo tools, do not add visible user-facing pre-tool text that describes gateway, resolver, backend, routing, or tool mechanics; either call the tool directly or use plain wording like "I'll check that." For normal user answers, say what is connected, what Divo can do, and what needs approval or permission; do not explain architecture or show tool IDs such as googleGmail, googleDrive, googleCalendar, zohoCrm, or zohoBooks.
 </divo_company_persona>`;
 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
@@ -79,6 +83,9 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"For any ambiguous request, call divo_skill_resolve before choosing backend tools or local skills.",
 			"If divo_skill_resolve selects a backend skill, call divo_gateway skills.get for that skill and follow the backend recipe.",
+			"If divo_skill_resolve does not select a useful exact backend skill, do not tell the user. Continue silently with divo_gateway discovery such as capabilities.get, tools.list, skills.list, or connections.list.",
+			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",
+			"Unless the user asks about security or architecture, do not mention backend, local credentials, OAuth tokens, RBAC, audit, tool IDs, or request plumbing in final answers.",
 			"If divo_skill_resolve selects a local skill, read the returned skill file before acting.",
 			"Backend Divo skills are authoritative for connected accounts, RBAC, approvals, SaaS credentials, and company data.",
 			"Use backend Divo research skills for public web search and deep research; do not use local web_search tools or local Serper credentials.",
@@ -112,7 +119,11 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"For attached local image OCR or screenshot understanding, call divo_gateway directly with op \"media.image_ocr\" and payload { filePath, mimeType?, fileName? }. Do not convert or compress it yourself first; desktop normalizes unsupported formats and compresses oversized images before sending attachment metadata to Pi. Do not use Read for image contents first.",
 			"For Divo/company/plugin/SaaS/account requests, call divo_skill_resolve with the user's original request before choosing tools.",
 			"After divo_skill_resolve selects a backend skill, call skills.get for that skill before invoking backend tools.",
+			"If divo_skill_resolve is inconclusive, silently use divo_gateway discovery calls. Do not expose resolver failure, routing, gateway, enum names, backend, or request plumbing in the user-facing answer.",
+			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",
+			"Unless the user asks about security or architecture, final answers should only cover connected accounts, available actions, approval/permission status, and the next useful choice. Use service names like Gmail, Drive, Calendar, Zoho CRM, and Zoho Books instead of internal tool IDs.",
 			"Follow backend skill recipes exactly. If a recipe requires connections.list, call it before tools.invoke and never guess connection IDs.",
+			"For connections.list, provider ids are exact backend enums: use google_workspace for Gmail/Drive/Calendar and zoho for Zoho CRM/Books; never use google.",
 			"For public web search or deep research, use backend skills such as research or deepResearch and invoke backend toolId webSearch through tools.invoke when the fetched skill recipe says so.",
 			"Use capabilities.get or tools.list when diagnosing permissions or when a skill recipe asks for tool discovery.",
 			"For tools.invoke, pass payload: { toolId, args } matching backend tool contracts.",
@@ -157,7 +168,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: `Divo gateway request failed: ${message}`,
+							text: `Request failed: ${message}`,
 						},
 					],
 					details: { configured: true, networkError: true },

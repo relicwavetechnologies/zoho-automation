@@ -21,6 +21,9 @@ const BUNDLED_BRIDGE_REL: &str = "resources/pi/pi-chrome-devtools-bridge.mjs";
 
 const CHROME_DEVTOOLS_MCP_REL: &str =
     "resources/pi/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js";
+const DEFAULT_PI_PROVIDER: &str = "deepseek";
+const DEFAULT_PI_MODEL: &str = "deepseek-v4-flash";
+const LEGACY_DEFAULT_PI_MODEL: &str = "deepseek-v4-pro";
 
 pub struct PiRuntimePaths {
     pub bun: PathBuf,
@@ -103,7 +106,7 @@ fn default_pi_settings_json() -> &'static str {
     r#"{
   "packages": ["npm:pi-mcp-adapter"],
   "defaultProvider": "deepseek",
-  "defaultModel": "deepseek-v4-pro",
+  "defaultModel": "deepseek-v4-flash",
   "defaultThinkingLevel": "medium"
 }"#
 }
@@ -120,14 +123,16 @@ fn ensure_pi_settings(settings_path: &Path) -> Result<(), String> {
     if obj.get("defaultProvider").is_none() {
         obj.insert(
             "defaultProvider".to_string(),
-            serde_json::Value::String("deepseek".to_string()),
+            serde_json::Value::String(DEFAULT_PI_PROVIDER.to_string()),
         );
         changed = true;
     }
-    if obj.get("defaultModel").is_none() {
+    if obj.get("defaultModel").is_none()
+        || obj.get("defaultModel").and_then(|v| v.as_str()) == Some(LEGACY_DEFAULT_PI_MODEL)
+    {
         obj.insert(
             "defaultModel".to_string(),
-            serde_json::Value::String("deepseek-v4-pro".to_string()),
+            serde_json::Value::String(DEFAULT_PI_MODEL.to_string()),
         );
         changed = true;
     }
