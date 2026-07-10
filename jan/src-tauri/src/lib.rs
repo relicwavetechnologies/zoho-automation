@@ -117,6 +117,10 @@ macro_rules! invoke_commands_with_extras {
         core::pi::pi_stop,
         core::pi::pi_is_running,
         core::pi::pi_get_state,
+        core::pi::pi_extension_ui_respond,
+        core::pi::pi_revoke_bash_approval,
+        core::pi::pi_get_permission_rules,
+        core::pi::pi_set_bash_approval_rule,
         // Divo backend session (gateway config for Pi)
         core::divo::commands::divo_set_session,
         core::divo::commands::divo_clear_session,

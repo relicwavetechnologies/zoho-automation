@@ -6,7 +6,7 @@
     "typebox": "1.1.38"
   },
   "scripts": {
-    "test": "node --import tsx --test gateway-client.test.ts skill-resolver.test.ts"
+    "test": "node --import tsx --test approval-gate.test.ts gateway-client.test.ts skill-resolver.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.4"

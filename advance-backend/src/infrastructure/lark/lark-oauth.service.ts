@@ -32,6 +32,7 @@ export interface LarkTokenResponse {
   larkEnName:             string | null;
   tenantKey:              string | null;
   scope:                  string | null;
+  avatarUrl:              string | null;
 }
 
 export interface LarkUserInfo {
@@ -232,6 +233,7 @@ export class LarkOAuthService {
       larkEnName: userInfo.larkEnName ?? parsed.larkEnName,
       tenantKey:  userInfo.tenantKey  ?? parsed.tenantKey,
       scope:      parsed.scope,
+      avatarUrl:  userInfo.avatarUrl  ?? parsed.avatarUrl,
     };
   }
 
@@ -250,6 +252,7 @@ export class LarkOAuthService {
       larkEnName:            (data['en_name']   as string)       ?? null,
       tenantKey:             (data['tenant_key'] as string)      ?? null,
       scope:                 (data['scope'] as string)           ?? null,
+      avatarUrl:             (data['avatar_url'] as string)      ?? null,
     };
   }
 }

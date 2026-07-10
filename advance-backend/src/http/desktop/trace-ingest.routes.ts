@@ -26,6 +26,8 @@ import { TokenUsageService } from '../../application/observability/token-usage.s
 export interface TraceIngestRoutesDeps {
   prisma: PrismaClient;
   logger: Logger;
+  /** When the LLM proxy owns the trace + usage, ingest stands down (no double-writes). */
+  proxyOwnsTrace?: boolean;
 }
 
 // ─── Contract (shared shape PI emits) ───────────────────────────────────────
@@ -262,6 +264,12 @@ export function createTraceIngestRoutes(deps: TraceIngestRoutesDeps): Router {
   const tokens = new TokenUsageService(deps.prisma, deps.logger);
 
   router.post('/', async (req: Request, res: Response): Promise<void> => {
+    // Proxy owns the trace + authoritative usage — accept & drop PI's self-report.
+    if (deps.proxyOwnsTrace) {
+      res.status(202).json({ success: true, data: { skipped: true } });
+      return;
+    }
+
     const companyId = res.locals['companyId'] as string | undefined;
     const userId    = res.locals['userId'] as string | undefined;
     if (!companyId || !userId) {

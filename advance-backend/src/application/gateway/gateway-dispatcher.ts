@@ -7,6 +7,7 @@ import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { PermissionResult } from '../permissions/permission.types';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
 import type { ToolExecutor } from './tool-executor';
+import type { LocalApprovalIntentService } from './local-approval-intent.service';
 import { mediaImageOcrPayloadSchema, type MediaOcrService } from './media-ocr.service';
 import type { ConnectionRegistryPort } from '../connections/connection-registry.port';
 import type {
@@ -22,6 +23,7 @@ import {
   skillsGetPayloadSchema,
   skillsSearchPayloadSchema,
   toolsInvokePayloadSchema,
+  toolsCommitPayloadSchema,
 } from './gateway.types';
 
 export interface GatewayDispatcherDeps {
@@ -29,6 +31,7 @@ export interface GatewayDispatcherDeps {
   readonly toolRegistry: ToolRegistry;
   readonly skillCatalog: SkillCatalogService;
   readonly toolExecutor: ToolExecutor;
+  readonly localApprovalIntents?: LocalApprovalIntentService;
   readonly connectionRegistry?: ConnectionRegistryPort;
   readonly mediaOcr?: MediaOcrService;
   readonly logger: Logger;
@@ -61,6 +64,10 @@ export class GatewayDispatcher {
         return this.handleMediaImageOcr(member, departmentId, request.payload);
       case 'tools.invoke':
         return this.handleToolsInvoke(member, departmentId, request.payload);
+      case 'tools.prepare':
+        return this.handleToolsPrepare(member, departmentId, request.payload);
+      case 'tools.commit':
+        return this.handleToolsCommit(member, departmentId, request.payload);
       default:
         return gatewayFailure('unknown_op', `Unknown operation: ${request.op}`);
     }
@@ -287,11 +294,68 @@ export class GatewayDispatcher {
       departmentId: departmentId ?? null,
     });
 
-    return this.deps.toolExecutor.invoke({
+    const input = {
       member,
       ...(departmentId ? { departmentId } : {}),
       toolId: parsed.data.toolId,
       args: parsed.data.args,
+    };
+    const prepared = await this.deps.toolExecutor.prepare(input);
+    if (!prepared.ok || !prepared.data) return prepared;
+    if (prepared.data.action !== 'read') {
+      return gatewayFailure(
+        'local_approval_required',
+        'Write actions must be prepared with tools.prepare and executed with tools.commit after local approval.',
+      );
+    }
+
+    return this.deps.toolExecutor.invoke({ ...input, expectedAction: 'read' });
+  }
+
+  private async handleToolsPrepare(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload: Record<string, unknown> | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = toolsInvokePayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid tools.prepare payload — ${issues}`);
+    }
+    if (!this.deps.localApprovalIntents) {
+      return gatewayFailure('tool_error', 'Local approval intents are not configured');
+    }
+
+    return this.deps.localApprovalIntents.prepare({
+      member,
+      ...(departmentId ? { departmentId } : {}),
+      toolId: parsed.data.toolId,
+      args: parsed.data.args,
+    });
+  }
+
+  private async handleToolsCommit(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload: Record<string, unknown> | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = toolsCommitPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid tools.commit payload — ${issues}`);
+    }
+    if (!this.deps.localApprovalIntents) {
+      return gatewayFailure('tool_error', 'Local approval intents are not configured');
+    }
+
+    return this.deps.localApprovalIntents.commit({
+      member,
+      ...(departmentId ? { departmentId } : {}),
+      intentId: parsed.data.intentId,
     });
   }
 

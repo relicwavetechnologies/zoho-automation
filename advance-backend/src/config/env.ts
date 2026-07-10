@@ -64,6 +64,22 @@ const EnvSchema = z.object({
   // ── DeepSeek ──────────────────────────────────────────────────────────────
   DEEPSEEK_API_KEY:  z.string().optional(),
 
+  // ── LLM proxy (Guardrails) ────────────────────────────────────────────────
+  // The proxy is ON by default — the route mounts and resolves the DeepSeek key
+  // server-side (company → platform → env). With no key configured it simply
+  // returns 503 "not configured" (never 404). Set LLM_PROXY_ENABLED=false only as
+  // a kill switch. PI is repointed at /api/llm/v1 via the divo-llm extension.
+  LLM_PROXY_ENABLED:  z.string().default('true').transform((v) => v === 'true' || v === '1'),
+  DEEPSEEK_BASE_URL:  z.string().default('https://api.deepseek.com'),
+  // Whether the proxy owns run traces (so the old desktop trace-ingest stands down
+  // to avoid double-writes). Kept SEPARATE from LLM_PROXY_ENABLED: enabling the
+  // proxy must NOT silently drop Track A ingest for desktops not yet repointed.
+  // Flip to true only once PI fully routes through the proxy.
+  PROXY_OWNS_TRACE:   z.string().default('false').transform((v) => v === 'true' || v === '1'),
+  // Encrypts DeepSeek keys admins add via the Guardrails UI (AES-256-GCM, token.crypto
+  // format). Falls back to ZOHO_TOKEN_ENCRYPTION_KEY so no new secret is required to ship.
+  PROXY_KEY_ENCRYPTION_KEY: z.string().optional(),
+
   // ── Groq (intent classification + reranking) ──────────────────────────────
   GROQ_API_KEY:      z.string().optional(),
   GROQ_ROUTER_MODEL: z.string().default('llama-3.1-8b-instant'),

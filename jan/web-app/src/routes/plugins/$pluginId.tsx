@@ -523,7 +523,7 @@ function PluginDetailRoute() {
                   plugin.accentClassName
                 )}
               >
-                <Icon className="size-7" />
+                <Icon className={cn('size-7', plugin.iconClassName)} />
               </div>
               <div>
                 <h1 className="text-2xl font-medium tracking-normal">
@@ -832,7 +832,7 @@ function LocalLarkPluginDetail({
                   plugin.accentClassName
                 )}
               >
-                <Icon className="size-7" />
+                <Icon className={cn('size-7', plugin.iconClassName)} />
               </div>
               <div>
                 <h1 className="text-2xl font-medium tracking-normal">
@@ -1122,7 +1122,7 @@ function ZohoPluginDetail({
                   plugin.accentClassName
                 )}
               >
-                <Icon className="size-7" />
+                <Icon className={cn('size-7', plugin.iconClassName)} />
               </div>
               <div>
                 <h1 className="text-2xl font-medium tracking-normal">{plugin.name}</h1>

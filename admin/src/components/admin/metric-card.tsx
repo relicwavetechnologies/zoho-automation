@@ -32,7 +32,8 @@ export function MetricCard({ label, value, detail, icon: Icon, tone = "default" 
             <p className={cn("truncate text-[10px] font-medium uppercase tracking-wide", isTinted ? "opacity-70" : "text-muted-foreground")}>
               {label}
             </p>
-            <p className="truncate text-2xl font-semibold tracking-tight">{value}</p>
+            {/* Cursor editorial figure: regular weight, tight tracking (never bold). */}
+            <p className="truncate text-2xl font-normal tracking-tight">{value}</p>
             {detail ? (
               <p className={cn("truncate text-[11px]", isTinted ? "opacity-70" : "text-muted-foreground")}>{detail}</p>
             ) : null}

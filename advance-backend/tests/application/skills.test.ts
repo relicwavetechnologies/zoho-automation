@@ -20,6 +20,7 @@ import type { SkillRepoPort, SkillRow } from '../../src/infrastructure/persisten
 import { ok, err } from '../../src/shared/result.ts';
 import type { InfraError } from '../../src/shared/errors.ts';
 import { SkillRegistry } from '../../src/application/skills/skill-registry.ts';
+import { createDefaultSkillRegistry } from '../../src/application/skills/index.ts';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -94,6 +95,33 @@ describe('SkillRegistry', () => {
 
     const results = registry.search('mail', { skills: [zoho] });
     assert.deepEqual(results.map((r) => r.skill.id), ['zoho']);
+  });
+
+  it('routes finance prompts to core or specialized Zoho skills deterministically', () => {
+    const registry = createDefaultSkillRegistry();
+
+    assert.equal(
+      registry.discover('check our unpaid invoices and recent payments this month')?.id,
+      'finance-ops-core',
+    );
+    assert.equal(
+      registry.discover('record this vendor bill from a PDF invoice in Zoho Books')?.id,
+      'zoho-books-bill',
+    );
+    assert.equal(
+      registry.discover('create the Zoho bill from this PDF and notify Core Accounts')?.id,
+      'zoho-bill-notify-accounts',
+    );
+  });
+
+  it('keeps Finance Ops Core as a router without stale pseudo-tool names', () => {
+    const core = createDefaultSkillRegistry().getById('finance-ops-core');
+    assert.ok(core);
+    assert.doesNotMatch(core.instructions, /\bbooksRead\b/);
+    assert.doesNotMatch(core.instructions, /\bbooksWrite\b/);
+    assert.doesNotMatch(core.instructions, /\bsearchContext\b/);
+    assert.match(core.instructions, /zoho-books-bill/);
+    assert.match(core.instructions, /zoho-bill-notify-accounts/);
   });
 });
 

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -18,9 +18,101 @@ use super::session::{ensure_session_workspace_cwd, resolve_session_path};
 use crate::core::divo::workspace::{prepare_workspace_run_layout, DivoWorkspaceRunLayout};
 use crate::core::threads::utils::ensure_thread_dir_exists;
 
+const DIVO_APPROVAL_PROTOCOL_TITLE: &str = "divo_approval_v1";
+
 struct PiProcess {
     child: Child,
     stdin: std::process::ChildStdin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingExtensionUiRequest {
+    thread_id: String,
+    method: String,
+    source: Option<ApprovalSource>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApprovalSource {
+    Divo,
+    Bash,
+    Edit,
+    Write,
+}
+
+fn take_pending_confirm(
+    requests: &mut HashMap<String, PendingExtensionUiRequest>,
+    active_thread_id: Option<&str>,
+    request_id: &str,
+    thread_id: &str,
+) -> Result<PendingExtensionUiRequest, String> {
+    if active_thread_id != Some(thread_id) {
+        return Err("Approval response does not belong to the active thread".into());
+    }
+    let pending = requests
+        .get(request_id)
+        .ok_or("Unknown or already resolved extension UI request")?;
+    if pending.thread_id != thread_id {
+        return Err("Approval response thread does not match its request".into());
+    }
+    if pending.method != "confirm" {
+        return Err("This extension UI request is not a confirmation".into());
+    }
+    Ok(requests
+        .remove(request_id)
+        .expect("request existed while the state lock was held"))
+}
+
+fn drain_pending_extension_ui(
+    requests: &mut HashMap<String, PendingExtensionUiRequest>,
+    thread_id: Option<&str>,
+) -> Vec<String> {
+    let request_ids = requests
+        .iter()
+        .filter(|(_, request)| {
+            thread_id
+                .map(|expected| request.thread_id == expected)
+                .unwrap_or(true)
+        })
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    for id in &request_ids {
+        requests.remove(id);
+    }
+    request_ids
+}
+
+fn is_divo_approval_request(value: &serde_json::Value, thread_id: &str) -> bool {
+    !thread_id.is_empty()
+        && value.get("method").and_then(|v| v.as_str()) == Some("confirm")
+        && value.get("title").and_then(|v| v.as_str()) == Some(DIVO_APPROVAL_PROTOCOL_TITLE)
+}
+
+fn approval_source(value: &serde_json::Value) -> Option<ApprovalSource> {
+    let message = value.get("message")?.as_str()?;
+    let descriptor: serde_json::Value = serde_json::from_str(message).ok()?;
+    if descriptor.get("version").and_then(|value| value.as_u64()) != Some(1) {
+        return None;
+    }
+    match descriptor.get("source").and_then(|value| value.as_str()) {
+        Some("divo") => Some(ApprovalSource::Divo),
+        Some("bash") => Some(ApprovalSource::Bash),
+        Some("edit") => Some(ApprovalSource::Edit),
+        Some("write") => Some(ApprovalSource::Write),
+        _ => None,
+    }
+}
+
+fn should_auto_allow_bash(
+    source: Option<ApprovalSource>,
+    allowed_threads: &HashSet<String>,
+    thread_id: &str,
+) -> bool {
+    source == Some(ApprovalSource::Bash) && allowed_threads.contains(thread_id)
+}
+
+fn can_enable_always_allow_bash(pending: &PendingExtensionUiRequest, confirmed: bool) -> bool {
+    confirmed && pending.source == Some(ApprovalSource::Bash)
 }
 
 struct SharedState {
@@ -32,6 +124,8 @@ struct SharedState {
     active_thread_id: Option<String>,
     browser_cdp_fingerprint: Option<String>,
     pending: HashMap<String, oneshot::Sender<Result<serde_json::Value, String>>>,
+    pending_extension_ui: HashMap<String, PendingExtensionUiRequest>,
+    bash_always_allowed_threads: HashSet<String>,
     stdout_buffer: String,
 }
 
@@ -62,6 +156,8 @@ impl PiManager {
             active_thread_id: None,
             browser_cdp_fingerprint: None,
             pending: HashMap::new(),
+            pending_extension_ui: HashMap::new(),
+            bash_always_allowed_threads: HashSet::new(),
             stdout_buffer: String::new(),
         }));
         let (cmd_tx, cmd_rx) = mpsc::channel::<String>();
@@ -193,6 +289,14 @@ Divo workspace policy:
                     let _ = pi.child.kill();
                 }
                 guard.pending.clear();
+                guard.pending_extension_ui.clear();
+                if let Some(thread_id) = initial_thread_id.as_deref() {
+                    guard
+                        .bash_always_allowed_threads
+                        .retain(|candidate| candidate == thread_id);
+                } else {
+                    guard.bash_always_allowed_threads.clear();
+                }
                 guard.active_thread_id = None;
                 kill_orphan_chrome_devtools_mcp();
             }
@@ -260,7 +364,6 @@ Divo workspace policy:
         let inner_reader = self.inner.clone();
         let app_reader = self.app.clone();
         let cmd_tx_reader = self.cmd_tx.clone();
-
         std::thread::spawn(move || {
             use std::io::Read;
             let mut stdout = stdout;
@@ -301,6 +404,8 @@ Divo workspace policy:
                     .unwrap_or(false);
                 if is_current_process {
                     guard.process = None;
+                    guard.pending_extension_ui.clear();
+                    guard.bash_always_allowed_threads.clear();
                 }
                 is_current_process
             };
@@ -426,26 +531,57 @@ Divo workspace policy:
 
         if event_type == Some("extension_ui_request") {
             let thread_id = Self::active_thread_id(inner);
-            Self::emit_pi_event(app, thread_id, value.clone());
+            if let (Some(id), Some(method)) = (
+                value.get("id").and_then(|v| v.as_str()),
+                value.get("method").and_then(|v| v.as_str()),
+            ) {
+                if is_divo_approval_request(&value, &thread_id) {
+                    let source = approval_source(&value);
+                    let auto_allow_bash = {
+                        let guard = inner.lock().unwrap();
+                        should_auto_allow_bash(
+                            source,
+                            &guard.bash_always_allowed_threads,
+                            &thread_id,
+                        )
+                    };
 
-            // Block on dialog methods until Jan implements extension UI bridge.
-            if let Some(method) = value.get("method").and_then(|v| v.as_str()) {
-                match method {
-                    "select" | "confirm" | "input" | "editor" => {
-                        if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
-                            let cancel = serde_json::json!({
-                                "type": "extension_ui_response",
-                                "id": id,
-                                "cancelled": true
-                            });
-                            if let Ok(json) = serde_json::to_string(&cancel) {
-                                let _ = cmd_tx.send(json);
-                            }
+                    if auto_allow_bash {
+                        let response = serde_json::json!({
+                            "type": "extension_ui_response",
+                            "id": id,
+                            "confirmed": true
+                        });
+                        if serde_json::to_string(&response)
+                            .ok()
+                            .is_some_and(|json| cmd_tx.send(json).is_ok())
+                        {
+                            return;
                         }
                     }
-                    _ => {}
+
+                    inner.lock().unwrap().pending_extension_ui.insert(
+                        id.to_string(),
+                        PendingExtensionUiRequest {
+                            thread_id: thread_id.clone(),
+                            method: method.to_string(),
+                            source,
+                        },
+                    );
+                } else if matches!(method, "select" | "confirm" | "input" | "editor") {
+                    // The desktop currently implements only the private Divo approval
+                    // contract. Keep unsupported dialogs fail-closed instead of
+                    // leaving Pi blocked on UI the frontend cannot render.
+                    if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                        "type": "extension_ui_response",
+                        "id": id,
+                        "cancelled": true
+                    })) {
+                        let _ = cmd_tx.send(json);
+                    }
                 }
             }
+            Self::emit_pi_event(app, thread_id, value.clone());
             return;
         }
 
@@ -490,6 +626,16 @@ Divo workspace policy:
             return Ok(());
         }
 
+        self.cancel_pending_extension_ui(None);
+        let preserve_bash_rule = {
+            let mut guard = self.inner.lock().unwrap();
+            let preserve = guard.bash_always_allowed_threads.contains(&thread_id);
+            guard
+                .bash_always_allowed_threads
+                .retain(|candidate| candidate == &thread_id);
+            preserve
+        };
+
         if let Ok(state) = self.get_state().await {
             if state
                 .get("isStreaming")
@@ -497,6 +643,9 @@ Divo workspace policy:
                 .unwrap_or(false)
             {
                 self.abort().await?;
+                if preserve_bash_rule {
+                    self.set_bash_approval_rule(&thread_id, true);
+                }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
@@ -595,12 +744,19 @@ Divo workspace policy:
     }
 
     pub async fn abort(&self) -> Result<(), String> {
+        self.cancel_pending_extension_ui(None);
+        self.inner
+            .lock()
+            .unwrap()
+            .bash_always_allowed_threads
+            .clear();
         self.send_rpc(serde_json::json!({ "type": "abort" }))
             .await?;
         Ok(())
     }
 
     pub async fn stop(&self) {
+        self.cancel_pending_extension_ui(None);
         let mut guard = self.inner.lock().unwrap();
         if let Some(mut pi) = guard.process.take() {
             let _ = pi.child.kill();
@@ -609,10 +765,270 @@ Divo workspace policy:
         guard.run_thread_id = None;
         guard.browser_cdp_fingerprint = None;
         guard.pending.clear();
+        guard.pending_extension_ui.clear();
+        guard.bash_always_allowed_threads.clear();
+    }
+
+    fn cancel_pending_extension_ui(&self, thread_id: Option<&str>) {
+        let request_ids = {
+            let mut guard = self.inner.lock().unwrap();
+            drain_pending_extension_ui(&mut guard.pending_extension_ui, thread_id)
+        };
+
+        for id in request_ids {
+            if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                "type": "extension_ui_response",
+                "id": id,
+                "cancelled": true
+            })) {
+                let _ = self.cmd_tx.send(json);
+            }
+        }
+    }
+
+    pub fn extension_ui_response(
+        &self,
+        request_id: String,
+        thread_id: String,
+        confirmed: bool,
+        always_allow_bash: bool,
+    ) -> Result<(), String> {
+        let pending = {
+            let mut guard = self.inner.lock().unwrap();
+            if guard.process.is_none() {
+                return Err("Pi process is not running".into());
+            }
+            let active_thread_id = guard.active_thread_id.clone();
+            let pending = take_pending_confirm(
+                &mut guard.pending_extension_ui,
+                active_thread_id.as_deref(),
+                &request_id,
+                &thread_id,
+            )?;
+            if always_allow_bash && !can_enable_always_allow_bash(&pending, confirmed) {
+                guard
+                    .pending_extension_ui
+                    .insert(request_id.clone(), pending);
+                return Err("Always allow is available only for a confirmed Bash request".into());
+            }
+            if always_allow_bash {
+                guard.bash_always_allowed_threads.insert(thread_id.clone());
+            }
+            pending
+        };
+
+        let response = serde_json::to_string(&serde_json::json!({
+            "type": "extension_ui_response",
+            "id": request_id.clone(),
+            "confirmed": confirmed
+        }))
+        .map_err(|error| error.to_string())?;
+
+        if let Err(error) = self.write_stdin(&response) {
+            let mut guard = self.inner.lock().unwrap();
+            if always_allow_bash {
+                guard.bash_always_allowed_threads.remove(&thread_id);
+            }
+            guard.pending_extension_ui.insert(request_id, pending);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn revoke_bash_approval(&self, thread_id: &str) {
+        self.set_bash_approval_rule(thread_id, false);
+    }
+
+    pub fn set_bash_approval_rule(&self, thread_id: &str, allowed: bool) {
+        let mut guard = self.inner.lock().unwrap();
+        if allowed {
+            guard
+                .bash_always_allowed_threads
+                .insert(thread_id.to_string());
+        } else {
+            guard.bash_always_allowed_threads.remove(thread_id);
+        }
+    }
+
+    pub fn bash_approval_allowed(&self, thread_id: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .bash_always_allowed_threads
+            .contains(thread_id)
     }
 
     pub async fn is_running(&self) -> bool {
         let guard = self.inner.lock().unwrap();
         guard.process.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        approval_source, can_enable_always_allow_bash, drain_pending_extension_ui,
+        is_divo_approval_request, should_auto_allow_bash, take_pending_confirm, ApprovalSource,
+        PendingExtensionUiRequest, PiManager,
+    };
+    use std::collections::{HashMap, HashSet};
+
+    fn pending(method: &str, thread_id: &str) -> PendingExtensionUiRequest {
+        PendingExtensionUiRequest {
+            thread_id: thread_id.to_string(),
+            method: method.to_string(),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn confirmation_response_requires_matching_active_thread_and_request() {
+        let mut requests =
+            HashMap::from([("request-1".to_string(), pending("confirm", "thread-1"))]);
+
+        assert!(
+            take_pending_confirm(&mut requests, Some("thread-2"), "request-1", "thread-1").is_err()
+        );
+        assert!(requests.contains_key("request-1"));
+
+        assert!(
+            take_pending_confirm(&mut requests, Some("thread-1"), "unknown", "thread-1").is_err()
+        );
+        assert!(requests.contains_key("request-1"));
+
+        assert!(
+            take_pending_confirm(&mut requests, Some("thread-1"), "request-1", "thread-1").is_ok()
+        );
+        assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn confirmation_response_rejects_other_dialog_methods_without_consuming_them() {
+        let mut requests = HashMap::from([("request-1".to_string(), pending("input", "thread-1"))]);
+
+        assert!(
+            take_pending_confirm(&mut requests, Some("thread-1"), "request-1", "thread-1").is_err()
+        );
+        assert!(requests.contains_key("request-1"));
+    }
+
+    #[test]
+    fn fail_closed_cleanup_drains_only_the_selected_thread() {
+        let mut requests = HashMap::from([
+            ("request-1".to_string(), pending("confirm", "thread-1")),
+            ("request-2".to_string(), pending("confirm", "thread-2")),
+        ]);
+
+        assert_eq!(
+            drain_pending_extension_ui(&mut requests, Some("thread-1")),
+            vec!["request-1".to_string()]
+        );
+        assert!(!requests.contains_key("request-1"));
+        assert!(requests.contains_key("request-2"));
+    }
+
+    #[test]
+    fn only_the_versioned_divo_confirm_is_forwarded_to_the_frontend() {
+        assert!(is_divo_approval_request(
+            &serde_json::json!({
+                "method": "confirm",
+                "title": "divo_approval_v1"
+            }),
+            "thread-1"
+        ));
+        assert!(!is_divo_approval_request(
+            &serde_json::json!({
+                "method": "confirm",
+                "title": "Other extension"
+            }),
+            "thread-1"
+        ));
+        assert!(!is_divo_approval_request(
+            &serde_json::json!({
+                "method": "select",
+                "title": "divo_approval_v1"
+            }),
+            "thread-1"
+        ));
+        assert!(!is_divo_approval_request(
+            &serde_json::json!({
+                "method": "confirm",
+                "title": "divo_approval_v1"
+            }),
+            ""
+        ));
+    }
+
+    #[test]
+    fn always_allow_classification_accepts_only_versioned_bash_requests() {
+        let bash = serde_json::json!({
+            "message": serde_json::json!({
+                "version": 1,
+                "source": "bash",
+                "kind": "bash.execute"
+            }).to_string()
+        });
+        let edit = serde_json::json!({
+            "message": serde_json::json!({
+                "version": 1,
+                "source": "edit",
+                "kind": "file.edit"
+            }).to_string()
+        });
+        let unknown_version = serde_json::json!({
+            "message": serde_json::json!({
+                "version": 2,
+                "source": "bash"
+            }).to_string()
+        });
+
+        assert_eq!(approval_source(&bash), Some(ApprovalSource::Bash));
+        assert_eq!(approval_source(&edit), Some(ApprovalSource::Edit));
+        assert_eq!(approval_source(&unknown_version), None);
+    }
+
+    #[test]
+    fn bash_grants_are_source_and_thread_scoped() {
+        let allowed = HashSet::from(["thread-1".to_string()]);
+        assert!(should_auto_allow_bash(
+            Some(ApprovalSource::Bash),
+            &allowed,
+            "thread-1"
+        ));
+        assert!(!should_auto_allow_bash(
+            Some(ApprovalSource::Bash),
+            &allowed,
+            "thread-2"
+        ));
+        assert!(!should_auto_allow_bash(
+            Some(ApprovalSource::Write),
+            &allowed,
+            "thread-1"
+        ));
+
+        let bash = PendingExtensionUiRequest {
+            thread_id: "thread-1".into(),
+            method: "confirm".into(),
+            source: Some(ApprovalSource::Bash),
+        };
+        let divo = PendingExtensionUiRequest {
+            source: Some(ApprovalSource::Divo),
+            ..bash.clone()
+        };
+        assert!(can_enable_always_allow_bash(&bash, true));
+        assert!(!can_enable_always_allow_bash(&bash, false));
+        assert!(!can_enable_always_allow_bash(&divo, true));
+    }
+
+    #[test]
+    fn permission_rules_can_explicitly_enable_and_revoke_bash_for_one_task() {
+        let manager = PiManager::new();
+
+        manager.set_bash_approval_rule("thread-1", true);
+        assert!(manager.bash_approval_allowed("thread-1"));
+        assert!(!manager.bash_approval_allowed("thread-2"));
+
+        manager.revoke_bash_approval("thread-1");
+        assert!(!manager.bash_approval_allowed("thread-1"));
     }
 }

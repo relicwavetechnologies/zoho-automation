@@ -132,6 +132,10 @@ import { createDataProcessorTool } from './application/orchestration/tools/famil
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
 import { ToolExecutor } from './application/gateway/tool-executor';
 import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
+import {
+  InMemoryApprovalIntentRepository,
+  LocalApprovalIntentService,
+} from './application/gateway/local-approval-intent.service';
 import { MediaOcrService } from './application/gateway/media-ocr.service';
 
 // AI model
@@ -1026,12 +1030,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'gateway-tool-executor' }),
     clock:  systemClock,
   });
+  const localApprovalIntents = new LocalApprovalIntentService({
+    toolExecutor: gatewayToolExecutor,
+    repository: new InMemoryApprovalIntentRepository(),
+    clock: systemClock,
+    logger: logger.child({ service: 'gateway-local-approval' }),
+  });
   const mediaOcr = new MediaOcrService(env, logger);
   const gatewayDispatcher = new GatewayDispatcher({
     permissions,
     toolRegistry,
     skillCatalog,
     toolExecutor: gatewayToolExecutor,
+    localApprovalIntents,
     connectionRegistry: integrationConnectionRepo,
     mediaOcr,
     logger: logger.child({ service: 'gateway-dispatcher' }),

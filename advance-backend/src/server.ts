@@ -25,6 +25,11 @@ import { createAiProvidersRoutes } from './http/admin/ai-providers.routes';
 import { createRuntimeRoutes } from './http/admin/runtime.routes';
 import { createAnalyticsRoutes } from './http/admin/analytics.routes';
 import { createTokenUsageRoutes } from './http/admin/token-usage.routes';
+import { createSpendRoutes } from './http/admin/spend.routes';
+import { createProxyPolicyRoutes } from './http/admin/proxy-policy.routes';
+import { createProxyRoutes } from './http/admin/proxy.routes';
+import { createLlmProxyRoutes } from './http/llm/llm-proxy.routes';
+import { ProxyKeyStore } from './application/proxy/proxy-key.store';
 import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
 import { createDesktopThreadsRoutes } from './http/desktop/desktop-threads.routes';
 import { createTraceIngestRoutes } from './http/desktop/trace-ingest.routes';
@@ -353,15 +358,41 @@ export const createServer = (c: Container) => {
     }),
   );
 
-  // Desktop/PI run-trace ingest (Track A — member auth)
+  // Desktop/PI run-trace ingest (Track A — member auth).
+  // When the LLM proxy owns the trace, this stands down (no double-writes).
   app.use(
     '/api/desktop/trace',
     memberAuth,
     createTraceIngestRoutes({
-      prisma: c.prisma,
-      logger: c.logger,
+      prisma:         c.prisma,
+      logger:         c.logger,
+      proxyOwnsTrace: c.env.PROXY_OWNS_TRACE,
     }),
   );
+
+  // LLM proxy (Guardrails) — desktop → backend → DeepSeek. Mounts whenever the
+  // flag is on; the key is resolved per-request by the store (company → platform →
+  // env). No key configured ⇒ the route returns 503 "not configured", never 404.
+  // PI holds no key — it authenticates with its member token.
+  const proxyKeyStore = new ProxyKeyStore({
+    prisma:         c.prisma,
+    logger:         c.logger,
+    encryptionKey:  c.env.PROXY_KEY_ENCRYPTION_KEY ?? c.env.ZOHO_TOKEN_ENCRYPTION_KEY,
+    envFallbackKey: c.env.DEEPSEEK_API_KEY,
+  });
+  if (c.env.LLM_PROXY_ENABLED) {
+    app.use(
+      '/api/llm',
+      memberAuth,
+      createLlmProxyRoutes({
+        prisma:  c.prisma,
+        logger:  c.logger,
+        store:   proxyKeyStore,
+        baseUrl: c.env.DEEPSEEK_BASE_URL,
+      }),
+    );
+    c.logger.info('llm-proxy.enabled', { baseUrl: c.env.DEEPSEEK_BASE_URL, canEncrypt: proxyKeyStore.canEncrypt() });
+  }
 
   // AirNote channel (SSE chat + thread recovery)
   app.use(
@@ -450,6 +481,16 @@ export const createServer = (c: Container) => {
 
   // Token usage (per-member consumption + limits)
   app.use('/api/admin/token-usage', adminAuth, createTokenUsageRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  app.use('/api/admin/spend', adminAuth, createSpendRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // Per-member proxy guardrails (block / budget / rate / allowed models).
+  app.use('/api/admin/proxy-policy', adminAuth, createProxyPolicyRoutes({ prisma: c.prisma, logger: c.logger }));
+
+  // Proxy control plane (Guardrails) — key store + status.
+  app.use('/api/admin/proxy', adminAuth, createProxyRoutes({
+    prisma: c.prisma, store: proxyKeyStore, logger: c.logger, enabled: c.env.LLM_PROXY_ENABLED, upstream: c.env.DEEPSEEK_BASE_URL,
+  }));
 
   // 404
   app.use((_req, res) => {

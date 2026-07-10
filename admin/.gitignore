@@ -1,2 +1,5 @@
 node_modules
 dist
+
+# Design mock / plans — HTML previews for iterating on the admin UX (not shipped)
+html-plans/

@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { UIMessageChunk } from 'ai'
+import { consumePiApprovalEvent, usePiApproval } from '@/hooks/usePiApproval'
 import {
   PI_TRACE_TIMELINE_METADATA_KEY,
   createPiStreamState,
@@ -45,9 +46,21 @@ export function createPiMessageStream(options: {
 
       const state = createPiStreamState()
 
+      const denyThenAbort = async () => {
+        await usePiApproval.getState().denyThread(threadId)
+        try {
+          await invoke('pi_abort')
+          usePiApproval.getState().discardThreadAfterAbort(threadId)
+        } catch {
+          // If abort itself fails, retain any failed denial in the UI. This is
+          // the only state where we cannot prove the Pi request was cancelled.
+        }
+      }
+
       const finishStream = (reason: 'stop' | 'error' = 'stop') => {
         if (finished) return
         finished = true
+        void usePiApproval.getState().denyThread(threadId)
         onTerminal?.()
         if (reason === 'stop') {
           controller.enqueue({ type: 'finish', finishReason: 'stop' })
@@ -57,7 +70,7 @@ export function createPiMessageStream(options: {
       }
 
       const onAbort = () => {
-        void invoke('pi_abort').catch(() => undefined)
+        void denyThenAbort()
         if (!isStale()) {
           controller.enqueue({
             type: 'error',
@@ -81,6 +94,7 @@ export function createPiMessageStream(options: {
           const payload = event.payload
           if (payload.thread_id && payload.thread_id !== threadId) return
 
+          void consumePiApprovalEvent(payload)
           onPiEvent?.(payload)
           mapPiEventToUiChunks(payload, controller, state, finishStream)
         })
@@ -97,8 +111,14 @@ export function createPiMessageStream(options: {
         finishStream('error')
       }
     },
-    cancel() {
-      void invoke('pi_abort').catch(() => undefined)
+    async cancel() {
+      await usePiApproval.getState().denyThread(threadId)
+      try {
+        await invoke('pi_abort')
+        usePiApproval.getState().discardThreadAfterAbort(threadId)
+      } catch {
+        // Retain a failed denial if Rust could not confirm cancellation.
+      }
       void unlisten?.()
     },
   })

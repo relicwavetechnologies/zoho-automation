@@ -525,6 +525,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
             larkTenantKey: tenantKey,
             larkOpenId:    tokenBundle.larkOpenId,
             larkUserId:    tokenBundle.larkUserId,
+            avatarUrl:     tokenBundle.avatarUrl,
             departments,
           },
         },

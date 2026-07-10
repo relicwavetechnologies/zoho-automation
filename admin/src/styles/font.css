@@ -1,3 +1,9 @@
+/* JetBrains Mono — data/code surfaces (ids, tokens, cost, raw I/O).
+   Loaded from Google Fonts for now; TODO self-host under /fonts/jetbrains-mono
+   to match Inter/Studio and drop the network dependency. @import must stay
+   first (before any @font-face) per the CSS spec. */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 /* Inter */
 @font-face {
   font-family: 'Inter';

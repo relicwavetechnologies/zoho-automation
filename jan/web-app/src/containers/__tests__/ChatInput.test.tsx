@@ -301,6 +301,7 @@ vi.mock('@/lib/platform/utils', () => ({
 // Import component AFTER all mocks
 import ChatInput from '../ChatInput'
 import { clearDivoSkillSearchCache } from '@/lib/divo-skill-search'
+import { usePiApproval } from '@/hooks/usePiApproval'
 
 // Helpers -------------------------------------------------------------------
 
@@ -325,6 +326,8 @@ const resetAll = () => {
   enqueueMock.mockClear()
   clearQueueMock.mockClear()
   tauriCoreMock.invoke.mockReset()
+  tauriCoreMock.invoke.mockResolvedValue(undefined)
+  usePiApproval.setState({ queues: {} })
   clearDivoSkillSearchCache()
   for (const k of Object.keys(queueState)) delete queueState[k]
   getCurrentThreadMock.mockReturnValue(undefined)
@@ -349,6 +352,143 @@ describe('ChatInput', () => {
     expect(ta).toHaveAttribute('placeholder', 'common:placeholder.chatInput')
     // send button is present
     expect(document.querySelector('[data-test-id="send-message-button"]')).toBeTruthy()
+  })
+
+  it('opens real permission rules instead of the mock approval preview', async () => {
+    tauriCoreMock.invoke.mockImplementation((command: string) => {
+      if (command === 'pi_get_permission_rules') {
+        return Promise.resolve({ bashAlwaysAllow: false })
+      }
+      return Promise.resolve(undefined)
+    })
+    renderInput()
+
+    fireEvent.click(screen.getByTestId('permission-rules-trigger'))
+
+    expect(await screen.findByText('Permission rules')).toBeInTheDocument()
+    expect(screen.getByText('Bash commands')).toBeInTheDocument()
+    expect(screen.getByTestId('chat-input')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Review email before sending')
+    ).not.toBeInTheDocument()
+  })
+
+  it('replaces the composer with a live Pi approval and resumes after approval', async () => {
+    usePiApproval.getState().enqueue({
+      requestId: 'approval-request-1',
+      threadId: 'thread-1',
+      descriptor: {
+        version: 1,
+        toolCallId: 'tool-call-1',
+        source: 'divo',
+        kind: 'gmail.send',
+        action: 'send',
+        title: 'Review live email',
+        presentation: {
+          to: ['maya@example.com'],
+          subject: 'Live subject',
+          body: 'Live body',
+        },
+      },
+      receivedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      status: 'pending',
+    })
+
+    renderInput()
+
+    expect(screen.queryByTestId('chat-input')).toBeNull()
+    expect(screen.getByText('Review live email')).toBeInTheDocument()
+    expect(screen.getByText('Live subject')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve & send' }))
+
+    await waitFor(() => {
+      expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+        'pi_extension_ui_respond',
+        {
+          requestId: 'approval-request-1',
+          threadId: 'thread-1',
+          confirmed: true,
+        }
+      )
+      expect(screen.getByTestId('chat-input')).toBeInTheDocument()
+    })
+  })
+
+  it('denies a live approval before forwarding Stop run to chat abort', async () => {
+    const onStop = vi.fn()
+    usePiApproval.getState().enqueue({
+      requestId: 'approval-request-stop',
+      threadId: 'thread-1',
+      descriptor: {
+        version: 1,
+        toolCallId: 'tool-call-stop',
+        source: 'bash',
+        kind: 'bash.execute',
+        action: 'execute',
+        title: 'Run terminal command',
+        presentation: { command: 'touch example.txt' },
+      },
+      receivedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      status: 'pending',
+    })
+
+    renderInput({ onStop })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop run' }))
+
+    await waitFor(() => expect(onStop).toHaveBeenCalledOnce())
+    expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+      'pi_extension_ui_respond',
+      {
+        requestId: 'approval-request-stop',
+        threadId: 'thread-1',
+        confirmed: false,
+      }
+    )
+    expect(
+      tauriCoreMock.invoke.mock.invocationCallOrder[0]
+    ).toBeLessThan(onStop.mock.invocationCallOrder[0])
+  })
+
+  it('can always allow Bash for the active task', async () => {
+    usePiApproval.getState().enqueue({
+      requestId: 'approval-request-bash-always',
+      threadId: 'thread-1',
+      descriptor: {
+        version: 1,
+        toolCallId: 'tool-call-bash-always',
+        source: 'bash',
+        kind: 'bash.execute',
+        action: 'execute',
+        title: 'Run terminal command',
+        presentation: { command: 'npm test' },
+      },
+      receivedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      status: 'pending',
+    })
+
+    renderInput()
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Always allow Bash for this task',
+      })
+    )
+
+    await waitFor(() => {
+      expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+        'pi_extension_ui_respond',
+        {
+          requestId: 'approval-request-bash-always',
+          threadId: 'thread-1',
+          confirmed: true,
+          alwaysAllowBash: true,
+        }
+      )
+      expect(screen.getByTestId('chat-input')).toBeInTheDocument()
+    })
   })
 
   it('disables the send button when prompt is empty', () => {

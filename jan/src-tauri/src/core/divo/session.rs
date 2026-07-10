@@ -31,6 +31,8 @@ pub struct DivoSession {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub departments: Vec<DivoDepartment>,
 }

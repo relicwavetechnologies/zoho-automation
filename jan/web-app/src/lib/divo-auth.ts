@@ -22,6 +22,7 @@ export type DivoSessionStatus = {
   companyId?: string
   role?: string
   expiresAt?: string
+  avatarUrl?: string
   departments: DivoDepartment[]
 }
 
@@ -56,6 +57,7 @@ type DesktopExchangeResponse = {
       expiresAt: string
       email?: string
       name?: string
+      avatarUrl?: string | null
       departments?: DivoDepartment[]
     }
   }
@@ -176,6 +178,7 @@ export async function signInDivoWithLark(backendUrl: string): Promise<DivoSessio
     companyId: session.companyId,
     role: session.role,
     expiresAt: session.expiresAt,
+    avatarUrl: session.avatarUrl ?? undefined,
     departments,
   }).then(normalizeDivoSessionStatus)
 }

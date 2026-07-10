@@ -9,7 +9,8 @@ export default {
   	extend: {
   		fontFamily: {
   			sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
-  			studio: ['StudioFeixenSans', 'Inter', 'sans-serif']
+  			studio: ['StudioFeixenSans', 'Inter', 'sans-serif'],
+  			mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace']
   		},
   		borderRadius: {
   			lg: 'var(--radius)',
@@ -72,6 +73,14 @@ export default {
   				'3': 'hsl(var(--chart-3))',
   				'4': 'hsl(var(--chart-4))',
   				'5': 'hsl(var(--chart-5))'
+  			},
+  			/* pastel AI-timeline stages — agent trace only (see TraceStage) */
+  			timeline: {
+  				thinking: 'hsl(var(--tl-thinking))',
+  				grep: 'hsl(var(--tl-grep))',
+  				read: 'hsl(var(--tl-read))',
+  				edit: 'hsl(var(--tl-edit))',
+  				done: 'hsl(var(--tl-done))'
   			},
   			sidebar: {
   				DEFAULT: 'hsl(var(--sidebar-background))',

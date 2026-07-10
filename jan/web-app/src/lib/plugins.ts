@@ -15,6 +15,7 @@ import {
   Users,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
+import { GmailIcon, ZohoIcon } from '@/components/brand-icons'
 
 export type DivoPluginCategory = 'connector' | 'skill' | 'data_source'
 
@@ -30,6 +31,7 @@ export type DivoPlugin = {
   category: DivoPluginCategory
   description: string
   icon: ComponentType<{ className?: string }>
+  iconClassName?: string
   accentClassName: string
   featured?: boolean
   enabled?: boolean
@@ -79,8 +81,8 @@ export const divoPlugins: DivoPlugin[] = [
     name: 'Google Workspace',
     category: 'connector',
     description: 'Connect Gmail, Drive, and Calendar accounts.',
-    icon: Mail,
-    accentClassName: 'text-rose-400 bg-rose-400/10 border-rose-400/20',
+    icon: GmailIcon,
+    accentClassName: 'bg-card border-border/70',
     featured: true,
     enabled: true,
   },
@@ -89,8 +91,9 @@ export const divoPlugins: DivoPlugin[] = [
     name: 'Zoho',
     category: 'connector',
     description: 'Connect Zoho CRM and Books through Divo backend.',
-    icon: FileSpreadsheet,
-    accentClassName: 'text-emerald-300 bg-emerald-300/10 border-emerald-300/20',
+    icon: ZohoIcon,
+    iconClassName: 'h-5 w-7',
+    accentClassName: 'bg-card border-border/70',
     featured: true,
     enabled: true,
   },
@@ -188,7 +191,7 @@ export const pluginSkills: DivoPluginSkill[] = [
 ]
 
 export const googleWorkspaceServices = [
-  { name: 'Gmail', icon: Mail, description: 'Read, search, draft, and send email based on access.' },
+  { name: 'Gmail', icon: GmailIcon, description: 'Read, search, draft, and send email based on access.' },
   { name: 'Drive', icon: HardDrive, description: 'Search files, inspect metadata, and read shared docs.' },
   { name: 'Calendar', icon: CalendarDays, description: 'Read schedules and create events when allowed.' },
 ]
@@ -201,8 +204,8 @@ export const pluginAutomationCards = [
   },
   {
     title: 'Get a personal email assistant for Gmail.',
-    icon: Mail,
-    accentClassName: 'text-rose-400 bg-rose-400/10 border-rose-400/20',
+    icon: GmailIcon,
+    accentClassName: 'bg-card border-border/70',
   },
   {
     title: 'Turn repeat work into reusable skills.',

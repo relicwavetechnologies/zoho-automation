@@ -139,7 +139,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.approval?.message ??
 			"Manager approval is required before this action can run.";
 		return {
-			text: `Approval required.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user approval is pending in Lark. Do not claim the action completed. After the manager approves, retry the exact same tools.invoke request with the same departmentId, toolId, and args. Do not change or enrich the args; changed args require a fresh approval.`,
+			text: `Approval required.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user approval is pending in Lark. Do not claim the action completed. After the manager approves, retry the exact same divo_gateway tools.invoke request with the same departmentId, toolId, and args. Do not change or enrich the args; changed args require a fresh approval.`,
 			isError: true,
 		};
 	}

@@ -1604,6 +1604,65 @@ model MemberTokenPolicy {
   @@index([companyId])
 }
 
+/// Guardrails policy for the LLM proxy: per-member block / budget / rate / model allow-list.
+model MemberProxyPolicy {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  companyId       String
+  blocked         Boolean  @default(false)
+  monthlyBudgetUsd Float?  // null = no cap
+  rateLimitRpm    Int?     // null = no per-minute cap
+  allowedModels   String[] @default([]) // empty = all models allowed
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([companyId])
+}
+
+/// Encrypted upstream provider key (DeepSeek) the proxy resolves server-side.
+/// The desktop never holds a key — it authenticates with its member token and
+/// the backend attaches the resolved key. Resolution precedence: company → platform → env.
+model ProxyProviderKey {
+  id           String    @id @default(uuid())
+  provider     String    @default("deepseek")
+  scope        String    // 'platform' | 'company'
+  companyId    String?   // null for platform scope
+  scopeKey     String    // 'platform' or the companyId — the uniqueness discriminator
+  encryptedKey String    // AES-256-GCM cipher text (token.crypto v1 format)
+  keyLast4     String    // last 4 chars for masked display; never the full key
+  status       String    @default("active") // 'active' | 'disabled'
+  createdBy    String?   // admin userId who set it
+  lastUsedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([provider, scopeKey])
+  @@index([companyId])
+}
+
+/// One row per proxied request — the audit trail behind the Guardrails live feed
+/// + health metrics. Tokens are stored (cache-split); cost is priced at read via
+/// pricing.ts (Track B), never stored. Writing this NEVER blocks the proxied call.
+model ProxyRequestLog {
+  id              String   @id @default(uuid())
+  companyId       String
+  userId          String
+  executionRunId  String?
+  model           String
+  decision        String   // 'allowed' | 'denied'
+  reason          String?  // gate reason / error type when not allowed
+  httpStatus      Int      // status returned to the caller
+  cacheHitTokens  Int      @default(0)
+  cacheMissTokens Int      @default(0)
+  outputTokens    Int      @default(0)
+  latencyMs       Int      @default(0)
+  keySource       String?  // 'company' | 'platform' | 'env'
+  createdAt       DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([companyId, userId, createdAt])
+}
+
 model SupervisorTodo {
   id        String   @id @default(cuid())
   companyId String

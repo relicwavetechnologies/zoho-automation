@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Divo mark</title>
+  <desc id="desc">A continuous ribbon forming an interlocking D and V.</desc>
+  <g
+    fill="none"
+    stroke="currentColor"
+    stroke-width="68"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M320 720V320h125c65 0 107 20 151 64l80 80 60-60h62c25 0 36 16 27 40l-79 220c-19 54-70 68-109 29L493 549c-21-21-44-21-65 0L320 657" />
+  </g>
+</svg>

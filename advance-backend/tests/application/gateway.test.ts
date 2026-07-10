@@ -7,6 +7,10 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { GatewayDispatcher } from '../../src/application/gateway/gateway-dispatcher.ts';
 import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
+import {
+  InMemoryApprovalIntentRepository,
+  LocalApprovalIntentService,
+} from '../../src/application/gateway/local-approval-intent.service.ts';
 import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
 import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
 import { createWebSearchTool } from '../../src/application/orchestration/tools/families/web-search.tool.ts';
@@ -20,6 +24,7 @@ import type { PermissionService } from '../../src/application/permissions/permis
 import type { PermissionQuery, PermissionResult } from '../../src/application/permissions/permission.types.ts';
 import type { GatewayMemberContext } from '../../src/application/gateway/gateway.types.ts';
 import type { MediaOcrService } from '../../src/application/gateway/media-ocr.service.ts';
+import type { Clock } from '../../src/shared/clock.ts';
 
 const member: GatewayMemberContext = {
   companyId: 'co-test',
@@ -128,6 +133,20 @@ function makeSkillCatalog(skills: CatalogSkill[]): SkillCatalogService {
     getInScope: async ({ skillId }: { skillId: string }) =>
       skills.find((skill) => skill.id === skillId) ?? null,
   } as unknown as SkillCatalogService;
+}
+
+function makeLocalApprovals(
+  toolExecutor: ToolExecutor,
+  clock: Clock = { now: () => new Date(), nowMs: () => Date.now() },
+  intentTtlMs?: number,
+): LocalApprovalIntentService {
+  return new LocalApprovalIntentService({
+    toolExecutor,
+    repository: new InMemoryApprovalIntentRepository(),
+    clock,
+    logger: noopLogger,
+    ...(intentTtlMs !== undefined ? { intentTtlMs } : {}),
+  });
 }
 
 describe('ToolExecutor', () => {
@@ -445,6 +464,315 @@ describe('ToolExecutor', () => {
   });
 });
 
+describe('LocalApprovalIntentService', () => {
+  it('classifies reads without executing or creating an approval intent', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      execute: async (args) => {
+        executions++;
+        return ok({ result: `echo:${args.query}` });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await makeLocalApprovals(executor).prepare({
+      member,
+      toolId: 'fakeTool',
+      args: { query: 'preview only' },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal((result.data as any).action, 'read');
+    assert.equal((result.data as any).requiresApproval, false);
+    assert.equal((result.data as any).intentId, undefined);
+    assert.equal(executions, 0);
+  });
+
+  it('commits the exact validated write args once and rejects replay', async () => {
+    const executed: unknown[] = [];
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['update']),
+      permissionCheck: () => ok('update'),
+      execute: async (args) => {
+        executed.push(args);
+        return ok({ result: `echo:${args.query}` });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['update'])),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const approvals = makeLocalApprovals(executor);
+
+    const prepared = await approvals.prepare({
+      member,
+      toolId: 'fakeTool',
+      // Zod strips the unrecognized property, binding the intent to normalized args.
+      args: { query: 'original', ignored: 'not executable' },
+    });
+    assert.equal(prepared.ok, true);
+    assert.equal((prepared.data as any).requiresApproval, true);
+    assert.equal((prepared.data as any).action, 'update');
+    assert.match((prepared.data as any).intentId, /^[0-9a-f-]{36}$/);
+    assert.match((prepared.data as any).argsHash, /^[0-9a-f]{64}$/);
+    assert.equal((prepared.data as any).presentation.kind, 'generic.fakeTool.update');
+
+    const intentId = (prepared.data as any).intentId as string;
+    const committed = await approvals.commit({ member, intentId });
+    assert.equal(committed.ok, true);
+    assert.deepEqual(executed, [{ query: 'original' }]);
+
+    const replay = await approvals.commit({ member, intentId });
+    assert.equal(replay.ok, false);
+    assert.equal(replay.status, 'approval_intent_consumed');
+    assert.equal(executed.length, 1);
+  });
+
+  it('returns deterministic Gmail and Zoho presentation payloads for the UI registry', async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      ...makeFakeTool(),
+      id: asToolId('googleGmail'),
+      family: 'google',
+      actionGroups: new Set(['send']),
+      argsSchema: z.object({
+        connectionId: z.string(),
+        op: z.literal('send'),
+        to: z.array(z.string()),
+        subject: z.string(),
+        body: z.string(),
+      }),
+      permissionCheck: () => ok('send'),
+    } as Tool<unknown, unknown>);
+    registry.register({
+      ...makeFakeTool(),
+      id: asToolId('zohoCrm'),
+      family: 'zoho',
+      actionGroups: new Set(['update']),
+      argsSchema: z.object({
+        connectionId: z.string(),
+        op: z.literal('update'),
+        module: z.string(),
+        recordId: z.string(),
+        fields: z.record(z.unknown()),
+      }),
+      permissionCheck: () => ok('update'),
+    } as Tool<unknown, unknown>);
+    const permissions = makePermissionService({
+      ...makeAllowedPerm('googleGmail', ['send']),
+      allowedToolIds: new Set([asToolId('googleGmail'), asToolId('zohoCrm')]),
+      allowedActionsByTool: new Map([
+        [asToolId('googleGmail'), new Set(['send'] as const)],
+        [asToolId('zohoCrm'), new Set(['update'] as const)],
+      ]),
+    });
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const approvals = makeLocalApprovals(executor);
+
+    const gmail = await approvals.prepare({
+      member,
+      toolId: 'googleGmail',
+      args: {
+        connectionId: 'google-1',
+        op: 'send',
+        to: ['maya@example.com'],
+        subject: 'Q3 rollout',
+        body: 'Hi Maya',
+      },
+    });
+    assert.deepEqual((gmail.data as any).presentation, {
+      kind: 'gmail.send',
+      provider: 'gmail',
+      title: 'Review email before sending',
+      action: 'send',
+      operation: 'send',
+      details: {
+        connectionId: 'google-1',
+        to: ['maya@example.com'],
+        subject: 'Q3 rollout',
+        body: 'Hi Maya',
+      },
+    });
+
+    const zoho = await approvals.prepare({
+      member,
+      toolId: 'zohoCrm',
+      args: {
+        connectionId: 'zoho-1',
+        op: 'update',
+        module: 'Deals',
+        recordId: 'D-1842',
+        fields: { Stage: 'Closed Won', Amount: 925000 },
+      },
+    });
+    assert.deepEqual((zoho.data as any).presentation, {
+      kind: 'zoho.crm.update',
+      provider: 'zoho',
+      title: 'Review Zoho CRM update',
+      action: 'update',
+      operation: 'update',
+      details: {
+        connectionId: 'zoho-1',
+        module: 'Deals',
+        recordId: 'D-1842',
+        fields: { Stage: 'Closed Won', Amount: 925000 },
+      },
+    });
+  });
+
+  it('binds an intent to the preparing session and department', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({ permissionCheck: () => ok('create') }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['create'])),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const approvals = makeLocalApprovals(executor);
+    const prepared = await approvals.prepare({
+      member,
+      departmentId: 'dept-1',
+      toolId: 'fakeTool',
+      args: { query: 'bound' },
+    });
+    const intentId = (prepared.data as any).intentId as string;
+
+    const wrongSession = await approvals.commit({
+      member: { ...member, sessionId: 'sess-other' },
+      departmentId: 'dept-1',
+      intentId,
+    });
+    assert.equal(wrongSession.status, 'approval_intent_not_found');
+
+    const wrongDepartment = await approvals.commit({
+      member,
+      departmentId: 'dept-2',
+      intentId,
+    });
+    assert.equal(wrongDepartment.status, 'approval_intent_not_found');
+
+    const committed = await approvals.commit({ member, departmentId: 'dept-1', intentId });
+    assert.equal(committed.ok, true);
+  });
+
+  it('expires uncommitted intents using the injected clock', async () => {
+    let nowMs = Date.parse('2026-07-10T00:00:00.000Z');
+    const clock: Clock = { now: () => new Date(nowMs), nowMs: () => nowMs };
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({ permissionCheck: () => ok('delete') }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['delete'])),
+      logger: noopLogger,
+      clock,
+    });
+    const approvals = makeLocalApprovals(executor, clock, 1_000);
+    const prepared = await approvals.prepare({
+      member,
+      toolId: 'fakeTool',
+      args: { query: 'expire me' },
+    });
+    assert.equal((prepared.data as any).expiresAt, '2026-07-10T00:00:01.000Z');
+
+    nowMs += 1_000;
+    const expired = await approvals.commit({
+      member,
+      intentId: (prepared.data as any).intentId,
+    });
+    assert.equal(expired.status, 'approval_intent_expired');
+  });
+
+  it('rejects a concurrent commit while the first exact action is running', async () => {
+    let releaseExecution!: () => void;
+    const executionStarted = new Promise<void>((resolve) => { releaseExecution = resolve; });
+    let allowCompletion!: () => void;
+    const completion = new Promise<void>((resolve) => { allowCompletion = resolve; });
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      permissionCheck: () => ok('send'),
+      execute: async (args) => {
+        releaseExecution();
+        await completion;
+        return ok({ result: `echo:${args.query}` });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const approvals = makeLocalApprovals(executor);
+    const prepared = await approvals.prepare({ member, toolId: 'fakeTool', args: { query: 'once' } });
+    const intentId = (prepared.data as any).intentId as string;
+
+    const firstCommit = approvals.commit({ member, intentId });
+    await executionStarted;
+    const concurrent = await approvals.commit({ member, intentId });
+    assert.equal(concurrent.status, 'approval_intent_busy');
+    allowCompletion();
+    assert.equal((await firstCommit).ok, true);
+  });
+
+  it('keeps the local intent retryable while manager approval is pending', async () => {
+    let checks = 0;
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      permissionCheck: () => ok('create'),
+      execute: async () => {
+        executions++;
+        return ok({ result: 'done' });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['create'])),
+      approvalGate: {
+        check: async () => ++checks === 1
+          ? { kind: 'pending', approvalId: 'manager-1', message: 'Waiting for manager' }
+          : { kind: 'allowed' },
+        completeExecution: async () => {},
+        failExecution: async () => {},
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const approvals = makeLocalApprovals(executor);
+    const prepared = await approvals.prepare({
+      member,
+      departmentId: 'dept-1',
+      toolId: 'fakeTool',
+      args: { query: 'manager-gated' },
+    });
+    const intentId = (prepared.data as any).intentId as string;
+
+    const pending = await approvals.commit({ member, departmentId: 'dept-1', intentId });
+    assert.equal(pending.status, 'approval_required');
+    assert.equal(executions, 0);
+
+    const approved = await approvals.commit({ member, departmentId: 'dept-1', intentId });
+    assert.equal(approved.ok, true);
+    assert.equal(executions, 1);
+    assert.equal((await approvals.commit({ member, departmentId: 'dept-1', intentId })).status, 'approval_intent_consumed');
+  });
+});
+
 describe('GatewayDispatcher', () => {
   const allowedSkill: CatalogSkill = {
     id: 'allowed-skill',
@@ -678,6 +1006,55 @@ describe('GatewayDispatcher', () => {
 
     assert.equal(result.ok, true);
     assert.deepEqual((result.data as { result: { result: string } }).result, { result: 'echo:gateway' });
+  });
+
+  it('blocks direct write invocation and executes it only through prepare then commit', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['update']),
+      permissionCheck: () => ok('update'),
+      execute: async (args) => {
+        executions++;
+        return ok({ result: `echo:${args.query}` });
+      },
+    }));
+    const permissions = makePermissionService(makeAllowedPerm('fakeTool', ['update']));
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor,
+      localApprovalIntents: makeLocalApprovals(toolExecutor),
+      logger: noopLogger,
+    });
+
+    const bypass = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { toolId: 'fakeTool', args: { query: 'write' } },
+    }, member);
+    assert.equal(bypass.status, 'local_approval_required');
+    assert.equal(executions, 0);
+
+    const prepared = await dispatcher.dispatch({
+      op: 'tools.prepare',
+      payload: { toolId: 'fakeTool', args: { query: 'write' } },
+    }, member);
+    assert.equal(prepared.ok, true);
+    assert.equal((prepared.data as any).requiresApproval, true);
+
+    const committed = await dispatcher.dispatch({
+      op: 'tools.commit',
+      payload: { intentId: (prepared.data as any).intentId },
+    }, member);
+    assert.equal(committed.ok, true);
+    assert.equal(executions, 1);
   });
 
   it('exposes and invokes webSearch through the backend gateway when RBAC allows it', async () => {

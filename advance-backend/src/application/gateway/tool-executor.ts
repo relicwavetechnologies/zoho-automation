@@ -4,6 +4,7 @@ import type { PermissionResult } from '../permissions/permission.types';
 import type { ApprovalGateService } from '../approval/approval-gate.service';
 import { buildArgsSummary } from '../orchestration/tools/ai-sdk-adapter';
 import type { ToolExecutionContext } from '../orchestration/tools/tool.contract';
+import type { Tool } from '../orchestration/tools/tool.contract';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import type { Logger } from '../../shared/logger';
 import type { Clock } from '../../shared/clock';
@@ -22,6 +23,8 @@ export interface ToolExecutorInput {
   readonly toolId: string;
   readonly args: Record<string, unknown>;
   readonly requestId?: string;
+  /** Optional invariant used by prepared commits to prevent action reclassification. */
+  readonly expectedAction?: ToolActionGroup;
 }
 
 export interface ToolExecutorDeps {
@@ -32,82 +35,58 @@ export interface ToolExecutorDeps {
   readonly clock: Clock;
 }
 
+export interface PreparedToolInvocation {
+  readonly toolId: string;
+  readonly action: ToolActionGroup;
+  readonly args: Record<string, unknown>;
+}
+
+interface ResolvedToolInvocation extends PreparedToolInvocation {
+  readonly tool: Tool<unknown, unknown>;
+  readonly perm: PermissionResult;
+  readonly runContext: RunContext;
+  readonly effectiveDepartmentId?: string;
+}
+
+type ResolveToolInvocationResult =
+  | { readonly ok: true; readonly value: ResolvedToolInvocation }
+  | { readonly ok: false; readonly response: GatewayResponse };
+
 export class ToolExecutor {
   constructor(private readonly deps: ToolExecutorDeps) {}
 
-  async invoke(input: ToolExecutorInput): Promise<GatewayResponse> {
-    const { member, departmentId, toolId, args } = input;
+  /** Validate and authorize a proposed invocation without running approval gates or tool code. */
+  async prepare(input: ToolExecutorInput): Promise<GatewayResponse<PreparedToolInvocation>> {
+    const resolved = await this.resolve(input);
+    if (!resolved.ok) return resolved.response as GatewayResponse<PreparedToolInvocation>;
 
-    if (toolId === 'runCommand') {
+    return gatewaySuccess({
+      toolId: resolved.value.toolId,
+      action: resolved.value.action,
+      args: resolved.value.args,
+    });
+  }
+
+  async invoke(input: ToolExecutorInput): Promise<GatewayResponse> {
+    const resolved = await this.resolve(input);
+    if (!resolved.ok) return resolved.response;
+    if (input.expectedAction && resolved.value.action !== input.expectedAction) {
       return gatewayFailure(
-        'permission_denied',
-        'runCommand is not available through the company gateway',
+        'invalid_args',
+        `Tool action changed from "${input.expectedAction}" to "${resolved.value.action}" after preparation`,
       );
     }
 
-    const tool = this.deps.toolRegistry.byId(toolId as never);
-    if (!tool) {
-      return gatewayFailure('unknown_tool', `Unknown toolId "${toolId}"`);
-    }
+    const { member } = input;
+    const {
+      tool,
+      action,
+      args: validatedArgs,
+      perm,
+      runContext,
+      effectiveDepartmentId,
+    } = resolved.value;
 
-    const argsParse = tool.argsSchema.safeParse(args);
-    if (!argsParse.success) {
-      const issues = argsParse.error.errors
-        .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
-        .join('; ');
-      return gatewayFailure('invalid_args', `Invalid args for "${toolId}" — ${issues}`);
-    }
-
-    const validatedArgs = argsParse.data;
-    const skillPublishingDepartmentId = skillPublishingScopedDepartmentId(toolId, validatedArgs, departmentId);
-    const companyScopedSkillPublishing = isCompanyScopedSkillPublishingInvocation(toolId, validatedArgs);
-    const effectiveDepartmentId = companyScopedSkillPublishing ? undefined : skillPublishingDepartmentId;
-
-    const basePermissionQuery = {
-      companyId: asCompanyId(member.companyId),
-      userId: asUserId(member.userId),
-      companyRole: asCompanyRoleSlug(member.aiRole),
-      channel: 'desktop',
-    } as const;
-
-    let permResult = await this.deps.permissions.resolve({
-      ...basePermissionQuery,
-      ...(effectiveDepartmentId ? { departmentId: asDepartmentId(effectiveDepartmentId) } : {}),
-    });
-
-    if (
-      isSkillPublishingAuthorityCheck(toolId, validatedArgs)
-      && skillPublishingDepartmentId
-    ) {
-      const companyPermResult = await this.deps.permissions.resolve(basePermissionQuery);
-      if (!companyPermResult.ok) {
-        return gatewayFailure('permission_denied', companyPermResult.error.message);
-      }
-
-      if (!permResult.ok) {
-        return gatewayFailure('permission_denied', permResult.error.message);
-      }
-
-      permResult = {
-        ok: true,
-        value: mergeSkillPublishingAuthority(companyPermResult.value, permResult.value),
-      };
-    }
-
-    if (!permResult.ok) {
-      return gatewayFailure('permission_denied', permResult.error.message);
-    }
-
-    const perm = permResult.value;
-
-    const permCheck = tool.permissionCheck(validatedArgs, perm);
-    if (!permCheck.ok) {
-      return gatewayFailure('permission_denied', permCheck.error.message);
-    }
-
-    const action = permCheck.value;
-
-    const runContext = this.buildRunContext(member, effectiveDepartmentId, perm.department?.zohoReadScope, input.requestId);
     let executionGrant: { approvalId: string } | undefined;
 
     if (this.deps.approvalGate && effectiveDepartmentId) {
@@ -168,6 +147,93 @@ export class ToolExecutor {
     }
 
     return gatewaySuccess({ toolId: tool.id, action, result: result.value });
+  }
+
+  private async resolve(input: ToolExecutorInput): Promise<ResolveToolInvocationResult> {
+    const { member, departmentId, toolId, args } = input;
+
+    if (toolId === 'runCommand') {
+      return { ok: false, response: gatewayFailure(
+        'permission_denied',
+        'runCommand is not available through the company gateway',
+      ) };
+    }
+
+    const tool = this.deps.toolRegistry.byId(toolId as never);
+    if (!tool) {
+      return { ok: false, response: gatewayFailure('unknown_tool', `Unknown toolId "${toolId}"`) };
+    }
+
+    const argsParse = tool.argsSchema.safeParse(args);
+    if (!argsParse.success) {
+      const issues = argsParse.error.errors
+        .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
+        .join('; ');
+      return { ok: false, response: gatewayFailure('invalid_args', `Invalid args for "${toolId}" — ${issues}`) };
+    }
+
+    const validatedArgs = argsParse.data;
+    const skillPublishingDepartmentId = skillPublishingScopedDepartmentId(toolId, validatedArgs, departmentId);
+    const companyScopedSkillPublishing = isCompanyScopedSkillPublishingInvocation(toolId, validatedArgs);
+    const effectiveDepartmentId = companyScopedSkillPublishing ? undefined : skillPublishingDepartmentId;
+
+    const basePermissionQuery = {
+      companyId: asCompanyId(member.companyId),
+      userId: asUserId(member.userId),
+      companyRole: asCompanyRoleSlug(member.aiRole),
+      channel: 'desktop',
+    } as const;
+
+    let permResult = await this.deps.permissions.resolve({
+      ...basePermissionQuery,
+      ...(effectiveDepartmentId ? { departmentId: asDepartmentId(effectiveDepartmentId) } : {}),
+    });
+
+    if (
+      isSkillPublishingAuthorityCheck(toolId, validatedArgs)
+      && skillPublishingDepartmentId
+    ) {
+      const companyPermResult = await this.deps.permissions.resolve(basePermissionQuery);
+      if (!companyPermResult.ok) {
+        return { ok: false, response: gatewayFailure('permission_denied', companyPermResult.error.message) };
+      }
+
+      if (!permResult.ok) {
+        return { ok: false, response: gatewayFailure('permission_denied', permResult.error.message) };
+      }
+
+      permResult = {
+        ok: true,
+        value: mergeSkillPublishingAuthority(companyPermResult.value, permResult.value),
+      };
+    }
+
+    if (!permResult.ok) {
+      return { ok: false, response: gatewayFailure('permission_denied', permResult.error.message) };
+    }
+
+    const perm = permResult.value;
+
+    const permCheck = tool.permissionCheck(validatedArgs, perm);
+    if (!permCheck.ok) {
+      return { ok: false, response: gatewayFailure('permission_denied', permCheck.error.message) };
+    }
+
+    const action = permCheck.value;
+
+    const runContext = this.buildRunContext(member, effectiveDepartmentId, perm.department?.zohoReadScope, input.requestId);
+    return {
+      ok: true,
+      value: {
+        tool,
+        toolId: tool.id,
+        action,
+        args: validatedArgs as Record<string, unknown>,
+        perm,
+        runContext,
+        ...(effectiveDepartmentId ? { effectiveDepartmentId } : {}),
+      },
+    };
   }
 
   private buildRunContext(

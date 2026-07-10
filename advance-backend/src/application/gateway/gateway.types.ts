@@ -8,6 +8,8 @@ export const GATEWAY_OPS = [
   'skills.get',
   'connections.list',
   'media.image_ocr',
+  'tools.prepare',
+  'tools.commit',
   'tools.invoke',
 ] as const;
 
@@ -21,6 +23,11 @@ export const GATEWAY_STATUSES = [
   'unknown_tool',
   'invalid_args',
   'permission_denied',
+  'local_approval_required',
+  'approval_intent_not_found',
+  'approval_intent_expired',
+  'approval_intent_consumed',
+  'approval_intent_busy',
   'approval_required',
   'approval_rejected',
   'approval_misconfigured',
@@ -43,6 +50,12 @@ export const toolsInvokePayloadSchema = z.object({
 });
 
 export type ToolsInvokePayload = z.infer<typeof toolsInvokePayloadSchema>;
+
+export const toolsCommitPayloadSchema = z.object({
+  intentId: z.string().uuid(),
+});
+
+export type ToolsCommitPayload = z.infer<typeof toolsCommitPayloadSchema>;
 
 export const skillsGetPayloadSchema = z.object({
   skillId: z.string().min(1),

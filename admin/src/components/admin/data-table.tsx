@@ -8,6 +8,8 @@ type Column<T extends JsonRecord> = {
   key: keyof T & string
   header: string
   render?: (row: T) => ReactNode
+  /** Cell + header horizontal alignment (default "left"). */
+  align?: "left" | "right"
 }
 
 type DataTableProps<T extends JsonRecord> = {
@@ -46,7 +48,9 @@ export function DataTable<T extends JsonRecord>({ columns, rows, loading, emptyT
         <TableHeader>
           <TableRow>
             {columns.map((column) => (
-              <TableHead key={column.key}>{column.header}</TableHead>
+              <TableHead key={column.key} className={column.align === "right" ? "text-right" : undefined}>
+                {column.header}
+              </TableHead>
             ))}
           </TableRow>
         </TableHeader>
@@ -54,7 +58,9 @@ export function DataTable<T extends JsonRecord>({ columns, rows, loading, emptyT
           {rows.map((row, index) => (
             <TableRow key={String(row.id ?? row._id ?? index)} className={onRowClick ? "cursor-pointer hover:bg-accent/5" : ""} onClick={() => onRowClick?.(row)}>
               {columns.map((column) => (
-                <TableCell key={column.key}>{column.render ? column.render(row) : renderValue(row[column.key])}</TableCell>
+                <TableCell key={column.key} className={column.align === "right" ? "text-right" : undefined}>
+                  {column.render ? column.render(row) : renderValue(row[column.key])}
+                </TableCell>
               ))}
             </TableRow>
           ))}

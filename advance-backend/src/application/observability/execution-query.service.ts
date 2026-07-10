@@ -10,8 +10,9 @@
  * companyId. The service never returns data across company boundaries.
  */
 
-import type { ExecutionRepository, ExecutionRunView, ExecutionEventView } from '../../infrastructure/persistence/execution.repository';
+import type { ExecutionRepository, ExecutionRunView, ExecutionEventView, RunStatsRow } from '../../infrastructure/persistence/execution.repository';
 import type { Logger } from '../../shared/logger';
+import { costUsd } from './pricing';
 
 // ─── Redaction ────────────────────────────────────────────────────────────────
 
@@ -39,7 +40,7 @@ function redactPayload(payload: unknown, isSuperAdmin: boolean): unknown {
 
 // ─── View DTOs ────────────────────────────────────────────────────────────────
 
-export interface RunSummaryDto {
+interface RunBaseDto {
   id:            string;
   status:        string;
   channel:       string;
@@ -52,8 +53,15 @@ export interface RunSummaryDto {
   durationMs:    number | null;
 }
 
+export interface RunSummaryDto extends RunBaseDto {
+  userId:   string | null;
+  userName: string | null;   // resolved display name (or email fallback)
+  turns:    number;          // model calls in the run
+  tokens:   number;          // input + output tokens
+  costUsd:  number | null;   // provider-reported cost (null when unattributed)
+}
+
 export interface RunDetailDto extends RunSummaryDto {
-  userId:      string | null;
   threadId:    string | null;
   chatId:      string | null;
   agentTarget: string | null;
@@ -102,7 +110,12 @@ export class ExecutionQueryService {
       ...(input.channel ? { channel: input.channel } : {}),
     });
 
-    return runs.map(r => this.toSummary(r));
+    const [stats, users] = await Promise.all([
+      this.deps.repo.aggregateRunStats(runs.map(r => r.id)),
+      this.deps.repo.resolveUsers(runs.map(r => r.userId).filter((x): x is string => Boolean(x))),
+    ]);
+
+    return runs.map(r => this.enrich(r, stats, users));
   }
 
   /** Get a single run's detail (includes userId, chatId, etc.). */
@@ -114,9 +127,13 @@ export class ExecutionQueryService {
     const run = await this.deps.repo.findById(input.id, input.companyId);
     if (!run) return null;
 
+    const [stats, users] = await Promise.all([
+      this.deps.repo.aggregateRunStats([run.id]),
+      run.userId ? this.deps.repo.resolveUsers([run.userId]) : Promise.resolve(new Map()),
+    ]);
+
     return {
-      ...this.toSummary(run),
-      userId:      run.userId,
+      ...this.enrich(run, stats, users),
       threadId:    run.threadId,
       chatId:      run.chatId,
       agentTarget: run.agentTarget,
@@ -143,7 +160,7 @@ export class ExecutionQueryService {
 
   // ─── Private helpers ────────────────────────────────────────────────────
 
-  private toSummary(run: ExecutionRunView): RunSummaryDto {
+  private toBase(run: ExecutionRunView): RunBaseDto {
     const durationMs = run.finishedAt
       ? run.finishedAt.getTime() - run.startedAt.getTime()
       : null;
@@ -159,6 +176,30 @@ export class ExecutionQueryService {
       startedAt:     run.startedAt.toISOString(),
       finishedAt:    run.finishedAt?.toISOString() ?? null,
       durationMs,
+    };
+  }
+
+  /** Fold per-run stats + resolved user onto the base run shape (cost priced from tokens). */
+  private enrich(
+    run: ExecutionRunView,
+    stats: Map<string, RunStatsRow>,
+    users: Map<string, { name: string | null; email: string }>,
+  ): RunSummaryDto {
+    const s = stats.get(run.id);
+    const u = run.userId ? users.get(run.userId) : undefined;
+    let tokens = 0;
+    let cost = 0;
+    for (const m of s?.models ?? []) {
+      tokens += m.missIn + m.out;
+      cost += costUsd(m.modelId, { cacheMissIn: m.missIn, cacheHitIn: m.hitIn, output: m.out });
+    }
+    return {
+      ...this.toBase(run),
+      userId:   run.userId,
+      userName: u?.name ?? u?.email ?? null,
+      turns:    s?.turns ?? 0,
+      tokens,
+      costUsd:  s && s.models.length > 0 ? cost : null,
     };
   }
 

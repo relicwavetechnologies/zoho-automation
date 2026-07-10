@@ -376,6 +376,8 @@ pub struct DivoSessionStatus {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     pub departments: Vec<DivoDepartment>,
 }
 
@@ -392,6 +394,7 @@ pub async fn divo_set_session<R: Runtime>(
     company_id: Option<String>,
     role: Option<String>,
     expires_at: Option<String>,
+    avatar_url: Option<String>,
     departments: Option<Vec<DivoDepartment>>,
 ) -> Result<DivoSessionStatus, String> {
     let session = DivoSession {
@@ -408,6 +411,7 @@ pub async fn divo_set_session<R: Runtime>(
         company_id,
         role: role.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         expires_at,
+        avatar_url: avatar_url.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         departments: departments.unwrap_or_default(),
     };
 
@@ -429,6 +433,7 @@ pub async fn divo_set_session<R: Runtime>(
         company_id: session.company_id,
         role: session.role,
         expires_at: session.expires_at,
+        avatar_url: session.avatar_url,
         departments: session.departments,
     })
 }
@@ -460,6 +465,7 @@ pub async fn divo_get_session_status<R: Runtime>(
             company_id: s.company_id,
             role: s.role,
             expires_at: s.expires_at,
+            avatar_url: s.avatar_url,
             departments: s.departments,
         },
         None => DivoSessionStatus {
@@ -472,6 +478,7 @@ pub async fn divo_get_session_status<R: Runtime>(
             company_id: None,
             role: None,
             expires_at: None,
+            avatar_url: None,
             departments: Vec::new(),
         },
     })
@@ -513,6 +520,7 @@ pub async fn divo_set_department<R: Runtime>(
         company_id: session.company_id,
         role: session.role,
         expires_at: session.expires_at,
+        avatar_url: session.avatar_url,
         departments: session.departments,
     })
 }

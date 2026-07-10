@@ -63,6 +63,7 @@ describe('LarkOAuthService', () => {
             enterprise_email: 'vabhi.verma2678@gmail.com',
             en_name: 'Abhishek',
             tenant_key: 'tenant-1',
+            avatar_url: 'https://example.com/avatar.png',
           },
         });
       }
@@ -81,6 +82,7 @@ describe('LarkOAuthService', () => {
     assert.equal(tokens.larkUserId, 'u_123');
     assert.equal(tokens.larkEmail, 'vabhi.verma2678@gmail.com');
     assert.equal(tokens.tenantKey, 'tenant-1');
+    assert.equal(tokens.avatarUrl, 'https://example.com/avatar.png');
     assert.equal(tokens.scope, LARK_USER_OAUTH_SCOPES.join(' '));
     assert.equal(calls.length, 2);
   });

@@ -5,6 +5,7 @@ import { NavProjects } from './NavProjects'
 import { useLeftPanel } from '@/hooks/useLeftPanel'
 import { useEffect, useState } from 'react'
 import { UserRound } from 'lucide-react'
+import { listen } from '@tauri-apps/api/event'
 
 import {
   Sidebar,
@@ -23,20 +24,45 @@ import {
 
 function DivoProfileFooter() {
   const [status, setStatus] = useState<DivoSessionStatus | null>(null)
+  const [avatarFailed, setAvatarFailed] = useState(false)
 
   useEffect(() => {
     let cancelled = false
-    void getDivoSessionStatus()
-      .then((next) => {
-        if (!cancelled) setStatus(next.configured ? next : null)
+    let unlisten: (() => void) | undefined
+
+    const refresh = () => {
+      void getDivoSessionStatus()
+        .then((next) => {
+          if (!cancelled) setStatus(next.configured ? next : null)
+        })
+        .catch(() => {
+          if (!cancelled) setStatus(null)
+        })
+    }
+
+    refresh()
+    if (IS_TAURI) {
+      void listen<{ configured?: boolean }>('divo-session-changed', (event) => {
+        if (event.payload?.configured) {
+          refresh()
+        } else {
+          setStatus(null)
+        }
+      }).then((dispose) => {
+        if (cancelled) dispose()
+        else unlisten = dispose
       })
-      .catch(() => {
-        if (!cancelled) setStatus(null)
-      })
+    }
+
     return () => {
       cancelled = true
+      unlisten?.()
     }
   }, [])
+
+  useEffect(() => {
+    setAvatarFailed(false)
+  }, [status?.avatarUrl])
 
   if (!status) return null
 
@@ -48,12 +74,23 @@ function DivoProfileFooter() {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join('') || 'D'
+  const avatarUrl = status.avatarUrl?.trim()
 
   return (
     <SidebarFooter className="border-t border-sidebar-border/70 p-2">
       <div className="group-data-[collapsible=icon]:hidden flex min-w-0 items-center gap-2 rounded-lg border border-sidebar-border/70 bg-sidebar-accent/30 p-2">
-        <div className="grid size-9 shrink-0 place-items-center rounded-md border border-sidebar-border bg-sidebar-accent text-xs font-medium">
-          {initials || <UserRound className="size-4" />}
+        <div className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-md border border-sidebar-border bg-sidebar-accent text-xs font-medium">
+          {avatarUrl && !avatarFailed ? (
+            <img
+              src={avatarUrl}
+              alt={`${name} profile`}
+              className="size-full object-cover"
+              referrerPolicy="no-referrer"
+              onError={() => setAvatarFailed(true)}
+            />
+          ) : (
+            initials || <UserRound className="size-4" />
+          )}
         </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{name}</p>

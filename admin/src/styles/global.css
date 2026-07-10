@@ -1,114 +1,134 @@
 @import "./font.css";
+@import "./cursor.css";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /*
-  Theme ported from the jan desktop app (jan/web-app/src/index.css).
-  jan authors in oklch (Tailwind v4); admin is Tailwind v3 + hsl(var(--x)),
-  so the neutral grays and coral accent below are the hsl equivalents of
-  jan's tokens. The look = fully neutral (zero-chroma) surfaces layered by
-  lightness, translucent-feeling borders, and a single coral accent shared
-  across light and dark.
+  Cursor design language (see admin/html-plans mock).
+  Single source of truth for the whole admin: swapping these token *values*
+  re-skins every shadcn-based component — pages keep their class names.
+
+  The look = warm cream canvas (never pure white), warm ink (never pure black),
+  a single, scarce Cursor Orange used only for brand/CTAs/cost, and hairline-only
+  depth (borders, not shadows). Values are the hsl() equivalents of the mock's
+  hex palette. Light is the primary mode; dark is a coherent warm-dark derivation
+  (the mock is light-only) that keeps the same orange + pastel timeline.
+
+  The `--tl-*` tokens are the pastel AI-timeline stages, used ONLY by the agent
+  trace (TraceStage) — do not reuse them as generic UI colors.
 */
 
 @layer base {
   :root {
-    /* shell → content → card, layered by lightness */
-    --background: 0 0% 100%;
-    --foreground: 0 0% 3.9%;
-    --mat: 0 0% 98%;
-    --mat-foreground: 0 0% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 3.9%;
+    /* shell → content → card, three warm steps toward white */
+    --background: 48 16% 96%;        /* canvas       #f7f7f4 */
+    --foreground: 50 12% 13%;        /* ink          #26251e */
+    --mat: 48 22% 97%;               /* canvas-soft  #fafaf7 */
+    --mat-foreground: 50 12% 13%;
+    --card: 0 0% 100%;               /* surface      #ffffff */
+    --card-foreground: 50 12% 13%;
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 3.9%;
+    --popover-foreground: 50 12% 13%;
 
-    /* coral accent (jan: oklch(0.7003 0.1611 35.09)).
-       admin treats primary === accent as one brand hue, so both are coral. */
-    --primary: 12 85% 64%;
-    --primary-foreground: 0 0% 98%;
-    --accent: 12 85% 64%;
-    --accent-foreground: 0 0% 98%;
+    /* Cursor Orange — brand + CTAs + cost only (#f54e00) */
+    --primary: 19 100% 48%;
+    --primary-foreground: 0 0% 100%;
 
-    /* neutral hover / fill surfaces */
-    --secondary: 0 0% 96.1%;
-    --secondary-foreground: 0 0% 9%;
-    --muted: 0 0% 96.1%;
-    --muted-foreground: 0 0% 45.1%;
+    /* accent is the SUBTLE hover/fill surface here (not the brand hue): Cursor
+       keeps orange scarce, so shadcn hover states resolve to warm grey. */
+    --accent: 48 14% 90%;            /* surface-strong #e6e5e0 */
+    --accent-foreground: 50 12% 13%;
+    --secondary: 48 14% 90%;         /* badges / avatars */
+    --secondary-foreground: 50 12% 13%;
+    --muted: 48 16% 93%;             /* subtle fill */
+    --muted-foreground: 45 8% 47%;   /* secondary text #807d72 */
 
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 98%;
-    --success: 142 64% 38%;
+    --destructive: 345 64% 49%;      /* error  #cf2d56 */
+    --destructive-foreground: 0 0% 100%;
+    --success: 159 63% 33%;          /* success #1f8a65 */
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
-    --warning-foreground: 0 0% 9%;
-    --emphasis: 0 0% 9%;
-    --emphasis-foreground: 0 0% 98%;
+    --warning: 35 80% 46%;
+    --warning-foreground: 0 0% 100%;
+    --emphasis: 50 12% 13%;          /* ink card (MetricCard tone="emphasis") */
+    --emphasis-foreground: 48 16% 96%;
 
-    --border: 0 0% 89.8%;
-    --input: 0 0% 89.8%;
-    --ring: 0 0% 63.9%;
-    --radius: 0.625rem;
+    --border: 48 12% 88%;            /* hairline        #e6e5e0 */
+    --input: 48 12% 82%;             /* hairline-strong #cfcdc4 */
+    --ring: 19 100% 48%;             /* crisp branded focus ring */
+    --radius: 0.75rem;               /* 12px cards; md/sm derive to 10/8px CTAs */
 
-    /* light mode leans on borders, not shadows (jan-style) */
-    --shadow-soft: 0 1px 2px 0 hsl(0 0% 0% / 0.04), 0 4px 12px -4px hsl(0 0% 0% / 0.06);
-    --shadow-elevated: 0 6px 16px -4px hsl(0 0% 0% / 0.08), 0 12px 32px -8px hsl(0 0% 0% / 0.08);
+    /* Cursor is hairline-first: soft = a whisper of ring, elevated keeps a
+       little lift for popovers/dialogs that genuinely float. */
+    --shadow-soft: 0 1px 0 0 hsl(45 8% 47% / 0.05), 0 0 0 1px hsl(45 8% 47% / 0.05);
+    --shadow-elevated: 0 8px 24px -10px hsl(40 8% 10% / 0.16), 0 0 0 1px hsl(45 8% 47% / 0.06);
     --sidebar-width: 240px;
     --sidebar-width-collapsed: 76px;
 
-    --chart-1: 12 85% 64%;
-    --chart-2: 142 64% 50%;
-    --chart-3: 253 82% 70%;
-    --chart-4: 212 70% 58%;
-    --chart-5: 0 0% 45%;
+    /* pastel AI-timeline stages — agent trace ONLY (via TraceStage) */
+    --tl-thinking: 19 56% 72%;       /* #dfa88f */
+    --tl-grep: 124 29% 71%;          /* #9fc9a2 */
+    --tl-read: 214 51% 75%;          /* #9fbbe0 */
+    --tl-edit: 267 44% 76%;          /* #c0a8dd */
+    --tl-done: 35 59% 47%;           /* #c08532 */
+
+    --chart-1: 19 100% 48%;          /* primary */
+    --chart-2: 159 63% 33%;          /* success green */
+    --chart-3: 267 44% 76%;          /* edit purple */
+    --chart-4: 214 51% 75%;          /* read blue */
+    --chart-5: 45 8% 47%;            /* muted */
   }
 
   .dark {
-    /* jan dark: soft near-black bg, each surface one step lighter */
-    --background: 0 0% 7%;
-    --foreground: 0 0% 98%;
-    --mat: 0 0% 9.5%;
-    --mat-foreground: 0 0% 98%;
-    --card: 0 0% 11%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 11%;
-    --popover-foreground: 0 0% 98%;
+    /* warm-dark derivation: same warmth, inverted lightness */
+    --background: 40 8% 8%;
+    --foreground: 48 15% 92%;
+    --mat: 40 8% 10%;
+    --mat-foreground: 48 15% 92%;
+    --card: 40 7% 12%;
+    --card-foreground: 48 15% 92%;
+    --popover: 40 7% 12%;
+    --popover-foreground: 48 15% 92%;
 
-    /* same coral in both modes; jan uses dark text on the accent in dark mode */
-    --primary: 12 85% 64%;
-    --primary-foreground: 0 0% 11%;
-    --accent: 12 85% 64%;
-    --accent-foreground: 0 0% 11%;
+    --primary: 19 100% 52%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 0 0% 15%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 63%;
+    --accent: 40 6% 18%;
+    --accent-foreground: 48 15% 92%;
+    --secondary: 40 6% 18%;
+    --secondary-foreground: 48 15% 92%;
+    --muted: 40 6% 16%;
+    --muted-foreground: 45 7% 58%;
 
-    --destructive: 0 72% 55%;
-    --destructive-foreground: 0 0% 98%;
-    --success: 142 56% 50%;
-    --success-foreground: 0 0% 9%;
-    --warning: 38 92% 58%;
-    --warning-foreground: 0 0% 9%;
-    --emphasis: 0 0% 98%;
-    --emphasis-foreground: 0 0% 9%;
+    --destructive: 345 65% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 159 55% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 35 75% 55%;
+    --warning-foreground: 40 8% 10%;
+    --emphasis: 48 15% 92%;
+    --emphasis-foreground: 40 8% 10%;
 
-    /* solid equivalents of jan's translucent-white borders over near-black */
-    --border: 0 0% 17%;
-    --input: 0 0% 22%;
-    --ring: 0 0% 45%;
+    --border: 42 8% 20%;
+    --input: 42 8% 26%;
+    --ring: 19 100% 52%;
 
-    --shadow-soft: 0 0 0 1px hsl(0 0% 100% / 0.06), 0 2px 6px -2px hsl(0 0% 0% / 0.5);
-    --shadow-elevated: 0 0 0 1px hsl(0 0% 100% / 0.08), 0 8px 24px -6px hsl(0 0% 0% / 0.6);
+    --shadow-soft: 0 0 0 1px hsl(0 0% 100% / 0.06);
+    --shadow-elevated: 0 8px 24px -8px hsl(0 0% 0% / 0.6), 0 0 0 1px hsl(0 0% 100% / 0.08);
 
-    --chart-1: 12 85% 64%;
-    --chart-2: 142 56% 55%;
-    --chart-3: 253 82% 75%;
-    --chart-4: 212 70% 62%;
-    --chart-5: 0 0% 63%;
+    /* pastels read fine on warm-dark — keep identical */
+    --tl-thinking: 19 56% 72%;
+    --tl-grep: 124 29% 71%;
+    --tl-read: 214 51% 75%;
+    --tl-edit: 267 44% 76%;
+    --tl-done: 35 59% 47%;
+
+    --chart-1: 19 100% 52%;
+    --chart-2: 159 55% 45%;
+    --chart-3: 267 44% 76%;
+    --chart-4: 214 51% 75%;
+    --chart-5: 45 7% 58%;
   }
 }
 

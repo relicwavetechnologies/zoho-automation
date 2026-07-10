@@ -14,6 +14,8 @@ import { MemberDetailPage } from "@/pages/MemberDetailPage"
 import { MembersPage } from "@/pages/MembersPage"
 import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { OverviewPage } from "@/pages/OverviewPage"
+import { GuardrailsPage } from "@/pages/GuardrailsPage"
+import { RunDetailPage } from "@/pages/RunDetailPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
 import { SettingsPage } from "@/pages/SettingsPage"
 
@@ -45,6 +47,14 @@ const DefaultProtectedRoute = () => {
   return <Navigate to={fallbackPath} replace />
 }
 
+/**
+ * Padding/rhythm wrapper for the not-yet-redesigned shadcn pages. The Cursor
+ * shell's scroll area has no padding (designed pages self-pad via `.page`), so
+ * these legacy pages get their old `space-y-5 p-6` container here until they're
+ * ported to the mock design too.
+ */
+const Legacy = ({ children }: { children: JSX.Element }) => <div className="space-y-5 p-6">{children}</div>
+
 export function App() {
   return (
     <>
@@ -69,16 +79,18 @@ export function App() {
           <Route index element={<DefaultProtectedRoute />} />
           <Route path="home" element={<OverviewPage />} />
           <Route path="overview" element={<Navigate to="/home" replace />} />
-          <Route path="workspaces" element={<SettingsPage />} />
+          <Route path="workspaces" element={<Legacy><SettingsPage /></Legacy>} />
           <Route path="people" element={<MembersPage />} />
           <Route path="people/:userId" element={<MemberDetailPage />} />
           <Route path="members" element={<Navigate to="/people" replace />} />
-          <Route path="departments" element={<DepartmentsPage />} />
+          <Route path="departments" element={<Legacy><DepartmentsPage /></Legacy>} />
           <Route path="ai-ops" element={<AiOpsPage />} />
-          <Route path="ai-providers" element={<AiProvidersPage />} />
-          <Route path="agents" element={<AgentsPage />} />
-          <Route path="memories" element={<MemoriesPage />} />
-          <Route path="settings" element={<SettingsPage />} />
+          <Route path="ai-ops/runs/:runId" element={<RunDetailPage />} />
+          <Route path="guardrails" element={<GuardrailsPage />} />
+          <Route path="ai-providers" element={<Legacy><AiProvidersPage /></Legacy>} />
+          <Route path="agents" element={<Legacy><AgentsPage /></Legacy>} />
+          <Route path="memories" element={<Legacy><MemoriesPage /></Legacy>} />
+          <Route path="settings" element={<Legacy><SettingsPage /></Legacy>} />
           <Route path="rbac" element={<Navigate to="/settings?tab=governance" replace />} />
           <Route path="executions" element={<Navigate to="/ai-ops?tab=executions" replace />} />
           <Route path="token-usage" element={<Navigate to="/ai-ops" replace />} />

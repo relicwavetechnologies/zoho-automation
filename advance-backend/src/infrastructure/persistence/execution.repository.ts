@@ -88,6 +88,12 @@ export interface ExecutionEventView {
   createdAt:   Date;
 }
 
+/** Per-run rollup: turn count + per-model cache-split tokens for pricing. */
+export interface RunStatsRow {
+  turns:  number;
+  models: { modelId: string; missIn: number; hitIn: number; out: number }[];
+}
+
 // ─── Repository ───────────────────────────────────────────────────────────────
 
 export class ExecutionRepository {
@@ -272,6 +278,83 @@ export class ExecutionRepository {
       take:    input.limit  ?? 50,
       skip:    input.offset ?? 0,
     });
+  }
+
+  /**
+   * Batch per-run rollups for the list/detail views, keyed by executionId:
+   *   turns  — number of model calls (one per turn in the PI loop)
+   *   models — per-model cache-split token counts, so the application layer can
+   *            price the run (see pricing.ts) rather than trusting reportedCostUsd
+   * Two grouped queries, so listing N runs stays O(1) round-trips.
+   */
+  async aggregateRunStats(
+    runIds: string[],
+  ): Promise<Map<string, RunStatsRow>> {
+    const out = new Map<string, RunStatsRow>();
+    if (runIds.length === 0) return out;
+    for (const id of runIds) out.set(id, { turns: 0, models: [] });
+
+    const [turnGroups, tokenGroups] = await this.prisma.$transaction([
+      this.prisma.executionEvent.groupBy({
+        by:      ['executionId'],
+        where:   { executionId: { in: runIds }, eventType: 'model_call' },
+        _count:  { _all: true },
+        orderBy: { executionId: 'asc' },
+      }),
+      this.prisma.aiTokenUsage.groupBy({
+        by:      ['executionRunId', 'modelId'],
+        where:   { executionRunId: { in: runIds } },
+        _sum:    { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
+        orderBy: { executionRunId: 'asc' },
+      }),
+    ]);
+
+    // Prisma's groupBy return typing for _count/_sum is awkward to narrow; the
+    // runtime shape is stable, so read it through a precise local cast.
+    for (const g of turnGroups as Array<{ executionId: string; _count?: { _all?: number } }>) {
+      const e = out.get(g.executionId);
+      if (e) e.turns = g._count?._all ?? 0;
+    }
+    for (const g of tokenGroups as Array<{
+      executionRunId: string | null;
+      modelId: string;
+      _sum?: { actualInputTokens: number | null; cacheReadInputTokens: number | null; actualOutputTokens: number | null };
+    }>) {
+      if (!g.executionRunId) continue;
+      const e = out.get(g.executionRunId);
+      if (e) {
+        e.models.push({
+          modelId: g.modelId,
+          missIn:  g._sum?.actualInputTokens ?? 0,
+          hitIn:   g._sum?.cacheReadInputTokens ?? 0,
+          out:     g._sum?.actualOutputTokens ?? 0,
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Atomically reserve the next event sequence number for a run. */
+  async nextSequence(executionId: string): Promise<number> {
+    const run = await this.prisma.executionRun.update({
+      where:  { id: executionId },
+      data:   { lastSequence: { increment: 1 } },
+      select: { lastSequence: true },
+    });
+    return run.lastSequence;
+  }
+
+  /** Resolve userId → display name/email for run attribution (batch, deduped). */
+  async resolveUsers(userIds: string[]): Promise<Map<string, { name: string | null; email: string }>> {
+    const out = new Map<string, { name: string | null; email: string }>();
+    const ids = [...new Set(userIds.filter(Boolean))];
+    if (ids.length === 0) return out;
+    const users = await this.prisma.user.findMany({
+      where:  { id: { in: ids } },
+      select: { id: true, name: true, email: true },
+    });
+    for (const u of users) out.set(u.id, { name: u.name, email: u.email });
+    return out;
   }
 
   /**

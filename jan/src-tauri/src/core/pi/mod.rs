@@ -78,6 +78,61 @@ pub async fn pi_get_state(state: State<'_, PiState>) -> Result<serde_json::Value
     state.manager.get_state().await
 }
 
+/// Resolve a pending Pi extension confirmation for the active Jan thread.
+#[tauri::command]
+pub async fn pi_extension_ui_respond(
+    state: State<'_, PiState>,
+    request_id: String,
+    thread_id: String,
+    confirmed: bool,
+    always_allow_bash: Option<bool>,
+) -> Result<(), String> {
+    state.manager.extension_ui_response(
+        request_id,
+        thread_id,
+        confirmed,
+        always_allow_bash.unwrap_or(false),
+    )
+}
+
+/// Revoke the memory-only Bash grant when the user leaves or stops a task.
+#[tauri::command]
+pub async fn pi_revoke_bash_approval(
+    state: State<'_, PiState>,
+    thread_id: String,
+) -> Result<(), String> {
+    state.manager.revoke_bash_approval(&thread_id);
+    Ok(())
+}
+
+/// Read the task-scoped local permission rules shown by the desktop composer.
+#[tauri::command]
+pub async fn pi_get_permission_rules(
+    state: State<'_, PiState>,
+    thread_id: String,
+) -> Result<serde_json::Value, String> {
+    if thread_id.trim().is_empty() {
+        return Err("A task id is required to read permission rules".into());
+    }
+    Ok(serde_json::json!({
+        "bashAlwaysAllow": state.manager.bash_approval_allowed(&thread_id)
+    }))
+}
+
+/// Update the Bash rule directly from the explicit Permission Rules UI.
+#[tauri::command]
+pub async fn pi_set_bash_approval_rule(
+    state: State<'_, PiState>,
+    thread_id: String,
+    allowed: bool,
+) -> Result<(), String> {
+    if thread_id.trim().is_empty() {
+        return Err("A task id is required to update permission rules".into());
+    }
+    state.manager.set_bash_approval_rule(&thread_id, allowed);
+    Ok(())
+}
+
 pub fn init() -> PiState {
     PiState {
         manager: Arc::new(PiManager::new()),

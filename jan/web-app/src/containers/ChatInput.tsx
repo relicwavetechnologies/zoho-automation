@@ -99,6 +99,10 @@ import {
   normalizeDivoSkillReferences,
   type DivoSkillReferenceSubmitOptions,
 } from '@/lib/divo-skill-reference-context'
+import { LiveApprovalComposer } from '@/components/approval-preview/LiveApprovalComposer'
+import { PermissionRulesPopover } from '@/components/approval-preview/PermissionRulesPopover'
+import { usePiApproval } from '@/hooks/usePiApproval'
+import type { PiApprovalRequest } from '@/lib/pi/approval'
 
 type ChatInputProps = {
   className?: string
@@ -126,6 +130,8 @@ type NormalizedImageAttachment = {
   size: number
   normalized: boolean
 }
+
+const EMPTY_PI_APPROVAL_QUEUE: PiApprovalRequest[] = []
 
 const getFileNameFromPath = (path: string, fallback: string) =>
   path.split(/[\\/]/).filter(Boolean).pop() || fallback
@@ -339,6 +345,8 @@ const ChatInput = memo(function ChatInput({
   const [skillReferenceResults, setSkillReferenceResults] = useState<
     DivoSkillSearchResult[]
   >([])
+  const [approvalQueueIndex, setApprovalQueueIndex] = useState(0)
+  const [approvalClock, setApprovalClock] = useState(Date.now)
   const [selectedSkillReferences, setSelectedSkillReferences] = useState<
     DivoSkillSearchResult[]
   >([])
@@ -354,6 +362,20 @@ const ChatInput = memo(function ChatInput({
   const addToHistory = usePrompt((state) => state.addToHistory)
   const navigateHistory = usePrompt((state) => state.navigateHistory)
   const currentThreadId = useThreads((state) => state.currentThreadId)
+  const approvalQueue = usePiApproval((state) =>
+    currentThreadId
+      ? state.queues[currentThreadId] ?? EMPTY_PI_APPROVAL_QUEUE
+      : EMPTY_PI_APPROVAL_QUEUE
+  )
+  const resolvePiApproval = usePiApproval((state) => state.resolve)
+  const allowBashForTask = usePiApproval(
+    (state) => state.allowBashForTask
+  )
+  const denyExpiredPiApprovals = usePiApproval((state) => state.denyExpired)
+  const approvalCleanupRef = useRef<{
+    threadId: string
+    timer: ReturnType<typeof setTimeout>
+  } | null>(null)
   const { t } = useTranslation()
   const spellCheckChatInput = useGeneralSetting(
     (state) => state.spellCheckChatInput
@@ -418,6 +440,46 @@ const ChatInput = memo(function ChatInput({
     setSelectedAssistantId(currentAssistant?.id || '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading])
+
+  useEffect(() => {
+    setApprovalQueueIndex((current) =>
+      Math.min(current, Math.max(approvalQueue.length - 1, 0))
+    )
+    if (approvalQueue.length === 0) return
+
+    setApprovalClock(Date.now())
+    const timer = setInterval(() => {
+      const now = Date.now()
+      setApprovalClock(now)
+      void denyExpiredPiApprovals(now)
+    }, 30_000)
+    return () => clearInterval(timer)
+  }, [approvalQueue.length, denyExpiredPiApprovals])
+
+  useEffect(() => {
+    if (!currentThreadId) return
+
+    // React StrictMode mounts effects twice in development. Cancel only the
+    // simulated cleanup for the same thread; a real navigation to another
+    // thread still denies every unresolved request for the old thread.
+    if (approvalCleanupRef.current?.threadId === currentThreadId) {
+      clearTimeout(approvalCleanupRef.current.timer)
+      approvalCleanupRef.current = null
+    }
+
+    return () => {
+      const timer = setTimeout(() => {
+        void usePiApproval.getState().denyThread(currentThreadId)
+        void invoke('pi_revoke_bash_approval', {
+          threadId: currentThreadId,
+        })
+        if (approvalCleanupRef.current?.timer === timer) {
+          approvalCleanupRef.current = null
+        }
+      }, 0)
+      approvalCleanupRef.current = { threadId: currentThreadId, timer }
+    }
+  }, [currentThreadId])
 
   // Jan Browser Extension hook
   const {
@@ -2042,6 +2104,52 @@ const ChatInput = memo(function ChatInput({
 
   const isStreaming = chatStatus === 'submitted' || chatStatus === 'streaming'
 
+  const activeApproval = approvalQueue[approvalQueueIndex]
+  if (activeApproval && currentThreadId) {
+    return (
+      <LiveApprovalComposer
+        request={activeApproval}
+        position={approvalQueueIndex}
+        total={approvalQueue.length}
+        now={approvalClock}
+        onMove={(direction) =>
+          setApprovalQueueIndex((current) => {
+            const next = current + direction
+            return (next + approvalQueue.length) % approvalQueue.length
+          })
+        }
+        onDecision={(confirmed) =>
+          void resolvePiApproval(
+            currentThreadId,
+            activeApproval.requestId,
+            confirmed
+          )
+        }
+        onAlwaysAllowBash={() => {
+          void allowBashForTask(
+            currentThreadId,
+            activeApproval.requestId
+          ).then((allowed) => {
+            if (allowed) {
+              toast.success(
+                'Bash commands are allowed for this task until you stop or leave it.'
+              )
+            }
+          })
+        }}
+        onStop={() => {
+          void invoke('pi_revoke_bash_approval', {
+            threadId: currentThreadId,
+          })
+          void usePiApproval
+            .getState()
+            .denyThread(currentThreadId)
+            .finally(() => stopStreaming(currentThreadId))
+        }}
+      />
+    )
+  }
+
   return (
     <div className="relative">
       <div className="relative">
@@ -2402,6 +2510,7 @@ const ChatInput = memo(function ChatInput({
                     </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
+                <PermissionRulesPopover threadId={currentThreadId} />
                 <SamplerPopover
                   providerId={selectedProvider}
                   modelId={selectedModel?.id}
