@@ -11,6 +11,28 @@ import {
 
 export type { PiRawEvent } from './pi'
 
+// Approval dialogs must outlive the stream that happened to create them. A
+// tool can wait on an editor after the stream is replaced or otherwise marked
+// stale; tying this listener to that stream leaves Pi blocked without a card.
+let approvalEventListener: Promise<void> | undefined
+
+async function ensureApprovalEventListener(): Promise<void> {
+  if (approvalEventListener) return approvalEventListener
+
+  approvalEventListener = listen<PiRawEvent>('pi-event', (event) => {
+    void consumePiApprovalEvent(event.payload).catch((error) => {
+      console.error('[Pi approval] Failed to consume UI request', error)
+    })
+  })
+    .then(() => undefined)
+    .catch((error) => {
+      approvalEventListener = undefined
+      throw error
+    })
+
+  return approvalEventListener
+}
+
 async function ensurePiStarted(threadId: string): Promise<void> {
   await invoke('pi_start', {
     workspacePath: null,
@@ -87,6 +109,7 @@ export function createPiMessageStream(options: {
       abortSignal?.addEventListener('abort', onAbort, { once: true })
 
       try {
+        await ensureApprovalEventListener()
         await ensurePiStarted(threadId)
 
         unlisten = await listen<PiRawEvent>('pi-event', (event) => {
@@ -94,7 +117,6 @@ export function createPiMessageStream(options: {
           const payload = event.payload
           if (payload.thread_id && payload.thread_id !== threadId) return
 
-          void consumePiApprovalEvent(payload)
           onPiEvent?.(payload)
           mapPiEventToUiChunks(payload, controller, state, finishStream)
         })

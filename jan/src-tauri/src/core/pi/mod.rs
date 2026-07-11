@@ -78,19 +78,23 @@ pub async fn pi_get_state(state: State<'_, PiState>) -> Result<serde_json::Value
     state.manager.get_state().await
 }
 
-/// Resolve a pending Pi extension confirmation for the active Jan thread.
+/// Resolve a pending named Pi extension UI request for the active Jan thread.
 #[tauri::command]
 pub async fn pi_extension_ui_respond(
     state: State<'_, PiState>,
     request_id: String,
     thread_id: String,
-    confirmed: bool,
+    confirmed: Option<bool>,
+    value: Option<String>,
+    cancelled: Option<bool>,
     always_allow_bash: Option<bool>,
 ) -> Result<(), String> {
     state.manager.extension_ui_response(
         request_id,
         thread_id,
         confirmed,
+        value,
+        cancelled.unwrap_or(false),
         always_allow_bash.unwrap_or(false),
     )
 }

@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 
 use super::browser::{current_browser_cdp_fingerprint, kill_orphan_chrome_devtools_mcp};
 use super::env::{
@@ -19,6 +19,8 @@ use crate::core::divo::workspace::{prepare_workspace_run_layout, DivoWorkspaceRu
 use crate::core::threads::utils::ensure_thread_dir_exists;
 
 const DIVO_APPROVAL_PROTOCOL_TITLE: &str = "divo_approval_v1";
+const DIVO_MEMORY_REVIEW_PROTOCOL_TITLE: &str = "divo_memory_review_v1";
+const MAX_MEMORY_REVIEW_MESSAGE_BYTES: usize = 16_000;
 
 struct PiProcess {
     child: Child,
@@ -30,6 +32,13 @@ struct PendingExtensionUiRequest {
     thread_id: String,
     method: String,
     source: Option<ApprovalSource>,
+    protocol: ExtensionUiProtocol,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExtensionUiProtocol {
+    Approval,
+    MemoryReview,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +66,32 @@ fn take_pending_confirm(
     }
     if pending.method != "confirm" {
         return Err("This extension UI request is not a confirmation".into());
+    }
+    if pending.protocol != ExtensionUiProtocol::Approval {
+        return Err("This extension UI request is not a Divo approval".into());
+    }
+    Ok(requests
+        .remove(request_id)
+        .expect("request existed while the state lock was held"))
+}
+
+fn take_pending_memory_review(
+    requests: &mut HashMap<String, PendingExtensionUiRequest>,
+    active_thread_id: Option<&str>,
+    request_id: &str,
+    thread_id: &str,
+) -> Result<PendingExtensionUiRequest, String> {
+    if active_thread_id != Some(thread_id) {
+        return Err("Memory review response does not belong to the active thread".into());
+    }
+    let pending = requests
+        .get(request_id)
+        .ok_or("Unknown or already resolved memory review request")?;
+    if pending.thread_id != thread_id {
+        return Err("Memory review response thread does not match its request".into());
+    }
+    if pending.method != "editor" || pending.protocol != ExtensionUiProtocol::MemoryReview {
+        return Err("This extension UI request is not a Divo memory review".into());
     }
     Ok(requests
         .remove(request_id)
@@ -86,6 +121,111 @@ fn is_divo_approval_request(value: &serde_json::Value, thread_id: &str) -> bool 
     !thread_id.is_empty()
         && value.get("method").and_then(|v| v.as_str()) == Some("confirm")
         && value.get("title").and_then(|v| v.as_str()) == Some(DIVO_APPROVAL_PROTOCOL_TITLE)
+}
+
+fn is_non_empty_bounded_string(value: Option<&serde_json::Value>, max: usize) -> bool {
+    value
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.trim().is_empty() && value.trim().chars().count() <= max)
+}
+
+fn valid_memory_review_request(value: &serde_json::Value) -> bool {
+    let Some(prefill) = value.get("prefill").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    if prefill.len() > MAX_MEMORY_REVIEW_MESSAGE_BYTES {
+        return false;
+    }
+    let Ok(descriptor) = serde_json::from_str::<serde_json::Value>(prefill) else {
+        return false;
+    };
+    if descriptor.get("version").and_then(|value| value.as_u64()) != Some(1)
+        || !is_non_empty_bounded_string(descriptor.get("proposalId"), 200)
+    {
+        return false;
+    }
+    let Some(bullets) = descriptor.get("bullets").and_then(|value| value.as_array()) else {
+        return false;
+    };
+    if bullets.len() > 10
+        || bullets.iter().any(|bullet| {
+            !is_non_empty_bounded_string(bullet.get("id"), 200)
+                || !is_non_empty_bounded_string(bullet.get("text"), 500)
+        })
+    {
+        return false;
+    }
+    let Some(targets) = descriptor
+        .get("allowedTargets")
+        .and_then(|value| value.as_array())
+    else {
+        return false;
+    };
+    !targets.is_empty()
+        && targets.len() <= 3
+        && targets.iter().all(|target| {
+            let scope = target.get("scope").and_then(|value| value.as_str());
+            let department_id = target.get("departmentId");
+            matches!(scope, Some("personal" | "department" | "company"))
+                && is_non_empty_bounded_string(target.get("label"), 200)
+                && match scope {
+                    Some("department") => is_non_empty_bounded_string(department_id, 200),
+                    _ => department_id.is_none(),
+                }
+        })
+}
+
+fn is_divo_memory_review_request(value: &serde_json::Value, thread_id: &str) -> bool {
+    !thread_id.is_empty()
+        && value.get("method").and_then(|value| value.as_str()) == Some("editor")
+        && value.get("title").and_then(|value| value.as_str())
+            == Some(DIVO_MEMORY_REVIEW_PROTOCOL_TITLE)
+        && valid_memory_review_request(value)
+}
+
+fn valid_memory_review_response(value: &str) -> bool {
+    if value.len() > MAX_MEMORY_REVIEW_MESSAGE_BYTES {
+        return false;
+    }
+    let Ok(response) = serde_json::from_str::<serde_json::Value>(value) else {
+        return false;
+    };
+    if response.get("version").and_then(|value| value.as_u64()) != Some(1)
+        || !is_non_empty_bounded_string(response.get("proposalId"), 200)
+    {
+        return false;
+    }
+    let decision = response.get("decision").and_then(|value| value.as_str());
+    if !matches!(decision, Some("approve" | "revise" | "cancel")) {
+        return false;
+    }
+    let Some(selected_ids) = response
+        .get("selectedBulletIds")
+        .and_then(|value| value.as_array())
+    else {
+        return false;
+    };
+    if selected_ids.len() > 10
+        || selected_ids
+            .iter()
+            .any(|value| !is_non_empty_bounded_string(Some(value), 200))
+    {
+        return false;
+    }
+    let target_valid = match response.get("selectedTarget") {
+        Some(serde_json::Value::Null) | None => false,
+        Some(target) => match target.get("scope").and_then(|value| value.as_str()) {
+            Some("department") => is_non_empty_bounded_string(target.get("departmentId"), 200),
+            Some("personal" | "company") => target.get("departmentId").is_none(),
+            _ => false,
+        },
+    };
+    match decision {
+        Some("approve") => target_valid && !selected_ids.is_empty(),
+        Some("revise") => is_non_empty_bounded_string(response.get("revision"), 1_000),
+        Some("cancel") => true,
+        _ => false,
+    }
 }
 
 fn approval_source(value: &serde_json::Value) -> Option<ApprovalSource> {
@@ -132,7 +272,10 @@ struct SharedState {
 pub struct PiManager {
     inner: Arc<StdMutex<SharedState>>,
     cmd_tx: mpsc::Sender<String>,
-    app: Arc<Mutex<Option<AppHandle>>>,
+    // Pi stdout is consumed on a blocking thread. Keep the app handle behind
+    // the same blocking mutex so forwarding an extension UI request cannot
+    // silently lose the event when a Tokio mutex is temporarily contended.
+    app: Arc<StdMutex<Option<AppHandle>>>,
 }
 
 impl Clone for PiManager {
@@ -176,7 +319,7 @@ impl PiManager {
         PiManager {
             inner,
             cmd_tx,
-            app: Arc::new(Mutex::new(None)),
+            app: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -261,7 +404,7 @@ Divo workspace policy:
         initial_thread_id: Option<String>,
     ) -> Result<(), String> {
         {
-            let mut app_guard = self.app.lock().await;
+            let mut app_guard = self.app.lock().unwrap();
             *app_guard = Some(app.clone());
         }
 
@@ -457,7 +600,7 @@ Divo workspace policy:
 
     fn handle_line(
         inner: &Arc<StdMutex<SharedState>>,
-        app: &Arc<Mutex<Option<AppHandle>>>,
+        app: &Arc<StdMutex<Option<AppHandle>>>,
         cmd_tx: &mpsc::Sender<String>,
         line: &str,
     ) {
@@ -531,6 +674,10 @@ Divo workspace policy:
 
         if event_type == Some("extension_ui_request") {
             let thread_id = Self::active_thread_id(inner);
+            let request_id = value
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
             if let (Some(id), Some(method)) = (
                 value.get("id").and_then(|v| v.as_str()),
                 value.get("method").and_then(|v| v.as_str()),
@@ -566,12 +713,23 @@ Divo workspace policy:
                             thread_id: thread_id.clone(),
                             method: method.to_string(),
                             source,
+                            protocol: ExtensionUiProtocol::Approval,
+                        },
+                    );
+                } else if is_divo_memory_review_request(&value, &thread_id) {
+                    inner.lock().unwrap().pending_extension_ui.insert(
+                        id.to_string(),
+                        PendingExtensionUiRequest {
+                            thread_id: thread_id.clone(),
+                            method: method.to_string(),
+                            source: None,
+                            protocol: ExtensionUiProtocol::MemoryReview,
                         },
                     );
                 } else if matches!(method, "select" | "confirm" | "input" | "editor") {
-                    // The desktop currently implements only the private Divo approval
-                    // contract. Keep unsupported dialogs fail-closed instead of
-                    // leaving Pi blocked on UI the frontend cannot render.
+                    // The desktop implements only the named Divo approval and
+                    // memory-review contracts. Keep every other dialog fail-closed
+                    // instead of leaving Pi blocked on UI the frontend cannot render.
                     if let Ok(json) = serde_json::to_string(&serde_json::json!({
                         "type": "extension_ui_response",
                         "id": id,
@@ -581,7 +739,28 @@ Divo workspace policy:
                     }
                 }
             }
-            Self::emit_pi_event(app, thread_id, value.clone());
+            if !Self::emit_pi_event(app, thread_id, value.clone()) {
+                // The editor/confirm promise is already pending in Pi. If the
+                // desktop cannot deliver its card request, cancel it instead
+                // of leaving the agent blocked with no actionable UI.
+                if let Some(request_id) = request_id {
+                    let should_cancel = inner
+                        .lock()
+                        .unwrap()
+                        .pending_extension_ui
+                        .remove(&request_id)
+                        .is_some();
+                    if should_cancel {
+                        if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                            "type": "extension_ui_response",
+                            "id": request_id,
+                            "cancelled": true
+                        })) {
+                            let _ = cmd_tx.send(json);
+                        }
+                    }
+                }
+            }
             return;
         }
 
@@ -592,10 +771,10 @@ Divo workspace policy:
     }
 
     fn emit_pi_event(
-        app: &Arc<Mutex<Option<AppHandle>>>,
+        app: &Arc<StdMutex<Option<AppHandle>>>,
         thread_id: String,
         mut event: serde_json::Value,
-    ) {
+    ) -> bool {
         if let Some(obj) = event.as_object_mut() {
             obj.insert(
                 "thread_id".to_string(),
@@ -609,11 +788,16 @@ Divo workspace policy:
             });
         }
 
-        if let Ok(guard) = app.try_lock() {
-            if let Some(app) = guard.as_ref() {
-                let _ = app.emit("pi-event", event);
-            }
+        let app = app.lock().unwrap().clone();
+        let Some(app) = app else {
+            eprintln!("[pi] Cannot emit Pi event: app handle is unavailable");
+            return false;
+        };
+        if let Err(error) = app.emit("pi-event", event) {
+            eprintln!("[pi] Failed to emit Pi event: {error}");
+            return false;
         }
+        true
     }
 
     pub async fn ensure_thread(&self, thread_id: String) -> Result<(), String> {
@@ -731,7 +915,8 @@ Divo workspace policy:
     }
 
     pub async fn prompt(&self, thread_id: String, message: String) -> Result<(), String> {
-        if let Some(app) = self.app.lock().await.clone() {
+        let app = self.app.lock().unwrap().clone();
+        if let Some(app) = app {
             self.restart_if_browser_cdp_changed(&app).await?;
         }
         self.ensure_thread(thread_id).await?;
@@ -790,22 +975,38 @@ Divo workspace policy:
         &self,
         request_id: String,
         thread_id: String,
-        confirmed: bool,
+        confirmed: Option<bool>,
+        value: Option<String>,
+        cancelled: bool,
         always_allow_bash: bool,
     ) -> Result<(), String> {
-        let pending = {
+        let (pending, response) = {
             let mut guard = self.inner.lock().unwrap();
             if guard.process.is_none() {
                 return Err("Pi process is not running".into());
             }
             let active_thread_id = guard.active_thread_id.clone();
-            let pending = take_pending_confirm(
-                &mut guard.pending_extension_ui,
-                active_thread_id.as_deref(),
-                &request_id,
-                &thread_id,
-            )?;
-            if always_allow_bash && !can_enable_always_allow_bash(&pending, confirmed) {
+            let protocol = guard
+                .pending_extension_ui
+                .get(&request_id)
+                .map(|pending| pending.protocol)
+                .ok_or("Unknown or already resolved extension UI request")?;
+            let pending = match protocol {
+                ExtensionUiProtocol::Approval => take_pending_confirm(
+                    &mut guard.pending_extension_ui,
+                    active_thread_id.as_deref(),
+                    &request_id,
+                    &thread_id,
+                )?,
+                ExtensionUiProtocol::MemoryReview => take_pending_memory_review(
+                    &mut guard.pending_extension_ui,
+                    active_thread_id.as_deref(),
+                    &request_id,
+                    &thread_id,
+                )?,
+            };
+            let is_confirmed = confirmed.unwrap_or(false);
+            if always_allow_bash && !can_enable_always_allow_bash(&pending, is_confirmed) {
                 guard
                     .pending_extension_ui
                     .insert(request_id.clone(), pending);
@@ -814,15 +1015,48 @@ Divo workspace policy:
             if always_allow_bash {
                 guard.bash_always_allowed_threads.insert(thread_id.clone());
             }
-            pending
+            let response = match protocol {
+                ExtensionUiProtocol::Approval => {
+                    let Some(confirmed) = confirmed else {
+                        guard
+                            .pending_extension_ui
+                            .insert(request_id.clone(), pending);
+                        return Err("Divo approval response requires confirmed".into());
+                    };
+                    serde_json::json!({
+                        "type": "extension_ui_response",
+                        "id": request_id.clone(),
+                        "confirmed": confirmed
+                    })
+                }
+                ExtensionUiProtocol::MemoryReview => {
+                    if cancelled {
+                        serde_json::json!({
+                            "type": "extension_ui_response",
+                            "id": request_id.clone(),
+                            "cancelled": true
+                        })
+                    } else if value.as_deref().is_some_and(valid_memory_review_response) {
+                        serde_json::json!({
+                            "type": "extension_ui_response",
+                            "id": request_id.clone(),
+                            "value": value.expect("validated value is present")
+                        })
+                    } else {
+                        // Invalid structured form data is consumed as a cancellation.
+                        // Never leave Pi waiting or let malformed data reach publishing.
+                        serde_json::json!({
+                            "type": "extension_ui_response",
+                            "id": request_id.clone(),
+                            "cancelled": true
+                        })
+                    }
+                }
+            };
+            (pending, response)
         };
 
-        let response = serde_json::to_string(&serde_json::json!({
-            "type": "extension_ui_response",
-            "id": request_id.clone(),
-            "confirmed": confirmed
-        }))
-        .map_err(|error| error.to_string())?;
+        let response = serde_json::to_string(&response).map_err(|error| error.to_string())?;
 
         if let Err(error) = self.write_stdin(&response) {
             let mut guard = self.inner.lock().unwrap();
@@ -868,8 +1102,9 @@ Divo workspace policy:
 mod tests {
     use super::{
         approval_source, can_enable_always_allow_bash, drain_pending_extension_ui,
-        is_divo_approval_request, should_auto_allow_bash, take_pending_confirm, ApprovalSource,
-        PendingExtensionUiRequest, PiManager,
+        is_divo_approval_request, is_divo_memory_review_request, should_auto_allow_bash,
+        take_pending_confirm, take_pending_memory_review, valid_memory_review_response,
+        ApprovalSource, ExtensionUiProtocol, PendingExtensionUiRequest, PiManager,
     };
     use std::collections::{HashMap, HashSet};
 
@@ -878,6 +1113,7 @@ mod tests {
             thread_id: thread_id.to_string(),
             method: method.to_string(),
             source: None,
+            protocol: ExtensionUiProtocol::Approval,
         }
     }
 
@@ -959,6 +1195,120 @@ mod tests {
         ));
     }
 
+    fn memory_review_event(prefill: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "method": "editor",
+            "title": "divo_memory_review_v1",
+            "prefill": prefill.to_string()
+        })
+    }
+
+    #[test]
+    fn only_valid_named_memory_reviews_are_forwarded() {
+        let valid = memory_review_event(serde_json::json!({
+            "version": 1,
+            "proposalId": "proposal-1",
+            "bullets": [{"id": "fact-1", "text": "Acme uses net-60 terms."}],
+            "allowedTargets": [
+                {"scope": "personal", "label": "Personal"},
+                {"scope": "department", "label": "Finance", "departmentId": "dept-1"}
+            ]
+        }));
+        assert!(is_divo_memory_review_request(&valid, "thread-1"));
+        assert!(!is_divo_memory_review_request(&valid, ""));
+
+        let malformed = memory_review_event(serde_json::json!({
+            "version": 1,
+            "proposalId": "proposal-1",
+            "bullets": [{"id": "fact-1", "text": "Fact"}],
+            "allowedTargets": [{"scope": "department", "label": "Finance"}]
+        }));
+        assert!(!is_divo_memory_review_request(&malformed, "thread-1"));
+    }
+
+    #[test]
+    fn memory_review_responses_are_request_and_thread_bound() {
+        let mut request = pending("editor", "thread-1");
+        request.protocol = ExtensionUiProtocol::MemoryReview;
+        let mut requests = HashMap::from([("review-1".to_string(), request)]);
+
+        assert!(take_pending_memory_review(
+            &mut requests,
+            Some("thread-2"),
+            "review-1",
+            "thread-1"
+        )
+        .is_err());
+        assert!(requests.contains_key("review-1"));
+        assert!(take_pending_memory_review(
+            &mut requests,
+            Some("thread-1"),
+            "review-1",
+            "thread-1"
+        )
+        .is_ok());
+        assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn malformed_memory_review_values_fail_closed() {
+        assert!(valid_memory_review_response(
+            &serde_json::json!({
+                "version": 1,
+                "proposalId": "proposal-1",
+                "decision": "approve",
+                "selectedTarget": {"scope": "department", "departmentId": "dept-1"},
+                "selectedBulletIds": ["fact-1"]
+            })
+            .to_string()
+        ));
+        assert!(!valid_memory_review_response("not json"));
+        assert!(!valid_memory_review_response(
+            &serde_json::json!({
+                "version": 1,
+                "proposalId": "proposal-1",
+                "decision": "approve",
+                "selectedTarget": {"scope": "company"},
+                "selectedBulletIds": []
+            })
+            .to_string()
+        ));
+    }
+
+    #[test]
+    fn memory_review_field_limits_count_unicode_characters_not_utf8_bytes() {
+        let at_fact_limit = "界".repeat(500);
+        let over_fact_limit = "界".repeat(501);
+        let valid_request = memory_review_event(serde_json::json!({
+            "version": 1,
+            "proposalId": "proposal-1",
+            "bullets": [{"id": "fact-1", "text": at_fact_limit}],
+            "allowedTargets": [{"scope": "personal", "label": "Personal"}]
+        }));
+        let invalid_request = memory_review_event(serde_json::json!({
+            "version": 1,
+            "proposalId": "proposal-1",
+            "bullets": [{"id": "fact-1", "text": over_fact_limit}],
+            "allowedTargets": [{"scope": "personal", "label": "Personal"}]
+        }));
+        assert!(is_divo_memory_review_request(&valid_request, "thread-1"));
+        assert!(!is_divo_memory_review_request(&invalid_request, "thread-1"));
+
+        let response = |revision: String| {
+            serde_json::json!({
+                "version": 1,
+                "proposalId": "proposal-1",
+                "decision": "revise",
+                "selectedTarget": null,
+                "selectedBulletIds": [],
+                "revision": revision
+            })
+            .to_string()
+        };
+        assert!(valid_memory_review_response(&response("界".repeat(1_000))));
+        assert!(!valid_memory_review_response(&response("界".repeat(1_001))));
+    }
+
     #[test]
     fn always_allow_classification_accepts_only_versioned_bash_requests() {
         let bash = serde_json::json!({
@@ -1010,6 +1360,7 @@ mod tests {
             thread_id: "thread-1".into(),
             method: "confirm".into(),
             source: Some(ApprovalSource::Bash),
+            protocol: ExtensionUiProtocol::Approval,
         };
         let divo = PendingExtensionUiRequest {
             source: Some(ApprovalSource::Divo),

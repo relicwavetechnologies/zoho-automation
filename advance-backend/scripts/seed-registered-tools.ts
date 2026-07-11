@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { PrismaClient } from '../src/generated/prisma';
+import { MEMORY_PUBLISHING_REGISTERED_TOOL } from '../src/application/skills/share-memory-provisioning';
 
 /**
  * Seeds the RegisteredTool catalog (the table the admin panel lists tools from).
@@ -37,6 +38,7 @@ const TOOLS: ToolSeed[] = [
   { toolId: 'contextSearch', name: 'Context Search', description: 'RAG search over ingested company documents.', category: 'knowledge', domain: 'context' },
   { toolId: 'webSearch', name: 'Web Search', description: 'Search the web for current information.', category: 'knowledge', domain: 'context' },
   { toolId: 'skillPublishing', name: 'Skill Publishing', description: 'Check sharing authority and publish explicitly shared skills to company or department scope.', category: 'knowledge', domain: 'skills', hitlRequired: true },
+  MEMORY_PUBLISHING_REGISTERED_TOOL,
   { toolId: 'documentRag', name: 'Document RAG', description: 'Ingest and retrieve uploaded documents.', category: 'knowledge', domain: 'rag' },
   { toolId: 'dataProcessor', name: 'Data Processor', description: 'Transform and process datasets in a sandbox.', category: 'data', domain: 'data' },
   {

@@ -5,17 +5,31 @@ import {
   parsePiApprovalEvent,
   type PiApprovalRequest,
 } from '@/lib/pi/approval'
+import {
+  isPiMemoryReviewRequest,
+  parsePiMemoryReviewEvent,
+  validatePiMemoryReviewResponse,
+  type PiMemoryReviewRequest,
+  type PiMemoryReviewResponse,
+} from '@/lib/pi/memory-review'
 import type { PiRawEvent } from '@/lib/pi'
 
 export const PI_APPROVAL_RESPONSE_COMMAND = 'pi_extension_ui_respond'
 
+export type PiPendingUiRequest = PiApprovalRequest | PiMemoryReviewRequest
+
 type PiApprovalState = {
-  queues: Record<string, PiApprovalRequest[]>
-  enqueue: (request: PiApprovalRequest) => void
+  queues: Record<string, PiPendingUiRequest[]>
+  enqueue: (request: PiPendingUiRequest) => void
   resolve: (
     threadId: string,
     requestId: string,
     confirmed: boolean
+  ) => Promise<boolean>
+  resolveMemory: (
+    threadId: string,
+    requestId: string,
+    response: PiMemoryReviewResponse
   ) => Promise<boolean>
   allowBashForTask: (threadId: string, requestId: string) => Promise<boolean>
   denyExpired: (now?: number) => Promise<void>
@@ -24,7 +38,7 @@ type PiApprovalState = {
 }
 
 function containsRequest(
-  queues: Record<string, PiApprovalRequest[]>,
+  queues: Record<string, PiPendingUiRequest[]>,
   requestId: string
 ) {
   return Object.values(queues).some((queue) =>
@@ -33,10 +47,10 @@ function containsRequest(
 }
 
 function updateRequest(
-  queues: Record<string, PiApprovalRequest[]>,
+  queues: Record<string, PiPendingUiRequest[]>,
   threadId: string,
   requestId: string,
-  update: (request: PiApprovalRequest) => PiApprovalRequest
+  update: (request: PiPendingUiRequest) => PiPendingUiRequest
 ) {
   const queue = queues[threadId]
   if (!queue) return queues
@@ -49,7 +63,7 @@ function updateRequest(
 }
 
 function removeRequest(
-  queues: Record<string, PiApprovalRequest[]>,
+  queues: Record<string, PiPendingUiRequest[]>,
   threadId: string,
   requestId: string
 ) {
@@ -76,6 +90,20 @@ async function sendDecision(
   })
 }
 
+async function sendMemoryResponse(
+  requestId: string,
+  threadId: string,
+  response?: PiMemoryReviewResponse
+) {
+  await invoke(PI_APPROVAL_RESPONSE_COMMAND, {
+    requestId,
+    threadId,
+    ...(response
+      ? { value: JSON.stringify(response) }
+      : { cancelled: true }),
+  })
+}
+
 export const usePiApproval = create<PiApprovalState>()((set, get) => ({
   queues: {},
 
@@ -98,7 +126,13 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     const request = get().queues[threadId]?.find(
       (candidate) => candidate.requestId === requestId
     )
-    if (!request || request.status === 'submitting') return false
+    if (
+      !request ||
+      isPiMemoryReviewRequest(request) ||
+      request.status === 'submitting'
+    ) {
+      return false
+    }
 
     // Expired actions can only be denied. This prevents an old card from
     // approving an action after its payload-bound intent has gone stale.
@@ -140,12 +174,81 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     }
   },
 
+  resolveMemory: async (threadId, requestId, response) => {
+    const request = get().queues[threadId]?.find(
+      (candidate) => candidate.requestId === requestId
+    )
+    if (
+      !request ||
+      !isPiMemoryReviewRequest(request) ||
+      request.status === 'submitting'
+    ) {
+      return false
+    }
+
+    let validated: PiMemoryReviewResponse
+    try {
+      validated = validatePiMemoryReviewResponse(request, response)
+    } catch (error) {
+      // A malformed local form result must cancel the Pi editor promise rather
+      // than leave it blocked or forward untrusted selections.
+      try {
+        await sendMemoryResponse(requestId, threadId)
+        set((state) => ({
+          queues: removeRequest(state.queues, threadId, requestId),
+        }))
+      } catch (deliveryError) {
+        set((state) => ({
+          queues: updateRequest(state.queues, threadId, requestId, (entry) => ({
+            ...entry,
+            status: 'error',
+            error:
+              deliveryError instanceof Error
+                ? deliveryError.message
+                : error instanceof Error
+                  ? error.message
+                  : 'Could not cancel invalid memory review',
+          })),
+        }))
+      }
+      return false
+    }
+
+    set((state) => ({
+      queues: updateRequest(state.queues, threadId, requestId, (entry) => ({
+        ...entry,
+        status: 'submitting',
+        error: undefined,
+      })),
+    }))
+    try {
+      await sendMemoryResponse(requestId, threadId, validated)
+      set((state) => ({
+        queues: removeRequest(state.queues, threadId, requestId),
+      }))
+      return true
+    } catch (error) {
+      set((state) => ({
+        queues: updateRequest(state.queues, threadId, requestId, (entry) => ({
+          ...entry,
+          status: 'error',
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Could not deliver the memory review decision',
+        })),
+      }))
+      return false
+    }
+  },
+
   allowBashForTask: async (threadId, requestId) => {
     const request = get().queues[threadId]?.find(
       (candidate) => candidate.requestId === requestId
     )
     if (
       !request ||
+      isPiMemoryReviewRequest(request) ||
       request.status === 'submitting' ||
       request.descriptor.source !== 'bash' ||
       request.expiresAt <= Date.now()
@@ -195,7 +298,9 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
       .flat()
       .filter(
         (request) =>
-          request.expiresAt <= now && request.status !== 'submitting'
+          !isPiMemoryReviewRequest(request) &&
+          request.expiresAt <= now &&
+          request.status !== 'submitting'
       )
     await Promise.all(
       expired.map((request) =>
@@ -207,9 +312,18 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
   denyThread: async (threadId) => {
     const pending = get().queues[threadId] ?? []
     await Promise.all(
-      pending.map((request) =>
-        get().resolve(threadId, request.requestId, false)
-      )
+      pending.map((request) => {
+        if (isPiMemoryReviewRequest(request)) {
+          return get().resolveMemory(threadId, request.requestId, {
+            version: 1,
+            proposalId: request.descriptor.proposalId,
+            decision: 'cancel',
+            selectedTarget: null,
+            selectedBulletIds: [],
+          })
+        }
+        return get().resolve(threadId, request.requestId, false)
+      })
     )
   },
 
@@ -232,19 +346,40 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
  */
 export async function consumePiApprovalEvent(event: PiRawEvent) {
   const parsed = parsePiApprovalEvent(event)
-  if (parsed.kind === 'not-approval') return false
-
   if (parsed.kind === 'approval') {
     usePiApproval.getState().enqueue(parsed.request)
     return true
   }
+  if (parsed.kind === 'invalid') {
+    console.error(`[Pi approval] Rejected invalid request: ${parsed.reason}`)
+    if (parsed.requestId && parsed.threadId) {
+      try {
+        await sendDecision(parsed.requestId, parsed.threadId, false)
+      } catch (error) {
+        console.error('[Pi approval] Failed to deliver automatic denial', error)
+      }
+    }
+    return true
+  }
 
-  console.error(`[Pi approval] Rejected invalid request: ${parsed.reason}`)
-  if (parsed.requestId && parsed.threadId) {
+  const memoryReview = parsePiMemoryReviewEvent(event)
+  if (memoryReview.kind === 'not-memory-review') return false
+  if (memoryReview.kind === 'memory-review') {
+    usePiApproval.getState().enqueue(memoryReview.request)
+    return true
+  }
+
+  console.error(
+    `[Pi memory review] Rejected invalid request: ${memoryReview.reason}`
+  )
+  if (memoryReview.requestId && memoryReview.threadId) {
     try {
-      await sendDecision(parsed.requestId, parsed.threadId, false)
+      await sendMemoryResponse(memoryReview.requestId, memoryReview.threadId)
     } catch (error) {
-      console.error('[Pi approval] Failed to deliver automatic denial', error)
+      console.error(
+        '[Pi memory review] Failed to deliver automatic cancellation',
+        error
+      )
     }
   }
   return true

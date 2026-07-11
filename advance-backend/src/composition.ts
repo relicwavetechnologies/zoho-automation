@@ -128,6 +128,7 @@ import { createZohoBooksTool } from './application/orchestration/tools/families/
 import { createContextSearchTool } from './application/orchestration/tools/families/context-search.tool';
 import { createWebSearchTool } from './application/orchestration/tools/families/web-search.tool';
 import { createSkillPublishingTool } from './application/orchestration/tools/families/skill-publishing.tool';
+import { createMemoryPublishingTool } from './application/orchestration/tools/families/memory-publishing.tool';
 import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
 import { ToolExecutor } from './application/gateway/tool-executor';
@@ -805,6 +806,29 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     },
   };
 
+  logger.info('mem0.config', {
+    MEM0_ENABLED: env.MEM0_ENABLED,
+    MEM0_EXTRACTION_MODEL: env.MEM0_EXTRACTION_MODEL,
+    MEM0_QDRANT_COLLECTION: env.MEM0_QDRANT_COLLECTION,
+    QDRANT_URL: env.QDRANT_URL,
+    hasQdrantApiKey: !!env.QDRANT_API_KEY,
+    qdrantApiKeyLength: env.QDRANT_API_KEY?.length ?? 0,
+  });
+
+  const mem0Service = env.MEM0_ENABLED
+    ? new Mem0Service({
+      openaiApiKey:    env.OPENAI_API_KEY,
+      qdrantUrl:       env.QDRANT_URL,
+      ...(env.QDRANT_API_KEY ? { qdrantApiKey: env.QDRANT_API_KEY } : {}),
+      collectionName:  env.MEM0_QDRANT_COLLECTION,
+      extractionModel: env.MEM0_EXTRACTION_MODEL,
+      maxResults:      env.MEM0_MAX_RESULTS,
+      logger:          logger.child({ service: 'mem0' }),
+    })
+    : null;
+
+  logger.info('mem0.status', { enabled: !!mem0Service });
+
   // ── Tool registry ──────────────────────────────────────────────────────
   const toolRegistry = new ToolRegistry();
   toolRegistry.register(createLarkTaskTool({
@@ -872,6 +896,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createContextSearchTool({ broker: contextSearchBroker }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(createSkillPublishingTool({ prisma }));
+  toolRegistry.register(createMemoryPublishingTool({ mem0: mem0Service }));
   toolRegistry.register(new DocumentRagTool(documentRagBroker));
   toolRegistry.register(createDataProcessorTool({
     cloudinary:  cloudinaryAdapter,
@@ -911,29 +936,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     permissions,
   });
   const todoRepo      = new SupervisorTodoRepository(prisma);
-
-  logger.info('mem0.config', {
-    MEM0_ENABLED: env.MEM0_ENABLED,
-    MEM0_EXTRACTION_MODEL: env.MEM0_EXTRACTION_MODEL,
-    MEM0_QDRANT_COLLECTION: env.MEM0_QDRANT_COLLECTION,
-    QDRANT_URL: env.QDRANT_URL,
-    hasQdrantApiKey: !!env.QDRANT_API_KEY,
-    qdrantApiKeyLength: env.QDRANT_API_KEY?.length ?? 0,
-  });
-
-  const mem0Service = env.MEM0_ENABLED
-    ? new Mem0Service({
-      openaiApiKey:    env.OPENAI_API_KEY,
-      qdrantUrl:       env.QDRANT_URL,
-      ...(env.QDRANT_API_KEY ? { qdrantApiKey: env.QDRANT_API_KEY } : {}),
-      collectionName:  env.MEM0_QDRANT_COLLECTION,
-      extractionModel: env.MEM0_EXTRACTION_MODEL,
-      maxResults:      env.MEM0_MAX_RESULTS,
-      logger:          logger.child({ service: 'mem0' }),
-    })
-    : null;
-
-  logger.info('mem0.status', { enabled: !!mem0Service });
 
   const supervisor = new SupervisorAgent({
     model,

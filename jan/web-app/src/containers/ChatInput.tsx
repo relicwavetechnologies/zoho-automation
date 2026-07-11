@@ -133,6 +133,18 @@ type NormalizedImageAttachment = {
 
 const EMPTY_PI_APPROVAL_QUEUE: PiApprovalRequest[] = []
 
+const SHARE_MEMORY_COMMAND = '/share-memory'
+const SHARE_MEMORY_COMMAND_REQUEST =
+  'Resolve and fetch the backend Share Memory skill, then call memoryPublishing.check_authority. Propose bounded durable memory bullets and call the local divo_memory_review tool with only proposalId and bullets. Do not pass departmentId or allowedTargets and do not call memoryPublishing.publish directly; the local review tool uses the desktop-configured selected department context, independently fetches canonical allowed targets, and owns the review card and final prepare/commit.'
+
+const matchesShareMemoryCommand = (search: string) => {
+  const normalizedSearch = search.trim().toLowerCase().replace(/^\//, '')
+  return (
+    normalizedSearch.length === 0 ||
+    'share-memory'.startsWith(normalizedSearch)
+  )
+}
+
 const getFileNameFromPath = (path: string, fallback: string) =>
   path.split(/[\\/]/).filter(Boolean).pop() || fallback
 
@@ -778,6 +790,15 @@ const ChatInput = memo(function ChatInput({
       // processAndSendMessage already calls clearAttachmentsForThread after
       // processing is complete.
     }
+  }
+
+  const activateShareMemoryCommand = () => {
+    setSkillReferenceDrawerOpen(false)
+    setSkillReferenceSearch('')
+    setSkillReferenceError(null)
+    setSkillReferenceResults([])
+    setPrompt('')
+    void handleSendMessage(SHARE_MEMORY_COMMAND_REQUEST)
   }
 
   useEffect(() => {
@@ -2315,34 +2336,78 @@ const ChatInput = memo(function ChatInput({
               </div>
             )}
             {skillReferenceDrawerOpen && (
-              <SkillReferenceDrawer
-                searchInputRef={skillReferenceSearchRef}
-                search={skillReferenceSearch}
-                loading={skillReferenceLoading}
-                error={skillReferenceError}
-                results={skillReferenceResults}
-                onSearchChange={setSkillReferenceSearch}
-                onClose={() => {
-                  setSkillReferenceDrawerOpen(false)
-                  setSkillReferenceSearch('')
-                  setSkillReferenceError(null)
-                  setSkillReferenceResults([])
-                  textareaRef.current?.focus()
+              <div
+                onKeyDownCapture={(event) => {
+                  if (
+                    event.key !== 'Enter' ||
+                    event.shiftKey ||
+                    event.nativeEvent.isComposing ||
+                    !matchesShareMemoryCommand(skillReferenceSearch)
+                  ) {
+                    return
+                  }
+
+                  event.preventDefault()
+                  event.stopPropagation()
+                  activateShareMemoryCommand()
                 }}
-                onSelect={(skill) => {
-                  setSelectedSkillReferences((current) =>
-                    current.some((item) => item.id === skill.id)
-                      ? current
-                      : [...current, skill]
-                  )
-                  setSkillReferenceDrawerOpen(false)
-                  setSkillReferenceSearch('')
-                  setSkillReferenceError(null)
-                  setSkillReferenceResults([])
-                  setPrompt('')
-                  textareaRef.current?.focus()
-                }}
-              />
+              >
+                {matchesShareMemoryCommand(skillReferenceSearch) && (
+                  <div className="mx-3 mt-3 overflow-hidden rounded-2xl border border-border bg-background shadow-lg">
+                    <button
+                      type="button"
+                      data-testid="share-memory-command"
+                      className="flex w-full items-start gap-3 px-3 py-3 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={activateShareMemoryCommand}
+                    >
+                      <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-violet-500/10 text-violet-700 dark:text-violet-300">
+                        <IconBrain size={17} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-sm font-medium text-foreground">
+                            {SHARE_MEMORY_COMMAND}
+                          </span>
+                          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                            Enter
+                          </span>
+                        </div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          Fetch the Share Memory skill and prepare a review. Nothing is saved before approval.
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                )}
+                <SkillReferenceDrawer
+                  searchInputRef={skillReferenceSearchRef}
+                  search={skillReferenceSearch}
+                  loading={skillReferenceLoading}
+                  error={skillReferenceError}
+                  results={skillReferenceResults}
+                  onSearchChange={setSkillReferenceSearch}
+                  onClose={() => {
+                    setSkillReferenceDrawerOpen(false)
+                    setSkillReferenceSearch('')
+                    setSkillReferenceError(null)
+                    setSkillReferenceResults([])
+                    textareaRef.current?.focus()
+                  }}
+                  onSelect={(skill) => {
+                    setSelectedSkillReferences((current) =>
+                      current.some((item) => item.id === skill.id)
+                        ? current
+                        : [...current, skill]
+                    )
+                    setSkillReferenceDrawerOpen(false)
+                    setSkillReferenceSearch('')
+                    setSkillReferenceError(null)
+                    setSkillReferenceResults([])
+                    setPrompt('')
+                    textareaRef.current?.focus()
+                  }}
+                />
+              </div>
             )}
             <SkillReferenceChips
               skills={selectedSkillReferences}

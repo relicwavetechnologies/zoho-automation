@@ -11,6 +11,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:push": "prisma db push",
     "seed:dynamic-agents": "tsx scripts/seed-dynamic-agents.ts",
+    "provision:share-memory": "tsx scripts/provision-share-memory.ts",
     "backfill:dept-permissions": "tsx scripts/backfill-dept-permissions.ts",
     "test": "node --import tsx --test 'tests/**/*.test.ts'",
     "test:unit": "node --import tsx --test 'tests/tools/**/*.test.ts'",

@@ -529,6 +529,55 @@ describe('ChatInput', () => {
     await waitFor(() => expect(document.activeElement).toBe(search))
   })
 
+  it('discovers the share-memory command alongside backend skill search', async () => {
+    renderInput()
+    fireEvent.change(getTextarea(), { target: { value: '/' } })
+
+    const command = await screen.findByTestId('share-memory-command')
+    expect(command).toHaveTextContent('/share-memory')
+    expect(command).toHaveTextContent('Nothing is saved before approval')
+    expect(screen.getByTestId('skill-reference-search')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByTestId('skill-reference-search'), {
+      target: { value: 'google' },
+    })
+
+    expect(screen.queryByTestId('share-memory-command')).toBeNull()
+    expect(screen.getByTestId('skill-reference-search')).toHaveValue('google')
+  })
+
+  it('activates share-memory by mouse with a deterministic review-only request', async () => {
+    const onSubmit = vi.fn()
+    renderInput({ onSubmit })
+    fireEvent.change(getTextarea(), { target: { value: '/' } })
+
+    fireEvent.click(await screen.findByTestId('share-memory-command'))
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      'Resolve and fetch the backend Share Memory skill, then call memoryPublishing.check_authority. Propose bounded durable memory bullets and call the local divo_memory_review tool with only proposalId and bullets. Do not pass departmentId or allowedTargets and do not call memoryPublishing.publish directly; the local review tool uses the desktop-configured selected department context, independently fetches canonical allowed targets, and owns the review card and final prepare/commit.',
+      undefined
+    )
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(setPromptMock).toHaveBeenLastCalledWith('')
+    expect(screen.queryByTestId('skill-reference-drawer')).toBeNull()
+  })
+
+  it('activates a matching share-memory command with Enter', async () => {
+    const onSubmit = vi.fn()
+    renderInput({ onSubmit })
+    fireEvent.change(getTextarea(), { target: { value: '/' } })
+
+    const search = await screen.findByTestId('skill-reference-search')
+    fireEvent.change(search, { target: { value: 'share-mem' } })
+    fireEvent.keyDown(search, { key: 'Enter' })
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      'Resolve and fetch the backend Share Memory skill, then call memoryPublishing.check_authority. Propose bounded durable memory bullets and call the local divo_memory_review tool with only proposalId and bullets. Do not pass departmentId or allowedTargets and do not call memoryPublishing.publish directly; the local review tool uses the desktop-configured selected department context, independently fetches canonical allowed targets, and owns the review card and final prepare/commit.',
+      undefined
+    )
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+
   it('does not open the skill reference drawer for normal input', () => {
     renderInput()
     fireEvent.change(getTextarea(), { target: { value: 'abc' } })

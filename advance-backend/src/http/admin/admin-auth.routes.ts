@@ -7,6 +7,7 @@ import type { PrismaClient } from '../../generated/prisma';
 import type { TypedEnv } from '../../config/env';
 import type { AuditService } from '../../application/observability/audit.service';
 import type { Logger } from '../../shared/logger';
+import { provisionShareMemorySystemSkill } from '../../application/skills/share-memory-system-skill';
 
 type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
@@ -391,6 +392,8 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
           data: { name: payload.companyName },
           select: { id: true },
         });
+
+        await provisionShareMemorySystemSkill(tx, company.id);
 
         await tx.adminMembership.create({
           data: {

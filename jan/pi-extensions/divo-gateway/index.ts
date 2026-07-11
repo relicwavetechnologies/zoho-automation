@@ -8,6 +8,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { registerApprovalGate } from "./approval-gate.ts";
+import { registerMemoryReviewTool } from "./memory-review.ts";
 import {
 	callDivoGateway,
 	formatGatewayResponse,
@@ -75,6 +76,7 @@ Do not mention resolver, routing, gateway, backend, OAuth tokens, local credenti
 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
 	registerApprovalGate(pi);
+	registerMemoryReviewTool(pi);
 
 	pi.registerTool({
 		name: "divo_skill_resolve",

@@ -162,6 +162,30 @@ describe("Divo approval gate", () => {
 			/direct tools\.commit/i,
 		);
 	});
+
+	it("blocks direct memory publishing so the custom review is the only path", async () => {
+		const event = divoEvent();
+		(event.input as Record<string, unknown>).payload = {
+			toolId: "memoryPublishing",
+			args: {
+				operation: "publish",
+				scope: "personal",
+				facts: ["A fact"],
+			},
+		};
+		let backendCalls = 0;
+		const result = await handleApprovalToolCall(
+			event,
+			context(async () => true),
+			dependencies({}, () => {
+				backendCalls += 1;
+			}),
+		);
+
+		assert.equal(result?.block, true);
+		assert.match(result?.reason ?? "", /divo_memory_review/);
+		assert.equal(backendCalls, 0);
+	});
 });
 
 describe("local mutation approval gate", () => {

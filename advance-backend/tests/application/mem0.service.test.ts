@@ -59,6 +59,29 @@ class StubMemoryClient implements Mem0MemoryClient {
   }
 }
 
+class FailingSecondAddClient extends StubMemoryClient {
+  private addCount = 0;
+
+  constructor(private readonly failRollback = false) {
+    super();
+  }
+
+  override async add(messages: unknown, config: Record<string, unknown>) {
+    this.addCount++;
+    this.adds.push({ messages, config });
+    if (this.addCount === 2) throw new Error('second add failed');
+    return {
+      results: [{ id: 'stored-first', memory: String(messages) }],
+    };
+  }
+
+  override async delete(memoryId: string) {
+    this.deletes.push(memoryId);
+    if (this.failRollback) throw new Error('rollback delete failed');
+    return { message: 'deleted' };
+  }
+}
+
 function makeService(memoryClient = new StubMemoryClient()) {
   return {
     memoryClient,
@@ -154,6 +177,81 @@ describe('Mem0Service', () => {
         infer: false,
       },
     }]);
+  });
+
+  it('stores every explicit batch fact as a non-inferred memory', async () => {
+    const { service, memoryClient } = makeService();
+
+    await service.rememberExplicitBatch({
+      facts: ['First reviewed fact.', 'Second reviewed fact.'],
+      scope: 'department',
+      userId: 'user-1',
+      companyId: 'co-1',
+      departmentId: 'dept-1',
+    });
+
+    assert.deepEqual(memoryClient.adds, [
+      {
+        messages: 'First reviewed fact.',
+        config: {
+          agentId: 'company:co-1:department:dept-1',
+          metadata: {
+            scope: 'department',
+            company_id: 'co-1',
+            department_id: 'dept-1',
+            owner_user_id: 'user-1',
+            source: 'explicit',
+          },
+          infer: false,
+        },
+      },
+      {
+        messages: 'Second reviewed fact.',
+        config: {
+          agentId: 'company:co-1:department:dept-1',
+          metadata: {
+            scope: 'department',
+            company_id: 'co-1',
+            department_id: 'dept-1',
+            owner_user_id: 'user-1',
+            source: 'explicit',
+          },
+          infer: false,
+        },
+      },
+    ]);
+  });
+
+  it('compensates completed writes when a later batch add fails', async () => {
+    const memoryClient = new FailingSecondAddClient();
+    const { service } = makeService(memoryClient);
+
+    await assert.rejects(
+      service.rememberExplicitBatch({
+        facts: ['First reviewed fact.', 'Second reviewed fact.'],
+        scope: 'company',
+        userId: 'user-1',
+        companyId: 'co-1',
+      }),
+      /completed writes were rolled back; no facts were published/,
+    );
+    assert.deepEqual(memoryClient.deletes, ['stored-first']);
+  });
+
+  it('surfaces indeterminate state when compensation fails', async () => {
+    const memoryClient = new FailingSecondAddClient(true);
+    const { service } = makeService(memoryClient);
+
+    await assert.rejects(
+      service.rememberExplicitBatch({
+        facts: ['First reviewed fact.', 'Second reviewed fact.'],
+        scope: 'company',
+        userId: 'user-1',
+        companyId: 'co-1',
+      }),
+      /state is indeterminate and must be reviewed before retrying/,
+    );
+    assert.deepEqual(memoryClient.deletes, ['stored-first']);
   });
 
   it('skips trivial conversations', async () => {

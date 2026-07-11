@@ -172,4 +172,81 @@ describe('usePiApproval', () => {
     })
     expect(usePiApproval.getState().queues).toEqual({})
   })
+
+  it('queues a memory review and returns a structured value response', async () => {
+    const consumed = await consumePiApprovalEvent({
+      type: 'extension_ui_request',
+      thread_id: 'thread-1',
+      id: 'review-1',
+      method: 'editor',
+      title: 'divo_memory_review_v1',
+      prefill: JSON.stringify({
+        version: 1,
+        proposalId: 'proposal-1',
+        bullets: [{ id: 'fact-1', text: 'Acme uses net-60 terms.' }],
+        allowedTargets: [{ scope: 'personal', label: 'Personal' }],
+      }),
+    })
+
+    expect(consumed).toBe(true)
+    expect(usePiApproval.getState().queues['thread-1']?.[0]).toMatchObject({
+      protocol: 'memory-review',
+      requestId: 'review-1',
+    })
+
+    await usePiApproval.getState().resolveMemory('thread-1', 'review-1', {
+      version: 1,
+      proposalId: 'proposal-1',
+      decision: 'approve',
+      selectedTarget: { scope: 'personal' },
+      selectedBulletIds: ['fact-1'],
+    })
+
+    expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
+      requestId: 'review-1',
+      threadId: 'thread-1',
+      value: JSON.stringify({
+        version: 1,
+        proposalId: 'proposal-1',
+        decision: 'approve',
+        selectedTarget: { scope: 'personal' },
+        selectedBulletIds: ['fact-1'],
+      }),
+    })
+    expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
+  })
+
+  it('fails closed when a memory review selects a target it was not given', async () => {
+    await consumePiApprovalEvent({
+      type: 'extension_ui_request',
+      thread_id: 'thread-1',
+      id: 'review-1',
+      method: 'editor',
+      title: 'divo_memory_review_v1',
+      prefill: JSON.stringify({
+        version: 1,
+        proposalId: 'proposal-1',
+        bullets: [{ id: 'fact-1', text: 'Acme uses net-60 terms.' }],
+        allowedTargets: [{ scope: 'personal', label: 'Personal' }],
+      }),
+    })
+
+    const delivered = await usePiApproval
+      .getState()
+      .resolveMemory('thread-1', 'review-1', {
+        version: 1,
+        proposalId: 'proposal-1',
+        decision: 'approve',
+        selectedTarget: { scope: 'company' },
+        selectedBulletIds: ['fact-1'],
+      })
+
+    expect(delivered).toBe(false)
+    expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
+      requestId: 'review-1',
+      threadId: 'thread-1',
+      cancelled: true,
+    })
+    expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
+  })
 })

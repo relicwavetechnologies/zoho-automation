@@ -13,6 +13,7 @@ import {
 import { useState } from 'react'
 
 import { GmailIcon, ZohoIcon } from '@/components/brand-icons'
+import { MemoryReviewCard } from '@/components/memory-review/MemoryReviewCard'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import {
@@ -29,13 +30,14 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import { Separator } from '@/components/ui/separator'
-import type { PiApprovalRequest } from '@/lib/pi/approval'
+import { usePiApproval, type PiPendingUiRequest } from '@/hooks/usePiApproval'
+import { isPiMemoryReviewRequest } from '@/lib/pi/memory-review'
 import { cn } from '@/lib/utils'
 
 type ApprovalAppKind = 'gmail' | 'zoho' | 'generic'
 
 type LiveApprovalComposerProps = {
-  request: PiApprovalRequest
+  request: PiPendingUiRequest
   position: number
   total: number
   onMove: (direction: -1 | 1) => void
@@ -79,7 +81,7 @@ function presentationDetails(
   return presentation
 }
 
-function appKind(request: PiApprovalRequest): ApprovalAppKind {
+function appKind(request: Exclude<PiPendingUiRequest, { protocol: 'memory-review' }>): ApprovalAppKind {
   const identity = `${request.descriptor.source} ${request.descriptor.kind}`.toLowerCase()
   if (identity.includes('gmail')) return 'gmail'
   if (identity.includes('zoho')) return 'zoho'
@@ -120,6 +122,22 @@ export function LiveApprovalComposer({
   onStop,
   now,
 }: LiveApprovalComposerProps) {
+  if (isPiMemoryReviewRequest(request)) {
+    return (
+      <MemoryReviewCard
+        key={request.requestId}
+        request={request}
+        position={position}
+        total={total}
+        onMove={onMove}
+        onSubmit={(response) =>
+          void usePiApproval
+            .getState()
+            .resolveMemory(request.threadId, request.requestId, response)
+        }
+      />
+    )
+  }
   const kind = appKind(request)
   const { descriptor } = request
   const details = presentationDetails(descriptor.presentation)
@@ -443,7 +461,11 @@ function GenericRequest({
   )
 }
 
-function ExactRequestDetails({ request }: { request: PiApprovalRequest }) {
+function ExactRequestDetails({
+  request,
+}: {
+  request: Exclude<PiPendingUiRequest, { protocol: 'memory-review' }>
+}) {
   const [open, setOpen] = useState(false)
   const { descriptor } = request
 

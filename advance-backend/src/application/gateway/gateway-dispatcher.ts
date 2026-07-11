@@ -461,21 +461,31 @@ export class GatewayDispatcher {
 }
 
 function withGatewayDiscoveryPermissions(perm: PermissionResult): PermissionResult {
-  if (perm.department?.roleSlug !== 'MANAGER') return perm;
-
-  const skillPublishingToolId = asToolId('skillPublishing');
-  const existingActions = perm.allowedActionsByTool.get(skillPublishingToolId);
-  if (existingActions?.has('read') && existingActions.has('create')) return perm;
-
   const allowedActionsByTool = new Map(perm.allowedActionsByTool);
-  const actions = new Set<ToolActionGroup>(existingActions ?? []);
-  actions.add('read');
-  actions.add('create');
-  allowedActionsByTool.set(skillPublishingToolId, actions);
+  const allowedToolIds = new Set(perm.allowedToolIds);
+
+  const memoryPublishingToolId = asToolId('memoryPublishing');
+  const memoryActions = new Set<ToolActionGroup>(
+    allowedActionsByTool.get(memoryPublishingToolId) ?? [],
+  );
+  memoryActions.add('read');
+  allowedActionsByTool.set(memoryPublishingToolId, memoryActions);
+  allowedToolIds.add(memoryPublishingToolId);
+
+  if (perm.department?.roleSlug === 'MANAGER') {
+    const skillPublishingToolId = asToolId('skillPublishing');
+    const skillActions = new Set<ToolActionGroup>(
+      allowedActionsByTool.get(skillPublishingToolId) ?? [],
+    );
+    skillActions.add('read');
+    skillActions.add('create');
+    allowedActionsByTool.set(skillPublishingToolId, skillActions);
+    allowedToolIds.add(skillPublishingToolId);
+  }
 
   return {
     ...perm,
-    allowedToolIds: new Set([...perm.allowedToolIds, skillPublishingToolId]),
+    allowedToolIds,
     allowedActionsByTool,
   };
 }

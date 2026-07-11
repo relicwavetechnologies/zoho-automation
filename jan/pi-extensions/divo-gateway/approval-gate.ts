@@ -159,6 +159,15 @@ async function gateDivoInvocation(
 			"The Divo tool request was malformed and could not be safely prepared.",
 		);
 	}
+	const args = asRecord(payload.args);
+	if (
+		toolId === "memoryPublishing" &&
+		nonEmptyString(args?.operation) === "publish"
+	) {
+		return approvalBlock(
+			"Memory publishing must use divo_memory_review so the user can select the exact facts and target before the backend binds them.",
+		);
+	}
 
 	const resolved = dependencies.resolveConfig();
 	if ("error" in resolved) {

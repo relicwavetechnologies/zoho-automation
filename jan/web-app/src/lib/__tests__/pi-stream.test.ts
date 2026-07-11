@@ -15,7 +15,10 @@ vi.mock('@tauri-apps/api/event', () => ({
       _name: string,
       listener: (event: { payload: PiRawEvent }) => void
     ) => {
-      mocks.listener = listener
+      // The first listener is the durable approval listener. A stream adds a
+      // second listener for transcript events, but that one is removed with
+      // the stream and must not control approval delivery.
+      mocks.listener ??= listener
       return mocks.unlisten
     }
   ),
@@ -33,7 +36,7 @@ describe('createPiMessageStream approval events', () => {
     usePiApproval.setState({ queues: {} })
   })
 
-  it('consumes live approval events and denies them when the stream is cancelled', async () => {
+  it('keeps approval delivery alive after the originating stream is cancelled', async () => {
     const stream = createPiMessageStream({
       threadId: 'thread-1',
       message: 'send the email',
@@ -74,6 +77,31 @@ describe('createPiMessageStream approval events', () => {
       })
     )
     expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
+
+    // A memory editor can outlive the stream that opened it. It must still
+    // reach the persistent approval queue rather than leave Pi blocked.
+    mocks.listener?.({
+      payload: {
+        type: 'extension_ui_request',
+        thread_id: 'thread-1',
+        id: 'memory-review-1',
+        method: 'editor',
+        title: 'divo_memory_review_v1',
+        prefill: JSON.stringify({
+          version: 1,
+          proposalId: 'proposal-1',
+          bullets: [{ id: 'fact-1', text: 'Use net-60 payment terms.' }],
+          allowedTargets: [{ scope: 'personal', label: 'Personal' }],
+        }),
+      },
+    })
+
+    await vi.waitFor(() =>
+      expect(usePiApproval.getState().queues['thread-1']).toHaveLength(1)
+    )
+    expect(usePiApproval.getState().queues['thread-1'][0]).toMatchObject({
+      protocol: 'memory-review',
+      requestId: 'memory-review-1',
+    })
   })
 })
-

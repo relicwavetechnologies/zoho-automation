@@ -33,6 +33,20 @@ export interface MemoryStats {
   readonly totalCompany: number;
 }
 
+export class MemoryBatchRolledBackError extends Error {
+  constructor(options: { cause: unknown }) {
+    super('Memory batch failed and completed writes were rolled back; no facts were published.', options);
+    this.name = 'MemoryBatchRolledBackError';
+  }
+}
+
+export class MemoryBatchIndeterminateError extends Error {
+  constructor(options: { cause: unknown }) {
+    super('Memory batch failed and rollback could not be fully verified; published memory state is indeterminate and must be reviewed before retrying.', options);
+    this.name = 'MemoryBatchIndeterminateError';
+  }
+}
+
 export interface Mem0ServiceDeps {
   readonly openaiApiKey: string;
   readonly qdrantUrl: string;
@@ -203,12 +217,65 @@ export class Mem0Service {
     companyId: string;
     departmentId?: string;
   }): Promise<void> {
+    await this.addExplicit(params);
+  }
+
+  private async addExplicit(params: {
+    fact: string;
+    scope: MemoryScope;
+    userId: string;
+    companyId: string;
+    departmentId?: string;
+  }): Promise<string[]> {
     const target = this.addTarget(params.scope, params);
-    await this.memory.add(params.fact, {
+    const result = await this.memory.add(params.fact, {
       ...target.entity,
       metadata: { ...target.metadata, source: 'explicit' },
       infer: false,
     });
+    return result.results
+      .map((entry) => entry.id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+  }
+
+  async rememberExplicitBatch(params: {
+    facts: readonly string[];
+    scope: MemoryScope;
+    userId: string;
+    companyId: string;
+    departmentId?: string;
+  }): Promise<void> {
+    const storedIds: string[] = [];
+    let writesWithoutIds = 0;
+
+    try {
+      for (const fact of params.facts) {
+        const ids = await this.addExplicit({
+          fact,
+          scope: params.scope,
+          userId: params.userId,
+          companyId: params.companyId,
+          ...(params.departmentId ? { departmentId: params.departmentId } : {}),
+        });
+        if (ids.length === 0) writesWithoutIds++;
+        storedIds.push(...ids);
+      }
+    } catch (cause) {
+      const rollback = await Promise.allSettled(
+        storedIds.map((memoryId) => this.memory.delete(memoryId)),
+      );
+      const rollbackFailures = rollback.filter((result) => result.status === 'rejected').length;
+      const indeterminate = writesWithoutIds > 0 || rollbackFailures > 0;
+      this.deps.logger.warn('mem0.explicit_batch.failed', {
+        factCount: params.facts.length,
+        completedWrites: storedIds.length + writesWithoutIds,
+        rollbackFailures,
+        uncompensatableWrites: writesWithoutIds,
+        outcome: indeterminate ? 'indeterminate' : 'rolled_back',
+      });
+      if (indeterminate) throw new MemoryBatchIndeterminateError({ cause });
+      throw new MemoryBatchRolledBackError({ cause });
+    }
   }
 
   async listMemories(params: {

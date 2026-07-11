@@ -12,6 +12,7 @@ import type { CachePort } from '../../src/shared/cache.ts';
 import type { Logger } from '../../src/shared/logger.ts';
 import { ok } from '../../src/shared/result.ts';
 import type { PermissionQuery } from '../../src/application/permissions/permission.types.ts';
+import { asToolId } from '../../src/shared/ids.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -127,6 +128,11 @@ describe('PermissionService', () => {
       assert.ok(!ids.includes('larkApproval'), 'MEMBER should NOT have larkApproval by default');
       assert.ok(ids.includes('zohoCrm'),       'MEMBER should have zohoCrm by default');
       assert.ok(ids.includes('zohoBooks'),     'MEMBER should have zohoBooks by default');
+      assert.ok(ids.includes('memoryPublishing'), 'MEMBER should have personal memory publishing by default');
+      assert.deepEqual(
+        [...(result.value.allowedActionsByTool.get(asToolId('memoryPublishing')) ?? [])],
+        ['read', 'create'],
+      );
     });
 
     it('COMPANY_ADMIN gets every tool including larkBase, larkApproval, zoho', async () => {

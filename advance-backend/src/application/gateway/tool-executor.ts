@@ -173,9 +173,18 @@ export class ToolExecutor {
     }
 
     const validatedArgs = argsParse.data;
-    const skillPublishingDepartmentId = skillPublishingScopedDepartmentId(toolId, validatedArgs, departmentId);
-    const companyScopedSkillPublishing = isCompanyScopedSkillPublishingInvocation(toolId, validatedArgs);
-    const effectiveDepartmentId = companyScopedSkillPublishing ? undefined : skillPublishingDepartmentId;
+    if (hasMismatchedMemoryDepartment(toolId, validatedArgs, departmentId)) {
+      return {
+        ok: false,
+        response: gatewayFailure(
+          'invalid_args',
+          'memoryPublishing departmentId must match the currently selected gateway department.',
+        ),
+      };
+    }
+    const publishingDepartmentId = publishingScopedDepartmentId(toolId, validatedArgs, departmentId);
+    const companyAxisPublishing = isCompanyAxisPublishingInvocation(toolId, validatedArgs);
+    const effectiveDepartmentId = companyAxisPublishing ? undefined : publishingDepartmentId;
 
     const basePermissionQuery = {
       companyId: asCompanyId(member.companyId),
@@ -190,21 +199,23 @@ export class ToolExecutor {
     });
 
     if (
-      isSkillPublishingAuthorityCheck(toolId, validatedArgs)
-      && skillPublishingDepartmentId
+      isPublishingAuthorityCheck(toolId, validatedArgs)
+      && publishingDepartmentId
     ) {
       const companyPermResult = await this.deps.permissions.resolve(basePermissionQuery);
       if (!companyPermResult.ok) {
         return { ok: false, response: gatewayFailure('permission_denied', companyPermResult.error.message) };
       }
 
-      if (!permResult.ok) {
+      if (!permResult.ok && toolId !== 'memoryPublishing') {
         return { ok: false, response: gatewayFailure('permission_denied', permResult.error.message) };
       }
 
       permResult = {
         ok: true,
-        value: mergeSkillPublishingAuthority(companyPermResult.value, permResult.value),
+        value: permResult.ok
+          ? mergePublishingAuthority(companyPermResult.value, permResult.value)
+          : companyPermResult.value,
       };
     }
 
@@ -258,28 +269,41 @@ export class ToolExecutor {
   }
 }
 
-function isSkillPublishingAuthorityCheck(toolId: string, args: unknown): boolean {
-  return toolId === 'skillPublishing'
+function isPublishingAuthorityCheck(toolId: string, args: unknown): boolean {
+  return (toolId === 'skillPublishing' || toolId === 'memoryPublishing')
     && typeof args === 'object'
     && args !== null
     && (args as { operation?: unknown }).operation === 'check_authority';
 }
 
-function isCompanyScopedSkillPublishingInvocation(toolId: string, args: unknown): boolean {
-  return toolId === 'skillPublishing'
+function hasMismatchedMemoryDepartment(
+  toolId: string,
+  args: unknown,
+  gatewayDepartmentId: string | undefined,
+): boolean {
+  if (toolId !== 'memoryPublishing' || typeof args !== 'object' || args === null) return false;
+  const departmentId = (args as { departmentId?: unknown }).departmentId;
+  return typeof departmentId === 'string' && departmentId !== gatewayDepartmentId;
+}
+
+function isCompanyAxisPublishingInvocation(toolId: string, args: unknown): boolean {
+  return (toolId === 'skillPublishing' || toolId === 'memoryPublishing')
     && typeof args === 'object'
     && args !== null
     && (args as { operation?: unknown }).operation === 'publish'
-    && (args as { scope?: unknown }).scope === 'company';
+    && (
+      (args as { scope?: unknown }).scope === 'company'
+      || (toolId === 'memoryPublishing' && (args as { scope?: unknown }).scope === 'personal')
+    );
 }
 
-function skillPublishingScopedDepartmentId(
+function publishingScopedDepartmentId(
   toolId: string,
   args: unknown,
   gatewayDepartmentId: string | undefined,
 ): string | undefined {
   if (
-    toolId === 'skillPublishing'
+    (toolId === 'skillPublishing' || toolId === 'memoryPublishing')
     && typeof args === 'object'
     && args !== null
     && typeof (args as { departmentId?: unknown }).departmentId === 'string'
@@ -290,7 +314,7 @@ function skillPublishingScopedDepartmentId(
   return gatewayDepartmentId;
 }
 
-function mergeSkillPublishingAuthority(
+function mergePublishingAuthority(
   companyPerm: PermissionResult,
   departmentPerm: PermissionResult,
 ): PermissionResult {
@@ -299,17 +323,6 @@ function mergeSkillPublishingAuthority(
     const mergedActions = new Set<ToolActionGroup>(allowedActionsByTool.get(toolId) ?? []);
     for (const action of actions) mergedActions.add(action);
     allowedActionsByTool.set(toolId, mergedActions);
-  }
-
-  const skillPublishingToolId = asToolId('skillPublishing');
-  const skillPublishingActions = new Set<ToolActionGroup>(
-    allowedActionsByTool.get(skillPublishingToolId) ?? [],
-  );
-  for (const action of companyPerm.allowedActionsByTool.get(skillPublishingToolId) ?? []) {
-    skillPublishingActions.add(action);
-  }
-  if (skillPublishingActions.size > 0) {
-    allowedActionsByTool.set(skillPublishingToolId, skillPublishingActions);
   }
 
   return {

@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { PiApprovalRequest } from '@/lib/pi/approval'
+import type { PiMemoryReviewRequest } from '@/lib/pi/memory-review'
 import { LiveApprovalComposer } from './LiveApprovalComposer'
 
 function request(
@@ -39,7 +40,85 @@ const baseProps = {
   onStop: vi.fn(),
 }
 
+function memoryRequest(
+  requestId: string,
+  proposalId: string,
+  bullets: PiMemoryReviewRequest['descriptor']['bullets'],
+  allowedTargets: PiMemoryReviewRequest['descriptor']['allowedTargets']
+): PiMemoryReviewRequest {
+  return {
+    protocol: 'memory-review',
+    requestId,
+    threadId: 'thread-1',
+    descriptor: {
+      version: 1,
+      proposalId,
+      bullets,
+      allowedTargets,
+    },
+    status: 'pending',
+  }
+}
+
 describe('LiveApprovalComposer', () => {
+  it('remounts memory review form state when the active request changes', () => {
+    const proposalA = memoryRequest(
+      'review-a',
+      'proposal-a',
+      [
+        { id: 'shared-id', text: 'Proposal A shared fact' },
+        { id: 'a-only', text: 'Proposal A only fact' },
+      ],
+      [
+        { scope: 'personal', label: 'Personal' },
+        { scope: 'company', label: 'Company' },
+      ]
+    )
+    const proposalB = memoryRequest(
+      'review-b',
+      'proposal-b',
+      [
+        { id: 'shared-id', text: 'Proposal B shared fact' },
+        { id: 'b-only', text: 'Proposal B only fact' },
+      ],
+      [
+        {
+          scope: 'department',
+          label: 'Finance',
+          departmentId: 'dept-finance',
+        },
+        { scope: 'personal', label: 'Personal' },
+      ]
+    )
+
+    const { rerender } = render(
+      <LiveApprovalComposer {...baseProps} request={proposalA} />
+    )
+    fireEvent.change(screen.getByLabelText('Memory target'), {
+      target: { value: 'company:' },
+    })
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Remove memory: Proposal A shared fact',
+      })
+    )
+    fireEvent.change(screen.getByLabelText('Memory revision'), {
+      target: { value: 'State that must not leak' },
+    })
+
+    rerender(<LiveApprovalComposer {...baseProps} request={proposalB} />)
+
+    expect(screen.getByLabelText('Memory target')).toHaveValue(
+      'department:dept-finance'
+    )
+    expect(screen.getByLabelText('Memory revision')).toHaveValue('')
+    expect(
+      screen.getByRole('button', { name: 'Remember 2 facts' })
+    ).toBeEnabled()
+    expect(screen.getByText('Proposal B shared fact')).toBeInTheDocument()
+    expect(screen.queryByText('Proposal A only fact')).not.toBeInTheDocument()
+  })
+
   it('renders Gmail fields from the validated presentation', () => {
     const onDecision = vi.fn()
     render(

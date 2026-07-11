@@ -15,6 +15,7 @@ import { ToolRegistry } from '../../src/application/orchestration/tools/tool-reg
 import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
 import { createWebSearchTool } from '../../src/application/orchestration/tools/families/web-search.tool.ts';
 import { createSkillPublishingTool } from '../../src/application/orchestration/tools/families/skill-publishing.tool.ts';
+import { createMemoryPublishingTool } from '../../src/application/orchestration/tools/families/memory-publishing.tool.ts';
 import type { CatalogSkill, SkillCatalogService } from '../../src/application/skills/skill-catalog.service.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import { PermissionError, ToolError } from '../../src/shared/errors.ts';
@@ -951,6 +952,244 @@ describe('GatewayDispatcher', () => {
     const capabilityTool = (capabilities.data as any).tools.find((tool: { toolId: string }) => tool.toolId === 'skillPublishing');
     assert.ok(capabilityTool);
     assert.deepEqual(capabilityTool.allowedActions, ['read', 'create']);
+  });
+
+  it('returns UI-safe memory authority targets across company and selected-department axes', async () => {
+    const registry = new ToolRegistry();
+    registry.register(createMemoryPublishingTool({ mem0: { rememberExplicitBatch: async () => {} } }));
+    const companyPerm = makeAllowedPerm('memoryPublishing', ['read', 'create']);
+    const departmentPerm: PermissionResult = {
+      ...makeDeniedPerm(),
+      department: {
+        id: asDepartmentId('dept-1'),
+        name: 'Finance',
+        roleSlug: 'MANAGER' as never,
+        zohoReadScope: 'personalized',
+      },
+    };
+    const permissions = makeScopedPermissionService((query) =>
+      query.departmentId ? departmentPerm : companyPerm);
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor,
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      departmentId: 'dept-1',
+      payload: { toolId: 'memoryPublishing', args: { operation: 'check_authority' } },
+    }, { ...member, aiRole: 'COMPANY_ADMIN' });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual((result.data as any).result, {
+      operation: 'check_authority',
+      availability: 'available',
+      targets: [
+        { scope: 'personal', label: 'Personal' },
+        { scope: 'department', label: 'Finance', departmentId: 'dept-1' },
+        { scope: 'company', label: 'Company' },
+      ],
+      scopeOutcomes: [
+        { scope: 'personal', status: 'allowed' },
+        { scope: 'department', status: 'allowed' },
+        { scope: 'company', status: 'allowed' },
+      ],
+    });
+  });
+
+  it('keeps Share Memory discoverable in a department without advertising create authority', async () => {
+    const registry = new ToolRegistry();
+    registry.register(createMemoryPublishingTool({ mem0: null }));
+    const departmentPerm: PermissionResult = {
+      ...makeDeniedPerm(),
+      department: {
+        id: asDepartmentId('dept-1'),
+        name: 'Finance',
+        roleSlug: 'MEMBER' as never,
+        zohoReadScope: 'personalized',
+      },
+    };
+    const permissions = makePermissionService(departmentPerm);
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([{
+        id: 'share-memory',
+        slug: 'share-memory',
+        name: 'Share Memory',
+        description: 'Review and publish durable facts.',
+        instructions: 'Call divo_memory_review.',
+        toolIds: ['memoryPublishing'],
+      }]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      logger: noopLogger,
+    });
+
+    const listed = await dispatcher.dispatch({ op: 'tools.list', departmentId: 'dept-1' }, member);
+    assert.equal(listed.ok, true);
+    const memoryTool = (listed.data as any).tools.find((tool: { id: string }) => tool.id === 'memoryPublishing');
+    assert.ok(memoryTool);
+    assert.deepEqual(memoryTool.allowedActions, ['read']);
+
+    const skills = await dispatcher.dispatch({ op: 'skills.list', departmentId: 'dept-1' }, member);
+    assert.equal(skills.ok, true);
+    assert.ok((skills.data as any).skills.some((skill: { id: string }) => skill.id === 'share-memory'));
+  });
+
+  it('keeps Share Memory discoverable and reports storage unavailable when Mem0 is disabled', async () => {
+    const registry = new ToolRegistry();
+    registry.register(createMemoryPublishingTool({ mem0: null }));
+    const perm = makeAllowedPerm('memoryPublishing', ['read', 'create']);
+    const permissions = makePermissionService(perm);
+    const shareMemorySkill: CatalogSkill = {
+      id: 'share-memory',
+      slug: 'share-memory',
+      name: 'Share Memory',
+      description: 'Review and publish durable facts.',
+      instructions: 'Call divo_memory_review.',
+      toolIds: ['memoryPublishing'],
+    };
+    const skillCatalog = makeSkillCatalog([shareMemorySkill]);
+    (skillCatalog as any).listVisible = async ({ permission }: { permission: PermissionResult }) =>
+      permission.allowedToolIds.has(asToolId('memoryPublishing')) ? [shareMemorySkill] : [];
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog,
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      logger: noopLogger,
+    });
+
+    const tools = await dispatcher.dispatch({ op: 'tools.list' }, member);
+    assert.equal(tools.ok, true);
+    assert.equal((tools.data as any).tools.some((tool: { id: string }) => tool.id === 'memoryPublishing'), true);
+
+    const skills = await dispatcher.dispatch({ op: 'skills.list' }, member);
+    assert.equal(skills.ok, true);
+    assert.equal((skills.data as any).skills.some((skill: { id: string }) => skill.id === 'share-memory'), true);
+
+    const authority = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { toolId: 'memoryPublishing', args: { operation: 'check_authority' } },
+    }, member);
+    assert.equal(authority.ok, true);
+    assert.deepEqual((authority.data as any).result, {
+      operation: 'check_authority',
+      availability: 'storage_unavailable',
+      targets: [],
+      scopeOutcomes: [],
+    });
+  });
+
+  it('rechecks memory publish authority on commit and never downgrades a revoked company target', async () => {
+    const writes: unknown[] = [];
+    const registry = new ToolRegistry();
+    registry.register(createMemoryPublishingTool({
+      mem0: { rememberExplicitBatch: async (input: unknown) => { writes.push(input); } },
+    }));
+    let resolutions = 0;
+    const permissions = makeScopedPermissionService(() => {
+      resolutions++;
+      return resolutions === 1
+        ? makeAllowedPerm('memoryPublishing', ['create'])
+        : makeDeniedPerm();
+    });
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor,
+      localApprovalIntents: makeLocalApprovals(toolExecutor),
+      logger: noopLogger,
+    });
+    const admin = { ...member, aiRole: 'COMPANY_ADMIN' };
+
+    const prepared = await dispatcher.dispatch({
+      op: 'tools.prepare',
+      payload: {
+        toolId: 'memoryPublishing',
+        args: {
+          operation: 'publish',
+          scope: 'company',
+          facts: ['The fiscal year starts in April.'],
+        },
+      },
+    }, admin);
+    assert.equal(prepared.ok, true);
+
+    const committed = await dispatcher.dispatch({
+      op: 'tools.commit',
+      payload: { intentId: (prepared.data as any).intentId },
+    }, admin);
+
+    assert.equal(committed.ok, false);
+    assert.equal(committed.status, 'permission_denied');
+    assert.equal(resolutions, 2);
+    assert.equal(writes.length, 0);
+  });
+
+  it('rejects a memory department target that differs from the selected gateway department', async () => {
+    const registry = new ToolRegistry();
+    registry.register(createMemoryPublishingTool({
+      mem0: { rememberExplicitBatch: async () => {} },
+    }));
+    const permissions = makePermissionService(makeAllowedPerm('memoryPublishing', ['create']));
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor,
+      localApprovalIntents: makeLocalApprovals(toolExecutor),
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'tools.prepare',
+      departmentId: 'dept-selected',
+      payload: {
+        toolId: 'memoryPublishing',
+        args: {
+          operation: 'publish',
+          scope: 'department',
+          departmentId: 'dept-other',
+          facts: ['Fact.'],
+        },
+      },
+    }, member);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'invalid_args');
   });
 
   it('returns skills.get with permission check', async () => {
