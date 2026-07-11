@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::core::divo::local_lark::resolve_lark_cli_home;
+use crate::core::divo::runtime_context::DIVO_RUNTIME_CONTEXT_FILE;
 use crate::core::divo::workspace::DivoWorkspaceRunLayout;
 
 /// Divo gateway config forwarded to bundled Pi (desktop-managed; never from prompts).
@@ -11,7 +12,10 @@ pub const DIVO_GATEWAY_ENV_VARS: &[&str] = &[
     "DIVO_BACKEND_URL",
     "DIVO_MEMBER_TOKEN",
     "DIVO_DEPARTMENT_ID",
+    "DIVO_RUNTIME_CONTEXT_PATH",
 ];
+
+const DIVO_RUNTIME_CONTEXT_PATH_ENV: &str = "DIVO_RUNTIME_CONTEXT_PATH";
 
 /// Pi provider API keys — see pi-coding-agent/docs/providers.md.
 /// Jan does not map its own provider keys; only these env vars are forwarded.
@@ -73,6 +77,13 @@ pub fn apply_divo_gateway_env(cmd: &mut Command, agent_dir: &Path) {
             }
         }
     }
+
+    // The desktop owns this file path. Do not allow inherited shell or .env
+    // values to redirect Pi to an untrusted prompt source.
+    cmd.env(
+        DIVO_RUNTIME_CONTEXT_PATH_ENV,
+        agent_dir.join(DIVO_RUNTIME_CONTEXT_FILE),
+    );
 }
 
 pub fn apply_divo_workspace_env(
@@ -125,15 +136,21 @@ pub fn write_divo_env_file(
     backend_url: &str,
     member_token: &str,
     department_id: Option<&str>,
+    runtime_context_path: &Path,
 ) -> Result<(), String> {
     fs::create_dir_all(agent_dir).map_err(|e| e.to_string())?;
     let backend_url = clean_env_value("DIVO_BACKEND_URL", backend_url)?
         .trim_end_matches('/')
         .to_string();
     let member_token = clean_env_value("DIVO_MEMBER_TOKEN", member_token)?;
+    let runtime_context_path = clean_env_value(
+        "DIVO_RUNTIME_CONTEXT_PATH",
+        &runtime_context_path.to_string_lossy(),
+    )?;
     let mut lines = vec![
         format!("DIVO_BACKEND_URL={backend_url}"),
         format!("DIVO_MEMBER_TOKEN={member_token}"),
+        format!("DIVO_RUNTIME_CONTEXT_PATH={runtime_context_path}"),
     ];
     if let Some(dept) = department_id {
         let trimmed = clean_env_value("DIVO_DEPARTMENT_ID", dept)?;
@@ -251,6 +268,7 @@ mod tests {
             "http://localhost:3000/",
             "jwt-abc",
             Some("dept-1"),
+            &agent_dir.join("divo-runtime-context.json"),
         )
         .unwrap();
 
@@ -258,6 +276,7 @@ mod tests {
         assert!(raw.contains("DIVO_BACKEND_URL=http://localhost:3000"));
         assert!(raw.contains("DIVO_MEMBER_TOKEN=jwt-abc"));
         assert!(raw.contains("DIVO_DEPARTMENT_ID=dept-1"));
+        assert!(raw.contains("DIVO_RUNTIME_CONTEXT_PATH="));
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -276,6 +295,7 @@ mod tests {
             "http://localhost:3000",
             "jwt-abc\nDIVO_BACKEND_URL=http://evil",
             None,
+            &agent_dir.join("divo-runtime-context.json"),
         )
         .unwrap_err();
 
@@ -283,6 +303,22 @@ mod tests {
         assert!(!agent_dir.join("divo.env").exists());
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn apply_divo_gateway_env_pins_runtime_context_to_agent_dir() {
+        let agent_dir = PathBuf::from("/tmp/divo-agent");
+        let mut cmd = Command::new("env");
+        apply_divo_gateway_env(&mut cmd, &agent_dir);
+
+        let value = cmd
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == DIVO_RUNTIME_CONTEXT_PATH_ENV).then_some(value.unwrap())
+            })
+            .unwrap();
+        let expected = agent_dir.join(DIVO_RUNTIME_CONTEXT_FILE);
+        assert_eq!(value, expected.as_os_str());
     }
 
     #[test]

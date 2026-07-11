@@ -129,6 +129,7 @@ import { createContextSearchTool } from './application/orchestration/tools/famil
 import { createWebSearchTool } from './application/orchestration/tools/families/web-search.tool';
 import { createSkillPublishingTool } from './application/orchestration/tools/families/skill-publishing.tool';
 import { createMemoryPublishingTool } from './application/orchestration/tools/families/memory-publishing.tool';
+import { createMemoryRecallTool } from './application/orchestration/tools/families/memory-recall.tool';
 import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
 import { ToolExecutor } from './application/gateway/tool-executor';
@@ -897,6 +898,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(createSkillPublishingTool({ prisma }));
   toolRegistry.register(createMemoryPublishingTool({ mem0: mem0Service }));
+  toolRegistry.register(createMemoryRecallTool({ mem0: mem0Service, departmentRepo: deptRepo }));
   toolRegistry.register(new DocumentRagTool(documentRagBroker));
   toolRegistry.register(createDataProcessorTool({
     cloudinary:  cloudinaryAdapter,

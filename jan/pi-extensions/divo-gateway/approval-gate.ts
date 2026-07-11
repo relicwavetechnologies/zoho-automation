@@ -160,6 +160,11 @@ async function gateDivoInvocation(
 		);
 	}
 	const args = asRecord(payload.args);
+	if (toolId === "memoryRecall") {
+		return approvalBlock(
+			"Memory recall must use divo_memory_recall with a query and optional exact department-name ranking preferences. The backend derives and searches all active memberships; names do not select or grant scope.",
+		);
+	}
 	if (
 		toolId === "memoryPublishing" &&
 		nonEmptyString(args?.operation) === "publish"

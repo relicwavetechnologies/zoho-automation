@@ -82,6 +82,48 @@ class FailingSecondAddClient extends StubMemoryClient {
   }
 }
 
+class PartialFailureSearchClient extends StubMemoryClient {
+  override async search(query: string, config: { filters: Record<string, unknown> }) {
+    if (config.filters.scope === 'department') throw new Error('qdrant unavailable');
+    return super.search(query, config);
+  }
+}
+
+class RecallBudgetSearchClient extends StubMemoryClient {
+  override async search(query: string, config: { filters: Record<string, unknown> }) {
+    this.searches.push({ query, filters: config.filters });
+    if (config.filters.scope === 'user') {
+      return {
+        results: Array.from({ length: 12 }, (_, index) => ({
+          id: `u${index}`,
+          memory: `Personal fact ${index}: ${'p'.repeat(480)}`,
+          score: 1 - index / 100,
+        })).concat([{ id: 'u-too-long', memory: 'x'.repeat(501), score: 2 }]),
+      };
+    }
+    if (config.filters.scope === 'department') {
+      return { results: [{ id: 'd1', memory: 'Department convention applies to month-end reports.', score: 0.8 }] };
+    }
+    return { results: [{ id: 'c1', memory: 'Company policy applies to all customer exports.', score: 0.7 }] };
+  }
+}
+
+class MultiDepartmentSearchClient extends StubMemoryClient {
+  override async search(query: string, config: { filters: Record<string, unknown> }) {
+    this.searches.push({ query, filters: config.filters });
+    if (config.filters.scope === 'user') return { results: [] };
+    if (config.filters.scope === 'company') return { results: [] };
+    const departmentId = String(config.filters.department_id);
+    return {
+      results: [{
+        id: departmentId,
+        memory: `${departmentId} reporting convention.`,
+        score: 0.8,
+      }],
+    };
+  }
+}
+
 function makeService(memoryClient = new StubMemoryClient()) {
   return {
     memoryClient,
@@ -120,6 +162,116 @@ describe('Mem0Service', () => {
         department_id: 'dept-1',
       },
       { agent_id: 'company:co-1', scope: 'company', company_id: 'co-1' },
+    ]);
+  });
+
+  it('recalls only scoped, deduplicated facts with explicit coverage and a global result bound', async () => {
+    const { service, memoryClient } = makeService();
+
+    const result = await service.searchForRecall({
+      query: 'reporting convention',
+      userId: 'user-1',
+      companyId: 'co-1',
+      departments: [{ id: 'dept-1', name: 'Finance' }],
+      limit: 2,
+      maxFactChars: 500,
+      maxTotalChars: 3_000,
+    });
+
+    assert.deepEqual(result, {
+      facts: [
+        { scope: 'personal', text: 'User prefers tables.' },
+        { scope: 'department', text: 'Team uses IST for daily ops.', department: { name: 'Finance' } },
+      ],
+      coverage: { personal: 'searched', departments: { searched: 1, failed: 0 }, company: 'searched' },
+      status: 'available',
+    });
+    assert.deepEqual(memoryClient.searches.map(call => call.filters), [
+      { user_id: 'user-1', scope: 'user', company_id: 'co-1' },
+      {
+        agent_id: 'company:co-1:department:dept-1',
+        scope: 'department',
+        company_id: 'co-1',
+        department_id: 'dept-1',
+      },
+      { agent_id: 'company:co-1', scope: 'company', company_id: 'co-1' },
+    ]);
+  });
+
+  it('searches every supplied active department and exposes aggregate partial coverage failures', async () => {
+    const { service, memoryClient } = makeService(new PartialFailureSearchClient());
+
+    const noDepartment = await service.searchForRecall({
+      query: 'reporting convention',
+      userId: 'user-1',
+      companyId: 'co-1',
+      departments: [],
+      limit: 3,
+      maxFactChars: 500,
+      maxTotalChars: 3_000,
+    });
+    assert.deepEqual(noDepartment.coverage, { personal: 'searched', departments: { searched: 0, failed: 0 }, company: 'searched' });
+    assert.equal(noDepartment.status, 'available');
+    assert.deepEqual(memoryClient.searches.map(call => call.filters.scope), ['user', 'company']);
+
+    const partial = await service.searchForRecall({
+      query: 'reporting convention',
+      userId: 'user-1',
+      companyId: 'co-1',
+      departments: [{ id: 'dept-1', name: 'Finance' }],
+      limit: 3,
+      maxFactChars: 500,
+      maxTotalChars: 3_000,
+    });
+    assert.deepEqual(partial.coverage, { personal: 'searched', departments: { searched: 0, failed: 1 }, company: 'searched' });
+    assert.equal(partial.status, 'partial');
+  });
+
+  it('caps whole recall facts by total text while reserving a fact from each searched scope', async () => {
+    const { service } = makeService(new RecallBudgetSearchClient());
+
+    const result = await service.searchForRecall({
+      query: 'month end reporting',
+      userId: 'user-1',
+      companyId: 'co-1',
+      departments: [{ id: 'dept-1', name: 'Finance' }],
+      limit: 12,
+      maxFactChars: 500,
+      maxTotalChars: 1_100,
+    });
+
+    assert.equal(result.facts.some(fact => fact.scope === 'personal'), true);
+    assert.equal(result.facts.some(fact => fact.scope === 'department'), true);
+    assert.equal(result.facts.some(fact => fact.scope === 'company'), true);
+    assert.equal(result.facts.some(fact => fact.text.length > 500), false);
+    assert.ok(result.facts.reduce((sum, fact) => sum + fact.text.length, 0) <= 1_100);
+  });
+
+  it('searches only active department inputs and uses matching name preferences as a department tie-breaker', async () => {
+    const { service, memoryClient } = makeService(new MultiDepartmentSearchClient());
+
+    const result = await service.searchForRecall({
+      query: 'reporting convention',
+      userId: 'user-1',
+      companyId: 'co-1',
+      departments: [
+        { id: 'dept-finance', name: 'Finance' },
+        { id: 'dept-sales', name: 'Sales' },
+      ],
+      departmentPreferences: ['Sales', 'Unknown department'],
+      limit: 12,
+      maxFactChars: 500,
+      maxTotalChars: 3_000,
+    });
+
+    assert.deepEqual(result.facts, [
+      { scope: 'department', text: 'dept-sales reporting convention.', department: { name: 'Sales' } },
+      { scope: 'department', text: 'dept-finance reporting convention.', department: { name: 'Finance' } },
+    ]);
+    assert.deepEqual(result.coverage, { personal: 'searched', departments: { searched: 2, failed: 0 }, company: 'searched' });
+    assert.deepEqual(memoryClient.searches.map(call => call.filters.department_id).filter(Boolean), [
+      'dept-finance',
+      'dept-sales',
     ]);
   });
 

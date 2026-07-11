@@ -18,12 +18,21 @@ export interface DepartmentMembershipRow {
   zohoRateLimitJson?: unknown;
 }
 
+export interface ActiveDepartmentMembershipRow {
+  readonly departmentId: string;
+  readonly departmentName: string;
+}
+
 export interface DepartmentRepoPort {
   getMembership(
     userId: string,
     companyId: string,
     departmentId: string,
   ): Promise<Result<DepartmentMembershipRow | null, InfraError>>;
+  listActiveMemberships(
+    userId: string,
+    companyId: string,
+  ): Promise<Result<ActiveDepartmentMembershipRow[], InfraError>>;
 }
 
 export class DepartmentRepository implements DepartmentRepoPort {
@@ -66,6 +75,32 @@ export class DepartmentRepository implements DepartmentRepoPort {
       });
     } catch (e) {
       return err(wrapInfra('prisma', 'getDepartmentMembership', e));
+    }
+  }
+
+  async listActiveMemberships(
+    userId: string,
+    companyId: string,
+  ): Promise<Result<ActiveDepartmentMembershipRow[], InfraError>> {
+    try {
+      const memberships = await this.db.departmentMembership.findMany({
+        where: {
+          userId,
+          status: 'active',
+          department: { companyId, status: 'active' },
+        },
+        select: {
+          departmentId: true,
+          department: { select: { name: true } },
+        },
+        orderBy: { department: { name: 'asc' } },
+      });
+      return ok(memberships.map(membership => ({
+        departmentId: membership.departmentId,
+        departmentName: membership.department.name,
+      })));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'listActiveDepartmentMemberships', e));
     }
   }
 }

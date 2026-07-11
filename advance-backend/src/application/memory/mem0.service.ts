@@ -33,6 +33,30 @@ export interface MemoryStats {
   readonly totalCompany: number;
 }
 
+export type MemoryRecallScope = 'personal' | 'department' | 'company';
+export type MemoryRecallScopeStatus = 'searched' | 'failed';
+export type MemoryRecallStatus = 'available' | 'partial' | 'unavailable';
+
+export interface MemoryRecallDepartment {
+  readonly id: string;
+  readonly name: string;
+}
+
+export type MemoryRecallFact =
+  | { readonly scope: 'personal'; readonly text: string }
+  | { readonly scope: 'department'; readonly text: string; readonly department: { readonly name: string } }
+  | { readonly scope: 'company'; readonly text: string };
+
+export interface MemoryRecallResult {
+  readonly facts: MemoryRecallFact[];
+  readonly coverage: {
+    readonly personal: MemoryRecallScopeStatus;
+    readonly departments: { readonly searched: number; readonly failed: number };
+    readonly company: MemoryRecallScopeStatus;
+  };
+  readonly status: MemoryRecallStatus;
+}
+
 export class MemoryBatchRolledBackError extends Error {
   constructor(options: { cause: unknown }) {
     super('Memory batch failed and completed writes were rolled back; no facts were published.', options);
@@ -82,6 +106,7 @@ interface ScopedSearch {
   readonly scope: MemoryScope;
   readonly label: string;
   readonly filters: Record<string, unknown>;
+  readonly departmentName?: string;
 }
 
 interface AddTarget {
@@ -156,6 +181,114 @@ export class Mem0Service {
       this.deps.logger.info('mem0.search.found', { memories: totalMemories, contextLength: context.length });
     }
     return context;
+  }
+
+  async searchForRecall(params: {
+    query: string;
+    userId: string;
+    companyId: string;
+    departments: readonly MemoryRecallDepartment[];
+    departmentPreferences?: readonly string[];
+    limit: number;
+    maxFactChars: number;
+    maxTotalChars: number;
+  }): Promise<MemoryRecallResult> {
+    const searches = this.buildRecallSearches(params);
+    const perScopeLimit = Math.min(this.deps.maxResults, params.limit);
+    const settled = await Promise.allSettled(
+      searches.map(async search => ({
+        ...search,
+        entries: await this.searchScope(params.query, search.filters, perScopeLimit),
+      })),
+    );
+
+    const coverage: {
+      personal: MemoryRecallScopeStatus;
+      departments: { searched: number; failed: number };
+      company: MemoryRecallScopeStatus;
+    } = {
+      personal: 'failed',
+      departments: { searched: 0, failed: 0 },
+      company: 'failed',
+    };
+    const succeeded: Array<ScopedSearch & { entries: MemoryEntry[] }> = [];
+    for (let index = 0; index < settled.length; index++) {
+      const search = searches[index]!;
+      const result = settled[index]!;
+      if (result.status === 'fulfilled') {
+        if (search.scope === 'user') coverage.personal = 'searched';
+        if (search.scope === 'company') coverage.company = 'searched';
+        if (search.scope === 'department') coverage.departments.searched++;
+        succeeded.push(result.value);
+      } else {
+        this.deps.logger.warn('mem0.recall.scope_failed', { scope: search.scope, error: String(result.reason) });
+        if (search.scope === 'department') coverage.departments.failed++;
+      }
+    }
+
+    const seen = new Set<string>();
+    const facts: MemoryRecallFact[] = [];
+    let totalChars = 0;
+    const preferenceRank = new Map(
+      (params.departmentPreferences ?? []).map((name, index) => [normalizeDepartmentName(name), index]),
+    );
+    const candidates = succeeded.flatMap(group => group.entries
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .map(entry => ({
+        scope: toMemoryRecallScope(group.scope),
+        text: entry.memory.trim(),
+        score: entry.score ?? 0,
+        ...(group.departmentName ? { departmentName: group.departmentName } : {}),
+        preferenceRank: group.departmentName === undefined
+          ? Number.MAX_SAFE_INTEGER
+          : preferenceRank.get(normalizeDepartmentName(group.departmentName)) ?? Number.MAX_SAFE_INTEGER,
+      })));
+
+    const add = (candidate: { scope: MemoryRecallScope; text: string; departmentName?: string }): boolean => {
+      const key = candidate.text.toLowerCase();
+      if (
+        !candidate.text
+        || candidate.text.length > params.maxFactChars
+        || seen.has(key)
+        || facts.length >= params.limit
+        || totalChars + candidate.text.length > params.maxTotalChars
+      ) return false;
+      seen.add(key);
+      totalChars += candidate.text.length;
+      if (candidate.scope === 'department' && candidate.departmentName) {
+        facts.push({ scope: 'department', text: candidate.text, department: { name: candidate.departmentName } });
+      } else if (candidate.scope === 'personal') {
+        facts.push({ scope: 'personal', text: candidate.text });
+      } else {
+        facts.push({ scope: 'company', text: candidate.text });
+      }
+      return true;
+    };
+
+    const rankedCandidates = [...candidates].sort((a, b) =>
+      b.score - a.score
+      || a.preferenceRank - b.preferenceRank
+      || scopeRank(a.scope) - scopeRank(b.scope)
+      || (a.departmentName ?? '').localeCompare(b.departmentName ?? ''),
+    );
+
+    // Reserve one relevant, bounded fact from personal, any active department,
+    // and company scope before filling the remaining global budget.
+    for (const scope of ['personal', 'department', 'company'] as const) {
+      rankedCandidates.some(item => item.scope === scope && add(item));
+    }
+
+    for (const candidate of rankedCandidates) {
+      add(candidate);
+    }
+
+    return {
+      facts,
+      coverage,
+      status: succeeded.length === searches.length
+        ? 'available'
+        : succeeded.length > 0 ? 'partial' : 'unavailable',
+    };
   }
 
   async extractAndStore(params: {
@@ -351,12 +484,16 @@ export class Mem0Service {
     };
   }
 
-  private async searchScope(query: string, filters: Record<string, unknown>): Promise<MemoryEntry[]> {
+  private async searchScope(
+    query: string,
+    filters: Record<string, unknown>,
+    limit = this.deps.maxResults,
+  ): Promise<MemoryEntry[]> {
     const log = this.deps.logger.child({ method: 'searchScope' });
     try {
       log.debug('mem0.searchScope.calling', { queryLength: query.length, filters });
       const result = await this.memory.search(query, {
-        topK: this.deps.maxResults,
+        topK: limit,
         filters,
       });
       return this.toEntries(result).filter(entry => (entry.score ?? 0) >= MIN_MEMORY_SCORE);
@@ -418,6 +555,44 @@ export class Mem0Service {
     }
 
     return searches;
+  }
+
+  private buildRecallSearches(params: {
+    userId: string;
+    companyId: string;
+    departments: readonly MemoryRecallDepartment[];
+  }): ScopedSearch[] {
+    return [
+      {
+        scope: 'user',
+        label: 'User memory',
+        filters: {
+          user_id: params.userId,
+          scope: 'user',
+          company_id: params.companyId,
+        },
+      },
+      ...params.departments.map(department => ({
+        scope: 'department' as const,
+        label: 'Department memory',
+        departmentName: department.name,
+        filters: {
+          agent_id: this.departmentAgentId(params.companyId, department.id),
+          scope: 'department',
+          company_id: params.companyId,
+          department_id: department.id,
+        },
+      })),
+      {
+        scope: 'company',
+        label: 'Company memory',
+        filters: {
+          agent_id: this.companyAgentId(params.companyId),
+          scope: 'company',
+          company_id: params.companyId,
+        },
+      },
+    ];
   }
 
   private buildListSearches(params: {
@@ -591,4 +766,16 @@ export class Mem0Service {
   private departmentAgentId(companyId: string, departmentId: string): string {
     return `company:${companyId}:department:${departmentId}`;
   }
+}
+
+function toMemoryRecallScope(scope: MemoryScope): MemoryRecallScope {
+  return scope === 'user' ? 'personal' : scope;
+}
+
+function scopeRank(scope: MemoryRecallScope): number {
+  return scope === 'personal' ? 0 : scope === 'department' ? 1 : 2;
+}
+
+function normalizeDepartmentName(name: string): string {
+  return name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 }

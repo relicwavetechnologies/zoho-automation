@@ -39,6 +39,18 @@ const TOOLS: ToolSeed[] = [
   { toolId: 'webSearch', name: 'Web Search', description: 'Search the web for current information.', category: 'knowledge', domain: 'context' },
   { toolId: 'skillPublishing', name: 'Skill Publishing', description: 'Check sharing authority and publish explicitly shared skills to company or department scope.', category: 'knowledge', domain: 'skills', hitlRequired: true },
   MEMORY_PUBLISHING_REGISTERED_TOOL,
+  {
+    toolId: 'memoryRecall',
+    name: 'Memory Recall',
+    description: 'Recall relevant personal, current-department, and company memory within the authenticated member boundaries.',
+    category: 'knowledge',
+    domain: 'memory',
+    guardrails: [
+      'The backend derives member, company, and selected department scope',
+      'Read access does not use configurable RBAC or approval within valid organisational boundaries',
+      'Returns facts only; no vector IDs, scores, metadata, or embeddings',
+    ],
+  },
   { toolId: 'documentRag', name: 'Document RAG', description: 'Ingest and retrieve uploaded documents.', category: 'knowledge', domain: 'rag' },
   { toolId: 'dataProcessor', name: 'Data Processor', description: 'Transform and process datasets in a sandbox.', category: 'data', domain: 'data' },
   {

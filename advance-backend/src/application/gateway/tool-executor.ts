@@ -89,7 +89,7 @@ export class ToolExecutor {
 
     let executionGrant: { approvalId: string } | undefined;
 
-    if (this.deps.approvalGate && effectiveDepartmentId) {
+    if (this.deps.approvalGate && effectiveDepartmentId && tool.id !== asToolId('memoryRecall')) {
       const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
       const decision = await this.deps.approvalGate.check({
         toolId: tool.id,
@@ -184,7 +184,12 @@ export class ToolExecutor {
     }
     const publishingDepartmentId = publishingScopedDepartmentId(toolId, validatedArgs, departmentId);
     const companyAxisPublishing = isCompanyAxisPublishingInvocation(toolId, validatedArgs);
-    const effectiveDepartmentId = companyAxisPublishing ? undefined : publishingDepartmentId;
+    // Recall scope is derived by the tool from every active membership. The
+    // generic gateway department is desktop transport context, never a recall
+    // selector, so it must not enter permission resolution or run context.
+    const effectiveDepartmentId = toolId === 'memoryRecall' || companyAxisPublishing
+      ? undefined
+      : publishingDepartmentId;
 
     const basePermissionQuery = {
       companyId: asCompanyId(member.companyId),
@@ -223,7 +228,9 @@ export class ToolExecutor {
       return { ok: false, response: gatewayFailure('permission_denied', permResult.error.message) };
     }
 
-    const perm = permResult.value;
+    const perm = toolId === 'memoryRecall'
+      ? withGatewayMemoryRecallAccess(permResult.value)
+      : permResult.value;
 
     const permCheck = tool.permissionCheck(validatedArgs, perm);
     if (!permCheck.ok) {
@@ -330,5 +337,19 @@ function mergePublishingAuthority(
     allowedActionsByTool,
     decisions: [...companyPerm.decisions, ...departmentPerm.decisions],
     ...(departmentPerm.department ? { department: departmentPerm.department } : {}),
+  };
+}
+
+function withGatewayMemoryRecallAccess(perm: PermissionResult): PermissionResult {
+  const recallToolId = asToolId('memoryRecall');
+  const allowedActionsByTool = new Map(perm.allowedActionsByTool);
+  const recallActions = new Set<ToolActionGroup>(allowedActionsByTool.get(recallToolId) ?? []);
+  recallActions.add('read');
+  allowedActionsByTool.set(recallToolId, recallActions);
+
+  return {
+    ...perm,
+    allowedToolIds: new Set([...perm.allowedToolIds, recallToolId]),
+    allowedActionsByTool,
   };
 }

@@ -15,6 +15,9 @@ use uuid::Uuid;
 use crate::core::app::commands::get_jan_data_folder_path;
 use crate::core::pi::env::write_divo_env_file;
 
+use super::runtime_context::{
+    clear_runtime_context, runtime_context_path, write_runtime_context, DivoRuntimeContext,
+};
 use super::session::{
     clear_divo_session, load_divo_session, save_divo_session, DivoDepartment, DivoSession,
 };
@@ -49,17 +52,125 @@ fn sync_pi_divo_env<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let agent_dir = pi_agent_dir(&data_folder);
 
     if let Some(session) = load_divo_session(app)? {
+        let runtime_context = runtime_context_path(&agent_dir);
         write_divo_env_file(
             &agent_dir,
             &session.backend_url,
             &session.member_token,
             session.department_id.as_deref(),
+            &runtime_context,
         )?;
-    } else if agent_dir.join("divo.env").exists() {
-        fs::remove_file(agent_dir.join("divo.env")).map_err(|e| e.to_string())?;
+    } else {
+        if agent_dir.join("divo.env").exists() {
+            fs::remove_file(agent_dir.join("divo.env")).map_err(|e| e.to_string())?;
+        }
+        clear_runtime_context(&runtime_context_path(&agent_dir))?;
     }
 
     Ok(())
+}
+
+fn clear_cached_runtime_context<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let data_folder = get_jan_data_folder_path(app.clone());
+    clear_runtime_context(&runtime_context_path(&pi_agent_dir(&data_folder)))
+}
+
+fn member_department_names(session: &DivoSession) -> Vec<String> {
+    let mut names = Vec::new();
+    for department in &session.departments {
+        let name = department.name.trim();
+        if !name.is_empty() && !names.iter().any(|existing| existing == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+fn member_departments_runtime_context(session: &DivoSession) -> DivoRuntimeContext {
+    DivoRuntimeContext {
+        department_id: None,
+        department_name: None,
+        persona_prompt: String::new(),
+        version: None,
+        departments: member_department_names(session),
+    }
+}
+
+async fn refresh_runtime_context<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let data_folder = get_jan_data_folder_path(app.clone());
+    let context_path = runtime_context_path(&pi_agent_dir(&data_folder));
+
+    let session =
+        load_divo_session(app)?.ok_or_else(|| "No Divo session configured".to_string())?;
+    let member_context = member_departments_runtime_context(&session);
+
+    let result = async {
+        let Some(department_id) = session.department_id.as_deref() else {
+            return write_runtime_context(&context_path, &member_context);
+        };
+
+        let response = divo_desktop_json_request(
+            app,
+            reqwest::Method::GET,
+            &format!("/runtime-context?departmentId={department_id}"),
+            None,
+            "Divo runtime context refresh",
+        )
+        .await?;
+
+        let data = response
+            .get("data")
+            .cloned()
+            .ok_or_else(|| "Divo runtime context response is missing data".to_string())?;
+        let mut context: DivoRuntimeContext = serde_json::from_value(data)
+            .map_err(|e| format!("Divo runtime context response is invalid: {e}"))?;
+
+        if context.department_id.as_deref() != Some(department_id) {
+            return Err(
+                "Divo runtime context department does not match the active session department"
+                    .to_string(),
+            );
+        }
+
+        // The department directory is local authenticated-session context, not
+        // backend persona data. Keep only names so Pi can use them as recall
+        // ranking hints; it never receives department identifiers here.
+        context.departments = member_context.departments.clone();
+        write_runtime_context(&context_path, &context)
+    }
+    .await;
+
+    // A cached persona is authority-scoped data. Never keep it after its
+    // freshness or department binding can no longer be verified. The
+    // authenticated member's department names remain safe local context and
+    // must survive so recall can still rank them after a failed persona fetch.
+    if result.is_err() {
+        write_runtime_context(&context_path, &member_context)?;
+    }
+
+    result
+}
+
+fn is_runtime_context_access_denied(error: &str) -> bool {
+    error.starts_with("Divo runtime context refresh returned HTTP 403")
+        || error.starts_with("Divo runtime context refresh returned non-JSON (HTTP 403")
+}
+
+async fn clear_unavailable_department<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let Some(mut session) = load_divo_session(app)? else {
+        return Ok(());
+    };
+
+    let Some(department_id) = session.department_id.take() else {
+        return Ok(());
+    };
+
+    session
+        .departments
+        .retain(|department| department.id != department_id);
+    save_divo_session(app, &session)?;
+    refresh_runtime_context(app).await?;
+    sync_pi_divo_env(app)
 }
 
 fn clear_expired_session<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -70,7 +181,7 @@ fn clear_expired_session<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 }
 
 fn expired_session_message() -> String {
-    "Divo session expired. Reconnect Divo in Settings > Divo, then retry.".to_string()
+    "Divo session expired. Sign in again to continue.".to_string()
 }
 
 fn emit_divo_session_changed<R: Runtime>(app: &AppHandle<R>, configured: bool) {
@@ -381,6 +492,38 @@ pub struct DivoSessionStatus {
     pub departments: Vec<DivoDepartment>,
 }
 
+fn disconnected_session_status() -> DivoSessionStatus {
+    DivoSessionStatus {
+        configured: false,
+        backend_url: None,
+        department_id: None,
+        email: None,
+        name: None,
+        user_id: None,
+        company_id: None,
+        role: None,
+        expires_at: None,
+        avatar_url: None,
+        departments: Vec::new(),
+    }
+}
+
+fn session_status(session: DivoSession) -> DivoSessionStatus {
+    DivoSessionStatus {
+        configured: true,
+        backend_url: Some(session.backend_url),
+        department_id: session.department_id,
+        email: session.email,
+        name: session.name,
+        user_id: session.user_id,
+        company_id: session.company_id,
+        role: session.role,
+        expires_at: session.expires_at,
+        avatar_url: session.avatar_url,
+        departments: session.departments,
+    }
+}
+
 /// Persist backend member session and sync `pi-agent/divo.env` for bundled Pi.
 #[tauri::command]
 pub async fn divo_set_session<R: Runtime>(
@@ -411,7 +554,9 @@ pub async fn divo_set_session<R: Runtime>(
         company_id,
         role: role.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         expires_at,
-        avatar_url: avatar_url.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
+        avatar_url: avatar_url
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty()),
         departments: departments.unwrap_or_default(),
     };
 
@@ -419,23 +564,16 @@ pub async fn divo_set_session<R: Runtime>(
         return Err("backendUrl and memberToken are required".into());
     }
 
+    // A newly issued session must never inherit a previous member's persona.
+    clear_cached_runtime_context(&app)?;
     save_divo_session(&app, &session)?;
+    if let Err(error) = refresh_runtime_context(&app).await {
+        log::warn!("divo.runtime_context.refresh_failed after=login error={error}");
+    }
     sync_pi_divo_env(&app)?;
     emit_divo_session_changed(&app, true);
 
-    Ok(DivoSessionStatus {
-        configured: true,
-        backend_url: Some(session.backend_url),
-        department_id: session.department_id,
-        email: session.email,
-        name: session.name,
-        user_id: session.user_id,
-        company_id: session.company_id,
-        role: session.role,
-        expires_at: session.expires_at,
-        avatar_url: session.avatar_url,
-        departments: session.departments,
-    })
+    Ok(session_status(session))
 }
 
 /// Clear stored member session and remove Pi gateway env file.
@@ -453,24 +591,73 @@ pub async fn divo_clear_session<R: Runtime>(app: AppHandle<R>) -> Result<(), Str
 pub async fn divo_get_session_status<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<DivoSessionStatus, String> {
-    let session = load_divo_session(&app)?;
-    Ok(match session {
-        Some(s) => DivoSessionStatus {
-            configured: true,
-            backend_url: Some(s.backend_url),
-            department_id: s.department_id,
-            email: s.email,
-            name: s.name,
-            user_id: s.user_id,
-            company_id: s.company_id,
-            role: s.role,
-            expires_at: s.expires_at,
-            avatar_url: s.avatar_url,
-            departments: s.departments,
-        },
-        None => DivoSessionStatus {
-            configured: false,
-            backend_url: None,
+    Ok(load_divo_session(&app)?
+        .map(session_status)
+        .unwrap_or_else(disconnected_session_status))
+}
+
+/// Verify that the locally stored Divo member session is still accepted by the
+/// backend. A 401 clears the local session and notifies the desktop gate.
+#[tauri::command]
+pub async fn divo_validate_session<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<DivoSessionStatus, String> {
+    if load_divo_session(&app)?.is_none() {
+        return Ok(disconnected_session_status());
+    }
+
+    let response = divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/me",
+        None,
+        "Divo session validation",
+    )
+    .await?;
+
+    if response.get("success").and_then(Value::as_bool) != Some(true) {
+        return Err("Divo session validation returned an unsuccessful response".into());
+    }
+
+    if let Err(error) = refresh_runtime_context(&app).await {
+        log::warn!("divo.runtime_context.refresh_failed after=session_validation error={error}");
+        if is_runtime_context_access_denied(&error) {
+            clear_unavailable_department(&app).await?;
+            emit_divo_session_changed(&app, true);
+        }
+    }
+
+    divo_get_session_status(app).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_runtime_context_access_denied, member_departments_runtime_context, DivoDepartment,
+        DivoSession,
+    };
+
+    #[test]
+    fn recognizes_runtime_context_access_denied() {
+        assert!(is_runtime_context_access_denied(
+            "Divo runtime context refresh returned HTTP 403 Forbidden: {}"
+        ));
+        assert!(is_runtime_context_access_denied(
+            "Divo runtime context refresh returned non-JSON (HTTP 403 Forbidden): invalid response"
+        ));
+        assert!(!is_runtime_context_access_denied(
+            "Divo runtime context refresh returned HTTP 500 Internal Server Error: {}"
+        ));
+        assert!(!is_runtime_context_access_denied(
+            "Divo gateway returned HTTP 403 Forbidden: {}"
+        ));
+    }
+
+    #[test]
+    fn writes_member_department_directory_without_a_selected_department() {
+        let session = DivoSession {
+            backend_url: "https://example.test".to_string(),
+            member_token: "member-token".to_string(),
             department_id: None,
             email: None,
             name: None,
@@ -479,9 +666,28 @@ pub async fn divo_get_session_status<R: Runtime>(
             role: None,
             expires_at: None,
             avatar_url: None,
-            departments: Vec::new(),
-        },
-    })
+            departments: vec![
+                DivoDepartment {
+                    id: "dept-finance".to_string(),
+                    name: " Finance ".to_string(),
+                },
+                DivoDepartment {
+                    id: "dept-operations".to_string(),
+                    name: "Operations".to_string(),
+                },
+                DivoDepartment {
+                    id: "dept-finance-copy".to_string(),
+                    name: "Finance".to_string(),
+                },
+            ],
+        };
+
+        let context = member_departments_runtime_context(&session);
+        assert_eq!(context.department_id, None);
+        assert_eq!(context.department_name, None);
+        assert!(context.persona_prompt.is_empty());
+        assert_eq!(context.departments, vec!["Finance", "Operations"]);
+    }
 }
 
 /// Change the default department context used by Pi gateway calls.
@@ -507,22 +713,15 @@ pub async fn divo_set_department<R: Runtime>(
 
     session.department_id = next_department_id;
     save_divo_session(&app, &session)?;
+    // The previous department's prompt must not survive a failed refresh.
+    clear_cached_runtime_context(&app)?;
+    if let Err(error) = refresh_runtime_context(&app).await {
+        log::warn!("divo.runtime_context.refresh_failed after=department_change error={error}");
+    }
     sync_pi_divo_env(&app)?;
     emit_divo_session_changed(&app, true);
 
-    Ok(DivoSessionStatus {
-        configured: true,
-        backend_url: Some(session.backend_url),
-        department_id: session.department_id,
-        email: session.email,
-        name: session.name,
-        user_id: session.user_id,
-        company_id: session.company_id,
-        role: session.role,
-        expires_at: session.expires_at,
-        avatar_url: session.avatar_url,
-        departments: session.departments,
-    })
+    Ok(session_status(session))
 }
 
 /// Re-write `pi-agent/divo.env` from stored session (e.g. before Pi start).

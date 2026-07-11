@@ -186,6 +186,30 @@ describe("Divo approval gate", () => {
 		assert.match(result?.reason ?? "", /divo_memory_review/);
 		assert.equal(backendCalls, 0);
 	});
+
+	it("blocks generic memory recall before an alternate department can reach the gateway", async () => {
+		const event = divoEvent();
+		(event.input as Record<string, unknown>).departmentId = "dept-alternate";
+		(event.input as Record<string, unknown>).payload = {
+			toolId: "memoryRecall",
+			args: { query: "quarterly planning conventions" },
+		};
+		let backendCalls = 0;
+		const result = await handleApprovalToolCall(
+			event,
+			context(async () => true),
+			dependencies({}, () => {
+				backendCalls += 1;
+			}),
+		);
+
+		assert.equal(result?.block, true);
+		assert.match(result?.reason ?? "", /divo_memory_recall/);
+		assert.match(result?.reason ?? "", /optional exact department-name ranking preferences/);
+		assert.match(result?.reason ?? "", /all active memberships/);
+		assert.match(result?.reason ?? "", /do not select or grant scope/);
+		assert.equal(backendCalls, 0);
+	});
 });
 
 describe("local mutation approval gate", () => {

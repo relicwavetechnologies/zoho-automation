@@ -472,6 +472,14 @@ function withGatewayDiscoveryPermissions(perm: PermissionResult): PermissionResu
   allowedActionsByTool.set(memoryPublishingToolId, memoryActions);
   allowedToolIds.add(memoryPublishingToolId);
 
+  const memoryRecallToolId = asToolId('memoryRecall');
+  const recallActions = new Set<ToolActionGroup>(
+    allowedActionsByTool.get(memoryRecallToolId) ?? [],
+  );
+  recallActions.add('read');
+  allowedActionsByTool.set(memoryRecallToolId, recallActions);
+  allowedToolIds.add(memoryRecallToolId);
+
   if (perm.department?.roleSlug === 'MANAGER') {
     const skillPublishingToolId = asToolId('skillPublishing');
     const skillActions = new Set<ToolActionGroup>(

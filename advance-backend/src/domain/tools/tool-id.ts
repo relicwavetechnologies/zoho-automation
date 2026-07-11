@@ -18,6 +18,7 @@ export const CANONICAL_TOOL_IDS = [
   'webSearch',
   'skillPublishing',
   'memoryPublishing',
+  'memoryRecall',
   'documentRag',
   'dataProcessor',
   // NOTE: 'runCommand' is intentionally NOT here. The terminal tool runs on the
@@ -47,6 +48,7 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   webSearch:      'context',
   skillPublishing: 'skills',
   memoryPublishing: 'memory',
+  memoryRecall: 'memory',
   documentRag:    'rag',
   dataProcessor:  'data',
 };
@@ -69,6 +71,7 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   webSearch:      ['read'],
   skillPublishing: ['read', 'create', 'update', 'delete'],
   memoryPublishing: ['read', 'create'],
+  memoryRecall: ['read'],
   documentRag:    ['read'],
   dataProcessor:  ['read'],
 };
@@ -91,6 +94,7 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   webSearch:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   skillPublishing: { MEMBER: false, COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   memoryPublishing: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  memoryRecall: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   documentRag:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   dataProcessor:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
 };
