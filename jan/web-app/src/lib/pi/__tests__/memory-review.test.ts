@@ -33,6 +33,7 @@ const descriptor = {
       departmentId: 'dept-1',
     },
   ],
+  runCorrelation: { version: 1, threadId: 'thread-1', runId: 'run-1' },
 }
 
 describe('Pi memory review protocol', () => {
@@ -100,5 +101,22 @@ describe('Pi memory review protocol', () => {
         selectedBulletIds: ['invented'],
       })
     ).toThrow(/not part of this proposal/)
+  })
+
+  it('rejects missing or mismatched embedded run correlation', () => {
+    expect(
+      parsePiMemoryReviewEvent(event({ ...descriptor, runCorrelation: undefined }))
+    ).toMatchObject({ kind: 'invalid', reason: 'memory review is missing run correlation' })
+    expect(
+      parsePiMemoryReviewEvent(
+        event({
+          ...descriptor,
+          runCorrelation: { version: 1, threadId: 'thread-1', runId: 'old-run' },
+        })
+      )
+    ).toMatchObject({
+      kind: 'invalid',
+      reason: 'memory review run correlation does not match its event owner',
+    })
   })
 })

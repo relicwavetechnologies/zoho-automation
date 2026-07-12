@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
 	DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
@@ -9,6 +12,10 @@ import {
 	type MemoryReviewRequestV1,
 	type MemoryReviewTargetV1,
 } from "./memory-review.ts";
+
+const runContextPath = join(mkdtempSync(join(tmpdir(), "divo-memory-run-")), "context.json");
+writeFileSync(runContextPath, JSON.stringify({ version: 1, threadId: "thread-1", runId: "run-1" }));
+process.env.DIVO_RUN_CONTEXT_PATH = runContextPath;
 
 const proposal = {
 	proposalId: "proposal-1",
@@ -29,6 +36,7 @@ function reviewRequest(): MemoryReviewRequestV1 {
 		proposalId: proposal.proposalId,
 		bullets: [...proposal.bullets],
 		allowedTargets: canonicalTargets,
+		runCorrelation: { version: 1, threadId: "thread-1", runId: "run-1" },
 	};
 }
 
@@ -152,6 +160,7 @@ describe("memory review protocol", () => {
 		);
 
 		assert.equal(title, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE);
+		assert.deepEqual(cardRequest?.runCorrelation, { version: 1, threadId: "thread-1", runId: "run-1" });
 		assert.deepEqual(cardRequest?.allowedTargets, canonicalTargets);
 		assert.equal(
 			cardRequest?.allowedTargets.some(

@@ -29,6 +29,7 @@ function descriptor(overrides: Record<string, unknown> = {}) {
     action: 'send',
     title: 'Review email before sending',
     presentation: { to: ['maya@example.com'] },
+    runCorrelation: { version: 1, threadId: 'thread-1', runId: 'run-1' },
     ...overrides,
   }
 }
@@ -93,6 +94,22 @@ describe('parsePiApprovalEvent', () => {
     expect(result).toMatchObject({
       kind: 'invalid',
       reason: 'presentation must be an object',
+    })
+  })
+
+  it('rejects missing or mismatched embedded run correlation', () => {
+    expect(parsePiApprovalEvent(event(descriptor({ runCorrelation: undefined })), NOW)).toMatchObject({
+      kind: 'invalid',
+      reason: 'approval request is missing run correlation',
+    })
+    expect(
+      parsePiApprovalEvent(
+        event(descriptor({ runCorrelation: { version: 1, threadId: 'thread-1', runId: 'old-run' } })),
+        NOW
+      )
+    ).toMatchObject({
+      kind: 'invalid',
+      reason: 'approval request run correlation does not match its event owner',
     })
   })
 })

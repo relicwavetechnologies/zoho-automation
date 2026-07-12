@@ -26,11 +26,13 @@ const updateCurrentThreadAssistantMock = vi.fn()
 const updateCurrentThreadModelMock = vi.fn()
 const createThreadMock = vi.fn()
 const getCurrentThreadMock = vi.fn(() => undefined)
+let currentThreadId = 'thread-1'
 
 vi.mock('@/hooks/useThreads', () => ({
   useThreads: (selector: any) =>
     selector({
-      currentThreadId: 'thread-1',
+      currentThreadId,
+      threads: {},
       getCurrentThread: getCurrentThreadMock,
       updateCurrentThreadAssistant: updateCurrentThreadAssistantMock,
       updateCurrentThreadModel: updateCurrentThreadModelMock,
@@ -48,6 +50,7 @@ vi.mock('@/hooks/useAppState', () => ({
       streamingContents: {},
       loadingModels: {},
       cancelToolCalls: {},
+      piThreadRunStates: {},
       tools: [],
       cancelToolCall: cancelToolCallMock,
       activeModels: [],
@@ -321,6 +324,7 @@ import { usePiApproval } from '@/hooks/usePiApproval'
 
 const resetAll = () => {
   promptState = ''
+  currentThreadId = 'thread-1'
   appStateOverrides = {}
   attachmentsList = []
   threadMessagesState = []
@@ -359,6 +363,31 @@ const renderInput = (props: any = {}) =>
   render(
     <ChatInput onSubmit={props.onSubmit} onStop={props.onStop} {...props} />
   )
+
+const enqueueApproval = (
+  threadId: string,
+  runId: string,
+  requestId: string,
+  title: string
+) => {
+  usePiApproval.getState().enqueue({
+    requestId,
+    threadId,
+    runId,
+    descriptor: {
+      version: 1,
+      toolCallId: `tool-${requestId}`,
+      source: 'divo',
+      kind: 'gmail.send',
+      action: 'send',
+      title,
+      presentation: { subject: title },
+    },
+    receivedAt: Date.now(),
+    expiresAt: Date.now() + 60_000,
+    status: 'pending',
+  })
+}
 
 describe('ChatInput', () => {
   beforeEach(() => {
@@ -438,6 +467,110 @@ describe('ChatInput', () => {
       )
       expect(screen.getByTestId('chat-input')).toBeInTheDocument()
     })
+  })
+
+  it('keeps approvals route-owned while the global thread selection lags navigation', async () => {
+    currentThreadId = 'thread-a'
+    enqueueApproval('thread-a', 'run-a1', 'approval-a1', 'Approve A only')
+
+    const view = renderInput({ threadId: 'thread-b' })
+    expect(screen.getByTestId('chat-input')).toBeInTheDocument()
+    expect(screen.queryByText('Approve A only')).not.toBeInTheDocument()
+
+    // Reused route commits and rapid navigation must remain B-owned even when
+    // the global selection is still A until its passive synchronization runs.
+    view.rerender(<ChatInput threadId="thread-a" />)
+    expect(screen.getAllByText('Approve A only')).not.toHaveLength(0)
+    view.rerender(<ChatInput threadId="thread-b" />)
+    expect(screen.queryByText('Approve A only')).not.toBeInTheDocument()
+
+    act(() => {
+      enqueueApproval('thread-b', 'run-b1', 'approval-b1', 'Approve B only')
+    })
+    view.rerender(<ChatInput threadId="thread-b" />)
+    expect(screen.getAllByText('Approve B only')).not.toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve & send' }))
+    await waitFor(() =>
+      expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+        'pi_extension_ui_respond',
+        expect.objectContaining({
+          requestId: 'approval-b1',
+          threadId: 'thread-b',
+          runId: 'run-b1',
+          confirmed: true,
+        })
+      )
+    )
+    expect(tauriCoreMock.invoke).not.toHaveBeenCalledWith(
+      'pi_extension_ui_respond',
+      expect.objectContaining({ requestId: 'approval-a1' })
+    )
+  })
+
+  it('stops only B after an A-to-B route handoff while the global thread remains A', async () => {
+    const onStop = vi.fn()
+    const abortA = { abort: vi.fn() }
+    currentThreadId = 'thread-a'
+    appStateOverrides = { abortControllers: { 'thread-a': abortA } }
+    enqueueApproval('thread-a', 'run-a1', 'approval-a1', 'Approve A only')
+
+    const view = renderInput({ threadId: 'thread-b', onStop })
+    expect(screen.getByTestId('chat-input')).toBeInTheDocument()
+    expect(screen.queryByText('Approve A only')).not.toBeInTheDocument()
+
+    act(() => {
+      enqueueApproval('thread-b', 'run-b1', 'approval-b1', 'Approve B only')
+    })
+    view.rerender(<ChatInput threadId="thread-b" onStop={onStop} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Stop run' }))
+
+    await waitFor(() => {
+      expect(onStop).toHaveBeenCalledOnce()
+      expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+        'pi_revoke_bash_approval',
+        { threadId: 'thread-b' }
+      )
+      expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+        'pi_extension_ui_respond',
+        expect.objectContaining({
+          requestId: 'approval-b1',
+          threadId: 'thread-b',
+          runId: 'run-b1',
+          confirmed: false,
+        })
+      )
+    })
+    expect(tauriCoreMock.invoke).not.toHaveBeenCalledWith(
+      'pi_extension_ui_respond',
+      expect.objectContaining({ requestId: 'approval-a1' })
+    )
+    expect(abortA.abort).not.toHaveBeenCalled()
+    expect(usePiApproval.getState().queues['thread-a']).toMatchObject([
+      { requestId: 'approval-a1', runId: 'run-a1' },
+    ])
+    expect(usePiApproval.getState().queues['thread-b']).toBeUndefined()
+  })
+
+  it('fails closed on stale approvals after a branch activates a newer run', () => {
+    currentThreadId = 'thread-a'
+    appStateOverrides = {
+      piThreadRunStates: {
+        'thread-a': { runId: 'run-a2', state: 'active' },
+      },
+    }
+    enqueueApproval('thread-a', 'run-a1', 'approval-a1', 'Stale A1 approval')
+
+    const view = renderInput({ threadId: 'thread-a' })
+    expect(screen.getByTestId('chat-input')).toBeInTheDocument()
+    expect(screen.queryByText('Stale A1 approval')).not.toBeInTheDocument()
+
+    act(() => {
+      enqueueApproval('thread-a', 'run-a2', 'approval-a2', 'Current A2 approval')
+    })
+    view.rerender(<ChatInput threadId="thread-a" />)
+    expect(screen.getAllByText('Current A2 approval')).not.toHaveLength(0)
+    expect(screen.queryByText('Stale A1 approval')).not.toBeInTheDocument()
   })
 
   it('denies a live approval before forwarding Stop run to chat abort', async () => {

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import {
@@ -6,6 +9,10 @@ import {
 	handleApprovalToolCall,
 	type ApprovalGateDependencies,
 } from "./approval-gate.ts";
+
+const runContextPath = join(mkdtempSync(join(tmpdir(), "divo-approval-run-")), "context.json");
+writeFileSync(runContextPath, JSON.stringify({ version: 1, threadId: "thread-1", runId: "run-1" }));
+process.env.DIVO_RUN_CONTEXT_PATH = runContextPath;
 
 function context(confirm: (title: string, message: string) => Promise<boolean>) {
 	return {
@@ -112,6 +119,7 @@ describe("Divo approval gate", () => {
 			title: "Send email",
 			intentId: "intent-1",
 			presentation: { to: ["maya@example.com"], subject: "Hello" },
+			runCorrelation: { version: 1, threadId: "thread-1", runId: "run-1" },
 			expiresAt: "2026-07-10T12:00:00Z",
 		});
 		assert.deepEqual(event.input, {
@@ -242,6 +250,7 @@ describe("local mutation approval gate", () => {
 			assert.equal(payload?.version, 1);
 			assert.equal(payload?.source, toolName);
 			assert.equal(payload?.kind, expected);
+			assert.deepEqual(payload?.runCorrelation, { version: 1, threadId: "thread-1", runId: "run-1" });
 		});
 	}
 });

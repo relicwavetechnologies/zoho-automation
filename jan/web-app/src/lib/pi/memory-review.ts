@@ -21,11 +21,18 @@ export type PiMemoryReviewBullet = {
   text: string
 }
 
+export type PiMemoryReviewRunCorrelation = {
+  version: 1
+  threadId: string
+  runId: string
+}
+
 export type PiMemoryReviewDescriptor = {
   version: 1
   proposalId: string
   bullets: PiMemoryReviewBullet[]
   allowedTargets: PiMemoryReviewTarget[]
+  runCorrelation: PiMemoryReviewRunCorrelation
 }
 
 export type PiMemoryReviewRequest = {
@@ -94,6 +101,16 @@ function parseDescriptor(prefill: string): PiMemoryReviewDescriptor {
     throw new Error('unsupported memory review protocol version')
   }
   const proposalId = boundedString(descriptor.proposalId, 'proposalId')
+  const correlation = record(descriptor.runCorrelation)
+  if (!correlation) throw new Error('memory review is missing run correlation')
+  if (correlation.version !== 1) {
+    throw new Error('memory review has unsupported run correlation version')
+  }
+  const runCorrelation: PiMemoryReviewRunCorrelation = {
+    version: 1,
+    threadId: boundedString(correlation.threadId, 'runCorrelation.threadId'),
+    runId: boundedString(correlation.runId, 'runCorrelation.runId'),
+  }
 
   if (
     !Array.isArray(descriptor.bullets) ||
@@ -159,7 +176,7 @@ function parseDescriptor(prefill: string): PiMemoryReviewDescriptor {
     return result
   })
 
-  return { version: 1, proposalId, bullets, allowedTargets }
+  return { version: 1, proposalId, bullets, allowedTargets, runCorrelation }
 }
 
 export function parsePiMemoryReviewEvent(
@@ -202,6 +219,13 @@ export function parsePiMemoryReviewEvent(
     }
   }
   try {
+    const parsed = parseDescriptor(event.prefill)
+    if (
+      parsed.runCorrelation.threadId !== threadId ||
+      parsed.runCorrelation.runId !== runId
+    ) {
+      throw new Error('memory review run correlation does not match its event owner')
+    }
     return {
       kind: 'memory-review',
       request: {
@@ -209,7 +233,7 @@ export function parsePiMemoryReviewEvent(
         requestId,
         threadId,
         runId,
-        descriptor: parseDescriptor(event.prefill),
+        descriptor: parsed,
         status: 'pending',
       },
     }

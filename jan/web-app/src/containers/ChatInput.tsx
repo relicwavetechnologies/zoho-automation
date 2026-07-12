@@ -107,6 +107,12 @@ import type { PiApprovalRequest } from '@/lib/pi/approval'
 
 type ChatInputProps = {
   className?: string
+  /**
+   * The authoritative route owner for all thread-scoped composer state.
+   * Omit only on home/project composers, which intentionally follow the
+   * current-thread store while no concrete route thread exists.
+   */
+  threadId?: string
   showSpeedToken?: boolean
   model?: ThreadModel
   initialMessage?: boolean
@@ -340,6 +346,7 @@ const imageMimeForExt = (ext: string | undefined): string => {
 
 const ChatInput = memo(function ChatInput({
   className,
+  threadId,
   initialMessage,
   projectId,
   onSubmit,
@@ -375,20 +382,39 @@ const ChatInput = memo(function ChatInput({
   const addToHistory = usePrompt((state) => state.addToHistory)
   const navigateHistory = usePrompt((state) => state.navigateHistory)
   const currentThreadId = useThreads((state) => state.currentThreadId)
-  const currentThread = useThreads((state) => state.getCurrentThread())
+  // Route params commit before the passive effect that synchronizes the
+  // global current-thread selection. A route owner must therefore take
+  // precedence for every thread-scoped composer concern.
+  const displayedThreadId = threadId ?? currentThreadId
+  const currentThread = useThreads((state) =>
+    displayedThreadId ? state.threads[displayedThreadId] : undefined
+  )
   const isThreadBusy = useAppState((state) => {
-    if (!currentThreadId) return false
+    if (!displayedThreadId) return false
     return (
-      currentThreadId in state.busyThreads ||
-      currentThreadId in state.streamingContents ||
-      currentThreadId in state.loadingModels ||
-      currentThreadId in state.cancelToolCalls
+      displayedThreadId in state.busyThreads ||
+      displayedThreadId in state.streamingContents ||
+      displayedThreadId in state.loadingModels ||
+      displayedThreadId in state.cancelToolCalls
     )
   })
+  const activePiRunId = useAppState((state) =>
+    displayedThreadId ? state.piThreadRunStates[displayedThreadId]?.runId : undefined
+  )
   const approvalQueue = usePiApproval((state) =>
-    currentThreadId
-      ? state.queues[currentThreadId] ?? EMPTY_PI_APPROVAL_QUEUE
+    displayedThreadId
+      ? state.queues[displayedThreadId] ?? EMPTY_PI_APPROVAL_QUEUE
       : EMPTY_PI_APPROVAL_QUEUE
+  )
+  // Once the runtime has an exact owner, an approval from an older branch run
+  // is never actionable or visible. Keep the queue intact for terminal-event
+  // reconciliation; this is a presentation/action boundary, not authority.
+  const visibleApprovalQueue = useMemo(
+    () =>
+      activePiRunId
+        ? approvalQueue.filter((request) => request.runId === activePiRunId)
+        : approvalQueue,
+    [activePiRunId, approvalQueue]
   )
   const resolvePiApproval = usePiApproval((state) => state.resolve)
   const allowBashForTask = usePiApproval(
@@ -414,7 +440,7 @@ const ChatInput = memo(function ChatInput({
 
   // Agent mode
   // Use TEMPORARY_CHAT_ID as fallback key on the home screen (same pattern as attachments)
-  const agentModeKey = currentThreadId ?? TEMPORARY_CHAT_ID
+  const agentModeKey = displayedThreadId ?? TEMPORARY_CHAT_ID
   const isAgentMode = useAgentMode((state) =>
     state.agentThreads[agentModeKey] === true
   )
@@ -424,7 +450,7 @@ const ChatInput = memo(function ChatInput({
   // Get current thread messages for token counting
   const threadMessages = useMessages(
     useShallow((state) =>
-      currentThreadId ? state.messages[currentThreadId] : []
+      displayedThreadId ? state.messages[displayedThreadId] : []
     )
   )
 
@@ -461,10 +487,16 @@ const ChatInput = memo(function ChatInput({
   }, [loading])
 
   useEffect(() => {
+    // Route and run ownership changes must not retain an index from another
+    // approval queue during a rapid navigation/branch transition.
+    setApprovalQueueIndex(0)
+  }, [displayedThreadId, activePiRunId])
+
+  useEffect(() => {
     setApprovalQueueIndex((current) =>
-      Math.min(current, Math.max(approvalQueue.length - 1, 0))
+      Math.min(current, Math.max(visibleApprovalQueue.length - 1, 0))
     )
-    if (approvalQueue.length === 0) return
+    if (visibleApprovalQueue.length === 0) return
 
     setApprovalClock(Date.now())
     const timer = setInterval(() => {
@@ -473,7 +505,7 @@ const ChatInput = memo(function ChatInput({
       void denyExpiredPiApprovals(now)
     }, 30_000)
     return () => clearInterval(timer)
-  }, [approvalQueue.length, denyExpiredPiApprovals])
+  }, [visibleApprovalQueue.length, denyExpiredPiApprovals])
 
   // Jan Browser Extension hook
   const {
@@ -508,7 +540,7 @@ const ChatInput = memo(function ChatInput({
   const maxFileSizeMB = useAttachments((s) => s.maxFileSizeMB)
 
   // Derived: any document currently processing (ingestion in progress)
-  const attachmentsKey = currentThreadId ?? NEW_THREAD_ATTACHMENT_KEY
+  const attachmentsKey = displayedThreadId ?? NEW_THREAD_ATTACHMENT_KEY
   const attachments = useChatAttachments(
     useCallback(
       (state) => state.getAttachments(attachmentsKey),
@@ -544,32 +576,32 @@ const ChatInput = memo(function ChatInput({
 
   // Queued messages for this thread (shown as chips in the input area)
   const queuedMessages = useMessageQueue(
-    useShallow((s) => s.getQueue(currentThreadId ?? ''))
+    useShallow((s) => s.getQueue(displayedThreadId ?? ''))
   )
   const queueLength = queuedMessages.length
 
   const removeQueuedMessage = useCallback(
     (id: string) => {
-      if (useMessageQueue.getState().requestCancellation(currentThreadId ?? '', id)) {
+      if (useMessageQueue.getState().requestCancellation(displayedThreadId ?? '', id)) {
         toast.info('Cancelling queued message before it is sent')
         return
       }
-      useMessageQueue.getState().removeMessage(currentThreadId ?? '', id)
+      useMessageQueue.getState().removeMessage(displayedThreadId ?? '', id)
     },
-    [currentThreadId]
+    [displayedThreadId]
   )
 
   const lastTransferredThreadId = useRef<string | null>(null)
 
   useEffect(() => {
     if (
-      currentThreadId &&
-      lastTransferredThreadId.current !== currentThreadId
+      displayedThreadId &&
+      lastTransferredThreadId.current !== displayedThreadId
     ) {
-      transferAttachments(NEW_THREAD_ATTACHMENT_KEY, currentThreadId)
-      lastTransferredThreadId.current = currentThreadId
+      transferAttachments(NEW_THREAD_ATTACHMENT_KEY, displayedThreadId)
+      lastTransferredThreadId.current = displayedThreadId
     }
-  }, [currentThreadId, transferAttachments])
+  }, [displayedThreadId, transferAttachments])
 
   // Check for mmproj existence or vision capability when model changes
   useEffect(() => {
@@ -628,14 +660,14 @@ const ChatInput = memo(function ChatInput({
     if (onSubmit) {
       // Keep one per-thread gate for streaming, post-stream tools, and Pi
       // approval waits; queued entries capture their complete send context.
-      if ((isStreaming || isThreadBusy) && currentThreadId) {
+      if ((isStreaming || isThreadBusy) && displayedThreadId) {
         const messagesAtQueueTime = threadMessages ?? []
         const activeRootId = (
           currentThread?.metadata as Record<string, unknown> | undefined
         )?.activeRootId as string | undefined
         const activePath = computeActivePath(messagesAtQueueTime, activeRootId)
 
-        useMessageQueue.getState().enqueue(currentThreadId, {
+        useMessageQueue.getState().enqueue(displayedThreadId, {
           id: generateId(),
           text: prompt,
           createdAt: Date.now(),
@@ -895,7 +927,7 @@ const ChatInput = memo(function ChatInput({
     if (textareaRef.current) {
       textareaRef.current.focus()
     }
-  }, [currentThreadId])
+  }, [displayedThreadId])
 
   // Focus when streaming content finishes
   useEffect(() => {
@@ -1127,7 +1159,7 @@ const ChatInput = memo(function ChatInput({
     const attachmentToRemove = attachments[indexToRemove]
 
     // If attachment was ingested (has an ID), delete it from the backend
-    if (attachmentToRemove?.id && currentThreadId) {
+    if (attachmentToRemove?.id && displayedThreadId) {
       try {
         if (attachmentToRemove.type === 'document') {
           const vectorDBExtension = ExtensionManager.getInstance().get(
@@ -1136,7 +1168,7 @@ const ChatInput = memo(function ChatInput({
 
           if (vectorDBExtension?.deleteFile) {
             await vectorDBExtension.deleteFile(
-              currentThreadId,
+              displayedThreadId,
               attachmentToRemove.id
             )
           }
@@ -1310,7 +1342,7 @@ const ChatInput = memo(function ChatInput({
       newFiles.length > 0 ? [...prev, ...newFiles] : prev
     )
 
-    if (currentThreadId && newFiles.length > 0) {
+    if (displayedThreadId && newFiles.length > 0) {
       const ingestTotal = newFiles.length
       void (async () => {
         setFileIngestProgress({ completed: 0, total: ingestTotal })
@@ -1330,7 +1362,7 @@ const ChatInput = memo(function ChatInput({
 
               const result = await serviceHub
                 .uploads()
-                .ingestImage(currentThreadId, img)
+                .ingestImage(displayedThreadId, img)
 
               if (result?.id) {
                 setAttachmentsForThread(attachmentsKey, (prev) =>
@@ -1405,7 +1437,7 @@ const ChatInput = memo(function ChatInput({
     }
   }, [
     attachmentsKey,
-    currentThreadId,
+    displayedThreadId,
     normalizeImageForOcr,
     setAttachmentsForThread,
     serviceHub,
@@ -2125,31 +2157,41 @@ const ChatInput = memo(function ChatInput({
   const isStreaming = chatStatus === 'submitted' || chatStatus === 'streaming'
   const isComposerBusy = isStreaming || isThreadBusy
 
-  const activeApproval = approvalQueue[approvalQueueIndex]
-  if (activeApproval && currentThreadId) {
+  const activeApproval = visibleApprovalQueue[approvalQueueIndex]
+  if (
+    activeApproval &&
+    displayedThreadId &&
+    activeApproval.threadId === displayedThreadId &&
+    (!activePiRunId || activeApproval.runId === activePiRunId)
+  ) {
     return (
       <LiveApprovalComposer
         request={activeApproval}
         position={approvalQueueIndex}
-        total={approvalQueue.length}
+        total={visibleApprovalQueue.length}
         now={approvalClock}
         onMove={(direction) =>
           setApprovalQueueIndex((current) => {
             const next = current + direction
-            return (next + approvalQueue.length) % approvalQueue.length
+            return (
+              (next + visibleApprovalQueue.length) %
+              visibleApprovalQueue.length
+            )
           })
         }
         onDecision={(confirmed) =>
           void resolvePiApproval(
-            currentThreadId,
+            activeApproval.threadId,
             activeApproval.requestId,
-            confirmed
+            confirmed,
+            activeApproval.runId
           )
         }
         onAlwaysAllowBash={() => {
           void allowBashForTask(
-            currentThreadId,
-            activeApproval.requestId
+            activeApproval.threadId,
+            activeApproval.requestId,
+            activeApproval.runId
           ).then((allowed) => {
             if (allowed) {
               toast.success(
@@ -2160,12 +2202,12 @@ const ChatInput = memo(function ChatInput({
         }}
         onStop={() => {
           void invoke('pi_revoke_bash_approval', {
-            threadId: currentThreadId,
+            threadId: activeApproval.threadId,
           })
           void usePiApproval
             .getState()
-            .denyThread(currentThreadId)
-            .finally(() => stopStreaming(currentThreadId))
+            .denyThread(activeApproval.threadId, activeApproval.runId)
+            .finally(() => stopStreaming(activeApproval.threadId))
         }}
       />
     )
@@ -2326,8 +2368,8 @@ const ChatInput = memo(function ChatInput({
                     aria-label="Clear queued messages"
                     className="hover:text-foreground transition-colors"
                     onClick={() =>
-                      currentThreadId &&
-                      useMessageQueue.getState().clearQueue(currentThreadId)
+                      displayedThreadId &&
+                      useMessageQueue.getState().clearQueue(displayedThreadId)
                     }
                   >
                     Clear queue
@@ -2341,7 +2383,7 @@ const ChatInput = memo(function ChatInput({
                       if (
                         useMessageQueue
                           .getState()
-                          .requestCancellation(currentThreadId ?? '', queued.id)
+                          .requestCancellation(displayedThreadId ?? '', queued.id)
                       ) {
                         toast.info('Cancelling queued message before it is sent')
                         return
@@ -2616,7 +2658,7 @@ const ChatInput = memo(function ChatInput({
                     </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                <PermissionRulesPopover threadId={currentThreadId} />
+                <PermissionRulesPopover threadId={displayedThreadId} />
                 <SamplerPopover
                   providerId={selectedProvider}
                   modelId={selectedModel?.id}
@@ -2900,7 +2942,7 @@ const ChatInput = memo(function ChatInput({
                       aria-label="Stop generating"
                       className="rounded-full mr-1 mb-1"
                       onClick={() => {
-                        if (currentThreadId) stopStreaming(currentThreadId)
+                        if (displayedThreadId) stopStreaming(displayedThreadId)
                       }}
                     >
                       <IconPlayerStopFilled />

@@ -10,6 +10,7 @@ import {
 	type DivoGatewayConfig,
 	type GatewayResponseBody,
 } from "./gateway-client.ts";
+import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correlation.ts";
 
 export const DIVO_APPROVAL_PROTOCOL_TITLE = "divo_approval_v1";
 
@@ -24,6 +25,7 @@ export interface ApprovalPresentationV1 {
 	title: string;
 	intentId?: string;
 	presentation: unknown;
+	runCorrelation: DivoRunCorrelationV1;
 	expiresAt?: string;
 }
 
@@ -64,13 +66,18 @@ function approvalBlock(reason: string): ToolCallEventResult {
 
 async function askForApproval(
 	ctx: ApprovalContext,
-	request: ApprovalPresentationV1,
+	request: Omit<ApprovalPresentationV1, "runCorrelation">,
 ): Promise<ToolCallEventResult | undefined> {
 	let confirmed = false;
 	try {
+		// Capture provenance before Pi creates the raw extension UI request.
+		const correlatedRequest: ApprovalPresentationV1 = {
+			...request,
+			runCorrelation: await readDivoRunCorrelation(),
+		};
 		confirmed = await ctx.ui.confirm(
 			DIVO_APPROVAL_PROTOCOL_TITLE,
-			JSON.stringify(request),
+			JSON.stringify(correlatedRequest),
 			ctx.signal ? { signal: ctx.signal } : undefined,
 		);
 	} catch {
@@ -85,7 +92,7 @@ async function askForApproval(
 function localApprovalRequest(
 	event: ToolCallEvent,
 	ctx: ApprovalContext,
-): ApprovalPresentationV1 | undefined {
+): Omit<ApprovalPresentationV1, "runCorrelation"> | undefined {
 	const input = event.input as JsonRecord;
 	if (event.toolName === "bash") {
 		return {
@@ -218,7 +225,7 @@ async function gateDivoInvocation(
 	}
 
 	const presentationRecord = asRecord(data.presentation);
-	const request: ApprovalPresentationV1 = {
+	const request: Omit<ApprovalPresentationV1, "runCorrelation"> = {
 		version: 1,
 		toolCallId: event.toolCallId,
 		source: "divo",

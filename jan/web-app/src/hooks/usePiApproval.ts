@@ -24,14 +24,20 @@ type PiApprovalState = {
   resolve: (
     threadId: string,
     requestId: string,
-    confirmed: boolean
+    confirmed: boolean,
+    runId?: string
   ) => Promise<boolean>
   resolveMemory: (
     threadId: string,
     requestId: string,
-    response: PiMemoryReviewResponse
+    response: PiMemoryReviewResponse,
+    runId?: string
   ) => Promise<boolean>
-  allowBashForTask: (threadId: string, requestId: string) => Promise<boolean>
+  allowBashForTask: (
+    threadId: string,
+    requestId: string,
+    runId?: string
+  ) => Promise<boolean>
   denyExpired: (now?: number) => Promise<void>
   denyThread: (threadId: string, runId?: string) => Promise<void>
   discardThreadAfterAbort: (threadId: string, runId?: string) => void
@@ -39,10 +45,15 @@ type PiApprovalState = {
 
 function containsRequest(
   queues: Record<string, PiPendingUiRequest[]>,
-  requestId: string
+  candidate: PiPendingUiRequest
 ) {
   return Object.values(queues).some((queue) =>
-    queue.some((request) => request.requestId === requestId)
+    queue.some(
+      (request) =>
+        request.threadId === candidate.threadId &&
+        request.runId === candidate.runId &&
+        request.requestId === candidate.requestId
+    )
   )
 }
 
@@ -50,6 +61,7 @@ function updateRequest(
   queues: Record<string, PiPendingUiRequest[]>,
   threadId: string,
   requestId: string,
+  runId: string | undefined,
   update: (request: PiPendingUiRequest) => PiPendingUiRequest
 ) {
   const queue = queues[threadId]
@@ -57,7 +69,10 @@ function updateRequest(
   return {
     ...queues,
     [threadId]: queue.map((request) =>
-      request.requestId === requestId ? update(request) : request
+      request.requestId === requestId &&
+      (runId === undefined || request.runId === runId)
+        ? update(request)
+        : request
     ),
   }
 }
@@ -118,7 +133,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
 
   enqueue: (request) => {
     set((state) => {
-      if (containsRequest(state.queues, request.requestId)) return state
+      if (containsRequest(state.queues, request)) return state
       return {
         queues: {
           ...state.queues,
@@ -131,9 +146,11 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     })
   },
 
-  resolve: async (threadId, requestId, confirmed) => {
+  resolve: async (threadId, requestId, confirmed, runId) => {
     const request = get().queues[threadId]?.find(
-      (candidate) => candidate.requestId === requestId
+      (candidate) =>
+        candidate.requestId === requestId &&
+        (runId === undefined || candidate.runId === runId)
     )
     if (
       !request ||
@@ -153,6 +170,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
         state.queues,
         threadId,
         requestId,
+        request.runId,
         (entry) => ({ ...entry, status: 'submitting', error: undefined })
       ),
     }))
@@ -169,6 +187,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
           state.queues,
           threadId,
           requestId,
+          request.runId,
           (entry) => ({
             ...entry,
             status: 'error',
@@ -183,9 +202,11 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     }
   },
 
-  resolveMemory: async (threadId, requestId, response) => {
+  resolveMemory: async (threadId, requestId, response, runId) => {
     const request = get().queues[threadId]?.find(
-      (candidate) => candidate.requestId === requestId
+      (candidate) =>
+        candidate.requestId === requestId &&
+        (runId === undefined || candidate.runId === runId)
     )
     if (
       !request ||
@@ -208,7 +229,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
         }))
       } catch (deliveryError) {
         set((state) => ({
-          queues: updateRequest(state.queues, threadId, requestId, (entry) => ({
+          queues: updateRequest(state.queues, threadId, requestId, request.runId, (entry) => ({
             ...entry,
             status: 'error',
             error:
@@ -224,7 +245,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     }
 
     set((state) => ({
-      queues: updateRequest(state.queues, threadId, requestId, (entry) => ({
+      queues: updateRequest(state.queues, threadId, requestId, request.runId, (entry) => ({
         ...entry,
         status: 'submitting',
         error: undefined,
@@ -238,7 +259,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
       return true
     } catch (error) {
       set((state) => ({
-        queues: updateRequest(state.queues, threadId, requestId, (entry) => ({
+        queues: updateRequest(state.queues, threadId, requestId, request.runId, (entry) => ({
           ...entry,
           status: 'error',
           error:
@@ -251,9 +272,11 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     }
   },
 
-  allowBashForTask: async (threadId, requestId) => {
+  allowBashForTask: async (threadId, requestId, runId) => {
     const request = get().queues[threadId]?.find(
-      (candidate) => candidate.requestId === requestId
+      (candidate) =>
+        candidate.requestId === requestId &&
+        (runId === undefined || candidate.runId === runId)
     )
     if (
       !request ||
@@ -270,6 +293,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
         state.queues,
         threadId,
         requestId,
+        request.runId,
         (entry) => ({ ...entry, status: 'submitting', error: undefined })
       ),
     }))
@@ -288,6 +312,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
           state.queues,
           threadId,
           requestId,
+          request.runId,
           (entry) => ({
             ...entry,
             status: 'error',
@@ -313,7 +338,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
       )
     await Promise.all(
       expired.map((request) =>
-        get().resolve(request.threadId, request.requestId, false)
+        get().resolve(request.threadId, request.requestId, false, request.runId)
       )
     )
   },
@@ -331,9 +356,9 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
             decision: 'cancel',
             selectedTarget: null,
             selectedBulletIds: [],
-          })
+          }, request.runId)
         }
-        return get().resolve(threadId, request.requestId, false)
+        return get().resolve(threadId, request.requestId, false, request.runId)
       })
     )
   },

@@ -28,6 +28,7 @@ function request(
       action: 'send',
       title: 'Review email before sending',
       presentation: { to: ['maya@example.com'] },
+      runCorrelation: { version: 1, threadId: 'thread-1', runId: 'run-1' },
     },
     receivedAt: Date.now(),
     expiresAt: Date.now() + 60_000,
@@ -43,17 +44,42 @@ describe('usePiApproval', () => {
     usePiApproval.setState({ queues: {} })
   })
 
-  it('queues by thread and ignores duplicate request ids', () => {
+  it('queues by exact thread/run/request identity', () => {
     act(() => {
       usePiApproval.getState().enqueue(request('request-1'))
       usePiApproval.getState().enqueue(request('request-1'))
       usePiApproval
         .getState()
+        .enqueue(request('request-1', { runId: 'run-2' }))
+      usePiApproval
+        .getState()
         .enqueue(request('request-2', { threadId: 'thread-2' }))
     })
 
-    expect(usePiApproval.getState().queues['thread-1']).toHaveLength(1)
+    expect(usePiApproval.getState().queues['thread-1']).toHaveLength(2)
     expect(usePiApproval.getState().queues['thread-2']).toHaveLength(1)
+  })
+
+  it('resolves only the request from the supplied active run', async () => {
+    usePiApproval.getState().enqueue(request('same-request', { runId: 'run-a1' }))
+    usePiApproval.getState().enqueue(request('same-request', { runId: 'run-a2' }))
+
+    await usePiApproval
+      .getState()
+      .resolve('thread-1', 'same-request', true, 'run-a2')
+
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      PI_APPROVAL_RESPONSE_COMMAND,
+      expect.objectContaining({
+        requestId: 'same-request',
+        threadId: 'thread-1',
+        runId: 'run-a2',
+        confirmed: true,
+      })
+    )
+    expect(usePiApproval.getState().queues['thread-1']).toMatchObject([
+      { requestId: 'same-request', runId: 'run-a1' },
+    ])
   })
 
   it('delivers a payload-bound decision and removes it only after success', async () => {
@@ -93,6 +119,7 @@ describe('usePiApproval', () => {
           action: 'execute',
           title: 'Run terminal command',
           presentation: { command: 'npm test' },
+          runCorrelation: { version: 1, threadId: 'thread-1', runId: 'run-1' },
         },
       })
     )
@@ -191,6 +218,7 @@ describe('usePiApproval', () => {
         proposalId: 'proposal-1',
         bullets: [{ id: 'fact-1', text: 'Acme uses net-60 terms.' }],
         allowedTargets: [{ scope: 'personal', label: 'Personal' }],
+        runCorrelation: { version: 1, threadId: 'thread-1', runId: 'run-1' },
       }),
     })
 
@@ -236,6 +264,7 @@ describe('usePiApproval', () => {
         proposalId: 'proposal-1',
         bullets: [{ id: 'fact-1', text: 'Acme uses net-60 terms.' }],
         allowedTargets: [{ scope: 'personal', label: 'Personal' }],
+        runCorrelation: { version: 1, threadId: 'thread-1', runId: 'run-1' },
       }),
     })
 

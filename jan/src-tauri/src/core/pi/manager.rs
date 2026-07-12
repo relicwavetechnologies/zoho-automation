@@ -9,11 +9,16 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Mutex, Notify};
+use uuid::Uuid;
 
 use super::browser::current_browser_cdp_fingerprint;
 use super::env::{
     apply_divo_gateway_env, apply_divo_skill_env, apply_divo_workspace_env, apply_local_lark_env,
     apply_provider_env,
+};
+use super::run_context::{
+    clear_run_context, slot_run_context_path, write_run_context, DivoRunContext,
+    DIVO_RUN_CONTEXT_PATH_ENV,
 };
 use super::runtime::PiRuntimePaths;
 use super::session::{ensure_session_workspace_cwd, resolve_session_path};
@@ -176,6 +181,57 @@ fn clear_active_run_if_matches(active_run: &mut Option<RunOwner>, owner: &RunOwn
     false
 }
 
+fn take_run_context_path(state: &mut RuntimeState, owner: Option<&RunOwner>) -> Option<PathBuf> {
+    if owner.is_some_and(|expected| state.run_context_owner.as_ref() != Some(expected)) {
+        return None;
+    }
+    state.run_context_owner = None;
+    state.run_context_path.clone()
+}
+
+fn clear_run_context_path(path: Option<PathBuf>) {
+    if let Some(path) = path {
+        if let Err(error) = clear_run_context(&path) {
+            log::warn!(
+                "divo.pi.run_context.clear_failed path={} error={error}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn publish_run_context(slot: &RuntimeSlot, owner: &RunOwner) -> Result<(), String> {
+    let path = {
+        let state = slot.state.lock().unwrap();
+        if state.active_run.as_ref() != Some(owner) {
+            return Err("Cannot publish run correlation for an inactive Pi run".into());
+        }
+        state
+            .run_context_path
+            .clone()
+            .ok_or("Pi run correlation path is unavailable")?
+    };
+    // This boundary occurs before prompt handoff, when no extension request
+    // can be constructed for the new run. Removing a stale crash artifact
+    // first makes the subsequent temp-file rename atomic on every desktop OS.
+    clear_run_context(&path)?;
+    write_run_context(
+        &path,
+        &DivoRunContext {
+            version: 1,
+            thread_id: owner.thread_id.clone(),
+            run_id: owner.run_id.clone(),
+        },
+    )?;
+    let mut state = slot.state.lock().unwrap();
+    if state.active_run.as_ref() != Some(owner) {
+        clear_run_context_path(Some(path));
+        return Err("Pi run ended before its correlation context was published".into());
+    }
+    state.run_context_owner = Some(owner.clone());
+    Ok(())
+}
+
 /// Always-allow Bash is deliberately scoped to a live run.  The pool keeps the
 /// rule separately so a recreated runtime can inherit it while that run is
 /// live; every terminal reconciliation must therefore remove both copies.
@@ -229,6 +285,26 @@ fn is_divo_approval_request(value: &serde_json::Value, thread_id: &str) -> bool 
     !thread_id.is_empty()
         && value.get("method").and_then(|v| v.as_str()) == Some("confirm")
         && value.get("title").and_then(|v| v.as_str()) == Some(DIVO_APPROVAL_PROTOCOL_TITLE)
+}
+
+/// The outer UI protocol stays at v1 for compatibility with the existing
+/// cards. This nested v1 object is mandatory provenance added by Divo, not Pi
+/// core. Its exact equality with the slot owner closes delayed-stdout relabels.
+fn descriptor_run_owner(value: &serde_json::Value, descriptor_field: &str) -> Option<RunOwner> {
+    let descriptor = value.get(descriptor_field)?.as_str()?;
+    let descriptor = serde_json::from_str::<serde_json::Value>(descriptor).ok()?;
+    let correlation = descriptor.get("runCorrelation")?;
+    if correlation.get("version").and_then(|value| value.as_u64()) != Some(1)
+        || !is_non_empty_bounded_string(correlation.get("threadId"), 200)
+        || !is_non_empty_bounded_string(correlation.get("runId"), 200)
+    {
+        return None;
+    }
+    RunOwner::new(
+        correlation.get("threadId")?.as_str()?.to_string(),
+        correlation.get("runId")?.as_str()?.to_string(),
+    )
+    .ok()
 }
 
 fn is_non_empty_bounded_string(value: Option<&serde_json::Value>, max: usize) -> bool {
@@ -367,6 +443,11 @@ fn can_enable_always_allow_bash(pending: &PendingExtensionUiRequest, confirmed: 
 struct RuntimeState {
     process: Option<PiProcess>,
     active_run: Option<RunOwner>,
+    /// The owner published to this slot's child-visible context file. Abort
+    /// clears it before Pi confirms terminal completion, so delayed UI fails
+    /// closed in that interval.
+    run_context_owner: Option<RunOwner>,
+    run_context_path: Option<PathBuf>,
     pending: HashMap<String, PendingRpc>,
     pending_extension_ui: HashMap<String, PendingExtensionUiRequest>,
     bash_always_allowed: bool,
@@ -377,17 +458,128 @@ struct RuntimeState {
 
 struct RuntimeSlot {
     thread_id: String,
+    /// Per-pooled-slot opaque filename component, never derived from a caller
+    /// supplied thread id.
+    context_slot_id: String,
     state: Arc<StdMutex<RuntimeState>>,
     lifecycle: Arc<Mutex<()>>,
+}
+
+enum ExtensionUiRegistration {
+    Registered {
+        owner: RunOwner,
+        auto_allow_bash: bool,
+    },
+    Rejected,
+}
+
+/// Registers only a named Divo UI request whose captured extension provenance
+/// exactly matches both the live slot owner and its desktop-published context.
+/// The caller cancels `Rejected` requests rather than emitting them.
+fn register_divo_ui_request(
+    state: &mut RuntimeState,
+    value: &serde_json::Value,
+    id: &str,
+    method: &str,
+) -> ExtensionUiRegistration {
+    let Some(owner) = state.active_run.clone() else {
+        return ExtensionUiRegistration::Rejected;
+    };
+    if state.run_context_owner.as_ref() != Some(&owner) {
+        return ExtensionUiRegistration::Rejected;
+    }
+    if is_divo_approval_request(value, &owner.thread_id)
+        && descriptor_run_owner(value, "message").as_ref() == Some(&owner)
+    {
+        let source = approval_source(value);
+        let auto_allow_bash = source == Some(ApprovalSource::Bash) && state.bash_always_allowed;
+        if !auto_allow_bash {
+            state.pending_extension_ui.insert(
+                id.into(),
+                PendingExtensionUiRequest {
+                    owner: owner.clone(),
+                    method: method.into(),
+                    source,
+                    protocol: ExtensionUiProtocol::Approval,
+                },
+            );
+        }
+        return ExtensionUiRegistration::Registered {
+            owner,
+            auto_allow_bash,
+        };
+    }
+    if is_divo_memory_review_request(value, &owner.thread_id)
+        && descriptor_run_owner(value, "prefill").as_ref() == Some(&owner)
+    {
+        state.pending_extension_ui.insert(
+            id.into(),
+            PendingExtensionUiRequest {
+                owner: owner.clone(),
+                method: method.into(),
+                source: None,
+                protocol: ExtensionUiProtocol::MemoryReview,
+            },
+        );
+        return ExtensionUiRegistration::Registered {
+            owner,
+            auto_allow_bash: false,
+        };
+    }
+    ExtensionUiRegistration::Rejected
+}
+
+fn reconcile_lifecycle_event(
+    slot: &RuntimeSlot,
+    event_type: Option<&str>,
+    value: &serde_json::Value,
+) -> (
+    Option<RunOwner>,
+    Vec<ExtensionUiReconciliation>,
+    Option<PathBuf>,
+    bool,
+) {
+    let mut state = slot.state.lock().unwrap();
+    let owner = state.active_run.clone();
+    let terminal_event = event_type == Some("agent_end")
+        && !value
+            .get("willRetry")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+    let reconciliations = if terminal_event {
+        state.active_run = None;
+        owner
+            .as_ref()
+            .map(|owner| drain_pending_extension_ui(&mut state.pending_extension_ui, Some(owner)))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let run_context_path = if terminal_event {
+        owner
+            .as_ref()
+            .and_then(|owner| take_run_context_path(&mut state, Some(owner)))
+    } else {
+        None
+    };
+    (
+        owner.clone(),
+        reconciliations,
+        run_context_path,
+        terminal_event && owner.is_some(),
+    )
 }
 
 impl RuntimeSlot {
     fn new(thread_id: String) -> Self {
         Self {
             thread_id,
+            context_slot_id: Uuid::new_v4().to_string(),
             state: Arc::new(StdMutex::new(RuntimeState {
                 process: None,
                 active_run: None,
+                run_context_owner: None,
+                run_context_path: None,
                 pending: HashMap::new(),
                 pending_extension_ui: HashMap::new(),
                 bash_always_allowed: false,
@@ -859,6 +1051,10 @@ impl PiManager {
         let session_path = resolve_session_path(&config.data_folder, &slot.thread_id);
         ensure_session_workspace_cwd(&session_path, &config.workspace_dir)?;
         let layout = prepare_workspace_run_layout(&config.workspace_dir, &slot.thread_id)?;
+        let run_context_path = slot_run_context_path(&config.scratch_dir, &slot.context_slot_id);
+        // A prior crash may have left a valid-looking owner behind. Never let
+        // a newly spawned reusable child observe that stale provenance.
+        clear_run_context(&run_context_path)?;
         let mut command = Command::new(&runtime.bun);
         command
             .arg(&runtime.cli_js)
@@ -875,6 +1071,7 @@ impl PiManager {
                 "PI_CODING_AGENT_DIR",
                 runtime.agent_dir.to_string_lossy().to_string(),
             )
+            .env(DIVO_RUN_CONTEXT_PATH_ENV, &run_context_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -901,6 +1098,8 @@ impl PiManager {
         {
             let mut state = slot.state.lock().unwrap();
             state.process = Some(PiProcess { child, stdin });
+            state.run_context_path = Some(run_context_path);
+            state.run_context_owner = None;
             state.stdout_buffer.clear();
             state.browser_cdp_fingerprint = runtime.browser_cdp_fingerprint.clone();
         }
@@ -943,23 +1142,24 @@ impl PiManager {
                     }
                 }
             }
-            let (owner, reconciliations, exited) = {
+            let (owner, reconciliations, run_context_path, exited) = {
                 let mut state = reader_slot.state.lock().unwrap();
                 let current = state
                     .process
                     .as_ref()
                     .is_some_and(|process| process.child.id() == pid);
                 if !current {
-                    (None, Vec::new(), false)
+                    (None, Vec::new(), None, false)
                 } else {
                     let owner = state.active_run.take();
+                    let run_context_path = take_run_context_path(&mut state, None);
                     fail_pending_rpc(&mut state.pending, "Pi process exited unexpectedly");
                     let reconciliations =
                         drain_pending_extension_ui(&mut state.pending_extension_ui, None);
                     state.process = None;
                     state.bash_always_allowed = false;
                     state.browser_cdp_fingerprint = None;
-                    (owner, reconciliations, true)
+                    (owner, reconciliations, run_context_path, true)
                 }
             };
             if exited {
@@ -967,6 +1167,7 @@ impl PiManager {
                 // runtime. Remove only this slot's persisted rule so a later
                 // recreated slot cannot inherit a grant from a crashed run.
                 revoke_slot_bash_rule(&mut pool.blocking_lock(), &reader_slot);
+                clear_run_context_path(run_context_path);
                 Self::emit_reconciliations(&reader_app, reconciliations, "process_exited");
                 Self::emit(
                     &reader_app,
@@ -1038,10 +1239,11 @@ impl PiManager {
     }
 
     fn stop_slot_locked(slot: &Arc<RuntimeSlot>, app: Option<&AppHandle>, reason: &str) {
-        let (process, reconciliations) = {
+        let (process, reconciliations, run_context_path) = {
             let mut state = slot.state.lock().unwrap();
             let process = state.process.take();
             state.active_run = None;
+            let run_context_path = take_run_context_path(&mut state, None);
             fail_pending_rpc(
                 &mut state.pending,
                 "Pi process stopped before the RPC completed",
@@ -1049,8 +1251,9 @@ impl PiManager {
             let reconciliations = drain_pending_extension_ui(&mut state.pending_extension_ui, None);
             state.bash_always_allowed = false;
             state.browser_cdp_fingerprint = None;
-            (process, reconciliations)
+            (process, reconciliations, run_context_path)
         };
+        clear_run_context_path(run_context_path);
         if let Some(mut process) = process {
             let _ = process.child.kill();
         }
@@ -1090,7 +1293,7 @@ impl PiManager {
                 .get("success")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false);
-            let (pending, clear_owner) = {
+            let (pending, clear_owner, run_context_path) = {
                 let mut state = slot.state.lock().unwrap();
                 let pending = state.pending.remove(id);
                 capacity_changed.notify_waiters();
@@ -1102,8 +1305,12 @@ impl PiManager {
                     clear_active_run_if_matches(&mut state.active_run, owner);
                     capacity_changed.notify_waiters();
                 }
-                (pending, clear_owner)
+                let run_context_path = clear_owner
+                    .as_ref()
+                    .and_then(|owner| take_run_context_path(&mut state, Some(owner)));
+                (pending, clear_owner, run_context_path)
             };
+            clear_run_context_path(run_context_path);
             if let Some(pending) = pending {
                 let owner = pending.owner.clone();
                 let result = if success {
@@ -1131,91 +1338,20 @@ impl PiManager {
             return;
         }
         if event_type.as_deref() == Some("extension_ui_request") {
-            let owner = slot.state.lock().unwrap().active_run.clone();
-            let Some(owner) = owner else {
-                Self::cancel_unknown_ui(slot, &value);
-                return;
-            };
-            let id = value
-                .get("id")
-                .and_then(|value| value.as_str())
-                .map(str::to_string);
-            let registered = if let (Some(id), Some(method)) =
-                (id.as_deref(), value.get("method").and_then(|v| v.as_str()))
-            {
-                let mut state = slot.state.lock().unwrap();
-                if state.active_run.as_ref() != Some(&owner) {
-                    false
-                } else if is_divo_approval_request(&value, &owner.thread_id) {
-                    let source = approval_source(&value);
-                    if source == Some(ApprovalSource::Bash) && state.bash_always_allowed {
-                        drop(state);
-                        let _ = Self::write_stdin(slot, &serde_json::json!({"type":"extension_ui_response","id":id,"confirmed":true}).to_string());
-                        true
-                    } else {
-                        state.pending_extension_ui.insert(
-                            id.into(),
-                            PendingExtensionUiRequest {
-                                owner: owner.clone(),
-                                method: method.into(),
-                                source,
-                                protocol: ExtensionUiProtocol::Approval,
-                            },
-                        );
-                        true
-                    }
-                } else if is_divo_memory_review_request(&value, &owner.thread_id) {
-                    state.pending_extension_ui.insert(
-                        id.into(),
-                        PendingExtensionUiRequest {
-                            owner: owner.clone(),
-                            method: method.into(),
-                            source: None,
-                            protocol: ExtensionUiProtocol::MemoryReview,
-                        },
-                    );
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if registered {
-                Self::emit(app, Some(&owner), value);
-            } else {
-                Self::cancel_unknown_ui(slot, &value);
-            }
+            Self::handle_extension_ui_request(
+                slot,
+                value,
+                |owner, event| Self::emit(app, Some(owner), event),
+                |response| {
+                    let _ = Self::write_stdin(slot, &response.to_string());
+                },
+            );
             return;
         }
         if event_type.is_some() {
-            let (owner, reconciliations, terminal) = {
-                let mut state = slot.state.lock().unwrap();
-                let owner = state.active_run.clone();
-                let reconciliations = if event_type.as_deref() == Some("agent_end")
-                    && !value
-                        .get("willRetry")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                {
-                    state.active_run = None;
-                    owner
-                        .as_ref()
-                        .map(|owner| {
-                            drain_pending_extension_ui(&mut state.pending_extension_ui, Some(owner))
-                        })
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-                let terminal = event_type.as_deref() == Some("agent_end")
-                    && owner.is_some()
-                    && !value
-                        .get("willRetry")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                (owner, reconciliations, terminal)
-            };
+            let (owner, reconciliations, run_context_path, terminal) =
+                reconcile_lifecycle_event(slot, event_type.as_deref(), &value);
+            clear_run_context_path(run_context_path);
             if terminal {
                 // `bash_rules` outlives a slot; clear it at the same boundary
                 // that clears the active owner and pending approval UI.
@@ -1230,13 +1366,52 @@ impl PiManager {
         }
     }
 
-    fn cancel_unknown_ui(slot: &RuntimeSlot, value: &serde_json::Value) {
-        if let Some(id) = value.get("id").and_then(|value| value.as_str()) {
-            let _ = Self::write_stdin(
-                slot,
-                &serde_json::json!({"type":"extension_ui_response","id":id,"cancelled":true})
-                    .to_string(),
-            );
+    /// The named-extension branch of `handle_line`, separated only so tests
+    /// can observe the exact frontend/event and Pi-response effects. Every
+    /// production extension UI line still enters through `handle_line` above.
+    fn handle_extension_ui_request(
+        slot: &RuntimeSlot,
+        value: serde_json::Value,
+        mut emit: impl FnMut(&RunOwner, serde_json::Value),
+        mut respond: impl FnMut(serde_json::Value),
+    ) {
+        let id = value
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let registration = if let (Some(id), Some(method)) =
+            (id.as_deref(), value.get("method").and_then(|v| v.as_str()))
+        {
+            let mut state = slot.state.lock().unwrap();
+            register_divo_ui_request(&mut state, &value, id, method)
+        } else {
+            ExtensionUiRegistration::Rejected
+        };
+        match registration {
+            ExtensionUiRegistration::Registered {
+                owner,
+                auto_allow_bash,
+            } => {
+                if auto_allow_bash {
+                    if let Some(id) = id.as_deref() {
+                        respond(serde_json::json!({
+                            "type":"extension_ui_response",
+                            "id":id,
+                            "confirmed":true,
+                        }));
+                    }
+                }
+                emit(&owner, value);
+            }
+            ExtensionUiRegistration::Rejected => {
+                if let Some(id) = id {
+                    respond(serde_json::json!({
+                        "type":"extension_ui_response",
+                        "id":id,
+                        "cancelled":true,
+                    }));
+                }
+            }
         }
     }
 
@@ -1331,6 +1506,11 @@ impl PiManager {
             }
             state.active_run = Some(owner.clone());
         }
+        if let Err(error) = publish_run_context(&slot, &owner) {
+            clear_active_run_if_matches(&mut slot.state.lock().unwrap().active_run, &owner);
+            self.wake_capacity();
+            return Err(error);
+        }
         let result = Self::send_rpc(
             &slot,
             serde_json::json!({"type":"prompt","message":message}),
@@ -1339,7 +1519,12 @@ impl PiManager {
         )
         .await;
         if result.is_err() {
-            clear_active_run_if_matches(&mut slot.state.lock().unwrap().active_run, &owner);
+            let run_context_path = {
+                let mut state = slot.state.lock().unwrap();
+                clear_active_run_if_matches(&mut state.active_run, &owner);
+                take_run_context_path(&mut state, Some(&owner))
+            };
+            clear_run_context_path(run_context_path);
             self.wake_capacity();
         }
         lease.release();
@@ -1376,10 +1561,14 @@ impl PiManager {
             &owner,
             "abort",
         )?;
-        let reconciliations = {
+        let (reconciliations, run_context_path) = {
             let mut state = slot.state.lock().unwrap();
-            drain_pending_extension_ui(&mut state.pending_extension_ui, Some(&owner))
+            (
+                drain_pending_extension_ui(&mut state.pending_extension_ui, Some(&owner)),
+                take_run_context_path(&mut state, Some(&owner)),
+            )
         };
+        clear_run_context_path(run_context_path);
         self.revoke_slot_bash_rule(&slot).await;
         let app = self.config().await?.app;
         Self::emit_reconciliations(&app, reconciliations, "run_aborted");
@@ -1581,11 +1770,12 @@ mod tests {
     use super::{
         approval_source, can_enable_always_allow_bash, clear_active_run_if_matches,
         drain_pending_extension_ui, event_owner_payload, fail_pending_rpc, idle_runtime_thread,
-        is_divo_approval_request, is_divo_memory_review_request, require_active_run,
-        response_clears_active_run, revoke_slot_bash_rule, should_auto_allow_bash,
-        take_pending_confirm, take_pending_memory_review, valid_memory_review_response,
-        ApprovalSource, ExtensionUiProtocol, PendingExtensionUiRequest, PendingRpc, PiManager,
-        RunOwner, RuntimeSlot,
+        is_divo_approval_request, is_divo_memory_review_request, reconcile_lifecycle_event,
+        require_active_run, response_clears_active_run, revoke_slot_bash_rule,
+        should_auto_allow_bash, take_pending_confirm, take_pending_memory_review,
+        valid_memory_review_response, ApprovalSource, ExtensionUiProtocol,
+        PendingExtensionUiRequest, PendingRpc, PiManager, RunOwner, RuntimeSlot,
+        DIVO_APPROVAL_PROTOCOL_TITLE, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -1611,6 +1801,125 @@ mod tests {
             owner,
             tx,
         }
+    }
+
+    fn approval_ui(owner: &RunOwner, include_correlation: bool) -> serde_json::Value {
+        let mut descriptor = serde_json::json!({
+            "version": 1,
+            "toolCallId": "tool-1",
+            "source": "divo",
+            "kind": "gmail.send",
+            "action": "send",
+            "title": "Send email",
+            "presentation": {"to": ["maya@example.com"]},
+        });
+        if include_correlation {
+            descriptor["runCorrelation"] = serde_json::json!({
+                "version": 1,
+                "threadId": owner.thread_id,
+                "runId": owner.run_id,
+            });
+        }
+        serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "approval-1",
+            "method": "confirm",
+            "title": DIVO_APPROVAL_PROTOCOL_TITLE,
+            "message": descriptor.to_string(),
+        })
+    }
+
+    fn memory_review_ui(owner: &RunOwner) -> serde_json::Value {
+        serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "memory-1",
+            "method": "editor",
+            "title": DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
+            "prefill": serde_json::json!({
+                "version": 1,
+                "proposalId": "proposal-1",
+                "bullets": [{"id":"fact-1","text":"Use net-60 terms."}],
+                "allowedTargets": [{"scope":"personal","label":"Personal"}],
+                "runCorrelation": {
+                    "version": 1,
+                    "threadId": owner.thread_id,
+                    "runId": owner.run_id,
+                },
+            }).to_string(),
+        })
+    }
+
+    fn activate_context(slot: &RuntimeSlot, owner: RunOwner) {
+        let mut state = slot.state.lock().unwrap();
+        state.active_run = Some(owner.clone());
+        state.run_context_owner = Some(owner);
+    }
+
+    fn dispatch_extension_ui(
+        slot: &RuntimeSlot,
+        request: serde_json::Value,
+    ) -> (Vec<(RunOwner, serde_json::Value)>, Vec<serde_json::Value>) {
+        let mut events = Vec::new();
+        let mut responses = Vec::new();
+        PiManager::handle_extension_ui_request(
+            slot,
+            request,
+            |owner, event| events.push((owner.clone(), event)),
+            |response| responses.push(response),
+        );
+        (events, responses)
+    }
+
+    #[test]
+    fn delayed_a1_ui_is_cancelled_without_an_a2_event_for_approval_or_memory_review() {
+        for (request, expected_id) in [
+            (approval_ui(&owner("thread-a", "a1"), true), "approval-1"),
+            (memory_review_ui(&owner("thread-a", "a1")), "memory-1"),
+        ] {
+            let slot = RuntimeSlot::new("thread-a".into());
+            let a1 = owner("thread-a", "a1");
+            let a2 = owner("thread-a", "a2");
+
+            // Drive the same terminal event reconciler used by handle_line,
+            // then bind A2 before buffered raw A1 UI is processed.
+            activate_context(&slot, a1.clone());
+            let (ended, pending, _context, terminal) = reconcile_lifecycle_event(
+                &slot,
+                Some("agent_end"),
+                &serde_json::json!({"type":"agent_end"}),
+            );
+            assert_eq!(ended, Some(a1));
+            assert!(pending.is_empty());
+            assert!(terminal);
+            activate_context(&slot, a2);
+
+            let (events, responses) = dispatch_extension_ui(&slot, request);
+            // This is the actual named-extension branch used by handle_line:
+            // no frontend `pi-event`, no A2 pending UI, and Pi receives a
+            // cancellation that resolves confirm/editor fail-closed.
+            assert!(events.is_empty());
+            assert!(slot.state.lock().unwrap().pending_extension_ui.is_empty());
+            assert_eq!(
+                responses,
+                vec![serde_json::json!({
+                    "type":"extension_ui_response",
+                    "id":expected_id,
+                    "cancelled":true,
+                })]
+            );
+        }
+    }
+
+    #[test]
+    fn normal_correlated_a2_ui_registers_and_emits_through_handle_line_branch() {
+        let slot = RuntimeSlot::new("thread-a".into());
+        let a2 = owner("thread-a", "a2");
+        activate_context(&slot, a2.clone());
+        let (events, responses) = dispatch_extension_ui(&slot, approval_ui(&a2, true));
+        assert_eq!(slot.state.lock().unwrap().pending_extension_ui.len(), 1);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, a2);
+        assert!(responses.is_empty());
     }
 
     #[test]

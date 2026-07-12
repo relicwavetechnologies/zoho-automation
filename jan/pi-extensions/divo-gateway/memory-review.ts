@@ -10,6 +10,7 @@ import {
 	type DivoGatewayConfig,
 	type GatewayResponseBody,
 } from "./gateway-client.ts";
+import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correlation.ts";
 
 export const DIVO_MEMORY_REVIEW_PROTOCOL_TITLE = "divo_memory_review_v1";
 export const MAX_MEMORY_REVIEW_BULLETS = 10;
@@ -35,7 +36,10 @@ export interface MemoryReviewRequestV1 {
 	proposalId: string;
 	bullets: MemoryReviewBulletV1[];
 	allowedTargets: MemoryReviewTargetV1[];
+	runCorrelation: DivoRunCorrelationV1;
 }
+
+type MemoryReviewPayloadV1 = Omit<MemoryReviewRequestV1, "runCorrelation">;
 
 export interface MemoryReviewProposalV1 {
 	proposalId: string;
@@ -172,7 +176,7 @@ async function buildAuthorizedReviewRequest(
 	proposal: MemoryReviewProposalV1,
 	config: DivoGatewayConfig,
 	dependencies: MemoryReviewDependencies,
-): Promise<MemoryReviewRequestV1> {
+): Promise<MemoryReviewPayloadV1> {
 	const authority = await dependencies.callGateway(config, {
 		op: "tools.invoke",
 		payload: {
@@ -204,7 +208,7 @@ async function buildAuthorizedReviewRequest(
 
 export function parseMemoryReviewResponse(
 	value: unknown,
-	request: MemoryReviewRequestV1,
+	request: MemoryReviewPayloadV1,
 ): MemoryReviewResponseV1 {
 	const record = asRecord(value);
 	if (!record || record.version !== 1) {
@@ -268,11 +272,16 @@ export function parseMemoryReviewResponse(
 
 async function presentMemoryReview(
 	ctx: Pick<ExtensionContext, "ui">,
-	request: MemoryReviewRequestV1,
+	request: MemoryReviewPayloadV1,
 ): Promise<MemoryReviewResponseV1> {
+	// Capture provenance before Pi creates the raw extension UI request.
+	const correlatedRequest: MemoryReviewRequestV1 = {
+		...request,
+		runCorrelation: await readDivoRunCorrelation(),
+	};
 	const raw = await ctx.ui.editor(
 		DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
-		JSON.stringify(request),
+		JSON.stringify(correlatedRequest),
 	);
 	if (raw === undefined) {
 		return {
@@ -289,11 +298,11 @@ async function presentMemoryReview(
 	} catch {
 		throw new Error("desktop returned malformed memory review JSON");
 	}
-	return parseMemoryReviewResponse(parsed, request);
+	return parseMemoryReviewResponse(parsed, correlatedRequest);
 }
 
 async function publishApprovedMemory(
-	request: MemoryReviewRequestV1,
+	request: MemoryReviewPayloadV1,
 	response: MemoryReviewResponseV1,
 	config: DivoGatewayConfig,
 	dependencies: MemoryReviewDependencies,
@@ -371,7 +380,7 @@ export async function executeMemoryReview(
 		};
 	}
 
-	let request: MemoryReviewRequestV1;
+	let request: MemoryReviewPayloadV1;
 	try {
 		request = await buildAuthorizedReviewRequest(
 			proposal,

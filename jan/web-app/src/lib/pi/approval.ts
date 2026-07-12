@@ -9,6 +9,12 @@ const MAX_FIELD_LENGTH = 2_000
 export type PiApprovalPresentation = Record<string, unknown>
 export type PiApprovalSource = 'divo' | 'bash' | 'edit' | 'write'
 
+export type PiRunCorrelation = {
+  version: 1
+  threadId: string
+  runId: string
+}
+
 export type PiApprovalDescriptor = {
   version: 1
   toolCallId: string
@@ -17,6 +23,7 @@ export type PiApprovalDescriptor = {
   action: string
   title: string
   presentation: PiApprovalPresentation
+  runCorrelation: PiRunCorrelation
   expiresAt?: string
 }
 
@@ -96,6 +103,15 @@ function parseDescriptor(message: string): PiApprovalDescriptor {
     throw new Error('unsupported approval source')
   }
 
+  const correlation = record.runCorrelation
+  if (!correlation || typeof correlation !== 'object' || Array.isArray(correlation)) {
+    throw new Error('approval request is missing run correlation')
+  }
+  const correlationRecord = correlation as Record<string, unknown>
+  if (correlationRecord.version !== 1) {
+    throw new Error('approval request has unsupported run correlation version')
+  }
+
   return {
     version: 1,
     toolCallId: nonEmptyString(record.toolCallId, 'toolCallId'),
@@ -104,6 +120,11 @@ function parseDescriptor(message: string): PiApprovalDescriptor {
     action: nonEmptyString(record.action, 'action', 100),
     title: nonEmptyString(record.title, 'title'),
     presentation: presentation as PiApprovalPresentation,
+    runCorrelation: {
+      version: 1,
+      threadId: nonEmptyString(correlationRecord.threadId, 'runCorrelation.threadId'),
+      runId: nonEmptyString(correlationRecord.runId, 'runCorrelation.runId'),
+    },
     ...(expiresAt !== undefined ? { expiresAt } : {}),
   }
 }
@@ -157,6 +178,12 @@ export function parsePiApprovalEvent(
 
   try {
     const descriptor = parseDescriptor(event.message)
+    if (
+      descriptor.runCorrelation.threadId !== threadId ||
+      descriptor.runCorrelation.runId !== runId
+    ) {
+      throw new Error('approval request run correlation does not match its event owner')
+    }
     const explicitExpiry = descriptor.expiresAt
       ? Date.parse(descriptor.expiresAt)
       : undefined
