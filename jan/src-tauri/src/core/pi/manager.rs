@@ -1,14 +1,16 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, Notify};
 
-use super::browser::{current_browser_cdp_fingerprint, kill_orphan_chrome_devtools_mcp};
+use super::browser::current_browser_cdp_fingerprint;
 use super::env::{
     apply_divo_gateway_env, apply_divo_skill_env, apply_divo_workspace_env, apply_local_lark_env,
     apply_provider_env,
@@ -21,13 +23,15 @@ use crate::core::threads::utils::ensure_thread_dir_exists;
 const DIVO_APPROVAL_PROTOCOL_TITLE: &str = "divo_approval_v1";
 const DIVO_MEMORY_REVIEW_PROTOCOL_TITLE: &str = "divo_memory_review_v1";
 const MAX_MEMORY_REVIEW_MESSAGE_BYTES: usize = 16_000;
+/// Pi is intentionally bounded because every runtime is a complete Bun process.
+const RUNTIME_POOL_CAPACITY: usize = 2;
 
 struct PiProcess {
     child: Child,
     stdin: std::process::ChildStdin,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct RunOwner {
     thread_id: String,
     run_id: String,
@@ -334,6 +338,7 @@ fn approval_source(value: &serde_json::Value) -> Option<ApprovalSource> {
     }
 }
 
+#[cfg(test)]
 fn should_auto_allow_bash(
     source: Option<ApprovalSource>,
     allowed_threads: &HashSet<String>,
@@ -346,140 +351,351 @@ fn can_enable_always_allow_bash(pending: &PendingExtensionUiRequest, confirmed: 
     confirmed && pending.source == Some(ApprovalSource::Bash)
 }
 
-struct SharedState {
+struct RuntimeState {
     process: Option<PiProcess>,
-    data_folder: Option<PathBuf>,
-    scratch_dir: Option<PathBuf>,
-    workspace_dir: Option<PathBuf>,
-    runtime_thread_id: Option<String>,
-    active_thread_id: Option<String>,
     active_run: Option<RunOwner>,
-    browser_cdp_fingerprint: Option<String>,
     pending: HashMap<String, PendingRpc>,
     pending_extension_ui: HashMap<String, PendingExtensionUiRequest>,
-    bash_always_allowed_threads: HashSet<String>,
+    bash_always_allowed: bool,
+    browser_cdp_fingerprint: Option<String>,
     stdout_buffer: String,
+    admission_leases: usize,
+}
+
+struct RuntimeSlot {
+    thread_id: String,
+    state: Arc<StdMutex<RuntimeState>>,
+    lifecycle: Arc<Mutex<()>>,
+}
+
+impl RuntimeSlot {
+    fn new(thread_id: String) -> Self {
+        Self {
+            thread_id,
+            state: Arc::new(StdMutex::new(RuntimeState {
+                process: None,
+                active_run: None,
+                pending: HashMap::new(),
+                pending_extension_ui: HashMap::new(),
+                bash_always_allowed: false,
+                browser_cdp_fingerprint: None,
+                stdout_buffer: String::new(),
+                admission_leases: 0,
+            })),
+            lifecycle: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn reclaimable(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.active_run.is_none()
+            && state.pending_extension_ui.is_empty()
+            && state.pending.is_empty()
+            && state.admission_leases == 0
+    }
+}
+
+fn idle_runtime_thread(slots: &HashMap<String, Arc<RuntimeSlot>>) -> Option<String> {
+    // Stable thread-id ordering makes reclamation reproducible. More importantly,
+    // `reclaimable` excludes both an active run and every pending approval.
+    slots
+        .iter()
+        .filter(|(_, slot)| slot.reclaimable())
+        .min_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(thread, _)| thread.clone())
+}
+
+#[derive(Clone)]
+struct RuntimeConfig {
+    app: AppHandle,
+    data_folder: PathBuf,
+    scratch_dir: PathBuf,
+    workspace_dir: PathBuf,
+}
+
+struct QueuedAdmission {
+    ticket: u64,
+    owner: Option<RunOwner>,
+    state: Arc<AtomicU8>,
+}
+
+const WAITER_QUEUED: u8 = 0;
+const WAITER_CANCELLED: u8 = 1;
+const WAITER_ADMITTED: u8 = 2;
+const WAITER_STOPPED: u8 = 3;
+
+struct WaiterGuard {
+    ticket: u64,
+    state: Arc<AtomicU8>,
+    capacity_changed: Arc<Notify>,
+    armed: bool,
+}
+
+impl WaiterGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+    fn terminal(&self) -> u8 {
+        self.state.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for WaiterGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = self.state.compare_exchange(
+                WAITER_QUEUED,
+                WAITER_CANCELLED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            self.capacity_changed.notify_waiters();
+        }
+    }
+}
+
+struct SlotLease {
+    slot: Arc<RuntimeSlot>,
+    capacity_changed: Arc<Notify>,
+    released: bool,
+}
+
+impl SlotLease {
+    fn slot(&self) -> &Arc<RuntimeSlot> {
+        &self.slot
+    }
+    fn release(&mut self) {
+        if !self.released {
+            let mut state = self.slot.state.lock().unwrap();
+            state.admission_leases = state.admission_leases.saturating_sub(1);
+            self.released = true;
+            self.capacity_changed.notify_waiters();
+        }
+    }
+}
+
+impl Drop for SlotLease {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+struct PoolState {
+    config: Option<RuntimeConfig>,
+    slots: HashMap<String, Arc<RuntimeSlot>>,
+    waiters: VecDeque<QueuedAdmission>,
+    next_ticket: u64,
+    bash_rules: HashSet<String>,
+    cancelled_runs: HashSet<RunOwner>,
 }
 
 pub struct PiManager {
-    inner: Arc<StdMutex<SharedState>>,
-    lifecycle: Arc<Mutex<()>>,
-    cmd_tx: mpsc::Sender<String>,
-    // Pi stdout is consumed on a blocking thread. Keep the app handle behind
-    // the same blocking mutex so forwarding an extension UI request cannot
-    // silently lose the event when a Tokio mutex is temporarily contended.
-    app: Arc<StdMutex<Option<AppHandle>>>,
+    pool: Arc<Mutex<PoolState>>,
+    capacity_changed: Arc<Notify>,
+    #[cfg(test)]
+    test_hooks: Arc<StdMutex<TestHooks>>,
+    #[cfg(test)]
+    test_admission_configured: Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct TestHooks {
+    after_initial_cancel_read: Option<TestHook>,
+    after_capacity_observed: Option<TestHook>,
+    after_existing_lease: Option<TestHook>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TestHook {
+    reached: Arc<Notify>,
+    resume: Arc<Notify>,
 }
 
 impl Clone for PiManager {
     fn clone(&self) -> Self {
         PiManager {
-            inner: self.inner.clone(),
-            lifecycle: self.lifecycle.clone(),
-            cmd_tx: self.cmd_tx.clone(),
-            app: self.app.clone(),
+            pool: self.pool.clone(),
+            capacity_changed: self.capacity_changed.clone(),
+            #[cfg(test)]
+            test_hooks: self.test_hooks.clone(),
+            #[cfg(test)]
+            test_admission_configured: self.test_admission_configured.clone(),
         }
     }
 }
 
 impl PiManager {
     pub fn new() -> Self {
-        let inner = Arc::new(StdMutex::new(SharedState {
-            process: None,
-            data_folder: None,
-            scratch_dir: None,
-            workspace_dir: None,
-            runtime_thread_id: None,
-            active_thread_id: None,
-            active_run: None,
-            browser_cdp_fingerprint: None,
-            pending: HashMap::new(),
-            pending_extension_ui: HashMap::new(),
-            bash_always_allowed_threads: HashSet::new(),
-            stdout_buffer: String::new(),
-        }));
-        let (cmd_tx, cmd_rx) = mpsc::channel::<String>();
-        let inner_write = inner.clone();
-
-        std::thread::spawn(move || {
-            while let Ok(cmd) = cmd_rx.recv() {
-                let mut guard = inner_write.lock().unwrap();
-                if let Some(ref mut pi) = guard.process {
-                    let _ = writeln!(pi.stdin, "{}", cmd);
-                    let _ = pi.stdin.flush();
-                }
-            }
-        });
-
-        PiManager {
-            inner,
-            lifecycle: Arc::new(Mutex::new(())),
-            cmd_tx,
-            app: Arc::new(StdMutex::new(None)),
+        Self {
+            pool: Arc::new(Mutex::new(PoolState {
+                config: None,
+                slots: HashMap::new(),
+                waiters: VecDeque::new(),
+                next_ticket: 0,
+                bash_rules: HashSet::new(),
+                cancelled_runs: HashSet::new(),
+            })),
+            capacity_changed: Arc::new(Notify::new()),
+            #[cfg(test)]
+            test_hooks: Arc::new(StdMutex::new(TestHooks::default())),
+            #[cfg(test)]
+            test_admission_configured: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn write_stdin(&self, json: &str) -> Result<(), String> {
-        self.cmd_tx
-            .send(json.to_string())
-            .map_err(|e| format!("Failed to queue Pi command: {}", e))
+    async fn config(&self) -> Result<RuntimeConfig, String> {
+        self.pool
+            .lock()
+            .await
+            .config
+            .clone()
+            .ok_or("Pi runtime is not configured; call pi_start first".into())
     }
 
-    async fn send_rpc(
+    fn wake_capacity(&self) {
+        self.capacity_changed.notify_waiters();
+    }
+
+    #[cfg(test)]
+    async fn pause_test_hook(&self, select: impl FnOnce(&TestHooks) -> Option<TestHook>) {
+        let hook = select(&self.test_hooks.lock().unwrap());
+        if let Some(hook) = hook {
+            hook.reached.notify_one();
+            hook.resume.notified().await;
+        }
+    }
+
+    async fn acquire_slot(
         &self,
-        mut cmd: serde_json::Value,
-        owner: Option<RunOwner>,
-    ) -> Result<serde_json::Value, String> {
-        let id = uuid::Uuid::new_v4().to_string();
-        let command = cmd
-            .get("type")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        if let Some(obj) = cmd.as_object_mut() {
-            obj.insert("id".to_string(), serde_json::Value::String(id.clone()));
+        thread_id: &str,
+        waiter_owner: Option<RunOwner>,
+    ) -> Result<SlotLease, String> {
+        let thread_id = thread_id.trim();
+        if thread_id.is_empty() {
+            return Err("A thread id is required".into());
         }
-        let json = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
-
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut guard = self.inner.lock().unwrap();
-            if guard.process.is_none() {
-                return Err("Pi process is not running".into());
-            }
-            guard
-                .pending
-                .insert(id.clone(), PendingRpc { command, owner, tx });
-        }
-
-        self.write_stdin(&json)?;
-
-        match tokio::time::timeout(Duration::from_secs(60), rx).await {
-            Ok(Ok(Ok(data))) => Ok(data),
-            Ok(Ok(Err(e))) => Err(e),
-            Ok(Err(_)) => Err("Pi RPC channel closed".into()),
-            Err(_) => {
-                let mut guard = self.inner.lock().unwrap();
-                guard.pending.remove(&id);
-                Err("Pi RPC timed out".into())
-            }
-        }
-    }
-
-    async fn wait_until_ready(&self) -> Result<(), String> {
-        for attempt in 1..=30 {
-            match self
-                .send_rpc(serde_json::json!({ "type": "get_state" }), None)
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(_) if attempt < 30 => {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut waiter: Option<WaiterGuard> = None;
+        loop {
+            // Arm the subscription before observing capacity. Any transition
+            // after this point either changes the predicate while we hold the
+            // pool lock or leaves a retained notification for this wait.
+            let notified = self.capacity_changed.notified();
+            tokio::pin!(notified);
+            let _ = futures::poll!(notified.as_mut());
+            let (slot, evicted) = {
+                let mut pool = self.pool.lock().await;
+                if waiter_owner
+                    .as_ref()
+                    .is_some_and(|owner| pool.cancelled_runs.remove(owner))
+                {
+                    return Err("Pi prompt was cancelled before runtime admission".into());
                 }
-                Err(e) => return Err(e),
+                while pool
+                    .waiters
+                    .front()
+                    .is_some_and(|entry| entry.state.load(Ordering::Acquire) != WAITER_QUEUED)
+                {
+                    pool.waiters.pop_front();
+                }
+                if let Some(slot) = pool.slots.get(thread_id) {
+                    slot.state.lock().unwrap().admission_leases += 1;
+                    #[cfg(test)]
+                    if let Some(hook) = self.test_hooks.lock().unwrap().after_existing_lease.clone()
+                    {
+                        hook.reached.notify_one();
+                    }
+                    (Some(slot.clone()), None)
+                } else {
+                    let is_front = waiter.as_ref().map_or_else(
+                        || pool.waiters.is_empty(),
+                        |guard| {
+                            pool.waiters.front().is_some_and(|entry| {
+                                entry.ticket == guard.ticket
+                                    && Arc::ptr_eq(&entry.state, &guard.state)
+                            })
+                        },
+                    );
+                    let available = pool.slots.len() < RUNTIME_POOL_CAPACITY;
+                    let idle = if is_front && !available {
+                        idle_runtime_thread(&pool.slots)
+                    } else {
+                        None
+                    };
+                    if is_front && (available || idle.is_some()) {
+                        if let Some(guard) = waiter.as_mut() {
+                            let popped = pool.waiters.pop_front();
+                            debug_assert!(popped.is_some());
+                            guard.state.store(WAITER_ADMITTED, Ordering::Release);
+                            guard.disarm();
+                        }
+                        let evicted = idle.and_then(|thread| pool.slots.remove(&thread));
+                        let slot = Arc::new(RuntimeSlot::new(thread_id.to_string()));
+                        if pool.bash_rules.contains(thread_id) {
+                            slot.state.lock().unwrap().bash_always_allowed = true;
+                        }
+                        slot.state.lock().unwrap().admission_leases = 1;
+                        pool.slots.insert(thread_id.to_string(), slot.clone());
+                        (Some(slot), evicted)
+                    } else {
+                        if waiter.is_none() {
+                            let ticket = pool.next_ticket;
+                            pool.next_ticket += 1;
+                            let state = Arc::new(AtomicU8::new(WAITER_QUEUED));
+                            pool.waiters.push_back(QueuedAdmission {
+                                ticket,
+                                owner: waiter_owner.clone(),
+                                state: state.clone(),
+                            });
+                            waiter = Some(WaiterGuard {
+                                ticket,
+                                state,
+                                capacity_changed: self.capacity_changed.clone(),
+                                armed: true,
+                            });
+                        }
+                        (None, None)
+                    }
+                }
+            };
+
+            if let Some(slot) = slot {
+                if let Some(old) = evicted {
+                    // Only a proven-idle slot is removed above. Its stop and
+                    // reconciliation are therefore scoped to that old thread.
+                    let app = self
+                        .pool
+                        .lock()
+                        .await
+                        .config
+                        .as_ref()
+                        .map(|config| config.app.clone());
+                    Self::stop_slot(&old, app.as_ref(), "idle_reclaimed").await;
+                }
+                return Ok(SlotLease {
+                    slot,
+                    capacity_changed: self.capacity_changed.clone(),
+                    released: false,
+                });
+            }
+            drop(evicted);
+            let guard = waiter.as_ref().expect("waiter was registered");
+            match guard.terminal() {
+                WAITER_CANCELLED => {
+                    return Err("Pi prompt was cancelled while waiting for runtime capacity".into())
+                }
+                WAITER_STOPPED => {
+                    return Err("Pi runtime stopped while waiting for capacity".into())
+                }
+                _ => {
+                    #[cfg(test)]
+                    self.pause_test_hook(|hooks| hooks.after_capacity_observed.clone())
+                        .await;
+                    notified.await
+                }
             }
         }
-        Err("Pi RPC failed to become ready".into())
     }
 
     fn divo_workspace_system_prompt(
@@ -487,202 +703,195 @@ impl PiManager {
         layout: &DivoWorkspaceRunLayout,
     ) -> String {
         format!(
-            "\
-Divo workspace policy:
-- The selected workspace root is: {workspace}
-- The active Jan thread id for this run is: {thread_id}
-- Divo-owned scratch state for this run is: {run_dir}
-- Put temporary helper scripts, scratch notes, downloaded intermediate files, logs, and generated analysis artifacts under DIVO_RUN_DIR or the matching DIVO_* directory.
-- Do not create temporary scripts or scratch files in the workspace root or project folders.
-- Only create or edit files outside .divo when they are real project files required by the user's task.
-- Do not store credentials, backend tokens, or SaaS tokens in workspace files.",
+            "Divo workspace policy:\n- The selected workspace root is: {workspace}\n- The active Jan thread id for this run is: {thread_id}\n- Divo-owned scratch state for this run is: {run_dir}\n- Put temporary helper scripts, scratch notes, downloaded intermediate files, logs, and generated analysis artifacts under DIVO_RUN_DIR or the matching DIVO_* directory.\n- Do not create temporary scripts or scratch files in the workspace root or project folders.\n- Only create or edit files outside .divo when they are real project files required by the user's task.\n- Do not store credentials, backend tokens, or SaaS tokens in workspace files.",
             workspace = workspace_dir.display(),
             thread_id = layout.thread_id,
             run_dir = layout.run_dir.display(),
         )
     }
 
-    fn emit_extension_ui_reconciliations(
-        app: &Arc<StdMutex<Option<AppHandle>>>,
+    fn write_stdin(slot: &RuntimeSlot, json: &str) -> Result<(), String> {
+        let mut state = slot.state.lock().unwrap();
+        let process = state.process.as_mut().ok_or("Pi process is not running")?;
+        writeln!(process.stdin, "{json}")
+            .map_err(|error| format!("Failed to write Pi command: {error}"))?;
+        process
+            .stdin
+            .flush()
+            .map_err(|error| format!("Failed to flush Pi command: {error}"))
+    }
+
+    async fn send_rpc(
+        slot: &RuntimeSlot,
+        mut command: serde_json::Value,
+        owner: Option<RunOwner>,
+        capacity_changed: &Notify,
+    ) -> Result<serde_json::Value, String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let command_name = command
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        command
+            .as_object_mut()
+            .ok_or("Pi command must be an object")?
+            .insert("id".into(), serde_json::Value::String(id.clone()));
+        let serialized = serde_json::to_string(&command).map_err(|error| error.to_string())?;
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut state = slot.state.lock().unwrap();
+            if state.process.is_none() {
+                return Err("Pi process is not running".into());
+            }
+            state.pending.insert(
+                id.clone(),
+                PendingRpc {
+                    command: command_name,
+                    owner,
+                    tx,
+                },
+            );
+        }
+        if let Err(error) = Self::write_stdin(slot, &serialized) {
+            slot.state.lock().unwrap().pending.remove(&id);
+            capacity_changed.notify_waiters();
+            return Err(error);
+        }
+        match tokio::time::timeout(Duration::from_secs(60), rx).await {
+            Ok(Ok(Ok(value))) => Ok(value),
+            Ok(Ok(Err(error))) => Err(error),
+            Ok(Err(_)) => Err("Pi RPC channel closed".into()),
+            Err(_) => {
+                slot.state.lock().unwrap().pending.remove(&id);
+                capacity_changed.notify_waiters();
+                Err("Pi RPC timed out".into())
+            }
+        }
+    }
+
+    async fn wait_until_ready(slot: &RuntimeSlot, capacity_changed: &Notify) -> Result<(), String> {
+        for attempt in 1..=30 {
+            match Self::send_rpc(
+                slot,
+                serde_json::json!({"type":"get_state"}),
+                None,
+                capacity_changed,
+            )
+            .await
+            {
+                Ok(_) => return Ok(()),
+                Err(_) if attempt < 30 => tokio::time::sleep(Duration::from_millis(200)).await,
+                Err(error) => return Err(error),
+            }
+        }
+        Err("Pi RPC failed to become ready".into())
+    }
+
+    fn emit(app: &AppHandle, owner: Option<&RunOwner>, mut event: serde_json::Value) {
+        event_owner_payload(&mut event, owner);
+        if let Err(error) = app.emit("pi-event", event) {
+            eprintln!("[pi] Failed to emit Pi event: {error}");
+        }
+    }
+
+    fn emit_reconciliations(
+        app: &AppHandle,
         reconciliations: Vec<ExtensionUiReconciliation>,
         reason: &str,
     ) {
         for reconciliation in reconciliations {
-            Self::emit_pi_event(
+            Self::emit(
                 app,
                 Some(&reconciliation.owner),
                 serde_json::json!({
-                    "type": "extension_ui_response",
-                    "id": reconciliation.request_id,
-                    "cancelled": true,
-                    "reason": reason,
+                    "type":"extension_ui_response",
+                    "id":reconciliation.request_id,
+                    "cancelled":true,
+                    "reason":reason,
                 }),
             );
         }
     }
 
-    fn clear_active_run_for_owner(&self, owner: &RunOwner) {
-        let mut guard = self.inner.lock().unwrap();
-        clear_active_run_if_matches(&mut guard.active_run, owner);
-    }
-
-    fn active_run(&self) -> Option<RunOwner> {
-        self.inner.lock().unwrap().active_run.clone()
-    }
-
-    async fn wait_for_run_clear(&self, owner: &RunOwner) -> Result<(), String> {
-        for _ in 0..100 {
-            if self.active_run().as_ref() != Some(owner) {
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        Err("Timed out waiting for the active Pi run to stop".into())
-    }
-
-    async fn start_locked(
-        &self,
-        app: AppHandle,
-        data_folder: PathBuf,
-        scratch_dir: PathBuf,
-        workspace_dir: PathBuf,
-        initial_thread_id: Option<String>,
+    async fn spawn_slot(
+        slot: &Arc<RuntimeSlot>,
+        config: &RuntimeConfig,
+        capacity_changed: Arc<Notify>,
     ) -> Result<(), String> {
+        let runtime = PiRuntimePaths::resolve(&config.app, &config.data_folder)?;
+        std::fs::create_dir_all(&config.scratch_dir)
+            .map_err(|error| format!("Failed to create Pi scratch dir: {error}"))?;
+        ensure_thread_dir_exists(&config.data_folder, &slot.thread_id)?;
+        let session_path = resolve_session_path(&config.data_folder, &slot.thread_id);
+        ensure_session_workspace_cwd(&session_path, &config.workspace_dir)?;
+        let layout = prepare_workspace_run_layout(&config.workspace_dir, &slot.thread_id)?;
+        let mut command = Command::new(&runtime.bun);
+        command
+            .arg(&runtime.cli_js)
+            .arg("--mode")
+            .arg("rpc")
+            .arg("--session-dir")
+            .arg(config.scratch_dir.to_string_lossy().to_string())
+            .arg("--append-system-prompt")
+            .arg(Self::divo_workspace_system_prompt(
+                &config.workspace_dir,
+                &layout,
+            ))
+            .env(
+                "PI_CODING_AGENT_DIR",
+                runtime.agent_dir.to_string_lossy().to_string(),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(&config.workspace_dir);
+        for skill_dir in &runtime.skill_dirs {
+            command.arg("--skill").arg(skill_dir);
+        }
+        apply_provider_env(&mut command, &runtime.agent_dir);
+        apply_divo_gateway_env(&mut command, &runtime.agent_dir);
+        apply_divo_skill_env(&mut command, &runtime.skill_dirs);
+        apply_divo_workspace_env(&mut command, &config.workspace_dir, &layout);
+        apply_local_lark_env(&mut command, runtime.lark_cli_wrapper.as_deref());
+        let mut child = command.spawn().map_err(|error| {
+            format!(
+                "Failed to spawn bundled Pi (bun={} cli={}): {error}",
+                runtime.bun.display(),
+                runtime.cli_js.display()
+            )
+        })?;
+        let pid = child.id();
+        let stdin = child.stdin.take().ok_or("Failed to capture Pi stdin")?;
+        let stdout = child.stdout.take().ok_or("Failed to capture Pi stdout")?;
+        let stderr = child.stderr.take().ok_or("Failed to capture Pi stderr")?;
         {
-            let mut app_guard = self.app.lock().unwrap();
-            *app_guard = Some(app.clone());
+            let mut state = slot.state.lock().unwrap();
+            state.process = Some(PiProcess { child, stdin });
+            state.stdout_buffer.clear();
+            state.browser_cdp_fingerprint = runtime.browser_cdp_fingerprint.clone();
         }
 
-        let runtime = PiRuntimePaths::resolve(&app, &data_folder)?;
-        let new_fingerprint = runtime.browser_cdp_fingerprint.clone();
-
-        let reconciliations = {
-            let mut guard = self.inner.lock().unwrap();
-            if guard.process.is_some() {
-                let workspace_changed = guard
-                    .workspace_dir
-                    .as_ref()
-                    .map(|current| current != &workspace_dir)
-                    .unwrap_or(true);
-                let stale =
-                    new_fingerprint.is_some() && new_fingerprint != guard.browser_cdp_fingerprint;
-                if !stale && !workspace_changed {
-                    return Ok(());
-                }
-                if let Some(mut pi) = guard.process.take() {
-                    let _ = pi.child.kill();
-                }
-                fail_pending_rpc(
-                    &mut guard.pending,
-                    "Pi process restarted before the RPC completed",
-                );
-                let reconciliations =
-                    drain_pending_extension_ui(&mut guard.pending_extension_ui, None);
-                if let Some(thread_id) = initial_thread_id.as_deref() {
-                    guard
-                        .bash_always_allowed_threads
-                        .retain(|candidate| candidate == thread_id);
-                } else {
-                    guard.bash_always_allowed_threads.clear();
-                }
-                guard.active_run = None;
-                guard.runtime_thread_id = None;
-                guard.active_thread_id = None;
-                guard.browser_cdp_fingerprint = new_fingerprint.clone();
-                reconciliations
-            } else {
-                guard.browser_cdp_fingerprint = new_fingerprint.clone();
-                Vec::new()
-            }
-        };
-
-        if !reconciliations.is_empty() {
-            Self::emit_extension_ui_reconciliations(
-                &self.app,
-                reconciliations,
-                "process_restarted",
-            );
-        }
-
-        kill_orphan_chrome_devtools_mcp();
-
-        let (stdout, stderr, child_pid) = {
-            let mut guard = self.inner.lock().unwrap();
-
-            std::fs::create_dir_all(&scratch_dir)
-                .map_err(|e| format!("Failed to create Pi scratch dir: {}", e))?;
-            let run_thread_id = initial_thread_id
-                .clone()
-                .unwrap_or_else(|| "__process__".to_string());
-            let divo_layout = prepare_workspace_run_layout(&workspace_dir, &run_thread_id)?;
-
-            let scratch_dir_str = scratch_dir.to_string_lossy().to_string();
-            let agent_dir_str = runtime.agent_dir.to_string_lossy().to_string();
-            let divo_prompt = Self::divo_workspace_system_prompt(&workspace_dir, &divo_layout);
-
-            let mut cmd = Command::new(&runtime.bun);
-            cmd.arg(&runtime.cli_js)
-                .arg("--mode")
-                .arg("rpc")
-                .arg("--session-dir")
-                .arg(&scratch_dir_str)
-                .arg("--append-system-prompt")
-                .arg(divo_prompt)
-                .env("PI_CODING_AGENT_DIR", &agent_dir_str)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            for skill_dir in &runtime.skill_dirs {
-                cmd.arg("--skill").arg(skill_dir);
-            }
-            cmd.current_dir(&workspace_dir);
-            apply_provider_env(&mut cmd, &runtime.agent_dir);
-            apply_divo_gateway_env(&mut cmd, &runtime.agent_dir);
-            apply_divo_skill_env(&mut cmd, &runtime.skill_dirs);
-            apply_divo_workspace_env(&mut cmd, &workspace_dir, &divo_layout);
-            apply_local_lark_env(&mut cmd, runtime.lark_cli_wrapper.as_deref());
-            let mut child = cmd.spawn().map_err(|e| {
-                format!(
-                    "Failed to spawn bundled Pi (bun={} cli={}): {e}",
-                    runtime.bun.display(),
-                    runtime.cli_js.display()
-                )
-            })?;
-            let child_pid = child.id();
-
-            let stdin = child.stdin.take().ok_or("Failed to capture pi stdin")?;
-            let stdout = child.stdout.take().ok_or("Failed to capture pi stdout")?;
-            let stderr = child.stderr.take().ok_or("Failed to capture pi stderr")?;
-
-            guard.data_folder = Some(data_folder);
-            guard.scratch_dir = Some(scratch_dir);
-            guard.workspace_dir = Some(workspace_dir);
-            guard.runtime_thread_id = Some(run_thread_id);
-            guard.process = Some(PiProcess { child, stdin });
-            (stdout, stderr, child_pid)
-        };
-
-        let inner_reader = self.inner.clone();
-        let app_reader = self.app.clone();
-        let cmd_tx_reader = self.cmd_tx.clone();
+        let reader_slot = slot.clone();
+        let reader_app = config.app.clone();
+        let reader_capacity = capacity_changed.clone();
         std::thread::spawn(move || {
             use std::io::Read;
             let mut stdout = stdout;
-            let mut buf = [0u8; 8192];
+            let mut buffer = [0; 8192];
             loop {
-                match stdout.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let chunk = String::from_utf8_lossy(&buf[..n]);
-                        let lines: Vec<String> = {
-                            let mut guard = inner_reader.lock().unwrap();
-                            guard.stdout_buffer.push_str(&chunk);
+                match stdout.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(count) => {
+                        let lines = {
+                            let mut state = reader_slot.state.lock().unwrap();
+                            state
+                                .stdout_buffer
+                                .push_str(&String::from_utf8_lossy(&buffer[..count]));
                             let mut lines = Vec::new();
-                            while let Some(newline_idx) = guard.stdout_buffer.find('\n') {
-                                let line = guard.stdout_buffer[..newline_idx].to_string();
-                                guard.stdout_buffer =
-                                    guard.stdout_buffer[newline_idx + 1..].to_string();
-                                let line = line.trim_end_matches('\r').trim().to_string();
+                            while let Some(index) = state.stdout_buffer.find('\n') {
+                                let line = state.stdout_buffer[..index].trim().to_string();
+                                state.stdout_buffer = state.stdout_buffer[index + 1..].to_string();
                                 if !line.is_empty() {
                                     lines.push(line);
                                 }
@@ -690,340 +899,283 @@ Divo workspace policy:
                             lines
                         };
                         for line in lines {
-                            Self::handle_line(&inner_reader, &app_reader, &cmd_tx_reader, &line);
+                            Self::handle_line(&reader_slot, &reader_app, &line, &reader_capacity);
                         }
                     }
-                    Err(_) => break,
                 }
             }
-            let (should_emit_exit, owner, reconciliations) = {
-                let mut guard = inner_reader.lock().unwrap();
-                let is_current_process = guard
+            let (owner, reconciliations, exited) = {
+                let mut state = reader_slot.state.lock().unwrap();
+                let current = state
                     .process
                     .as_ref()
-                    .map(|pi| pi.child.id() == child_pid)
-                    .unwrap_or(false);
-                if !is_current_process {
-                    (false, None, Vec::new())
+                    .is_some_and(|process| process.child.id() == pid);
+                if !current {
+                    (None, Vec::new(), false)
                 } else {
-                    let owner = guard.active_run.take();
-                    fail_pending_rpc(&mut guard.pending, "Pi process exited unexpectedly");
+                    let owner = state.active_run.take();
+                    fail_pending_rpc(&mut state.pending, "Pi process exited unexpectedly");
                     let reconciliations =
-                        drain_pending_extension_ui(&mut guard.pending_extension_ui, None);
-                    guard.process = None;
-                    guard.runtime_thread_id = None;
-                    guard.active_thread_id = None;
-                    guard.bash_always_allowed_threads.clear();
-                    (true, owner, reconciliations)
+                        drain_pending_extension_ui(&mut state.pending_extension_ui, None);
+                    state.process = None;
+                    state.bash_always_allowed = false;
+                    state.browser_cdp_fingerprint = None;
+                    (owner, reconciliations, true)
                 }
             };
-            if !should_emit_exit {
-                return;
+            if exited {
+                Self::emit_reconciliations(&reader_app, reconciliations, "process_exited");
+                Self::emit(
+                    &reader_app,
+                    owner.as_ref(),
+                    serde_json::json!({"type":"pi_process_exit","message":"Pi process exited"}),
+                );
+                reader_capacity.notify_waiters();
             }
-            Self::emit_extension_ui_reconciliations(&app_reader, reconciliations, "process_exited");
-            Self::emit_pi_event(
-                &app_reader,
-                owner.as_ref(),
-                serde_json::json!({
-                    "type": "pi_process_exit",
-                    "message": "Pi process exited"
-                }),
-            );
         });
-
         std::thread::spawn(move || {
             use std::io::Read;
             let mut stderr = stderr;
-            let mut buf = [0u8; 1024];
-            loop {
-                match stderr.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        eprintln!("[pi stderr] {}", String::from_utf8_lossy(&buf[..n]).trim());
-                    }
-                    Err(_) => break,
+            let mut buffer = [0; 1024];
+            while let Ok(count) = stderr.read(&mut buffer) {
+                if count == 0 {
+                    break;
                 }
+                eprintln!(
+                    "[pi stderr] {}",
+                    String::from_utf8_lossy(&buffer[..count]).trim()
+                );
             }
         });
+        Self::wait_until_ready(slot, &capacity_changed).await?;
+        let response = Self::send_rpc(
+            slot,
+            serde_json::json!({
+                "type": "switch_session",
+                "sessionPath": session_path.to_string_lossy(),
+            }),
+            None,
+            &capacity_changed,
+        )
+        .await?;
+        if response
+            .get("cancelled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            return Err("Session switch cancelled".into());
+        }
+        Ok(())
+    }
 
-        self.wait_until_ready().await
+    async fn ensure_slot_started(&self, slot: &Arc<RuntimeSlot>) -> Result<(), String> {
+        let _lifecycle = slot.lifecycle.lock().await;
+        let needs_restart = {
+            let state = slot.state.lock().unwrap();
+            state.process.is_some()
+                && state.active_run.is_none()
+                && current_browser_cdp_fingerprint().is_some()
+                && current_browser_cdp_fingerprint() != state.browser_cdp_fingerprint
+        };
+        if needs_restart {
+            let app = self.config().await?.app;
+            Self::stop_slot_locked(slot, Some(&app), "process_restarted");
+        }
+        if slot.state.lock().unwrap().process.is_some() {
+            return Ok(());
+        }
+        Self::spawn_slot(slot, &self.config().await?, self.capacity_changed.clone()).await
+    }
+
+    fn stop_slot_locked(slot: &Arc<RuntimeSlot>, app: Option<&AppHandle>, reason: &str) {
+        let (process, reconciliations) = {
+            let mut state = slot.state.lock().unwrap();
+            let process = state.process.take();
+            state.active_run = None;
+            fail_pending_rpc(
+                &mut state.pending,
+                "Pi process stopped before the RPC completed",
+            );
+            let reconciliations = drain_pending_extension_ui(&mut state.pending_extension_ui, None);
+            state.bash_always_allowed = false;
+            state.browser_cdp_fingerprint = None;
+            (process, reconciliations)
+        };
+        if let Some(mut process) = process {
+            let _ = process.child.kill();
+        }
+        if let Some(app) = app {
+            Self::emit_reconciliations(app, reconciliations, reason);
+        }
+    }
+
+    async fn stop_slot(slot: &Arc<RuntimeSlot>, app: Option<&AppHandle>, reason: &str) {
+        let _lifecycle = slot.lifecycle.lock().await;
+        Self::stop_slot_locked(slot, app, reason);
     }
 
     fn handle_line(
-        inner: &Arc<StdMutex<SharedState>>,
-        app: &Arc<StdMutex<Option<AppHandle>>>,
-        cmd_tx: &mpsc::Sender<String>,
+        slot: &Arc<RuntimeSlot>,
+        app: &AppHandle,
         line: &str,
+        capacity_changed: &Notify,
     ) {
         let value: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[pi] JSON parse error: {} line={}", e, line);
+            Ok(value) => value,
+            Err(error) => {
+                eprintln!("[pi] JSON parse error: {error} line={line}");
                 return;
             }
         };
-
-        let event_type = value.get("type").and_then(|v| v.as_str());
-
-        if event_type == Some("response") {
-            if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
-                let success = value
-                    .get("success")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
-                let (pending, clear_owner) = {
-                    let mut guard = inner.lock().unwrap();
-                    let pending = guard.pending.remove(id);
-                    let clear_owner = pending
-                        .as_ref()
-                        .filter(|pending| response_clears_active_run(pending, success))
-                        .and_then(|pending| pending.owner.clone());
-                    if let Some(owner) = clear_owner.as_ref() {
-                        clear_active_run_if_matches(&mut guard.active_run, owner);
-                    }
-                    (pending, clear_owner)
+        let event_type = value
+            .get("type")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        if event_type.as_deref() == Some("response") {
+            let Some(id) = value.get("id").and_then(|value| value.as_str()) else {
+                return;
+            };
+            let success = value
+                .get("success")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let (pending, clear_owner) = {
+                let mut state = slot.state.lock().unwrap();
+                let pending = state.pending.remove(id);
+                capacity_changed.notify_waiters();
+                let clear_owner = pending
+                    .as_ref()
+                    .filter(|pending| response_clears_active_run(pending, success))
+                    .and_then(|pending| pending.owner.clone());
+                if let Some(owner) = clear_owner.as_ref() {
+                    clear_active_run_if_matches(&mut state.active_run, owner);
+                    capacity_changed.notify_waiters();
+                }
+                (pending, clear_owner)
+            };
+            if let Some(pending) = pending {
+                let owner = pending.owner.clone();
+                let result = if success {
+                    Ok(value
+                        .get("data")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null))
+                } else {
+                    Err(value
+                        .get("error")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("Pi command failed")
+                        .to_string())
                 };
-                if let Some(pending) = pending {
-                    let result = if success {
-                        Ok(value
-                            .get("data")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null))
+                let _ = pending.tx.send(result);
+                if pending.command == "prompt" {
+                    let event = if success {
+                        serde_json::json!({"type":"prompt_accepted","requestId":id})
                     } else {
-                        Err(value
-                            .get("error")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Pi command failed")
-                            .to_string())
+                        serde_json::json!({"type":"prompt_rejected","message":value.get("error").and_then(|v| v.as_str()).unwrap_or("Pi command failed")})
                     };
-                    let owner = pending.owner.clone();
-                    let _ = pending.tx.send(result);
-
-                    if pending.command == "prompt" {
-                        if success {
-                            let request_id = value
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            Self::emit_pi_event(
-                                app,
-                                owner.as_ref(),
-                                serde_json::json!({
-                                    "type": "prompt_accepted",
-                                    "requestId": request_id
-                                }),
-                            );
-                        } else if let Some(msg) = value.get("error").and_then(|v| v.as_str()) {
-                            let owner = clear_owner.or(owner);
-                            Self::emit_pi_event(
-                                app,
-                                owner.as_ref(),
-                                serde_json::json!({
-                                    "type": "prompt_rejected",
-                                    "message": msg
-                                }),
-                            );
-                        }
-                    }
+                    Self::emit(app, clear_owner.as_ref().or(owner.as_ref()), event);
                 }
             }
             return;
         }
-
-        if event_type == Some("extension_ui_request") {
-            let owner = inner.lock().unwrap().active_run.clone();
-            let request_owner = match owner {
-                Some(owner) => owner,
-                None => {
-                    if let (Some(id), Some(method)) = (
-                        value.get("id").and_then(|value| value.as_str()),
-                        value.get("method").and_then(|value| value.as_str()),
-                    ) {
-                        if matches!(method, "select" | "confirm" | "input" | "editor") {
-                            if let Ok(json) = serde_json::to_string(&serde_json::json!({
-                                "type": "extension_ui_response",
-                                "id": id,
-                                "cancelled": true
-                            })) {
-                                let _ = cmd_tx.send(json);
-                            }
-                        }
-                    }
-                    return;
-                }
+        if event_type.as_deref() == Some("extension_ui_request") {
+            let owner = slot.state.lock().unwrap().active_run.clone();
+            let Some(owner) = owner else {
+                Self::cancel_unknown_ui(slot, &value);
+                return;
             };
-            let request_id = value
+            let id = value
                 .get("id")
                 .and_then(|value| value.as_str())
-                .map(str::to_owned);
-            let (registered, auto_response) = if let (Some(id), Some(method)) = (
-                value.get("id").and_then(|v| v.as_str()),
-                value.get("method").and_then(|v| v.as_str()),
-            ) {
-                let mut guard = inner.lock().unwrap();
-                if guard.active_run.as_ref() != Some(&request_owner) {
-                    (false, None)
-                } else if is_divo_approval_request(&value, &request_owner.thread_id) {
+                .map(str::to_string);
+            let registered = if let (Some(id), Some(method)) =
+                (id.as_deref(), value.get("method").and_then(|v| v.as_str()))
+            {
+                let mut state = slot.state.lock().unwrap();
+                if state.active_run.as_ref() != Some(&owner) {
+                    false
+                } else if is_divo_approval_request(&value, &owner.thread_id) {
                     let source = approval_source(&value);
-                    if should_auto_allow_bash(
-                        source,
-                        &guard.bash_always_allowed_threads,
-                        &request_owner.thread_id,
-                    ) {
-                        (
-                            true,
-                            serde_json::to_string(&serde_json::json!({
-                                "type": "extension_ui_response",
-                                "id": id,
-                                "confirmed": true
-                            }))
-                            .ok(),
-                        )
+                    if source == Some(ApprovalSource::Bash) && state.bash_always_allowed {
+                        drop(state);
+                        let _ = Self::write_stdin(slot, &serde_json::json!({"type":"extension_ui_response","id":id,"confirmed":true}).to_string());
+                        true
                     } else {
-                        guard.pending_extension_ui.insert(
-                            id.to_string(),
+                        state.pending_extension_ui.insert(
+                            id.into(),
                             PendingExtensionUiRequest {
-                                owner: request_owner.clone(),
-                                method: method.to_string(),
+                                owner: owner.clone(),
+                                method: method.into(),
                                 source,
                                 protocol: ExtensionUiProtocol::Approval,
                             },
                         );
-                        (true, None)
+                        true
                     }
-                } else if is_divo_memory_review_request(&value, &request_owner.thread_id) {
-                    guard.pending_extension_ui.insert(
-                        id.to_string(),
+                } else if is_divo_memory_review_request(&value, &owner.thread_id) {
+                    state.pending_extension_ui.insert(
+                        id.into(),
                         PendingExtensionUiRequest {
-                            owner: request_owner.clone(),
-                            method: method.to_string(),
+                            owner: owner.clone(),
+                            method: method.into(),
                             source: None,
                             protocol: ExtensionUiProtocol::MemoryReview,
                         },
                     );
-                    (true, None)
+                    true
                 } else {
-                    if matches!(method, "select" | "confirm" | "input" | "editor") {
-                        // The desktop implements only the named Divo approval and
-                        // memory-review contracts. Keep every other dialog fail-closed
-                        // instead of leaving Pi blocked on UI the frontend cannot render.
-                        if let Ok(json) = serde_json::to_string(&serde_json::json!({
-                            "type": "extension_ui_response",
-                            "id": id,
-                            "cancelled": true
-                        })) {
-                            let _ = cmd_tx.send(json);
-                        }
-                    }
-                    (true, None)
+                    false
                 }
             } else {
-                let guard = inner.lock().unwrap();
-                (guard.active_run.as_ref() == Some(&request_owner), None)
+                false
             };
-
-            if !registered {
-                if let Some(id) = request_id {
-                    if let Ok(json) = serde_json::to_string(&serde_json::json!({
-                        "type": "extension_ui_response",
-                        "id": id,
-                        "cancelled": true
-                    })) {
-                        let _ = cmd_tx.send(json);
-                    }
-                }
-                return;
-            }
-
-            if let Some(response) = auto_response {
-                let _ = cmd_tx.send(response);
-                return;
-            }
-
-            // Hold the state lock through event emission. A concurrent abort or
-            // stop can therefore only emit its terminal reconciliation after the
-            // request card, never before it.
-            let delivered = {
-                let guard = inner.lock().unwrap();
-                guard.active_run.as_ref() == Some(&request_owner)
-                    && Self::emit_pi_event(app, Some(&request_owner), value.clone())
-            };
-            if !delivered {
-                // The editor/confirm promise is already pending in Pi. If the
-                // desktop cannot deliver its card request, cancel it instead
-                // of leaving the agent blocked with no actionable UI.
-                if let Some(request_id) = request_id {
-                    let cancelled = inner
-                        .lock()
-                        .unwrap()
-                        .pending_extension_ui
-                        .remove(&request_id);
-                    if let Some(cancelled) = cancelled {
-                        if let Ok(json) = serde_json::to_string(&serde_json::json!({
-                            "type": "extension_ui_response",
-                            "id": request_id,
-                            "cancelled": true
-                        })) {
-                            let _ = cmd_tx.send(json);
-                        }
-                        Self::emit_pi_event(
-                            app,
-                            Some(&cancelled.owner),
-                            serde_json::json!({
-                                "type": "extension_ui_response",
-                                "id": request_id,
-                                "cancelled": true,
-                                "reason": "frontend_delivery_failed"
-                            }),
-                        );
-                    }
-                }
+            if registered {
+                Self::emit(app, Some(&owner), value);
+            } else {
+                Self::cancel_unknown_ui(slot, &value);
             }
             return;
         }
-
         if event_type.is_some() {
             let (owner, reconciliations) = {
-                let mut guard = inner.lock().unwrap();
-                let owner = guard.active_run.clone();
-                let reconciliations = if event_type == Some("agent_end")
+                let mut state = slot.state.lock().unwrap();
+                let owner = state.active_run.clone();
+                let reconciliations = if event_type.as_deref() == Some("agent_end")
                     && !value
                         .get("willRetry")
-                        .and_then(|value| value.as_bool())
+                        .and_then(|v| v.as_bool())
                         .unwrap_or(false)
                 {
-                    guard.active_run = None;
-                    owner.as_ref().map_or_else(Vec::new, |owner| {
-                        drain_pending_extension_ui(&mut guard.pending_extension_ui, Some(owner))
-                    })
+                    state.active_run = None;
+                    owner
+                        .as_ref()
+                        .map(|owner| {
+                            drain_pending_extension_ui(&mut state.pending_extension_ui, Some(owner))
+                        })
+                        .unwrap_or_default()
                 } else {
                     Vec::new()
                 };
                 (owner, reconciliations)
             };
-            Self::emit_extension_ui_reconciliations(&app, reconciliations, "agent_ended");
-            Self::emit_pi_event(app, owner.as_ref(), value);
+            Self::emit_reconciliations(app, reconciliations, "agent_ended");
+            Self::emit(app, owner.as_ref(), value);
+            if event_type.as_deref() == Some("agent_end") && owner.is_some() {
+                capacity_changed.notify_waiters();
+            }
+            return;
         }
     }
 
-    fn emit_pi_event(
-        app: &Arc<StdMutex<Option<AppHandle>>>,
-        owner: Option<&RunOwner>,
-        mut event: serde_json::Value,
-    ) -> bool {
-        event_owner_payload(&mut event, owner);
-
-        let app = app.lock().unwrap().clone();
-        let Some(app) = app else {
-            eprintln!("[pi] Cannot emit Pi event: app handle is unavailable");
-            return false;
-        };
-        if let Err(error) = app.emit("pi-event", event) {
-            eprintln!("[pi] Failed to emit Pi event: {error}");
-            return false;
+    fn cancel_unknown_ui(slot: &RuntimeSlot, value: &serde_json::Value) {
+        if let Some(id) = value.get("id").and_then(|value| value.as_str()) {
+            let _ = Self::write_stdin(
+                slot,
+                &serde_json::json!({"type":"extension_ui_response","id":id,"cancelled":true})
+                    .to_string(),
+            );
         }
-        true
     }
 
     pub async fn start(
@@ -1032,186 +1184,41 @@ Divo workspace policy:
         data_folder: PathBuf,
         scratch_dir: PathBuf,
         workspace_dir: PathBuf,
-        initial_thread_id: Option<String>,
+        _initial_thread_id: Option<String>,
     ) -> Result<(), String> {
-        let _lifecycle = self.lifecycle.lock().await;
-        self.start_locked(
+        let config = RuntimeConfig {
             app,
             data_folder,
             scratch_dir,
             workspace_dir,
-            initial_thread_id,
-        )
-        .await
-    }
-
-    async fn ensure_thread_locked(&self, thread_id: String) -> Result<(), String> {
-        let needs_switch = {
-            let guard = self.inner.lock().unwrap();
-            guard.active_thread_id.as_deref() != Some(thread_id.as_str())
         };
-
-        if !needs_switch {
-            return Ok(());
-        }
-
-        let previous_run = self.active_run();
-        let preserve_bash_rule = {
-            let mut guard = self.inner.lock().unwrap();
-            let preserve = guard.bash_always_allowed_threads.contains(&thread_id);
-            guard
-                .bash_always_allowed_threads
-                .retain(|candidate| candidate == &thread_id);
-            preserve
+        let stale = {
+            let mut pool = self.pool.lock().await;
+            let changed = pool.config.as_ref().is_some_and(|current| {
+                current.workspace_dir != config.workspace_dir
+                    || current.data_folder != config.data_folder
+            });
+            pool.config = Some(config);
+            if changed {
+                std::mem::take(&mut pool.slots)
+                    .into_values()
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
         };
-
-        if let Some(owner) = previous_run {
-            self.abort_locked(owner.clone(), "thread_switched").await?;
-            self.wait_for_run_clear(&owner).await?;
+        let app = self.config().await?.app;
+        for slot in stale {
+            Self::stop_slot(&slot, Some(&app), "process_restarted").await;
         }
-
-        let restart_for_thread = {
-            let guard = self.inner.lock().unwrap();
-            guard.runtime_thread_id.as_deref() != Some(thread_id.as_str())
-        };
-        if restart_for_thread {
-            self.restart_for_thread_locked(&thread_id, preserve_bash_rule)
-                .await?;
-        }
-
-        let (data_folder, session_path, workspace_dir) = {
-            let guard = self.inner.lock().unwrap();
-            let data_folder = guard
-                .data_folder
-                .clone()
-                .ok_or("Pi process is not running")?;
-            let workspace_dir = guard
-                .workspace_dir
-                .clone()
-                .ok_or("Pi workspace is not configured")?;
-            let session_path = resolve_session_path(&data_folder, &thread_id);
-            (data_folder, session_path, workspace_dir)
-        };
-
-        ensure_thread_dir_exists(&data_folder, &thread_id)?;
-        ensure_session_workspace_cwd(&session_path, &workspace_dir)?;
-
-        let resp = self
-            .send_rpc(
-                serde_json::json!({
-                    "type": "switch_session",
-                    "sessionPath": session_path.to_string_lossy()
-                }),
-                None,
-            )
-            .await?;
-        if resp
-            .get("cancelled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            return Err("Session switch cancelled".into());
-        }
-
-        let mut guard = self.inner.lock().unwrap();
-        guard.active_thread_id = Some(thread_id);
+        self.wake_capacity();
         Ok(())
     }
 
-    async fn restart_for_thread_locked(
-        &self,
-        thread_id: &str,
-        preserve_bash_rule: bool,
-    ) -> Result<(), String> {
-        let (data_folder, scratch_dir, workspace_dir) = {
-            let guard = self.inner.lock().unwrap();
-            (
-                guard
-                    .data_folder
-                    .clone()
-                    .ok_or("Pi process is not running")?,
-                guard
-                    .scratch_dir
-                    .clone()
-                    .ok_or("Pi scratch directory is not configured")?,
-                guard
-                    .workspace_dir
-                    .clone()
-                    .ok_or("Pi workspace is not configured")?,
-            )
-        };
-        let app = self
-            .app
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or("Pi app handle is not configured")?;
-
-        self.stop_locked().await;
-        if preserve_bash_rule {
-            self.set_bash_approval_rule(thread_id, true);
-        }
-        self.start_locked(
-            app,
-            data_folder,
-            scratch_dir,
-            workspace_dir,
-            Some(thread_id.to_string()),
-        )
-        .await
-    }
-
     pub async fn ensure_thread(&self, thread_id: String) -> Result<(), String> {
-        let _lifecycle = self.lifecycle.lock().await;
-        self.ensure_thread_locked(thread_id).await
-    }
-
-    pub async fn get_state(&self) -> Result<serde_json::Value, String> {
-        self.send_rpc(serde_json::json!({ "type": "get_state" }), None)
-            .await
-    }
-
-    async fn restart_if_browser_cdp_changed_locked(&self, app: &AppHandle) -> Result<(), String> {
-        let fingerprint = current_browser_cdp_fingerprint();
-        let (needs_restart, data_folder, scratch_dir, workspace_dir, initial_thread_id) = {
-            let guard = self.inner.lock().unwrap();
-            let needs = guard.process.is_some()
-                && fingerprint.is_some()
-                && fingerprint != guard.browser_cdp_fingerprint;
-            (
-                needs,
-                guard.data_folder.clone(),
-                guard.scratch_dir.clone(),
-                guard.workspace_dir.clone(),
-                guard
-                    .active_run
-                    .as_ref()
-                    .map(|owner| owner.thread_id.clone())
-                    .or_else(|| guard.active_thread_id.clone()),
-            )
-        };
-
-        if !needs_restart {
-            return Ok(());
-        }
-
-        self.stop_locked().await;
-        kill_orphan_chrome_devtools_mcp();
-
-        let (data_folder, scratch_dir, workspace_dir) =
-            match (data_folder, scratch_dir, workspace_dir) {
-                (Some(d), Some(s), Some(w)) => (d, s, w),
-                _ => return Ok(()),
-            };
-
-        self.start_locked(
-            app.clone(),
-            data_folder,
-            scratch_dir,
-            workspace_dir,
-            initial_thread_id,
-        )
-        .await
+        self.config().await?;
+        let lease = self.acquire_slot(&thread_id, None).await?;
+        self.ensure_slot_started(lease.slot()).await
     }
 
     pub async fn prompt(
@@ -1221,100 +1228,123 @@ Divo workspace policy:
         message: String,
     ) -> Result<(), String> {
         let owner = RunOwner::new(thread_id, run_id)?;
-        let _lifecycle = self.lifecycle.lock().await;
-        let app = self.app.lock().unwrap().clone();
-        if let Some(app) = app {
-            self.restart_if_browser_cdp_changed_locked(&app).await?;
+        if self.pool.lock().await.cancelled_runs.remove(&owner) {
+            return Err("Pi prompt was cancelled before runtime admission".into());
         }
-        self.ensure_thread_locked(owner.thread_id.clone()).await?;
-        {
-            let mut guard = self.inner.lock().unwrap();
-            if let Some(active_run) = guard.active_run.as_ref() {
-                if active_run == &owner {
-                    return Err("This Pi run is already active".into());
-                }
-                return Err("Another Pi run is already active".into());
-            }
-            guard.active_run = Some(owner.clone());
-        }
-        let result = self
-            .send_rpc(
-                serde_json::json!({
-                    "type": "prompt",
-                    "message": message
-                }),
-                Some(owner.clone()),
-            )
+        #[cfg(test)]
+        self.pause_test_hook(|hooks| hooks.after_initial_cancel_read.clone())
             .await;
-        if result.is_err() {
-            self.clear_active_run_for_owner(&owner);
+        #[cfg(not(test))]
+        self.config().await?;
+        #[cfg(test)]
+        if !self.test_admission_configured.load(Ordering::Acquire) {
+            self.config().await?;
         }
-        result.map(|_| ())
-    }
-
-    async fn abort_locked(&self, owner: RunOwner, reason: &str) -> Result<(), String> {
-        {
-            let guard = self.inner.lock().unwrap();
-            require_active_run(guard.active_run.as_ref(), &owner, "abort")?;
-        }
-        self.cancel_pending_extension_ui(Some(&owner), reason);
-        self.inner
-            .lock()
-            .unwrap()
-            .bash_always_allowed_threads
-            .remove(&owner.thread_id);
-        self.send_rpc(serde_json::json!({ "type": "abort" }), None)
+        let mut lease = self
+            .acquire_slot(&owner.thread_id, Some(owner.clone()))
             .await?;
-        Ok(())
+        let slot = lease.slot().clone();
+        let _lifecycle = slot.lifecycle.lock().await;
+        if self.pool.lock().await.cancelled_runs.remove(&owner) {
+            return Err("Pi prompt was cancelled during runtime admission".into());
+        }
+        if slot.state.lock().unwrap().process.is_none() {
+            Self::spawn_slot(&slot, &self.config().await?, self.capacity_changed.clone()).await?;
+        }
+        {
+            let mut state = slot.state.lock().unwrap();
+            if let Some(active) = state.active_run.as_ref() {
+                return Err(if active == &owner {
+                    "This Pi run is already active".into()
+                } else {
+                    "Another Pi run is already active for this thread".into()
+                });
+            }
+            state.active_run = Some(owner.clone());
+        }
+        let result = Self::send_rpc(
+            &slot,
+            serde_json::json!({"type":"prompt","message":message}),
+            Some(owner.clone()),
+            &self.capacity_changed,
+        )
+        .await;
+        if result.is_err() {
+            clear_active_run_if_matches(&mut slot.state.lock().unwrap().active_run, &owner);
+            self.wake_capacity();
+        }
+        lease.release();
+        result.map(|_| ())
     }
 
     pub async fn abort(&self, thread_id: String, run_id: String) -> Result<(), String> {
         let owner = RunOwner::new(thread_id, run_id)?;
-        let _lifecycle = self.lifecycle.lock().await;
-        self.abort_locked(owner, "run_aborted").await
-    }
-
-    async fn stop_locked(&self) {
-        self.cancel_pending_extension_ui(None, "process_stopped");
-        let mut guard = self.inner.lock().unwrap();
-        if let Some(mut pi) = guard.process.take() {
-            let _ = pi.child.kill();
+        {
+            let pool = self.pool.lock().await;
+            if let Some(waiter) = pool.waiters.iter().find(|waiter| {
+                waiter.owner.as_ref() == Some(&owner)
+                    && waiter.state.load(Ordering::Acquire) == WAITER_QUEUED
+            }) {
+                waiter.state.store(WAITER_CANCELLED, Ordering::Release);
+                self.wake_capacity();
+                return Ok(());
+            }
         }
-        guard.runtime_thread_id = None;
-        guard.active_thread_id = None;
-        guard.active_run = None;
-        guard.browser_cdp_fingerprint = None;
-        fail_pending_rpc(
-            &mut guard.pending,
-            "Pi process stopped before the RPC completed",
-        );
-        guard.bash_always_allowed_threads.clear();
+        let slot = self.pool.lock().await.slots.get(&owner.thread_id).cloned();
+        let Some(slot) = slot else {
+            self.pool.lock().await.cancelled_runs.insert(owner);
+            self.wake_capacity();
+            return Ok(());
+        };
+        let _lifecycle = slot.lifecycle.lock().await;
+        if slot.state.lock().unwrap().active_run.is_none() {
+            self.pool.lock().await.cancelled_runs.insert(owner);
+            self.wake_capacity();
+            return Ok(());
+        }
+        require_active_run(
+            slot.state.lock().unwrap().active_run.as_ref(),
+            &owner,
+            "abort",
+        )?;
+        let reconciliations = {
+            let mut state = slot.state.lock().unwrap();
+            drain_pending_extension_ui(&mut state.pending_extension_ui, Some(&owner))
+        };
+        let app = self.config().await?.app;
+        Self::emit_reconciliations(&app, reconciliations, "run_aborted");
+        Self::send_rpc(
+            &slot,
+            serde_json::json!({"type":"abort"}),
+            None,
+            &self.capacity_changed,
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn stop(&self) {
-        let _lifecycle = self.lifecycle.lock().await;
-        self.stop_locked().await;
-    }
-
-    fn cancel_pending_extension_ui(&self, owner: Option<&RunOwner>, reason: &str) {
-        let reconciliations = {
-            let mut guard = self.inner.lock().unwrap();
-            drain_pending_extension_ui(&mut guard.pending_extension_ui, owner)
-        };
-
-        for reconciliation in &reconciliations {
-            if let Ok(json) = serde_json::to_string(&serde_json::json!({
-                "type": "extension_ui_response",
-                "id": reconciliation.request_id,
-                "cancelled": true
-            })) {
-                let _ = self.cmd_tx.send(json);
+        let (slots, app) = {
+            let mut pool = self.pool.lock().await;
+            let app = pool.config.as_ref().map(|config| config.app.clone());
+            for waiter in &pool.waiters {
+                waiter.state.store(WAITER_STOPPED, Ordering::Release);
             }
+            pool.bash_rules.clear();
+            (
+                std::mem::take(&mut pool.slots)
+                    .into_values()
+                    .collect::<Vec<_>>(),
+                app,
+            )
+        };
+        for slot in slots {
+            Self::stop_slot(&slot, app.as_ref(), "process_stopped").await;
         }
-        Self::emit_extension_ui_reconciliations(&self.app, reconciliations, reason);
+        self.wake_capacity();
     }
 
-    pub fn extension_ui_response(
+    pub async fn extension_ui_response(
         &self,
         request_id: String,
         thread_id: String,
@@ -1324,119 +1354,151 @@ Divo workspace policy:
         cancelled: bool,
         always_allow_bash: bool,
     ) -> Result<(), String> {
-        let owner = RunOwner::new(thread_id.clone(), run_id)?;
-        let (pending, response) = {
-            let mut guard = self.inner.lock().unwrap();
-            if guard.process.is_none() {
-                return Err("Pi process is not running".into());
+        let owner = RunOwner::new(thread_id, run_id)?;
+        if confirmed.is_none() {
+            let slot = self
+                .pool
+                .lock()
+                .await
+                .slots
+                .get(&owner.thread_id)
+                .cloned()
+                .ok_or("No Pi runtime is assigned to this thread")?;
+            if slot
+                .state
+                .lock()
+                .unwrap()
+                .pending_extension_ui
+                .get(&request_id)
+                .is_some_and(|pending| pending.protocol == ExtensionUiProtocol::Approval)
+            {
+                return Err("Divo approval response requires confirmed".into());
             }
-            let protocol = guard
+        }
+        let slot = self
+            .pool
+            .lock()
+            .await
+            .slots
+            .get(&owner.thread_id)
+            .cloned()
+            .ok_or("No Pi runtime is assigned to this thread")?;
+        let _lifecycle = slot.lifecycle.lock().await;
+        let (pending, response) = {
+            let mut state = slot.state.lock().unwrap();
+            let protocol = state
                 .pending_extension_ui
                 .get(&request_id)
                 .map(|pending| pending.protocol)
                 .ok_or("Unknown or already resolved extension UI request")?;
             let pending = match protocol {
                 ExtensionUiProtocol::Approval => {
-                    take_pending_confirm(&mut guard.pending_extension_ui, &request_id, &owner)?
+                    take_pending_confirm(&mut state.pending_extension_ui, &request_id, &owner)?
                 }
                 ExtensionUiProtocol::MemoryReview => take_pending_memory_review(
-                    &mut guard.pending_extension_ui,
+                    &mut state.pending_extension_ui,
                     &request_id,
                     &owner,
                 )?,
             };
-            let is_confirmed = confirmed.unwrap_or(false);
-            if always_allow_bash && !can_enable_always_allow_bash(&pending, is_confirmed) {
-                guard
+            if always_allow_bash
+                && !can_enable_always_allow_bash(&pending, confirmed.unwrap_or(false))
+            {
+                state
                     .pending_extension_ui
                     .insert(request_id.clone(), pending);
                 return Err("Always allow is available only for a confirmed Bash request".into());
             }
             if always_allow_bash {
-                guard
-                    .bash_always_allowed_threads
-                    .insert(owner.thread_id.clone());
+                state.bash_always_allowed = true;
             }
             let response = match protocol {
                 ExtensionUiProtocol::Approval => {
-                    let Some(confirmed) = confirmed else {
-                        guard
-                            .pending_extension_ui
-                            .insert(request_id.clone(), pending);
-                        return Err("Divo approval response requires confirmed".into());
-                    };
-                    serde_json::json!({
-                        "type": "extension_ui_response",
-                        "id": request_id.clone(),
-                        "confirmed": confirmed
-                    })
+                    serde_json::json!({"type":"extension_ui_response","id":request_id,"confirmed":confirmed.ok_or("Divo approval response requires confirmed")?})
+                }
+                ExtensionUiProtocol::MemoryReview if cancelled => {
+                    serde_json::json!({"type":"extension_ui_response","id":request_id,"cancelled":true})
+                }
+                ExtensionUiProtocol::MemoryReview
+                    if value.as_deref().is_some_and(valid_memory_review_response) =>
+                {
+                    serde_json::json!({"type":"extension_ui_response","id":request_id,"value":value})
                 }
                 ExtensionUiProtocol::MemoryReview => {
-                    if cancelled {
-                        serde_json::json!({
-                            "type": "extension_ui_response",
-                            "id": request_id.clone(),
-                            "cancelled": true
-                        })
-                    } else if value.as_deref().is_some_and(valid_memory_review_response) {
-                        serde_json::json!({
-                            "type": "extension_ui_response",
-                            "id": request_id.clone(),
-                            "value": value.expect("validated value is present")
-                        })
-                    } else {
-                        // Invalid structured form data is consumed as a cancellation.
-                        // Never leave Pi waiting or let malformed data reach publishing.
-                        serde_json::json!({
-                            "type": "extension_ui_response",
-                            "id": request_id.clone(),
-                            "cancelled": true
-                        })
-                    }
+                    serde_json::json!({"type":"extension_ui_response","id":request_id,"cancelled":true})
                 }
             };
             (pending, response)
         };
-
-        let response = serde_json::to_string(&response).map_err(|error| error.to_string())?;
-
-        if let Err(error) = self.write_stdin(&response) {
-            let mut guard = self.inner.lock().unwrap();
-            if always_allow_bash {
-                guard.bash_always_allowed_threads.remove(&owner.thread_id);
-            }
-            guard.pending_extension_ui.insert(request_id, pending);
+        if let Err(error) = Self::write_stdin(&slot, &response.to_string()) {
+            // The request was consumed under the lifecycle lock. Do not reinsert
+            // it after a process exit/stop may have performed terminal cleanup.
+            let app = self.config().await?.app;
+            Self::emit(
+                &app,
+                Some(&pending.owner),
+                serde_json::json!({
+                    "type": "extension_ui_response",
+                    "id": request_id,
+                    "cancelled": true,
+                    "reason": "response_write_failed",
+                }),
+            );
             return Err(error);
+        }
+        if always_allow_bash {
+            self.pool.lock().await.bash_rules.insert(owner.thread_id);
         }
         Ok(())
     }
 
-    pub fn revoke_bash_approval(&self, thread_id: &str) {
-        self.set_bash_approval_rule(thread_id, false);
+    pub async fn revoke_bash_approval(&self, thread_id: &str) {
+        self.set_bash_approval_rule(thread_id, false).await;
     }
-
-    pub fn set_bash_approval_rule(&self, thread_id: &str, allowed: bool) {
-        let mut guard = self.inner.lock().unwrap();
+    pub async fn set_bash_approval_rule(&self, thread_id: &str, allowed: bool) {
+        let mut pool = self.pool.lock().await;
         if allowed {
-            guard
-                .bash_always_allowed_threads
-                .insert(thread_id.to_string());
+            pool.bash_rules.insert(thread_id.into());
         } else {
-            guard.bash_always_allowed_threads.remove(thread_id);
+            pool.bash_rules.remove(thread_id);
+        }
+        if let Some(slot) = pool.slots.get(thread_id) {
+            slot.state.lock().unwrap().bash_always_allowed = allowed;
         }
     }
-
-    pub fn bash_approval_allowed(&self, thread_id: &str) -> bool {
-        self.inner
+    pub async fn bash_approval_allowed(&self, thread_id: &str) -> bool {
+        self.pool.lock().await.bash_rules.contains(thread_id)
+    }
+    pub async fn is_running(&self) -> bool {
+        self.pool
             .lock()
-            .unwrap()
-            .bash_always_allowed_threads
-            .contains(thread_id)
+            .await
+            .slots
+            .values()
+            .any(|slot| slot.state.lock().unwrap().process.is_some())
+    }
+    pub async fn get_state(&self) -> Result<serde_json::Value, String> {
+        let slot = {
+            let pool = self.pool.lock().await;
+            pool.slots
+                .iter()
+                .filter(|(_, slot)| slot.state.lock().unwrap().process.is_some())
+                .min_by(|(left, _), (right, _)| left.cmp(right))
+                .map(|(_, slot)| slot.clone())
+                .ok_or("Pi process is not running")?
+        };
+        Self::send_rpc(
+            &slot,
+            serde_json::json!({"type":"get_state"}),
+            None,
+            &self.capacity_changed,
+        )
+        .await
     }
 
-    pub async fn is_running(&self) -> bool {
-        let guard = self.inner.lock().unwrap();
-        guard.process.is_some()
+    pub async fn get_pool_state(&self) -> serde_json::Value {
+        let pool = self.pool.lock().await;
+        serde_json::json!({"poolCapacity":RUNTIME_POOL_CAPACITY,"runtimes":pool.slots.values().map(|slot| { let state=slot.state.lock().unwrap(); serde_json::json!({"threadId":slot.thread_id,"running":state.process.is_some(),"activeRunId":state.active_run.as_ref().map(|owner| owner.run_id.clone()),"pendingUi":state.pending_extension_ui.len(),"admissionLeases":state.admission_leases,"pendingRpcs":state.pending.len()}) }).collect::<Vec<_>>(),"waiting":pool.waiters.iter().filter(|waiter| waiter.state.load(Ordering::Acquire) == WAITER_QUEUED).count()})
     }
 }
 
@@ -1444,13 +1506,15 @@ Divo workspace policy:
 mod tests {
     use super::{
         approval_source, can_enable_always_allow_bash, clear_active_run_if_matches,
-        drain_pending_extension_ui, event_owner_payload, fail_pending_rpc,
+        drain_pending_extension_ui, event_owner_payload, fail_pending_rpc, idle_runtime_thread,
         is_divo_approval_request, is_divo_memory_review_request, require_active_run,
         response_clears_active_run, should_auto_allow_bash, take_pending_confirm,
         take_pending_memory_review, valid_memory_review_response, ApprovalSource,
         ExtensionUiProtocol, PendingExtensionUiRequest, PendingRpc, PiManager, RunOwner,
+        RuntimeSlot,
     };
     use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
     use tokio::runtime::Runtime;
 
     fn owner(thread_id: &str, run_id: &str) -> RunOwner {
@@ -1813,12 +1877,378 @@ mod tests {
     #[test]
     fn permission_rules_can_explicitly_enable_and_revoke_bash_for_one_task() {
         let manager = PiManager::new();
+        let runtime = Runtime::new().unwrap();
 
-        manager.set_bash_approval_rule("thread-1", true);
-        assert!(manager.bash_approval_allowed("thread-1"));
-        assert!(!manager.bash_approval_allowed("thread-2"));
+        runtime.block_on(manager.set_bash_approval_rule("thread-1", true));
+        assert!(runtime.block_on(manager.bash_approval_allowed("thread-1")));
+        assert!(!runtime.block_on(manager.bash_approval_allowed("thread-2")));
 
-        manager.revoke_bash_approval("thread-1");
-        assert!(!manager.bash_approval_allowed("thread-1"));
+        runtime.block_on(manager.revoke_bash_approval("thread-1"));
+        assert!(!runtime.block_on(manager.bash_approval_allowed("thread-1")));
+    }
+
+    #[test]
+    fn two_overlapping_runs_remain_owned_by_their_thread_slots() {
+        let first = Arc::new(RuntimeSlot::new("thread-a".into()));
+        let second = Arc::new(RuntimeSlot::new("thread-b".into()));
+        first.state.lock().unwrap().active_run = Some(owner("thread-a", "run-a"));
+        second.state.lock().unwrap().active_run = Some(owner("thread-b", "run-b"));
+
+        assert_eq!(
+            first.state.lock().unwrap().active_run,
+            Some(owner("thread-a", "run-a"))
+        );
+        assert_eq!(
+            second.state.lock().unwrap().active_run,
+            Some(owner("thread-b", "run-b"))
+        );
+        assert!(!first.reclaimable());
+        assert!(!second.reclaimable());
+    }
+
+    #[test]
+    fn third_waiter_can_be_admitted_only_after_an_idle_slot_is_available() {
+        let first = Arc::new(RuntimeSlot::new("thread-a".into()));
+        let second = Arc::new(RuntimeSlot::new("thread-b".into()));
+        first.state.lock().unwrap().active_run = Some(owner("thread-a", "run-a"));
+        second.state.lock().unwrap().active_run = Some(owner("thread-b", "run-b"));
+        let mut slots = HashMap::from([
+            ("thread-a".to_string(), first.clone()),
+            ("thread-b".to_string(), second),
+        ]);
+
+        assert_eq!(slots.len(), super::RUNTIME_POOL_CAPACITY);
+        assert_eq!(idle_runtime_thread(&slots), None);
+
+        first.state.lock().unwrap().active_run = None;
+        let reclaimed = idle_runtime_thread(&slots).unwrap();
+        assert_eq!(reclaimed, "thread-a");
+        slots.remove(&reclaimed);
+        slots.insert(
+            "thread-c".into(),
+            Arc::new(RuntimeSlot::new("thread-c".into())),
+        );
+        assert_eq!(slots.len(), super::RUNTIME_POOL_CAPACITY);
+        assert!(slots.contains_key("thread-c"));
+    }
+
+    #[test]
+    fn stale_abort_cannot_target_another_slot() {
+        let first = owner("thread-a", "run-a");
+        let second = owner("thread-b", "run-b");
+        assert!(require_active_run(Some(&first), &first, "abort").is_ok());
+        assert!(require_active_run(Some(&second), &first, "abort").is_err());
+    }
+
+    #[test]
+    fn approval_in_one_slot_does_not_make_another_slot_non_reclaimable() {
+        let approval_slot = Arc::new(RuntimeSlot::new("thread-a".into()));
+        let idle_slot = Arc::new(RuntimeSlot::new("thread-b".into()));
+        approval_slot
+            .state
+            .lock()
+            .unwrap()
+            .pending_extension_ui
+            .insert("approval-a".into(), pending("confirm", "thread-a", "run-a"));
+        let slots = HashMap::from([
+            ("thread-a".to_string(), approval_slot),
+            ("thread-b".to_string(), idle_slot),
+        ]);
+
+        assert_eq!(idle_runtime_thread(&slots).as_deref(), Some("thread-b"));
+    }
+
+    #[test]
+    fn idle_reclamation_is_stable_and_never_evicts_active_or_approval_waiting_slots() {
+        let active = Arc::new(RuntimeSlot::new("thread-a".into()));
+        active.state.lock().unwrap().active_run = Some(owner("thread-a", "run-a"));
+        let approval = Arc::new(RuntimeSlot::new("thread-b".into()));
+        approval
+            .state
+            .lock()
+            .unwrap()
+            .pending_extension_ui
+            .insert("approval-b".into(), pending("confirm", "thread-b", "run-b"));
+        let idle = Arc::new(RuntimeSlot::new("thread-c".into()));
+        let slots = HashMap::from([
+            ("thread-a".to_string(), active),
+            ("thread-b".to_string(), approval),
+            ("thread-c".to_string(), idle),
+        ]);
+
+        assert_eq!(idle_runtime_thread(&slots).as_deref(), Some("thread-c"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_third_waiter_is_removed_and_never_admitted() {
+        let manager = PiManager::new();
+        let mut first = manager.acquire_slot("thread-a", None).await.unwrap();
+        first.slot().state.lock().unwrap().active_run = Some(owner("thread-a", "run-a"));
+        first.release();
+        let mut second = manager.acquire_slot("thread-b", None).await.unwrap();
+        second.slot().state.lock().unwrap().active_run = Some(owner("thread-b", "run-b"));
+        second.release();
+
+        let waiting_owner = owner("thread-c", "run-c");
+        let waiter_manager = manager.clone();
+        let waiter_owner = waiting_owner.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_manager
+                .acquire_slot("thread-c", Some(waiter_owner))
+                .await
+        });
+        tokio::task::yield_now().await;
+        manager
+            .abort("thread-c".into(), "run-c".into())
+            .await
+            .unwrap();
+        assert!(waiter.await.unwrap().is_err());
+        assert!(!manager.pool.lock().await.slots.contains_key("thread-c"));
+    }
+
+    #[tokio::test]
+    async fn dropped_waiter_cleans_fifo_and_admission_lease_blocks_eviction() {
+        let manager = PiManager::new();
+        let mut first = manager.acquire_slot("thread-a", None).await.unwrap();
+        let first_slot = first.slot().clone();
+        first_slot.state.lock().unwrap().active_run = Some(owner("thread-a", "run-a"));
+        first.release();
+        let mut second = manager.acquire_slot("thread-b", None).await.unwrap();
+        second.slot().state.lock().unwrap().active_run = Some(owner("thread-b", "run-b"));
+        second.release();
+
+        let mut dropped =
+            Box::pin(manager.acquire_slot("thread-c", Some(owner("thread-c", "run-c"))));
+        assert!(matches!(
+            futures::poll!(dropped.as_mut()),
+            std::task::Poll::Pending
+        ));
+        drop(dropped);
+
+        // Dropping the caller cancels its explicit waiter identity; it cannot
+        // later claim A when that slot becomes idle.
+        let pool = manager.pool.lock().await;
+        assert!(pool
+            .waiters
+            .iter()
+            .all(|waiter| { waiter.state.load(super::Ordering::Acquire) != super::WAITER_QUEUED }));
+        drop(pool);
+
+        // A caller-held lease is not reclaimable even before it starts a
+        // prompt or creates any RPC work.
+        let held = manager.acquire_slot("thread-a", None).await.unwrap();
+        assert!(!held.slot().reclaimable());
+    }
+
+    #[tokio::test]
+    async fn stop_terminally_releases_waiters() {
+        let manager = PiManager::new();
+        let mut first = manager.acquire_slot("thread-a", None).await.unwrap();
+        first.slot().state.lock().unwrap().active_run = Some(owner("thread-a", "run-a"));
+        first.release();
+        let mut second = manager.acquire_slot("thread-b", None).await.unwrap();
+        second.slot().state.lock().unwrap().active_run = Some(owner("thread-b", "run-b"));
+        second.release();
+        let waiting_manager = manager.clone();
+        let waiter = tokio::spawn(async move {
+            waiting_manager
+                .acquire_slot("thread-c", Some(owner("thread-c", "run-c")))
+                .await
+        });
+        tokio::task::yield_now().await;
+        manager.stop().await;
+        assert!(waiter.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn abort_before_prompt_admission_prevents_later_execution() {
+        let manager = PiManager::new();
+        manager
+            .abort("thread-c".into(), "run-c".into())
+            .await
+            .unwrap();
+        assert!(manager
+            .prompt("thread-c".into(), "run-c".into(), "late prompt".into())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_ui_response_consumption_never_reinserts_after_terminal_cleanup() {
+        let manager = PiManager::new();
+        let slot = Arc::new(RuntimeSlot::new("thread-a".into()));
+        slot.state
+            .lock()
+            .unwrap()
+            .pending_extension_ui
+            .insert("approval-a".into(), pending("confirm", "thread-a", "run-a"));
+        manager
+            .pool
+            .lock()
+            .await
+            .slots
+            .insert("thread-a".into(), slot.clone());
+
+        assert!(manager
+            .extension_ui_response(
+                "approval-a".into(),
+                "thread-a".into(),
+                "run-a".into(),
+                Some(true),
+                None,
+                false,
+                false,
+            )
+            .await
+            .is_err());
+        assert!(slot.state.lock().unwrap().pending_extension_ui.is_empty());
+    }
+
+    #[tokio::test]
+    async fn barrier_forces_abort_between_initial_read_and_registration() {
+        let manager = PiManager::new();
+        manager
+            .test_admission_configured
+            .store(true, super::Ordering::Release);
+        let hook = super::TestHook {
+            reached: Arc::new(tokio::sync::Notify::new()),
+            resume: Arc::new(tokio::sync::Notify::new()),
+        };
+        {
+            let mut hooks = manager.test_hooks.lock().unwrap();
+            hooks.after_initial_cancel_read = Some(hook.clone());
+        }
+        let running = manager.clone();
+        let prompt = tokio::spawn(async move {
+            running
+                .prompt("thread-c".into(), "run-c".into(), "must not run".into())
+                .await
+        });
+        hook.reached.notified().await;
+        manager
+            .abort("thread-c".into(), "run-c".into())
+            .await
+            .unwrap();
+        hook.resume.notify_one();
+        assert_eq!(
+            prompt.await.unwrap().unwrap_err(),
+            "Pi prompt was cancelled before runtime admission"
+        );
+
+        let exact_owner = owner("thread-c", "run-c");
+        let pool = manager.pool.lock().await;
+        assert!(!pool.slots.contains_key("thread-c"));
+        assert!(pool
+            .waiters
+            .iter()
+            .all(|waiter| waiter.owner.as_ref() != Some(&exact_owner)));
+        assert!(!pool.cancelled_runs.contains(&exact_owner));
+        assert!(pool.slots.values().all(|slot| {
+            let state = slot.state.lock().unwrap();
+            state.active_run.as_ref() != Some(&exact_owner)
+                && state
+                    .pending
+                    .values()
+                    .all(|pending| pending.owner.as_ref() != Some(&exact_owner))
+                && state
+                    .pending_extension_ui
+                    .values()
+                    .all(|pending| pending.owner != exact_owner)
+        }));
+    }
+
+    #[tokio::test]
+    async fn armed_wait_barrier_does_not_lose_capacity_notification() {
+        let manager = PiManager::new();
+        let mut a = manager.acquire_slot("a", None).await.unwrap();
+        a.slot().state.lock().unwrap().active_run = Some(owner("a", "a-run"));
+        a.release();
+        let mut b = manager.acquire_slot("b", None).await.unwrap();
+        b.slot().state.lock().unwrap().active_run = Some(owner("b", "b-run"));
+        b.release();
+        let hook = super::TestHook {
+            reached: Arc::new(tokio::sync::Notify::new()),
+            resume: Arc::new(tokio::sync::Notify::new()),
+        };
+        {
+            let mut hooks = manager.test_hooks.lock().unwrap();
+            hooks.after_capacity_observed = Some(hook.clone());
+        }
+        let waiting = manager.clone();
+        let c =
+            tokio::spawn(async move { waiting.acquire_slot("c", Some(owner("c", "c-run"))).await });
+        hook.reached.notified().await;
+        {
+            let pool = manager.pool.lock().await;
+            assert_eq!(pool.slots.len(), super::RUNTIME_POOL_CAPACITY);
+            assert_eq!(pool.waiters.len(), 1);
+            assert_eq!(pool.waiters[0].owner, Some(owner("c", "c-run")));
+        }
+        a.slot().state.lock().unwrap().active_run = None;
+        manager.wake_capacity();
+        hook.resume.notify_one();
+        let held_c = tokio::time::timeout(std::time::Duration::from_secs(1), c)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let pool = manager.pool.lock().await;
+        assert!(pool.waiters.is_empty());
+        assert_eq!(pool.slots.len(), super::RUNTIME_POOL_CAPACITY);
+        assert!(!pool.slots.contains_key("a"));
+        assert!(pool.slots.contains_key("b"));
+        assert!(pool.slots.contains_key("c"));
+        assert_eq!(held_c.slot().state.lock().unwrap().admission_leases, 1);
+    }
+
+    #[tokio::test]
+    async fn existing_slot_lease_blocks_competing_reclamation_without_pool_overrun() {
+        let manager = PiManager::new();
+        let mut a = manager.acquire_slot("thread-a", None).await.unwrap();
+        let a_slot = a.slot().clone();
+        a.release();
+        let mut b = manager.acquire_slot("thread-b", None).await.unwrap();
+        b.release();
+
+        let hook = super::TestHook {
+            reached: Arc::new(tokio::sync::Notify::new()),
+            resume: Arc::new(tokio::sync::Notify::new()),
+        };
+        {
+            let mut hooks = manager.test_hooks.lock().unwrap();
+            hooks.after_existing_lease = Some(hook.clone());
+        }
+
+        // The observation fires immediately after A's pool-locked reservation.
+        // Its returned lease keeps that reservation live while C attempts real
+        // admission and reclamation.
+        let held_a = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.acquire_slot("thread-a", None),
+        )
+        .await
+        .expect("existing-slot admission should finish")
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), hook.reached.notified())
+            .await
+            .expect("existing-slot lease observation should fire");
+        let held_c = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.acquire_slot("thread-c", None),
+        )
+        .await
+        .expect("competing admission should finish")
+        .unwrap();
+
+        let pool = manager.pool.lock().await;
+        assert_eq!(pool.slots.len(), super::RUNTIME_POOL_CAPACITY);
+        assert!(Arc::ptr_eq(pool.slots.get("thread-a").unwrap(), &a_slot));
+        assert!(pool.slots.contains_key("thread-c"));
+        assert!(!pool.slots.contains_key("thread-b"));
+        assert!(Arc::ptr_eq(held_a.slot(), &a_slot));
+        assert_eq!(a_slot.state.lock().unwrap().admission_leases, 1);
+        drop(pool);
+        drop(held_c);
+        drop(held_a);
     }
 }

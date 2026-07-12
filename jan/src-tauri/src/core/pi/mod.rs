@@ -86,6 +86,12 @@ pub async fn pi_get_state(state: State<'_, PiState>) -> Result<serde_json::Value
     state.manager.get_state().await
 }
 
+/// Return manager-owned pool diagnostics without changing Pi's get_state RPC shape.
+#[tauri::command]
+pub async fn pi_get_pool_state(state: State<'_, PiState>) -> Result<serde_json::Value, String> {
+    Ok(state.manager.get_pool_state().await)
+}
+
 /// Resolve a pending named Pi extension UI request for its owning thread/run
 /// pair. A response for an earlier run is rejected.
 #[tauri::command]
@@ -99,15 +105,18 @@ pub async fn pi_extension_ui_respond(
     cancelled: Option<bool>,
     always_allow_bash: Option<bool>,
 ) -> Result<(), String> {
-    state.manager.extension_ui_response(
-        request_id,
-        thread_id,
-        run_id,
-        confirmed,
-        value,
-        cancelled.unwrap_or(false),
-        always_allow_bash.unwrap_or(false),
-    )
+    state
+        .manager
+        .extension_ui_response(
+            request_id,
+            thread_id,
+            run_id,
+            confirmed,
+            value,
+            cancelled.unwrap_or(false),
+            always_allow_bash.unwrap_or(false),
+        )
+        .await
 }
 
 /// Revoke the memory-only Bash grant when the user leaves or stops a task.
@@ -116,7 +125,7 @@ pub async fn pi_revoke_bash_approval(
     state: State<'_, PiState>,
     thread_id: String,
 ) -> Result<(), String> {
-    state.manager.revoke_bash_approval(&thread_id);
+    state.manager.revoke_bash_approval(&thread_id).await;
     Ok(())
 }
 
@@ -130,7 +139,7 @@ pub async fn pi_get_permission_rules(
         return Err("A task id is required to read permission rules".into());
     }
     Ok(serde_json::json!({
-        "bashAlwaysAllow": state.manager.bash_approval_allowed(&thread_id)
+        "bashAlwaysAllow": state.manager.bash_approval_allowed(&thread_id).await
     }))
 }
 
@@ -144,7 +153,10 @@ pub async fn pi_set_bash_approval_rule(
     if thread_id.trim().is_empty() {
         return Err("A task id is required to update permission rules".into());
     }
-    state.manager.set_bash_approval_rule(&thread_id, allowed);
+    state
+        .manager
+        .set_bash_approval_rule(&thread_id, allowed)
+        .await;
     Ok(())
 }
 
