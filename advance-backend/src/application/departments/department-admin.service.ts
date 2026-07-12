@@ -10,6 +10,7 @@ import {
   type CanonicalToolId,
 } from '../../domain/tools/tool-id';
 import { unknownSkillToolIds } from '../skills/skill-tool-validation';
+import { isFixedToolPolicy } from '../../domain/tools/tool-policy';
 
 export interface DepartmentAdminServiceDeps {
   prisma: PrismaClient;
@@ -21,6 +22,7 @@ export interface DepartmentAdminServiceDeps {
 export function memberTemplateGrants(): Array<{ toolId: string; actionGroup: string }> {
   const grants: Array<{ toolId: string; actionGroup: string }> = [];
   for (const toolId of CANONICAL_TOOL_IDS) {
+    if (isFixedToolPolicy(toolId)) continue;
     if (!TOOL_DEFAULT_PERMISSIONS[toolId].MEMBER) continue;
     for (const actionGroup of TOOL_SUPPORTED_ACTIONS[toolId as CanonicalToolId]) {
       grants.push({ toolId, actionGroup });
@@ -56,6 +58,9 @@ const VALID_TOOL_IDS = new Set<string>(CANONICAL_TOOL_IDS);
 function validateToolAndAction(toolId: string, actionGroup: string): DeptServiceError | null {
   if (!VALID_TOOL_IDS.has(toolId)) {
     return { kind: 'validation', message: `Unknown tool ID: ${toolId}` };
+  }
+  if (isFixedToolPolicy(toolId)) {
+    return { kind: 'validation', message: `Fixed-policy tool cannot be configured: ${toolId}` };
   }
   const supported = TOOL_SUPPORTED_ACTIONS[toolId as keyof typeof TOOL_SUPPORTED_ACTIONS] ?? [];
   if (actionGroup !== 'all' && !supported.includes(actionGroup)) {
@@ -157,6 +162,7 @@ export interface DeptDetail {
   };
   config: {
     systemPrompt:    string;
+    desktopPersonaPrompt: string;
     skillsMarkdown:  string;
     zohoRateLimit:   unknown;
     managerApproval: unknown;
@@ -326,6 +332,7 @@ export class DepartmentAdminService {
         },
         config: {
           systemPrompt:    agentConfig?.systemPrompt ?? '',
+          desktopPersonaPrompt: agentConfig?.desktopPersonaPrompt ?? '',
           skillsMarkdown:  agentConfig?.skillsMarkdown ?? '',
           zohoRateLimit:   agentConfig?.zohoRateLimitJson ?? null,
           managerApproval: agentConfig?.managerApprovalJson ?? null,
@@ -658,17 +665,17 @@ export class DepartmentAdminService {
     departmentId: string,
     companyId: string,
     updatedBy: string,
-    input: { systemPrompt: string; skillsMarkdown: string; zohoRateLimit?: unknown; managerApproval?: unknown; isActive?: boolean | undefined },
-  ): Promise<ServiceResult<{ departmentId: string; systemPrompt: string; skillsMarkdown: string; isActive: boolean; updatedAt: string }>> {
+    input: { systemPrompt: string; desktopPersonaPrompt?: string | undefined; skillsMarkdown: string; zohoRateLimit?: unknown; managerApproval?: unknown; isActive?: boolean | undefined },
+  ): Promise<ServiceResult<{ departmentId: string; systemPrompt: string; desktopPersonaPrompt: string; skillsMarkdown: string; isActive: boolean; updatedAt: string }>> {
     const check = await this.assertDepartmentInCompany(departmentId, companyId);
-    if (!check.ok) return check as ServiceResult<{ departmentId: string; systemPrompt: string; skillsMarkdown: string; isActive: boolean; updatedAt: string }>;
+    if (!check.ok) return check as ServiceResult<{ departmentId: string; systemPrompt: string; desktopPersonaPrompt: string; skillsMarkdown: string; isActive: boolean; updatedAt: string }>;
     try {
       const updated = await this.deps.prisma.departmentAgentConfig.upsert({
         where:  { departmentId },
-        update: { systemPrompt: input.systemPrompt, skillsMarkdown: input.skillsMarkdown, ...(input.zohoRateLimit !== undefined ? { zohoRateLimitJson: input.zohoRateLimit as object } : {}), ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), ...(input.isActive !== undefined ? { isActive: input.isActive } : {}), updatedBy },
-        create: { departmentId, systemPrompt: input.systemPrompt, skillsMarkdown: input.skillsMarkdown, ...(input.zohoRateLimit !== undefined ? { zohoRateLimitJson: input.zohoRateLimit as object } : {}), ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), isActive: input.isActive ?? true, createdBy: updatedBy, updatedBy },
+        update: { systemPrompt: input.systemPrompt, ...(input.desktopPersonaPrompt !== undefined ? { desktopPersonaPrompt: input.desktopPersonaPrompt } : {}), skillsMarkdown: input.skillsMarkdown, ...(input.zohoRateLimit !== undefined ? { zohoRateLimitJson: input.zohoRateLimit as object } : {}), ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), ...(input.isActive !== undefined ? { isActive: input.isActive } : {}), updatedBy },
+        create: { departmentId, systemPrompt: input.systemPrompt, desktopPersonaPrompt: input.desktopPersonaPrompt ?? '', skillsMarkdown: input.skillsMarkdown, ...(input.zohoRateLimit !== undefined ? { zohoRateLimitJson: input.zohoRateLimit as object } : {}), ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), isActive: input.isActive ?? true, createdBy: updatedBy, updatedBy },
       });
-      return ok({ departmentId, systemPrompt: updated.systemPrompt, skillsMarkdown: updated.skillsMarkdown, isActive: updated.isActive, updatedAt: updated.updatedAt.toISOString() });
+      return ok({ departmentId, systemPrompt: updated.systemPrompt, desktopPersonaPrompt: updated.desktopPersonaPrompt, skillsMarkdown: updated.skillsMarkdown, isActive: updated.isActive, updatedAt: updated.updatedAt.toISOString() });
     } catch (e) {
       this.log.error('dept.config.update.failed', { departmentId, error: String(e) });
       return fail({ kind: 'internal', message: 'Failed to update department config' });

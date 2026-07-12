@@ -1,6 +1,7 @@
 /**
  * Member session auth middleware.
- * Verifies HS256 JWT signed with MEMBER_JWT_SECRET, looks up MemberSession in DB.
+ * Verifies HS256 JWT signed with MEMBER_JWT_SECRET, looks up MemberSession and
+ * the current active company membership in DB.
  *
  * On success sets:
  *   res.locals.companyId  (string)
@@ -80,10 +81,28 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
         return;
       }
 
+      // MemberSession.role and the JWT role are issuance-time metadata only.
+      // Resolve the live membership on every request so a role downgrade or
+      // membership removal takes effect before any desktop or gateway handler.
+      const membership = await deps.prisma.adminMembership.findFirst({
+        where: {
+          userId:    session.userId,
+          companyId: session.companyId,
+          isActive:  true,
+        },
+        orderBy: { updatedAt: 'desc' },
+        select: { role: true },
+      });
+
+      if (!membership) {
+        res.status(401).json({ error: 'Company membership is no longer active' });
+        return;
+      }
+
       res.locals['companyId']  = session.companyId;
       res.locals['userId']     = session.userId;
-      res.locals['aiRole']     = session.role;
-      res.locals['isAdmin']    = session.role === 'COMPANY_ADMIN' || session.role === 'SUPER_ADMIN';
+      res.locals['aiRole']     = membership.role;
+      res.locals['isAdmin']    = membership.role === 'COMPANY_ADMIN' || membership.role === 'SUPER_ADMIN';
       res.locals['larkOpenId'] = session.larkOpenId ?? null;
       res.locals['sessionId']  = session.sessionId;
       res.locals['email']      = session.user?.email ?? null;

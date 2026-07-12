@@ -866,6 +866,7 @@ model DepartmentAgentConfig {
   departmentId        String     @unique
   department          Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   systemPrompt        String
+  desktopPersonaPrompt String    @default("")
   skillsMarkdown      String
   zohoRateLimitJson   Json?
   managerApprovalJson Json?

@@ -105,6 +105,7 @@ const updateDeptSchema = z.object({
 
 const updateConfigSchema = z.object({
   systemPrompt:    z.string().max(20000),
+  desktopPersonaPrompt: z.string().max(6000).optional(),
   skillsMarkdown:  z.string().max(40000),
   zohoRateLimit:   z.unknown().optional(),
   managerApproval: z.unknown().optional(),

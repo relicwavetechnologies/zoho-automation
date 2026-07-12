@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
 import type { GoogleOAuthService } from '../../infrastructure/google/google-oauth.service';
@@ -48,6 +49,10 @@ const DEFAULT_ZOHO_SCOPES = [
   'ZohoBooks.invoices.all',
   'ZohoBooks.expenses.all',
 ];
+
+const runtimeContextQuerySchema = z.object({
+  departmentId: z.string().uuid().optional(),
+});
 
 const pendingCallbacks = new Map<string, { code: string; state: string; createdAt: number }>();
 const pendingCallbackCleanup = setInterval(() => {
@@ -651,6 +656,86 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       });
     } catch (e) {
       res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  /**
+   * Desktop boot context. This intentionally stays outside gateway discovery:
+   * it is fetched at session lifecycle boundaries and cached locally by Jan,
+   * rather than fetched by Pi for each agent run.
+   */
+  router.get('/runtime-context', memberAuth, async (req: Request, res: Response) => {
+    const parsed = runtimeContextQuerySchema.safeParse({
+      departmentId: typeof req.query.departmentId === 'string'
+        ? req.query.departmentId
+        : undefined,
+    });
+    if (!parsed.success) {
+      res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? 'Invalid departmentId' });
+      return;
+    }
+
+    const userId = res.locals['userId'] as string;
+    const companyId = res.locals['companyId'] as string;
+    const departmentId = parsed.data.departmentId;
+
+    if (!departmentId) {
+      res.json({
+        success: true,
+        data: {
+          departmentId: null,
+          departmentName: null,
+          personaPrompt: '',
+          version: null,
+        },
+      });
+      return;
+    }
+
+    try {
+      const membership = await deps.prisma.departmentMembership.findFirst({
+        where: {
+          userId,
+          departmentId,
+          status: 'active',
+          department: { companyId, status: 'active' },
+        },
+        select: {
+          department: {
+            select: {
+              id: true,
+              name: true,
+              agentConfig: {
+                select: {
+                  desktopPersonaPrompt: true,
+                  isActive: true,
+                  updatedAt: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!membership) {
+        res.status(403).json({ success: false, message: 'Department access denied' });
+        return;
+      }
+
+      const config = membership.department.agentConfig;
+      const active = config?.isActive === true;
+      res.json({
+        success: true,
+        data: {
+          departmentId: membership.department.id,
+          departmentName: membership.department.name,
+          personaPrompt: active ? config.desktopPersonaPrompt : '',
+          version: active ? config.updatedAt.toISOString() : null,
+        },
+      });
+    } catch (e) {
+      log.error('runtime_context.read_failed', { error: String(e), userId, companyId, departmentId });
+      res.status(500).json({ success: false, message: 'Could not load desktop runtime context' });
     }
   });
 

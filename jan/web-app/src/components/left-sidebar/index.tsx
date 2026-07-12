@@ -16,6 +16,7 @@ import {
   SidebarRail,
 } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
+import { DivoDexWordmark } from '@/components/DivoDexBrand'
 import { useTitlebarLayout } from '@/stores/titlebar-layout-store'
 import {
   type DivoSessionStatus,
@@ -66,7 +67,7 @@ function DivoProfileFooter() {
 
   if (!status) return null
 
-  const name = status.name || status.email || 'Divo user'
+  const name = status.name || status.email || 'Divo Dex user'
   const role = status.role?.replace(/_/g, ' ').toLowerCase() || 'member'
   const initials = name
     .split(/\s+/)
@@ -104,7 +105,7 @@ function DivoProfileFooter() {
 export function LeftSidebar() {
   const { open: isLeftPanelOpen } = useLeftPanel()
   // Right-align the header when native controls own the top-left (macOS, or a Linux
-  // DE placing buttons left); "Jan" moves into the right cluster except on macOS.
+  // DE placing buttons left); the wordmark moves into the right cluster except on macOS.
   const leftButtons = useTitlebarLayout((s) => s.layout.left.length)
   const controlsOnLeft = !IS_MACOS && leftButtons > 0
   const reserveLeft = IS_MACOS || controlsOnLeft
@@ -113,10 +114,10 @@ export function LeftSidebar() {
       <Sidebar variant="floating" collapsible="offcanvas">
         <SidebarHeader className="flex px-1">
           <div className={cn("flex items-center w-full justify-between", reserveLeft && "justify-end")}>
-            {!reserveLeft && <span className="ml-2 font-medium font-studio">Jan</span>}
+            {!reserveLeft && <DivoDexWordmark className="ml-2" />}
             <div className="flex items-center">
               {controlsOnLeft && (
-                <span className="mr-2 font-medium font-studio">Jan</span>
+                <DivoDexWordmark className="mr-2" />
               )}
               {isLeftPanelOpen && <DownloadManagement />}
               <SidebarTrigger className="text-muted-foreground rounded-full hover:bg-sidebar-foreground/8! -mt-0.5 relative z-50 ml-0.5" />

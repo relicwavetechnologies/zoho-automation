@@ -11,6 +11,8 @@ const h = vi.hoisted(() => ({
   sidebarWidth: 260,
   setLeftPanel: vi.fn(),
   setLeftPanelWidth: vi.fn(),
+  invoke: vi.fn(),
+  listen: vi.fn(),
 }))
 
 // Tanstack router — avoid real router internals.
@@ -24,6 +26,18 @@ vi.mock('@tauri-apps/api/webviewWindow', () => ({
   getCurrentWebviewWindow: () => ({
     startDragging: vi.fn().mockResolvedValue(undefined),
   }),
+}))
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: h.invoke,
+}))
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: h.listen,
+}))
+
+vi.mock('@tauri-apps/plugin-opener', () => ({
+  openUrl: vi.fn(),
 }))
 
 // Providers
@@ -147,6 +161,13 @@ describe('__root route', () => {
     vi.clearAllMocks()
     h.productAnalyticPrompt = false
     h.showJanModelPrompt = false
+    h.listen.mockResolvedValue(() => {})
+    h.invoke.mockImplementation((command: string) => {
+      if (command === 'divo_validate_session') {
+        return Promise.resolve({ configured: true, departments: [] })
+      }
+      return Promise.resolve(undefined)
+    })
     // reset document state
     document.body.className = ''
     const loader = document.getElementById('initial-loader')
@@ -159,8 +180,9 @@ describe('__root route', () => {
     vi.useRealTimers()
   })
 
-  it('renders AppLayout by default (non-logs route)', () => {
+  it('renders AppLayout by default after a valid Divo session check', async () => {
     renderComponent()
+    await screen.findByTestId('sidebar-provider')
     expect(screen.getByTestId('service-hub')).toBeInTheDocument()
     expect(screen.getByTestId('theme-provider')).toBeInTheDocument()
     expect(screen.getByTestId('extension-provider')).toBeInTheDocument()
@@ -170,8 +192,9 @@ describe('__root route', () => {
     expect(screen.getByTestId('sidebar-provider')).toBeInTheDocument()
   })
 
-  it('renders all persistent dialogs', () => {
+  it('renders all persistent dialogs', async () => {
     renderComponent()
+    await screen.findByTestId('sidebar-provider')
     expect(screen.getByTestId('tool-approval')).toBeInTheDocument()
     expect(screen.getByTestId('attach-ingest')).toBeInTheDocument()
     expect(screen.getByTestId('error-dialog')).toBeInTheDocument()
@@ -180,42 +203,91 @@ describe('__root route', () => {
     expect(screen.getByTestId('backend-updater')).toBeInTheDocument()
   })
 
-  it('renders PromptAnalytic when productAnalyticPrompt is true', () => {
+  it('renders PromptAnalytic when productAnalyticPrompt is true', async () => {
     h.productAnalyticPrompt = true
     renderComponent()
-    expect(screen.getByTestId('prompt-analytic')).toBeInTheDocument()
+    expect(await screen.findByTestId('prompt-analytic')).toBeInTheDocument()
   })
 
-  it('does not render PromptAnalytic when productAnalyticPrompt is false', () => {
+  it('does not render PromptAnalytic when productAnalyticPrompt is false', async () => {
     h.productAnalyticPrompt = false
     renderComponent()
+    await screen.findByTestId('sidebar-provider')
     expect(screen.queryByTestId('prompt-analytic')).not.toBeInTheDocument()
   })
 
-  it('renders PromptJanModel when showJanModelPrompt is true', () => {
+  it('renders PromptJanModel when showJanModelPrompt is true', async () => {
     h.showJanModelPrompt = true
     renderComponent()
-    expect(screen.getByTestId('prompt-jan')).toBeInTheDocument()
+    expect(await screen.findByTestId('prompt-jan')).toBeInTheDocument()
   })
 
-  it('uses LogsLayout on /logs path (no sidebar)', () => {
+  it('uses LogsLayout on /logs path (no sidebar)', async () => {
     window.history.pushState({}, '', '/logs')
     renderComponent()
+    await screen.findByTestId('outlet')
     expect(screen.queryByTestId('left-sidebar')).not.toBeInTheDocument()
     expect(screen.queryByTestId('sidebar-provider')).not.toBeInTheDocument()
     expect(screen.getByTestId('outlet')).toBeInTheDocument()
   })
 
-  it('uses LogsLayout on /system-monitor path', () => {
+  it('uses LogsLayout on /system-monitor path', async () => {
     window.history.pushState({}, '', '/system-monitor')
     renderComponent()
+    await screen.findByTestId('outlet')
     expect(screen.queryByTestId('left-sidebar')).not.toBeInTheDocument()
     expect(screen.getByTestId('outlet')).toBeInTheDocument()
   })
 
-  it('uses LogsLayout on /local-api-server/logs path', () => {
+  it('uses LogsLayout on /local-api-server/logs path', async () => {
     window.history.pushState({}, '', '/local-api-server/logs')
     renderComponent()
+    await screen.findByTestId('outlet')
+    expect(screen.queryByTestId('left-sidebar')).not.toBeInTheDocument()
+  })
+
+  it('shows the login gate when there is no Divo session', async () => {
+    h.invoke.mockImplementation((command: string) => {
+      if (command === 'divo_validate_session') {
+        return Promise.resolve({ configured: false, departments: [] })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    renderComponent()
+
+    expect(await screen.findByRole('heading', { name: 'Sign in to continue' })).toBeInTheDocument()
+    expect(screen.queryByTestId('left-sidebar')).not.toBeInTheDocument()
+    expect(h.invoke).toHaveBeenCalledWith('divo_validate_session')
+  })
+
+  it('keeps the logs route behind the login gate without a Divo session', async () => {
+    window.history.pushState({}, '', '/logs')
+    h.invoke.mockImplementation((command: string) => {
+      if (command === 'divo_validate_session') {
+        return Promise.resolve({ configured: false, departments: [] })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    renderComponent()
+
+    expect(await screen.findByRole('heading', { name: 'Sign in to continue' })).toBeInTheDocument()
+    expect(screen.queryByTestId('outlet')).not.toBeInTheDocument()
+  })
+
+  it('shows the login gate when backend session validation fails', async () => {
+    h.invoke.mockImplementation((command: string) => {
+      if (command === 'divo_validate_session') {
+        return Promise.reject(new Error('Divo session expired. Sign in again to continue.'))
+      }
+      return Promise.resolve(undefined)
+    })
+
+    renderComponent()
+
+    expect(await screen.findByRole('heading', { name: 'Sign in to continue' })).toBeInTheDocument()
+    expect(screen.getByText('Divo session expired. Sign in again to continue.')).toBeInTheDocument()
     expect(screen.queryByTestId('left-sidebar')).not.toBeInTheDocument()
   })
 

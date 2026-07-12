@@ -10,7 +10,8 @@ import type { DeptToolPermissionRepoPort, DeptToolPermissionRow } from '../../sr
 import type { DeptUserOverrideRepoPort, DeptUserOverrideRow } from '../../src/infrastructure/persistence/department-user-override.repository.ts';
 import type { CachePort } from '../../src/shared/cache.ts';
 import type { Logger } from '../../src/shared/logger.ts';
-import { ok } from '../../src/shared/result.ts';
+import { ok, err } from '../../src/shared/result.ts';
+import { wrapInfra } from '../../src/shared/errors.ts';
 import type { PermissionQuery } from '../../src/application/permissions/permission.types.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 
@@ -212,6 +213,27 @@ describe('PermissionService', () => {
       assert.ok(ids.includes('larkTask'),  'custom role inherits MEMBER defaults');
       assert.ok(!ids.includes('larkBase'), 'custom role does not get larkBase (not in MEMBER defaults)');
     });
+
+    it('fails on company permission repository errors without caching default authorization', async () => {
+      let attempts = 0;
+      const toolPermRepo: ToolPermissionRepoPort = {
+        getForCompany: async () => {
+          attempts++;
+          return attempts === 1
+            ? err(wrapInfra('prisma', 'getToolPermissions', new Error('db unavailable')))
+            : ok([]);
+        },
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({ toolPermRepo }));
+      const query = baseQuery({ companyRole: 'MEMBER' as any });
+      const first = await svc.resolve(query);
+      assert.ok(!first.ok);
+      assert.equal(first.error.payload.reason, 'not_allowed');
+      const second = await svc.resolve(query);
+      assert.ok(second.ok);
+      assert.equal(attempts, 2);
+    });
   });
 
   // ── Cache behaviour ────────────────────────────────────────────────────────
@@ -289,6 +311,20 @@ describe('PermissionService', () => {
       const taskActions = [...(result.value.allowedActionsByTool.get('larkTask' as any) ?? [])];
       assert.equal(taskActions.length, 0, 'larkTask must be denied when no dept-role grant exists');
       assert.equal(result.value.allowedToolIds.size, 0, 'empty dept matrix yields no allowed tools');
+    });
+
+    it('fails instead of converting a department permission repository error into an empty grant', async () => {
+      const failingDeptPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => err(wrapInfra('prisma', 'getDeptToolPermissions', new Error('db unavailable'))),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: failingDeptPermRepo,
+      }));
+      const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+      assert.ok(!result.ok);
+      assert.equal(result.error.payload.reason, 'department_access_denied');
     });
 
     it('dept-role explicit allow → allowed when under company ceiling', async () => {

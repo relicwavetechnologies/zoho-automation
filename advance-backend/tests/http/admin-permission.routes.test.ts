@@ -9,6 +9,7 @@ import { ok, err } from '../../src/shared/result.ts';
 import { wrapInfra } from '../../src/shared/errors.ts';
 import type { Logger } from '../../src/shared/logger.ts';
 import type { Request, Response } from 'express';
+import { PermissionWriteService } from '../../src/application/permissions/permission-write.service.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -132,7 +133,7 @@ const noopAuditService: AdminPermissionRouteDeps['auditService'] = {
 };
 
 function makeDeps(overrides: Partial<AdminPermissionRouteDeps> = {}): AdminPermissionRouteDeps {
-  return {
+  const deps = {
     toolPermRepo: makeToolPermRepo(),
     toolActionRepo: makeActionPermRepo(),
     deptToolPermRepo: makeDeptPermRepo(),
@@ -140,6 +141,20 @@ function makeDeps(overrides: Partial<AdminPermissionRouteDeps> = {}): AdminPermi
     logger: noopLogger,
     auditService: noopAuditService,
     ...overrides,
+  };
+  return {
+    ...deps,
+    permissionWrites: overrides.permissionWrites ?? new PermissionWriteService({
+      toolActionRepo: deps.toolActionRepo,
+      deptToolPermRepo: deps.deptToolPermRepo,
+      deptUserOverrideRepo: {
+        getForUser: async () => ok([]),
+        upsert: async () => ok({ departmentId: 'dept1', userId: 'user1', toolId: 'larkTask', actionGroup: 'read', allowed: true }),
+      },
+      permissions: deps.permissions,
+      auditService: deps.auditService,
+      toolRegistry: { byId: () => ({}) } as any,
+    }),
   };
 }
 
@@ -190,6 +205,25 @@ describe('Admin permission routes', () => {
   });
 
   describe('PUT /companies/:companyId/tools/:toolId', () => {
+    it('rejects fixed-policy memory recall tool toggles without persistence, cache invalidation, or audit', async () => {
+      let writes = 0;
+      const permissionService = makePermService();
+      const audit: unknown[] = [];
+      const router = createAdminPermissionRoutes(makeDeps({
+        permissions: permissionService,
+        auditService: { record: (entry: unknown) => audit.push(entry), query: async () => [] } as any,
+        toolPermRepo: {
+          getForCompany: async () => ok([]),
+          upsert: async () => { writes++; return ok({ companyId: 'co1', toolId: 'memoryRecall', role: 'MEMBER', enabled: false }); },
+        },
+      }));
+      const result = await callRoute(router, 'PUT', '/companies/co1/tools/memoryRecall', { role: 'MEMBER', enabled: false });
+      assert.equal(result.status, 400);
+      assert.equal(writes, 0);
+      assert.equal((permissionService as any)._counts.company, 0);
+      assert.equal(audit.length, 0);
+    });
+
     it('returns 200 and invalidates company cache on success', async () => {
       const permSvc = makePermService();
       const router = createAdminPermissionRoutes(makeDeps({ permissions: permSvc }));
@@ -235,6 +269,51 @@ describe('Admin permission routes', () => {
   });
 
   describe('PUT /companies/:companyId/tools/:toolId/actions/:actionGroup', () => {
+    it('uses the shared writer to reject a canonical tool absent from the runtime registry', async () => {
+      const permissionService = makePermService();
+      const persisted: unknown[][] = [];
+      const audits: unknown[] = [];
+      const permissionWrites = new PermissionWriteService({
+        toolActionRepo: {
+          getForCompany: async () => ok([]),
+          upsert: async (...args: unknown[]) => { persisted.push(args); return ok({ companyId: 'co1', toolId: 'larkTask', role: 'MEMBER', actionGroup: 'read', enabled: true }); },
+        },
+        deptToolPermRepo: makeDeptPermRepo(),
+        deptUserOverrideRepo: { getForUser: async () => ok([]), upsert: async () => ok({ departmentId: 'd', userId: 'u', toolId: 'larkTask', actionGroup: 'read', allowed: true }) },
+        permissions: permissionService,
+        auditService: { record: (entry: unknown) => audits.push(entry) } as any,
+        toolRegistry: { byId: (toolId: string) => ['larkTask', 'memoryRecall'].includes(toolId) ? {} : undefined } as any,
+      });
+      const router = createAdminPermissionRoutes(makeDeps({ permissionWrites, permissions: permissionService }));
+      const missing = await callRoute(
+        router, 'PUT', '/companies/co1/tools/larkCalendar/actions/read',
+        { role: 'MEMBER', enabled: true },
+      );
+      assert.equal(missing.status, 400);
+      assert.equal(persisted.length, 0);
+      assert.equal((permissionService as any)._counts.company, 0);
+      assert.equal(audits.length, 0);
+
+      const validRouter = createAdminPermissionRoutes(makeDeps({ permissionWrites, permissions: permissionService }));
+      const valid = await callRoute(
+        validRouter, 'PUT', '/companies/co1/tools/larkTask/actions/read',
+        { role: 'MEMBER', enabled: true },
+      );
+      assert.equal(valid.status, 200);
+      assert.equal(persisted.length, 1);
+      assert.equal((permissionService as any)._counts.company, 1);
+      assert.equal(audits.length, 1);
+
+      const memoryRecall = await callRoute(
+        validRouter, 'PUT', '/companies/co1/tools/memoryRecall/actions/read',
+        { role: 'MEMBER', enabled: true },
+      );
+      assert.equal(memoryRecall.status, 400);
+      assert.equal(persisted.length, 1);
+      assert.equal((permissionService as any)._counts.company, 1);
+      assert.equal(audits.length, 1);
+    });
+
     it('returns 200 and invalidates company cache', async () => {
       const permSvc = makePermService();
       const router = createAdminPermissionRoutes(makeDeps({ permissions: permSvc }));

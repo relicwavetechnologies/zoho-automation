@@ -87,6 +87,11 @@ export async function getDivoSessionStatus(): Promise<DivoSessionStatus> {
   return normalizeDivoSessionStatus(status)
 }
 
+export async function validateDivoSession(): Promise<DivoSessionStatus> {
+  const status = await invoke<DivoSessionStatus>('divo_validate_session')
+  return normalizeDivoSessionStatus(status)
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,

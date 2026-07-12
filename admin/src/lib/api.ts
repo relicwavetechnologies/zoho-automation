@@ -413,6 +413,7 @@ export type DepartmentDetail = {
   };
   config: {
     systemPrompt: string;
+    desktopPersonaPrompt: string;
     skillsMarkdown: string;
     zohoRateLimit: unknown;
     managerApproval: unknown;
@@ -455,6 +456,7 @@ export type UpdateDepartmentInput = {
 
 export type UpdateDepartmentConfigInput = {
   systemPrompt: string;
+  desktopPersonaPrompt: string;
   skillsMarkdown: string;
   zohoRateLimit?: unknown;
   managerApproval?: unknown;
@@ -542,6 +544,7 @@ export const departmentsApi = {
     api.put<{
       departmentId: string;
       systemPrompt: string;
+      desktopPersonaPrompt: string;
       skillsMarkdown: string;
       isActive: boolean;
       updatedAt: string;

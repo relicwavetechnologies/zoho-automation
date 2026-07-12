@@ -45,7 +45,7 @@ export default function DivoWorkspaceSelector() {
       const status = await getPiWorkspaceStatus()
       setWorkspace(status)
     } catch (error) {
-      toast.error('Failed to resolve Divo workspace', {
+      toast.error('Failed to resolve Divo Dex workspace', {
         description: String(error),
       })
     }
@@ -70,7 +70,7 @@ export default function DivoWorkspaceSelector() {
       const status = await setPiWorkspacePath(nextPath)
       setWorkspace(status)
       await invoke('pi_stop').catch(() => undefined)
-      toast.success('Divo workspace selected')
+      toast.success('Divo Dex workspace selected')
     } catch (error) {
       toast.error('Failed to choose workspace', { description: String(error) })
     } finally {
@@ -92,7 +92,7 @@ export default function DivoWorkspaceSelector() {
           )}
           onClick={handleChooseWorkspace}
           disabled={loading}
-          aria-label="Choose Divo workspace"
+          aria-label="Choose Divo Dex workspace"
         >
           <IconFolderOpen size={16} className="shrink-0 text-muted-foreground" />
           <span className="shrink-0 text-foreground">Workspace</span>
@@ -103,7 +103,7 @@ export default function DivoWorkspaceSelector() {
         </Button>
       </TooltipTrigger>
       <TooltipContent>
-        <p>{workspacePath || 'Resolving Divo workspace...'}</p>
+        <p>{workspacePath || 'Resolving Divo Dex workspace...'}</p>
       </TooltipContent>
     </Tooltip>
   )

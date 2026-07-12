@@ -143,6 +143,7 @@ describe('createPiMessageStream run ownership', () => {
           action: 'send',
           title: 'Review email before sending',
           presentation: { to: ['maya@example.com'] },
+          runCorrelation: { version: 1, threadId: 'thread-1', runId: prompt.runId },
         }),
       },
     })
@@ -181,6 +182,7 @@ describe('createPiMessageStream run ownership', () => {
           proposalId: 'proposal-1',
           bullets: [{ id: 'fact-1', text: 'Use net-60 payment terms.' }],
           allowedTargets: [{ scope: 'personal', label: 'Personal' }],
+          runCorrelation: { version: 1, threadId: 'thread-1', runId: prompt.runId },
         }),
       },
     })
@@ -421,6 +423,7 @@ describe('createPiMessageStream run ownership', () => {
       message: JSON.stringify({
         version: 1, toolCallId: `tool-${id}`, source: 'divo', kind: 'gmail.send',
         action: 'send', title: 'Review email', presentation: { to: ['maya@example.com'] },
+        runCorrelation: { version: 1, threadId, runId },
       }),
     })
     mocks.listeners.forEach((listener) => listener({ payload: approvalFor('thread-a', promptA.runId, 'approval-a') }))

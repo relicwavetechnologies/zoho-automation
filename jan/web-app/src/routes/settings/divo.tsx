@@ -10,16 +10,17 @@ import SettingsMenu from '@/containers/SettingsMenu'
 import { Card, CardItem } from '@/containers/Card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DivoDexWordmark } from '@/components/DivoDexBrand'
 import { cn } from '@/lib/utils'
 import {
   DEFAULT_DIVO_BACKEND_URL,
   type DivoSessionStatus,
-  getDivoSessionStatus,
   getStoredDivoBackendUrl,
   normalizeDivoBackendUrl,
   normalizeDivoSessionStatus,
   signInDivoWithLark,
   storeDivoBackendUrl,
+  validateDivoSession,
 } from '@/lib/divo-auth'
 import {
   type DivoWorkspaceStatus,
@@ -48,17 +49,20 @@ function DivoSettings() {
     setIsLoadingStatus(true)
     try {
       const [next, workspaceStatus] = await Promise.all([
-        getDivoSessionStatus(),
+        validateDivoSession(),
         getPiWorkspaceStatus(),
       ])
       setStatus(normalizeDivoSessionStatus(next))
       setWorkspace(workspaceStatus)
+      if (status.departmentId && status.departmentId !== next.departmentId) {
+        await restartPiForWorkspaceChange()
+      }
       if (next.backendUrl) {
         setBackendUrl(next.backendUrl)
         storeDivoBackendUrl(next.backendUrl)
       }
     } catch (error) {
-      toast.error('Failed to read Divo session', { description: String(error) })
+      toast.error('Failed to read Divo Dex session', { description: String(error) })
     } finally {
       setIsLoadingStatus(false)
     }
@@ -77,9 +81,9 @@ function DivoSettings() {
 
       const next = await signInDivoWithLark(normalizedBackendUrl)
       setStatus(normalizeDivoSessionStatus(next))
-      toast.success('Divo connected')
+      toast.success('Divo Dex connected')
     } catch (error) {
-      toast.error('Divo connection failed', { description: String(error) })
+      toast.error('Divo Dex connection failed', { description: String(error) })
     } finally {
       setIsConnecting(false)
     }
@@ -103,7 +107,7 @@ function DivoSettings() {
       const next = await setPiWorkspacePath(nextPath)
       setWorkspace(next)
       await restartPiForWorkspaceChange()
-      toast.success('Divo workspace updated')
+      toast.success('Divo Dex workspace updated')
     } catch (error) {
       toast.error('Failed to choose workspace', { description: String(error) })
     }
@@ -114,7 +118,7 @@ function DivoSettings() {
       const next = await clearPiWorkspacePath()
       setWorkspace(next)
       await restartPiForWorkspaceChange()
-      toast.success('Using default Divo workspace')
+      toast.success('Using default Divo Dex workspace')
     } catch (error) {
       toast.error('Failed to clear workspace', { description: String(error) })
     }
@@ -141,6 +145,7 @@ function DivoSettings() {
         departmentId: departmentId || null,
       })
       setStatus(normalizeDivoSessionStatus(next))
+      await restartPiForWorkspaceChange()
       toast.success('Divo department updated')
     } catch (error) {
       toast.error('Failed to update department', { description: String(error) })
@@ -162,7 +167,7 @@ function DivoSettings() {
     <div className="flex flex-col h-svh w-full">
       <HeaderPage>
         <div className={cn("flex items-center justify-between w-full mr-2 pr-3", !IS_MACOS && "pr-30")}>
-          <span className="font-medium text-base font-studio">Divo</span>
+          <DivoDexWordmark textClassName="text-base" />
           <Button
             variant="outline"
             size="sm"
@@ -182,7 +187,7 @@ function DivoSettings() {
             <Card title="Connection">
               <CardItem
                 title="Backend URL"
-                description="The Divo backend used for company auth and gateway calls."
+                description="The Divo Dex backend used for company auth and gateway calls."
                 align="start"
                 actions={
                   <Input
@@ -238,7 +243,7 @@ function DivoSettings() {
                     <Input
                       value={effectiveWorkspacePath}
                       readOnly
-                      placeholder="Resolving Divo workspace..."
+                      placeholder="Resolving Divo Dex workspace..."
                       className="min-w-0 flex-1"
                     />
                     <div className="flex shrink-0 items-center gap-2">
@@ -265,15 +270,15 @@ function DivoSettings() {
                 }
               />
               <CardItem
-                title="Divo Home"
+                title="Divo Dex Home"
                 description={workspace?.homePath ?? 'Not resolved yet'}
               />
               <CardItem
-                title="Divo Workspace State"
+                title="Divo Dex Workspace State"
                 description={workspace?.divoPath ?? 'Not resolved yet'}
               />
               <CardItem
-                title="Divo Scratch"
+                title="Divo Dex Scratch"
                 description={workspace?.divoTmpPath ?? 'Not resolved yet'}
               />
               <CardItem

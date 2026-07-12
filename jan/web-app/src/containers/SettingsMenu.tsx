@@ -210,7 +210,7 @@ const SettingsMenu = () => {
 
   const integrationSettings = [
     {
-      title: 'Divo',
+      title: 'Divo Dex',
       route: route.settings.divo,
       icon: IconPlugConnected,
     },

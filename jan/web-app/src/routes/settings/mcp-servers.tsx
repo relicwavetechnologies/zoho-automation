@@ -35,6 +35,7 @@ import { useModelProvider } from '@/hooks/useModelProvider'
 import { McpRouterModelPicker } from '@/containers/McpRouterModelPicker'
 import { isRouterModelSelectable } from '@/lib/mcp-router-model-filter'
 import { normalizeAppError } from '@/utils/appError'
+import { DivoDexMark } from '@/components/DivoDexBrand'
 
 
 // Function to mask sensitive URL parameters
@@ -627,11 +628,7 @@ function MCPServersDesktop() {
                           </h1>
                           {config.official && (
                             <div className="flex items-center gap-1.5 px-2 py-0.5 text-xs bg-secondary border rounded-sm">
-                              <img
-                                src="/images/jan-logo.png"
-                                alt="Jan"
-                                className="w-3 h-3 object-contain"
-                              />
+                              <DivoDexMark decorative className="size-3" />
                               <span>Official</span>
                             </div>
                           )}

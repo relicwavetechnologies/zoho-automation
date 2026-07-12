@@ -6,6 +6,8 @@ import type { DeptToolPermissionRepoPort } from '../../infrastructure/persistenc
 import type { PermissionService } from '../../application/permissions/permission.service';
 import type { Logger } from '../../shared/logger';
 import type { AuditService } from '../../application/observability/audit.service';
+import type { PermissionWriteService } from '../../application/permissions/permission-write.service';
+import { isFixedToolPolicy } from '../../domain/tools/tool-policy';
 import {
   CANONICAL_TOOL_IDS,
   TOOL_SUPPORTED_ACTIONS,
@@ -19,6 +21,8 @@ export interface AdminPermissionRouteDeps {
   permissions: PermissionService;
   logger: Logger;
   auditService: AuditService;
+  /** All action writes use this runtime-validating shared writer. */
+  permissionWrites: PermissionWriteService;
 }
 
 // ── Request body schemas ───────────────────────────────────────────────────
@@ -128,6 +132,10 @@ export const createAdminPermissionRoutes = (deps: AdminPermissionRouteDeps): Rou
       badRequest(res, `Unknown toolId: ${toolId}`);
       return;
     }
+    if (isFixedToolPolicy(toolId)) {
+      badRequest(res, `Fixed-policy toolId cannot be configured: ${toolId}`);
+      return;
+    }
 
     const parsed = SetToolPermSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -179,22 +187,13 @@ export const createAdminPermissionRoutes = (deps: AdminPermissionRouteDeps): Rou
     }
     const { role, enabled, updatedBy } = parsed.data;
 
-    const result = await deps.toolActionRepo.upsert(companyId, toolId, role, actionGroup, enabled, updatedBy);
-    if (!result.ok) {
-      log.error('admin.action_perm.upsert_failed', { companyId, toolId, actionGroup, role });
-      res.status(500).json({ error: 'internal_error', message: 'Failed to update action permission' });
+    const write = await deps.permissionWrites.setCompanyAction({
+      companyId, actorId: actorId(req), ...(updatedBy ? { updatedBy } : {}), toolId, role, actionGroup, enabled,
+    });
+    if (!write.ok) {
+      res.status(write.reason === 'invalid' ? 400 : 500).json({ error: write.reason === 'invalid' ? 'bad_request' : 'internal_error', message: 'Failed to update action permission' });
       return;
     }
-
-    await deps.permissions.invalidateCompany(companyId);
-    auditService.record({
-      actorId:   actorId(req),
-      companyId,
-      action:    'permission.set_company_action',
-      outcome:   'success',
-      metadata:  { toolId, actionGroup, role, enabled },
-    });
-    log.info('admin.action_perm.updated', { companyId, toolId, actionGroup, role, enabled });
     res.json({ ok: true, companyId, toolId, actionGroup, role, enabled });
   });
 
@@ -246,22 +245,13 @@ export const createAdminPermissionRoutes = (deps: AdminPermissionRouteDeps): Rou
       }
       const { roleId, allowed, updatedBy } = parsed.data;
 
-      const result = await deps.deptToolPermRepo.upsert(deptId, roleId, toolId, actionGroup, allowed, updatedBy);
-      if (!result.ok) {
-        log.error('admin.dept_perm.upsert_failed', { deptId, roleId, toolId, actionGroup });
-        res.status(500).json({ error: 'internal_error', message: 'Failed to update dept permission' });
+      const write = await deps.permissionWrites.setDepartmentRoleAction({
+        companyId, departmentId: deptId, actorId: actorId(req), updatedBy, toolId, roleId, actionGroup, allowed,
+      });
+      if (!write.ok) {
+        res.status(write.reason === 'invalid' ? 400 : 500).json({ error: write.reason === 'invalid' ? 'bad_request' : 'internal_error', message: 'Failed to update dept permission' });
         return;
       }
-
-      await deps.permissions.invalidateDept(companyId, deptId);
-      auditService.record({
-        actorId:   actorId(req),
-        companyId,
-        action:    'permission.set_dept_action',
-        outcome:   'success',
-        metadata:  { deptId, roleId, toolId, actionGroup, allowed },
-      });
-      log.info('admin.dept_perm.updated', { companyId, deptId, roleId, toolId, actionGroup, allowed });
       res.json({ ok: true, companyId, deptId, roleId, toolId, actionGroup, allowed });
     },
   );

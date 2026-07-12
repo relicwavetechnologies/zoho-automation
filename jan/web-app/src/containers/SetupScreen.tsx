@@ -15,6 +15,7 @@ import { IconEye, IconSquareCheck } from '@tabler/icons-react'
 import { cn, formatBytes } from '@/lib/utils'
 import { useGeneralSetting } from '@/hooks/useGeneralSetting'
 import HeaderPage from './HeaderPage'
+import { DivoDexMark } from '@/components/DivoDexBrand'
 
 type CacheEntry = {
   status: 'RED' | 'YELLOW' | 'GREEN' | 'GREY'
@@ -406,9 +407,9 @@ function SetupScreen() {
           <div className="shrink-0 px-10 w-[480px] mx-auto overflow-auto pb-10 pointer-events-auto -mt-20">
             <div className="mb-4">
               <h1 className="font-studio font-medium text-2xl mb-1">
-                {isDownloading ?  'Sit tight, Jan is getting ready...' : 'Hey, welcome to Jan!'}
+                {isDownloading ?  'Sit tight, Divo Dex is getting ready...' : 'Hey, welcome to Divo Dex!'}
               </h1>
-              <p className='text-muted-foreground leading-normal w-full mt-1'>{isDownloading ? 'This may take a few minutes.' : 'Jan needs a model to begin. Let’s set it up.'}</p>
+              <p className='text-muted-foreground leading-normal w-full mt-1'>{isDownloading ? 'This may take a few minutes.' : 'Divo Dex needs a model to begin. Let’s set it up.'}</p>
             </div>
             <div className="flex gap-4 flex-col mt-6 relative z-50">
               <div
@@ -418,7 +419,7 @@ function SetupScreen() {
                 <div className={cn("bg-secondary/50 p-3 rounded-lg border transition-all hover:shadow disabled:opacity-60 flex justify-between items-start")}>
                   <div className="flex w-full items-start gap-4">
                     <div className="shrink-0 size-12 bg-background rounded-xl flex items-center justify-center">
-                      <img src="/images/jan-logo.png" alt="Jan Logo" className='size-6' />
+                      <DivoDexMark decorative className="size-6" />
                     </div>
                     <div className="flex flex-col w-full h-full justify-center">
                       <div className="flex flex-1 items-center justify-between">

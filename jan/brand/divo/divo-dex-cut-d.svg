@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Divo Dex Cut D</title>
+  <desc id="desc">A monoline capital D cut by a 45-degree diagonal.</desc>
+  <defs>
+    <mask id="cut" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M5 59 59 5" stroke="#000" stroke-width="9.5"/>
+    </mask>
+  </defs>
+  <path d="M17 10h9a22 22 0 0 1 0 44h-9z" fill="none" stroke="currentColor" stroke-width="7" stroke-linejoin="round" mask="url(#cut)"/>
+</svg>

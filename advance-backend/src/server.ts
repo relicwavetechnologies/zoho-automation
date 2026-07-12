@@ -12,6 +12,8 @@ import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
 import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
 import { createMemberAuthMiddleware } from './http/middleware/member-auth.middleware';
+import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
+import { PermissionWriteService } from './application/permissions/permission-write.service';
 import { createFilesRouter } from './http/files/files.routes';
 import { createAgentsRoutes } from './http/agents/agents.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
@@ -208,6 +210,14 @@ export const createServer = (c: Container) => {
       permissions:     c.permissions,
       logger:          c.logger,
       auditService:    c.auditService,
+      permissionWrites: new PermissionWriteService({
+        toolActionRepo: c.toolActionRepo,
+        deptToolPermRepo: c.deptToolPermRepo,
+        deptUserOverrideRepo: c.deptUserOverrideRepo,
+        permissions: c.permissions,
+        auditService: c.auditService,
+        toolRegistry: c.toolRegistry,
+      }),
     }),
   );
 
@@ -330,6 +340,23 @@ export const createServer = (c: Container) => {
   );
 
   // Desktop auth (Lark OAuth, handoff, session management)
+  app.use(
+    '/api/desktop/auth',
+    createDesktopToolsRoutes({
+      prisma:                 c.prisma,
+      memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
+      logger:                 c.logger,
+      permissions:            c.permissions,
+      toolActionRepo:         c.toolActionRepo,
+      toolPermRepo:           c.toolPermRepo,
+      companyRoleRepo:        c.companyRoleRepo,
+      deptToolPermRepo:       c.deptToolPermRepo,
+      deptUserOverrideRepo:   c.deptUserOverrideRepo,
+      connectionRepo:         c.integrationConnectionRepo,
+      auditService:           c.auditService,
+      toolRegistry:           c.toolRegistry,
+    }),
+  );
   app.use(
     '/api/desktop/auth',
     createDesktopAuthRoutes({

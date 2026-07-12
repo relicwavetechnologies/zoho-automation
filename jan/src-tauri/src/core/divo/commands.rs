@@ -1094,3 +1094,128 @@ pub async fn divo_zoho_revoke_access<R: Runtime>(
     )
     .await
 }
+
+/// Load the server-authoritative catalogue of tools available to the signed-in member.
+#[tauri::command]
+pub async fn divo_tools_inventory<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/tools",
+        None,
+        "Divo tools inventory",
+    )
+    .await
+}
+
+fn require_divo_tool_identifier<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{label} is required"));
+    }
+    Ok(value)
+}
+
+/// Load the constrained RBAC-management snapshot for one server-authorised tool scope.
+#[tauri::command]
+pub async fn divo_tool_manage_snapshot<R: Runtime>(
+    app: AppHandle<R>,
+    tool_id: String,
+    scope: String,
+    department_id: Option<String>,
+) -> Result<Value, String> {
+    let tool_id = require_divo_tool_identifier(&tool_id, "toolId")?;
+    let path = match scope.as_str() {
+        "global" => format!("/tools/{tool_id}/manage?scope=global"),
+        "department" => {
+            let department_id = require_divo_tool_identifier(
+                department_id.as_deref().unwrap_or_default(),
+                "departmentId",
+            )?;
+            format!("/tools/{tool_id}/manage?scope=department&departmentId={department_id}")
+        }
+        _ => return Err("scope must be global or department".into()),
+    };
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        &path,
+        None,
+        "Divo tool manage snapshot",
+    )
+    .await
+}
+
+/// Persist one exact global role/action permission and return a fresh scope snapshot.
+#[tauri::command]
+pub async fn divo_tool_set_global_action<R: Runtime>(
+    app: AppHandle<R>,
+    tool_id: String,
+    role: String,
+    action_group: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    let tool_id = require_divo_tool_identifier(&tool_id, "toolId")?;
+    let role = require_divo_tool_identifier(&role, "role")?;
+    let action_group = require_divo_tool_identifier(&action_group, "actionGroup")?;
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::PUT,
+        &format!("/tools/{tool_id}/global/roles/{role}/actions/{action_group}"),
+        Some(json!({ "enabled": enabled })),
+        "Divo tool global action update",
+    )
+    .await
+}
+
+/// Persist one exact department role/action permission and return a fresh scope snapshot.
+#[tauri::command]
+pub async fn divo_tool_set_department_role_action<R: Runtime>(
+    app: AppHandle<R>,
+    tool_id: String,
+    department_id: String,
+    role_id: String,
+    action_group: String,
+    allowed: bool,
+) -> Result<Value, String> {
+    let tool_id = require_divo_tool_identifier(&tool_id, "toolId")?;
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let role_id = require_divo_tool_identifier(&role_id, "roleId")?;
+    let action_group = require_divo_tool_identifier(&action_group, "actionGroup")?;
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::PUT,
+        &format!(
+            "/tools/{tool_id}/departments/{department_id}/roles/{role_id}/actions/{action_group}"
+        ),
+        Some(json!({ "allowed": allowed })),
+        "Divo tool department role action update",
+    )
+    .await
+}
+
+/// Persist one exact department member/action override and return a fresh scope snapshot.
+#[tauri::command]
+pub async fn divo_tool_set_department_member_action<R: Runtime>(
+    app: AppHandle<R>,
+    tool_id: String,
+    department_id: String,
+    user_id: String,
+    action_group: String,
+    allowed: bool,
+) -> Result<Value, String> {
+    let tool_id = require_divo_tool_identifier(&tool_id, "toolId")?;
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let user_id = require_divo_tool_identifier(&user_id, "userId")?;
+    let action_group = require_divo_tool_identifier(&action_group, "actionGroup")?;
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::PUT,
+        &format!(
+            "/tools/{tool_id}/departments/{department_id}/members/{user_id}/actions/{action_group}"
+        ),
+        Some(json!({ "allowed": allowed })),
+        "Divo tool department member action update",
+    )
+    .await
+}

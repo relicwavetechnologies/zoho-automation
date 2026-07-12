@@ -37,13 +37,14 @@ import LlamacppOomListener from '@/containers/dialogs/LlamacppOomListener'
 import MissingDependenciesDialog from '@/containers/dialogs/MissingDependenciesDialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { DivoDexMark } from '@/components/DivoDexBrand'
 import {
   type DivoSessionStatus,
-  getDivoSessionStatus,
   getStoredDivoBackendUrl,
   normalizeDivoBackendUrl,
   signInDivoWithLark,
   storeDivoBackendUrl,
+  validateDivoSession,
 } from '@/lib/divo-auth'
 import { cn } from '@/lib/utils'
 
@@ -126,14 +127,16 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
   const refreshSession = useCallback(async () => {
     setIsChecking(true)
     try {
-      const next = await getDivoSessionStatus()
+      const next = await validateDivoSession()
       setSession(next.configured ? next : null)
       if (next.backendUrl) {
         setBackendUrl(next.backendUrl)
         storeDivoBackendUrl(next.backendUrl)
       }
-    } catch {
+      setError(null)
+    } catch (err) {
       setSession(null)
+      setError(err instanceof Error ? err.message : 'Unable to verify the Divo session.')
     } finally {
       setIsChecking(false)
     }
@@ -202,11 +205,9 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_28%_24%,rgba(56,189,248,0.18),transparent_34%),radial-gradient(circle_at_72%_62%,rgba(244,63,94,0.14),transparent_30%)]" />
         <div className="relative flex h-full flex-col justify-between p-12">
           <div className="flex items-center gap-3">
-            <div className="grid size-10 place-items-center rounded-lg border border-white/10 bg-white/10 text-sm font-semibold text-white">
-              D
-            </div>
+            <DivoDexMark decorative className="size-10 text-white" />
             <div>
-              <p className="text-sm font-medium text-white">Divo Desktop</p>
+              <p className="text-sm font-medium text-white">Divo Dex</p>
               <p className="text-xs text-white/50">Company workspace</p>
             </div>
           </div>
@@ -235,15 +236,13 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
       <section className="flex min-h-0 items-center justify-center px-6 py-10">
         <div className="w-full max-w-md">
           <div className="mb-8 lg:hidden">
-            <div className="grid size-11 place-items-center rounded-lg border border-border bg-card text-sm font-semibold">
-              D
-            </div>
+            <DivoDexMark decorative className="size-11" />
           </div>
 
-          <p className="text-sm text-muted-foreground">Welcome to Divo</p>
+          <p className="text-sm text-muted-foreground">Welcome to Divo Dex</p>
           <h2 className="mt-2 text-3xl font-medium tracking-normal">Sign in to continue</h2>
           <p className="mt-3 text-sm leading-6 text-muted-foreground">
-            Desktop access is locked until your Divo backend session is active.
+            Desktop access is locked until your Divo Dex backend session is active.
           </p>
 
           <div className="mt-8 space-y-3">
@@ -268,7 +267,7 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
           </div>
 
           <p className="mt-5 text-xs leading-5 text-muted-foreground">
-            This uses the same Divo sign-in flow as Settings. Tokens stay in the
+            This uses the same Divo Dex sign-in flow as Settings. Tokens stay in the
             desktop session store and backend-owned integrations remain server-side.
           </p>
         </div>
@@ -299,11 +298,9 @@ function RootLayout() {
           <ExtensionProvider>
             <DataProvider />
             <GlobalEventHandler />
-            {IS_LOGS_ROUTE ? <LogsLayout /> : (
-              <DivoSignInGate>
-                <AppLayout />
-              </DivoSignInGate>
-            )}
+            <DivoSignInGate>
+              {IS_LOGS_ROUTE ? <LogsLayout /> : <AppLayout />}
+            </DivoSignInGate>
           </ExtensionProvider>
           {/* <TanStackRouterDevtools position="bottom-right" /> */}
           <ToolApproval />

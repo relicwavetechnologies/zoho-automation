@@ -192,8 +192,11 @@ export interface Container {
   // Admin surface
   permissions: PermissionService;
   toolPermRepo: ToolPermissionRepository;
+  companyRoleRepo: CompanyRoleRepository;
   toolActionRepo: ToolActionPermissionRepository;
   deptToolPermRepo: DeptToolPermissionRepository;
+  deptUserOverrideRepo: DeptUserOverrideRepository;
+  toolRegistry: ToolRegistry;
   // Agent admin CRUD
   agentAdminService:      AgentAdminService;
   agentCatalogCache:      AgentCatalogCache;
@@ -1086,8 +1089,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     queueRedisUrl,
     permissions,
     toolPermRepo,
+    companyRoleRepo,
     toolActionRepo,
     deptToolPermRepo,
+    deptUserOverrideRepo,
+    toolRegistry,
     // Agent admin CRUD
     agentAdminService,
     agentCatalogCache,

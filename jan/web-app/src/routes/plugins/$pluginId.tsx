@@ -20,10 +20,11 @@ import {
   Users,
 } from 'lucide-react'
 import type { ComponentType, ReactNode } from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
+import { ToolAccessSection } from '@/components/tool-access/ToolAccessSection'
 import {
   Dialog,
   DialogContent,
@@ -39,6 +40,8 @@ import {
   type DivoConnection,
   type DivoConnectionAccess,
 } from '@/lib/plugins'
+import { getDivoToolsInventory, type DivoToolInventoryItem } from '@/lib/divo-tools'
+import { groupToolsForDetail } from '@/lib/tool-presentation'
 import { cn } from '@/lib/utils'
 
 export const Route = createFileRoute('/plugins/$pluginId' as any)({
@@ -334,7 +337,7 @@ function pickPostOauthManageConnection(
   )
 }
 
-function PluginDetailRoute() {
+export function PluginDetailRoute() {
   const navigate = useNavigate()
   const { pluginId } = Route.useParams()
   const [addOpen, setAddOpen] = useState(false)
@@ -346,7 +349,37 @@ function PluginDetailRoute() {
   const [divoSession, setDivoSession] = useState<DivoSessionState>({
     status: 'checking',
   })
+  const [toolInventory, setToolInventory] = useState<DivoToolInventoryItem[] | null>(null)
+  const [toolInventoryError, setToolInventoryError] = useState<string | null>(null)
+  const inventoryRequestGeneration = useRef(0)
   const plugin = getPlugin(pluginId)
+
+  const invalidateInventoryRequests = useCallback(() => {
+    inventoryRequestGeneration.current++
+  }, [])
+
+  const loadToolInventory = useCallback(async () => {
+    const requestGeneration = ++inventoryRequestGeneration.current
+    setToolInventoryError(null)
+    try {
+      const response = await getDivoToolsInventory()
+      if (requestGeneration !== inventoryRequestGeneration.current) return
+      setToolInventory(response.tools)
+    } catch (error) {
+      if (requestGeneration !== inventoryRequestGeneration.current) return
+      setToolInventory(null)
+      setToolInventoryError(String(error))
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadToolInventory()
+    return invalidateInventoryRequests
+  }, [invalidateInventoryRequests, loadToolInventory])
+  const liveGroup = useMemo(
+    () => toolInventory ? groupToolsForDetail(toolInventory, pluginId) : null,
+    [pluginId, toolInventory],
+  )
 
   const refreshDivoSession = useCallback(async (): Promise<DivoSessionState> => {
     try {
@@ -374,6 +407,7 @@ function PluginDetailRoute() {
   }, [])
 
   const loadConnections = useCallback(async () => {
+    if (!liveGroup) return []
     if (pluginId !== 'google-workspace') {
       setConnectionState({ status: 'ready', connections: [] })
       return []
@@ -414,7 +448,7 @@ function PluginDetailRoute() {
       }))
       return []
     }
-  }, [pluginId, refreshDivoSession])
+  }, [liveGroup, pluginId, refreshDivoSession])
 
   useEffect(() => {
     void loadConnections()
@@ -422,40 +456,24 @@ function PluginDetailRoute() {
 
   const connections = connectionState.connections
 
-  if (!plugin) {
+  if (toolInventoryError) return <DetailInventoryState title="Could not load tools" description={toolInventoryError} onRetry={() => void loadToolInventory()} />
+  if (!toolInventory) return <DetailInventoryState title="Loading tool details" description="Checking your current Divo tool inventory." />
+  if (!liveGroup) return <DetailInventoryState title="Tool unavailable" description="This detail URL is not available in your current Divo tool inventory." />
+
+  if (pluginId === 'lark-personal' && plugin) {
     return (
-      <div className="flex h-full items-center justify-center bg-background px-6">
-        <div className="max-w-md text-center">
-          <h1 className="text-lg font-medium">Plugin not found</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            This plugin is not available in the desktop catalog yet.
-          </p>
-          <Button className="mt-4" asChild>
-            <Link to={route.plugins.index}>Back to Plugins</Link>
-          </Button>
-        </div>
-      </div>
+      <LocalLarkPluginDetail plugin={plugin!} onBack={() => navigate({ to: route.plugins.index } as any)} accessContent={<ToolAccessSection items={liveGroup.childTools} embedded onUpdated={() => void loadToolInventory()} />} />
+    )
+  }
+  if (pluginId === 'zoho' && plugin) {
+    return (
+      <ZohoPluginDetail plugin={plugin!} onBack={() => navigate({ to: route.plugins.index } as any)} onReconnectDivo={() => navigate({ to: route.settings.divo } as any)} accessContent={<ToolAccessSection items={liveGroup.childTools} embedded onUpdated={() => void loadToolInventory()} />} />
     )
   }
 
+  if (!plugin) return <FallbackToolDetail group={liveGroup} onBack={() => navigate({ to: route.plugins.index } as any)} onUpdated={() => void loadToolInventory()} />
+
   const Icon = plugin.icon
-  if (pluginId === 'lark-personal') {
-    return (
-      <LocalLarkPluginDetail
-        plugin={plugin}
-        onBack={() => navigate({ to: route.plugins.index } as any)}
-      />
-    )
-  }
-  if (pluginId === 'zoho') {
-    return (
-      <ZohoPluginDetail
-        plugin={plugin}
-        onBack={() => navigate({ to: route.plugins.index } as any)}
-        onReconnectDivo={() => navigate({ to: route.settings.divo } as any)}
-      />
-    )
-  }
 
   const personalCount = connections.filter((connection) => connection.kind === 'personal').length
   const sharedCount = connections.filter((connection) => connection.kind === 'company_shared').length
@@ -492,7 +510,7 @@ function PluginDetailRoute() {
               onClick={() => navigate({ to: route.plugins.index } as any)}
             >
               <ArrowLeft className="size-4" />
-              Plugins
+              Tools
             </Button>
             <div className="flex items-center gap-2">
               {adminConnections.length ? (
@@ -647,6 +665,7 @@ function PluginDetailRoute() {
             <PiContextCard connections={connections} />
           </aside>
         </section>
+        <ToolAccessSection items={liveGroup.childTools} onUpdated={() => void loadToolInventory()} />
       </main>
 
       <AddConnectionDialog
@@ -674,15 +693,45 @@ function PluginDetailRoute() {
   )
 }
 
+function DetailInventoryState({ title, description, onRetry }: { title: string; description: string; onRetry?: () => void }) {
+  return <div className="flex h-svh items-center justify-center bg-background px-6"><div className="max-w-md text-center"><h1 className="text-lg font-medium">{title}</h1><p className="mt-2 text-sm text-muted-foreground">{description}</p><div className="mt-4 flex justify-center gap-2"><Button asChild variant="outline"><Link to={route.plugins.index}>Back to Tools</Link></Button>{onRetry ? <Button onClick={onRetry}>Retry</Button> : null}</div></div></div>
+}
+
+function FallbackToolDetail({ group, onBack, onUpdated }: { group: NonNullable<ReturnType<typeof groupToolsForDetail>>; onBack: () => void; onUpdated: () => void }) {
+  const Icon = group.Icon
+  return (
+    <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
+      <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-6 lg:px-8">
+        <header className="rounded-lg border border-border/70 bg-card/30 p-5">
+          <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-4" />Back to Tools</Button>
+          <div className="mt-5 flex items-center gap-4">
+            <span className="flex size-14 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/40">
+              <Icon className={cn('size-7', group.iconClassName)} />
+            </span>
+            <div>
+              <h1 className="text-2xl font-medium tracking-normal">{group.title}</h1>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{group.description}</p>
+            </div>
+          </div>
+        </header>
+        <ToolAccessSection items={group.childTools} embedded onUpdated={onUpdated} />
+      </main>
+    </div>
+  )
+}
+
 function LocalLarkPluginDetail({
   plugin,
   onBack,
+  accessContent,
 }: {
   plugin: NonNullable<ReturnType<typeof getPlugin>>
   onBack: () => void
+  accessContent?: ReactNode
 }) {
   const Icon = plugin.icon
   const [status, setStatus] = useState<LocalLarkStatus | null>(null)
+  const [statusError, setStatusError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isBusy, setIsBusy] = useState(false)
   const [setupOutput, setSetupOutput] = useState('')
@@ -690,10 +739,13 @@ function LocalLarkPluginDetail({
 
   const loadStatus = useCallback(async () => {
     setIsLoading(true)
+    setStatusError(null)
     try {
       const next = await invoke<LocalLarkStatus>('divo_lark_local_status')
       setStatus(next)
     } catch (error) {
+      setStatus(null)
+      setStatusError(String(error))
       toast.error('Could not read Lark status', { description: String(error) })
     } finally {
       setIsLoading(false)
@@ -809,7 +861,7 @@ function LocalLarkPluginDetail({
           <div className="flex items-center justify-between gap-4">
             <Button variant="ghost" size="sm" onClick={onBack}>
               <ArrowLeft className="size-4" />
-              Plugins
+              Tools
             </Button>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={() => void loadStatus()}>
@@ -846,9 +898,9 @@ function LocalLarkPluginDetail({
             </div>
 
             <div className="grid min-w-72 grid-cols-3 gap-2">
-              <Metric value={installed ? 'Yes' : 'No'} label="Bundled" />
-              <Metric value={status?.usesConfiguredApp ? 'Org app' : configured ? 'Ready' : 'Setup'} label="CLI app" />
-              <Metric value={connected ? 'On' : 'Off'} label="Account" />
+              <Metric value={statusError ? 'Unknown' : installed ? 'Yes' : 'No'} label="Bundled" />
+              <Metric value={statusError ? 'Unknown' : status?.usesConfiguredApp ? 'Org app' : configured ? 'Ready' : 'Setup'} label="CLI app" />
+              <Metric value={statusError ? 'Unknown' : connected ? 'On' : 'Off'} label="Account" />
             </div>
           </div>
         </header>
@@ -870,14 +922,22 @@ function LocalLarkPluginDetail({
               />
             ) : null}
 
-            {!isLoading && !installed ? (
+            {!isLoading && statusError ? (
+              <ConnectionListState
+                title="Could not read Lark status"
+                description={statusError}
+                action={<Button size="sm" onClick={() => void loadStatus()}>Retry</Button>}
+              />
+            ) : null}
+
+            {!isLoading && !statusError && !installed ? (
               <ConnectionListState
                 title="Lark CLI is not bundled yet"
                 description="Run the Jan vendoring step so the desktop app can package @larksuite/cli."
               />
             ) : null}
 
-            {!isLoading && installed ? (
+            {!isLoading && !statusError && installed ? (
               <article className="rounded-lg border border-border/70 bg-card/30 p-4">
                 <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div className="min-w-0 flex-1">
@@ -975,6 +1035,7 @@ function LocalLarkPluginDetail({
             </div>
           </aside>
         </section>
+        {accessContent}
       </main>
     </div>
   )
@@ -984,10 +1045,12 @@ function ZohoPluginDetail({
   plugin,
   onBack,
   onReconnectDivo,
+  accessContent,
 }: {
   plugin: NonNullable<ReturnType<typeof getPlugin>>
   onBack: () => void
   onReconnectDivo: () => void
+  accessContent?: ReactNode
 }) {
   const Icon = plugin.icon
   const [divoSession, setDivoSession] = useState<DivoSessionState>({ status: 'checking' })
@@ -1077,7 +1140,7 @@ function ZohoPluginDetail({
           <div className="flex items-center justify-between gap-4">
             <Button variant="ghost" size="sm" onClick={onBack}>
               <ArrowLeft className="size-4" />
-              Plugins
+              Tools
             </Button>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={() => void loadStatus()}>
@@ -1240,6 +1303,7 @@ function ZohoPluginDetail({
 	            <PiContextCard connections={connections} />
 	          </aside>
 	        </section>
+	        {accessContent}
 	      </main>
 
 	      <ManageAccessDialog

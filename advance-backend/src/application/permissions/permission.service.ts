@@ -122,8 +122,14 @@ export class PermissionServiceImpl implements PermissionService {
       this.deps.deptUserOverrideRepo.getForUser(departmentId, userId),
     ]);
 
-    const deptRolePerms = deptRolePermsResult.ok ? deptRolePermsResult.value : [];
-    const userOverrides = userOverridesResult.ok ? userOverridesResult.value : [];
+    if (!deptRolePermsResult.ok || !userOverridesResult.ok) {
+      return err(new PermissionError({
+        reason: 'department_access_denied',
+        message: 'Failed to load department permission rules',
+      }));
+    }
+    const deptRolePerms = deptRolePermsResult.value;
+    const userOverrides = userOverridesResult.value;
 
     // Build fast lookup maps
     const deptRoleMap = new Map<string, boolean>();
@@ -298,22 +304,25 @@ export class PermissionServiceImpl implements PermissionService {
       this.deps.toolActionRepo.getForCompany(companyId),
     ]);
 
+    if (!toolPermResult.ok || !actionPermResult.ok) {
+      return err(new PermissionError({
+        reason: 'not_allowed',
+        message: 'Failed to load company permission rules',
+      }));
+    }
+
     // Build override maps (explicit admin toggles)
     const toolEnabledMap = new Map<string, boolean>();
-    if (toolPermResult.ok) {
-      for (const row of toolPermResult.value) {
-        if (row.role === companyRole) {
-          toolEnabledMap.set(row.toolId, row.enabled);
-        }
+    for (const row of toolPermResult.value) {
+      if (row.role === companyRole) {
+        toolEnabledMap.set(row.toolId, row.enabled);
       }
     }
 
     const actionEnabledMap = new Map<string, boolean>();
-    if (actionPermResult.ok) {
-      for (const row of actionPermResult.value) {
-        if (row.role === companyRole) {
-          actionEnabledMap.set(`${row.toolId}:${row.actionGroup}`, row.enabled);
-        }
+    for (const row of actionPermResult.value) {
+      if (row.role === companyRole) {
+        actionEnabledMap.set(`${row.toolId}:${row.actionGroup}`, row.enabled);
       }
     }
 

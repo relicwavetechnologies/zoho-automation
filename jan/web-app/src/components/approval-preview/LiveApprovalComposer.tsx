@@ -133,7 +133,12 @@ export function LiveApprovalComposer({
         onSubmit={(response) =>
           void usePiApproval
             .getState()
-            .resolveMemory(request.threadId, request.requestId, response)
+            .resolveMemory(
+              request.threadId,
+              request.requestId,
+              response,
+              request.runId
+            )
         }
       />
     )

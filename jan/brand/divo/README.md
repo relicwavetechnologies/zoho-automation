@@ -1,16 +1,19 @@
-# Divo logo
+# Divo Dex logo
 
-The mark combines three ideas in one continuous shape:
+The Cut D mark is a monoline capital D sliced by a clean 45-degree diagonal:
 
-- **D + V** — the product initials are embedded in one forward-moving path.
-- **Company knowledge** — one connected ribbon represents a unified company context.
-- **Agentic action** — the rising right edge suggests information becoming action.
+- **Divo** — the capital D anchors the product name.
+- **Dex** — the cut is the signature gesture, separating the mark into two precise pieces.
+- **Clarity at size** — the small-size variant keeps the cut open in menu bars and favicons.
 
 ## Files
 
-- `divo-mark.svg` is the transparent, single-color brand mark. It uses `currentColor`, so its color can be controlled with CSS.
-- `divo-app-icon.svg` is the graphite desktop application icon source.
-- `divo-app-icon-1024.png` is the transparent high-resolution raster master.
-- `platform-icons/` contains ready-to-use macOS `.icns`, Windows `.ico`, and generated desktop/mobile PNG sizes.
+- `divo-dex-cut-d.svg` is the transparent primary mark. It uses `currentColor` and is intended for sizes at or above 20 px.
+- `divo-dex-cut-d-small.svg` is the heavier small-size variant for compact UI.
+- `divo-dex-appicon.svg` is the dark desktop application icon source.
+- `divo-dex-app-icon-1024.png` is the high-resolution raster master used to generate platform icons.
+- `platform-icons/` contains the checked-in generated desktop and mobile icons.
 
-Keep clear space around the mark equal to at least one stroke width. At sizes below 24 px, use the complete app icon rather than placing the transparent mark over a busy background.
+When changing the app icon, regenerate from the raster master with `yarn build:icon`, then replace `platform-icons/` with the generated `src-tauri/icons/` directory. This keeps every platform export aligned with the same mark.
+
+Keep clear space around the mark equal to at least one stroke width. Preserve the flat 45-degree cut ends; they are the defining detail.

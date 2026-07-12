@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Divo Dex Cut D, small</title>
+  <desc id="desc">A small-size variant of the Divo Dex Cut D mark.</desc>
+  <defs>
+    <mask id="cut" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M4 60 60 4" stroke="#000" stroke-width="11.5"/>
+    </mask>
+  </defs>
+  <path d="M17 10h9a22 22 0 0 1 0 44h-9z" fill="none" stroke="currentColor" stroke-width="8.5" stroke-linejoin="round" mask="url(#cut)"/>
+</svg>
