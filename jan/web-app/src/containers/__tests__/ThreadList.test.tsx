@@ -1,7 +1,10 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import ThreadList from '../ThreadList'
+import { useAppState } from '@/hooks/useAppState'
+import { useChatSessions } from '@/stores/chat-session-store'
+import { usePiApproval } from '@/hooks/usePiApproval'
 
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, className, title }: any) => (
@@ -80,6 +83,20 @@ const makeThread = (overrides: Partial<Thread> = {}): Thread =>
 
 const flushEffects = () => act(() => Promise.resolve())
 
+const resetRuntimeStores = () => {
+  useAppState.setState({
+    busyThreads: {},
+    streamingContents: {},
+    loadingModels: {},
+    cancelToolCalls: {},
+    piThreadRunStates: {},
+  })
+  useChatSessions.setState({ sessions: {} })
+  usePiApproval.setState({ queues: {} })
+}
+
+beforeEach(resetRuntimeStores)
+
 describe('ThreadList — long-URL overflow guard (#7959)', () => {
   it('truncates non-project thread titles and exposes full text via title attribute', async () => {
     render(<ThreadList threads={[makeThread()]} />)
@@ -120,4 +137,60 @@ describe('ThreadList — long-URL overflow guard (#7959)', () => {
     expect(titleEl).toHaveClass('block', 'truncate')
     expect(titleEl).toHaveAttribute('title', 'common:newThread')
   })
+})
+
+describe('ThreadList — reserved thread-state slot placement', () => {
+  const titleSpan = () =>
+    screen.getAllByText(longUrl).find((el) => el.tagName === 'SPAN')!
+
+  const runVariant = (currentProjectId?: string) => {
+    it(
+      `renders a stable slot immediately before the title and keeps title ` +
+        `layout unchanged across state changes (${
+          currentProjectId ? 'project' : 'standard'
+        } row)`,
+      async () => {
+        render(
+          <ThreadList
+            threads={[makeThread()]}
+            currentProjectId={currentProjectId}
+          />
+        )
+        await flushEffects()
+
+        // Idle: a reserved-but-empty slot precedes the title.
+        const idleSlot = titleSpan().previousElementSibling
+        expect(idleSlot).not.toBeNull()
+        expect(idleSlot).toHaveAttribute('data-thread-state', 'idle')
+        expect(idleSlot).toHaveClass('size-3', 'shrink-0')
+        expect(idleSlot).toHaveAttribute('aria-hidden', 'true')
+
+        // Capture title geometry-bearing attributes before any state change.
+        const titleClassBefore = titleSpan().className
+        const titleAttrBefore = titleSpan().getAttribute('title')
+
+        // Drive the thread to a visible state; the slot mutates in place.
+        act(() => {
+          useAppState.setState({ busyThreads: { t1: true } })
+        })
+
+        const activeSlot = titleSpan().previousElementSibling
+        expect(activeSlot).toHaveAttribute('data-thread-state', 'running')
+        expect(activeSlot).toHaveClass('size-3', 'shrink-0')
+
+        // The title itself never changed its layout classes or label.
+        expect(titleSpan().className).toBe(titleClassBefore)
+        expect(titleSpan().getAttribute('title')).toBe(titleAttrBefore)
+
+        // Back to idle: slot remains reserved (not inserted/removed).
+        act(() => resetRuntimeStores())
+        const backToIdle = titleSpan().previousElementSibling
+        expect(backToIdle).toHaveAttribute('data-thread-state', 'idle')
+        expect(titleSpan().className).toBe(titleClassBefore)
+      }
+    )
+  }
+
+  runVariant(undefined)
+  runVariant('project-1')
 })
