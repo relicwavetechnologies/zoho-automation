@@ -6,11 +6,25 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listeners: [] as Array<(event: { payload: PiRawEvent }) => void>,
   unlisten: vi.fn(),
+  listen: vi.fn(),
+  approvalListener: undefined as
+    | ((event: { payload: PiRawEvent }) => void)
+    | undefined,
 }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(
+vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }))
+
+import { usePiApproval } from '@/hooks/usePiApproval'
+import { createPiMessageStream } from '../pi-stream'
+
+beforeEach(() => {
+  mocks.invoke.mockReset()
+  mocks.invoke.mockResolvedValue(undefined)
+  mocks.listeners = mocks.approvalListener ? [mocks.approvalListener] : []
+  mocks.unlisten.mockReset()
+  mocks.listen.mockReset()
+  mocks.listen.mockImplementation(
     async (
       _name: string,
       listener: (event: { payload: PiRawEvent }) => void
@@ -18,19 +32,85 @@ vi.mock('@tauri-apps/api/event', () => ({
       mocks.listeners.push(listener)
       return mocks.unlisten
     }
-  ),
-}))
-
-import { usePiApproval } from '@/hooks/usePiApproval'
-import { createPiMessageStream } from '../pi-stream'
+  )
+  usePiApproval.setState({ queues: {} })
+})
 
 describe('createPiMessageStream run ownership', () => {
-  beforeEach(() => {
-    mocks.invoke.mockReset()
-    mocks.invoke.mockResolvedValue(undefined)
-    mocks.listeners = []
-    mocks.unlisten.mockReset()
-    usePiApproval.setState({ queues: {} })
+  it('does not start Pi after stop while approval-listener setup is deferred', async () => {
+    const abortController = new AbortController()
+    let resolveApprovalListener: (() => void) | undefined
+    mocks.listen.mockImplementationOnce(
+      (_name: string, listener: (event: { payload: PiRawEvent }) => void) =>
+        new Promise((resolve) => {
+          resolveApprovalListener = () => {
+            mocks.approvalListener = listener
+            mocks.listeners.push(listener)
+            resolve(mocks.unlisten)
+          }
+        })
+    )
+
+    const stream = createPiMessageStream({
+      threadId: 'thread-1',
+      message: 'stop during listener startup',
+      abortSignal: abortController.signal,
+      isStale: () => false,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+
+    abortController.abort()
+    resolveApprovalListener?.()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      'pi_start',
+      expect.anything()
+    )
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      'pi_prompt',
+      expect.anything()
+    )
+  })
+
+  it('does not prompt after stop while Pi startup is deferred', async () => {
+    const abortController = new AbortController()
+    let resolvePiStart: (() => void) | undefined
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'pi_start') {
+        return new Promise<void>((resolve) => {
+          resolvePiStart = resolve
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    const stream = createPiMessageStream({
+      threadId: 'thread-1',
+      message: 'stop during Pi startup',
+      abortSignal: abortController.signal,
+      isStale: () => false,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_start',
+        expect.objectContaining({ threadId: 'thread-1' })
+      )
+    )
+
+    abortController.abort()
+    resolvePiStart?.()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      'pi_prompt',
+      expect.anything()
+    )
   })
 
   it('scopes aborts and approval responses to one generated run', async () => {
@@ -127,6 +207,12 @@ describe('createPiMessageStream run ownership', () => {
     const reader = stream.getReader()
     await reader.read()
     await vi.waitFor(() => expect(mocks.listeners.length).toBeGreaterThanOrEqual(1))
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-1', runId: expect.any(String) })
+      )
+    )
     const prompt = mocks.invoke.mock.calls.find(([command]) => command === 'pi_prompt')?.[1]
     const transcriptListener = mocks.listeners.at(-1)
 
@@ -194,6 +280,52 @@ describe('createPiMessageStream run ownership', () => {
 
     resolveAbort?.()
     await vi.waitFor(() => expect(onTerminal).toHaveBeenCalledOnce())
+  })
+
+  it('closes a partial Pi response as a stop rather than emitting a generic error', async () => {
+    const abortController = new AbortController()
+    const stream = createPiMessageStream({
+      threadId: 'thread-1',
+      message: 'stop after a partial answer',
+      abortSignal: abortController.signal,
+      isStale: () => false,
+    })
+    const reader = stream.getReader()
+    const first = await reader.read()
+    expect(first.value).toMatchObject({ type: 'start' })
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-1', runId: expect.any(String) })
+      )
+    )
+    const prompt = mocks.invoke.mock.calls.find(([command]) => command === 'pi_prompt')?.[1]
+    const transcriptListener = mocks.listeners.at(-1)
+    transcriptListener?.({
+      payload: {
+        type: 'message_update',
+        thread_id: 'thread-1',
+        run_id: prompt.runId,
+        assistantMessageEvent: { type: 'text_delta', delta: 'partial answer' },
+      },
+    })
+
+    const partialChunks = [await reader.read(), await reader.read()]
+    expect(partialChunks.map((chunk) => chunk.value?.type)).toEqual([
+      'text-start',
+      'text-delta',
+    ])
+
+    abortController.abort()
+    const rest: Array<{ type?: string }> = []
+    for (;;) {
+      const next = await reader.read()
+      if (next.done) break
+      rest.push(next.value as { type?: string })
+    }
+
+    expect(rest.map((chunk) => chunk.type)).toContain('text-end')
+    expect(rest.map((chunk) => chunk.type)).not.toContain('error')
   })
 
   it('releases terminal state after direct stream cancellation reconciles', async () => {

@@ -146,6 +146,7 @@ const mockServiceHub = {
 // Mock the useServiceHub module
 vi.mock('@/hooks/useServiceHub', () => ({
   useServiceHub: () => mockServiceHub,
+  useServiceStore: { getState: () => ({ serviceHub: mockServiceHub }) },
   getServiceHub: () => mockServiceHub,
   initializeServiceHubStore: vi.fn(),
   isServiceHubInitialized: () => true,

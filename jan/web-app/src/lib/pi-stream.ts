@@ -4,6 +4,7 @@ import type { UIMessageChunk } from 'ai'
 import { consumePiApprovalEvent, usePiApproval } from '@/hooks/usePiApproval'
 import {
   PI_TRACE_TIMELINE_METADATA_KEY,
+  closePiUiMessageBlocks,
   createPiStreamState,
   mapPiEventToUiChunks,
   type PiRawEvent,
@@ -62,6 +63,7 @@ export function createPiMessageStream(options: {
   let finished = false
   let abortReconciliation: Promise<void> | undefined
   let abortInProgress = false
+  let locallyCancelled = false
   let deferredFinishReason: 'stop' | 'error' | undefined
   let reconcileAbort: (() => Promise<void>) | undefined
   let finishCancelledStream: (() => void) | undefined
@@ -118,7 +120,7 @@ export function createPiMessageStream(options: {
         abortInProgress = true
         abortReconciliation = denyThenAbort().finally(() => {
           abortInProgress = false
-          const reason = deferredFinishReason ?? 'error'
+          const reason = deferredFinishReason ?? 'stop'
           deferredFinishReason = undefined
           finishCurrentStream(reason)
         })
@@ -129,14 +131,26 @@ export function createPiMessageStream(options: {
       finishCancelledStream = () => finishCurrentStream('error')
 
       const onAbort = () => {
-        void reconcileCurrentAbort()
-        if (!isStale()) {
-          controller.enqueue({
-            type: 'error',
-            errorText: 'Request aborted',
-          })
+        locallyCancelled = true
+        // Do not turn an explicit user stop into a generic stream error. The
+        // AI SDK marks this request as `isAbort` and hands its partial message
+        // to onFinish, where the route persists meaningful interrupted output.
+        try {
+          closePiUiMessageBlocks(controller, state)
+        } catch {
+          // ReadableStream.cancel may already have closed the controller. The
+          // terminal reconciliation below still releases the scoped Pi run.
         }
-        finishCurrentStream('error')
+        void reconcileCurrentAbort()
+        finishCurrentStream('stop')
+      }
+
+      const startupWasCancelledOrStale = () => {
+        if (locallyCancelled || abortSignal?.aborted) return true
+        if (!isStale()) return false
+
+        finishCurrentStream('stop')
+        return true
       }
 
       if (abortSignal?.aborted) {
@@ -147,7 +161,10 @@ export function createPiMessageStream(options: {
 
       try {
         await ensureApprovalEventListener()
+        if (startupWasCancelledOrStale()) return
+
         await ensurePiStarted(threadId)
+        if (startupWasCancelledOrStale()) return
 
         unlisten = await listen<PiRawEvent>('pi-event', (event) => {
           if (isStale()) return
@@ -157,7 +174,14 @@ export function createPiMessageStream(options: {
           onPiEvent?.(payload)
           mapPiEventToUiChunks(payload, controller, state, finishCurrentStream)
         })
+        if (startupWasCancelledOrStale()) {
+          void unlisten?.()
+          return
+        }
 
+        // Keep this check adjacent to the prompt invocation: cancellation can
+        // arrive while any of the startup boundaries above are pending.
+        if (startupWasCancelledOrStale()) return
         await invoke('pi_prompt', {
           threadId,
           thread_id: threadId,
@@ -166,7 +190,7 @@ export function createPiMessageStream(options: {
           message,
         })
       } catch (error) {
-        if (!isStale()) {
+        if (!startupWasCancelledOrStale()) {
           controller.enqueue({
             type: 'error',
             errorText:
@@ -177,6 +201,7 @@ export function createPiMessageStream(options: {
       }
     },
     async cancel() {
+      locallyCancelled = true
       if (reconcileAbort) {
         await reconcileAbort()
       } else {

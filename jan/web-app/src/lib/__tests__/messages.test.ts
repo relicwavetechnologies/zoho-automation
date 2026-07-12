@@ -121,6 +121,27 @@ describe('convertUIMessageToThreadMessage', () => {
     expect((result.metadata as any).tool_calls[0].tool.function.name).toBe('search')
   })
 
+  it.each([false, 0, ''])('round-trips falsy completed tool output: %p', (output) => {
+    const message = mkUI({
+      parts: [
+        {
+          type: 'tool-search',
+          toolCallId: 'tc-falsy',
+          input: { q: 'test' },
+          state: 'output-available',
+          output,
+        } as any,
+      ],
+    })
+
+    const persisted = convertUIMessageToThreadMessage(message, 't1')
+    const reloaded = convertThreadMessageToUIMessage(persisted)
+    expect(reloaded.parts.find((part: any) => part.type === 'tool-search')).toMatchObject({
+      state: 'output-available',
+      output,
+    })
+  })
+
   it('uses Date.now() when metadata.createdAt is not a Date', () => {
     expect(convertUIMessageToThreadMessage(mkUI({ metadata: {} as any }), 't1').created_at).toBeGreaterThan(0)
   })
@@ -213,6 +234,38 @@ describe('convertThreadMessageToUIMessage', () => {
       content: [{ type: 'tool_call', tool_call_id: 'tc-2', tool_name: 'fetch', input: { url: 'http://x' } }],
     }) as any)
     expect(withoutOutput.parts[0]).toMatchObject({ type: 'tool-fetch', state: 'input-available' })
+  })
+
+  it('restores interrupted Pi output and completed tool evidence after reload', () => {
+    const result = convertThreadMessageToUIMessage(makeTm({
+      content: [
+        { type: 'text', text: { value: 'partial answer', annotations: [] } },
+        {
+          type: 'tool_call',
+          tool_call_id: 'write-1',
+          tool_name: 'crm_update',
+          input: { status: 'done' },
+          output: { updated: true },
+        },
+      ],
+      metadata: {
+        piTraceTimeline: true,
+        interrupted: true,
+        interruption: { state: 'interrupted', reason: 'user_stop' },
+      },
+    }) as any)
+
+    expect(result.metadata).toMatchObject({
+      piTraceTimeline: true,
+      interrupted: true,
+      interruption: { state: 'interrupted', reason: 'user_stop' },
+    })
+    expect(result.parts).toContainEqual({ type: 'text', text: 'partial answer' })
+    expect(result.parts.find((part: any) => part.type === 'tool-crm_update')).toMatchObject({
+      toolCallId: 'write-1',
+      state: 'output-available',
+      output: { updated: true },
+    })
   })
 
   it('handles backward-compatible tool calls in metadata', () => {
@@ -320,5 +373,36 @@ describe('extractContentPartsFromUIMessage', () => {
     const content = extractContentPartsFromUIMessage(msg)
     expect(content).toHaveLength(1)
     expect(content[0].text!.value).toBe('actual')
+  })
+
+  it.each([false, 0, ''])('preserves falsy completed tool output: %p', (output) => {
+    const message = {
+      id: '1',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'tool-search',
+          toolCallId: 'tc-falsy',
+          input: { q: 'test' },
+          state: 'output-available',
+          output,
+        },
+      ],
+    } as UIMessage
+
+    const content = extractContentPartsFromUIMessage(message)
+    const reloaded = convertThreadMessageToUIMessage({
+      id: 'tm-falsy',
+      role: 'assistant',
+      content,
+      created_at: 1000,
+      status: MessageStatus.Ready,
+      object: 'thread.message',
+      thread_id: 't1',
+    } as any)
+    expect(reloaded.parts[0]).toMatchObject({
+      state: 'output-available',
+      output,
+    })
   })
 })

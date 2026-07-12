@@ -4,6 +4,7 @@ import type { UIMessage } from '@ai-sdk/react'
 import {
   buildLlamacppReasoningParams,
   coalesceMessagesForAlternation,
+  CustomChatTransport,
   hasGenuineUserQuery,
   extractContextInfoFromError,
   normalizeToolInputSchema,
@@ -546,6 +547,30 @@ describe('resolveOrphanToolCalls', () => {
     ]
     const out = resolveOrphanToolCalls(input)
     expect(out).toEqual(input)
+  })
+})
+
+describe('Pi interrupted history', () => {
+  it('uses only the latest user request and never replays interrupted tool evidence', () => {
+    const transport = new CustomChatTransport(undefined, 'thread-1')
+    const request = transport.buildPiUserMessage([
+      userMsg('u1', 'update the CRM'),
+      assistantMsg('a-interrupted', [
+        { type: 'text', text: 'I updated the first record.' },
+        {
+          type: 'tool-crm_update',
+          toolCallId: 'write-1',
+          input: { recordId: '1', status: 'done' },
+          state: 'output-available',
+          output: { updated: true },
+        } as unknown as UIMessage['parts'][number],
+      ] as UIMessage['parts']),
+      userMsg('u2', 'change the original request instead'),
+    ])
+
+    expect(request).toBe('change the original request instead')
+    expect(request).not.toContain('crm_update')
+    expect(request).not.toContain('recordId')
   })
 })
 

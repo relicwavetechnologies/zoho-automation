@@ -250,6 +250,10 @@ function ThreadDetail() {
   // Set before a generation when the resulting assistant message should be
   // linked to a specific parent (versioning). Consumed once in onFinish.
   const pendingAssistantParentId = useRef<string | null>(null)
+  // `isAbort` is also used for unmounts and system-triggered stops. Only the
+  // composer Stop button should turn a partial response into durable
+  // interrupted history.
+  const userStopRequestedRef = useRef(false)
 
   // Use the AI SDK chat hook
   const {
@@ -271,6 +275,8 @@ function ThreadDetail() {
     onFinish: ({ message, isAbort }) => {
       const msgMeta = message.metadata as Record<string, unknown> | undefined
       const finishReason = msgMeta?.finishReason as string | undefined
+      const wasUserStopped = isAbort && userStopRequestedRef.current
+      if (isAbort) userStopRequestedRef.current = false
 
       // Context limit hit: send partial content as prefill so the model continues
       // from where it stopped. The stream wrapper injects it as the first text-delta
@@ -306,11 +312,14 @@ function ThreadDetail() {
 
       if (!isAbort && message.parts.length) setPendingContinueMessage(null)
 
-      // Persist assistant message to backend (skip if aborted).
+      // Persist normal responses and meaningful partial output from an explicit
+      // user stop. Other aborts (route teardown, provider shutdown, etc.) stay
+      // transient. Tool/trace parts are stored verbatim as historical evidence;
+      // no continuation or automatic replay is started for an interrupted run.
       // For continuations, message.parts already contains partial + new content
       // because the stream wrapper prepended the partial text as the first delta.
       if (
-        !isAbort &&
+        (!isAbort || wasUserStopped) &&
         message.role === 'assistant' &&
         uiMessageHasMeaningfulContent(message)
       ) {
@@ -335,6 +344,17 @@ function ThreadDetail() {
           parentForAssistant = resolveAssistantParent(undefined)
         }
 
+        const persistedMetadata = wasUserStopped
+          ? {
+              ...messageMetadata,
+              interrupted: true,
+              interruption: {
+                state: 'interrupted',
+                reason: 'user_stop',
+              },
+            }
+          : messageMetadata
+
         const assistantMessage: ThreadMessage = {
           type: 'text',
           role: ChatCompletionRole.Assistant,
@@ -347,8 +367,8 @@ function ThreadDetail() {
           completed_at: Date.now(),
           metadata:
             parentForAssistant != null
-              ? { ...messageMetadata, parentId: parentForAssistant }
-              : messageMetadata,
+              ? { ...persistedMetadata, parentId: parentForAssistant }
+              : persistedMetadata,
         }
 
         const existingMessages = useMessages.getState().getMessages(threadId)
@@ -392,6 +412,10 @@ function ThreadDetail() {
           useMessageErrors.getState().clearError(m.id)
         }
       }
+
+      // A stop is terminal user intent. In particular, do not feed completed
+      // Pi tool parts back into a new run or kick off client-side tool work.
+      if (isAbort) return
 
       // Create a new AbortController for tool calls
       toolCallAbortController.current = new AbortController()
@@ -787,6 +811,7 @@ function ThreadDetail() {
       files?: Array<{ type: string; mediaType: string; url: string }>,
       options?: DivoSkillReferenceSubmitOptions
     ) => {
+      userStopRequestedRef.current = false
       const skillReferences = normalizeDivoSkillReferences(
         options?.skillReferences
       )
@@ -1015,6 +1040,7 @@ function ThreadDetail() {
   // This prevents stale or new attachments from leaking into auto-sent queue items.
   const sendQueuedMessage = useCallback(
     async (text: string, skillReferencesInput?: DivoSkillReference[]) => {
+      userStopRequestedRef.current = false
       const skillReferences = normalizeDivoSkillReferences(
         skillReferencesInput
       )
@@ -1220,6 +1246,7 @@ function ThreadDetail() {
   // new reply arrives in onFinish as a sibling and becomes the active branch.
   const handleRegenerate = useCallback(
     (messageId?: string) => {
+      userStopRequestedRef.current = false
       const hadBannerError =
         useAppState.getState().oomError != null ||
         useAppState.getState().backendError != null ||
@@ -1286,6 +1313,11 @@ function ThreadDetail() {
       regenerate,
     ]
   )
+
+  const handleUserStop = useCallback(() => {
+    userStopRequestedRef.current = true
+    stop()
+  }, [stop])
 
   // Handle delete message
   const handleDeleteMessage = useCallback(
@@ -1725,7 +1757,7 @@ function ThreadDetail() {
           <ChatInput
             model={threadModel}
             onSubmit={handleSubmit}
-            onStop={stop}
+            onStop={handleUserStop}
             chatStatus={effectiveStatus}
           />
         </div>

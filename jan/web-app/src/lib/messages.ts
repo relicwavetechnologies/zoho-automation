@@ -317,6 +317,11 @@ export function convertThreadMessageToUIMessage(
           // Multiple content parts or non-text - return full content array
           result = tc.response.content
         }
+      } else if (tc.response != null) {
+        // Older persisted tool calls may store the raw output directly. Keep
+        // falsy values such as false, 0, and an empty string as completed
+        // evidence rather than treating them as absent.
+        result = tc.response
       }
 
       const toolName = tc.tool?.function?.name || tc.name
@@ -504,7 +509,7 @@ export function extractContentPartsFromUIMessage(message: UIMessage): ThreadCont
       const toolName = (part.type as string).replace('tool-', '')
       const toolCallId = part.toolCallId || part.toolInvocationId
       const input = part.input || part.args
-      const output = part.output || part.result
+      const output = part.output ?? part.result
 
       const toolCallContent = {
         type: 'tool_call' as ContentType.ToolCall,

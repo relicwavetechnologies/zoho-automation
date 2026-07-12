@@ -707,6 +707,108 @@ describe('ThreadDetail route', () => {
     expect(persisted.metadata.parentId).not.toBeNull()
   })
 
+  it('persists meaningful Pi partial output as interrupted when the user stops it', () => {
+    h.chatState.status = 'streaming'
+    renderComponent()
+
+    screen.getByTestId('chat-stop').click()
+    expect(h.mockStop).toHaveBeenCalledOnce()
+
+    act(() => {
+      ;(h as any).capturedOnFinish({
+        message: {
+          id: 'a-stopped',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'Partial answer' }],
+          metadata: { piTraceTimeline: true },
+        },
+        isAbort: true,
+      })
+    })
+
+    const persisted = h.messagesState.addMessage.mock.calls
+      .map((c: any[]) => c[0])
+      .find((m: any) => m.id === 'a-stopped')
+    expect(persisted).toMatchObject({
+      metadata: {
+        piTraceTimeline: true,
+        interrupted: true,
+        interruption: { state: 'interrupted', reason: 'user_stop' },
+      },
+    })
+    // A user stop is terminal: do not automatically run tools or regenerate.
+    expect(h.mockAddToolOutput).not.toHaveBeenCalled()
+    expect(h.mockRegenerate).not.toHaveBeenCalled()
+  })
+
+  it('does not persist an empty assistant placeholder after user stop', () => {
+    h.chatState.status = 'streaming'
+    renderComponent()
+
+    screen.getByTestId('chat-stop').click()
+    act(() => {
+      ;(h as any).capturedOnFinish({
+        message: {
+          id: 'a-empty-stopped',
+          role: 'assistant',
+          parts: [{ type: 'text', text: '   ' }],
+          metadata: { piTraceTimeline: true },
+        },
+        isAbort: true,
+      })
+    })
+
+    expect(
+      h.messagesState.addMessage.mock.calls.some(
+        ([message]: any[]) => message.id === 'a-empty-stopped'
+      )
+    ).toBe(false)
+  })
+
+  it('keeps an interrupted branch when editing the original user message', () => {
+    const persisted: any[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        created_at: 1,
+        content: [{ type: 'text', text: { value: 'original', annotations: [] } }],
+        metadata: { parentId: null },
+      },
+    ]
+    h.messagesState.getMessages = vi.fn(() => persisted)
+    h.messagesState.addMessage = vi.fn((message: any) => persisted.push(message))
+    h.chatState.messages = [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'original' }] },
+    ]
+    h.chatState.status = 'streaming'
+    renderComponent()
+
+    screen.getByTestId('chat-stop').click()
+    act(() => {
+      ;(h as any).capturedOnFinish({
+        message: {
+          id: 'a-interrupted',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'partial result' }],
+          metadata: { piTraceTimeline: true },
+        },
+        isAbort: true,
+      })
+    })
+    screen.getByTestId('edit-u1').click()
+
+    expect(persisted.find((m) => m.id === 'a-interrupted')).toMatchObject({
+      metadata: { interrupted: true, parentId: 'u1' },
+    })
+    const edited = persisted.find((m) => m.id !== 'u1' && m.id !== 'a-interrupted')
+    expect(edited).toMatchObject({
+      role: 'user',
+      metadata: { parentId: null },
+    })
+    expect(h.messagesState.deleteMessage).not.toHaveBeenCalled()
+    expect(h.mockRegenerate).toHaveBeenCalledWith({ messageId: edited.id })
+  })
+
   it('delete removes message from store and chat list', () => {
     h.chatState.messages = [
       { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },

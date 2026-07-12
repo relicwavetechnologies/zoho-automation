@@ -1,6 +1,6 @@
 export { PI_PROVIDER_ID, PI_TRACE_TIMELINE_METADATA_KEY } from './constants'
 export { isPiTraceMessage } from './is-pi-trace-message'
-export { mapPiEventToUiChunks } from './pi-event-mapper'
+export { closePiUiMessageBlocks, mapPiEventToUiChunks } from './pi-event-mapper'
 export {
   findFinalAnswerTextIndex,
   splitPiMessageParts,

@@ -44,6 +44,21 @@ function closeAllOpenBlocks(
   }
 }
 
+/**
+ * Close any append-only trace blocks before a local stop closes the stream.
+ *
+ * AI SDK keeps the partial message it has received when its AbortSignal fires.
+ * Ending the open text/reasoning parts makes that partial structurally complete
+ * so it can be saved as interrupted history rather than treated as a stream
+ * error or an unfinished UI placeholder.
+ */
+export function closePiUiMessageBlocks(
+  controller: ReadableStreamDefaultController<UIMessageChunk>,
+  state: PiStreamState
+): void {
+  closeAllOpenBlocks(controller, state)
+}
+
 function openReasoningBlock(
   controller: ReadableStreamDefaultController<UIMessageChunk>,
   state: PiStreamState
