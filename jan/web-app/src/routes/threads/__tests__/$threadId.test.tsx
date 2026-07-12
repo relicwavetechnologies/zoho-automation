@@ -85,38 +85,44 @@ const h = vi.hoisted(() => {
     })),
     updateProvider: vi.fn(),
   }
-  const useModelProviderMock: any = (selector: any) => selector(modelProviderState)
+  const useModelProviderMock: any = (selector: any) =>
+    selector(modelProviderState)
   useModelProviderMock.getState = () => modelProviderState
 
   const chatSessionsState: any = {
     sessions: {},
     getSessionData: vi.fn(() => ({ tools: [] })),
   }
-  const useChatSessionsMock: any = (selector: any) => selector(chatSessionsState)
+  const useChatSessionsMock: any = (selector: any) =>
+    selector(chatSessionsState)
   useChatSessionsMock.getState = () => chatSessionsState
 
   const attachmentsState: any = {
     getAttachments: vi.fn(() => []),
     clearAttachments: vi.fn(),
   }
-  const useChatAttachmentsMock: any = (selector: any) => selector(attachmentsState)
+  const useChatAttachmentsMock: any = (selector: any) =>
+    selector(attachmentsState)
   useChatAttachmentsMock.getState = () => attachmentsState
 
   const useAttachmentsState: any = { enabled: true, parseMode: 'auto' }
-  const useAttachmentsMock: any = (selector: any) => selector(useAttachmentsState)
+  const useAttachmentsMock: any = (selector: any) =>
+    selector(useAttachmentsState)
   useAttachmentsMock.getState = () => useAttachmentsState
 
   const toolAvailableState: any = {
     getDisabledToolsForThread: vi.fn(() => []),
   }
-  const useToolAvailableMock: any = (selector: any) => selector(toolAvailableState)
+  const useToolAvailableMock: any = (selector: any) =>
+    selector(toolAvailableState)
   useToolAvailableMock.getState = () => toolAvailableState
 
   const toolApprovalState: any = {
     showApprovalModal: vi.fn().mockResolvedValue(true),
     approveToolForThread: vi.fn(),
   }
-  const useToolApprovalMock: any = (selector: any) => selector(toolApprovalState)
+  const useToolApprovalMock: any = (selector: any) =>
+    selector(toolApprovalState)
   useToolApprovalMock.getState = () => toolApprovalState
 
   const agentModeState: any = { agentThreads: {} }
@@ -124,10 +130,16 @@ const h = vi.hoisted(() => {
   useAgentModeMock.getState = () => agentModeState
 
   const messageQueueState: any = {
-    dequeue: vi.fn(() => null),
+    getQueue: vi.fn(() => []),
+    claimNext: vi.fn(() => undefined),
+    acknowledge: vi.fn(),
+    isDispatchable: vi.fn(() => true),
+    discard: vi.fn(),
+    release: vi.fn(),
     clearQueue: vi.fn(),
   }
-  const useMessageQueueMock: any = (_selector: any) => undefined
+  const useMessageQueueMock: any = (selector: any) =>
+    selector ? selector(messageQueueState) : messageQueueState
   useMessageQueueMock.getState = () => messageQueueState
 
   return {
@@ -169,13 +181,18 @@ const h = vi.hoisted(() => {
 // -----------------------------------------------------------------------------
 
 vi.mock('@tanstack/react-router', () => ({
-  createFileRoute: () => (config: any) => ({ ...config, id: '/threads/$threadId' }),
+  createFileRoute: () => (config: any) => ({
+    ...config,
+    id: '/threads/$threadId',
+  }),
   useParams: () => ({ threadId: 'thread-1' }),
   useSearch: () => ({ threadModel: undefined }),
 }))
 
 vi.mock('@/containers/HeaderPage', () => ({
-  default: ({ children }: any) => <div data-testid="header-page">{children}</div>,
+  default: ({ children }: any) => (
+    <div data-testid="header-page">{children}</div>
+  ),
 }))
 
 vi.mock('@/containers/DivoWorkspaceSelector', () => ({
@@ -296,13 +313,21 @@ vi.mock('@/lib/messages', () => ({
   extractContentPartsFromUIMessage: (msg: any) =>
     msg.parts
       .filter((p: any) => p.type === 'text')
-      .map((p: any) => ({ type: 'text', text: { value: p.text, annotations: [] } })),
+      .map((p: any) => ({
+        type: 'text',
+        text: { value: p.text, annotations: [] },
+      })),
   uiMessageHasMeaningfulContent: (msg: any) =>
     !!msg?.parts?.some((p: any) => p.type === 'text' && p.text?.trim()),
 }))
 
 vi.mock('@/lib/completion', () => ({
-  newUserThreadContent: (threadId: string, text: string, _a: any, id: string) => ({
+  newUserThreadContent: (
+    threadId: string,
+    text: string,
+    _a: any,
+    id: string
+  ) => ({
     id,
     thread_id: threadId,
     role: 'user',
@@ -314,7 +339,10 @@ vi.mock('@/lib/completion', () => ({
 vi.mock('@/lib/attachmentProcessing', () => ({
   processAttachmentsForSend: vi
     .fn()
-    .mockResolvedValue({ processedAttachments: [], hasEmbeddedDocuments: false }),
+    .mockResolvedValue({
+      processedAttachments: [],
+      hasEmbeddedDocuments: false,
+    }),
 }))
 
 vi.mock('@/lib/thread-title-summarizer', () => ({
@@ -337,6 +365,7 @@ vi.mock('zustand/react/shallow', () => ({
 vi.mock('@/hooks/use-chat', () => ({
   useChat: (_args: any) => {
     ;(h as any).capturedOnFinish = _args?.onFinish
+    ;(h as any).capturedOnError = _args?.onError
     return {
       messages: h.chatState.messages,
       status: h.chatState.status,
@@ -356,17 +385,29 @@ vi.mock('@/hooks/useThreads', () => ({ useThreads: h.useThreadsMock }))
 vi.mock('@/hooks/useMessages', () => ({ useMessages: h.useMessagesMock }))
 vi.mock('@/hooks/useTools', () => ({ useTools: vi.fn() }))
 vi.mock('@/hooks/useAppState', () => ({ useAppState: h.useAppStateMock }))
-vi.mock('@/hooks/useModelProvider', () => ({ useModelProvider: h.useModelProviderMock }))
-vi.mock('@/stores/chat-session-store', () => ({ useChatSessions: h.useChatSessionsMock }))
+vi.mock('@/hooks/useModelProvider', () => ({
+  useModelProvider: h.useModelProviderMock,
+}))
+vi.mock('@/stores/chat-session-store', () => ({
+  useChatSessions: h.useChatSessionsMock,
+}))
 vi.mock('@/hooks/useChatAttachments', () => ({
   useChatAttachments: h.useChatAttachmentsMock,
   NEW_THREAD_ATTACHMENT_KEY: '__new-thread__',
 }))
-vi.mock('@/hooks/useAttachments', () => ({ useAttachments: h.useAttachmentsMock }))
-vi.mock('@/hooks/useToolAvailable', () => ({ useToolAvailable: h.useToolAvailableMock }))
-vi.mock('@/hooks/useToolApproval', () => ({ useToolApproval: h.useToolApprovalMock }))
+vi.mock('@/hooks/useAttachments', () => ({
+  useAttachments: h.useAttachmentsMock,
+}))
+vi.mock('@/hooks/useToolAvailable', () => ({
+  useToolAvailable: h.useToolAvailableMock,
+}))
+vi.mock('@/hooks/useToolApproval', () => ({
+  useToolApproval: h.useToolApprovalMock,
+}))
 vi.mock('@/hooks/useAgentMode', () => ({ useAgentMode: h.useAgentModeMock }))
-vi.mock('@/stores/message-queue-store', () => ({ useMessageQueue: h.useMessageQueueMock }))
+vi.mock('@/stores/message-queue-store', () => ({
+  useMessageQueue: h.useMessageQueueMock,
+}))
 
 vi.mock('@/hooks/useAutoScroll', () => ({
   useAutoScroll: () => ({
@@ -408,6 +449,10 @@ const renderComponent = () => {
 describe('ThreadDetail route', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    h.mockSendMessage.mockImplementation((_message: any, options?: any) => {
+      options?.body?.__divoOnStreamAccepted?.()
+      return Promise.resolve()
+    })
     h.chatState.messages = []
     h.chatState.status = 'ready'
     h.chatState.error = null
@@ -439,7 +484,14 @@ describe('ThreadDetail route', () => {
     h.chatSessionsState.getSessionData = vi.fn(() => ({ tools: [] }))
     h.attachmentsState.getAttachments = vi.fn(() => [])
     h.attachmentsState.clearAttachments = vi.fn()
-    h.messageQueueState.dequeue = vi.fn(() => null)
+    h.messageQueueState.getQueue = vi.fn(() => [])
+    h.messageQueueState.claimNext = vi.fn(() => undefined)
+    h.messageQueueState.acknowledge = vi.fn(() => {
+      h.messageQueueState.claimNext = vi.fn(() => undefined)
+    })
+    h.messageQueueState.isDispatchable = vi.fn(() => true)
+    h.messageQueueState.discard = vi.fn()
+    h.messageQueueState.release = vi.fn()
     h.messageQueueState.clearQueue = vi.fn()
     h.agentModeState.agentThreads = {}
     h.modelProviderState.selectedProvider = 'openai'
@@ -470,7 +522,9 @@ describe('ThreadDetail route', () => {
     const { unmount } = renderComponent()
     expect(h.threadsState.setCurrentThreadId).toHaveBeenCalledWith('thread-1')
     unmount()
-    expect(h.threadsState.setCurrentThreadId).toHaveBeenLastCalledWith(undefined)
+    expect(h.threadsState.setCurrentThreadId).toHaveBeenLastCalledWith(
+      undefined
+    )
   })
 
   it('renders messages passed through useChat', () => {
@@ -771,12 +825,16 @@ describe('ThreadDetail route', () => {
         id: 'u1',
         role: 'user',
         created_at: 1,
-        content: [{ type: 'text', text: { value: 'original', annotations: [] } }],
+        content: [
+          { type: 'text', text: { value: 'original', annotations: [] } },
+        ],
         metadata: { parentId: null },
       },
     ]
     h.messagesState.getMessages = vi.fn(() => persisted)
-    h.messagesState.addMessage = vi.fn((message: any) => persisted.push(message))
+    h.messagesState.addMessage = vi.fn((message: any) =>
+      persisted.push(message)
+    )
     h.chatState.messages = [
       { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'original' }] },
     ]
@@ -800,7 +858,9 @@ describe('ThreadDetail route', () => {
     expect(persisted.find((m) => m.id === 'a-interrupted')).toMatchObject({
       metadata: { interrupted: true, parentId: 'u1' },
     })
-    const edited = persisted.find((m) => m.id !== 'u1' && m.id !== 'a-interrupted')
+    const edited = persisted.find(
+      (m) => m.id !== 'u1' && m.id !== 'a-interrupted'
+    )
     expect(edited).toMatchObject({
       role: 'user',
       metadata: { parentId: null },
@@ -837,10 +897,359 @@ describe('ThreadDetail route', () => {
     expect(sessionStorage.getItem('initial-message-thread-1')).toBeNull()
   })
 
-  it('clears queue on unmount', () => {
+  it('preserves the queue on unmount so navigation does not discard user intent', () => {
     const { unmount } = renderComponent()
     unmount()
-    expect(h.messageQueueState.clearQueue).toHaveBeenCalledWith('thread-1')
+    expect(h.messageQueueState.clearQueue).not.toHaveBeenCalled()
+  })
+
+  it('retains a queued message when its captured branch parent was deleted', async () => {
+    h.messageQueueState.claimNext = vi.fn(() => ({
+      claimId: 'claim-1',
+      message: {
+        id: 'queued-1',
+        text: 'keep this branch',
+        createdAt: 1,
+        attachments: [],
+        skillReferences: [],
+        parentId: 'deleted-parent',
+        hadBranching: true,
+      },
+    }))
+
+    renderComponent()
+
+    await waitFor(() => {
+      expect(h.messageQueueState.release).toHaveBeenCalledWith(
+        'thread-1',
+        expect.objectContaining({ claimId: 'claim-1' }),
+        expect.objectContaining({
+          code: 'branch_parent_missing',
+          message: expect.stringContaining('original branch'),
+        })
+      )
+    })
+    expect(h.mockSendMessage).not.toHaveBeenCalled()
+    expect(h.messageQueueState.acknowledge).not.toHaveBeenCalled()
+  })
+
+  it('replays queued attachments and skill references through the normal submission path', async () => {
+    h.messageQueueState.claimNext = vi.fn(() => ({
+      claimId: 'claim-attachments',
+      message: {
+        id: 'queued-attachments',
+        text: 'inspect this image',
+        createdAt: 1,
+        attachments: [
+          {
+            type: 'image',
+            name: 'diagram.png',
+            mimeType: 'image/png',
+            base64: 'ZmlsZQ==',
+            dataUrl: 'data:image/png;base64,ZmlsZQ==',
+          },
+        ],
+        skillReferences: [
+          {
+            id: 'vision',
+            name: 'Vision',
+            description: 'Inspect images',
+            category: 'Research',
+            toolIds: ['inspect-image'],
+          },
+        ],
+        parentId: 'a1',
+        hadBranching: false,
+      },
+    }))
+
+    renderComponent()
+
+    await waitFor(() => {
+      expect(processAttachmentsForSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attachments: [expect.objectContaining({ name: 'diagram.png' })],
+        })
+      )
+      expect(h.mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parts: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'file',
+              mediaType: 'image/png',
+            }),
+          ]),
+          metadata: expect.objectContaining({
+            divoSkillReferences: [expect.objectContaining({ id: 'vision' })],
+          }),
+        }),
+        expect.objectContaining({
+          body: expect.objectContaining({
+            __divoOnStreamAccepted: expect.any(Function),
+          }),
+        })
+      )
+      expect(h.messageQueueState.acknowledge).toHaveBeenCalledWith(
+        'thread-1',
+        expect.objectContaining({ claimId: 'claim-attachments' })
+      )
+    })
+  })
+
+  it('retains the captured parent when the active branch changes before replay', async () => {
+    const branchedMessages: any[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        metadata: { parentId: null, activeChildId: 'a-active-now' },
+        content: [{ type: 'text', text: { value: 'root' } }],
+      },
+      {
+        id: 'a-captured',
+        role: 'assistant',
+        metadata: { parentId: 'u1' },
+        content: [{ type: 'text', text: { value: 'captured' } }],
+      },
+      {
+        id: 'a-active-now',
+        role: 'assistant',
+        metadata: { parentId: 'u1' },
+        content: [{ type: 'text', text: { value: 'other branch' } }],
+      },
+    ]
+    h.messagesState.getMessages = vi.fn(() => branchedMessages)
+    h.messagesState.addMessage = vi.fn((message: any) => {
+      branchedMessages.push(message)
+    })
+    h.messagesState.updateMessage = vi.fn((message: any) => {
+      const index = branchedMessages.findIndex((current) => current.id === message.id)
+      if (index >= 0) branchedMessages[index] = message
+    })
+    let sdkMessages: any[] = []
+    h.mockSetChatMessages = vi.fn((messages: any[]) => {
+      sdkMessages = messages
+    })
+    h.mockSendMessage.mockImplementation((message: any, options?: any) => {
+      sdkMessages = [...sdkMessages, message]
+      options?.body?.__divoOnStreamAccepted?.()
+      return Promise.resolve()
+    })
+    h.messageQueueState.claimNext = vi.fn(() => ({
+      claimId: 'claim-branch',
+      message: {
+        id: 'queued-branch',
+        text: 'continue the original branch',
+        createdAt: 1,
+        attachments: [],
+        skillReferences: [],
+        parentId: 'a-captured',
+        hadBranching: true,
+      },
+    }))
+
+    renderComponent()
+
+    await waitFor(() => {
+      expect(h.messagesState.addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({ parentId: 'a-captured' }),
+        })
+      )
+      expect(h.messagesState.updateMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'a-captured',
+          metadata: expect.objectContaining({ activeChildId: 'gen-id' }),
+        })
+      )
+      expect(h.mockSetChatMessages).toHaveBeenCalledWith(
+        expect.not.arrayContaining([expect.objectContaining({ id: 'gen-id' })])
+      )
+      expect(sdkMessages.filter((message) => message.id === 'gen-id')).toHaveLength(1)
+      expect(
+        sdkMessages.filter(
+          (message) => message.parts?.[0]?.text === 'continue the original branch'
+        )
+      ).toHaveLength(1)
+      expect(h.messageQueueState.acknowledge).toHaveBeenCalled()
+    })
+  })
+
+  it('cancels a claimed item during attachment preprocessing before dispatch', async () => {
+    let resolveProcessing: ((value: any) => void) | undefined
+    ;(processAttachmentsForSend as any).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveProcessing = resolve
+        })
+    )
+    h.messageQueueState.isDispatchable = vi
+      .fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false)
+    h.messageQueueState.claimNext = vi.fn(() => ({
+      claimId: 'claim-cancel',
+      message: {
+        id: 'queued-cancel',
+        text: 'do not send',
+        createdAt: 1,
+        attachments: [
+          { type: 'document', name: 'brief.pdf', path: '/tmp/brief.pdf' },
+        ],
+        skillReferences: [],
+        parentId: 'a1',
+        hadBranching: false,
+      },
+    }))
+
+    renderComponent()
+    await waitFor(() => expect(resolveProcessing).toBeDefined())
+    resolveProcessing?.({ processedAttachments: [], hasEmbeddedDocuments: false })
+
+    await waitFor(() => {
+      expect(h.messageQueueState.discard).toHaveBeenCalledWith(
+        'thread-1',
+        expect.objectContaining({ claimId: 'claim-cancel' })
+      )
+    })
+    expect(h.mockSendMessage).not.toHaveBeenCalled()
+    expect(h.messageQueueState.release).not.toHaveBeenCalled()
+  })
+
+  it('keeps an accepted queued user turn when the stream later rejects', async () => {
+    h.mockSendMessage.mockImplementationOnce((_message: any, options?: any) => {
+      options?.body?.__divoOnStreamAccepted?.()
+      return Promise.reject(new Error('stream interrupted'))
+    })
+    h.messageQueueState.claimNext = vi.fn(() => ({
+      claimId: 'claim-late-error',
+      message: {
+        id: 'queued-late-error',
+        text: 'accepted turn',
+        createdAt: 1,
+        attachments: [],
+        skillReferences: [],
+        parentId: 'a1',
+        hadBranching: false,
+      },
+    }))
+
+    renderComponent()
+
+    await waitFor(() => {
+      expect(h.messageQueueState.acknowledge).toHaveBeenCalledWith(
+        'thread-1',
+        expect.objectContaining({ claimId: 'claim-late-error' })
+      )
+    })
+    expect(h.messagesState.deleteMessage).not.toHaveBeenCalled()
+    expect(h.messageQueueState.release).not.toHaveBeenCalled()
+  })
+
+  it('releases an unaccepted transport failure for retry', async () => {
+    // AI SDK resolves handled transport errors; absence of the explicit
+    // transport callback is what proves this request was never accepted.
+    h.mockSendMessage.mockResolvedValueOnce(undefined)
+    h.messageQueueState.claimNext = vi.fn(() => ({
+      claimId: 'claim-preflight-error',
+      message: {
+        id: 'queued-preflight-error',
+        text: 'retry this',
+        createdAt: 1,
+        attachments: [],
+        skillReferences: [],
+        parentId: 'a1',
+        hadBranching: false,
+      },
+    }))
+
+    renderComponent()
+
+    await waitFor(() => {
+      expect(h.messageQueueState.release).toHaveBeenCalledWith(
+        'thread-1',
+        expect.objectContaining({ claimId: 'claim-preflight-error' }),
+        expect.objectContaining({ code: 'submission_failed' })
+      )
+    })
+    expect(h.messagesState.deleteMessage).toHaveBeenCalledWith('thread-1', 'gen-id')
+    expect(h.messageQueueState.acknowledge).not.toHaveBeenCalled()
+  })
+
+  it('retains the queue when the captured parent is deleted during preprocessing', async () => {
+    let resolveProcessing: ((value: any) => void) | undefined
+    const messages: any[] = [
+      { id: 'u1', role: 'user', content: [] },
+      { id: 'a1', role: 'assistant', content: [] },
+    ]
+    h.messagesState.getMessages = vi.fn(() => messages)
+    ;(processAttachmentsForSend as any).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveProcessing = resolve
+        })
+    )
+    h.messageQueueState.claimNext = vi.fn(() => ({
+      claimId: 'claim-parent-race',
+      message: {
+        id: 'queued-parent-race',
+        text: 'branch race',
+        createdAt: 1,
+        attachments: [
+          { type: 'document', name: 'brief.pdf', path: '/tmp/brief.pdf' },
+        ],
+        skillReferences: [],
+        parentId: 'a1',
+        hadBranching: false,
+      },
+    }))
+
+    renderComponent()
+    await waitFor(() => expect(resolveProcessing).toBeDefined())
+    messages.splice(messages.findIndex((message) => message.id === 'a1'), 1)
+    resolveProcessing?.({ processedAttachments: [], hasEmbeddedDocuments: false })
+
+    await waitFor(() => {
+      expect(h.messageQueueState.release).toHaveBeenCalledWith(
+        'thread-1',
+        expect.objectContaining({ claimId: 'claim-parent-race' }),
+        expect.objectContaining({ code: 'branch_parent_missing' })
+      )
+    })
+    expect(h.mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('retains a queued head when attachment preprocessing fails', async () => {
+    ;(processAttachmentsForSend as any).mockRejectedValueOnce(
+      new Error('Attachment preprocessing failed')
+    )
+    h.messageQueueState.claimNext = vi.fn(() => ({
+      claimId: 'claim-preprocess',
+      message: {
+        id: 'queued-preprocess',
+        text: 'read this file',
+        createdAt: 1,
+        attachments: [
+          { type: 'document', name: 'brief.pdf', path: '/tmp/brief.pdf' },
+        ],
+        skillReferences: [],
+        parentId: 'a1',
+        hadBranching: false,
+      },
+    }))
+
+    renderComponent()
+
+    await waitFor(() => {
+      expect(h.messageQueueState.release).toHaveBeenCalledWith(
+        'thread-1',
+        expect.objectContaining({ claimId: 'claim-preprocess' }),
+        expect.objectContaining({
+          code: 'submission_failed',
+          message: 'Attachment preprocessing failed',
+        })
+      )
+    })
+    expect(h.messageQueueState.acknowledge).not.toHaveBeenCalled()
   })
 
   it('updates RAG tool availability based on thread/model capabilities', async () => {

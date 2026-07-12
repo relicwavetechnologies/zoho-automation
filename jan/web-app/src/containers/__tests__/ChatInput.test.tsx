@@ -39,6 +39,7 @@ vi.mock('@/hooks/useThreads', () => ({
 }))
 
 let appStateOverrides: any = {}
+const cancelToolCallMock = vi.fn()
 vi.mock('@/hooks/useAppState', () => ({
   useAppState: (selector: any) => {
     const state = {
@@ -48,7 +49,7 @@ vi.mock('@/hooks/useAppState', () => ({
       loadingModels: {},
       cancelToolCalls: {},
       tools: [],
-      cancelToolCall: vi.fn(),
+      cancelToolCall: cancelToolCallMock,
       activeModels: [],
       ...appStateOverrides,
     }
@@ -103,10 +104,11 @@ vi.mock('@/hooks/useAgentMode', () => ({
     }),
 }))
 
+let threadMessagesState: any[] = []
 vi.mock('@/hooks/useMessages', () => ({
   useMessages: (selector: any) =>
     selector({
-      messages: { 'thread-1': [] },
+      messages: { 'thread-1': threadMessagesState },
     }),
 }))
 
@@ -175,6 +177,7 @@ const enqueueMock = vi.fn((tid: string, msg: any) => {
 })
 const removeMessageMock = vi.fn()
 const clearQueueMock = vi.fn()
+const requestCancellationMock = vi.fn(() => false)
 const getQueueMock = vi.fn((tid: string) => queueState[tid] || [])
 
 function useMessageQueueImpl(selector?: any) {
@@ -182,6 +185,7 @@ function useMessageQueueImpl(selector?: any) {
     getQueue: getQueueMock,
     enqueue: enqueueMock,
     removeMessage: removeMessageMock,
+    requestCancellation: requestCancellationMock,
     clearQueue: clearQueueMock,
   }
   if (selector) return selector(state)
@@ -191,6 +195,7 @@ function useMessageQueueImpl(selector?: any) {
   getQueue: getQueueMock,
   enqueue: enqueueMock,
   removeMessage: removeMessageMock,
+  requestCancellation: requestCancellationMock,
   clearQueue: clearQueueMock,
 })
 vi.mock('@/stores/message-queue-store', () => ({
@@ -242,8 +247,13 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 // Stub heavy children
 vi.mock('@/containers/QueuedMessageBubble', () => ({
-  QueuedMessageChip: ({ message }: any) => (
-    <div data-testid="queued-chip">{message?.text}</div>
+  QueuedMessageChip: ({ message, onEdit }: any) => (
+    <div data-testid="queued-chip">
+      {message?.text}
+      <button data-testid={`edit-queued-${message?.id}`} onClick={() => onEdit?.(message)}>
+        edit
+      </button>
+    </div>
   ),
 }))
 vi.mock('@/containers/DropdownToolsAvailable', () => ({
@@ -313,6 +323,7 @@ const resetAll = () => {
   promptState = ''
   appStateOverrides = {}
   attachmentsList = []
+  threadMessagesState = []
   agentModeOn = false
   isTauriPlatform = false
   selectedModelOverride = {
@@ -329,6 +340,9 @@ const resetAll = () => {
   transferAttachmentsMock.mockClear()
   enqueueMock.mockClear()
   clearQueueMock.mockClear()
+  requestCancellationMock.mockReset()
+  requestCancellationMock.mockReturnValue(false)
+  cancelToolCallMock.mockClear()
   tauriCoreMock.invoke.mockReset()
   tauriCoreMock.invoke.mockResolvedValue(undefined)
   usePiApproval.setState({ queues: {} })
@@ -342,7 +356,9 @@ const getTextarea = () =>
 
 // Shared render helper that returns last rerender handle
 const renderInput = (props: any = {}) =>
-  render(<ChatInput onSubmit={props.onSubmit} onStop={props.onStop} {...props} />)
+  render(
+    <ChatInput onSubmit={props.onSubmit} onStop={props.onStop} {...props} />
+  )
 
 describe('ChatInput', () => {
   beforeEach(() => {
@@ -355,7 +371,9 @@ describe('ChatInput', () => {
     expect(ta).toBeInTheDocument()
     expect(ta).toHaveAttribute('placeholder', 'common:placeholder.chatInput')
     // send button is present
-    expect(document.querySelector('[data-test-id="send-message-button"]')).toBeTruthy()
+    expect(
+      document.querySelector('[data-test-id="send-message-button"]')
+    ).toBeTruthy()
   })
 
   it('opens real permission rules instead of the mock approval preview', async () => {
@@ -455,9 +473,9 @@ describe('ChatInput', () => {
         confirmed: false,
       }
     )
-    expect(
-      tauriCoreMock.invoke.mock.invocationCallOrder[0]
-    ).toBeLessThan(onStop.mock.invocationCallOrder[0])
+    expect(tauriCoreMock.invoke.mock.invocationCallOrder[0]).toBeLessThan(
+      onStop.mock.invocationCallOrder[0]
+    )
   })
 
   it('can always allow Bash for the active task', async () => {
@@ -609,19 +627,19 @@ describe('ChatInput', () => {
         }
       }
       return {
-      ok: true,
-      status: 'success',
-      data: {
-        skills: [
-          {
-            id: 'google-workspace',
-            name: 'Google Workspace',
-            description: 'Find the right Gmail, Drive, and Calendar action.',
-            score: 3,
-            toolIds: ['googleGmail', 'googleDrive', 'googleCalendar'],
-          },
-        ],
-      },
+        ok: true,
+        status: 'success',
+        data: {
+          skills: [
+            {
+              id: 'google-workspace',
+              name: 'Google Workspace',
+              description: 'Find the right Gmail, Drive, and Calendar action.',
+              score: 3,
+              toolIds: ['googleGmail', 'googleDrive', 'googleCalendar'],
+            },
+          ],
+        },
       }
     })
 
@@ -637,19 +655,16 @@ describe('ChatInput', () => {
       'skill-reference-result-google-workspace'
     )
     expect(result).toHaveTextContent('Google Workspace')
-    expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
-      'divo_gateway_request',
-      {
-        op: 'skills.list',
-        payload: { context: { surface: 'desktop_composer_reference' } },
-      }
-    )
+    expect(tauriCoreMock.invoke).toHaveBeenCalledWith('divo_gateway_request', {
+      op: 'skills.list',
+      payload: { context: { surface: 'desktop_composer_reference' } },
+    })
 
     fireEvent.click(result)
 
-    expect(await screen.findByTestId('skill-reference-chips')).toHaveTextContent(
-      '/Google Workspace'
-    )
+    expect(
+      await screen.findByTestId('skill-reference-chips')
+    ).toHaveTextContent('/Google Workspace')
     expect(screen.queryByTestId('skill-reference-drawer')).toBeNull()
     expect(setPromptMock).toHaveBeenCalledWith('')
   })
@@ -668,19 +683,19 @@ describe('ChatInput', () => {
         }
       }
       return {
-      ok: true,
-      status: 'success',
-      data: {
-        skills: [
-          {
-            id: 'google',
-            name: 'Google Workspace',
-            description: 'Gmail, Drive, and Calendar workflows.',
-            score: 3,
-            toolIds: ['googleGmail'],
-          },
-        ],
-      },
+        ok: true,
+        status: 'success',
+        data: {
+          skills: [
+            {
+              id: 'google',
+              name: 'Google Workspace',
+              description: 'Gmail, Drive, and Calendar workflows.',
+              score: 3,
+              toolIds: ['googleGmail'],
+            },
+          ],
+        },
       }
     })
 
@@ -698,21 +713,17 @@ describe('ChatInput', () => {
     view.rerender(<ChatInput onSubmit={onSubmit} />)
     fireEvent.keyDown(getTextarea(), { key: 'Enter' })
 
-    expect(onSubmit).toHaveBeenCalledWith(
-      'list my unread mails',
-      undefined,
-      {
-        skillReferences: [
-          expect.objectContaining({
-            id: 'google',
-            name: 'Google Workspace',
-            description: 'Gmail, Drive, and Calendar workflows.',
-            category: 'Google',
-            toolIds: ['googleGmail'],
-          }),
-        ],
-      }
-    )
+    expect(onSubmit).toHaveBeenCalledWith('list my unread mails', undefined, {
+      skillReferences: [
+        expect.objectContaining({
+          id: 'google',
+          name: 'Google Workspace',
+          description: 'Gmail, Drive, and Calendar workflows.',
+          category: 'Google',
+          toolIds: ['googleGmail'],
+        }),
+      ],
+    })
   })
 
   it('submits via onSubmit prop when Enter is pressed', () => {
@@ -788,8 +799,8 @@ describe('ChatInput', () => {
     getQueueMock.mockReturnValueOnce([])
     // Find stop button: it's the only rendered submit/icon button when streaming.
     const allButtons = Array.from(document.querySelectorAll('button'))
-    const stopBtn = allButtons.find((b) =>
-      b.className.includes('destructive') || b.innerHTML.includes('svg')
+    const stopBtn = allButtons.find(
+      (b) => b.className.includes('destructive') || b.innerHTML.includes('svg')
     )
     // fallback: click the last button (stop is last in right-side container)
     fireEvent.click(stopBtn ?? allButtons[allButtons.length - 1])
@@ -812,6 +823,115 @@ describe('ChatInput', () => {
     // onSubmit should NOT fire when queued
     expect(onSubmit).not.toHaveBeenCalled()
     expect(setPromptMock).toHaveBeenCalledWith('')
+  })
+
+  it('transfers an immutable attachment and active branch parent into a queued send', () => {
+    promptState = 'summarize this'
+    attachmentsList = [
+      {
+        type: 'document',
+        name: 'brief.pdf',
+        path: '/tmp/brief.pdf',
+      },
+    ]
+    threadMessagesState = [
+      { id: 'u1', metadata: { parentId: null } },
+      { id: 'a1', metadata: { parentId: 'u1' } },
+    ]
+    const onSubmit = vi.fn()
+    renderInput({ onSubmit, chatStatus: 'streaming' })
+
+    fireEvent.keyDown(getTextarea(), { key: 'Enter' })
+
+    expect(enqueueMock).toHaveBeenCalledWith(
+      'thread-1',
+      expect.objectContaining({
+        parentId: 'a1',
+        hadBranching: true,
+        attachments: [expect.objectContaining({ name: 'brief.pdf' })],
+      })
+    )
+    expect(clearAttachmentsMock).toHaveBeenCalledWith('thread-1')
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('keeps Stop independent from Clear Queue while messages are queued', () => {
+    queueState['thread-1'] = [
+      {
+        id: 'q1',
+        text: 'queued',
+        createdAt: 1,
+        attachments: [],
+        skillReferences: [],
+        parentId: null,
+        hadBranching: false,
+      },
+    ]
+    const onStop = vi.fn()
+    renderInput({ chatStatus: 'streaming', onStop })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }))
+
+    expect(onStop).toHaveBeenCalledOnce()
+    expect(cancelToolCallMock).toHaveBeenCalledOnce()
+    expect(clearQueueMock).not.toHaveBeenCalled()
+  })
+
+  it('restores a queued attachment snapshot before removing an item for editing', () => {
+    queueState['thread-1'] = [
+      {
+        id: 'q-with-file',
+        text: 'revise this',
+        createdAt: 1,
+        attachments: [
+          {
+            type: 'document',
+            name: 'brief.pdf',
+            path: '/tmp/brief.pdf',
+          },
+        ],
+        skillReferences: [],
+        parentId: null,
+        hadBranching: false,
+      },
+    ]
+    renderInput()
+
+    fireEvent.click(screen.getByTestId('edit-queued-q-with-file'))
+
+    expect(attachmentsList).toEqual([
+      expect.objectContaining({ name: 'brief.pdf', path: '/tmp/brief.pdf' }),
+    ])
+    expect(removeMessageMock).toHaveBeenCalledWith('thread-1', 'q-with-file')
+  })
+
+  it('does not overwrite a non-empty composer while editing a queued item', () => {
+    promptState = 'current draft'
+    attachmentsList = [
+      { type: 'document', name: 'current.pdf', path: '/tmp/current.pdf' },
+    ]
+    queueState['thread-1'] = [
+      {
+        id: 'q-preserve-draft',
+        text: 'queued draft',
+        createdAt: 1,
+        attachments: [
+          { type: 'document', name: 'queued.pdf', path: '/tmp/queued.pdf' },
+        ],
+        skillReferences: [],
+        parentId: null,
+        hadBranching: false,
+      },
+    ]
+    renderInput()
+
+    fireEvent.click(screen.getByTestId('edit-queued-q-preserve-draft'))
+
+    expect(promptState).toBe('current draft')
+    expect(attachmentsList).toEqual([
+      expect.objectContaining({ name: 'current.pdf' }),
+    ])
+    expect(removeMessageMock).not.toHaveBeenCalled()
   })
 
   it('shows "please select a model" inline message when no model selected', () => {
@@ -1124,7 +1244,9 @@ describe('ChatInput', () => {
     act(() => {
       fireEvent.keyDown(getTextarea(), { key: 'Enter' })
     })
-    const errorNode = screen.getByText('Please select a model to start chatting.')
+    const errorNode = screen.getByText(
+      'Please select a model to start chatting.'
+    )
     expect(errorNode).toBeInTheDocument()
     // dismiss icon (svg) sits alongside
     const svg = container.querySelector('.text-destructive svg')

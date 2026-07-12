@@ -53,6 +53,7 @@ import {
   createImageAttachment,
   createAudioAttachment,
   createVideoAttachment,
+  type Attachment,
 } from '@/types/attachment'
 import {
   useChatAttachments,
@@ -75,7 +76,10 @@ import DivoWorkspaceSelector from '@/containers/DivoWorkspaceSelector'
 import { ExtensionTypeEnum, VectorDBExtension } from '@janhq/core'
 import { ExtensionManager } from '@/lib/extension'
 import { Shimmer } from '@/components/ai-elements/shimmer'
-import { useMessageQueue } from '@/stores/message-queue-store'
+import {
+  useMessageQueue,
+  type QueuedMessage,
+} from '@/stores/message-queue-store'
 import { generateThreadTitle } from '@/lib/thread-title-summarizer'
 import { useAutoScroll } from '@/hooks/useAutoScroll'
 import {
@@ -91,6 +95,45 @@ const CHAT_STATUS = {
 } as const
 
 const TITLE_REFRESH_EVERY_N_ASSISTANT_MESSAGES = 4
+
+class QueuedBranchParentMissingError extends Error {
+  constructor() {
+    super(
+      'The original branch for this queued message no longer exists. Edit or remove the queued message before retrying.'
+    )
+    this.name = 'QueuedBranchParentMissingError'
+  }
+}
+
+class QueuedSendCancelledError extends Error {
+  constructor() {
+    super('Queued message was cancelled before submission')
+    this.name = 'QueuedSendCancelledError'
+  }
+}
+
+class QueuedSubmissionNotAcceptedError extends Error {
+  constructor() {
+    super('Queued message was not accepted by the provider')
+    this.name = 'QueuedSubmissionNotAcceptedError'
+  }
+}
+
+function findBranchRootId(
+  messages: ThreadMessage[],
+  nodeId: string
+): string | undefined {
+  const byId = new Map(messages.map((message) => [message.id, message]))
+  let current = byId.get(nodeId)
+  const seen = new Set<string>()
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id)
+    const parentId = getParentId(current)
+    if (!parentId) return current.id
+    current = byId.get(parentId)
+  }
+  return undefined
+}
 
 // Persist the out-of-context error onto the latest user message so the banner
 // survives thread switches, mirroring how LlamacppOomListener stamps oom/backend.
@@ -150,6 +193,9 @@ function ThreadDetail() {
   const getAttachments = useChatAttachments((state) => state.getAttachments)
   const clearAttachmentsForThread = useChatAttachments(
     (state) => state.clearAttachments
+  )
+  const queuedMessages = useMessageQueue(
+    useShallow((state) => state.getQueue(threadId))
   )
 
   // Session data for tool call tracking
@@ -809,11 +855,29 @@ function ThreadDetail() {
     async (
       text: string,
       files?: Array<{ type: string; mediaType: string; url: string }>,
-      options?: DivoSkillReferenceSubmitOptions
+      options?: DivoSkillReferenceSubmitOptions,
+      queuedMessage?: QueuedMessage,
+      assertCanSubmit?: () => void,
+      onSubmissionAccepted?: () => void
     ) => {
       userStopRequestedRef.current = false
+      assertCanSubmit?.()
+      const currentMessages = useMessages.getState().getMessages(threadId)
+      if (
+        queuedMessage?.parentId != null &&
+        !currentMessages.some(
+          (message) => message.id === queuedMessage.parentId
+        )
+      ) {
+        throw new QueuedBranchParentMissingError()
+      }
       const skillReferences = normalizeDivoSkillReferences(
-        options?.skillReferences
+        queuedMessage
+          ? queuedMessage.skillReferences.map((reference) => ({
+              ...reference,
+              toolIds: [...reference.toolIds],
+            }))
+          : options?.skillReferences
       )
       const skillReferenceMetadata =
         skillReferences.length > 0
@@ -826,7 +890,9 @@ function ThreadDetail() {
 
       // Get all attachments from the store (media transferred from the
       // new-thread key, plus documents).
-      const allAttachments = getAttachments(attachmentsKey)
+      const allAttachments: Attachment[] = queuedMessage
+        ? queuedMessage.attachments.map((attachment) => ({ ...attachment }))
+        : getAttachments(attachmentsKey)
 
       // In-thread sends pass media inline via `files`; reconstruct typed by
       // mediaType (image/audio/video — not all images). New-thread sends pass
@@ -905,9 +971,9 @@ function ThreadDetail() {
         setChatMessages((prev) => [...prev, ...previewUI])
       }
 
-      // Clear attachment chips from the input — they are now either
-      // about to be sent or visible in the preview message above.
-      clearAttachmentsForThread(attachmentsKey)
+      // Immediate sends transfer ownership from the composer here. Queued
+      // sends already detached their snapshot when they entered the queue.
+      if (!queuedMessage) clearAttachmentsForThread(attachmentsKey)
 
       // Process attachments (ingest images, parse/index documents)
       let processedAttachments = combinedAttachments
@@ -949,6 +1015,7 @@ function ThreadDetail() {
               prev.filter((m) => m.id !== messageId)
             )
           }
+          if (queuedMessage) throw error
           return
         } finally {
           useAppState.getState().setThreadEmbedding(threadId, false)
@@ -960,6 +1027,20 @@ function ThreadDetail() {
       // with the same id — this prevents duplicates.
       if (hasDocuments) {
         setChatMessages((prev) => prev.filter((m) => m.id !== messageId))
+      }
+
+      // Attachment processing can take long enough for a branch deletion or
+      // queue cancellation to race with it. Check both at the final boundary,
+      // before writing the message or handing it to the AI SDK.
+      assertCanSubmit?.()
+      const messagesBeforeSend = useMessages.getState().getMessages(threadId)
+      if (
+        queuedMessage?.parentId != null &&
+        !messagesBeforeSend.some(
+          (message) => message.id === queuedMessage.parentId
+        )
+      ) {
+        throw new QueuedBranchParentMissingError()
       }
 
       // Persist the final message to backend
@@ -977,14 +1058,18 @@ function ThreadDetail() {
       // assistant reply attaches to this message. Legacy threads stay linear.
       const branchedMessages = useMessages.getState().getMessages(threadId)
       let userMessage = baseUserMessage
-      if (hasBranching(branchedMessages)) {
+      if (hasBranching(branchedMessages) || queuedMessage?.hadBranching) {
         const activeRootId = (
           useThreads.getState().threads[threadId]?.metadata as
             | Record<string, unknown>
             | undefined
         )?.activeRootId as string | undefined
         const path = computeActivePath(branchedMessages, activeRootId)
-        const parentId = path.length ? path[path.length - 1].id : null
+        const parentId = queuedMessage
+          ? queuedMessage.parentId
+          : path.length
+            ? path[path.length - 1].id
+            : null
         userMessage = {
           ...baseUserMessage,
           metadata: { ...(baseUserMessage.metadata ?? {}), parentId },
@@ -992,6 +1077,51 @@ function ThreadDetail() {
         pendingAssistantParentId.current = messageId
       }
       addMessage(userMessage)
+
+      if (queuedMessage?.parentId) {
+        const messagesWithQueuedTurn = useMessages
+          .getState()
+          .getMessages(threadId)
+        const parent = messagesWithQueuedTurn.find(
+          (message) => message.id === queuedMessage.parentId
+        )
+        if (!parent) throw new QueuedBranchParentMissingError()
+
+        // Re-select every ancestor down to the captured parent before adding
+        // this turn. Otherwise a sibling selected while the item waited would
+        // remain the visible/model context despite the persisted parent link.
+        const byId = new Map(
+          messagesWithQueuedTurn.map((message) => [message.id, message])
+        )
+        let childId = userMessage.id
+        let current: ThreadMessage | undefined = parent
+        const seen = new Set<string>()
+        while (current && !seen.has(current.id)) {
+          seen.add(current.id)
+          updateMessage(withActiveChild(current, childId))
+          childId = current.id
+          const parentId = getParentId(current)
+          current = parentId ? byId.get(parentId) : undefined
+        }
+        const rootId = findBranchRootId(messagesWithQueuedTurn, parent.id)
+        if (rootId) {
+          const currentThread = useThreads.getState().threads[threadId]
+          useThreads.getState().updateThread(threadId, {
+            metadata: {
+              ...((currentThread?.metadata as Record<string, unknown>) ?? {}),
+              activeRootId: rootId,
+            },
+          })
+        }
+        const activatedMessages = useMessages.getState().getMessages(threadId)
+        const activatedPath = computeActivePath(activatedMessages, rootId)
+        // sendMessage appends the queued user turn itself. Preloading it here
+        // would make AI SDK v6 append the same id a second time to provider
+        // context, so prime only the captured ancestor path.
+        setChatMessages(
+          convertThreadMessagesToUIMessages(activatedPath.slice(0, -1))
+        )
+      }
 
       // Build parts for AI SDK. Derive media file parts from the resolved
       // attachments (not the raw `files` arg) so the first-message flow — where
@@ -1016,11 +1146,37 @@ function ThreadDetail() {
         }
       })
 
-      sendMessage({
-        parts,
-        id: messageId,
-        metadata: { ...userMessage.metadata, createdAt: new Date() },
-      })
+      let submissionAccepted = false
+      try {
+        const sendPromise = sendMessage(
+          {
+            parts,
+            id: messageId,
+            metadata: { ...userMessage.metadata, createdAt: new Date() },
+          },
+          onSubmissionAccepted
+            ? { body: { __divoOnStreamAccepted: () => {
+                submissionAccepted = true
+                onSubmissionAccepted()
+              } } }
+            : undefined
+        )
+        await sendPromise
+        if (queuedMessage && onSubmissionAccepted && !submissionAccepted) {
+          throw new QueuedSubmissionNotAcceptedError()
+        }
+      } catch (error) {
+        // Only a synchronous handoff failure is pre-acceptance. The queue
+        // callback is invoked first for accepted sends, so late failures keep
+        // their user/assistant evidence and never re-enter the queue.
+        if (queuedMessage && !submissionAccepted) {
+          deleteMessage(threadId, messageId)
+          setChatMessages((previous) =>
+            previous.filter((message) => message.id !== messageId)
+          )
+        }
+        throw error
+      }
     },
     [
       sendMessage,
@@ -1033,36 +1189,9 @@ function ThreadDetail() {
       clearAttachmentsForThread,
       serviceHub,
       selectedProvider,
+      deleteMessage,
+      updateMessage,
     ]
-  )
-
-  // Sends a text-only queued message, bypassing attachment processing entirely.
-  // This prevents stale or new attachments from leaking into auto-sent queue items.
-  const sendQueuedMessage = useCallback(
-    async (text: string, skillReferencesInput?: DivoSkillReference[]) => {
-      userStopRequestedRef.current = false
-      const skillReferences = normalizeDivoSkillReferences(
-        skillReferencesInput
-      )
-      const skillReferenceMetadata =
-        skillReferences.length > 0
-          ? { [DIVO_SKILL_REFERENCES_METADATA_KEY]: skillReferences }
-          : {}
-      const messageId = generateId()
-      const userMessage = newUserThreadContent(threadId, text, [], messageId)
-      userMessage.metadata = {
-        ...(userMessage.metadata ?? {}),
-        ...skillReferenceMetadata,
-      }
-      addMessage(userMessage)
-
-      sendMessage({
-        parts: [{ type: 'text', text }],
-        id: messageId,
-        metadata: userMessage.metadata,
-      })
-    },
-    [sendMessage, threadId, addMessage]
   )
 
   // Check for and send initial message from sessionStorage
@@ -1464,34 +1593,81 @@ function ThreadDetail() {
     }
   }, [status]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Message queue: auto-send the next queued message when the stream finishes.
-  // No reactive subscription to the queue here — ChatInput owns the UI.
-  // We only read the store imperatively when status transitions to 'ready'.
+  // Message queue: claim the FIFO head, run it through the same normal send
+  // path, then acknowledge only after the AI SDK accepts the submission.
+  // Failed heads remain visible and block later entries until the user edits
+  // or removes them, rather than spinning or silently changing branch.
   const processingQueueRef = useRef(false)
+  const [queueWorkerEpoch, setQueueWorkerEpoch] = useState(0)
 
   useEffect(() => {
     if (status !== 'ready' || processingQueueRef.current) return
     if (sessionData.tools.length > 0) return
 
-    const next = useMessageQueue.getState().dequeue(threadId)
-    if (!next) return
+    const claim = useMessageQueue.getState().claimNext(threadId)
+    if (!claim) return
 
     processingQueueRef.current = true
-    sendQueuedMessage(next.text, next.skillReferences)
-      .catch((err) => {
-        console.error('Failed to send queued message:', err)
+    let submissionAccepted = false
+    const assertCanSubmit = () => {
+      if (!useMessageQueue.getState().isDispatchable(threadId, claim)) {
+        throw new QueuedSendCancelledError()
+      }
+    }
+    processAndSendMessage(
+      claim.message.text,
+      undefined,
+      {
+        skillReferences: claim.message.skillReferences.map((reference) => ({
+          ...reference,
+          toolIds: [...reference.toolIds],
+        })),
+      },
+      claim.message,
+      assertCanSubmit,
+      () => {
+        submissionAccepted = true
+        useMessageQueue.getState().acknowledge(threadId, claim)
+      }
+    )
+      .then(() => {
+        processingQueueRef.current = false
+      })
+      .catch((error) => {
+        processingQueueRef.current = false
+        if (error instanceof QueuedSendCancelledError) {
+          useMessageQueue.getState().discard(threadId, claim)
+          return
+        }
+        // After local handoff, late stream/runtime errors are durable chat
+        // evidence. They must not restore a queue item or delete its user turn.
+        if (submissionAccepted) return
+        const branchParentMissing =
+          error instanceof QueuedBranchParentMissingError
+        useMessageQueue.getState().release(threadId, claim, {
+          code: branchParentMissing
+            ? 'branch_parent_missing'
+            : 'submission_failed',
+          message:
+            error instanceof Error && error.message
+              ? error.message
+              : 'Queued message could not be submitted. Edit or remove it before retrying.',
+        })
       })
       .finally(() => {
         processingQueueRef.current = false
+        if (submissionAccepted) {
+          setQueueWorkerEpoch((epoch) => epoch + 1)
+        }
       })
-  }, [status, threadId, sendQueuedMessage, sessionData.tools.length])
-
-  // If streaming errors out, discard any queued messages so they don't sit there stuck
-  useEffect(() => {
-    if (status === 'error') {
-      useMessageQueue.getState().clearQueue(threadId)
-    }
-  }, [status, threadId])
+  }, [
+    status,
+    threadId,
+    processAndSendMessage,
+    sessionData.tools.length,
+    queuedMessages,
+    queueWorkerEpoch,
+  ])
 
   // Attach the error to the assistant turn it belongs to so the banner renders
   // alongside any tool-call parts the model already produced. Falls back to the
@@ -1561,13 +1737,6 @@ function ThreadDetail() {
       })
     }
   }, [localThreadMessages, errorEntries, updateMessage])
-
-  // Clear the queue when navigating away from this thread
-  useEffect(() => {
-    return () => {
-      useMessageQueue.getState().clearQueue(threadId)
-    }
-  }, [threadId])
 
   const threadModel = useMemo(
     () => searchThreadModel ?? thread?.model,

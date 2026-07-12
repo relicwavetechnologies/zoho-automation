@@ -572,6 +572,38 @@ function prependTextDeltaToUIStream(
   })
 }
 
+function acceptOnFirstStreamChunk(
+  stream: ReadableStream<UIMessageChunk>,
+  onAccepted: (() => void) | undefined
+): ReadableStream<UIMessageChunk> {
+  if (!onAccepted) return stream
+  const reader = stream.getReader()
+  let accepted = false
+  return new ReadableStream<UIMessageChunk>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          controller.close()
+          return
+        }
+        // An AI SDK `error` chunk means request setup failed before a usable
+        // response began. Any other chunk is the transport acceptance boundary.
+        if (!accepted && (value as { type?: string }).type !== 'error') {
+          accepted = true
+          onAccepted()
+        }
+        controller.enqueue(value)
+      } catch (error) {
+        controller.error(error)
+      }
+    },
+    cancel() {
+      return reader.cancel()
+    },
+  })
+}
+
 function isImageFileMetadata(file: FileMetadata): boolean {
   const type = file.type?.toLowerCase() ?? ''
   if (type.startsWith('image/')) return true
@@ -881,6 +913,12 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       messageId: string | undefined
     } & ChatRequestOptions
   ): Promise<ReadableStream<UIMessageChunk>> {
+    const onSubmissionAccepted =
+      typeof (options.body as { __divoOnStreamAccepted?: unknown } | undefined)
+        ?.__divoOnStreamAccepted === 'function'
+        ? (options.body as { __divoOnStreamAccepted: () => void })
+            .__divoOnStreamAccepted
+        : undefined
     const threadId = this.threadId ?? options.chatId
     const myGeneration = ++this.streamGeneration
     useAppState.getState().setCurrentStreamThreadId(threadId)
@@ -911,7 +949,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       // Pi can remain active after visible token streaming while it executes a
       // tool or waits for its run-owned extension UI response.
       useAppState.getState().setThreadBusy(threadId, true)
-      return createPiMessageStream({
+      return acceptOnFirstStreamChunk(createPiMessageStream({
         threadId,
         message: userMessage,
         abortSignal: options.abortSignal,
@@ -927,7 +965,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
             useAppState.getState().setCurrentStreamThreadId(undefined)
           }
         },
-      })
+      }), onSubmissionAccepted)
     }
 
     try {
@@ -1299,7 +1337,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       ? prependTextDeltaToUIStream(uiStream, continueContent)
       : uiStream
 
-    return finalStream
+    return acceptOnFirstStreamChunk(finalStream, onSubmissionAccepted)
   }
 
   async reconnectToStream(

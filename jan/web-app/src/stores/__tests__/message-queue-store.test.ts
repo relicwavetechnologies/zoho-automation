@@ -1,12 +1,20 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useMessageQueue } from '../message-queue-store'
+import { useMessageQueue, type QueuedMessage } from '../message-queue-store'
 
 function resetStore() {
-  useMessageQueue.setState({ queues: {} })
+  useMessageQueue.setState({ queues: {}, inFlight: {} })
 }
 
-function makeMessage(id: string, text: string) {
-  return { id, text, createdAt: Date.now() }
+function makeMessage(id: string, text: string): QueuedMessage {
+  return {
+    id,
+    text,
+    createdAt: Date.now(),
+    attachments: [],
+    skillReferences: [],
+    parentId: null,
+    hadBranching: false,
+  }
 }
 
 describe('useMessageQueue', () => {
@@ -46,26 +54,72 @@ describe('useMessageQueue', () => {
     })
   })
 
-  describe('dequeue', () => {
-    it('removes and returns the first message', () => {
-      const { enqueue, dequeue, getQueue } = useMessageQueue.getState()
+  describe('claim / acknowledge', () => {
+    it('keeps the first message until its claim is acknowledged', () => {
+      const { enqueue, claimNext, acknowledge, getQueue } =
+        useMessageQueue.getState()
       enqueue('thread-1', makeMessage('m1', 'first'))
       enqueue('thread-1', makeMessage('m2', 'second'))
 
-      const msg = dequeue('thread-1')
-      expect(msg?.text).toBe('first')
+      const claim = claimNext('thread-1')
+      expect(claim?.message.text).toBe('first')
+      expect(getQueue('thread-1')).toHaveLength(2)
+
+      acknowledge('thread-1', claim!)
       expect(getQueue('thread-1')).toHaveLength(1)
       expect(getQueue('thread-1')[0].text).toBe('second')
     })
 
-    it('returns undefined when the queue is empty', () => {
-      const { dequeue } = useMessageQueue.getState()
-      expect(dequeue('thread-1')).toBeUndefined()
+    it('returns undefined when the queue is empty or its head is already claimed', () => {
+      const { enqueue, claimNext } = useMessageQueue.getState()
+      expect(claimNext('thread-1')).toBeUndefined()
+      enqueue('thread-1', makeMessage('m1', 'first'))
+      expect(claimNext('thread-1')).toBeDefined()
+      expect(claimNext('thread-1')).toBeUndefined()
     })
 
-    it('returns undefined for a non-existent thread', () => {
-      const { dequeue } = useMessageQueue.getState()
-      expect(dequeue('non-existent')).toBeUndefined()
+    it('retains a failed head with an actionable failure and does not spin past FIFO', () => {
+      const { enqueue, claimNext, release, getQueue } =
+        useMessageQueue.getState()
+      enqueue('thread-1', makeMessage('m1', 'first'))
+      enqueue('thread-1', makeMessage('m2', 'second'))
+
+      const claim = claimNext('thread-1')!
+      release('thread-1', claim, {
+        code: 'submission_failed',
+        message: 'Try again after fixing the attachment.',
+      })
+
+      expect(getQueue('thread-1').map((message) => message.text)).toEqual([
+        'first',
+        'second',
+      ])
+      expect(getQueue('thread-1')[0].failure?.message).toContain('attachment')
+      expect(claimNext('thread-1')).toBeUndefined()
+    })
+
+    it('keeps a claimed head visible until cancellation wins or it is acknowledged', () => {
+      const {
+        enqueue,
+        claimNext,
+        requestCancellation,
+        isDispatchable,
+        discard,
+        getQueue,
+      } = useMessageQueue.getState()
+      enqueue('thread-1', makeMessage('m1', 'first'))
+      enqueue('thread-1', makeMessage('m2', 'second'))
+
+      const claim = claimNext('thread-1')!
+      expect(requestCancellation('thread-1', 'm1')).toBe(true)
+      expect(isDispatchable('thread-1', claim)).toBe(false)
+      expect(getQueue('thread-1').map((message) => message.id)).toEqual([
+        'm1',
+        'm2',
+      ])
+
+      discard('thread-1', claim)
+      expect(getQueue('thread-1').map((message) => message.id)).toEqual(['m2'])
     })
   })
 
@@ -124,6 +178,19 @@ describe('useMessageQueue', () => {
       clearQueue('non-existent')
       expect(getQueue('non-existent')).toHaveLength(0)
     })
+
+    it('cancels but does not hide an in-flight head', () => {
+      const { enqueue, claimNext, clearQueue, getQueue, isDispatchable } =
+        useMessageQueue.getState()
+      enqueue('thread-1', makeMessage('m1', 'claimed'))
+      enqueue('thread-1', makeMessage('m2', 'later'))
+      const claim = claimNext('thread-1')!
+
+      clearQueue('thread-1')
+
+      expect(getQueue('thread-1').map((message) => message.id)).toEqual(['m1'])
+      expect(isDispatchable('thread-1', claim)).toBe(false)
+    })
   })
 
   describe('getQueue', () => {
@@ -140,18 +207,45 @@ describe('useMessageQueue', () => {
     })
   })
 
-  describe('sequential dequeue (simulates auto-processing)', () => {
-    it('processes messages one at a time in order', () => {
-      const { enqueue, dequeue } = useMessageQueue.getState()
+  describe('immutable snapshots and FIFO', () => {
+    it('detaches attachments and skill references from later composer edits', () => {
+      const { enqueue, getQueue } = useMessageQueue.getState()
+      const message = makeMessage('m1', 'with file')
+      message.attachments = [
+        { type: 'document', name: 'brief.pdf', path: '/tmp/brief.pdf' },
+      ]
+      message.skillReferences = [
+        {
+          id: 'skill-1',
+          name: 'Briefing',
+          description: 'Use the brief',
+          category: 'Ops',
+          toolIds: ['read-brief'],
+        },
+      ]
+      enqueue('thread-1', message)
+
+      message.attachments[0].name = 'changed.pdf'
+      message.skillReferences[0].toolIds.push('changed-tool')
+
+      expect(getQueue('thread-1')[0].attachments[0].name).toBe('brief.pdf')
+      expect(getQueue('thread-1')[0].skillReferences[0].toolIds).toEqual([
+        'read-brief',
+      ])
+    })
+
+    it('processes acknowledged messages one at a time in order', () => {
+      const { enqueue, claimNext, acknowledge } = useMessageQueue.getState()
       enqueue('thread-1', makeMessage('m1', 'first'))
       enqueue('thread-1', makeMessage('m2', 'second'))
       enqueue('thread-1', makeMessage('m3', 'third'))
 
       const results: string[] = []
-      let msg = dequeue('thread-1')
-      while (msg) {
-        results.push(msg.text)
-        msg = dequeue('thread-1')
+      let claim = claimNext('thread-1')
+      while (claim) {
+        results.push(claim.message.text)
+        acknowledge('thread-1', claim)
+        claim = claimNext('thread-1')
       }
 
       expect(results).toEqual(['first', 'second', 'third'])

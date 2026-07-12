@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { IconClock, IconX } from '@tabler/icons-react'
+import { IconAlertCircle, IconClock, IconX } from '@tabler/icons-react'
 import type { QueuedMessage } from '@/stores/message-queue-store'
 
 type QueuedMessageChipProps = {
@@ -15,9 +15,20 @@ export const QueuedMessageChip = memo(function QueuedMessageChip({
   onEdit,
   onRemove,
 }: QueuedMessageChipProps) {
+  const failure = message.failure
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-secondary/80 border border-input text-sm max-w-full">
-      <IconClock size={14} className="shrink-0 text-muted-foreground animate-pulse" />
+    <div
+      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-secondary/80 border border-input text-sm max-w-full"
+      title={failure?.message}
+    >
+      {failure ? (
+        <IconAlertCircle size={14} className="shrink-0 text-destructive" />
+      ) : (
+        <IconClock
+          size={14}
+          className="shrink-0 text-muted-foreground animate-pulse"
+        />
+      )}
       <span
         className="truncate text-foreground/70 cursor-pointer hover:text-foreground transition-colors"
         onClick={() => onEdit?.(message)}
@@ -25,6 +36,11 @@ export const QueuedMessageChip = memo(function QueuedMessageChip({
       >
         {message.text}
       </span>
+      {failure && (
+        <span className="truncate text-xs text-destructive" role="status">
+          {failure.message}
+        </span>
+      )}
       {onRemove && (
         <button
           type="button"

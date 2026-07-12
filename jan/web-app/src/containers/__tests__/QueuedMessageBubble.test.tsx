@@ -7,6 +7,10 @@ describe('QueuedMessageChip', () => {
     id: 'queued-1',
     text: 'This is a queued message',
     createdAt: Date.now(),
+    attachments: [],
+    skillReferences: [],
+    parentId: null,
+    hadBranching: false,
   }
 
   it('renders the message text', () => {
@@ -38,5 +42,23 @@ describe('QueuedMessageChip', () => {
     render(<QueuedMessageChip message={baseMessage} onEdit={onEdit} />)
     screen.getByText('This is a queued message').click()
     expect(onEdit).toHaveBeenCalledWith(baseMessage)
+  })
+
+  it('shows a retained submission failure next to the queued message', () => {
+    render(
+      <QueuedMessageChip
+        message={{
+          ...baseMessage,
+          failure: {
+            code: 'branch_parent_missing',
+            message: 'The original branch no longer exists.',
+          },
+        }}
+      />
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'The original branch no longer exists.'
+    )
   })
 })

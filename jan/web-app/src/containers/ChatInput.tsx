@@ -34,6 +34,7 @@ import {
 import { generateId } from 'ai'
 import { useMessageQueue } from '@/stores/message-queue-store'
 import { QueuedMessageChip } from '@/containers/QueuedMessageBubble'
+import { computeActivePath, hasBranching } from '@/lib/message-branching'
 import { SamplerPopover } from '@/containers/SamplerPopover'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { useGeneralSetting } from '@/hooks/useGeneralSetting'
@@ -374,6 +375,7 @@ const ChatInput = memo(function ChatInput({
   const addToHistory = usePrompt((state) => state.addToHistory)
   const navigateHistory = usePrompt((state) => state.navigateHistory)
   const currentThreadId = useThreads((state) => state.currentThreadId)
+  const currentThread = useThreads((state) => state.getCurrentThread())
   const isThreadBusy = useAppState((state) => {
     if (!currentThreadId) return false
     return (
@@ -577,6 +579,10 @@ const ChatInput = memo(function ChatInput({
 
   const removeQueuedMessage = useCallback(
     (id: string) => {
+      if (useMessageQueue.getState().requestCancellation(currentThreadId ?? '', id)) {
+        toast.info('Cancelling queued message before it is sent')
+        return
+      }
       useMessageQueue.getState().removeMessage(currentThreadId ?? '', id)
     },
     [currentThreadId]
@@ -650,14 +656,26 @@ const ChatInput = memo(function ChatInput({
     // Use onSubmit prop if available (AI SDK), otherwise create thread and navigate
     if (onSubmit) {
       // Keep one per-thread gate for streaming, post-stream tools, and Pi
-      // approval waits. The durable queue shape itself remains unchanged.
+      // approval waits; queued entries capture their complete send context.
       if ((isStreaming || isThreadBusy) && currentThreadId) {
+        const messagesAtQueueTime = threadMessages ?? []
+        const activeRootId = (
+          currentThread?.metadata as Record<string, unknown> | undefined
+        )?.activeRootId as string | undefined
+        const activePath = computeActivePath(messagesAtQueueTime, activeRootId)
+
         useMessageQueue.getState().enqueue(currentThreadId, {
           id: generateId(),
           text: prompt,
           createdAt: Date.now(),
           skillReferences: skillReferencesForSend,
+          attachments,
+          parentId: activePath.at(-1)?.id ?? null,
+          hadBranching: hasBranching(messagesAtQueueTime),
         })
+        // Queued sends own a detached snapshot. Remove the composer-owned
+        // attachments now so subsequent composer edits cannot alter replay.
+        useChatAttachments.getState().clearAttachments(attachmentsKey)
         setPrompt('')
         setSelectedSkillReferences([])
         return
@@ -2330,14 +2348,55 @@ const ChatInput = memo(function ChatInput({
             )}
             {queuedMessages.length > 0 && (
               <div className="flex flex-col gap-1 px-3 pt-2 pb-0">
+                <div className="flex items-center justify-between px-1 text-xs text-muted-foreground">
+                  <span>{queueLength} queued</span>
+                  <button
+                    type="button"
+                    aria-label="Clear queued messages"
+                    className="hover:text-foreground transition-colors"
+                    onClick={() =>
+                      currentThreadId &&
+                      useMessageQueue.getState().clearQueue(currentThreadId)
+                    }
+                  >
+                    Clear queue
+                  </button>
+                </div>
                 {queuedMessages.map((msg) => (
                   <QueuedMessageChip
                     key={msg.id}
                     message={msg}
                     onEdit={(queued) => {
-                      // Put the text back in the input for editing, remove from queue
+                      if (
+                        useMessageQueue
+                          .getState()
+                          .requestCancellation(currentThreadId ?? '', queued.id)
+                      ) {
+                        toast.info('Cancelling queued message before it is sent')
+                        return
+                      }
+                      if (
+                        prompt.trim() ||
+                        attachments.length > 0 ||
+                        selectedSkillReferences.length > 0
+                      ) {
+                        toast.info(
+                          'Finish or clear the current draft before editing a queued message'
+                        )
+                        return
+                      }
+                      // Transfer the detached queued snapshot back to the composer
+                      // before removing it, so editing cannot lose attached files.
                       setPrompt(queued.text)
-                      setSelectedSkillReferences(queued.skillReferences ?? [])
+                      setSelectedSkillReferences(
+                        queued.skillReferences.map((reference) => ({
+                          ...reference,
+                          toolIds: [...reference.toolIds],
+                        }))
+                      )
+                      setAttachmentsForThread(attachmentsKey, () =>
+                        queued.attachments.map((attachment) => ({ ...attachment }))
+                      )
                       removeQueuedMessage(queued.id)
                       textareaRef.current?.focus()
                     }}
@@ -2867,22 +2926,17 @@ const ChatInput = memo(function ChatInput({
                     <Button
                       variant="destructive"
                       size="icon-sm"
+                      aria-label="Stop generating"
                       className="rounded-full mr-1 mb-1"
                       onClick={() => {
-                        if (!currentThreadId) return
-                        const queue = useMessageQueue.getState().getQueue(currentThreadId)
-                        if (queue.length > 0) {
-                          useMessageQueue.getState().clearQueue(currentThreadId)
-                        } else {
-                          stopStreaming(currentThreadId)
-                        }
+                        if (currentThreadId) stopStreaming(currentThreadId)
                       }}
                     >
                       <IconPlayerStopFilled />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>{queueLength > 0 ? `Clear ${queueLength} queued message(s)` : 'Stop generating'}</p>
+                    <p>Stop generating</p>
                   </TooltipContent>
                 </Tooltip>
               ) : (
