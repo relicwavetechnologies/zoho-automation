@@ -51,7 +51,7 @@ export function OAuthCallbackPage({ provider }: OAuthCallbackPageProps) {
         {done ? <p className="rounded-lg bg-accent p-4 text-sm font-medium text-accent-foreground">Integration connected.</p> : null}
         <ErrorCallout message={error} />
         <Button asChild className="w-full rounded-full">
-          <Link to="/settings?tab=integrations">Back to integrations</Link>
+          <Link to="/settings">Back to settings</Link>
         </Button>
       </div>
     </AuthCard>
