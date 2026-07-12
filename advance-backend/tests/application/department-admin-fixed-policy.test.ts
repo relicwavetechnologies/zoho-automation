@@ -33,4 +33,32 @@ describe('DepartmentAdminService fixed policy', () => {
     assert.equal(writes().roleWrites, 0);
     assert.equal(writes().memberWrites, 0);
   });
+
+  it('invalidates the exact department permission cache after membership changes', async () => {
+    const invalidations: string[] = [];
+    const service = new DepartmentAdminService({
+      prisma: {
+        department: { findFirst: async () => ({ id: 'dept-1', companyId: 'company-1', name: 'Ops', slug: 'ops' }) },
+        adminMembership: { findFirst: async () => ({ id: 'workspace-membership' }) },
+        departmentRole: { findFirst: async () => ({ id: 'role-1', slug: 'MEMBER' }) },
+        departmentMembership: {
+          upsert: async () => ({
+            id: 'membership-1', userId: 'user-1', roleId: 'role-1',
+            user: { name: 'Member', email: 'member@example.com' },
+            role: { slug: 'MEMBER', name: 'Member' }, status: 'active',
+            createdAt: new Date(), updatedAt: new Date(),
+          }),
+          delete: async () => ({}),
+        },
+      } as any,
+      logger,
+      permissions: { invalidateDept: async (companyId: string, departmentId: string) => { invalidations.push(`${companyId}:${departmentId}`); } } as any,
+    });
+
+    const saved = await service.upsertMembership('dept-1', 'company-1', { userId: 'user-1', roleId: 'role-1' });
+    const removed = await service.removeMembership('dept-1', 'company-1', 'user-1');
+    assert.equal(saved.ok, true);
+    assert.equal(removed.ok, true);
+    assert.deepEqual(invalidations, ['company-1:dept-1', 'company-1:dept-1']);
+  });
 });

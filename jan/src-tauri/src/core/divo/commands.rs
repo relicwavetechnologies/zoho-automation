@@ -418,8 +418,9 @@ async fn best_effort_backend_logout<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-async fn divo_desktop_json_request<R: Runtime>(
+async fn divo_member_json_request<R: Runtime>(
     app: &AppHandle<R>,
+    api_base_path: &str,
     method: reqwest::Method,
     path: &str,
     body: Option<Value>,
@@ -428,8 +429,9 @@ async fn divo_desktop_json_request<R: Runtime>(
     let session =
         load_divo_session(app)?.ok_or_else(|| "No Divo session configured".to_string())?;
     let url = format!(
-        "{}/api/desktop/auth{}",
+        "{}{}{}",
         session.backend_url.trim_end_matches('/'),
+        api_base_path,
         path
     );
     log::info!("divo.desktop_request.start label={label}");
@@ -465,6 +467,16 @@ async fn divo_desktop_json_request<R: Runtime>(
     }
 
     Ok(parsed)
+}
+
+async fn divo_desktop_json_request<R: Runtime>(
+    app: &AppHandle<R>,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+    label: &str,
+) -> Result<Value, String> {
+    divo_member_json_request(app, "/api/desktop/auth", method, path, body, label).await
 }
 
 #[derive(Serialize)]
@@ -633,9 +645,11 @@ pub async fn divo_validate_session<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_runtime_context_access_denied, member_departments_runtime_context, DivoDepartment,
+        department_management_request, is_runtime_context_access_denied,
+        member_departments_runtime_context, DepartmentManagementOperation, DivoDepartment,
         DivoSession,
     };
+    use serde_json::json;
 
     #[test]
     fn recognizes_runtime_context_access_denied() {
@@ -651,6 +665,87 @@ mod tests {
         assert!(!is_runtime_context_access_denied(
             "Divo gateway returned HTTP 403 Forbidden: {}"
         ));
+    }
+
+    #[test]
+    fn department_management_requests_match_the_constrained_backend_contract() {
+        let dept = "finance-id";
+        let cases = [
+            (
+                department_management_request(dept, DepartmentManagementOperation::Snapshot),
+                reqwest::Method::GET,
+                "/departments/finance-id/manage",
+                None,
+            ),
+            (
+                department_management_request(
+                    dept,
+                    DepartmentManagementOperation::SearchCandidates { query: "Ava & Co" },
+                ),
+                reqwest::Method::GET,
+                "/departments/finance-id/candidates?query=Ava+%26+Co",
+                None,
+            ),
+            (
+                department_management_request(
+                    dept,
+                    DepartmentManagementOperation::CreateRole {
+                        name: "Analyst",
+                        slug: "ANALYST",
+                    },
+                ),
+                reqwest::Method::POST,
+                "/departments/finance-id/roles",
+                Some(json!({ "name": "Analyst", "slug": "ANALYST" })),
+            ),
+            (
+                department_management_request(
+                    dept,
+                    DepartmentManagementOperation::UpdateRole {
+                        role_id: "role-id",
+                        name: "Senior analyst",
+                    },
+                ),
+                reqwest::Method::PUT,
+                "/departments/finance-id/roles/role-id",
+                Some(json!({ "name": "Senior analyst" })),
+            ),
+            (
+                department_management_request(
+                    dept,
+                    DepartmentManagementOperation::DeleteRole { role_id: "role-id" },
+                ),
+                reqwest::Method::DELETE,
+                "/departments/finance-id/roles/role-id",
+                None,
+            ),
+            (
+                department_management_request(
+                    dept,
+                    DepartmentManagementOperation::SaveMember {
+                        user_id: "user-id",
+                        role_id: "role-id",
+                    },
+                ),
+                reqwest::Method::PUT,
+                "/departments/finance-id/memberships",
+                Some(json!({ "userId": "user-id", "roleId": "role-id" })),
+            ),
+            (
+                department_management_request(
+                    dept,
+                    DepartmentManagementOperation::RemoveMember { user_id: "user-id" },
+                ),
+                reqwest::Method::DELETE,
+                "/departments/finance-id/memberships/user-id",
+                None,
+            ),
+        ];
+        for ((method, path, body), expected_method, expected_path, expected_body) in cases {
+            assert_eq!(method, expected_method);
+            assert_eq!(path, expected_path);
+            assert_eq!(body, expected_body);
+        }
     }
 
     #[test]
@@ -1116,6 +1211,66 @@ fn require_divo_tool_identifier<'a>(value: &'a str, label: &str) -> Result<&'a s
     Ok(value)
 }
 
+enum DepartmentManagementOperation<'a> {
+    Snapshot,
+    SearchCandidates { query: &'a str },
+    CreateRole { name: &'a str, slug: &'a str },
+    UpdateRole { role_id: &'a str, name: &'a str },
+    DeleteRole { role_id: &'a str },
+    SaveMember { user_id: &'a str, role_id: &'a str },
+    RemoveMember { user_id: &'a str },
+}
+
+/// Builds the only desktop-to-backend contract for department team management.
+/// Keeping it pure lets tests pin the method, path, query encoding, and body.
+fn department_management_request(
+    department_id: &str,
+    operation: DepartmentManagementOperation<'_>,
+) -> (reqwest::Method, String, Option<Value>) {
+    let base = format!("/departments/{department_id}");
+    match operation {
+        DepartmentManagementOperation::Snapshot => {
+            (reqwest::Method::GET, format!("{base}/manage"), None)
+        }
+        DepartmentManagementOperation::SearchCandidates { query } => {
+            let mut url = reqwest::Url::parse("http://localhost/")
+                .expect("static candidate-search URL is valid");
+            url.set_path(&format!("{base}/candidates"));
+            url.query_pairs_mut().append_pair("query", query);
+            (
+                reqwest::Method::GET,
+                format!("{}?{}", url.path(), url.query().unwrap_or_default()),
+                None,
+            )
+        }
+        DepartmentManagementOperation::CreateRole { name, slug } => (
+            reqwest::Method::POST,
+            format!("{base}/roles"),
+            Some(json!({ "name": name, "slug": slug })),
+        ),
+        DepartmentManagementOperation::UpdateRole { role_id, name } => (
+            reqwest::Method::PUT,
+            format!("{base}/roles/{role_id}"),
+            Some(json!({ "name": name })),
+        ),
+        DepartmentManagementOperation::DeleteRole { role_id } => (
+            reqwest::Method::DELETE,
+            format!("{base}/roles/{role_id}"),
+            None,
+        ),
+        DepartmentManagementOperation::SaveMember { user_id, role_id } => (
+            reqwest::Method::PUT,
+            format!("{base}/memberships"),
+            Some(json!({ "userId": user_id, "roleId": role_id })),
+        ),
+        DepartmentManagementOperation::RemoveMember { user_id } => (
+            reqwest::Method::DELETE,
+            format!("{base}/memberships/{user_id}"),
+            None,
+        ),
+    }
+}
+
 /// Load the constrained RBAC-management snapshot for one server-authorised tool scope.
 #[tauri::command]
 pub async fn divo_tool_manage_snapshot<R: Runtime>(
@@ -1216,6 +1371,174 @@ pub async fn divo_tool_set_department_member_action<R: Runtime>(
         ),
         Some(json!({ "allowed": allowed })),
         "Divo tool department member action update",
+    )
+    .await
+}
+
+/// Load roles and members for a department the signed-in member is allowed to manage.
+#[tauri::command]
+pub async fn divo_department_manage_snapshot<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let (method, path, body) =
+        department_management_request(department_id, DepartmentManagementOperation::Snapshot);
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        method,
+        &path,
+        body,
+        "Divo department management snapshot",
+    )
+    .await
+}
+
+/// Search the synced directory for an authorised department-management flow.
+#[tauri::command]
+pub async fn divo_department_search_candidates<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+    query: String,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let query = require_divo_tool_identifier(&query, "query")?;
+    let (method, path, body) = department_management_request(
+        department_id,
+        DepartmentManagementOperation::SearchCandidates { query },
+    );
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        method,
+        &path,
+        body,
+        "Divo department candidate search",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_department_create_role<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+    name: String,
+    slug: String,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let (method, path, body) = department_management_request(
+        department_id,
+        DepartmentManagementOperation::CreateRole {
+            name: &name,
+            slug: &slug,
+        },
+    );
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        method,
+        &path,
+        body,
+        "Divo department role creation",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_department_update_role<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+    role_id: String,
+    name: String,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let role_id = require_divo_tool_identifier(&role_id, "roleId")?;
+    let (method, path, body) = department_management_request(
+        department_id,
+        DepartmentManagementOperation::UpdateRole {
+            role_id,
+            name: &name,
+        },
+    );
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        method,
+        &path,
+        body,
+        "Divo department role update",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_department_delete_role<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+    role_id: String,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let role_id = require_divo_tool_identifier(&role_id, "roleId")?;
+    let (method, path, body) = department_management_request(
+        department_id,
+        DepartmentManagementOperation::DeleteRole { role_id },
+    );
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        method,
+        &path,
+        body,
+        "Divo department role deletion",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_department_save_member<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+    user_id: String,
+    role_id: String,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let user_id = require_divo_tool_identifier(&user_id, "userId")?;
+    let role_id = require_divo_tool_identifier(&role_id, "roleId")?;
+    let (method, path, body) = department_management_request(
+        department_id,
+        DepartmentManagementOperation::SaveMember { user_id, role_id },
+    );
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        method,
+        &path,
+        body,
+        "Divo department membership update",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_department_remove_member<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+    user_id: String,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let user_id = require_divo_tool_identifier(&user_id, "userId")?;
+    let (method, path, body) = department_management_request(
+        department_id,
+        DepartmentManagementOperation::RemoveMember { user_id },
+    );
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        method,
+        &path,
+        body,
+        "Divo department membership removal",
     )
     .await
 }

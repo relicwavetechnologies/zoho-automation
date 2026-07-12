@@ -927,7 +927,7 @@ impl PiManager {
         layout: &DivoWorkspaceRunLayout,
     ) -> String {
         format!(
-            "Divo workspace policy:\n- The selected workspace root is: {workspace}\n- The active Jan thread id for this run is: {thread_id}\n- Divo-owned scratch state for this run is: {run_dir}\n- Put temporary helper scripts, scratch notes, downloaded intermediate files, logs, and generated analysis artifacts under DIVO_RUN_DIR or the matching DIVO_* directory.\n- Do not create temporary scripts or scratch files in the workspace root or project folders.\n- Only create or edit files outside .divo when they are real project files required by the user's task.\n- Do not store credentials, backend tokens, or SaaS tokens in workspace files.",
+            "Divo response language policy:\n- Respond to the user in English only.\n- Write every user-facing explanation, question, confirmation, summary, heading, and list item in English.\n- Do not switch to Chinese or any other language, even when the user, conversation history, or a tool result uses another language.\n\nDivo workspace policy:\n- The selected workspace root is: {workspace}\n- The active Jan thread id for this run is: {thread_id}\n- Divo-owned scratch state for this run is: {run_dir}\n- Put temporary helper scripts, scratch notes, downloaded intermediate files, logs, and generated analysis artifacts under DIVO_RUN_DIR or the matching DIVO_* directory.\n- Do not create temporary scripts or scratch files in the workspace root or project folders.\n- Only create or edit files outside .divo when they are real project files required by the user's task.\n- Do not store credentials, backend tokens, or SaaS tokens in workspace files.",
             workspace = workspace_dir.display(),
             thread_id = layout.thread_id,
             run_dir = layout.run_dir.display(),
@@ -1778,6 +1778,7 @@ mod tests {
         DIVO_APPROVAL_PROTOCOL_TITLE, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
     };
     use std::collections::{HashMap, HashSet};
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use tokio::runtime::Runtime;
 
@@ -1801,6 +1802,26 @@ mod tests {
             owner,
             tx,
         }
+    }
+
+    #[test]
+    fn appended_divo_system_prompt_requires_english_only_responses() {
+        let layout = crate::core::divo::workspace::DivoWorkspaceRunLayout {
+            run_id: "run-1".into(),
+            thread_id: "thread-1".into(),
+            divo_dir: PathBuf::from("/workspace/.divo"),
+            thread_dir: PathBuf::from("/workspace/.divo/threads/thread-1"),
+            run_dir: PathBuf::from("/workspace/.divo/threads/thread-1/runs/run-1"),
+            tmp_dir: PathBuf::from("/workspace/.divo/threads/thread-1/runs/run-1/tmp"),
+            scripts_dir: PathBuf::from("/workspace/.divo/threads/thread-1/runs/run-1/scripts"),
+            artifacts_dir: PathBuf::from("/workspace/.divo/threads/thread-1/runs/run-1/artifacts"),
+            logs_dir: PathBuf::from("/workspace/.divo/threads/thread-1/runs/run-1/logs"),
+        };
+
+        let prompt = PiManager::divo_workspace_system_prompt(Path::new("/workspace"), &layout);
+
+        assert!(prompt.contains("Respond to the user in English only."));
+        assert!(prompt.contains("Do not switch to Chinese or any other language"));
     }
 
     fn approval_ui(owner: &RunOwner, include_correlation: bool) -> serde_json::Value {

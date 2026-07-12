@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
+import { toast } from 'sonner'
 
 // --- Module mocks (must be declared before component import) ---------------
 
@@ -26,7 +27,7 @@ const updateCurrentThreadAssistantMock = vi.fn()
 const updateCurrentThreadModelMock = vi.fn()
 const createThreadMock = vi.fn()
 const getCurrentThreadMock = vi.fn(() => undefined)
-let currentThreadId = 'thread-1'
+let currentThreadId: string | undefined = 'thread-1'
 
 vi.mock('@/hooks/useThreads', () => ({
   useThreads: (selector: any) =>
@@ -881,6 +882,70 @@ describe('ChatInput', () => {
     expect(enqueueMock).toHaveBeenCalledWith(
       'thread-1',
       expect.objectContaining({ text: 'follow up after tool' })
+    )
+  })
+
+  it.each([
+    'busyThreads',
+    'streamingContents',
+    'loadingModels',
+    'cancelToolCalls',
+  ] as const)(
+    'blocks Enter sends while another chat is active in %s',
+    (activityStore) => {
+      promptState = 'second chat message'
+      appStateOverrides = { [activityStore]: { 'thread-running': true } }
+      const onSubmit = vi.fn()
+      vi.mocked(toast.info).mockClear()
+      renderInput({ onSubmit })
+
+      fireEvent.keyDown(getTextarea(), { key: 'Enter' })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+      expect(enqueueMock).not.toHaveBeenCalled()
+      expect(addToHistoryMock).not.toHaveBeenCalled()
+      expect(setPromptMock).not.toHaveBeenCalled()
+      expect(promptState).toBe('second chat message')
+      expect(toast.info).toHaveBeenCalledWith(
+        'First stop the previous chat running, and then send.'
+      )
+    }
+  )
+
+  it('blocks send-button clicks while another chat is active', () => {
+    promptState = 'second chat message'
+    appStateOverrides = { busyThreads: { 'thread-running': true } }
+    const onSubmit = vi.fn()
+    vi.mocked(toast.info).mockClear()
+    renderInput({ onSubmit })
+
+    fireEvent.click(
+      document.querySelector(
+        '[data-test-id="send-message-button"]'
+      ) as HTMLButtonElement
+    )
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(enqueueMock).not.toHaveBeenCalled()
+    expect(toast.info).toHaveBeenCalledWith(
+      'First stop the previous chat running, and then send.'
+    )
+  })
+
+  it('blocks a new chat from the home composer while another chat is active', () => {
+    currentThreadId = undefined
+    promptState = 'new chat message'
+    appStateOverrides = { busyThreads: { 'thread-running': true } }
+    const onSubmit = vi.fn()
+    vi.mocked(toast.info).mockClear()
+    renderInput({ onSubmit })
+
+    fireEvent.keyDown(getTextarea(), { key: 'Enter' })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(createThreadMock).not.toHaveBeenCalled()
+    expect(toast.info).toHaveBeenCalledWith(
+      'First stop the previous chat running, and then send.'
     )
   })
 

@@ -398,6 +398,15 @@ const ChatInput = memo(function ChatInput({
       displayedThreadId in state.cancelToolCalls
     )
   })
+  const hasAnotherActiveChat = useAppState((state) => {
+    const activeThreadIds = new Set([
+      ...Object.keys(state.busyThreads),
+      ...Object.keys(state.streamingContents),
+      ...Object.keys(state.loadingModels),
+      ...Object.keys(state.cancelToolCalls),
+    ])
+    return [...activeThreadIds].some((id) => id !== displayedThreadId)
+  })
   const activePiRunId = useAppState((state) =>
     displayedThreadId ? state.piThreadRunStates[displayedThreadId]?.runId : undefined
   )
@@ -651,6 +660,10 @@ const ChatInput = memo(function ChatInput({
     }
     if (ingestingAny) {
       toast.info('Please wait for attachments to finish processing')
+      return
+    }
+    if (hasAnotherActiveChat) {
+      toast.info('First stop the previous chat running, and then send.')
       return
     }
     setMessage('')

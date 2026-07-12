@@ -13,6 +13,7 @@ import { createExecutionRoutes } from './http/executions/execution.routes';
 import { createAdminAuthMiddleware } from './http/middleware/admin-auth.middleware';
 import { createMemberAuthMiddleware } from './http/middleware/member-auth.middleware';
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
+import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { PermissionWriteService } from './application/permissions/permission-write.service';
 import { createFilesRouter } from './http/files/files.routes';
 import { createAgentsRoutes } from './http/agents/agents.routes';
@@ -355,6 +356,15 @@ export const createServer = (c: Container) => {
       connectionRepo:         c.integrationConnectionRepo,
       auditService:           c.auditService,
       toolRegistry:           c.toolRegistry,
+    }),
+  );
+  app.use(
+    '/api/desktop',
+    createDesktopDepartmentRoutes({
+      prisma:          c.prisma,
+      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+      logger:          c.logger,
+      service:         c.desktopDepartmentManagementService,
     }),
   );
   app.use(

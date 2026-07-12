@@ -83,6 +83,7 @@ import { AgentAdminService } from './application/agents/agent-admin.service';
 import { AgentCatalogService } from './application/agents/agent-catalog.service';
 import { AgentCatalogCache } from './application/agents/agent-catalog.cache';
 import { DepartmentAdminService } from './application/departments/department-admin.service';
+import { DesktopDepartmentManagementService } from './application/desktop/desktop-department-management.service';
 import { AgentResolver } from './application/orchestration/agents/agent-resolver';
 import { ChatMessageSerializer } from './application/orchestration/chat-message-serializer';
 import { SupervisorAgent } from './application/orchestration/agents/supervisor';
@@ -201,6 +202,7 @@ export interface Container {
   agentAdminService:      AgentAdminService;
   agentCatalogCache:      AgentCatalogCache;
   departmentAdminService: DepartmentAdminService;
+  desktopDepartmentManagementService: DesktopDepartmentManagementService;
   // Lark user OAuth
   larkOAuthService:     LarkOAuthService;
   larkUserAuthLinkRepo: LarkUserAuthLinkRepository;
@@ -315,8 +317,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       return openaiModel(modelId);
     }
     if (provider === 'deepseek') {
-      if (!env.DEEPSEEK_API_KEY) throw new Error('AI provider deepseek selected but DEEPSEEK_API_KEY is not set');
-      const ds = createDeepSeek({ apiKey: env.DEEPSEEK_API_KEY });
+      // The SDK resolves a missing key when a DeepSeek request is made. Keep
+      // startup independent from this optional provider (the proxy can also
+      // receive a company or platform key after the server is running).
+      const ds = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_API_KEY } : {});
       return ds(modelId);
     }
     throw new Error(`Unsupported AI model provider: ${provider}`);
@@ -940,6 +944,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'department-admin' }),
     permissions,
   });
+  const desktopDepartmentManagementService = new DesktopDepartmentManagementService({
+    prisma,
+    departmentAdminService,
+    auditService,
+    logger: logger.child({ service: 'desktop-department-management' }),
+  });
   const todoRepo      = new SupervisorTodoRepository(prisma);
 
   const supervisor = new SupervisorAgent({
@@ -1098,6 +1108,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     agentAdminService,
     agentCatalogCache,
     departmentAdminService,
+    desktopDepartmentManagementService,
     // Lark user OAuth
     larkOAuthService,
     larkUserAuthLinkRepo,

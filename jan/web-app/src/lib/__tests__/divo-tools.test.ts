@@ -6,6 +6,13 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: h.invoke }))
 
 import {
   getDivoToolManageSnapshot,
+  getDivoDepartmentManageSnapshot,
+  searchDivoDepartmentCandidates,
+  createDivoDepartmentRole,
+  updateDivoDepartmentRole,
+  deleteDivoDepartmentRole,
+  saveDivoDepartmentMember,
+  removeDivoDepartmentMember,
   setDivoDepartmentMemberToolAction,
   toolActionSummary,
   toolSearchText,
@@ -54,5 +61,22 @@ describe('Divo desktop tools client', () => {
     expect(h.invoke).toHaveBeenCalledWith('divo_tool_set_department_member_action', {
       toolId: 'googleDrive', departmentId: 'ops-id', userId: 'member-id', actionGroup: 'create', allowed: true,
     })
+  })
+
+  it('proxies every department team operation through Tauri without exposing session credentials', () => {
+    getDivoDepartmentManageSnapshot('ops-id')
+    expect(h.invoke).toHaveBeenCalledWith('divo_department_manage_snapshot', { departmentId: 'ops-id' })
+    searchDivoDepartmentCandidates('ops-id', 'sam@example.com')
+    expect(h.invoke).toHaveBeenCalledWith('divo_department_search_candidates', { departmentId: 'ops-id', query: 'sam@example.com' })
+    createDivoDepartmentRole('ops-id', 'Analyst', 'ANALYST')
+    expect(h.invoke).toHaveBeenCalledWith('divo_department_create_role', { departmentId: 'ops-id', name: 'Analyst', slug: 'ANALYST' })
+    updateDivoDepartmentRole('ops-id', 'role-id', 'Senior analyst')
+    expect(h.invoke).toHaveBeenCalledWith('divo_department_update_role', { departmentId: 'ops-id', roleId: 'role-id', name: 'Senior analyst' })
+    deleteDivoDepartmentRole('ops-id', 'role-id')
+    expect(h.invoke).toHaveBeenCalledWith('divo_department_delete_role', { departmentId: 'ops-id', roleId: 'role-id' })
+    saveDivoDepartmentMember('ops-id', 'user-id', 'role-id')
+    expect(h.invoke).toHaveBeenCalledWith('divo_department_save_member', { departmentId: 'ops-id', userId: 'user-id', roleId: 'role-id' })
+    removeDivoDepartmentMember('ops-id', 'user-id')
+    expect(h.invoke).toHaveBeenCalledWith('divo_department_remove_member', { departmentId: 'ops-id', userId: 'user-id' })
   })
 })

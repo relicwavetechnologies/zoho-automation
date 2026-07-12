@@ -83,6 +83,44 @@ export type DepartmentToolManageSnapshot = {
 
 export type ToolManageSnapshot = GlobalToolManageSnapshot | DepartmentToolManageSnapshot
 
+export type DepartmentManagementRole = {
+  id: string
+  name: string
+  slug: string
+  isSystem: boolean
+  isDefault: boolean
+  zohoReadScope: string
+}
+
+export type DepartmentManagementMember = {
+  id: string
+  userId: string
+  name: string | null
+  email: string
+  roleId: string
+  roleSlug: string
+  roleName: string
+  status: string
+}
+
+export type DepartmentManagementSnapshot = {
+  department: { id: string; name: string; slug: string; description: string | null; status: string }
+  roles: DepartmentManagementRole[]
+  memberships: DepartmentManagementMember[]
+}
+
+export type DepartmentCandidate = {
+  channelIdentityId: string
+  userId?: string
+  name?: string
+  email?: string
+  workspaceRole?: string
+  isWorkspaceMember: boolean
+  isAlreadyAssigned: boolean
+  larkDisplayName?: string
+  larkSourceRoles: string[]
+}
+
 export function getDivoToolsInventory(): Promise<DivoToolInventory> {
   return invoke<DivoToolInventory>('divo_tools_inventory')
 }
@@ -142,6 +180,34 @@ export function setDivoDepartmentMemberToolAction(
     actionGroup,
     allowed,
   })
+}
+
+export function getDivoDepartmentManageSnapshot(departmentId: string): Promise<DepartmentManagementSnapshot> {
+  return invoke<DepartmentManagementSnapshot>('divo_department_manage_snapshot', { departmentId })
+}
+
+export function searchDivoDepartmentCandidates(departmentId: string, query: string): Promise<DepartmentCandidate[]> {
+  return invoke<DepartmentCandidate[]>('divo_department_search_candidates', { departmentId, query })
+}
+
+export function createDivoDepartmentRole(departmentId: string, name: string, slug: string): Promise<DepartmentManagementRole> {
+  return invoke<DepartmentManagementRole>('divo_department_create_role', { departmentId, name, slug })
+}
+
+export function updateDivoDepartmentRole(departmentId: string, roleId: string, name: string): Promise<DepartmentManagementRole> {
+  return invoke<DepartmentManagementRole>('divo_department_update_role', { departmentId, roleId, name })
+}
+
+export function deleteDivoDepartmentRole(departmentId: string, roleId: string): Promise<{ deleted: boolean }> {
+  return invoke<{ deleted: boolean }>('divo_department_delete_role', { departmentId, roleId })
+}
+
+export function saveDivoDepartmentMember(departmentId: string, userId: string, roleId: string): Promise<DepartmentManagementMember> {
+  return invoke<DepartmentManagementMember>('divo_department_save_member', { departmentId, userId, roleId })
+}
+
+export function removeDivoDepartmentMember(departmentId: string, userId: string): Promise<{ deleted: boolean }> {
+  return invoke<{ deleted: boolean }>('divo_department_remove_member', { departmentId, userId })
 }
 
 export function toolSearchText(item: DivoToolInventoryItem): string {

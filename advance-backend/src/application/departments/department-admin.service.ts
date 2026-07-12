@@ -798,6 +798,7 @@ export class DepartmentAdminService {
         create: { departmentId, userId: resolvedUserId, roleId: role.id, status: input.status ?? 'active' },
         include: { user: { select: { id: true, name: true, email: true } }, role: true },
       });
+      await this.deps.permissions.invalidateDept(companyId, departmentId);
       return ok({ id: membership.id, userId: membership.userId, name: membership.user.name, email: membership.user.email, roleId: membership.roleId, roleSlug: membership.role.slug, roleName: membership.role.name, status: membership.status, createdAt: membership.createdAt.toISOString(), updatedAt: membership.updatedAt.toISOString() });
     } catch (e) {
       return fail({ kind: 'internal', message: 'Failed to save membership' });
@@ -809,6 +810,7 @@ export class DepartmentAdminService {
     if (!check.ok) return check as ServiceResult<{ deleted: boolean }>;
     try {
       await this.deps.prisma.departmentMembership.delete({ where: { departmentId_userId: { departmentId, userId } } });
+      await this.deps.permissions.invalidateDept(companyId, departmentId);
       return ok({ deleted: true });
     } catch (e) {
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2025') {
