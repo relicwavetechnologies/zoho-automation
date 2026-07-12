@@ -374,6 +374,15 @@ const ChatInput = memo(function ChatInput({
   const addToHistory = usePrompt((state) => state.addToHistory)
   const navigateHistory = usePrompt((state) => state.navigateHistory)
   const currentThreadId = useThreads((state) => state.currentThreadId)
+  const isThreadBusy = useAppState((state) => {
+    if (!currentThreadId) return false
+    return (
+      currentThreadId in state.busyThreads ||
+      currentThreadId in state.streamingContents ||
+      currentThreadId in state.loadingModels ||
+      currentThreadId in state.cancelToolCalls
+    )
+  })
   const approvalQueue = usePiApproval((state) =>
     currentThreadId
       ? state.queues[currentThreadId] ?? EMPTY_PI_APPROVAL_QUEUE
@@ -640,8 +649,9 @@ const ChatInput = memo(function ChatInput({
 
     // Use onSubmit prop if available (AI SDK), otherwise create thread and navigate
     if (onSubmit) {
-      // When the model is still streaming, queue the message for later
-      if (isStreaming && currentThreadId) {
+      // Keep one per-thread gate for streaming, post-stream tools, and Pi
+      // approval waits. The durable queue shape itself remains unchanged.
+      if ((isStreaming || isThreadBusy) && currentThreadId) {
         useMessageQueue.getState().enqueue(currentThreadId, {
           id: generateId(),
           text: prompt,
@@ -2124,6 +2134,7 @@ const ChatInput = memo(function ChatInput({
   }
 
   const isStreaming = chatStatus === 'submitted' || chatStatus === 'streaming'
+  const isComposerBusy = isStreaming || isThreadBusy
 
   const activeApproval = approvalQueue[approvalQueueIndex]
   if (activeApproval && currentThreadId) {
@@ -2179,7 +2190,7 @@ const ChatInput = memo(function ChatInput({
             'relative overflow-hidden p-0.5 rounded-3xl'
           )}
         >
-          {isStreaming && (
+          {isComposerBusy && (
             <div className="absolute inset-0">
               <MovingBorder rx="10%" ry="10%">
                 <div
@@ -2499,7 +2510,7 @@ const ChatInput = memo(function ChatInput({
               <div
                 className={cn(
                   'px-1 flex items-center w-full gap-1',
-                  isStreaming && 'opacity-50 pointer-events-none'
+                  isComposerBusy && 'opacity-50 pointer-events-none'
                 )}
               >
                 {/* Attachments are first-class Divo inputs. */}
@@ -2850,7 +2861,7 @@ const ChatInput = memo(function ChatInput({
                   </div>
                 )}
 
-              {isStreaming ? (
+              {isComposerBusy ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button

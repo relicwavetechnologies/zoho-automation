@@ -4,7 +4,7 @@ import type { PiRawEvent } from '@/lib/pi'
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
-  listener: undefined as ((event: { payload: PiRawEvent }) => void) | undefined,
+  listeners: [] as Array<(event: { payload: PiRawEvent }) => void>,
   unlisten: vi.fn(),
 }))
 
@@ -15,10 +15,7 @@ vi.mock('@tauri-apps/api/event', () => ({
       _name: string,
       listener: (event: { payload: PiRawEvent }) => void
     ) => {
-      // The first listener is the durable approval listener. A stream adds a
-      // second listener for transcript events, but that one is removed with
-      // the stream and must not control approval delivery.
-      mocks.listener ??= listener
+      mocks.listeners.push(listener)
       return mocks.unlisten
     }
   ),
@@ -27,16 +24,16 @@ vi.mock('@tauri-apps/api/event', () => ({
 import { usePiApproval } from '@/hooks/usePiApproval'
 import { createPiMessageStream } from '../pi-stream'
 
-describe('createPiMessageStream approval events', () => {
+describe('createPiMessageStream run ownership', () => {
   beforeEach(() => {
     mocks.invoke.mockReset()
     mocks.invoke.mockResolvedValue(undefined)
-    mocks.listener = undefined
+    mocks.listeners = []
     mocks.unlisten.mockReset()
     usePiApproval.setState({ queues: {} })
   })
 
-  it('keeps approval delivery alive after the originating stream is cancelled', async () => {
+  it('scopes aborts and approval responses to one generated run', async () => {
     const stream = createPiMessageStream({
       threadId: 'thread-1',
       message: 'send the email',
@@ -45,12 +42,16 @@ describe('createPiMessageStream approval events', () => {
     })
     const reader = stream.getReader()
     await reader.read()
-    await vi.waitFor(() => expect(mocks.listener).toBeTypeOf('function'))
+    await vi.waitFor(() => expect(mocks.listeners).toHaveLength(2))
+    const prompt = mocks.invoke.mock.calls.find(([command]) => command === 'pi_prompt')?.[1]
+    expect(prompt).toMatchObject({ threadId: 'thread-1', runId: expect.any(String) })
+    expect(prompt.runId).toBe(prompt.run_id)
 
-    mocks.listener?.({
+    mocks.listeners[0]?.({
       payload: {
         type: 'extension_ui_request',
         thread_id: 'thread-1',
+        run_id: prompt.runId,
         id: 'approval-request-1',
         method: 'confirm',
         title: 'divo_approval_v1',
@@ -73,17 +74,25 @@ describe('createPiMessageStream approval events', () => {
       expect(mocks.invoke).toHaveBeenCalledWith('pi_extension_ui_respond', {
         requestId: 'approval-request-1',
         threadId: 'thread-1',
+        runId: prompt.runId,
         confirmed: false,
       })
     )
     expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
+    expect(mocks.invoke).toHaveBeenCalledWith('pi_abort', {
+      threadId: 'thread-1',
+      thread_id: 'thread-1',
+      runId: prompt.runId,
+      run_id: prompt.runId,
+    })
 
     // A memory editor can outlive the stream that opened it. It must still
     // reach the persistent approval queue rather than leave Pi blocked.
-    mocks.listener?.({
+    mocks.listeners[0]?.({
       payload: {
         type: 'extension_ui_request',
         thread_id: 'thread-1',
+        run_id: prompt.runId,
         id: 'memory-review-1',
         method: 'editor',
         title: 'divo_memory_review_v1',
@@ -102,6 +111,123 @@ describe('createPiMessageStream approval events', () => {
     expect(usePiApproval.getState().queues['thread-1'][0]).toMatchObject({
       protocol: 'memory-review',
       requestId: 'memory-review-1',
+      runId: prompt.runId,
     })
+  })
+
+  it('ignores a stale transcript event from another run', async () => {
+    const onPiEvent = vi.fn()
+    const stream = createPiMessageStream({
+      threadId: 'thread-1',
+      message: 'current run',
+      abortSignal: undefined,
+      isStale: () => false,
+      onPiEvent,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    await vi.waitFor(() => expect(mocks.listeners.length).toBeGreaterThanOrEqual(1))
+    const prompt = mocks.invoke.mock.calls.find(([command]) => command === 'pi_prompt')?.[1]
+    const transcriptListener = mocks.listeners.at(-1)
+
+    transcriptListener?.({
+      payload: {
+        type: 'agent_end',
+        thread_id: 'thread-1',
+        run_id: `${prompt.runId}-stale`,
+      },
+    })
+
+    expect(onPiEvent).not.toHaveBeenCalled()
+    await reader.cancel()
+  })
+
+  it('waits for scoped abort reconciliation before releasing the terminal busy state', async () => {
+    const abortController = new AbortController()
+    const onTerminal = vi.fn()
+    let resolveAbort: (() => void) | undefined
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'pi_abort') {
+        return new Promise<void>((resolve) => {
+          resolveAbort = resolve
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    const stream = createPiMessageStream({
+      threadId: 'thread-1',
+      message: 'abort this run',
+      abortSignal: abortController.signal,
+      isStale: () => false,
+      onTerminal,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-1', runId: expect.any(String) })
+      )
+    )
+    const prompt = mocks.invoke.mock.calls.find(([command]) => command === 'pi_prompt')?.[1]
+    const transcriptListener = mocks.listeners.at(-1)
+
+    abortController.abort()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_abort',
+        expect.objectContaining({ threadId: 'thread-1', runId: prompt.runId })
+      )
+    )
+    expect(onTerminal).not.toHaveBeenCalled()
+
+    // A terminal event from the aborting run cannot release busy early.
+    transcriptListener?.({
+      payload: {
+        type: 'agent_end',
+        thread_id: 'thread-1',
+        run_id: prompt.runId,
+      },
+    })
+    expect(onTerminal).not.toHaveBeenCalled()
+
+    resolveAbort?.()
+    await vi.waitFor(() => expect(onTerminal).toHaveBeenCalledOnce())
+  })
+
+  it('releases terminal state after direct stream cancellation reconciles', async () => {
+    const onTerminal = vi.fn()
+    let resolveAbort: (() => void) | undefined
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'pi_abort') {
+        return new Promise<void>((resolve) => {
+          resolveAbort = resolve
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    const stream = createPiMessageStream({
+      threadId: 'thread-1',
+      message: 'cancel this run',
+      abortSignal: undefined,
+      isStale: () => false,
+      onTerminal,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    const cancellation = reader.cancel()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_abort',
+        expect.objectContaining({ threadId: 'thread-1', runId: expect.any(String) })
+      )
+    )
+    expect(onTerminal).not.toHaveBeenCalled()
+
+    resolveAbort?.()
+    await cancellation
+    expect(onTerminal).toHaveBeenCalledOnce()
   })
 })

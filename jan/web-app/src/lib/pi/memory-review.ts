@@ -32,6 +32,7 @@ export type PiMemoryReviewRequest = {
   protocol: 'memory-review'
   requestId: string
   threadId: string
+  runId: string
   descriptor: PiMemoryReviewDescriptor
   status: 'pending' | 'submitting' | 'error'
   error?: string
@@ -52,6 +53,7 @@ export type PiMemoryReviewParseResult =
       kind: 'invalid'
       requestId?: string
       threadId?: string
+      runId?: string
       reason: string
     }
   | { kind: 'memory-review'; request: PiMemoryReviewRequest }
@@ -177,12 +179,17 @@ export function parsePiMemoryReviewEvent(
     typeof event.thread_id === 'string' && event.thread_id.trim()
       ? event.thread_id.trim()
       : undefined
-  if (!requestId || !threadId) {
+  const runId =
+    typeof event.run_id === 'string' && event.run_id.trim()
+      ? event.run_id.trim()
+      : undefined
+  if (!requestId || !threadId || !runId) {
     return {
       kind: 'invalid',
       requestId,
       threadId,
-      reason: 'memory review is missing its request or thread identifier',
+      runId,
+      reason: 'memory review is missing its request, thread, or run identifier',
     }
   }
   if (typeof event.prefill !== 'string') {
@@ -190,6 +197,7 @@ export function parsePiMemoryReviewEvent(
       kind: 'invalid',
       requestId,
       threadId,
+      runId,
       reason: 'memory review is missing its structured request',
     }
   }
@@ -200,6 +208,7 @@ export function parsePiMemoryReviewEvent(
         protocol: 'memory-review',
         requestId,
         threadId,
+        runId,
         descriptor: parseDescriptor(event.prefill),
         status: 'pending',
       },
@@ -209,6 +218,7 @@ export function parsePiMemoryReviewEvent(
       kind: 'invalid',
       requestId,
       threadId,
+      runId,
       reason: error instanceof Error ? error.message : String(error),
     }
   }

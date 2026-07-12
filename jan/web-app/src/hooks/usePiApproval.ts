@@ -33,8 +33,8 @@ type PiApprovalState = {
   ) => Promise<boolean>
   allowBashForTask: (threadId: string, requestId: string) => Promise<boolean>
   denyExpired: (now?: number) => Promise<void>
-  denyThread: (threadId: string) => Promise<void>
-  discardThreadAfterAbort: (threadId: string) => void
+  denyThread: (threadId: string, runId?: string) => Promise<void>
+  discardThreadAfterAbort: (threadId: string, runId?: string) => void
 }
 
 function containsRequest(
@@ -65,11 +65,16 @@ function updateRequest(
 function removeRequest(
   queues: Record<string, PiPendingUiRequest[]>,
   threadId: string,
-  requestId: string
+  requestId: string,
+  runId?: string
 ) {
   const queue = queues[threadId]
   if (!queue) return queues
-  const nextQueue = queue.filter((request) => request.requestId !== requestId)
+  const nextQueue = queue.filter(
+    (request) =>
+      request.requestId !== requestId ||
+      (runId !== undefined && request.runId !== runId)
+  )
   const nextQueues = { ...queues }
   if (nextQueue.length > 0) nextQueues[threadId] = nextQueue
   else delete nextQueues[threadId]
@@ -79,12 +84,14 @@ function removeRequest(
 async function sendDecision(
   requestId: string,
   threadId: string,
+  runId: string,
   confirmed: boolean,
   alwaysAllowBash = false
 ) {
   await invoke(PI_APPROVAL_RESPONSE_COMMAND, {
     requestId,
     threadId,
+    runId,
     confirmed,
     ...(alwaysAllowBash ? { alwaysAllowBash: true } : {}),
   })
@@ -93,11 +100,13 @@ async function sendDecision(
 async function sendMemoryResponse(
   requestId: string,
   threadId: string,
+  runId: string,
   response?: PiMemoryReviewResponse
 ) {
   await invoke(PI_APPROVAL_RESPONSE_COMMAND, {
     requestId,
     threadId,
+    runId,
     ...(response
       ? { value: JSON.stringify(response) }
       : { cancelled: true }),
@@ -149,9 +158,9 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     }))
 
     try {
-      await sendDecision(requestId, threadId, effectiveConfirmation)
+      await sendDecision(requestId, threadId, request.runId, effectiveConfirmation)
       set((state) => ({
-        queues: removeRequest(state.queues, threadId, requestId),
+        queues: removeRequest(state.queues, threadId, requestId, request.runId),
       }))
       return true
     } catch (error) {
@@ -193,9 +202,9 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
       // A malformed local form result must cancel the Pi editor promise rather
       // than leave it blocked or forward untrusted selections.
       try {
-        await sendMemoryResponse(requestId, threadId)
+        await sendMemoryResponse(requestId, threadId, request.runId)
         set((state) => ({
-          queues: removeRequest(state.queues, threadId, requestId),
+          queues: removeRequest(state.queues, threadId, requestId, request.runId),
         }))
       } catch (deliveryError) {
         set((state) => ({
@@ -222,9 +231,9 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
       })),
     }))
     try {
-      await sendMemoryResponse(requestId, threadId, validated)
+      await sendMemoryResponse(requestId, threadId, request.runId, validated)
       set((state) => ({
-        queues: removeRequest(state.queues, threadId, requestId),
+        queues: removeRequest(state.queues, threadId, requestId, request.runId),
       }))
       return true
     } catch (error) {
@@ -268,9 +277,9 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     try {
       // Rust verifies that this exact active request is Bash before recording
       // the memory-only task grant and confirming the current command.
-      await sendDecision(requestId, threadId, true, true)
+      await sendDecision(requestId, threadId, request.runId, true, true)
       set((state) => ({
-        queues: removeRequest(state.queues, threadId, requestId),
+        queues: removeRequest(state.queues, threadId, requestId, request.runId),
       }))
       return true
     } catch (error) {
@@ -309,8 +318,10 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     )
   },
 
-  denyThread: async (threadId) => {
-    const pending = get().queues[threadId] ?? []
+  denyThread: async (threadId, runId) => {
+    const pending = (get().queues[threadId] ?? []).filter(
+      (request) => runId === undefined || request.runId === runId
+    )
     await Promise.all(
       pending.map((request) => {
         if (isPiMemoryReviewRequest(request)) {
@@ -330,21 +341,52 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
   // Call only after Rust confirms pi_abort. At that point Rust has cancelled
   // every pending extension UI promise, so removing a failed local denial is
   // safe and cannot resume execution.
-  discardThreadAfterAbort: (threadId) => {
+  discardThreadAfterAbort: (threadId, runId) => {
     set((state) => {
-      if (!state.queues[threadId]) return state
+      const pending = state.queues[threadId]
+      if (!pending) return state
+      if (runId === undefined) {
+        const queues = { ...state.queues }
+        delete queues[threadId]
+        return { queues }
+      }
+      const remaining = pending.filter((request) => request.runId !== runId)
       const queues = { ...state.queues }
-      delete queues[threadId]
-      return { queues }
+      if (remaining.length > 0) queues[threadId] = remaining
+      else delete queues[threadId]
+      return {
+        queues,
+      }
     })
   },
 }))
+
+function reconcileCancelledRequest(event: PiRawEvent) {
+  if (
+    event.type !== 'extension_ui_response' ||
+    event.cancelled !== true ||
+    typeof event.id !== 'string' ||
+    typeof event.thread_id !== 'string' ||
+    typeof event.run_id !== 'string'
+  ) {
+    return false
+  }
+  const requestId = event.id.trim()
+  const threadId = event.thread_id.trim()
+  const runId = event.run_id.trim()
+  if (!requestId || !threadId || !runId) return false
+  usePiApproval.setState((state) => ({
+    queues: removeRequest(state.queues, threadId, requestId, runId),
+  }))
+  return true
+}
 
 /**
  * Consume a raw Pi event. Malformed events for this private protocol are
  * immediately denied when they still carry enough routing information.
  */
 export async function consumePiApprovalEvent(event: PiRawEvent) {
+  if (reconcileCancelledRequest(event)) return true
   const parsed = parsePiApprovalEvent(event)
   if (parsed.kind === 'approval') {
     usePiApproval.getState().enqueue(parsed.request)
@@ -352,9 +394,14 @@ export async function consumePiApprovalEvent(event: PiRawEvent) {
   }
   if (parsed.kind === 'invalid') {
     console.error(`[Pi approval] Rejected invalid request: ${parsed.reason}`)
-    if (parsed.requestId && parsed.threadId) {
+    if (parsed.requestId && parsed.threadId && parsed.runId) {
       try {
-        await sendDecision(parsed.requestId, parsed.threadId, false)
+        await sendDecision(
+          parsed.requestId,
+          parsed.threadId,
+          parsed.runId,
+          false
+        )
       } catch (error) {
         console.error('[Pi approval] Failed to deliver automatic denial', error)
       }
@@ -372,9 +419,13 @@ export async function consumePiApprovalEvent(event: PiRawEvent) {
   console.error(
     `[Pi memory review] Rejected invalid request: ${memoryReview.reason}`
   )
-  if (memoryReview.requestId && memoryReview.threadId) {
+  if (memoryReview.requestId && memoryReview.threadId && memoryReview.runId) {
     try {
-      await sendMemoryResponse(memoryReview.requestId, memoryReview.threadId)
+      await sendMemoryResponse(
+        memoryReview.requestId,
+        memoryReview.threadId,
+        memoryReview.runId
+      )
     } catch (error) {
       console.error(
         '[Pi memory review] Failed to deliver automatic cancellation',

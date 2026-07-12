@@ -43,20 +43,28 @@ pub async fn pi_ensure_thread(state: State<'_, PiState>, thread_id: String) -> R
     state.manager.ensure_thread(thread_id).await
 }
 
-/// Send a user prompt to Pi for the given Jan thread.
+/// Send a user prompt to Pi for a thread/run pair.
+///
+/// `run_id` is the caller-generated identity for this invocation. Abort and
+/// extension-UI responses must reuse the same pair; Rust rejects stale pairs.
 #[tauri::command]
 pub async fn pi_prompt(
     state: State<'_, PiState>,
     thread_id: String,
+    run_id: String,
     message: String,
 ) -> Result<(), String> {
-    state.manager.prompt(thread_id, message).await
+    state.manager.prompt(thread_id, run_id, message).await
 }
 
-/// Abort the current Pi agent run.
+/// Abort exactly the active Pi thread/run pair.
 #[tauri::command]
-pub async fn pi_abort(state: State<'_, PiState>) -> Result<(), String> {
-    state.manager.abort().await
+pub async fn pi_abort(
+    state: State<'_, PiState>,
+    thread_id: String,
+    run_id: String,
+) -> Result<(), String> {
+    state.manager.abort(thread_id, run_id).await
 }
 
 /// Stop the Pi RPC process.
@@ -78,12 +86,14 @@ pub async fn pi_get_state(state: State<'_, PiState>) -> Result<serde_json::Value
     state.manager.get_state().await
 }
 
-/// Resolve a pending named Pi extension UI request for the active Jan thread.
+/// Resolve a pending named Pi extension UI request for its owning thread/run
+/// pair. A response for an earlier run is rejected.
 #[tauri::command]
 pub async fn pi_extension_ui_respond(
     state: State<'_, PiState>,
     request_id: String,
     thread_id: String,
+    run_id: String,
     confirmed: Option<bool>,
     value: Option<String>,
     cancelled: Option<bool>,
@@ -92,6 +102,7 @@ pub async fn pi_extension_ui_respond(
     state.manager.extension_ui_response(
         request_id,
         thread_id,
+        run_id,
         confirmed,
         value,
         cancelled.unwrap_or(false),

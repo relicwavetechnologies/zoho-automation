@@ -43,6 +43,10 @@ vi.mock('@/hooks/useAppState', () => ({
   useAppState: (selector: any) => {
     const state = {
       abortControllers: {},
+      busyThreads: {},
+      streamingContents: {},
+      loadingModels: {},
+      cancelToolCalls: {},
       tools: [],
       cancelToolCall: vi.fn(),
       activeModels: [],
@@ -377,6 +381,7 @@ describe('ChatInput', () => {
     usePiApproval.getState().enqueue({
       requestId: 'approval-request-1',
       threadId: 'thread-1',
+      runId: 'run-1',
       descriptor: {
         version: 1,
         toolCallId: 'tool-call-1',
@@ -409,6 +414,7 @@ describe('ChatInput', () => {
         {
           requestId: 'approval-request-1',
           threadId: 'thread-1',
+          runId: 'run-1',
           confirmed: true,
         }
       )
@@ -421,6 +427,7 @@ describe('ChatInput', () => {
     usePiApproval.getState().enqueue({
       requestId: 'approval-request-stop',
       threadId: 'thread-1',
+      runId: 'run-1',
       descriptor: {
         version: 1,
         toolCallId: 'tool-call-stop',
@@ -444,6 +451,7 @@ describe('ChatInput', () => {
       {
         requestId: 'approval-request-stop',
         threadId: 'thread-1',
+        runId: 'run-1',
         confirmed: false,
       }
     )
@@ -456,6 +464,7 @@ describe('ChatInput', () => {
     usePiApproval.getState().enqueue({
       requestId: 'approval-request-bash-always',
       threadId: 'thread-1',
+      runId: 'run-1',
       descriptor: {
         version: 1,
         toolCallId: 'tool-call-bash-always',
@@ -483,6 +492,7 @@ describe('ChatInput', () => {
         {
           requestId: 'approval-request-bash-always',
           threadId: 'thread-1',
+          runId: 'run-1',
           confirmed: true,
           alwaysAllowBash: true,
         }
@@ -713,6 +723,21 @@ describe('ChatInput', () => {
     expect(onSubmit).toHaveBeenCalledWith('hello world', undefined)
     expect(addToHistoryMock).toHaveBeenCalledWith('hello world')
     expect(setPromptMock).toHaveBeenCalledWith('')
+  })
+
+  it('queues a send while the thread is busy after visible streaming', () => {
+    promptState = 'follow up after tool'
+    appStateOverrides = { busyThreads: { 'thread-1': true } }
+    const onSubmit = vi.fn()
+    renderInput({ onSubmit })
+
+    fireEvent.keyDown(getTextarea(), { key: 'Enter' })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(enqueueMock).toHaveBeenCalledWith(
+      'thread-1',
+      expect.objectContaining({ text: 'follow up after tool' })
+    )
   })
 
   it('does NOT submit on Shift+Enter (newline behavior)', () => {

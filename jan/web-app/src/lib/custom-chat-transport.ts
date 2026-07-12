@@ -908,6 +908,9 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       }
       useAppState.getState().updateLoadingModel(false)
       useAppState.getState().updateThreadLoadingModel(threadId, false)
+      // Pi can remain active after visible token streaming while it executes a
+      // tool or waits for its run-owned extension UI response.
+      useAppState.getState().setThreadBusy(threadId, true)
       return createPiMessageStream({
         threadId,
         message: userMessage,
@@ -919,6 +922,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           useAppState.getState().updateLoadingModel(false)
           useAppState.getState().updateThreadPromptProgress(threadId, undefined)
           useAppState.getState().updateThreadLoadingModel(threadId, false)
+          useAppState.getState().setThreadBusy(threadId, false)
           if (useAppState.getState().currentStreamThreadId === threadId) {
             useAppState.getState().setCurrentStreamThreadId(undefined)
           }

@@ -10,6 +10,7 @@ function event(descriptor: unknown): PiRawEvent {
   return {
     type: 'extension_ui_request',
     thread_id: 'thread-1',
+    run_id: 'run-1',
     id: 'review-1',
     method: 'editor',
     title: 'divo_memory_review_v1',

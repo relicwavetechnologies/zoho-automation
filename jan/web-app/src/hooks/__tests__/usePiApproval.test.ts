@@ -19,6 +19,7 @@ function request(
   return {
     requestId,
     threadId: 'thread-1',
+    runId: 'run-1',
     descriptor: {
       version: 1,
       toolCallId: `tool-${requestId}`,
@@ -63,6 +64,7 @@ describe('usePiApproval', () => {
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
       requestId: 'request-1',
       threadId: 'thread-1',
+      runId: 'run-1',
       confirmed: true,
     })
     expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
@@ -103,6 +105,7 @@ describe('usePiApproval', () => {
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
       requestId: 'request-bash',
       threadId: 'thread-1',
+      runId: 'run-1',
       confirmed: true,
       alwaysAllowBash: true,
     })
@@ -158,6 +161,7 @@ describe('usePiApproval', () => {
     const consumed = await consumePiApprovalEvent({
       type: 'extension_ui_request',
       thread_id: 'thread-1',
+      run_id: 'run-1',
       id: 'request-bad',
       method: 'confirm',
       title: 'divo_approval_v1',
@@ -168,6 +172,7 @@ describe('usePiApproval', () => {
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
       requestId: 'request-bad',
       threadId: 'thread-1',
+      runId: 'run-1',
       confirmed: false,
     })
     expect(usePiApproval.getState().queues).toEqual({})
@@ -177,6 +182,7 @@ describe('usePiApproval', () => {
     const consumed = await consumePiApprovalEvent({
       type: 'extension_ui_request',
       thread_id: 'thread-1',
+      run_id: 'run-1',
       id: 'review-1',
       method: 'editor',
       title: 'divo_memory_review_v1',
@@ -205,6 +211,7 @@ describe('usePiApproval', () => {
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
       requestId: 'review-1',
       threadId: 'thread-1',
+      runId: 'run-1',
       value: JSON.stringify({
         version: 1,
         proposalId: 'proposal-1',
@@ -220,6 +227,7 @@ describe('usePiApproval', () => {
     await consumePiApprovalEvent({
       type: 'extension_ui_request',
       thread_id: 'thread-1',
+      run_id: 'run-1',
       id: 'review-1',
       method: 'editor',
       title: 'divo_memory_review_v1',
@@ -245,8 +253,28 @@ describe('usePiApproval', () => {
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
       requestId: 'review-1',
       threadId: 'thread-1',
+      runId: 'run-1',
       cancelled: true,
     })
     expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
+  })
+
+  it('reconciles only the run-owned request cancelled by Rust', async () => {
+    usePiApproval.getState().enqueue(request('same-id', { runId: 'run-1' }))
+    usePiApproval.getState().enqueue(request('other-id', { runId: 'run-2' }))
+
+    const consumed = await consumePiApprovalEvent({
+      type: 'extension_ui_response',
+      thread_id: 'thread-1',
+      run_id: 'run-1',
+      id: 'same-id',
+      cancelled: true,
+      reason: 'process_exited',
+    })
+
+    expect(consumed).toBe(true)
+    expect(usePiApproval.getState().queues['thread-1']).toMatchObject([
+      { requestId: 'other-id', runId: 'run-2' },
+    ])
   })
 })

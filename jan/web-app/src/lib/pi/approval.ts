@@ -23,6 +23,7 @@ export type PiApprovalDescriptor = {
 export type PiApprovalRequest = {
   requestId: string
   threadId: string
+  runId: string
   descriptor: PiApprovalDescriptor
   receivedAt: number
   expiresAt: number
@@ -36,6 +37,7 @@ export type PiApprovalParseResult =
       kind: 'invalid'
       requestId?: string
       threadId?: string
+      runId?: string
       reason: string
     }
   | { kind: 'approval'; request: PiApprovalRequest }
@@ -128,13 +130,18 @@ export function parsePiApprovalEvent(
     typeof event.thread_id === 'string' && event.thread_id.trim()
       ? event.thread_id.trim()
       : undefined
+  const runId =
+    typeof event.run_id === 'string' && event.run_id.trim()
+      ? event.run_id.trim()
+      : undefined
 
-  if (!requestId || !threadId) {
+  if (!requestId || !threadId || !runId) {
     return {
       kind: 'invalid',
       requestId,
       threadId,
-      reason: 'approval request is missing its request or thread identifier',
+      runId,
+      reason: 'approval request is missing its request, thread, or run identifier',
     }
   }
 
@@ -143,6 +150,7 @@ export function parsePiApprovalEvent(
       kind: 'invalid',
       requestId,
       threadId,
+      runId,
       reason: 'approval request is missing its structured message',
     }
   }
@@ -162,6 +170,7 @@ export function parsePiApprovalEvent(
         kind: 'invalid',
         requestId,
         threadId,
+        runId,
         reason: 'approval request has expired',
       }
     }
@@ -171,6 +180,7 @@ export function parsePiApprovalEvent(
       request: {
         requestId,
         threadId,
+        runId,
         descriptor,
         receivedAt: now,
         expiresAt,
@@ -182,6 +192,7 @@ export function parsePiApprovalEvent(
       kind: 'invalid',
       requestId,
       threadId,
+      runId,
       reason: error instanceof Error ? error.message : String(error),
     }
   }

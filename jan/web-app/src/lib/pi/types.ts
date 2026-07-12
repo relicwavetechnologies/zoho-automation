@@ -1,6 +1,7 @@
-/** Raw Pi stdout event with Jan-injected thread_id (Pi field names preserved). */
+/** Raw Pi stdout event with Jan-injected run ownership (Pi field names preserved). */
 export type PiRawEvent = Record<string, unknown> & {
   thread_id: string
+  run_id: string
   type: string
 }
 

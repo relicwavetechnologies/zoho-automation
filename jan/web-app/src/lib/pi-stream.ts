@@ -54,9 +54,17 @@ export function createPiMessageStream(options: {
   const { threadId, message, abortSignal, isStale, onTerminal, onPiEvent } =
     options
   const messageId = crypto.randomUUID()
+  // Rust treats this caller-generated id as part of the active-run owner.
+  // Keep one identity for this whole stream, including every cancellation path.
+  const runId = crypto.randomUUID()
 
   let unlisten: UnlistenFn | undefined
   let finished = false
+  let abortReconciliation: Promise<void> | undefined
+  let abortInProgress = false
+  let deferredFinishReason: 'stop' | 'error' | undefined
+  let reconcileAbort: (() => Promise<void>) | undefined
+  let finishCancelledStream: (() => void) | undefined
 
   return new ReadableStream<UIMessageChunk>({
     async start(controller) {
@@ -69,37 +77,66 @@ export function createPiMessageStream(options: {
       const state = createPiStreamState()
 
       const denyThenAbort = async () => {
-        await usePiApproval.getState().denyThread(threadId)
+        await usePiApproval.getState().denyThread(threadId, runId)
         try {
-          await invoke('pi_abort')
-          usePiApproval.getState().discardThreadAfterAbort(threadId)
+          await invoke('pi_abort', { threadId, thread_id: threadId, runId, run_id: runId })
+          usePiApproval.getState().discardThreadAfterAbort(threadId, runId)
         } catch {
           // If abort itself fails, retain any failed denial in the UI. This is
           // the only state where we cannot prove the Pi request was cancelled.
         }
       }
 
-      const finishStream = (reason: 'stop' | 'error' = 'stop') => {
+      function finishCurrentStream(reason: 'stop' | 'error' = 'stop') {
         if (finished) return
-        finished = true
-        void usePiApproval.getState().denyThread(threadId)
-        onTerminal?.()
-        if (reason === 'stop') {
-          controller.enqueue({ type: 'finish', finishReason: 'stop' })
+        if (abortInProgress) {
+          // Rust still owns this run. A matching agent_end received during an
+          // abort must not clear the composer before scoped cancellation has
+          // settled.
+          if (reason === 'error' || !deferredFinishReason) {
+            deferredFinishReason = reason
+          }
+          return
         }
-        controller.close()
+        finished = true
+        onTerminal?.()
+        try {
+          if (reason === 'stop') {
+            controller.enqueue({ type: 'finish', finishReason: 'stop' })
+          }
+          controller.close()
+        } catch {
+          // ReadableStream.cancel closes its controller before this source's
+          // async cancellation hook settles. Terminal state still must be
+          // reconciled, even though no more UI chunks can be written.
+        }
         void unlisten?.()
       }
 
+      function reconcileCurrentAbort() {
+        if (abortReconciliation) return abortReconciliation
+        abortInProgress = true
+        abortReconciliation = denyThenAbort().finally(() => {
+          abortInProgress = false
+          const reason = deferredFinishReason ?? 'error'
+          deferredFinishReason = undefined
+          finishCurrentStream(reason)
+        })
+        return abortReconciliation
+      }
+
+      reconcileAbort = reconcileCurrentAbort
+      finishCancelledStream = () => finishCurrentStream('error')
+
       const onAbort = () => {
-        void denyThenAbort()
+        void reconcileCurrentAbort()
         if (!isStale()) {
           controller.enqueue({
             type: 'error',
             errorText: 'Request aborted',
           })
         }
-        finishStream('error')
+        finishCurrentStream('error')
       }
 
       if (abortSignal?.aborted) {
@@ -115,13 +152,19 @@ export function createPiMessageStream(options: {
         unlisten = await listen<PiRawEvent>('pi-event', (event) => {
           if (isStale()) return
           const payload = event.payload
-          if (payload.thread_id && payload.thread_id !== threadId) return
+          if (payload.thread_id !== threadId || payload.run_id !== runId) return
 
           onPiEvent?.(payload)
-          mapPiEventToUiChunks(payload, controller, state, finishStream)
+          mapPiEventToUiChunks(payload, controller, state, finishCurrentStream)
         })
 
-        await invoke('pi_prompt', { threadId, thread_id: threadId, message })
+        await invoke('pi_prompt', {
+          threadId,
+          thread_id: threadId,
+          runId,
+          run_id: runId,
+          message,
+        })
       } catch (error) {
         if (!isStale()) {
           controller.enqueue({
@@ -130,18 +173,19 @@ export function createPiMessageStream(options: {
               error instanceof Error ? error.message : String(error),
           })
         }
-        finishStream('error')
+        finishCurrentStream('error')
       }
     },
     async cancel() {
-      await usePiApproval.getState().denyThread(threadId)
-      try {
-        await invoke('pi_abort')
-        usePiApproval.getState().discardThreadAfterAbort(threadId)
-      } catch {
-        // Retain a failed denial if Rust could not confirm cancellation.
+      if (reconcileAbort) {
+        await reconcileAbort()
+      } else {
+        // A cancellation can race asynchronous stream initialization. There is
+        // no prompt to abort in that case, but the transport still needs its
+        // terminal notification to release the busy marker.
+        if (finishCancelledStream) finishCancelledStream()
+        else onTerminal?.()
       }
-      void unlisten?.()
     },
   })
 }

@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 
 use super::browser::{current_browser_cdp_fingerprint, kill_orphan_chrome_devtools_mcp};
 use super::env::{
@@ -28,11 +28,44 @@ struct PiProcess {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingExtensionUiRequest {
+struct RunOwner {
     thread_id: String,
+    run_id: String,
+}
+
+impl RunOwner {
+    fn new(thread_id: String, run_id: String) -> Result<Self, String> {
+        let thread_id = thread_id.trim().to_string();
+        if thread_id.is_empty() {
+            return Err("A thread id is required".into());
+        }
+        let run_id = run_id.trim().to_string();
+        if run_id.is_empty() {
+            return Err("A run id is required".into());
+        }
+        Ok(Self { thread_id, run_id })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingExtensionUiRequest {
+    owner: RunOwner,
     method: String,
     source: Option<ApprovalSource>,
     protocol: ExtensionUiProtocol,
+}
+
+#[derive(Debug)]
+struct PendingRpc {
+    command: String,
+    owner: Option<RunOwner>,
+    tx: oneshot::Sender<Result<serde_json::Value, String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExtensionUiReconciliation {
+    request_id: String,
+    owner: RunOwner,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,18 +84,14 @@ enum ApprovalSource {
 
 fn take_pending_confirm(
     requests: &mut HashMap<String, PendingExtensionUiRequest>,
-    active_thread_id: Option<&str>,
     request_id: &str,
-    thread_id: &str,
+    owner: &RunOwner,
 ) -> Result<PendingExtensionUiRequest, String> {
-    if active_thread_id != Some(thread_id) {
-        return Err("Approval response does not belong to the active thread".into());
-    }
     let pending = requests
         .get(request_id)
         .ok_or("Unknown or already resolved extension UI request")?;
-    if pending.thread_id != thread_id {
-        return Err("Approval response thread does not match its request".into());
+    if pending.owner != *owner {
+        return Err("Approval response does not match its active run".into());
     }
     if pending.method != "confirm" {
         return Err("This extension UI request is not a confirmation".into());
@@ -77,18 +106,14 @@ fn take_pending_confirm(
 
 fn take_pending_memory_review(
     requests: &mut HashMap<String, PendingExtensionUiRequest>,
-    active_thread_id: Option<&str>,
     request_id: &str,
-    thread_id: &str,
+    owner: &RunOwner,
 ) -> Result<PendingExtensionUiRequest, String> {
-    if active_thread_id != Some(thread_id) {
-        return Err("Memory review response does not belong to the active thread".into());
-    }
     let pending = requests
         .get(request_id)
         .ok_or("Unknown or already resolved memory review request")?;
-    if pending.thread_id != thread_id {
-        return Err("Memory review response thread does not match its request".into());
+    if pending.owner != *owner {
+        return Err("Memory review response does not match its active run".into());
     }
     if pending.method != "editor" || pending.protocol != ExtensionUiProtocol::MemoryReview {
         return Err("This extension UI request is not a Divo memory review".into());
@@ -100,21 +125,87 @@ fn take_pending_memory_review(
 
 fn drain_pending_extension_ui(
     requests: &mut HashMap<String, PendingExtensionUiRequest>,
-    thread_id: Option<&str>,
-) -> Vec<String> {
-    let request_ids = requests
+    owner: Option<&RunOwner>,
+) -> Vec<ExtensionUiReconciliation> {
+    let reconciliations = requests
         .iter()
         .filter(|(_, request)| {
-            thread_id
-                .map(|expected| request.thread_id == expected)
+            owner
+                .map(|expected| request.owner == *expected)
                 .unwrap_or(true)
         })
-        .map(|(id, _)| id.clone())
+        .map(|(id, request)| ExtensionUiReconciliation {
+            request_id: id.clone(),
+            owner: request.owner.clone(),
+        })
         .collect::<Vec<_>>();
-    for id in &request_ids {
+    for reconciliation in &reconciliations {
+        let id = &reconciliation.request_id;
         requests.remove(id);
     }
-    request_ids
+    reconciliations
+}
+
+fn fail_pending_rpc(pending: &mut HashMap<String, PendingRpc>, error: &str) {
+    for (_, pending) in pending.drain() {
+        let _ = pending.tx.send(Err(error.to_string()));
+    }
+}
+
+fn require_active_run(
+    active_run: Option<&RunOwner>,
+    owner: &RunOwner,
+    action: &str,
+) -> Result<(), String> {
+    match active_run {
+        Some(active) if active == owner => Ok(()),
+        Some(_) => Err(format!("{action} does not belong to the active run")),
+        None => Err(format!("No active Pi run matches this {action} request")),
+    }
+}
+
+fn clear_active_run_if_matches(active_run: &mut Option<RunOwner>, owner: &RunOwner) -> bool {
+    if active_run.as_ref() == Some(owner) {
+        *active_run = None;
+        return true;
+    }
+    false
+}
+
+/// A prompt acknowledgement only ends ownership when Pi rejects the prompt.
+/// A successful acknowledgement means the agent has accepted work and remains
+/// the active owner until a later terminal lifecycle event.
+fn response_clears_active_run(pending: &PendingRpc, success: bool) -> bool {
+    pending.command == "prompt" && !success
+}
+
+fn event_owner_payload(event: &mut serde_json::Value, owner: Option<&RunOwner>) {
+    if let Some(obj) = event.as_object_mut() {
+        obj.insert(
+            "thread_id".to_string(),
+            serde_json::Value::String(
+                owner
+                    .map(|owner| owner.thread_id.clone())
+                    .unwrap_or_default(),
+            ),
+        );
+        if let Some(owner) = owner {
+            obj.insert(
+                "run_id".to_string(),
+                serde_json::Value::String(owner.run_id.clone()),
+            );
+        }
+        return;
+    }
+
+    *event = serde_json::json!({
+        "thread_id": owner
+            .map(|owner| owner.thread_id.clone())
+            .unwrap_or_default(),
+        "run_id": owner.map(|owner| owner.run_id.clone()),
+        "type": "unknown",
+        "payload": event.clone()
+    });
 }
 
 fn is_divo_approval_request(value: &serde_json::Value, thread_id: &str) -> bool {
@@ -260,10 +351,11 @@ struct SharedState {
     data_folder: Option<PathBuf>,
     scratch_dir: Option<PathBuf>,
     workspace_dir: Option<PathBuf>,
-    run_thread_id: Option<String>,
+    runtime_thread_id: Option<String>,
     active_thread_id: Option<String>,
+    active_run: Option<RunOwner>,
     browser_cdp_fingerprint: Option<String>,
-    pending: HashMap<String, oneshot::Sender<Result<serde_json::Value, String>>>,
+    pending: HashMap<String, PendingRpc>,
     pending_extension_ui: HashMap<String, PendingExtensionUiRequest>,
     bash_always_allowed_threads: HashSet<String>,
     stdout_buffer: String,
@@ -271,6 +363,7 @@ struct SharedState {
 
 pub struct PiManager {
     inner: Arc<StdMutex<SharedState>>,
+    lifecycle: Arc<Mutex<()>>,
     cmd_tx: mpsc::Sender<String>,
     // Pi stdout is consumed on a blocking thread. Keep the app handle behind
     // the same blocking mutex so forwarding an extension UI request cannot
@@ -282,6 +375,7 @@ impl Clone for PiManager {
     fn clone(&self) -> Self {
         PiManager {
             inner: self.inner.clone(),
+            lifecycle: self.lifecycle.clone(),
             cmd_tx: self.cmd_tx.clone(),
             app: self.app.clone(),
         }
@@ -295,8 +389,9 @@ impl PiManager {
             data_folder: None,
             scratch_dir: None,
             workspace_dir: None,
-            run_thread_id: None,
+            runtime_thread_id: None,
             active_thread_id: None,
+            active_run: None,
             browser_cdp_fingerprint: None,
             pending: HashMap::new(),
             pending_extension_ui: HashMap::new(),
@@ -318,6 +413,7 @@ impl PiManager {
 
         PiManager {
             inner,
+            lifecycle: Arc::new(Mutex::new(())),
             cmd_tx,
             app: Arc::new(StdMutex::new(None)),
         }
@@ -329,8 +425,17 @@ impl PiManager {
             .map_err(|e| format!("Failed to queue Pi command: {}", e))
     }
 
-    async fn send_rpc(&self, mut cmd: serde_json::Value) -> Result<serde_json::Value, String> {
+    async fn send_rpc(
+        &self,
+        mut cmd: serde_json::Value,
+        owner: Option<RunOwner>,
+    ) -> Result<serde_json::Value, String> {
         let id = uuid::Uuid::new_v4().to_string();
+        let command = cmd
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string();
         if let Some(obj) = cmd.as_object_mut() {
             obj.insert("id".to_string(), serde_json::Value::String(id.clone()));
         }
@@ -342,7 +447,9 @@ impl PiManager {
             if guard.process.is_none() {
                 return Err("Pi process is not running".into());
             }
-            guard.pending.insert(id.clone(), tx);
+            guard
+                .pending
+                .insert(id.clone(), PendingRpc { command, owner, tx });
         }
 
         self.write_stdin(&json)?;
@@ -362,7 +469,7 @@ impl PiManager {
     async fn wait_until_ready(&self) -> Result<(), String> {
         for attempt in 1..=30 {
             match self
-                .send_rpc(serde_json::json!({ "type": "get_state" }))
+                .send_rpc(serde_json::json!({ "type": "get_state" }), None)
                 .await
             {
                 Ok(_) => return Ok(()),
@@ -395,7 +502,45 @@ Divo workspace policy:
         )
     }
 
-    pub async fn start(
+    fn emit_extension_ui_reconciliations(
+        app: &Arc<StdMutex<Option<AppHandle>>>,
+        reconciliations: Vec<ExtensionUiReconciliation>,
+        reason: &str,
+    ) {
+        for reconciliation in reconciliations {
+            Self::emit_pi_event(
+                app,
+                Some(&reconciliation.owner),
+                serde_json::json!({
+                    "type": "extension_ui_response",
+                    "id": reconciliation.request_id,
+                    "cancelled": true,
+                    "reason": reason,
+                }),
+            );
+        }
+    }
+
+    fn clear_active_run_for_owner(&self, owner: &RunOwner) {
+        let mut guard = self.inner.lock().unwrap();
+        clear_active_run_if_matches(&mut guard.active_run, owner);
+    }
+
+    fn active_run(&self) -> Option<RunOwner> {
+        self.inner.lock().unwrap().active_run.clone()
+    }
+
+    async fn wait_for_run_clear(&self, owner: &RunOwner) -> Result<(), String> {
+        for _ in 0..100 {
+            if self.active_run().as_ref() != Some(owner) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Err("Timed out waiting for the active Pi run to stop".into())
+    }
+
+    async fn start_locked(
         &self,
         app: AppHandle,
         data_folder: PathBuf,
@@ -411,7 +556,7 @@ Divo workspace policy:
         let runtime = PiRuntimePaths::resolve(&app, &data_folder)?;
         let new_fingerprint = runtime.browser_cdp_fingerprint.clone();
 
-        {
+        let reconciliations = {
             let mut guard = self.inner.lock().unwrap();
             if guard.process.is_some() {
                 let workspace_changed = guard
@@ -419,20 +564,20 @@ Divo workspace policy:
                     .as_ref()
                     .map(|current| current != &workspace_dir)
                     .unwrap_or(true);
-                let run_thread_changed = initial_thread_id
-                    .as_ref()
-                    .map(|thread_id| guard.run_thread_id.as_ref() != Some(thread_id))
-                    .unwrap_or(false);
                 let stale =
                     new_fingerprint.is_some() && new_fingerprint != guard.browser_cdp_fingerprint;
-                if !stale && !workspace_changed && !run_thread_changed {
+                if !stale && !workspace_changed {
                     return Ok(());
                 }
                 if let Some(mut pi) = guard.process.take() {
                     let _ = pi.child.kill();
                 }
-                guard.pending.clear();
-                guard.pending_extension_ui.clear();
+                fail_pending_rpc(
+                    &mut guard.pending,
+                    "Pi process restarted before the RPC completed",
+                );
+                let reconciliations =
+                    drain_pending_extension_ui(&mut guard.pending_extension_ui, None);
                 if let Some(thread_id) = initial_thread_id.as_deref() {
                     guard
                         .bash_always_allowed_threads
@@ -440,10 +585,23 @@ Divo workspace policy:
                 } else {
                     guard.bash_always_allowed_threads.clear();
                 }
+                guard.active_run = None;
+                guard.runtime_thread_id = None;
                 guard.active_thread_id = None;
-                kill_orphan_chrome_devtools_mcp();
+                guard.browser_cdp_fingerprint = new_fingerprint.clone();
+                reconciliations
+            } else {
+                guard.browser_cdp_fingerprint = new_fingerprint.clone();
+                Vec::new()
             }
-            guard.browser_cdp_fingerprint = new_fingerprint;
+        };
+
+        if !reconciliations.is_empty() {
+            Self::emit_extension_ui_reconciliations(
+                &self.app,
+                reconciliations,
+                "process_restarted",
+            );
         }
 
         kill_orphan_chrome_devtools_mcp();
@@ -499,7 +657,7 @@ Divo workspace policy:
             guard.data_folder = Some(data_folder);
             guard.scratch_dir = Some(scratch_dir);
             guard.workspace_dir = Some(workspace_dir);
-            guard.run_thread_id = Some(run_thread_id);
+            guard.runtime_thread_id = Some(run_thread_id);
             guard.process = Some(PiProcess { child, stdin });
             (stdout, stderr, child_pid)
         };
@@ -538,32 +696,34 @@ Divo workspace policy:
                     Err(_) => break,
                 }
             }
-            let should_emit_exit = {
+            let (should_emit_exit, owner, reconciliations) = {
                 let mut guard = inner_reader.lock().unwrap();
                 let is_current_process = guard
                     .process
                     .as_ref()
                     .map(|pi| pi.child.id() == child_pid)
                     .unwrap_or(false);
-                if is_current_process {
+                if !is_current_process {
+                    (false, None, Vec::new())
+                } else {
+                    let owner = guard.active_run.take();
+                    fail_pending_rpc(&mut guard.pending, "Pi process exited unexpectedly");
+                    let reconciliations =
+                        drain_pending_extension_ui(&mut guard.pending_extension_ui, None);
                     guard.process = None;
-                    guard.pending_extension_ui.clear();
+                    guard.runtime_thread_id = None;
+                    guard.active_thread_id = None;
                     guard.bash_always_allowed_threads.clear();
+                    (true, owner, reconciliations)
                 }
-                is_current_process
             };
             if !should_emit_exit {
                 return;
             }
-            let thread_id = inner_reader
-                .lock()
-                .unwrap()
-                .active_thread_id
-                .clone()
-                .unwrap_or_default();
+            Self::emit_extension_ui_reconciliations(&app_reader, reconciliations, "process_exited");
             Self::emit_pi_event(
                 &app_reader,
-                thread_id,
+                owner.as_ref(),
                 serde_json::json!({
                     "type": "pi_process_exit",
                     "message": "Pi process exited"
@@ -589,15 +749,6 @@ Divo workspace policy:
         self.wait_until_ready().await
     }
 
-    fn active_thread_id(inner: &Arc<StdMutex<SharedState>>) -> String {
-        inner
-            .lock()
-            .unwrap()
-            .active_thread_id
-            .clone()
-            .unwrap_or_default()
-    }
-
     fn handle_line(
         inner: &Arc<StdMutex<SharedState>>,
         app: &Arc<StdMutex<Option<AppHandle>>>,
@@ -616,12 +767,23 @@ Divo workspace policy:
 
         if event_type == Some("response") {
             if let Some(id) = value.get("id").and_then(|v| v.as_str()) {
-                let mut guard = inner.lock().unwrap();
-                if let Some(tx) = guard.pending.remove(id) {
-                    let success = value
-                        .get("success")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
+                let success = value
+                    .get("success")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                let (pending, clear_owner) = {
+                    let mut guard = inner.lock().unwrap();
+                    let pending = guard.pending.remove(id);
+                    let clear_owner = pending
+                        .as_ref()
+                        .filter(|pending| response_clears_active_run(pending, success))
+                        .and_then(|pending| pending.owner.clone());
+                    if let Some(owner) = clear_owner.as_ref() {
+                        clear_active_run_if_matches(&mut guard.active_run, owner);
+                    }
+                    (pending, clear_owner)
+                };
+                if let Some(pending) = pending {
                     let result = if success {
                         Ok(value
                             .get("data")
@@ -634,102 +796,135 @@ Divo workspace policy:
                             .unwrap_or("Pi command failed")
                             .to_string())
                     };
-                    let _ = tx.send(result);
-                }
-            }
+                    let owner = pending.owner.clone();
+                    let _ = pending.tx.send(result);
 
-            if value.get("command").and_then(|v| v.as_str()) == Some("prompt") {
-                let thread_id = Self::active_thread_id(inner);
-                let success = value
-                    .get("success")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if success {
-                    let request_id = value
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    Self::emit_pi_event(
-                        app,
-                        thread_id,
-                        serde_json::json!({
-                            "type": "prompt_accepted",
-                            "requestId": request_id
-                        }),
-                    );
-                } else if let Some(msg) = value.get("error").and_then(|v| v.as_str()) {
-                    Self::emit_pi_event(
-                        app,
-                        thread_id,
-                        serde_json::json!({
-                            "type": "prompt_rejected",
-                            "message": msg
-                        }),
-                    );
+                    if pending.command == "prompt" {
+                        if success {
+                            let request_id = value
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            Self::emit_pi_event(
+                                app,
+                                owner.as_ref(),
+                                serde_json::json!({
+                                    "type": "prompt_accepted",
+                                    "requestId": request_id
+                                }),
+                            );
+                        } else if let Some(msg) = value.get("error").and_then(|v| v.as_str()) {
+                            let owner = clear_owner.or(owner);
+                            Self::emit_pi_event(
+                                app,
+                                owner.as_ref(),
+                                serde_json::json!({
+                                    "type": "prompt_rejected",
+                                    "message": msg
+                                }),
+                            );
+                        }
+                    }
                 }
             }
             return;
         }
 
         if event_type == Some("extension_ui_request") {
-            let thread_id = Self::active_thread_id(inner);
+            let owner = inner.lock().unwrap().active_run.clone();
+            let request_owner = match owner {
+                Some(owner) => owner,
+                None => {
+                    if let (Some(id), Some(method)) = (
+                        value.get("id").and_then(|value| value.as_str()),
+                        value.get("method").and_then(|value| value.as_str()),
+                    ) {
+                        if matches!(method, "select" | "confirm" | "input" | "editor") {
+                            if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                                "type": "extension_ui_response",
+                                "id": id,
+                                "cancelled": true
+                            })) {
+                                let _ = cmd_tx.send(json);
+                            }
+                        }
+                    }
+                    return;
+                }
+            };
             let request_id = value
                 .get("id")
                 .and_then(|value| value.as_str())
                 .map(str::to_owned);
-            if let (Some(id), Some(method)) = (
+            let (registered, auto_response) = if let (Some(id), Some(method)) = (
                 value.get("id").and_then(|v| v.as_str()),
                 value.get("method").and_then(|v| v.as_str()),
             ) {
-                if is_divo_approval_request(&value, &thread_id) {
+                let mut guard = inner.lock().unwrap();
+                if guard.active_run.as_ref() != Some(&request_owner) {
+                    (false, None)
+                } else if is_divo_approval_request(&value, &request_owner.thread_id) {
                     let source = approval_source(&value);
-                    let auto_allow_bash = {
-                        let guard = inner.lock().unwrap();
-                        should_auto_allow_bash(
-                            source,
-                            &guard.bash_always_allowed_threads,
-                            &thread_id,
+                    if should_auto_allow_bash(
+                        source,
+                        &guard.bash_always_allowed_threads,
+                        &request_owner.thread_id,
+                    ) {
+                        (
+                            true,
+                            serde_json::to_string(&serde_json::json!({
+                                "type": "extension_ui_response",
+                                "id": id,
+                                "confirmed": true
+                            }))
+                            .ok(),
                         )
-                    };
-
-                    if auto_allow_bash {
-                        let response = serde_json::json!({
-                            "type": "extension_ui_response",
-                            "id": id,
-                            "confirmed": true
-                        });
-                        if serde_json::to_string(&response)
-                            .ok()
-                            .is_some_and(|json| cmd_tx.send(json).is_ok())
-                        {
-                            return;
-                        }
+                    } else {
+                        guard.pending_extension_ui.insert(
+                            id.to_string(),
+                            PendingExtensionUiRequest {
+                                owner: request_owner.clone(),
+                                method: method.to_string(),
+                                source,
+                                protocol: ExtensionUiProtocol::Approval,
+                            },
+                        );
+                        (true, None)
                     }
-
-                    inner.lock().unwrap().pending_extension_ui.insert(
+                } else if is_divo_memory_review_request(&value, &request_owner.thread_id) {
+                    guard.pending_extension_ui.insert(
                         id.to_string(),
                         PendingExtensionUiRequest {
-                            thread_id: thread_id.clone(),
-                            method: method.to_string(),
-                            source,
-                            protocol: ExtensionUiProtocol::Approval,
-                        },
-                    );
-                } else if is_divo_memory_review_request(&value, &thread_id) {
-                    inner.lock().unwrap().pending_extension_ui.insert(
-                        id.to_string(),
-                        PendingExtensionUiRequest {
-                            thread_id: thread_id.clone(),
+                            owner: request_owner.clone(),
                             method: method.to_string(),
                             source: None,
                             protocol: ExtensionUiProtocol::MemoryReview,
                         },
                     );
-                } else if matches!(method, "select" | "confirm" | "input" | "editor") {
-                    // The desktop implements only the named Divo approval and
-                    // memory-review contracts. Keep every other dialog fail-closed
-                    // instead of leaving Pi blocked on UI the frontend cannot render.
+                    (true, None)
+                } else {
+                    if matches!(method, "select" | "confirm" | "input" | "editor") {
+                        // The desktop implements only the named Divo approval and
+                        // memory-review contracts. Keep every other dialog fail-closed
+                        // instead of leaving Pi blocked on UI the frontend cannot render.
+                        if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                            "type": "extension_ui_response",
+                            "id": id,
+                            "cancelled": true
+                        })) {
+                            let _ = cmd_tx.send(json);
+                        }
+                    }
+                    (true, None)
+                }
+            } else {
+                let guard = inner.lock().unwrap();
+                (guard.active_run.as_ref() == Some(&request_owner), None)
+            };
+
+            if !registered {
+                if let Some(id) = request_id {
                     if let Ok(json) = serde_json::to_string(&serde_json::json!({
                         "type": "extension_ui_response",
                         "id": id,
@@ -738,19 +933,33 @@ Divo workspace policy:
                         let _ = cmd_tx.send(json);
                     }
                 }
+                return;
             }
-            if !Self::emit_pi_event(app, thread_id, value.clone()) {
+
+            if let Some(response) = auto_response {
+                let _ = cmd_tx.send(response);
+                return;
+            }
+
+            // Hold the state lock through event emission. A concurrent abort or
+            // stop can therefore only emit its terminal reconciliation after the
+            // request card, never before it.
+            let delivered = {
+                let guard = inner.lock().unwrap();
+                guard.active_run.as_ref() == Some(&request_owner)
+                    && Self::emit_pi_event(app, Some(&request_owner), value.clone())
+            };
+            if !delivered {
                 // The editor/confirm promise is already pending in Pi. If the
                 // desktop cannot deliver its card request, cancel it instead
                 // of leaving the agent blocked with no actionable UI.
                 if let Some(request_id) = request_id {
-                    let should_cancel = inner
+                    let cancelled = inner
                         .lock()
                         .unwrap()
                         .pending_extension_ui
-                        .remove(&request_id)
-                        .is_some();
-                    if should_cancel {
+                        .remove(&request_id);
+                    if let Some(cancelled) = cancelled {
                         if let Ok(json) = serde_json::to_string(&serde_json::json!({
                             "type": "extension_ui_response",
                             "id": request_id,
@@ -758,6 +967,16 @@ Divo workspace policy:
                         })) {
                             let _ = cmd_tx.send(json);
                         }
+                        Self::emit_pi_event(
+                            app,
+                            Some(&cancelled.owner),
+                            serde_json::json!({
+                                "type": "extension_ui_response",
+                                "id": request_id,
+                                "cancelled": true,
+                                "reason": "frontend_delivery_failed"
+                            }),
+                        );
                     }
                 }
             }
@@ -765,28 +984,35 @@ Divo workspace policy:
         }
 
         if event_type.is_some() {
-            let thread_id = Self::active_thread_id(inner);
-            Self::emit_pi_event(app, thread_id, value);
+            let (owner, reconciliations) = {
+                let mut guard = inner.lock().unwrap();
+                let owner = guard.active_run.clone();
+                let reconciliations = if event_type == Some("agent_end")
+                    && !value
+                        .get("willRetry")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false)
+                {
+                    guard.active_run = None;
+                    owner.as_ref().map_or_else(Vec::new, |owner| {
+                        drain_pending_extension_ui(&mut guard.pending_extension_ui, Some(owner))
+                    })
+                } else {
+                    Vec::new()
+                };
+                (owner, reconciliations)
+            };
+            Self::emit_extension_ui_reconciliations(&app, reconciliations, "agent_ended");
+            Self::emit_pi_event(app, owner.as_ref(), value);
         }
     }
 
     fn emit_pi_event(
         app: &Arc<StdMutex<Option<AppHandle>>>,
-        thread_id: String,
+        owner: Option<&RunOwner>,
         mut event: serde_json::Value,
     ) -> bool {
-        if let Some(obj) = event.as_object_mut() {
-            obj.insert(
-                "thread_id".to_string(),
-                serde_json::Value::String(thread_id),
-            );
-        } else {
-            event = serde_json::json!({
-                "thread_id": thread_id,
-                "type": "unknown",
-                "payload": event
-            });
-        }
+        event_owner_payload(&mut event, owner);
 
         let app = app.lock().unwrap().clone();
         let Some(app) = app else {
@@ -800,7 +1026,26 @@ Divo workspace policy:
         true
     }
 
-    pub async fn ensure_thread(&self, thread_id: String) -> Result<(), String> {
+    pub async fn start(
+        &self,
+        app: AppHandle,
+        data_folder: PathBuf,
+        scratch_dir: PathBuf,
+        workspace_dir: PathBuf,
+        initial_thread_id: Option<String>,
+    ) -> Result<(), String> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.start_locked(
+            app,
+            data_folder,
+            scratch_dir,
+            workspace_dir,
+            initial_thread_id,
+        )
+        .await
+    }
+
+    async fn ensure_thread_locked(&self, thread_id: String) -> Result<(), String> {
         let needs_switch = {
             let guard = self.inner.lock().unwrap();
             guard.active_thread_id.as_deref() != Some(thread_id.as_str())
@@ -810,7 +1055,7 @@ Divo workspace policy:
             return Ok(());
         }
 
-        self.cancel_pending_extension_ui(None);
+        let previous_run = self.active_run();
         let preserve_bash_rule = {
             let mut guard = self.inner.lock().unwrap();
             let preserve = guard.bash_always_allowed_threads.contains(&thread_id);
@@ -820,18 +1065,18 @@ Divo workspace policy:
             preserve
         };
 
-        if let Ok(state) = self.get_state().await {
-            if state
-                .get("isStreaming")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                self.abort().await?;
-                if preserve_bash_rule {
-                    self.set_bash_approval_rule(&thread_id, true);
-                }
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
+        if let Some(owner) = previous_run {
+            self.abort_locked(owner.clone(), "thread_switched").await?;
+            self.wait_for_run_clear(&owner).await?;
+        }
+
+        let restart_for_thread = {
+            let guard = self.inner.lock().unwrap();
+            guard.runtime_thread_id.as_deref() != Some(thread_id.as_str())
+        };
+        if restart_for_thread {
+            self.restart_for_thread_locked(&thread_id, preserve_bash_rule)
+                .await?;
         }
 
         let (data_folder, session_path, workspace_dir) = {
@@ -852,10 +1097,13 @@ Divo workspace policy:
         ensure_session_workspace_cwd(&session_path, &workspace_dir)?;
 
         let resp = self
-            .send_rpc(serde_json::json!({
-                "type": "switch_session",
-                "sessionPath": session_path.to_string_lossy()
-            }))
+            .send_rpc(
+                serde_json::json!({
+                    "type": "switch_session",
+                    "sessionPath": session_path.to_string_lossy()
+                }),
+                None,
+            )
             .await?;
         if resp
             .get("cancelled")
@@ -870,14 +1118,62 @@ Divo workspace policy:
         Ok(())
     }
 
+    async fn restart_for_thread_locked(
+        &self,
+        thread_id: &str,
+        preserve_bash_rule: bool,
+    ) -> Result<(), String> {
+        let (data_folder, scratch_dir, workspace_dir) = {
+            let guard = self.inner.lock().unwrap();
+            (
+                guard
+                    .data_folder
+                    .clone()
+                    .ok_or("Pi process is not running")?,
+                guard
+                    .scratch_dir
+                    .clone()
+                    .ok_or("Pi scratch directory is not configured")?,
+                guard
+                    .workspace_dir
+                    .clone()
+                    .ok_or("Pi workspace is not configured")?,
+            )
+        };
+        let app = self
+            .app
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or("Pi app handle is not configured")?;
+
+        self.stop_locked().await;
+        if preserve_bash_rule {
+            self.set_bash_approval_rule(thread_id, true);
+        }
+        self.start_locked(
+            app,
+            data_folder,
+            scratch_dir,
+            workspace_dir,
+            Some(thread_id.to_string()),
+        )
+        .await
+    }
+
+    pub async fn ensure_thread(&self, thread_id: String) -> Result<(), String> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.ensure_thread_locked(thread_id).await
+    }
+
     pub async fn get_state(&self) -> Result<serde_json::Value, String> {
-        self.send_rpc(serde_json::json!({ "type": "get_state" }))
+        self.send_rpc(serde_json::json!({ "type": "get_state" }), None)
             .await
     }
 
-    async fn restart_if_browser_cdp_changed(&self, app: &AppHandle) -> Result<(), String> {
+    async fn restart_if_browser_cdp_changed_locked(&self, app: &AppHandle) -> Result<(), String> {
         let fingerprint = current_browser_cdp_fingerprint();
-        let (needs_restart, data_folder, scratch_dir, workspace_dir, run_thread_id) = {
+        let (needs_restart, data_folder, scratch_dir, workspace_dir, initial_thread_id) = {
             let guard = self.inner.lock().unwrap();
             let needs = guard.process.is_some()
                 && fingerprint.is_some()
@@ -887,7 +1183,11 @@ Divo workspace policy:
                 guard.data_folder.clone(),
                 guard.scratch_dir.clone(),
                 guard.workspace_dir.clone(),
-                guard.run_thread_id.clone(),
+                guard
+                    .active_run
+                    .as_ref()
+                    .map(|owner| owner.thread_id.clone())
+                    .or_else(|| guard.active_thread_id.clone()),
             )
         };
 
@@ -895,7 +1195,7 @@ Divo workspace policy:
             return Ok(());
         }
 
-        self.stop().await;
+        self.stop_locked().await;
         kill_orphan_chrome_devtools_mcp();
 
         let (data_folder, scratch_dir, workspace_dir) =
@@ -904,105 +1204,145 @@ Divo workspace policy:
                 _ => return Ok(()),
             };
 
-        self.start(
+        self.start_locked(
             app.clone(),
             data_folder,
             scratch_dir,
             workspace_dir,
-            run_thread_id,
+            initial_thread_id,
         )
         .await
     }
 
-    pub async fn prompt(&self, thread_id: String, message: String) -> Result<(), String> {
+    pub async fn prompt(
+        &self,
+        thread_id: String,
+        run_id: String,
+        message: String,
+    ) -> Result<(), String> {
+        let owner = RunOwner::new(thread_id, run_id)?;
+        let _lifecycle = self.lifecycle.lock().await;
         let app = self.app.lock().unwrap().clone();
         if let Some(app) = app {
-            self.restart_if_browser_cdp_changed(&app).await?;
+            self.restart_if_browser_cdp_changed_locked(&app).await?;
         }
-        self.ensure_thread(thread_id).await?;
-        self.send_rpc(serde_json::json!({
-            "type": "prompt",
-            "message": message
-        }))
-        .await?;
-        Ok(())
+        self.ensure_thread_locked(owner.thread_id.clone()).await?;
+        {
+            let mut guard = self.inner.lock().unwrap();
+            if let Some(active_run) = guard.active_run.as_ref() {
+                if active_run == &owner {
+                    return Err("This Pi run is already active".into());
+                }
+                return Err("Another Pi run is already active".into());
+            }
+            guard.active_run = Some(owner.clone());
+        }
+        let result = self
+            .send_rpc(
+                serde_json::json!({
+                    "type": "prompt",
+                    "message": message
+                }),
+                Some(owner.clone()),
+            )
+            .await;
+        if result.is_err() {
+            self.clear_active_run_for_owner(&owner);
+        }
+        result.map(|_| ())
     }
 
-    pub async fn abort(&self) -> Result<(), String> {
-        self.cancel_pending_extension_ui(None);
+    async fn abort_locked(&self, owner: RunOwner, reason: &str) -> Result<(), String> {
+        {
+            let guard = self.inner.lock().unwrap();
+            require_active_run(guard.active_run.as_ref(), &owner, "abort")?;
+        }
+        self.cancel_pending_extension_ui(Some(&owner), reason);
         self.inner
             .lock()
             .unwrap()
             .bash_always_allowed_threads
-            .clear();
-        self.send_rpc(serde_json::json!({ "type": "abort" }))
+            .remove(&owner.thread_id);
+        self.send_rpc(serde_json::json!({ "type": "abort" }), None)
             .await?;
         Ok(())
     }
 
-    pub async fn stop(&self) {
-        self.cancel_pending_extension_ui(None);
+    pub async fn abort(&self, thread_id: String, run_id: String) -> Result<(), String> {
+        let owner = RunOwner::new(thread_id, run_id)?;
+        let _lifecycle = self.lifecycle.lock().await;
+        self.abort_locked(owner, "run_aborted").await
+    }
+
+    async fn stop_locked(&self) {
+        self.cancel_pending_extension_ui(None, "process_stopped");
         let mut guard = self.inner.lock().unwrap();
         if let Some(mut pi) = guard.process.take() {
             let _ = pi.child.kill();
         }
+        guard.runtime_thread_id = None;
         guard.active_thread_id = None;
-        guard.run_thread_id = None;
+        guard.active_run = None;
         guard.browser_cdp_fingerprint = None;
-        guard.pending.clear();
-        guard.pending_extension_ui.clear();
+        fail_pending_rpc(
+            &mut guard.pending,
+            "Pi process stopped before the RPC completed",
+        );
         guard.bash_always_allowed_threads.clear();
     }
 
-    fn cancel_pending_extension_ui(&self, thread_id: Option<&str>) {
-        let request_ids = {
+    pub async fn stop(&self) {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.stop_locked().await;
+    }
+
+    fn cancel_pending_extension_ui(&self, owner: Option<&RunOwner>, reason: &str) {
+        let reconciliations = {
             let mut guard = self.inner.lock().unwrap();
-            drain_pending_extension_ui(&mut guard.pending_extension_ui, thread_id)
+            drain_pending_extension_ui(&mut guard.pending_extension_ui, owner)
         };
 
-        for id in request_ids {
+        for reconciliation in &reconciliations {
             if let Ok(json) = serde_json::to_string(&serde_json::json!({
                 "type": "extension_ui_response",
-                "id": id,
+                "id": reconciliation.request_id,
                 "cancelled": true
             })) {
                 let _ = self.cmd_tx.send(json);
             }
         }
+        Self::emit_extension_ui_reconciliations(&self.app, reconciliations, reason);
     }
 
     pub fn extension_ui_response(
         &self,
         request_id: String,
         thread_id: String,
+        run_id: String,
         confirmed: Option<bool>,
         value: Option<String>,
         cancelled: bool,
         always_allow_bash: bool,
     ) -> Result<(), String> {
+        let owner = RunOwner::new(thread_id.clone(), run_id)?;
         let (pending, response) = {
             let mut guard = self.inner.lock().unwrap();
             if guard.process.is_none() {
                 return Err("Pi process is not running".into());
             }
-            let active_thread_id = guard.active_thread_id.clone();
             let protocol = guard
                 .pending_extension_ui
                 .get(&request_id)
                 .map(|pending| pending.protocol)
                 .ok_or("Unknown or already resolved extension UI request")?;
             let pending = match protocol {
-                ExtensionUiProtocol::Approval => take_pending_confirm(
-                    &mut guard.pending_extension_ui,
-                    active_thread_id.as_deref(),
-                    &request_id,
-                    &thread_id,
-                )?,
+                ExtensionUiProtocol::Approval => {
+                    take_pending_confirm(&mut guard.pending_extension_ui, &request_id, &owner)?
+                }
                 ExtensionUiProtocol::MemoryReview => take_pending_memory_review(
                     &mut guard.pending_extension_ui,
-                    active_thread_id.as_deref(),
                     &request_id,
-                    &thread_id,
+                    &owner,
                 )?,
             };
             let is_confirmed = confirmed.unwrap_or(false);
@@ -1013,7 +1353,9 @@ Divo workspace policy:
                 return Err("Always allow is available only for a confirmed Bash request".into());
             }
             if always_allow_bash {
-                guard.bash_always_allowed_threads.insert(thread_id.clone());
+                guard
+                    .bash_always_allowed_threads
+                    .insert(owner.thread_id.clone());
             }
             let response = match protocol {
                 ExtensionUiProtocol::Approval => {
@@ -1061,7 +1403,7 @@ Divo workspace policy:
         if let Err(error) = self.write_stdin(&response) {
             let mut guard = self.inner.lock().unwrap();
             if always_allow_bash {
-                guard.bash_always_allowed_threads.remove(&thread_id);
+                guard.bash_always_allowed_threads.remove(&owner.thread_id);
             }
             guard.pending_extension_ui.insert(request_id, pending);
             return Err(error);
@@ -1101,66 +1443,169 @@ Divo workspace policy:
 #[cfg(test)]
 mod tests {
     use super::{
-        approval_source, can_enable_always_allow_bash, drain_pending_extension_ui,
-        is_divo_approval_request, is_divo_memory_review_request, should_auto_allow_bash,
-        take_pending_confirm, take_pending_memory_review, valid_memory_review_response,
-        ApprovalSource, ExtensionUiProtocol, PendingExtensionUiRequest, PiManager,
+        approval_source, can_enable_always_allow_bash, clear_active_run_if_matches,
+        drain_pending_extension_ui, event_owner_payload, fail_pending_rpc,
+        is_divo_approval_request, is_divo_memory_review_request, require_active_run,
+        response_clears_active_run, should_auto_allow_bash, take_pending_confirm,
+        take_pending_memory_review, valid_memory_review_response, ApprovalSource,
+        ExtensionUiProtocol, PendingExtensionUiRequest, PendingRpc, PiManager, RunOwner,
     };
     use std::collections::{HashMap, HashSet};
+    use tokio::runtime::Runtime;
 
-    fn pending(method: &str, thread_id: &str) -> PendingExtensionUiRequest {
+    fn owner(thread_id: &str, run_id: &str) -> RunOwner {
+        RunOwner::new(thread_id.to_string(), run_id.to_string()).unwrap()
+    }
+
+    fn pending(method: &str, thread_id: &str, run_id: &str) -> PendingExtensionUiRequest {
         PendingExtensionUiRequest {
-            thread_id: thread_id.to_string(),
+            owner: owner(thread_id, run_id),
             method: method.to_string(),
             source: None,
             protocol: ExtensionUiProtocol::Approval,
         }
     }
 
+    fn pending_rpc(command: &str, owner: Option<RunOwner>) -> PendingRpc {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        PendingRpc {
+            command: command.to_string(),
+            owner,
+            tx,
+        }
+    }
+
     #[test]
-    fn confirmation_response_requires_matching_active_thread_and_request() {
-        let mut requests =
-            HashMap::from([("request-1".to_string(), pending("confirm", "thread-1"))]);
+    fn confirmation_response_requires_matching_run_and_request() {
+        let request_owner = owner("thread-1", "run-1");
+        let mut requests = HashMap::from([(
+            "request-1".to_string(),
+            pending("confirm", "thread-1", "run-1"),
+        )]);
 
         assert!(
-            take_pending_confirm(&mut requests, Some("thread-2"), "request-1", "thread-1").is_err()
+            take_pending_confirm(&mut requests, "request-1", &owner("thread-1", "run-2")).is_err()
         );
         assert!(requests.contains_key("request-1"));
 
-        assert!(
-            take_pending_confirm(&mut requests, Some("thread-1"), "unknown", "thread-1").is_err()
-        );
+        assert!(take_pending_confirm(&mut requests, "unknown", &request_owner).is_err());
         assert!(requests.contains_key("request-1"));
 
-        assert!(
-            take_pending_confirm(&mut requests, Some("thread-1"), "request-1", "thread-1").is_ok()
-        );
+        assert!(take_pending_confirm(&mut requests, "request-1", &request_owner).is_ok());
         assert!(requests.is_empty());
     }
 
     #[test]
     fn confirmation_response_rejects_other_dialog_methods_without_consuming_them() {
-        let mut requests = HashMap::from([("request-1".to_string(), pending("input", "thread-1"))]);
+        let mut requests = HashMap::from([(
+            "request-1".to_string(),
+            pending("input", "thread-1", "run-1"),
+        )]);
 
         assert!(
-            take_pending_confirm(&mut requests, Some("thread-1"), "request-1", "thread-1").is_err()
+            take_pending_confirm(&mut requests, "request-1", &owner("thread-1", "run-1")).is_err()
         );
         assert!(requests.contains_key("request-1"));
     }
 
     #[test]
-    fn fail_closed_cleanup_drains_only_the_selected_thread() {
+    fn fail_closed_cleanup_drains_only_the_selected_run() {
         let mut requests = HashMap::from([
-            ("request-1".to_string(), pending("confirm", "thread-1")),
-            ("request-2".to_string(), pending("confirm", "thread-2")),
+            (
+                "request-1".to_string(),
+                pending("confirm", "thread-1", "run-1"),
+            ),
+            (
+                "request-2".to_string(),
+                pending("confirm", "thread-1", "run-2"),
+            ),
         ]);
 
         assert_eq!(
-            drain_pending_extension_ui(&mut requests, Some("thread-1")),
-            vec!["request-1".to_string()]
+            drain_pending_extension_ui(&mut requests, Some(&owner("thread-1", "run-1"))),
+            vec![super::ExtensionUiReconciliation {
+                request_id: "request-1".to_string(),
+                owner: owner("thread-1", "run-1"),
+            }]
         );
         assert!(!requests.contains_key("request-1"));
         assert!(requests.contains_key("request-2"));
+    }
+
+    #[test]
+    fn stale_abort_scope_is_rejected() {
+        let active = owner("thread-1", "run-1");
+        assert!(require_active_run(Some(&active), &active, "abort").is_ok());
+        assert!(require_active_run(Some(&active), &owner("thread-1", "run-2"), "abort").is_err());
+    }
+
+    #[test]
+    fn run_owner_requires_nonempty_thread_and_run_ids() {
+        assert!(RunOwner::new(" thread-1 ".into(), " run-1 ".into()).is_ok());
+        assert!(RunOwner::new(" ".into(), "run-1".into()).is_err());
+        assert!(RunOwner::new("thread-1".into(), " ".into()).is_err());
+    }
+
+    #[test]
+    fn successful_prompt_ack_retains_active_run_owner() {
+        let owner = owner("thread-1", "run-1");
+        let pending = pending_rpc("prompt", Some(owner.clone()));
+        let mut active_run = Some(owner.clone());
+
+        assert!(!response_clears_active_run(&pending, true));
+        if response_clears_active_run(&pending, true) {
+            clear_active_run_if_matches(&mut active_run, &owner);
+        }
+
+        assert_eq!(active_run, Some(owner));
+    }
+
+    #[test]
+    fn failed_prompt_ack_clears_active_run_owner() {
+        let owner = owner("thread-1", "run-1");
+        let pending = pending_rpc("prompt", Some(owner.clone()));
+        let mut active_run = Some(owner.clone());
+
+        assert!(response_clears_active_run(&pending, false));
+        assert!(clear_active_run_if_matches(&mut active_run, &owner));
+
+        assert_eq!(active_run, None);
+    }
+
+    #[test]
+    fn process_exit_fails_pending_rpc_immediately() {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut pending = HashMap::from([(
+            "rpc-1".to_string(),
+            PendingRpc {
+                command: "prompt".into(),
+                owner: Some(owner("thread-1", "run-1")),
+                tx,
+            },
+        )]);
+
+        fail_pending_rpc(&mut pending, "Pi process exited unexpectedly");
+        assert!(pending.is_empty());
+
+        let result = Runtime::new()
+            .unwrap()
+            .block_on(async { rx.await.unwrap() });
+        assert_eq!(result.unwrap_err(), "Pi process exited unexpectedly");
+    }
+
+    #[test]
+    fn emitted_events_include_run_id() {
+        let mut event = serde_json::json!({ "type": "prompt_accepted" });
+        event_owner_payload(&mut event, Some(&owner("thread-1", "run-1")));
+
+        assert_eq!(
+            event.get("thread_id").and_then(|value| value.as_str()),
+            Some("thread-1")
+        );
+        assert_eq!(
+            event.get("run_id").and_then(|value| value.as_str()),
+            Some("run-1")
+        );
     }
 
     #[test]
@@ -1227,26 +1672,20 @@ mod tests {
     }
 
     #[test]
-    fn memory_review_responses_are_request_and_thread_bound() {
-        let mut request = pending("editor", "thread-1");
+    fn memory_review_responses_are_request_and_run_bound() {
+        let mut request = pending("editor", "thread-1", "run-1");
         request.protocol = ExtensionUiProtocol::MemoryReview;
         let mut requests = HashMap::from([("review-1".to_string(), request)]);
 
-        assert!(take_pending_memory_review(
-            &mut requests,
-            Some("thread-2"),
-            "review-1",
-            "thread-1"
-        )
-        .is_err());
+        assert!(
+            take_pending_memory_review(&mut requests, "review-1", &owner("thread-1", "run-2"))
+                .is_err()
+        );
         assert!(requests.contains_key("review-1"));
-        assert!(take_pending_memory_review(
-            &mut requests,
-            Some("thread-1"),
-            "review-1",
-            "thread-1"
-        )
-        .is_ok());
+        assert!(
+            take_pending_memory_review(&mut requests, "review-1", &owner("thread-1", "run-1"))
+                .is_ok()
+        );
         assert!(requests.is_empty());
     }
 
@@ -1357,7 +1796,7 @@ mod tests {
         ));
 
         let bash = PendingExtensionUiRequest {
-            thread_id: "thread-1".into(),
+            owner: owner("thread-1", "run-1"),
             method: "confirm".into(),
             source: Some(ApprovalSource::Bash),
             protocol: ExtensionUiProtocol::Approval,

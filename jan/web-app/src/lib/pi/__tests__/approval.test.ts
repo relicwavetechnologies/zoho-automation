@@ -12,6 +12,7 @@ function event(message: unknown): PiRawEvent {
   return {
     type: 'extension_ui_request',
     thread_id: 'thread-1',
+    run_id: 'run-1',
     id: 'request-1',
     method: 'confirm',
     title: 'divo_approval_v1',
@@ -95,4 +96,3 @@ describe('parsePiApprovalEvent', () => {
     })
   })
 })
-
