@@ -228,6 +228,219 @@ describe('createPiMessageStream run ownership', () => {
     await reader.cancel()
   })
 
+  it('keeps two concurrent thread streams isolated through terminal cleanup', async () => {
+    const onA = vi.fn()
+    const onB = vi.fn()
+    const terminalA = vi.fn()
+    const terminalB = vi.fn()
+    const streamA = createPiMessageStream({
+      threadId: 'thread-a',
+      message: 'A',
+      abortSignal: undefined,
+      isStale: () => false,
+      onPiEvent: onA,
+      onTerminal: terminalA,
+    })
+    const streamB = createPiMessageStream({
+      threadId: 'thread-b',
+      message: 'B',
+      abortSignal: undefined,
+      isStale: () => false,
+      onPiEvent: onB,
+      onTerminal: terminalB,
+    })
+    const readerA = streamA.getReader()
+    const readerB = streamB.getReader()
+    await Promise.all([readerA.read(), readerB.read()])
+    await vi.waitFor(() =>
+      expect(
+        mocks.invoke.mock.calls.filter(([command]) => command === 'pi_prompt')
+      ).toHaveLength(2)
+    )
+    const prompts = mocks.invoke.mock.calls
+      .filter(([command]) => command === 'pi_prompt')
+      .map(([, payload]) => payload)
+    const promptA = prompts.find((payload) => payload.threadId === 'thread-a')
+    const promptB = prompts.find((payload) => payload.threadId === 'thread-b')
+
+    mocks.listeners.forEach((listener) =>
+      listener({
+        payload: {
+          type: 'message_update',
+          thread_id: 'thread-a',
+          run_id: promptA.runId,
+          assistantMessageEvent: { type: 'text_delta', delta: 'only A' },
+        },
+      })
+    )
+    expect(onA).toHaveBeenCalledOnce()
+    expect(onB).not.toHaveBeenCalled()
+
+    mocks.listeners.forEach((listener) =>
+      listener({
+        payload: { type: 'agent_end', thread_id: 'thread-a', run_id: promptA.runId },
+      })
+    )
+    await vi.waitFor(() => expect(terminalA).toHaveBeenCalledOnce())
+    expect(terminalB).not.toHaveBeenCalled()
+
+    mocks.listeners.forEach((listener) =>
+      listener({
+        payload: { type: 'agent_end', thread_id: 'thread-b', run_id: promptB.runId },
+      })
+    )
+    await vi.waitFor(() => expect(terminalB).toHaveBeenCalledOnce())
+  })
+
+  it('tracks capacity waiting and admission for the same run without resubmitting', async () => {
+    const onRunStateChange = vi.fn()
+    const stream = createPiMessageStream({
+      threadId: 'thread-c',
+      message: 'C',
+      abortSignal: undefined,
+      isStale: () => false,
+      onRunStateChange,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-c', runId: expect.any(String) })
+      )
+    )
+    const prompt = mocks.invoke.mock.calls.find(([command]) => command === 'pi_prompt')?.[1]
+
+    mocks.listeners.forEach((listener) =>
+      listener({
+        payload: {
+          type: 'pi_runtime_waiting',
+          thread_id: 'thread-c',
+          run_id: prompt.runId,
+        },
+      })
+    )
+    mocks.listeners.forEach((listener) =>
+      listener({
+        payload: {
+          type: 'prompt_accepted',
+          thread_id: 'thread-c',
+          run_id: prompt.runId,
+        },
+      })
+    )
+
+    expect(onRunStateChange.mock.calls).toEqual([
+      [prompt.runId, 'capacity_waiting'],
+      [prompt.runId, 'active'],
+    ])
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === 'pi_prompt')
+    ).toHaveLength(1)
+    await reader.cancel()
+  })
+
+  it('stops the exact capacity waiter once and never admits it later', async () => {
+    const abortController = new AbortController()
+    const onTerminal = vi.fn()
+    const onRunStateChange = vi.fn()
+    const stream = createPiMessageStream({
+      threadId: 'thread-c',
+      message: 'C',
+      abortSignal: abortController.signal,
+      isStale: () => false,
+      onTerminal,
+      onRunStateChange,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-c', runId: expect.any(String) })
+      )
+    )
+    const prompt = mocks.invoke.mock.calls.find(([command]) => command === 'pi_prompt')?.[1]
+    mocks.listeners.forEach((listener) =>
+      listener({
+        payload: {
+          type: 'pi_runtime_waiting',
+          thread_id: 'thread-c',
+          run_id: prompt.runId,
+        },
+      })
+    )
+
+    abortController.abort()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith('pi_abort', {
+        threadId: 'thread-c',
+        thread_id: 'thread-c',
+        runId: prompt.runId,
+        run_id: prompt.runId,
+      })
+    )
+    await vi.waitFor(() => expect(onTerminal).toHaveBeenCalledOnce())
+
+    mocks.listeners.forEach((listener) =>
+      listener({
+        payload: {
+          type: 'prompt_accepted',
+          thread_id: 'thread-c',
+          run_id: prompt.runId,
+        },
+      })
+    )
+    expect(onRunStateChange.mock.calls).toEqual([[prompt.runId, 'capacity_waiting']])
+    expect(onTerminal).toHaveBeenCalledOnce()
+  })
+
+  it('keeps approvals and a crash scoped to their owning concurrent run', async () => {
+    const terminalA = vi.fn()
+    const terminalB = vi.fn()
+    const streamA = createPiMessageStream({
+      threadId: 'thread-a', message: 'A', abortSignal: undefined, isStale: () => false,
+      onTerminal: terminalA,
+    })
+    const streamB = createPiMessageStream({
+      threadId: 'thread-b', message: 'B', abortSignal: undefined, isStale: () => false,
+      onTerminal: terminalB,
+    })
+    await Promise.all([streamA.getReader().read(), streamB.getReader().read()])
+    await vi.waitFor(() =>
+      expect(mocks.invoke.mock.calls.filter(([command]) => command === 'pi_prompt')).toHaveLength(2)
+    )
+    const prompts = mocks.invoke.mock.calls
+      .filter(([command]) => command === 'pi_prompt')
+      .map(([, payload]) => payload)
+    const promptA = prompts.find((payload) => payload.threadId === 'thread-a')
+    const promptB = prompts.find((payload) => payload.threadId === 'thread-b')
+    const approvalFor = (threadId: string, runId: string, id: string): PiRawEvent => ({
+      type: 'extension_ui_request', thread_id: threadId, run_id: runId, id,
+      method: 'confirm', title: 'divo_approval_v1',
+      message: JSON.stringify({
+        version: 1, toolCallId: `tool-${id}`, source: 'divo', kind: 'gmail.send',
+        action: 'send', title: 'Review email', presentation: { to: ['maya@example.com'] },
+      }),
+    })
+    mocks.listeners.forEach((listener) => listener({ payload: approvalFor('thread-a', promptA.runId, 'approval-a') }))
+    mocks.listeners.forEach((listener) => listener({ payload: approvalFor('thread-b', promptB.runId, 'approval-b') }))
+    expect(usePiApproval.getState().queues['thread-a']).toHaveLength(1)
+    expect(usePiApproval.getState().queues['thread-b']).toHaveLength(1)
+
+    mocks.listeners.forEach((listener) =>
+      listener({
+        payload: {
+          type: 'pi_process_exit', thread_id: 'thread-a', run_id: promptA.runId,
+          message: 'Pi process exited',
+        },
+      })
+    )
+    await vi.waitFor(() => expect(terminalA).toHaveBeenCalledOnce())
+    expect(terminalB).not.toHaveBeenCalled()
+    expect(usePiApproval.getState().queues['thread-b']).toHaveLength(1)
+  })
+
   it('waits for scoped abort reconciliation before releasing the terminal busy state', async () => {
     const abortController = new AbortController()
     const onTerminal = vi.fn()

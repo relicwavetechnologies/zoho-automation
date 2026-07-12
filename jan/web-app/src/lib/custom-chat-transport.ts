@@ -921,7 +921,6 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         : undefined
     const threadId = this.threadId ?? options.chatId
     const myGeneration = ++this.streamGeneration
-    useAppState.getState().setCurrentStreamThreadId(threadId)
     // Capture the effective provider name early so the Anthropic serial
     // tool-use repair later uses the same value that was used to create the
     // model, even if the user switches provider mid-request.
@@ -954,19 +953,25 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         message: userMessage,
         abortSignal: options.abortSignal,
         isStale: () => this.streamGeneration !== myGeneration,
-        onTerminal: () => {
+        onRunStateChange: (runId, state) => {
+          if (this.streamGeneration !== myGeneration) return
+          useAppState.getState().setPiThreadRunState(threadId, runId, state)
+        },
+        onTerminal: (runId) => {
           if (this.streamGeneration !== myGeneration) return
           useAppState.getState().updatePromptProgress(undefined)
           useAppState.getState().updateLoadingModel(false)
           useAppState.getState().updateThreadPromptProgress(threadId, undefined)
           useAppState.getState().updateThreadLoadingModel(threadId, false)
           useAppState.getState().setThreadBusy(threadId, false)
-          if (useAppState.getState().currentStreamThreadId === threadId) {
-            useAppState.getState().setCurrentStreamThreadId(undefined)
-          }
+          useAppState.getState().clearPiThreadRunState(threadId, runId)
         },
       }), onSubmissionAccepted)
     }
+
+    // Non-Pi providers still use this legacy bridge for model-loader progress.
+    // Pi streams are thread/run keyed and must never share a global owner.
+    useAppState.getState().setCurrentStreamThreadId(threadId)
 
     try {
       const updatedProvider = useModelProvider

@@ -9,13 +9,23 @@ export type PromptProgress = {
   total: number
 }
 
+/**
+ * Pi lifecycle state used by thread-level consumers such as the sidebar.
+ * Capacity waiting is intentionally separate from a thread's follow-up
+ * message queue: the user message has already been accepted by Pi.
+ */
+export type PiThreadRunState = {
+  runId: string
+  state: 'capacity_waiting' | 'active'
+}
+
 type AppErrorMessage = {
   message?: string
   title?: string
   subtitle: string
 }
 
-type AppState = {
+export type AppState = {
   streamingContent?: ThreadMessage
   loadingModel?: boolean
   tools: MCPTool[]
@@ -35,6 +45,7 @@ type AppState = {
   cancelToolCalls: Record<string, () => void>
   errorMessages: Record<string, AppErrorMessage>
   busyThreads: Record<string, boolean>
+  piThreadRunStates: Record<string, PiThreadRunState>
   embeddingThreads: Record<string, boolean>
   currentStreamThreadId?: string
   oomError?: string
@@ -77,6 +88,12 @@ type AppState = {
   clearThreadState: (threadId: string) => void
   setCurrentStreamThreadId: (threadId: string | undefined) => void
   setThreadBusy: (threadId: string, busy: boolean) => void
+  setPiThreadRunState: (
+    threadId: string,
+    runId: string,
+    state: PiThreadRunState['state']
+  ) => void
+  clearPiThreadRunState: (threadId: string, runId: string) => void
   setThreadEmbedding: (threadId: string, embedding: boolean) => void
 }
 
@@ -97,6 +114,7 @@ export const useAppState = create<AppState>()((set) => ({
   cancelToolCalls: {},
   errorMessages: {},
   busyThreads: {},
+  piThreadRunStates: {},
   embeddingThreads: {},
   currentStreamThreadId: undefined,
   setCurrentStreamThreadId: (threadId) => set({ currentStreamThreadId: threadId }),
@@ -108,6 +126,34 @@ export const useAppState = create<AppState>()((set) => ({
       if (busy) next[threadId] = true
       else delete next[threadId]
       return { busyThreads: next }
+    }),
+  setPiThreadRunState: (threadId, runId, runState) =>
+    set((state) => {
+      const current = state.piThreadRunStates[threadId]
+      // A delayed capacity notification belongs to an older stream. It cannot
+      // put a thread back into waiting after a newer run was admitted.
+      if (
+        runState === 'capacity_waiting' &&
+        current?.state === 'active' &&
+        current.runId !== runId
+      ) {
+        return state
+      }
+      return {
+        piThreadRunStates: {
+          ...state.piThreadRunStates,
+          [threadId]: { runId, state: runState },
+        },
+      }
+    }),
+  clearPiThreadRunState: (threadId, runId) =>
+    set((state) => {
+      const current = state.piThreadRunStates[threadId]
+      // A stale terminal event must never clear a newer run for this thread.
+      if (!current || current.runId !== runId) return state
+      const piThreadRunStates = { ...state.piThreadRunStates }
+      delete piThreadRunStates[threadId]
+      return { piThreadRunStates }
     }),
   setThreadEmbedding: (threadId, embedding) =>
     set((state) => {
@@ -151,6 +197,7 @@ export const useAppState = create<AppState>()((set) => ({
     set({
       streamingContent: undefined,
       abortControllers: {},
+      piThreadRunStates: {},
       cancelToolCall: undefined,
       errorMessage: undefined,
       showOutOfContextDialog: false,
@@ -230,6 +277,7 @@ export const useAppState = create<AppState>()((set) => ({
       const cancelToolCalls = { ...state.cancelToolCalls }
       const errorMessages = { ...state.errorMessages }
       const busyThreads = { ...state.busyThreads }
+      const piThreadRunStates = { ...state.piThreadRunStates }
       const embeddingThreads = { ...state.embeddingThreads }
       delete streamingContents[threadId]
       delete loadingModels[threadId]
@@ -237,6 +285,7 @@ export const useAppState = create<AppState>()((set) => ({
       delete cancelToolCalls[threadId]
       delete errorMessages[threadId]
       delete busyThreads[threadId]
+      delete piThreadRunStates[threadId]
       delete embeddingThreads[threadId]
       return {
         streamingContents,
@@ -245,6 +294,7 @@ export const useAppState = create<AppState>()((set) => ({
         cancelToolCalls,
         errorMessages,
         busyThreads,
+        piThreadRunStates,
         embeddingThreads,
       }
     }),
@@ -257,8 +307,18 @@ export const useActiveThreadIds = () =>
     Object.keys(state.loadingModels).forEach((id) => ids.add(id))
     Object.keys(state.cancelToolCalls).forEach((id) => ids.add(id))
     Object.keys(state.busyThreads).forEach((id) => ids.add(id))
+    Object.keys(state.piThreadRunStates).forEach((id) => ids.add(id))
     return ids
   })
+
+/** Stable selectors for concurrent-thread UI. */
+export const selectPiThreadRunState = (threadId: string) =>
+  (state: AppState): PiThreadRunState | undefined =>
+    state.piThreadRunStates[threadId]
+
+export const selectPiThreadCapacityWaiting = (threadId: string) =>
+  (state: AppState): boolean =>
+    state.piThreadRunStates[threadId]?.state === 'capacity_waiting'
 
 export const useIsThreadActive = (threadId: string | undefined) =>
   useAppState((state) =>

@@ -1,22 +1,50 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { CustomChatTransport, normalizeToolInputSchema } from '../custom-chat-transport'
+import { useAppState } from '@/hooks/useAppState'
+
+const piRuntime = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  listeners: new Set<(event: { payload: Record<string, unknown> }) => void>(),
+}))
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: piRuntime.invoke }))
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(
+    async (
+      _name: string,
+      listener: (event: { payload: Record<string, unknown> }) => void
+    ) => {
+      piRuntime.listeners.add(listener)
+      return () => piRuntime.listeners.delete(listener)
+    }
+  ),
+}))
 
 // Mock all the heavy dependencies
 vi.mock('@/hooks/useServiceHub', () => ({
-  useServiceStore: { getState: () => ({ serviceHub: null }) },
+  useServiceStore: { getState: () => ({ serviceHub: {} }) },
 }))
 
 vi.mock('@/hooks/useToolAvailable', () => ({
   useToolAvailable: { getState: () => ({ getDisabledToolsForThread: () => [], getDefaultDisabledTools: () => [] }) },
 }))
 
-vi.mock('@/hooks/useModelProvider', () => ({
-  useModelProvider: { getState: () => ({ selectedModel: null, selectedProvider: '', getProviderByName: () => null }) },
-}))
-
 const mockState = vi.hoisted(() => ({
   currentAssistant: null as unknown,
   threads: {} as Record<string, unknown>,
+  selectedModel: null as { id: string; capabilities?: string[] } | null,
+  selectedProvider: '',
+  provider: null as Record<string, unknown> | null,
+}))
+
+vi.mock('@/hooks/useModelProvider', () => ({
+  useModelProvider: {
+    getState: () => ({
+      selectedModel: mockState.selectedModel,
+      selectedProvider: mockState.selectedProvider,
+      getProviderByName: () => mockState.provider,
+    }),
+  },
 }))
 
 vi.mock('@/hooks/useAssistant', () => ({
@@ -57,6 +85,12 @@ describe('CustomChatTransport', () => {
   beforeEach(() => {
     mockState.currentAssistant = null
     mockState.threads = {}
+    mockState.selectedModel = null
+    mockState.selectedProvider = ''
+    mockState.provider = null
+    piRuntime.invoke.mockReset()
+    piRuntime.invoke.mockResolvedValue(undefined)
+    piRuntime.listeners.clear()
     transport = new CustomChatTransport('You are helpful', 'thread-1')
   })
 
@@ -190,6 +224,74 @@ describe('CustomChatTransport', () => {
   it('setLastUserMessage sets the message', () => {
     transport.setLastUserMessage('hello')
     expect(true).toBe(true)
+  })
+
+  it('isolates concurrent Pi transport streams and removes only the terminal listener', async () => {
+    mockState.selectedModel = { id: 'divo-pi' }
+    mockState.selectedProvider = 'pi'
+    mockState.provider = { id: 'pi' }
+    useAppState.setState({ busyThreads: {}, piThreadRunStates: {} })
+
+    const first = new CustomChatTransport(undefined, 'thread-a')
+    const second = new CustomChatTransport(undefined, 'thread-b')
+    const request = (text: string, chatId: string) => ({
+      chatId,
+      messages: [{ id: `message-${chatId}`, role: 'user', parts: [{ type: 'text', text }] }],
+      abortSignal: undefined,
+      trigger: 'submit-message' as const,
+      messageId: undefined,
+    })
+
+    const [streamA, streamB] = await Promise.all([
+      first.sendMessages(request('first', 'thread-a') as any),
+      second.sendMessages(request('second', 'thread-b') as any),
+    ])
+    await vi.waitFor(() =>
+      expect(
+        piRuntime.invoke.mock.calls.filter(([command]) => command === 'pi_prompt')
+      ).toHaveLength(2)
+    )
+    const prompts = piRuntime.invoke.mock.calls
+      .filter(([command]) => command === 'pi_prompt')
+      .map(([, payload]) => payload as { threadId: string; runId: string })
+    const promptA = prompts.find((prompt) => prompt.threadId === 'thread-a')!
+    const promptB = prompts.find((prompt) => prompt.threadId === 'thread-b')!
+    const emit = (payload: Record<string, unknown>) => {
+      for (const listener of [...piRuntime.listeners]) listener({ payload })
+    }
+
+    emit({ type: 'pi_runtime_waiting', thread_id: 'thread-a', run_id: promptA.runId })
+    expect(useAppState.getState().piThreadRunStates['thread-a']).toEqual({
+      runId: promptA.runId,
+      state: 'capacity_waiting',
+    })
+    expect(useAppState.getState().piThreadRunStates['thread-b']).toBeUndefined()
+
+    emit({ type: 'prompt_accepted', thread_id: 'thread-a', run_id: promptA.runId })
+    emit({ type: 'message_update', thread_id: 'thread-b', run_id: promptB.runId, assistantMessageEvent: { type: 'text_delta', delta: 'B only' } })
+    expect(useAppState.getState().piThreadRunStates['thread-a']).toEqual({
+      runId: promptA.runId,
+      state: 'active',
+    })
+    expect(useAppState.getState().busyThreads).toEqual({ 'thread-a': true, 'thread-b': true })
+
+    const listenerCountBeforeTerminal = piRuntime.listeners.size
+    emit({ type: 'agent_end', thread_id: 'thread-a', run_id: promptA.runId })
+    await vi.waitFor(() => expect(piRuntime.listeners.size).toBe(listenerCountBeforeTerminal - 1))
+    expect(useAppState.getState().busyThreads['thread-a']).toBeUndefined()
+    expect(useAppState.getState().busyThreads['thread-b']).toBe(true)
+
+    // A delayed waiting notification from A must not alter B, and B's own
+    // listener remains live after A unlistens.
+    emit({ type: 'pi_runtime_waiting', thread_id: 'thread-a', run_id: promptA.runId })
+    emit({ type: 'prompt_accepted', thread_id: 'thread-b', run_id: promptB.runId })
+    expect(useAppState.getState().piThreadRunStates['thread-b']).toEqual({
+      runId: promptB.runId,
+      state: 'active',
+    })
+
+    await streamA.cancel()
+    await streamB.cancel()
   })
 
   it('reconnectToStream returns null', async () => {

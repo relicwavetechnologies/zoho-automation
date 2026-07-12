@@ -176,6 +176,14 @@ fn clear_active_run_if_matches(active_run: &mut Option<RunOwner>, owner: &RunOwn
     false
 }
 
+/// Always-allow Bash is deliberately scoped to a live run.  The pool keeps the
+/// rule separately so a recreated runtime can inherit it while that run is
+/// live; every terminal reconciliation must therefore remove both copies.
+fn revoke_slot_bash_rule(pool: &mut PoolState, slot: &RuntimeSlot) {
+    pool.bash_rules.remove(&slot.thread_id);
+    slot.state.lock().unwrap().bash_always_allowed = false;
+}
+
 /// A prompt acknowledgement only ends ownership when Pi rejects the prompt.
 /// A successful acknowledgement means the agent has accepted work and remains
 /// the active owner until a later terminal lifecycle event.
@@ -210,6 +218,11 @@ fn event_owner_payload(event: &mut serde_json::Value, owner: Option<&RunOwner>) 
         "type": "unknown",
         "payload": event.clone()
     });
+}
+
+fn owned_event(owner: Option<&RunOwner>, mut event: serde_json::Value) -> serde_json::Value {
+    event_owner_payload(&mut event, owner);
+    event
 }
 
 fn is_divo_approval_request(value: &serde_json::Value, thread_id: &str) -> bool {
@@ -584,7 +597,7 @@ impl PiManager {
             let notified = self.capacity_changed.notified();
             tokio::pin!(notified);
             let _ = futures::poll!(notified.as_mut());
-            let (slot, evicted) = {
+            let (slot, evicted, capacity_waiting) = {
                 let mut pool = self.pool.lock().await;
                 if waiter_owner
                     .as_ref()
@@ -606,7 +619,7 @@ impl PiManager {
                     {
                         hook.reached.notify_one();
                     }
-                    (Some(slot.clone()), None)
+                    (Some(slot.clone()), None, None)
                 } else {
                     let is_front = waiter.as_ref().map_or_else(
                         || pool.waiters.is_empty(),
@@ -637,8 +650,9 @@ impl PiManager {
                         }
                         slot.state.lock().unwrap().admission_leases = 1;
                         pool.slots.insert(thread_id.to_string(), slot.clone());
-                        (Some(slot), evicted)
+                        (Some(slot), evicted, None)
                     } else {
+                        let mut capacity_waiting = None;
                         if waiter.is_none() {
                             let ticket = pool.next_ticket;
                             pool.next_ticket += 1;
@@ -654,11 +668,28 @@ impl PiManager {
                                 capacity_changed: self.capacity_changed.clone(),
                                 armed: true,
                             });
+                            // This is emitted only for an owned prompt, never
+                            // for a background ensure-thread allocation. The
+                            // frontend uses it as a per-thread run state, not
+                            // as a message-send queue.
+                            capacity_waiting = waiter_owner.clone().and_then(|owner| {
+                                pool.config
+                                    .as_ref()
+                                    .map(|config| (owner, config.app.clone()))
+                            });
                         }
-                        (None, None)
+                        (None, None, capacity_waiting)
                     }
                 }
             };
+
+            if let Some((owner, app)) = capacity_waiting {
+                Self::emit(
+                    &app,
+                    Some(&owner),
+                    serde_json::json!({"type":"pi_runtime_waiting"}),
+                );
+            }
 
             if let Some(slot) = slot {
                 if let Some(old) = evicted {
@@ -671,6 +702,7 @@ impl PiManager {
                         .config
                         .as_ref()
                         .map(|config| config.app.clone());
+                    self.revoke_slot_bash_rule(&old).await;
                     Self::stop_slot(&old, app.as_ref(), "idle_reclaimed").await;
                 }
                 return Ok(SlotLease {
@@ -789,7 +821,7 @@ impl PiManager {
     }
 
     fn emit(app: &AppHandle, owner: Option<&RunOwner>, mut event: serde_json::Value) {
-        event_owner_payload(&mut event, owner);
+        event = owned_event(owner, event);
         if let Err(error) = app.emit("pi-event", event) {
             eprintln!("[pi] Failed to emit Pi event: {error}");
         }
@@ -818,6 +850,7 @@ impl PiManager {
         slot: &Arc<RuntimeSlot>,
         config: &RuntimeConfig,
         capacity_changed: Arc<Notify>,
+        pool: Arc<Mutex<PoolState>>,
     ) -> Result<(), String> {
         let runtime = PiRuntimePaths::resolve(&config.app, &config.data_folder)?;
         std::fs::create_dir_all(&config.scratch_dir)
@@ -899,7 +932,13 @@ impl PiManager {
                             lines
                         };
                         for line in lines {
-                            Self::handle_line(&reader_slot, &reader_app, &line, &reader_capacity);
+                            Self::handle_line(
+                                &reader_slot,
+                                &reader_app,
+                                &line,
+                                &reader_capacity,
+                                &pool,
+                            );
                         }
                     }
                 }
@@ -924,6 +963,10 @@ impl PiManager {
                 }
             };
             if exited {
+                // This reader runs on a dedicated OS thread, outside Tokio's
+                // runtime. Remove only this slot's persisted rule so a later
+                // recreated slot cannot inherit a grant from a crashed run.
+                revoke_slot_bash_rule(&mut pool.blocking_lock(), &reader_slot);
                 Self::emit_reconciliations(&reader_app, reconciliations, "process_exited");
                 Self::emit(
                     &reader_app,
@@ -979,12 +1022,19 @@ impl PiManager {
         };
         if needs_restart {
             let app = self.config().await?.app;
+            self.revoke_slot_bash_rule(slot).await;
             Self::stop_slot_locked(slot, Some(&app), "process_restarted");
         }
         if slot.state.lock().unwrap().process.is_some() {
             return Ok(());
         }
-        Self::spawn_slot(slot, &self.config().await?, self.capacity_changed.clone()).await
+        Self::spawn_slot(
+            slot,
+            &self.config().await?,
+            self.capacity_changed.clone(),
+            self.pool.clone(),
+        )
+        .await
     }
 
     fn stop_slot_locked(slot: &Arc<RuntimeSlot>, app: Option<&AppHandle>, reason: &str) {
@@ -1019,6 +1069,7 @@ impl PiManager {
         app: &AppHandle,
         line: &str,
         capacity_changed: &Notify,
+        pool: &Arc<Mutex<PoolState>>,
     ) {
         let value: serde_json::Value = match serde_json::from_str(line) {
             Ok(value) => value,
@@ -1138,7 +1189,7 @@ impl PiManager {
             return;
         }
         if event_type.is_some() {
-            let (owner, reconciliations) = {
+            let (owner, reconciliations, terminal) = {
                 let mut state = slot.state.lock().unwrap();
                 let owner = state.active_run.clone();
                 let reconciliations = if event_type.as_deref() == Some("agent_end")
@@ -1157,8 +1208,19 @@ impl PiManager {
                 } else {
                     Vec::new()
                 };
-                (owner, reconciliations)
+                let terminal = event_type.as_deref() == Some("agent_end")
+                    && owner.is_some()
+                    && !value
+                        .get("willRetry")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                (owner, reconciliations, terminal)
             };
+            if terminal {
+                // `bash_rules` outlives a slot; clear it at the same boundary
+                // that clears the active owner and pending approval UI.
+                revoke_slot_bash_rule(&mut pool.blocking_lock(), slot);
+            }
             Self::emit_reconciliations(app, reconciliations, "agent_ended");
             Self::emit(app, owner.as_ref(), value);
             if event_type.as_deref() == Some("agent_end") && owner.is_some() {
@@ -1209,6 +1271,7 @@ impl PiManager {
         };
         let app = self.config().await?.app;
         for slot in stale {
+            self.revoke_slot_bash_rule(&slot).await;
             Self::stop_slot(&slot, Some(&app), "process_restarted").await;
         }
         self.wake_capacity();
@@ -1249,7 +1312,13 @@ impl PiManager {
             return Err("Pi prompt was cancelled during runtime admission".into());
         }
         if slot.state.lock().unwrap().process.is_none() {
-            Self::spawn_slot(&slot, &self.config().await?, self.capacity_changed.clone()).await?;
+            Self::spawn_slot(
+                &slot,
+                &self.config().await?,
+                self.capacity_changed.clone(),
+                self.pool.clone(),
+            )
+            .await?;
         }
         {
             let mut state = slot.state.lock().unwrap();
@@ -1311,6 +1380,7 @@ impl PiManager {
             let mut state = slot.state.lock().unwrap();
             drain_pending_extension_ui(&mut state.pending_extension_ui, Some(&owner))
         };
+        self.revoke_slot_bash_rule(&slot).await;
         let app = self.config().await?.app;
         Self::emit_reconciliations(&app, reconciliations, "run_aborted");
         Self::send_rpc(
@@ -1455,6 +1525,10 @@ impl PiManager {
     pub async fn revoke_bash_approval(&self, thread_id: &str) {
         self.set_bash_approval_rule(thread_id, false).await;
     }
+    async fn revoke_slot_bash_rule(&self, slot: &RuntimeSlot) {
+        let mut pool = self.pool.lock().await;
+        revoke_slot_bash_rule(&mut pool, slot);
+    }
     pub async fn set_bash_approval_rule(&self, thread_id: &str, allowed: bool) {
         let mut pool = self.pool.lock().await;
         if allowed {
@@ -1508,10 +1582,10 @@ mod tests {
         approval_source, can_enable_always_allow_bash, clear_active_run_if_matches,
         drain_pending_extension_ui, event_owner_payload, fail_pending_rpc, idle_runtime_thread,
         is_divo_approval_request, is_divo_memory_review_request, require_active_run,
-        response_clears_active_run, should_auto_allow_bash, take_pending_confirm,
-        take_pending_memory_review, valid_memory_review_response, ApprovalSource,
-        ExtensionUiProtocol, PendingExtensionUiRequest, PendingRpc, PiManager, RunOwner,
-        RuntimeSlot,
+        response_clears_active_run, revoke_slot_bash_rule, should_auto_allow_bash,
+        take_pending_confirm, take_pending_memory_review, valid_memory_review_response,
+        ApprovalSource, ExtensionUiProtocol, PendingExtensionUiRequest, PendingRpc, PiManager,
+        RunOwner, RuntimeSlot,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -1670,6 +1744,108 @@ mod tests {
             event.get("run_id").and_then(|value| value.as_str()),
             Some("run-1")
         );
+    }
+
+    #[test]
+    fn capacity_waiting_event_carries_the_exact_queued_owner() {
+        let event = super::owned_event(
+            Some(&owner("thread-c", "run-c")),
+            serde_json::json!({"type":"pi_runtime_waiting"}),
+        );
+
+        assert_eq!(event["type"], "pi_runtime_waiting");
+        assert_eq!(event["thread_id"], "thread-c");
+        assert_eq!(event["run_id"], "run-c");
+    }
+
+    #[tokio::test]
+    async fn normal_terminal_reconciliation_revokes_only_its_thread_bash_grant() {
+        let manager = PiManager::new();
+        let first = Arc::new(RuntimeSlot::new("thread-a".into()));
+        let second = Arc::new(RuntimeSlot::new("thread-b".into()));
+        first.state.lock().unwrap().active_run = Some(owner("thread-a", "run-a"));
+        first.state.lock().unwrap().bash_always_allowed = true;
+        second.state.lock().unwrap().active_run = Some(owner("thread-b", "run-b"));
+        second.state.lock().unwrap().bash_always_allowed = true;
+        {
+            let mut pool = manager.pool.lock().await;
+            pool.bash_rules.insert("thread-a".into());
+            pool.bash_rules.insert("thread-b".into());
+            pool.slots.insert("thread-a".into(), first.clone());
+            pool.slots.insert("thread-b".into(), second.clone());
+        }
+
+        // This is the same exact-thread cleanup performed after a non-retry
+        // agent_end clears A's active run and pending approval UI.
+        first.state.lock().unwrap().active_run = None;
+        manager.revoke_slot_bash_rule(&first).await;
+
+        assert!(!manager.bash_approval_allowed("thread-a").await);
+        assert!(!first.state.lock().unwrap().bash_always_allowed);
+        assert!(manager.bash_approval_allowed("thread-b").await);
+        assert!(second.state.lock().unwrap().bash_always_allowed);
+        assert_eq!(
+            second.state.lock().unwrap().active_run,
+            Some(owner("thread-b", "run-b"))
+        );
+    }
+
+    #[test]
+    fn crash_and_restart_reconciliation_cannot_resurrect_a_slot_bash_grant() {
+        let first = Arc::new(RuntimeSlot::new("thread-a".into()));
+        let second = Arc::new(RuntimeSlot::new("thread-b".into()));
+        first.state.lock().unwrap().bash_always_allowed = true;
+        second.state.lock().unwrap().bash_always_allowed = true;
+        let mut pool = super::PoolState {
+            config: None,
+            slots: HashMap::from([
+                ("thread-a".into(), first.clone()),
+                ("thread-b".into(), second.clone()),
+            ]),
+            waiters: Default::default(),
+            next_ticket: 0,
+            bash_rules: HashSet::from(["thread-a".into(), "thread-b".into()]),
+            cancelled_runs: HashSet::new(),
+        };
+
+        // The reader crash path and restart/eviction path share this helper.
+        revoke_slot_bash_rule(&mut pool, &first);
+        assert!(!pool.bash_rules.contains("thread-a"));
+        assert!(!first.state.lock().unwrap().bash_always_allowed);
+        assert!(pool.bash_rules.contains("thread-b"));
+
+        // A recreated A must not inherit the old rule.
+        let recreated = RuntimeSlot::new("thread-a".into());
+        assert!(!pool.bash_rules.contains(&recreated.thread_id));
+        assert!(!recreated.state.lock().unwrap().bash_always_allowed);
+    }
+
+    #[tokio::test]
+    async fn stop_clears_bash_grants_and_run_state_for_every_remaining_slot() {
+        let manager = PiManager::new();
+        let first = Arc::new(RuntimeSlot::new("thread-a".into()));
+        let second = Arc::new(RuntimeSlot::new("thread-b".into()));
+        for (slot, run) in [(&first, "run-a"), (&second, "run-b")] {
+            let mut state = slot.state.lock().unwrap();
+            state.active_run = Some(owner(&slot.thread_id, run));
+            state.bash_always_allowed = true;
+        }
+        {
+            let mut pool = manager.pool.lock().await;
+            pool.bash_rules
+                .extend(["thread-a".into(), "thread-b".into()]);
+            pool.slots.insert("thread-a".into(), first.clone());
+            pool.slots.insert("thread-b".into(), second.clone());
+        }
+
+        manager.stop().await;
+
+        assert!(!manager.bash_approval_allowed("thread-a").await);
+        assert!(!manager.bash_approval_allowed("thread-b").await);
+        assert!(first.state.lock().unwrap().active_run.is_none());
+        assert!(second.state.lock().unwrap().active_run.is_none());
+        assert!(!first.state.lock().unwrap().bash_always_allowed);
+        assert!(!second.state.lock().unwrap().bash_always_allowed);
     }
 
     #[test]

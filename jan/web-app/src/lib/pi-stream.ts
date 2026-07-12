@@ -48,12 +48,24 @@ export function createPiMessageStream(options: {
   message: string
   abortSignal: AbortSignal | undefined
   isStale: () => boolean
-  onTerminal?: () => void
+  onTerminal?: (runId: string) => void
+  /** Owner-tagged runtime admission transitions, for thread-level state. */
+  onRunStateChange?: (
+    runId: string,
+    state: 'capacity_waiting' | 'active'
+  ) => void
   /** Called for every raw pi-event (including those without UI mapping). */
   onPiEvent?: (event: PiRawEvent) => void
 }): ReadableStream<UIMessageChunk> {
-  const { threadId, message, abortSignal, isStale, onTerminal, onPiEvent } =
-    options
+  const {
+    threadId,
+    message,
+    abortSignal,
+    isStale,
+    onTerminal,
+    onRunStateChange,
+    onPiEvent,
+  } = options
   const messageId = crypto.randomUUID()
   // Rust treats this caller-generated id as part of the active-run owner.
   // Keep one identity for this whole stream, including every cancellation path.
@@ -101,7 +113,7 @@ export function createPiMessageStream(options: {
           return
         }
         finished = true
-        onTerminal?.()
+        onTerminal?.(runId)
         try {
           if (reason === 'stop') {
             controller.enqueue({ type: 'finish', finishReason: 'stop' })
@@ -167,10 +179,15 @@ export function createPiMessageStream(options: {
         if (startupWasCancelledOrStale()) return
 
         unlisten = await listen<PiRawEvent>('pi-event', (event) => {
-          if (isStale()) return
+          if (finished || isStale()) return
           const payload = event.payload
           if (payload.thread_id !== threadId || payload.run_id !== runId) return
 
+          if (payload.type === 'pi_runtime_waiting') {
+            onRunStateChange?.(runId, 'capacity_waiting')
+          } else if (payload.type === 'prompt_accepted') {
+            onRunStateChange?.(runId, 'active')
+          }
           onPiEvent?.(payload)
           mapPiEventToUiChunks(payload, controller, state, finishCurrentStream)
         })
@@ -209,7 +226,7 @@ export function createPiMessageStream(options: {
         // no prompt to abort in that case, but the transport still needs its
         // terminal notification to release the busy marker.
         if (finishCancelledStream) finishCancelledStream()
-        else onTerminal?.()
+        else onTerminal?.(runId)
       }
     },
   })

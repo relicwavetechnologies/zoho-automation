@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { useAppState } from '../useAppState'
+import {
+  selectPiThreadCapacityWaiting,
+  selectPiThreadRunState,
+  useAppState,
+} from '../useAppState'
 
 
 describe('useAppState', () => {
@@ -14,6 +18,7 @@ describe('useAppState', () => {
         tools: [],
         serverStatus: 'stopped',
         abortControllers: {},
+        piThreadRunStates: {},
         currentToolCall: undefined,
         showOutOfContextDialog: false
       })
@@ -107,6 +112,29 @@ describe('useAppState', () => {
     expect(result.current.abortControllers['thread-123']).toBe(controller)
   })
 
+  it('tracks capacity waiting by exact thread and run without clearing a newer run', () => {
+    act(() => {
+      resultForStore().setPiThreadRunState('thread-c', 'run-c-1', 'capacity_waiting')
+    })
+
+    expect(selectPiThreadCapacityWaiting('thread-c')(useAppState.getState())).toBe(true)
+    expect(selectPiThreadRunState('thread-c')(useAppState.getState())).toEqual({
+      runId: 'run-c-1',
+      state: 'capacity_waiting',
+    })
+
+    act(() => {
+      resultForStore().setPiThreadRunState('thread-c', 'run-c-2', 'active')
+      resultForStore().setPiThreadRunState('thread-c', 'run-c-1', 'capacity_waiting')
+      resultForStore().clearPiThreadRunState('thread-c', 'run-c-1')
+    })
+
+    expect(selectPiThreadRunState('thread-c')(useAppState.getState())).toEqual({
+      runId: 'run-c-2',
+      state: 'active',
+    })
+  })
+
   it('should set out of context dialog', () => {
     const { result } = renderHook(() => useAppState())
 
@@ -124,3 +152,7 @@ describe('useAppState', () => {
   })
 
 })
+
+function resultForStore() {
+  return useAppState.getState()
+}

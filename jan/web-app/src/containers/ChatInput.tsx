@@ -395,10 +395,6 @@ const ChatInput = memo(function ChatInput({
     (state) => state.allowBashForTask
   )
   const denyExpiredPiApprovals = usePiApproval((state) => state.denyExpired)
-  const approvalCleanupRef = useRef<{
-    threadId: string
-    timer: ReturnType<typeof setTimeout>
-  } | null>(null)
   const { t } = useTranslation()
   const spellCheckChatInput = useGeneralSetting(
     (state) => state.spellCheckChatInput
@@ -478,31 +474,6 @@ const ChatInput = memo(function ChatInput({
     }, 30_000)
     return () => clearInterval(timer)
   }, [approvalQueue.length, denyExpiredPiApprovals])
-
-  useEffect(() => {
-    if (!currentThreadId) return
-
-    // React StrictMode mounts effects twice in development. Cancel only the
-    // simulated cleanup for the same thread; a real navigation to another
-    // thread still denies every unresolved request for the old thread.
-    if (approvalCleanupRef.current?.threadId === currentThreadId) {
-      clearTimeout(approvalCleanupRef.current.timer)
-      approvalCleanupRef.current = null
-    }
-
-    return () => {
-      const timer = setTimeout(() => {
-        void usePiApproval.getState().denyThread(currentThreadId)
-        void invoke('pi_revoke_bash_approval', {
-          threadId: currentThreadId,
-        })
-        if (approvalCleanupRef.current?.timer === timer) {
-          approvalCleanupRef.current = null
-        }
-      }, 0)
-      approvalCleanupRef.current = { threadId: currentThreadId, timer }
-    }
-  }, [currentThreadId])
 
   // Jan Browser Extension hook
   const {
