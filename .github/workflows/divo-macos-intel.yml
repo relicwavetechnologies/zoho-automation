@@ -1,19 +1,9 @@
 name: Divo macOS Intel DMG
 
 on:
-  push:
-    branches: [dev]
-    paths:
-      - '.github/workflows/divo-macos-intel.yml'
-      - 'jan/src-tauri/**'
-      - 'jan/core/**'
-      - 'jan/web-app/**'
-      - 'jan/extensions/**'
-      - 'jan/scripts/**'
-      - 'jan/pre-install/**'
-      - 'jan/Makefile'
-      - 'jan/package.json'
-      - 'jan/yarn.lock'
+  # Manual only. DMG builds are produced locally, so a push to dev (or any
+  # branch) must not trigger a macOS DMG build in CI. Run on demand from the
+  # Actions tab or `gh workflow run divo-macos-intel.yml` if ever needed.
   workflow_dispatch:
 
 concurrency:
