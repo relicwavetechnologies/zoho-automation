@@ -44,6 +44,7 @@ import {
   type FinanceQuickStartDefinition,
 } from '@/lib/divo-finance-quick-start'
 import { cn } from '@/lib/utils'
+import { FinanceDatePicker } from './FinanceDatePicker'
 
 type RuntimeContext = {
   capabilityBootstrap?: {
@@ -305,7 +306,20 @@ export function FinanceQuickStarts({ onSubmit }: Props) {
                       <Label htmlFor={`quick-${field.id}`}>
                         {field.label}{field.required ? <span className="text-destructive"> *</span> : null}
                       </Label>
-                      {field.type === 'select' ? (
+                      {field.type === 'date' ? (
+                        <FinanceDatePicker
+                          id={`quick-${field.id}`}
+                          value={values[field.id]}
+                          placeholder={`Select ${field.label.toLowerCase()}`}
+                          required={field.required}
+                          onChange={(value) =>
+                            setValues((current) => ({
+                              ...current,
+                              [field.id]: value,
+                            }))
+                          }
+                        />
+                      ) : field.type === 'select' ? (
                         <OptionMenu
                           label={field.options?.find((option) => option.value === values[field.id])?.label ?? field.label}
                           options={field.options ?? []}

@@ -80,9 +80,10 @@ describe('FinanceQuickStarts', () => {
 
     expect(screen.getByRole('button', { name: /Branch Books/i })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Receivables/i }))
-    fireEvent.change(screen.getByLabelText(/As of/i), {
-      target: { value: '2026-07-13' },
-    })
+    fireEvent.click(screen.getByRole('button', { name: /Select as of/i }))
+    fireEvent.click(
+      screen.getByRole('gridcell', { name: /July 13, 2026/i })
+    )
     fireEvent.click(screen.getByRole('button', { name: /Run in Divo/i }))
 
     expect(onSubmit).toHaveBeenCalledWith(
