@@ -210,6 +210,9 @@ jobs:
       DIVO_DEV_HOST: 103.172.92.187
       DIVO_DEV_USER: deploy
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Validate deployment secrets
         env:
           DIVO_DEV_SSH_KEY: ${{ secrets.DIVO_DEV_SSH_KEY }}
