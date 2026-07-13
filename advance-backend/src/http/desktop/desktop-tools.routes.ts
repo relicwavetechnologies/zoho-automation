@@ -14,6 +14,8 @@ import type { IntegrationConnectionRepository } from '../../infrastructure/persi
 import type { AuditService } from '../../application/observability/audit.service';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import type { ToolRegistry } from '../../application/orchestration/tools/tool-registry';
+import type { CompanySerperConnectionRepository } from '../../infrastructure/persistence/company-serper-connection.repository';
+import type { CompanySerperService } from '../../application/web-search/company-serper.service';
 
 export interface DesktopToolsRouteDeps {
   prisma: PrismaClient;
@@ -28,6 +30,8 @@ export interface DesktopToolsRouteDeps {
   connectionRepo: IntegrationConnectionRepository;
   auditService: AuditService;
   toolRegistry: ToolRegistry;
+  serperConnectionRepo: CompanySerperConnectionRepository;
+  serperService: CompanySerperService;
 }
 
 const enabledSchema = z.object({ enabled: z.boolean() });
@@ -36,6 +40,9 @@ const scopeSchema = z.union([
   z.object({ scope: z.literal('global') }).strict(),
   z.object({ scope: z.literal('department'), departmentId: z.string().uuid() }).strict(),
 ]);
+const serperTestSchema = z.object({ apiKey: z.string().min(1).max(512) }).strict();
+const serperSaveSchema = z.object({ label: z.string().trim().min(1).max(100), apiKey: z.string().min(1).max(512), verificationToken: z.string().uuid() }).strict();
+const serperStatusSchema = z.object({ enabled: z.boolean() }).strict();
 
 function actor(res: Response) {
   return { userId: res.locals.userId as string, companyId: res.locals.companyId as string, role: res.locals.aiRole as string };
@@ -48,6 +55,13 @@ function respondError(res: Response, error: unknown): void {
     return;
   }
   res.status(500).json({ error: 'internal_error', message: 'Unable to load desktop tools' });
+}
+
+function requireCompanyAdmin(res: Response): boolean {
+  const role = res.locals.aiRole as string;
+  if (role === 'COMPANY_ADMIN' || role === 'SUPER_ADMIN') return true;
+  res.status(403).json({ error: 'forbidden', message: 'Only company admins can manage Web Search connections' });
+  return false;
 }
 
 /** Member-auth desktop-only tools inventory and tightly scoped RBAC management API. */
@@ -85,6 +99,51 @@ export function createDesktopToolsRoutes(deps: DesktopToolsRouteDeps): Router {
       const scope = parsed.data.scope === 'global' ? { kind: 'global' as const } : { kind: 'department' as const, departmentId: parsed.data.departmentId };
       res.json(await service.snapshot(actor(res), req.params.toolId!, scope));
     } catch (error) { respondError(res, error); }
+  });
+
+  // Company-shared Serper credentials. Keys are accepted only by the test/save
+  // flow and are never sent back to the desktop after encryption.
+  router.get('/tools/webSearch/connections', memberAuth, async (_req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    res.json({ connections: await deps.serperConnectionRepo.list(res.locals.companyId as string) });
+  });
+
+  router.post('/tools/webSearch/connections/test', memberAuth, async (req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    const parsed = serperTestSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'apiKey is required' }); return; }
+    try {
+      res.json(await deps.serperService.verify(res.locals.companyId as string, res.locals.userId as string, parsed.data.apiKey));
+    } catch (error) {
+      res.status(422).json({ error: 'connection_test_failed', message: error instanceof Error ? error.message : 'Unable to verify this Serper API key' });
+    }
+  });
+
+  router.post('/tools/webSearch/connections', memberAuth, async (req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    const parsed = serperSaveSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'label, apiKey, and verificationToken are required' }); return; }
+    try {
+      res.status(201).json({ connection: await deps.serperService.saveVerified({ companyId: res.locals.companyId as string, userId: res.locals.userId as string, ...parsed.data }) });
+    } catch (error) {
+      res.status(422).json({ error: 'connection_not_verified', message: error instanceof Error ? error.message : 'Test the key before saving it' });
+    }
+  });
+
+  router.patch('/tools/webSearch/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    const parsed = serperStatusSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'enabled must be a boolean' }); return; }
+    const connection = await deps.serperConnectionRepo.setStatus(res.locals.companyId as string, req.params.connectionId!, parsed.data.enabled ? 'connected' : 'disabled');
+    if (!connection) { res.status(404).json({ error: 'not_found' }); return; }
+    res.json({ connection });
+  });
+
+  router.delete('/tools/webSearch/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    const deleted = await deps.serperConnectionRepo.revoke(res.locals.companyId as string, req.params.connectionId!);
+    if (!deleted) { res.status(404).json({ error: 'not_found' }); return; }
+    res.json({ success: true });
   });
 
   router.put('/tools/:toolId/global/roles/:role/actions/:actionGroup', memberAuth, async (req: Request, res: Response) => {

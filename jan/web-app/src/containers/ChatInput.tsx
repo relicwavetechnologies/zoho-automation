@@ -2230,7 +2230,7 @@ const ChatInput = memo(function ChatInput({
           ).then((allowed) => {
             if (allowed) {
               toast.success(
-                'Bash commands are allowed for this task until you stop or leave it.'
+                'Bash commands are allowed for this run and are revoked when it finishes.'
               )
             }
           })

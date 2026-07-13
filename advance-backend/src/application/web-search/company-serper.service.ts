@@ -1,0 +1,60 @@
+import { randomUUID } from 'node:crypto';
+import type { CachePort } from '../../shared/cache';
+import type { Logger } from '../../shared/logger';
+import { SerperClient, SearchIntegrationError, type SerperSearchInput, type SerperSearchResponse } from '../../infrastructure/ai/search/serper.client';
+import { CompanySerperConnectionRepository, serperKeyFingerprint } from '../../infrastructure/persistence/company-serper-connection.repository';
+
+const TEST_TTL_SECONDS = 10 * 60;
+const verificationKey = (token: string) => `serper:verification:${token}`;
+type Verification = { companyId: string; userId: string; fingerprint: string };
+
+/** Owns company Serper credential validation, storage proof, and safe failover. */
+export class CompanySerperService {
+  constructor(
+    private readonly connections: CompanySerperConnectionRepository,
+    private readonly cache: CachePort,
+    private readonly timeoutMs: number,
+    private readonly logger: Logger,
+    private readonly legacyApiKey = '',
+  ) {}
+
+  async verify(companyId: string, userId: string, apiKey: string): Promise<{ verificationToken: string }> {
+    const key = apiKey.trim();
+    if (!key) throw new Error('An API key is required');
+    await new SerperClient({ apiKey: key, timeoutMs: this.timeoutMs }).search({ query: 'Divo connection verification', num: 1 });
+    const verificationToken = randomUUID();
+    const stored = await this.cache.set(verificationKey(verificationToken), { companyId, userId, fingerprint: serperKeyFingerprint(key) } satisfies Verification, TEST_TTL_SECONDS);
+    if (!stored.ok) throw new Error('Unable to retain the verification result. Please test the key again.');
+    return { verificationToken };
+  }
+
+  async saveVerified(input: { companyId: string; userId: string; label: string; apiKey: string; verificationToken: string }) {
+    const proof = await this.cache.get<Verification>(verificationKey(input.verificationToken));
+    await this.cache.del(verificationKey(input.verificationToken));
+    if (!proof.ok || !proof.value || proof.value.companyId !== input.companyId || proof.value.userId !== input.userId || proof.value.fingerprint !== serperKeyFingerprint(input.apiKey)) {
+      throw new Error('Test this exact API key successfully before saving it.');
+    }
+    return this.connections.saveVerified(input);
+  }
+
+  async search(companyId: string, input: SerperSearchInput): Promise<SerperSearchResponse> {
+    const configured = await this.connections.activeKeys(companyId);
+    const candidates = configured.length > 0 ? configured : this.legacyApiKey ? [{ id: 'legacy-env', apiKey: this.legacyApiKey }] : [];
+    if (candidates.length === 0) throw new SearchIntegrationError('No Web Search connection is configured for this company', 'search_not_configured');
+    let lastError: unknown;
+    for (const candidate of candidates) {
+      try {
+        const result = await new SerperClient({ apiKey: candidate.apiKey, timeoutMs: this.timeoutMs }).search(input);
+        if (candidate.id !== 'legacy-env') void this.connections.markSuccess(candidate.id);
+        return result;
+      } catch (error) {
+        lastError = error;
+        const code = error instanceof SearchIntegrationError ? error.code : 'search_unavailable';
+        if (candidate.id !== 'legacy-env') void this.connections.markFailure(candidate.id, code);
+        if (code !== 'search_rate_limited' && code !== 'search_auth_failed') throw error;
+        this.logger.warn('serper.connection.failed_over', { companyId, connectionId: candidate.id, code });
+      }
+    }
+    throw lastError instanceof Error ? lastError : new SearchIntegrationError('All company Web Search connections are unavailable', 'search_unavailable');
+  }
+}

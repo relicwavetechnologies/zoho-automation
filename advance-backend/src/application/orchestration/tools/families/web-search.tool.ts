@@ -20,7 +20,7 @@ const ResultSchema = z.object({
 type Res = z.infer<typeof ResultSchema>;
 
 export interface WebSearchClientPort {
-  search(query: string, limit?: number): Promise<Array<{ title: string; url: string; snippet: string }>>;
+  search(companyId: string, query: string, limit?: number): Promise<Array<{ title: string; url: string; snippet: string }>>;
 }
 
 export const createWebSearchTool = (deps: { client: WebSearchClientPort }): Tool<Args, Res> => ({
@@ -36,7 +36,7 @@ export const createWebSearchTool = (deps: { client: WebSearchClientPort }): Tool
   async execute(args, ctx): Promise<Result<Res, ToolError>> {
     try {
       ctx.onProgress?.('Searching the web…');
-      const results = await deps.client.search(args.query, args.limit ?? 5);
+      const results = await deps.client.search(ctx.runContext.companyId, args.query, args.limit ?? 5);
       return ok({ success: true, results, message: `Found ${results.length} results` });
     } catch (e) {
       return err(new ToolError({ toolId: 'webSearch', reason: 'upstream_failure', cause: e, message: String(e) }));

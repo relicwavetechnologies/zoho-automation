@@ -154,7 +154,7 @@ describe('webSearch tool', () => {
 
     it('passes limit to client', async () => {
       let capturedLimit: number | undefined;
-      const cap = { search: async (_q: string, limit?: number) => { capturedLimit = limit; return fakeResults; } };
+      const cap = { search: async (_companyId: string, _q: string, limit?: number) => { capturedLimit = limit; return fakeResults; } };
       const tool = createWebSearchTool({ client: cap });
       await tool.execute({ query: 'test', limit: 3 }, ctx);
       assert.equal(capturedLimit, 3);
@@ -162,7 +162,7 @@ describe('webSearch tool', () => {
 
     it('defaults limit to 5 when not provided', async () => {
       let capturedLimit: number | undefined;
-      const cap = { search: async (_q: string, limit?: number) => { capturedLimit = limit; return []; } };
+      const cap = { search: async (_companyId: string, _q: string, limit?: number) => { capturedLimit = limit; return []; } };
       const tool = createWebSearchTool({ client: cap });
       await tool.execute({ query: 'test' }, ctx);
       assert.equal(capturedLimit, 5);

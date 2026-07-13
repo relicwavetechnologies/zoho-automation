@@ -96,6 +96,12 @@ function removeRequest(
   return nextQueues
 }
 
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) return error.message
+  if (typeof error === 'string' && error.trim()) return error
+  return fallback
+}
+
 async function sendDecision(
   requestId: string,
   threadId: string,
@@ -191,10 +197,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
           (entry) => ({
             ...entry,
             status: 'error',
-            error:
-              error instanceof Error
-                ? error.message
-                : 'Could not deliver the approval decision',
+            error: errorMessage(error, 'Could not deliver the approval decision'),
           })
         ),
       }))
@@ -316,10 +319,10 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
           (entry) => ({
             ...entry,
             status: 'error',
-            error:
-              error instanceof Error
-                ? error.message
-                : 'Could not enable automatic Bash approval',
+            error: errorMessage(
+              error,
+              'Could not enable automatic Bash approval'
+            ),
           })
         ),
       }))

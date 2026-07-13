@@ -612,7 +612,7 @@ describe('ChatInput', () => {
     )
   })
 
-  it('can always allow Bash for the active task', async () => {
+  it('can always allow Bash for the active run', async () => {
     usePiApproval.getState().enqueue({
       requestId: 'approval-request-bash-always',
       threadId: 'thread-1',
@@ -634,7 +634,7 @@ describe('ChatInput', () => {
     renderInput()
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Always allow Bash for this task',
+        name: 'Always allow Bash for this run',
       })
     )
 

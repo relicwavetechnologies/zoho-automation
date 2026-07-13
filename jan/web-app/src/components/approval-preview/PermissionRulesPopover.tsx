@@ -73,7 +73,7 @@ export function PermissionRulesPopover({
       setBashAlwaysAllow(allowed)
       toast.success(
         allowed
-          ? 'Bash is allowed for this task until you stop or leave it.'
+          ? 'Bash is allowed for the active run and is revoked when it finishes.'
           : 'Bash will ask for approval before each command.'
       )
     } catch (updateError) {
@@ -119,7 +119,7 @@ export function PermissionRulesPopover({
                 <p className="text-sm font-medium">Bash commands</p>
                 <p className="text-xs text-muted-foreground">
                   {bashAlwaysAllow
-                    ? 'Always allow for this task'
+                    ? 'Always allow for active run'
                     : 'Ask before every command'}
                 </p>
               </div>
@@ -127,14 +127,14 @@ export function PermissionRulesPopover({
                 checked={bashAlwaysAllow}
                 disabled={!threadId || loading || saving}
                 loading={loading || saving}
-                aria-label="Always allow Bash for this task"
+                aria-label="Always allow Bash for this run"
                 onCheckedChange={(checked) => void updateBashRule(checked)}
               />
             </div>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">
               Bash can modify or delete files, access local data, and use the
-              network. This rule is held in memory and is cleared when the task
-              is stopped or left.
+              network. This rule is held in memory and is cleared when the run
+              finishes or is stopped.
             </p>
           </div>
         </div>

@@ -355,6 +355,8 @@ export const createServer = (c: Container) => {
       connectionRepo:         c.integrationConnectionRepo,
       auditService:           c.auditService,
       toolRegistry:           c.toolRegistry,
+      serperConnectionRepo:   c.companySerperConnectionRepo,
+      serperService:          c.companySerperService,
     }),
   );
   app.use(

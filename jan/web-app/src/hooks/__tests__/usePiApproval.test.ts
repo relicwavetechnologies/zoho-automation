@@ -108,6 +108,21 @@ describe('usePiApproval', () => {
     })
   })
 
+  it('keeps the actionable runtime delivery error returned by Tauri', async () => {
+    mocks.invoke.mockRejectedValueOnce(
+      'The local Divo runtime could not deliver this approval. Stop the run and send the request again. (Pi process is not running)'
+    )
+    usePiApproval.getState().enqueue(request('request-1'))
+
+    await usePiApproval.getState().resolve('thread-1', 'request-1', true)
+
+    expect(usePiApproval.getState().queues['thread-1']?.[0]).toMatchObject({
+      status: 'error',
+      error:
+        'The local Divo runtime could not deliver this approval. Stop the run and send the request again. (Pi process is not running)',
+    })
+  })
+
   it('enables Rust-owned always allow only for an active Bash request', async () => {
     usePiApproval.getState().enqueue(
       request('request-bash', {
@@ -137,6 +152,34 @@ describe('usePiApproval', () => {
       alwaysAllowBash: true,
     })
     expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
+  })
+
+  it('does not hide a failed always-allow delivery behind a generic error', async () => {
+    mocks.invoke.mockRejectedValueOnce('Pi process is not running')
+    usePiApproval.getState().enqueue(
+      request('request-bash', {
+        descriptor: {
+          version: 1,
+          toolCallId: 'tool-bash',
+          source: 'bash',
+          kind: 'bash.execute',
+          action: 'execute',
+          title: 'Run terminal command',
+          presentation: { command: 'pwd' },
+          runCorrelation: { version: 1, threadId: 'thread-1', runId: 'run-1' },
+        },
+      })
+    )
+
+    const allowed = await usePiApproval
+      .getState()
+      .allowBashForTask('thread-1', 'request-bash')
+
+    expect(allowed).toBe(false)
+    expect(usePiApproval.getState().queues['thread-1']?.[0]).toMatchObject({
+      status: 'error',
+      error: 'Pi process is not running',
+    })
   })
 
   it('refuses always allow for non-Bash requests', async () => {

@@ -37,7 +37,7 @@ export interface SerperSearchInput {
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 
-export type SearchErrorCode = 'search_unavailable' | 'search_invalid_response' | 'search_not_configured';
+export type SearchErrorCode = 'search_unavailable' | 'search_invalid_response' | 'search_not_configured' | 'search_auth_failed' | 'search_rate_limited';
 
 export class SearchIntegrationError extends Error {
   readonly code: SearchErrorCode;
@@ -140,9 +140,14 @@ export class SerperClient {
     const raw = await res.text();
 
     if (!res.ok) {
+      const code: SearchErrorCode = res.status === 429
+        ? 'search_rate_limited'
+        : res.status === 401 || res.status === 403
+          ? 'search_auth_failed'
+          : 'search_unavailable';
       throw new SearchIntegrationError(
         `Serper HTTP ${res.status}: ${raw.slice(0, 240)}`,
-        'search_unavailable',
+        code,
       );
     }
 

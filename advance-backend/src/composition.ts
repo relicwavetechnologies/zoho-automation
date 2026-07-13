@@ -43,6 +43,8 @@ import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
 import { LarkUserAuthLinkRepository } from './infrastructure/persistence/lark-user-auth-link.repository';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
+import { CompanySerperConnectionRepository } from './infrastructure/persistence/company-serper-connection.repository';
+import { CompanySerperService } from './application/web-search/company-serper.service';
 import { GmailClient } from './infrastructure/google/google-gmail.client';
 import { GoogleDriveClient } from './infrastructure/google/google-drive.client';
 import { GoogleCalendarClient } from './infrastructure/google/google-calendar.client';
@@ -213,6 +215,8 @@ export interface Container {
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
   integrationConnectionRepo: IntegrationConnectionRepository;
+  companySerperConnectionRepo: CompanySerperConnectionRepository;
+  companySerperService: CompanySerperService;
   zohoTokenService: ZohoTokenService;
   zohoConnectionRepo: ZohoConnectionRepository;
   // Observability
@@ -508,6 +512,15 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const webSearchService    = new WebSearchService(
     serperClient,
     logger.child({ service: 'web-search' }),
+  );
+  const serperEncryptionKey = env.SERPER_CONNECTION_ENCRYPTION_KEY ?? env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '';
+  const companySerperConnectionRepo = new CompanySerperConnectionRepository(prisma, serperEncryptionKey);
+  const companySerperService = new CompanySerperService(
+    companySerperConnectionRepo,
+    memoryCache,
+    env.SERPER_TIMEOUT_MS,
+    logger.child({ service: 'company-serper' }),
+    env.SERPER_API_KEY ?? '',
   );
 
   // ── Lark user OAuth ───────────────────────────────────────────────────────
@@ -839,13 +852,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // Thin adapter: WebSearchService → WebSearchClientPort (used by web-search tool)
   const webSearchClientAdapter = {
-    async search(query: string, limit = 5): Promise<Array<{ title: string; url: string; snippet: string }>> {
-      const result = await webSearchService.search({ query, searchResultsLimit: limit });
-      return result.items.map(item => ({
-        title:   item.title   ?? '',
-        url:     item.link,
-        snippet: item.snippet ?? '',
-      }));
+    async search(companyId: string, query: string, limit = 5): Promise<Array<{ title: string; url: string; snippet: string }>> {
+      const result = await companySerperService.search(companyId, { query, num: limit });
+      return result.organic.map(item => ({ title: item.title ?? '', url: item.link ?? '', snippet: item.snippet ?? '' })).filter(item => item.url);
     },
   };
 
@@ -1152,6 +1161,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // OAuth surfaces
     googleOAuthService,
     integrationConnectionRepo,
+    companySerperConnectionRepo,
+    companySerperService,
     zohoConnectionRepo,
     zohoTokenService,
     // Observability

@@ -18,7 +18,7 @@ describe('PermissionRulesPopover', () => {
     })
   })
 
-  it('loads and updates the real task-scoped Bash rule', async () => {
+  it('loads and updates the real active-run Bash rule', async () => {
     render(<PermissionRulesPopover threadId="thread-1" />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Permission rules' }))
@@ -29,7 +29,7 @@ describe('PermissionRulesPopover', () => {
     })
 
     const rule = screen.getByRole('switch', {
-      name: 'Always allow Bash for this task',
+      name: 'Always allow Bash for this run',
     })
     fireEvent.click(rule)
 
@@ -40,7 +40,7 @@ describe('PermissionRulesPopover', () => {
       )
       expect(rule).toBeChecked()
     })
-    expect(screen.getByText('Always allow for this task')).toBeInTheDocument()
+    expect(screen.getByText('Always allow for active run')).toBeInTheDocument()
   })
 
   it('disables rule changes when there is no task', async () => {
@@ -52,7 +52,7 @@ describe('PermissionRulesPopover', () => {
     ).toBeInTheDocument()
     expect(
       screen.getByRole('switch', {
-        name: 'Always allow Bash for this task',
+        name: 'Always allow Bash for this run',
       })
     ).toBeDisabled()
     expect(mocks.invoke).not.toHaveBeenCalled()

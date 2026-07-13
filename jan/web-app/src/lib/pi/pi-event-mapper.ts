@@ -388,7 +388,8 @@ export function mapPiEventToUiChunks(
     }
 
     case 'prompt_rejected':
-    case 'pi_process_exit': {
+    case 'pi_process_exit':
+    case 'pi_approval_delivery_failed': {
       const message =
         typeof payload.message === 'string'
           ? payload.message

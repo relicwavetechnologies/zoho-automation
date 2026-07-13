@@ -147,6 +147,7 @@ export function LiveApprovalComposer({
   const { descriptor } = request
   const details = presentationDetails(descriptor.presentation)
   const submitting = request.status === 'submitting'
+  const deliveryFailed = request.status === 'error'
   const expired = request.expiresAt <= now
   const canAlwaysAllowBash = descriptor.source === 'bash'
   const description =
@@ -215,7 +216,8 @@ export function LiveApprovalComposer({
         <ExactRequestDetails request={request} />
         {request.status === 'error' ? (
           <p className="text-sm text-destructive" role="alert">
-            Decision was not delivered. Divo remains paused. {request.error}
+            Decision was not delivered. Stop this run, then send the request
+            again. {request.error}
           </p>
         ) : null}
         {expired ? (
@@ -227,9 +229,10 @@ export function LiveApprovalComposer({
           <div className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs leading-5 text-muted-foreground">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
             <span>
-              Always allowing Bash lets future terminal commands in this task
+              Always allowing Bash lets future terminal commands in this run
               modify or delete files, access local data, and use the network
-              without another review. Stop the run to revoke it.
+              without another review. It is revoked when this run finishes or
+              you stop it.
             </span>
           </div>
         ) : null}
@@ -249,7 +252,7 @@ export function LiveApprovalComposer({
           <Button
             variant="outline"
             className="flex-1 sm:flex-none"
-            disabled={submitting}
+            disabled={submitting || deliveryFailed}
             onClick={() => onDecision(false)}
           >
             {submitting ? <LoaderCircle data-icon="inline-start" className="animate-spin" /> : null}
@@ -258,15 +261,15 @@ export function LiveApprovalComposer({
           {canAlwaysAllowBash && onAlwaysAllowBash ? (
             <Button
               variant="secondary"
-              disabled={submitting || expired}
+              disabled={submitting || expired || deliveryFailed}
               onClick={onAlwaysAllowBash}
             >
-              Always allow Bash for this task
+              Always allow Bash for this run
             </Button>
           ) : null}
           <Button
             className="flex-1 sm:flex-none"
-            disabled={submitting || expired}
+            disabled={submitting || expired || deliveryFailed}
             onClick={() => onDecision(true)}
           >
             {submitting ? (

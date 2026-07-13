@@ -473,6 +473,15 @@ enum ExtensionUiRegistration {
     Rejected,
 }
 
+/// A local response to Pi could not be written. Registered approvals carry an
+/// owner so the desktop can surface a run-scoped recovery message; rejected
+/// requests have no trusted owner and are logged only.
+struct ExtensionUiResponseFailure {
+    owner: Option<RunOwner>,
+    request_id: String,
+    error: String,
+}
+
 /// Registers only a named Divo UI request whose captured extension provenance
 /// exactly matches both the live slot owner and its desktop-published context.
 /// The caller cancels `Rejected` requests rather than emitting them.
@@ -1338,14 +1347,41 @@ impl PiManager {
             return;
         }
         if event_type.as_deref() == Some("extension_ui_request") {
-            Self::handle_extension_ui_request(
+            // The response path holds this same lock while it flushes the
+            // current decision and commits an always-allow grant. Without it,
+            // Pi could emit the next Bash request in the tiny interval between
+            // the flush and that commit, causing an unnecessary second card.
+            let _lifecycle = slot.lifecycle.blocking_lock();
+            if let Some(failure) = Self::handle_extension_ui_request(
                 slot,
                 value,
                 |owner, event| Self::emit(app, Some(owner), event),
-                |response| {
-                    let _ = Self::write_stdin(slot, &response.to_string());
-                },
-            );
+                |response| Self::write_stdin(slot, &response.to_string()),
+            ) {
+                let ExtensionUiResponseFailure {
+                    owner,
+                    request_id,
+                    error,
+                } = failure;
+                log::warn!(
+                    "divo.pi.approval.auto_response_failed request_id={} error={}",
+                    request_id,
+                    error
+                );
+                if let Some(owner) = owner.as_ref() {
+                    Self::emit(
+                        app,
+                        Some(owner),
+                        serde_json::json!({
+                            "type": "pi_approval_delivery_failed",
+                            "request_id": request_id,
+                            "message": format!(
+                                "The local Divo runtime could not automatically approve this Bash command. Stop the run and send the request again. ({error})"
+                            ),
+                        }),
+                    );
+                }
+            }
             return;
         }
         if event_type.is_some() {
@@ -1373,8 +1409,8 @@ impl PiManager {
         slot: &RuntimeSlot,
         value: serde_json::Value,
         mut emit: impl FnMut(&RunOwner, serde_json::Value),
-        mut respond: impl FnMut(serde_json::Value),
-    ) {
+        mut respond: impl FnMut(serde_json::Value) -> Result<(), String>,
+    ) -> Option<ExtensionUiResponseFailure> {
         let id = value
             .get("id")
             .and_then(|value| value.as_str())
@@ -1394,25 +1430,43 @@ impl PiManager {
             } => {
                 if auto_allow_bash {
                     if let Some(id) = id.as_deref() {
-                        respond(serde_json::json!({
+                        if let Err(error) = respond(serde_json::json!({
                             "type":"extension_ui_response",
                             "id":id,
                             "confirmed":true,
-                        }));
+                        })) {
+                            return Some(ExtensionUiResponseFailure {
+                                owner: Some(owner),
+                                request_id: id.to_string(),
+                                error,
+                            });
+                        }
                     }
+                    // This request was confirmed directly with Pi and was
+                    // deliberately never registered as pending. Emitting the
+                    // original request here would create a stale approval card
+                    // that can only fail as "already resolved" when clicked.
+                    return None;
                 }
                 emit(&owner, value);
             }
             ExtensionUiRegistration::Rejected => {
                 if let Some(id) = id {
-                    respond(serde_json::json!({
+                    if let Err(error) = respond(serde_json::json!({
                         "type":"extension_ui_response",
-                        "id":id,
+                        "id":id.clone(),
                         "cancelled":true,
-                    }));
+                    })) {
+                        return Some(ExtensionUiResponseFailure {
+                            owner: None,
+                            request_id: id,
+                            error,
+                        });
+                    }
                 }
             }
         }
+        None
     }
 
     pub async fn start(
@@ -1643,7 +1697,7 @@ impl PiManager {
             .cloned()
             .ok_or("No Pi runtime is assigned to this thread")?;
         let _lifecycle = slot.lifecycle.lock().await;
-        let (pending, response) = {
+        let response = {
             let mut state = slot.state.lock().unwrap();
             let protocol = state
                 .pending_extension_ui
@@ -1668,10 +1722,7 @@ impl PiManager {
                     .insert(request_id.clone(), pending);
                 return Err("Always allow is available only for a confirmed Bash request".into());
             }
-            if always_allow_bash {
-                state.bash_always_allowed = true;
-            }
-            let response = match protocol {
+            match protocol {
                 ExtensionUiProtocol::Approval => {
                     serde_json::json!({"type":"extension_ui_response","id":request_id,"confirmed":confirmed.ok_or("Divo approval response requires confirmed")?})
                 }
@@ -1686,27 +1737,24 @@ impl PiManager {
                 ExtensionUiProtocol::MemoryReview => {
                     serde_json::json!({"type":"extension_ui_response","id":request_id,"cancelled":true})
                 }
-            };
-            (pending, response)
+            }
         };
         if let Err(error) = Self::write_stdin(&slot, &response.to_string()) {
             // The request was consumed under the lifecycle lock. Do not reinsert
             // it after a process exit/stop may have performed terminal cleanup.
-            let app = self.config().await?.app;
-            Self::emit(
-                &app,
-                Some(&pending.owner),
-                serde_json::json!({
-                    "type": "extension_ui_response",
-                    "id": request_id,
-                    "cancelled": true,
-                    "reason": "response_write_failed",
-                }),
-            );
-            return Err(error);
+            // Keep the card visible in its non-retryable error state so the
+            // user sees the real recovery action instead of a stale-card race.
+            return Err(format!(
+                "The local Divo runtime could not deliver this approval. Stop the run and send the request again. ({error})"
+            ));
         }
         if always_allow_bash {
-            self.pool.lock().await.bash_rules.insert(owner.thread_id);
+            // A task-level grant is committed only after Pi has accepted the
+            // current approval. This prevents a failed pipe write from leaving
+            // a half-enabled Bash rule behind.
+            let mut pool = self.pool.lock().await;
+            pool.bash_rules.insert(owner.thread_id);
+            slot.state.lock().unwrap().bash_always_allowed = true;
         }
         Ok(())
     }
@@ -1879,6 +1927,29 @@ mod tests {
         })
     }
 
+    fn bash_approval_ui(owner: &RunOwner) -> serde_json::Value {
+        serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "bash-approval-1",
+            "method": "confirm",
+            "title": DIVO_APPROVAL_PROTOCOL_TITLE,
+            "message": serde_json::json!({
+                "version": 1,
+                "toolCallId": "tool-bash-1",
+                "source": "bash",
+                "kind": "bash.execute",
+                "action": "execute",
+                "title": "Run terminal command",
+                "presentation": {"command": "pwd"},
+                "runCorrelation": {
+                    "version": 1,
+                    "threadId": owner.thread_id,
+                    "runId": owner.run_id,
+                },
+            }).to_string(),
+        })
+    }
+
     fn memory_review_ui(owner: &RunOwner) -> serde_json::Value {
         serde_json::json!({
             "type": "extension_ui_request",
@@ -1911,12 +1982,16 @@ mod tests {
     ) -> (Vec<(RunOwner, serde_json::Value)>, Vec<serde_json::Value>) {
         let mut events = Vec::new();
         let mut responses = Vec::new();
-        PiManager::handle_extension_ui_request(
+        let failure = PiManager::handle_extension_ui_request(
             slot,
             request,
             |owner, event| events.push((owner.clone(), event)),
-            |response| responses.push(response),
+            |response| {
+                responses.push(response);
+                Ok(())
+            },
         );
+        assert!(failure.is_none());
         (events, responses)
     }
 
@@ -1970,6 +2045,50 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, a2);
         assert!(responses.is_empty());
+    }
+
+    #[test]
+    fn auto_allowed_bash_is_confirmed_without_emitting_an_approval_card() {
+        let slot = RuntimeSlot::new("thread-a".into());
+        let run = owner("thread-a", "run-a");
+        activate_context(&slot, run.clone());
+        slot.state.lock().unwrap().bash_always_allowed = true;
+
+        let (events, responses) = dispatch_extension_ui(&slot, bash_approval_ui(&run));
+
+        assert!(events.is_empty());
+        assert!(slot.state.lock().unwrap().pending_extension_ui.is_empty());
+        assert_eq!(
+            responses,
+            vec![serde_json::json!({
+                "type": "extension_ui_response",
+                "id": "bash-approval-1",
+                "confirmed": true,
+            })]
+        );
+    }
+
+    #[test]
+    fn failed_auto_bash_response_is_reported_without_creating_an_approval_card() {
+        let slot = RuntimeSlot::new("thread-a".into());
+        let run = owner("thread-a", "run-a");
+        activate_context(&slot, run.clone());
+        slot.state.lock().unwrap().bash_always_allowed = true;
+        let mut events = Vec::new();
+
+        let failure = PiManager::handle_extension_ui_request(
+            &slot,
+            bash_approval_ui(&run),
+            |owner, event| events.push((owner.clone(), event)),
+            |_| Err("Pi process is not running".into()),
+        )
+        .expect("auto response failure should be surfaced to the caller");
+
+        assert!(events.is_empty());
+        assert!(slot.state.lock().unwrap().pending_extension_ui.is_empty());
+        assert_eq!(failure.owner, Some(run));
+        assert_eq!(failure.request_id, "bash-approval-1");
+        assert_eq!(failure.error, "Pi process is not running");
     }
 
     #[test]
@@ -2636,6 +2755,43 @@ mod tests {
             )
             .await
             .is_err());
+        assert!(slot.state.lock().unwrap().pending_extension_ui.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_always_allow_delivery_never_commits_a_bash_grant() {
+        let manager = PiManager::new();
+        let slot = Arc::new(RuntimeSlot::new("thread-a".into()));
+        let mut bash_pending = pending("confirm", "thread-a", "run-a");
+        bash_pending.source = Some(ApprovalSource::Bash);
+        slot.state
+            .lock()
+            .unwrap()
+            .pending_extension_ui
+            .insert("approval-a".into(), bash_pending);
+        manager
+            .pool
+            .lock()
+            .await
+            .slots
+            .insert("thread-a".into(), slot.clone());
+
+        let error = manager
+            .extension_ui_response(
+                "approval-a".into(),
+                "thread-a".into(),
+                "run-a".into(),
+                Some(true),
+                None,
+                false,
+                true,
+            )
+            .await
+            .expect_err("a missing Pi process cannot receive the approval");
+
+        assert!(error.contains("could not deliver this approval"));
+        assert!(!manager.bash_approval_allowed("thread-a").await);
+        assert!(!slot.state.lock().unwrap().bash_always_allowed);
         assert!(slot.state.lock().unwrap().pending_extension_ui.is_empty());
     }
 

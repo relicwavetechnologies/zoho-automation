@@ -473,6 +473,7 @@ export function PluginDetailRoute() {
     )
   }
 
+  if (pluginId === 'tool-webSearch') return <WebSearchPluginDetail group={liveGroup} onBack={() => navigate({ to: route.plugins.index } as any)} onUpdated={() => void loadToolInventory()} />
   if (!plugin) return <FallbackToolDetail group={liveGroup} onBack={() => navigate({ to: route.plugins.index } as any)} onUpdated={() => void loadToolInventory()} />
 
   const Icon = plugin.icon
@@ -763,6 +764,62 @@ function FallbackToolDetail({ group, onBack, onUpdated }: { group: NonNullable<R
       </main>
     </div>
   )
+}
+
+type SerperConnection = { id: string; label: string; status: 'connected' | 'disabled'; priority: number; lastTestedAt: string | null; lastSucceededAt: string | null; lastFailureAt: string | null; lastFailureCode: string | null }
+type SerperConnectionsResponse = { connections: SerperConnection[] }
+
+function WebSearchPluginDetail({ group, onBack, onUpdated }: { group: NonNullable<ReturnType<typeof groupToolsForDetail>>; onBack: () => void; onUpdated: () => void }) {
+  const Icon = group.Icon
+  const [connections, setConnections] = useState<SerperConnection[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [apiKey, setApiKey] = useState('')
+  const [label, setLabel] = useState('Company Web Search')
+  const [verificationToken, setVerificationToken] = useState<string | null>(null)
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const result = await invoke<SerperConnectionsResponse>('divo_serper_connections')
+      setConnections(result.connections ?? [])
+    } catch (error) {
+      toast.error('Could not load Web Search connections', { description: String(error) })
+    } finally { setLoading(false) }
+  }, [])
+  useEffect(() => { void load() }, [load])
+  const test = async () => {
+    if (!apiKey.trim()) return toast.error('Paste a Serper API key first')
+    setBusy(true)
+    try {
+      const result = await invoke<{ verificationToken: string }>('divo_serper_test_connection', { apiKey, api_key: apiKey })
+      setVerificationToken(result.verificationToken)
+      toast.success('Connection verified', { description: 'This key can now be saved for the company.' })
+    } catch (error) { setVerificationToken(null); toast.error('Serper test failed', { description: String(error) }) } finally { setBusy(false) }
+  }
+  const save = async () => {
+    if (!verificationToken) return toast.error('Test this key successfully before saving it')
+    setBusy(true)
+    try {
+      await invoke('divo_serper_save_connection', { label, apiKey, api_key: apiKey, verificationToken, verification_token: verificationToken })
+      setApiKey(''); setVerificationToken(null); await load(); toast.success('Company Web Search connection saved')
+    } catch (error) { toast.error('Could not save connection', { description: String(error) }) } finally { setBusy(false) }
+  }
+  const toggle = async (connection: SerperConnection) => {
+    setBusy(true)
+    try { await invoke('divo_serper_set_connection_enabled', { connectionId: connection.id, connection_id: connection.id, enabled: connection.status !== 'connected' }); await load() }
+    catch (error) { toast.error('Could not update connection', { description: String(error) }) } finally { setBusy(false) }
+  }
+  const remove = async (id: string) => {
+    setBusy(true)
+    try { await invoke('divo_serper_disconnect_connection', { connectionId: id, connection_id: id }); await load(); toast.success('Web Search connection disconnected') }
+    catch (error) { toast.error('Could not disconnect connection', { description: String(error) }) } finally { setBusy(false) }
+  }
+  return <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background"><main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6 lg:px-8">
+    <header className="rounded-lg border border-border/70 bg-card/30 p-5"><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-4" />Back to Tools</Button><div className="mt-5 flex items-center gap-4"><span className="flex size-14 items-center justify-center rounded-lg border border-border/70 bg-muted/40"><Icon className="size-7" /></span><div><h1 className="text-2xl font-medium">Web Search</h1><p className="mt-2 text-sm text-muted-foreground">Company-shared Serper connections. Divo automatically uses the first healthy connection and falls back when quota or rate limits are reached.</p></div></div></header>
+    <section className="rounded-lg border border-border/70 p-5"><h2 className="text-lg font-medium">Add company connection</h2><p className="mt-1 text-sm text-muted-foreground">Only company admins can add keys. A live Serper test is required before the encrypted key can be saved.</p><div className="mt-5 grid gap-3"><input value={label} onChange={e => setLabel(e.target.value)} placeholder="Connection label" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><input value={apiKey} onChange={e => { setApiKey(e.target.value); setVerificationToken(null) }} type="password" placeholder="Serper API key" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><div className="flex gap-2"><Button variant="outline" disabled={busy} onClick={() => void test()}>{verificationToken ? <Check className="size-4" /> : <KeyRound className="size-4" />}{verificationToken ? 'Verified' : 'Test key'}</Button><Button disabled={busy || !verificationToken} onClick={() => void save()}><Plus className="size-4" />Save connection</Button></div></div></section>
+    <section className="rounded-lg border border-border/70 p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-medium">Company connections</h2><p className="mt-1 text-sm text-muted-foreground">Keys remain encrypted on the backend and are never displayed here.</p></div><Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4" />Refresh</Button></div><div className="mt-4 space-y-3">{connections.map((connection, index) => <div key={connection.id} className="flex items-center justify-between gap-4 rounded-md border border-border/70 p-4"><div><div className="flex items-center gap-2 font-medium"><span className={cn('size-2 rounded-full', connection.status === 'connected' ? 'bg-emerald-400' : 'bg-muted-foreground')} />{connection.label}{index === 0 && connection.status === 'connected' ? <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">Default</span> : null}</div><p className="mt-1 text-xs text-muted-foreground">{connection.lastFailureCode ? `Last issue: ${connection.lastFailureCode}` : connection.lastSucceededAt ? 'Validated and ready' : 'Not yet used'}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={() => void toggle(connection)}>{connection.status === 'connected' ? 'Disable' : 'Enable'}</Button><Button size="sm" variant="ghost" disabled={busy} className="text-destructive hover:text-destructive" onClick={() => void remove(connection.id)}><Trash2 className="size-4" />Disconnect</Button></div></div>)}{!loading && connections.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">No company Web Search connection yet.</p> : null}</div></section>
+    <ToolAccessSection items={group.childTools} embedded onUpdated={onUpdated} />
+  </main></div>
 }
 
 function LocalLarkPluginDetail({

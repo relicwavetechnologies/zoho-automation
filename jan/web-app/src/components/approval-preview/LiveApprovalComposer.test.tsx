@@ -208,7 +208,7 @@ describe('LiveApprovalComposer', () => {
     expect(onStop).toHaveBeenCalledOnce()
   })
 
-  it('offers task-scoped always allow only for Bash requests', () => {
+  it('offers active-run always allow only for Bash requests', () => {
     const onAlwaysAllowBash = vi.fn()
     const bashRequest = request(
       'bash.execute',
@@ -235,11 +235,11 @@ describe('LiveApprovalComposer', () => {
     )
 
     expect(
-      screen.getByText(/future terminal commands in this task/i)
+      screen.getByText(/future terminal commands in this run/i)
     ).toBeInTheDocument()
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Always allow Bash for this task',
+        name: 'Always allow Bash for this run',
       })
     )
     expect(onAlwaysAllowBash).toHaveBeenCalledOnce()
@@ -253,8 +253,45 @@ describe('LiveApprovalComposer', () => {
     )
     expect(
       screen.queryByRole('button', {
-        name: 'Always allow Bash for this task',
+        name: 'Always allow Bash for this run',
       })
     ).not.toBeInTheDocument()
+  })
+
+  it('offers only stop after an approval delivery failure', () => {
+    const bashRequest = request(
+      'bash.execute',
+      { command: 'pwd' },
+      {
+        status: 'error',
+        error:
+          'The local Divo runtime could not deliver this approval. Stop the run and send the request again.',
+        descriptor: {
+          version: 1,
+          toolCallId: 'tool-call-bash',
+          source: 'bash',
+          kind: 'bash.execute',
+          action: 'execute',
+          title: 'Run terminal command',
+          presentation: { command: 'pwd' },
+        },
+      }
+    )
+
+    render(
+      <LiveApprovalComposer
+        {...baseProps}
+        onAlwaysAllowBash={vi.fn()}
+        request={bashRequest}
+      />
+    )
+
+    expect(screen.getByText(/stop this run, then send the request again/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop run' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeDisabled()
+    expect(
+      screen.getByRole('button', { name: 'Always allow Bash for this run' })
+    ).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Approve & run' })).toBeDisabled()
   })
 })

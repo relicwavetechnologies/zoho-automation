@@ -125,7 +125,7 @@ describe('SerperClient.search', () => {
     await assert.rejects(
       () => makeClient().search({ query: 'test' }),
       (e: SearchIntegrationError) => {
-        assert.equal(e.code, 'search_unavailable');
+        assert.equal(e.code, 'search_auth_failed');
         return true;
       },
     );

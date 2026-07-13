@@ -124,6 +124,8 @@ const EnvSchema = z.object({
 
   // ── Web / context search ──────────────────────────────────────────────────
   SERPER_API_KEY:                z.string().optional(),
+  // Encrypts company-owned Serper credentials. Falls back to the existing OAuth key.
+  SERPER_CONNECTION_ENCRYPTION_KEY: z.string().optional(),
   SERPER_TIMEOUT_MS:             positiveInt(10_000),
   CONTEXT_SEARCH_TIMEOUT_ENABLED: booleanStr.default('true'),
   CONTEXT_SEARCH_TIMEOUT_MS:     positiveInt(8_000),

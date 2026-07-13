@@ -136,6 +136,7 @@ model User {
   larkAuthLinks                      LarkUserAuthLink[]
   ownedIntegrationConnections        IntegrationConnection[]      @relation("IntegrationConnectionOwner")
   createdIntegrationConnections      IntegrationConnection[]      @relation("IntegrationConnectionCreatedBy")
+  createdSerperConnections           CompanySerperConnection[]   @relation("CompanySerperConnectionCreatedBy")
   grantedIntegrationConnectionGrants IntegrationConnectionGrant[] @relation("IntegrationConnectionGrantGrantedBy")
   memoryItems                        UserMemoryItem[]
   memoryProfiles                     UserMemoryProfile[]
@@ -185,6 +186,7 @@ model Company {
   larkAuthLinks               LarkUserAuthLink[]
   integrationConnections      IntegrationConnection[]
   integrationConnectionGrants IntegrationConnectionGrant[]
+  serperConnections           CompanySerperConnection[]
   fileAssets                  FileAsset[]
   outboundArtifacts           OutboundArtifact[]
   userMemoryItems             UserMemoryItem[]
@@ -1130,6 +1132,32 @@ model IntegrationConnection {
   @@index([companyId, provider, status])
   @@index([companyId, provider, accountEmail])
   @@index([companyId, ownerUserId])
+}
+
+/// Company-owned Serper credentials. The raw key is AES-GCM encrypted and never
+/// returned through the desktop API; the fingerprint only supports safe dedupe.
+model CompanySerperConnection {
+  id              String   @id @default(uuid())
+  companyId       String
+  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  label           String
+  apiKeyEncrypted String
+  keyFingerprint  String
+  status          String   @default("connected")
+  priority        Int      @default(0)
+  lastTestedAt    DateTime?
+  lastSucceededAt DateTime?
+  lastFailureAt   DateTime?
+  lastFailureCode String?
+  lastUsedAt      DateTime?
+  createdBy       String?
+  createdByUser   User?    @relation("CompanySerperConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  revokedAt       DateTime?
+
+  @@unique([companyId, keyFingerprint])
+  @@index([companyId, status, priority])
 }
 
 model IntegrationConnectionGrant {

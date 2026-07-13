@@ -427,6 +427,10 @@ async fn divo_member_json_request<R: Runtime>(
     path: &str,
     body: Option<Value>,
     label: &str,
+    // Whether a 401 should be treated as an expired session (clearing it and
+    // logging the member out). Authoritative calls pass `true`; optional UI
+    // hints whose endpoint may be missing pass `false` so a 401 can't log out.
+    clear_on_unauthorized: bool,
 ) -> Result<Value, String> {
     let session =
         load_divo_session(app)?.ok_or_else(|| "No Divo session configured".to_string())?;
@@ -461,7 +465,7 @@ async fn divo_member_json_request<R: Runtime>(
         .map_err(|e| format!("{label} returned non-JSON (HTTP {status}): {e}"))?;
 
     if !status.is_success() {
-        if status.as_u16() == 401 {
+        if status.as_u16() == 401 && clear_on_unauthorized {
             clear_expired_session(app)?;
             return Err(expired_session_message());
         }
@@ -478,7 +482,20 @@ async fn divo_desktop_json_request<R: Runtime>(
     body: Option<Value>,
     label: &str,
 ) -> Result<Value, String> {
-    divo_member_json_request(app, "/api/desktop/auth", method, path, body, label).await
+    divo_member_json_request(app, "/api/desktop/auth", method, path, body, label, true).await
+}
+
+/// Best-effort desktop request that leaves the session intact on 401. Use for
+/// optional UI hints (e.g. model options) whose backend route may not exist on
+/// every deployment — a 401 there must never log the member out.
+async fn divo_desktop_json_request_optional<R: Runtime>(
+    app: &AppHandle<R>,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+    label: &str,
+) -> Result<Value, String> {
+    divo_member_json_request(app, "/api/desktop/auth", method, path, body, label, false).await
 }
 
 #[derive(Serialize)]
@@ -1102,6 +1119,32 @@ pub async fn divo_google_disconnect_connection<R: Runtime>(
     .await
 }
 
+/// List company-owned Web Search (Serper) connections. API keys never leave the backend.
+#[tauri::command]
+pub async fn divo_serper_connections<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    divo_desktop_json_request(&app, reqwest::Method::GET, "/tools/webSearch/connections", None, "Web Search connections").await
+}
+
+#[tauri::command]
+pub async fn divo_serper_test_connection<R: Runtime>(app: AppHandle<R>, api_key: String) -> Result<Value, String> {
+    divo_desktop_json_request(&app, reqwest::Method::POST, "/tools/webSearch/connections/test", Some(json!({ "apiKey": api_key })), "Web Search connection test").await
+}
+
+#[tauri::command]
+pub async fn divo_serper_save_connection<R: Runtime>(app: AppHandle<R>, label: String, api_key: String, verification_token: String) -> Result<Value, String> {
+    divo_desktop_json_request(&app, reqwest::Method::POST, "/tools/webSearch/connections", Some(json!({ "label": label, "apiKey": api_key, "verificationToken": verification_token })), "Web Search connection save").await
+}
+
+#[tauri::command]
+pub async fn divo_serper_set_connection_enabled<R: Runtime>(app: AppHandle<R>, connection_id: String, enabled: bool) -> Result<Value, String> {
+    divo_desktop_json_request(&app, reqwest::Method::PATCH, &format!("/tools/webSearch/connections/{connection_id}"), Some(json!({ "enabled": enabled })), "Web Search connection update").await
+}
+
+#[tauri::command]
+pub async fn divo_serper_disconnect_connection<R: Runtime>(app: AppHandle<R>, connection_id: String) -> Result<Value, String> {
+    divo_desktop_json_request(&app, reqwest::Method::DELETE, &format!("/tools/webSearch/connections/{connection_id}"), None, "Web Search connection disconnect").await
+}
+
 /// Start Zoho OAuth for the stored Divo member session.
 #[tauri::command]
 pub async fn divo_zoho_authorize_url<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
@@ -1262,7 +1305,9 @@ pub async fn divo_tools_inventory<R: Runtime>(app: AppHandle<R>) -> Result<Value
 /// desktop shows a model toggle only when more than one is returned.
 #[tauri::command]
 pub async fn divo_get_model_options<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
-    divo_desktop_json_request(
+    // Optional UI hint: use the lenient path so a 401 (e.g. the route is not
+    // deployed on this backend) never clears the session and logs the user out.
+    divo_desktop_json_request_optional(
         &app,
         reqwest::Method::GET,
         "/model-options",
@@ -1460,6 +1505,7 @@ pub async fn divo_department_manage_snapshot<R: Runtime>(
         &path,
         body,
         "Divo department management snapshot",
+        true,
     )
     .await
 }
@@ -1484,6 +1530,7 @@ pub async fn divo_department_search_candidates<R: Runtime>(
         &path,
         body,
         "Divo department candidate search",
+        true,
     )
     .await
 }
@@ -1510,6 +1557,7 @@ pub async fn divo_department_create_role<R: Runtime>(
         &path,
         body,
         "Divo department role creation",
+        true,
     )
     .await
 }
@@ -1537,6 +1585,7 @@ pub async fn divo_department_update_role<R: Runtime>(
         &path,
         body,
         "Divo department role update",
+        true,
     )
     .await
 }
@@ -1560,6 +1609,7 @@ pub async fn divo_department_delete_role<R: Runtime>(
         &path,
         body,
         "Divo department role deletion",
+        true,
     )
     .await
 }
@@ -1585,6 +1635,7 @@ pub async fn divo_department_save_member<R: Runtime>(
         &path,
         body,
         "Divo department membership update",
+        true,
     )
     .await
 }
@@ -1608,6 +1659,7 @@ pub async fn divo_department_remove_member<R: Runtime>(
         &path,
         body,
         "Divo department membership removal",
+        true,
     )
     .await
 }
