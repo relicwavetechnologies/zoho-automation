@@ -1,4 +1,4 @@
-name: divo-dev
+name: divo-development
 
 x-default-logging: &default-logging
   driver: local
