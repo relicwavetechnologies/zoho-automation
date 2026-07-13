@@ -18,6 +18,11 @@ services:
       POSTGRES_PASSWORD: ${DIVO_DEV_POSTGRES_PASSWORD:?DIVO_DEV_POSTGRES_PASSWORD is required}
     volumes:
       - divo_dev_postgres_data:/var/lib/postgresql/data
+    ports:
+      # SSH forwards to this VPS-loopback port. Never bind dev Postgres to a
+      # public interface; local development reaches it through the VPS SSH
+      # boundary only.
+      - "127.0.0.1:${DIVO_DEV_POSTGRES_PORT:-15433}:5432"
     restart: unless-stopped
     networks:
       - divo-dev-internal
