@@ -21,7 +21,7 @@ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: h.openUrl }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('lucide-react', () => {
   const Icon = () => null
-  return { ArrowLeft: Icon, Brain: Icon, Building2: Icon, CalendarDays: Icon, Check: Icon, ChevronRight: Icon, ExternalLink: Icon, KeyRound: Icon, Lock: Icon, MessageSquare: Icon, Plus: Icon, RefreshCw: Icon, RotateCw: Icon, Search: Icon, ShieldCheck: Icon, Trash2: Icon, User: Icon, Users: Icon }
+  return { ArrowLeft: Icon, Brain: Icon, Building2: Icon, CalendarDays: Icon, Check: Icon, ChevronRight: Icon, Cpu: Icon, ExternalLink: Icon, FileSearch: Icon, Globe: Icon, KeyRound: Icon, Lock: Icon, MessageSquare: Icon, Plus: Icon, RefreshCw: Icon, RotateCw: Icon, ScanSearch: Icon, Search: Icon, Share2: Icon, ShieldCheck: Icon, SquareTerminal: Icon, Trash2: Icon, User: Icon, Users: Icon }
 })
 vi.mock('@/components/ui/button', () => ({ Button: ({ children, asChild: _asChild, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }) => <button {...props}>{children}</button> }))
 vi.mock('@/components/ui/dialog', () => ({

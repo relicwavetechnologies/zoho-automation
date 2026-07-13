@@ -1,7 +1,15 @@
-import { Brain, MessageSquare } from 'lucide-react'
+import {
+  Brain,
+  Cpu,
+  FileSearch,
+  Globe,
+  ScanSearch,
+  Share2,
+  SquareTerminal,
+} from 'lucide-react'
 import type { ComponentType } from 'react'
 
-import { GoogleIcon, ZohoIcon } from '@/components/brand-icons'
+import { GoogleIcon, LarkIcon, ZohoIcon } from '@/components/brand-icons'
 import type { DivoToolInventoryItem } from './divo-tools'
 
 export type ToolPresentationGroup = {
@@ -16,9 +24,22 @@ export type ToolPresentationGroup = {
 const providers = [
   { id: 'google-workspace', title: 'Google Workspace', description: 'Gmail, Drive, and Calendar tools.', Icon: GoogleIcon, toolIds: ['googleGmail', 'googleDrive', 'googleCalendar'] },
   { id: 'zoho', title: 'Zoho', description: 'CRM and Books tools.', Icon: ZohoIcon, iconClassName: 'h-5 w-7', toolIds: ['zohoCrm', 'zohoBooks'] },
-  { id: 'lark-personal', title: 'Lark', description: 'Company collaboration tools.', Icon: MessageSquare, toolIds: ['larkMessaging', 'larkContacts', 'larkTask', 'larkCalendar', 'larkDoc', 'larkBase', 'larkApproval'] },
+  { id: 'lark-personal', title: 'Lark', description: 'Company collaboration tools.', Icon: LarkIcon, toolIds: ['larkMessaging', 'larkContacts', 'larkTask', 'larkCalendar', 'larkDoc', 'larkBase', 'larkApproval'] },
   { id: 'tool-memory', title: 'Memory', description: 'Company memory and knowledge tools.', Icon: Brain, toolIds: ['memoryPublishing', 'memoryRecall'] },
 ] as const
+
+// Distinct, fitting icons for the standalone capability tools so each card reads
+// at a glance instead of falling back to a generic mark.
+const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
+  dataProcessor: Cpu,
+  runCommand: SquareTerminal,
+  documentRag: FileSearch,
+  skillPublishing: Share2,
+  webSearch: Globe,
+  contextSearch: ScanSearch,
+  memoryRecall: Brain,
+  memoryPublishing: Brain,
+}
 
 export function groupToolInventory(items: DivoToolInventoryItem[]): ToolPresentationGroup[] {
   const grouped = new Set<string>()
@@ -28,7 +49,7 @@ export function groupToolInventory(items: DivoToolInventoryItem[]): ToolPresenta
     return childTools.length ? [{ ...provider, childTools }] : []
   })
   return [...groups, ...items.filter(item => !grouped.has(item.tool.toolId)).map(item => ({
-    id: `tool-${item.tool.toolId}`, title: item.tool.name, description: item.tool.description, Icon: Brain, childTools: [item],
+    id: `tool-${item.tool.toolId}`, title: item.tool.name, description: item.tool.description, Icon: toolIcons[item.tool.toolId] ?? Brain, childTools: [item],
   }))]
 }
 

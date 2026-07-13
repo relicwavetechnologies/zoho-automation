@@ -176,3 +176,45 @@ export function ZohoIcon({ title = 'Zoho', ...props }: BrandIconProps) {
     </svg>
   )
 }
+
+/** Lark-style app mark: a blue→teal gradient tile with a white swallow. */
+export function LarkIcon({ title = 'Lark', ...props }: BrandIconProps) {
+  const gradientSuffix = useId().replaceAll(':', '')
+  const tileGradientId = `lark-tile-${gradientSuffix}`
+
+  return (
+    <svg
+      viewBox="0 0 192 192"
+      fill="none"
+      role="img"
+      aria-label={title}
+      {...props}
+    >
+      <rect width="192" height="192" rx="46" fill={`url(#${tileGradientId})`} />
+      <path
+        fill="#fff"
+        d="M58 60c26-4 47 4 63 25 9 12 21 19 37 20-5 17-19 30-38 33 9 11 22 16 37 15-16 16-42 18-62 6-18-11-28-31-27-53-6-4-11-9-14-16 1-2 3-3 4-3z"
+        opacity=".95"
+      />
+      <path
+        fill="#fff"
+        d="M96 118c11 7 24 9 37 6-14 14-36 16-53 6 6-4 11-8 16-12z"
+        opacity=".8"
+      />
+      <defs>
+        <linearGradient
+          id={tileGradientId}
+          x1="24"
+          y1="18"
+          x2="172"
+          y2="180"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#3B7CFF" />
+          <stop offset=".55" stopColor="#0AC0E0" />
+          <stop offset="1" stopColor="#00D6B9" />
+        </linearGradient>
+      </defs>
+    </svg>
+  )
+}
