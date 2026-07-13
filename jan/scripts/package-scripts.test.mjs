@@ -34,6 +34,7 @@ describe('desktop package scripts', () => {
       /JAN_MACOS_TARGET=x86_64 yarn vendor:pi/
     )
     assert.doesNotMatch(packageJson.scripts['build:tauri:darwin:x86_64'], /mlx/i)
+    assert.match(packageJson.scripts['build:tauri:plugin:api:darwin:x86_64'], /yarn install/)
   })
 
   it('vendors Pi before the desktop development runtime starts', () => {

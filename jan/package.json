@@ -46,7 +46,7 @@
     "build:tauri": "yarn build:icon && yarn copy:assets:tauri && run-script-os",
     "build:tauri:plugin:api": "cd src-tauri/plugins && yarn install && cd ../.. && run-script-os",
     "build:tauri:plugin:api:darwin": "cd src-tauri/plugins && yarn workspaces foreach -Apt run build",
-    "build:tauri:plugin:api:darwin:x86_64": "cd src-tauri/plugins && yarn workspaces foreach -Apt --exclude @janhq/tauri-plugin-mlx-api run build",
+    "build:tauri:plugin:api:darwin:x86_64": "cd src-tauri/plugins && yarn install && yarn workspaces foreach -Apt --exclude @janhq/tauri-plugin-mlx-api run build",
     "build:tauri:plugin:api:win32": "cd src-tauri/plugins && yarn workspaces foreach -Apt --exclude @janhq/tauri-plugin-mlx-api run build",
     "build:tauri:plugin:api:linux": "cd src-tauri/plugins && yarn workspaces foreach -Apt --exclude @janhq/tauri-plugin-mlx-api run build",
     "build:icon": "tauri icon ./brand/divo/divo-dex-app-icon-1024.png",
