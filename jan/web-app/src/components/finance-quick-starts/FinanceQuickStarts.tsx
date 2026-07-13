@@ -36,6 +36,11 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import { Separator } from '@/components/ui/separator'
 import {
   compileFinanceQuickStart,
@@ -75,6 +80,7 @@ export type FinanceQuickStartRequest = {
 
 type Props = {
   onSubmit: (request: FinanceQuickStartRequest) => void
+  variant?: 'home' | 'launcher'
 }
 
 const GROUP_ICONS: Record<string, typeof ReceiptText> = {
@@ -91,7 +97,7 @@ const GROUP_ICONS: Record<string, typeof ReceiptText> = {
 const displayConnection = (connection: ZohoConnection) =>
   connection.label || connection.accountName || connection.accountEmail || 'Zoho Books'
 
-export function FinanceQuickStarts({ onSubmit }: Props) {
+export function FinanceQuickStarts({ onSubmit, variant = 'home' }: Props) {
   const [loading, setLoading] = useState(true)
   const [enabled, setEnabled] = useState(false)
   const [allowedActions, setAllowedActions] = useState<string[]>([])
@@ -102,6 +108,7 @@ export function FinanceQuickStarts({ onSubmit }: Props) {
   const [selectedConnectionId, setSelectedConnectionId] = useState('')
   const [selected, setSelected] = useState<FinanceQuickStartDefinition | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
+  const [launcherOpen, setLauncherOpen] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -157,6 +164,7 @@ export function FinanceQuickStarts({ onSubmit }: Props) {
   )
 
   const open = (definition: FinanceQuickStartDefinition) => {
+    setLauncherOpen(false)
     setSelected(definition)
     setValues(
       Object.fromEntries(
@@ -188,64 +196,94 @@ export function FinanceQuickStarts({ onSubmit }: Props) {
   if (loading || !enabled) return null
 
   return (
-    <section className="mt-5" data-testid="finance-quick-starts">
-      <div className="mb-2.5 flex items-center justify-between px-1">
-        <div>
-          <p className="text-sm font-medium">Finance quick starts</p>
-          <p className="text-xs text-muted-foreground">
-            Exact Zoho Books routes, ready for your details
-          </p>
-        </div>
-        {connections.length > 1 && connection ? (
-          <AccountMenu
-            connections={connections}
-            selected={connection}
-            onSelect={setSelectedConnectionId}
-          />
-        ) : connection ? (
-          <span className="max-w-48 truncate rounded-full border bg-card px-3 py-1 text-xs text-muted-foreground">
-            {displayConnection(connection)}
-          </span>
-        ) : null}
-      </div>
-
-      {connections.length === 0 ? (
-        <Card className="rounded-2xl border-dashed bg-card/60">
-          <CardContent className="flex items-center gap-3 p-4">
-            <span className="flex size-9 items-center justify-center rounded-xl border bg-background">
-              <ZohoIcon className="size-5" />
-            </span>
-            <div>
-              <p className="text-sm font-medium">Connect Zoho Books to use quick starts</p>
-              <p className="text-xs text-muted-foreground">Your department permissions still control every action.</p>
+    <section
+      className={cn(variant === 'home' ? 'mt-5' : 'inline-flex')}
+      data-testid="finance-quick-starts"
+      data-variant={variant}
+    >
+      {variant === 'launcher' ? (
+        <Popover open={launcherOpen} onOpenChange={setLauncherOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-label="Open Finance quick starts"
+              className="mb-1"
+            >
+              <ZohoIcon data-icon="inline-start" />
+              Quick starts
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-[30rem] p-3">
+            <div className="flex items-start justify-between gap-3 px-1 pb-3">
+              <div className="flex items-start gap-2.5">
+                <span className="flex size-9 items-center justify-center rounded-xl border bg-background">
+                  <ZohoIcon className="size-5" />
+                </span>
+                <div>
+                  <p className="text-sm font-medium">Finance quick starts</p>
+                  <p className="text-xs text-muted-foreground">
+                    Add a precise Zoho request to this chat
+                  </p>
+                </div>
+              </div>
+              {connection && connections.length > 1 ? (
+                <AccountMenu
+                  connections={connections}
+                  selected={connection}
+                  onSelect={setSelectedConnectionId}
+                />
+              ) : null}
             </div>
-          </CardContent>
-        </Card>
+            <Separator className="mb-3" />
+            {connections.length === 0 ? (
+              <p className="px-1 py-3 text-sm text-muted-foreground">
+                Connect Zoho Books to use Finance quick starts.
+              </p>
+            ) : (
+              <QuickStartGrid groups={groups} onOpen={open} compact />
+            )}
+          </PopoverContent>
+        </Popover>
       ) : (
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-          {groups.map(([group, items]) => {
-            const Icon = GROUP_ICONS[group] ?? ReceiptText
-            return (
-              <button
-                key={group}
-                type="button"
-                className="group min-h-24 rounded-2xl border bg-card/70 p-3 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => open(items[0])}
-              >
-                <span className="mb-3 flex items-start justify-between">
-                  <span className="flex size-8 items-center justify-center rounded-lg border bg-background">
-                    <Icon className="size-4 text-muted-foreground" />
-                  </span>
-                  <ArrowRight className="size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+        <>
+          <div className="mb-2.5 flex items-center justify-between px-1">
+            <div>
+              <p className="text-sm font-medium">Finance quick starts</p>
+              <p className="text-xs text-muted-foreground">
+                Exact Zoho Books routes, ready for your details
+              </p>
+            </div>
+            {connections.length > 1 && connection ? (
+              <AccountMenu
+                connections={connections}
+                selected={connection}
+                onSelect={setSelectedConnectionId}
+              />
+            ) : connection ? (
+              <span className="max-w-48 truncate rounded-full border bg-card px-3 py-1 text-xs text-muted-foreground">
+                {displayConnection(connection)}
+              </span>
+            ) : null}
+          </div>
+
+          {connections.length === 0 ? (
+            <Card className="rounded-2xl border-dashed bg-card/60">
+              <CardContent className="flex items-center gap-3 p-4">
+                <span className="flex size-9 items-center justify-center rounded-xl border bg-background">
+                  <ZohoIcon className="size-5" />
                 </span>
-                <span className="block text-sm font-medium">{group}</span>
-                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                  {items.map((item) => item.title).join(' · ')}
-                </span>
-              </button>
-            )
-          })}
-        </div>
+                <div>
+                  <p className="text-sm font-medium">Connect Zoho Books to use quick starts</p>
+                  <p className="text-xs text-muted-foreground">Your department permissions still control every action.</p>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <QuickStartGrid groups={groups} onOpen={open} />
+          )}
+        </>
       )}
 
       <Dialog open={Boolean(selected)} onOpenChange={(openState) => !openState && setSelected(null)}>
@@ -374,6 +412,42 @@ export function FinanceQuickStarts({ onSubmit }: Props) {
         </DialogContent>
       </Dialog>
     </section>
+  )
+}
+
+function QuickStartGrid({ groups, onOpen, compact = false }: {
+  groups: Array<[string, FinanceQuickStartDefinition[]]>
+  onOpen: (definition: FinanceQuickStartDefinition) => void
+  compact?: boolean
+}) {
+  return (
+    <div className={cn('grid grid-cols-2 gap-2', !compact && 'lg:grid-cols-4')}>
+      {groups.map(([group, items]) => {
+        const Icon = GROUP_ICONS[group] ?? ReceiptText
+        return (
+          <button
+            key={group}
+            type="button"
+            className={cn(
+              'group rounded-2xl border bg-card/70 p-3 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              compact ? 'min-h-20' : 'min-h-24'
+            )}
+            onClick={() => onOpen(items[0])}
+          >
+            <span className={cn('flex items-start justify-between', compact ? 'mb-2' : 'mb-3')}>
+              <span className="flex size-8 items-center justify-center rounded-lg border bg-background">
+                <Icon className="size-4 text-muted-foreground" />
+              </span>
+              <ArrowRight className="size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+            </span>
+            <span className="block text-sm font-medium">{group}</span>
+            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+              {items.map((item) => item.title).join(' · ')}
+            </span>
+          </button>
+        )
+      })}
+    </div>
   )
 }
 

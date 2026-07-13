@@ -105,6 +105,7 @@ import { PermissionRulesPopover } from '@/components/approval-preview/Permission
 import { usePiApproval } from '@/hooks/usePiApproval'
 import type { PiApprovalRequest } from '@/lib/pi/approval'
 import type { DivoQuickStartPlan } from '@/lib/divo-finance-quick-start'
+import { FinanceQuickStarts } from '@/components/finance-quick-starts/FinanceQuickStarts'
 
 type ChatInputProps = {
   className?: string
@@ -2696,6 +2697,14 @@ const ChatInput = memo(function ChatInput({
                     </DropdownMenuContent>
                   </DropdownMenu>
                 <PermissionRulesPopover threadId={displayedThreadId} />
+                {!initialMessage && threadId && (
+                  <FinanceQuickStarts
+                    variant="launcher"
+                    onSubmit={(request) =>
+                      void handleSendMessage(request.prompt, request.plan)
+                    }
+                  />
+                )}
                 <SamplerPopover
                   providerId={selectedProvider}
                   modelId={selectedModel?.id}

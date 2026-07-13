@@ -97,4 +97,22 @@ describe('FinanceQuickStarts', () => {
       })
     )
   })
+
+  it('reopens the same catalogue from the in-chat launcher', async () => {
+    render(
+      <FinanceQuickStarts
+        variant="launcher"
+        onSubmit={vi.fn()}
+      />
+    )
+
+    const launcher = await screen.findByRole('button', {
+      name: 'Open Finance quick starts',
+    })
+    fireEvent.click(launcher)
+
+    expect(screen.getByText('Add a precise Zoho request to this chat')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Receivables/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Expenses/i })).toBeInTheDocument()
+  })
 })
