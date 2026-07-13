@@ -169,7 +169,12 @@ function makePrisma(overrides: {
     },
     adminMembership: {
       findMany: async () => overrides.memberships ?? [fakeMembership],
+      findFirst: async () => fakeMembership,
+      count: async () => 1,
+      updateMany: async () => ({ count: 1 }),
+      update: async () => ({ userId: 'u-1', companyId: 'co-1', role: 'COMPANY_ADMIN' }),
     },
+    adminSession: { updateMany: async () => ({ count: 1 }) },
     channelIdentity: {
       findMany: async () => overrides.identities ?? [],
       findFirst: async () => overrides.channelIdentity ?? null,
@@ -280,6 +285,60 @@ describe('GET /members', () => {
     const router = makeRouter({ memberships: [] });
     const { body } = await callRoute(router, 'GET', '/members');
     assert.equal((body as any).data.length, 0);
+  });
+});
+
+// ─── PUT /members/:userId/role ──────────────────────────────────────────────
+
+describe('PUT /members/:userId/role', () => {
+  function roleMutationPrisma(input: { targetRole: 'MEMBER' | 'COMPANY_ADMIN'; companyAdminCount: number; actorIsTarget?: boolean }) {
+    const target = { id: 'target-membership', userId: 'u-target', companyId: 'co-1', role: input.targetRole, isActive: true, createdAt: new Date('2025-01-01'), updatedAt: new Date('2025-01-02') };
+    const actor = input.actorIsTarget
+      ? target
+      : { id: 'actor-membership', userId: 'u-1', companyId: 'co-1', role: 'COMPANY_ADMIN', isActive: true, createdAt: new Date('2025-01-01'), updatedAt: new Date('2025-01-02') };
+    const prisma = makePrisma() as any;
+    prisma.$transaction = async (work: (tx: any) => Promise<unknown>) => work(prisma);
+    prisma.adminMembership = {
+      findFirst: async (args: any) => args.where.userId === actor.userId ? actor : null,
+      findMany: async (args: any) => args.where.userId === 'u-target' ? [target] : [],
+      count: async () => input.companyAdminCount,
+      updateMany: async () => ({ count: 1 }),
+      update: async (args: any) => ({ userId: 'u-target', companyId: 'co-1', role: args.data.role }),
+    };
+    prisma.adminSession = { updateMany: async () => ({ count: 1 }) };
+    return prisma;
+  }
+
+  it('allows a company admin to promote a member within their company', async () => {
+    const { status, body } = await callRoute(
+      createCompanyRoutes(makeRouteDeps(roleMutationPrisma({ targetRole: 'MEMBER', companyAdminCount: 1 }))),
+      'PUT',
+      '/members/u-target/role',
+      { body: { role: 'COMPANY_ADMIN' } },
+    );
+    assert.equal(status, 200);
+    assert.equal((body as any).data.role, 'COMPANY_ADMIN');
+  });
+
+  it('rejects demoting the last active company admin', async () => {
+    const { status, body } = await callRoute(
+      createCompanyRoutes(makeRouteDeps(roleMutationPrisma({ targetRole: 'COMPANY_ADMIN', companyAdminCount: 1, actorIsTarget: true }))),
+      'PUT',
+      '/members/u-target/role',
+      { body: { role: 'MEMBER' }, locals: { ...DEFAULT_LOCALS, userId: 'u-target' } },
+    );
+    assert.equal(status, 409);
+    assert.match((body as any).message, /at least one active company admin/i);
+  });
+
+  it('rejects a request scoped to another company for a company admin', async () => {
+    const { status } = await callRoute(
+      createCompanyRoutes(makeRouteDeps(roleMutationPrisma({ targetRole: 'MEMBER', companyAdminCount: 1 }))),
+      'PUT',
+      '/members/u-target/role',
+      { body: { role: 'COMPANY_ADMIN', companyId: 'aaaaaaaa-aaaa-aaaa-aaaa-000000000001' } },
+    );
+    assert.equal(status, 403);
   });
 });
 

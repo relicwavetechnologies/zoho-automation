@@ -90,6 +90,15 @@ export function PluginsRoute() {
   const selectedDepartment = departments.find(department => department.id === selectedDepartmentId) ?? null
   const selectedSnapshot = selectedDepartment ? teamSnapshots[selectedDepartment.id] : undefined
   const allGroups = useMemo(() => groupToolInventory(inventory ?? []), [inventory])
+  // The inventory is already server-filtered for the signed-in member. A
+  // management scope is the server-authoritative signal that this member is a
+  // department manager or company admin, so do not rely on a cached desktop
+  // role to decide whether to expose the administration workspace.
+  const hasManagementAccess = (inventory ?? []).some(item => item.managementScopes.length > 0)
+  const personalGroups = useMemo(
+    () => allGroups.filter(group => group.id === 'google-workspace'),
+    [allGroups],
+  )
   const managedGroup = managedGroupId ? allGroups.find(group => group.id === managedGroupId) ?? null : null
   const searchQuery = search.trim().toLocaleLowerCase()
 
@@ -114,9 +123,9 @@ export function PluginsRoute() {
       <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-5 py-7 lg:px-8">
         <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
           <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><span className="size-1.5 rounded-full bg-foreground" />Live company policy</div>
+            {inventory !== null && !error && hasManagementAccess ? <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><span className="size-1.5 rounded-full bg-foreground" />Live company policy</div> : null}
             <h1 className="text-2xl font-medium tracking-tight">Tools</h1>
-            <p className="text-sm text-muted-foreground">Control what your department can use, and who can do what.</p>
+            <p className="text-sm text-muted-foreground">{inventory !== null && !error && !hasManagementAccess ? 'Connect the Google Workspace account you use with Divo.' : 'Control what your department can use, and who can do what.'}</p>
           </div>
           <Button variant="outline" size="sm" onClick={() => void loadInventory()} disabled={inventory === null && !error}>
             <RefreshCw data-icon="inline-start" />
@@ -124,12 +133,12 @@ export function PluginsRoute() {
           </Button>
         </header>
 
-        {inventory !== null && !error && selectedDepartment ? (
+        {inventory !== null && !error && hasManagementAccess && selectedDepartment ? (
           <DepartmentScopeBar department={selectedDepartment} departments={departments} snapshot={selectedSnapshot} attentionCount={attentionCount} onDepartmentChange={setSelectedDepartmentId} />
         ) : null}
 
         {inventory !== null && !error ? (
-          <Tabs value={view} onValueChange={next => { setView(next as WorkspaceView); setSearch('') }} className="gap-5">
+          hasManagementAccess ? <Tabs value={view} onValueChange={next => { setView(next as WorkspaceView); setSearch('') }} className="gap-5">
             <div className="flex flex-col justify-between gap-3 border-b sm:flex-row sm:items-end">
               <TabsList variant="line" className="max-w-full justify-start overflow-x-auto">
                 <TabsTrigger value="tools">Tools <CountBadge>{allGroups.length}</CountBadge></TabsTrigger>
@@ -170,7 +179,7 @@ export function PluginsRoute() {
             {selectedDepartment ? <TabsContent value="people"><PeopleView loading={!selectedSnapshot} members={visibleMembers} onManage={() => openTeamDialog('people')} /></TabsContent> : null}
             {selectedDepartment ? <TabsContent value="roles"><RolesView loading={!selectedSnapshot} roles={visibleRoles} members={selectedSnapshot?.memberships ?? []} onManage={() => openTeamDialog('roles')} /></TabsContent> : null}
             {selectedDepartment && selectedSnapshot ? <TabsContent value="access"><DepartmentAccessMatrix department={selectedDepartment} items={inventory} query={searchQuery} roles={selectedSnapshot.roles} onUpdated={() => void loadInventory()} /></TabsContent> : null}
-          </Tabs>
+          </Tabs> : <PersonalToolsView groups={personalGroups} onOpenDetails={group => navigate({ to: route.plugins.detail, params: { pluginId: group.id } } as never)} />
         ) : null}
 
         {inventory === null && !error ? <ToolsState title="Checking your tool access" description="Divo is loading current company and department policy." loading /> : null}
@@ -180,6 +189,24 @@ export function PluginsRoute() {
       {teamDialog ? <DepartmentTeamDialog department={teamDialog.department} initialFocus={teamDialog.focus} open onOpenChange={open => { if (!open) setTeamDialog(null) }} onChanged={() => void loadInventory()} /> : null}
       <ManagedToolSheet group={managedGroup} open={managedGroup !== null} onOpenChange={open => { if (!open) setManagedGroupId(null) }} onUpdated={() => void loadInventory()} />
     </div>
+  )
+}
+
+function PersonalToolsView({ groups, onOpenDetails }: { groups: ToolPresentationGroup[]; onOpenDetails: (group: ToolPresentationGroup) => void }) {
+  return (
+    <section className="flex max-w-xl flex-col gap-3" aria-label="Your tools">
+      <div>
+        <h2 className="text-base font-medium">Your Google Workspace</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Connect and manage the Google account you use with Divo.</p>
+      </div>
+      {groups.length > 0 ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {groups.map(group => <ToolCatalogueCard key={group.id} group={group} onManage={() => undefined} onOpenDetails={() => onOpenDetails(group)} />)}
+        </div>
+      ) : (
+        <ToolsState compact title="Google Workspace is not available" description="Ask your company admin to enable Google Workspace for your role." />
+      )}
+    </section>
   )
 }
 

@@ -4,6 +4,7 @@
  * All routes require admin auth. Mounted at /api/admin/company.
  *
  *   GET  /members               — list admin members
+ *   PUT  /members/:userId/role  — update a company member role
  *   GET  /directory             — company directory (members + Lark identities)
  *   GET  /invites               — list pending invites
  *   POST /invites               — create invite
@@ -18,6 +19,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { Prisma } from '../../generated/prisma';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import type { CachePort } from '../../shared/cache';
@@ -86,6 +88,14 @@ function resolveCompanyId(res: Response, providedId?: string): string {
 const createInviteSchema = z.object({
   email:     z.string().email().max(200),
   roleId:    z.string().min(1).max(50),
+  companyId: z.string().uuid().optional(),
+});
+
+// Company membership is deliberately simpler than platform administration.
+// A company admin can assign only these tenant-scoped roles; SUPER_ADMIN is a
+// platform operator role and must never be granted from a company workspace.
+const updateMemberRoleSchema = z.object({
+  role: z.enum(['MEMBER', 'COMPANY_ADMIN']),
   companyId: z.string().uuid().optional(),
 });
 
@@ -225,6 +235,87 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       updatedAt: r.updatedAt.toISOString(),
     }));
     success(res, members, 'Members loaded');
+  }));
+
+  // ── Update company member role ──────────────────────────────────────────
+  // Keep one active membership authoritative per user/company. Older versions
+  // allowed a MEMBER and COMPANY_ADMIN row to remain active at once, which made
+  // role reads dependent on query ordering.
+  router.put('/members/:userId/role', asyncRoute(async (req, res) => {
+    const payload = updateMemberRoleSchema.parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, payload.companyId);
+    const actorId = res.locals['userId'] as string | null | undefined;
+    const isSuperAdmin = Boolean(res.locals['isSuperAdmin']);
+    if (!actorId && !isSuperAdmin) throw routeError(403, 'An authenticated company admin is required');
+
+    let result: { userId: string; companyId: string | null; role: string };
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        if (!isSuperAdmin) {
+          const actorMembership = await tx.adminMembership.findFirst({
+            where: { userId: actorId!, companyId, role: 'COMPANY_ADMIN', isActive: true },
+            select: { id: true },
+            orderBy: { updatedAt: 'desc' },
+          });
+          if (!actorMembership) throw routeError(403, 'Only an active company admin can update member roles');
+        }
+
+        const memberships = await tx.adminMembership.findMany({
+          where: { userId: req.params.userId!, companyId, isActive: true },
+          select: { id: true, role: true },
+          orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+        });
+        const primary = memberships[0];
+        if (!primary) throw routeError(404, 'Member not found in this company');
+
+        const targetIsCompanyAdmin = memberships.some(membership => membership.role === 'COMPANY_ADMIN');
+        if (targetIsCompanyAdmin && payload.role === 'MEMBER') {
+          const companyAdminCount = await tx.adminMembership.count({
+            where: { companyId, role: 'COMPANY_ADMIN', isActive: true },
+          });
+          if (companyAdminCount <= 1) {
+            throw routeError(409, 'At least one active company admin is required');
+          }
+        }
+
+        // Deactivate every prior active record before reactivating the newest
+        // record as the sole source of truth for this user and company.
+        await tx.adminMembership.updateMany({
+          where: { userId: req.params.userId!, companyId, isActive: true },
+          data: { isActive: false },
+        });
+        const membership = await tx.adminMembership.update({
+          where: { id: primary.id },
+          data: { role: payload.role, isActive: true },
+          select: { userId: true, companyId: true, role: true },
+        });
+
+        // AdminSession carries an issuance-time role. Revoke the target's
+        // existing dashboard sessions so a demoted admin cannot retain access.
+        await tx.adminSession.updateMany({
+          where: { userId: membership.userId, companyId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+
+        return membership;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    } catch (error) {
+      // Serializable isolation prevents two concurrent demotions from removing
+      // every company admin. Surface contention as a safe retry rather than a
+      // generic internal failure.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+        throw routeError(409, 'Member roles changed concurrently. Refresh and try again.');
+      }
+      throw error;
+    }
+
+    deps.logger.info('company.member_role.updated', {
+      companyId,
+      actorId: actorId ?? 'platform',
+      userId: result.userId,
+      role: result.role,
+    });
+    success(res, result, 'Member role updated');
   }));
 
   // ── Company directory ─────────────────────────────────────────────────────

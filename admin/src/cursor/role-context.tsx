@@ -1,23 +1,22 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react"
+import { createContext, useContext, useMemo, type ReactNode } from "react"
+import { useAdminAuth } from "@/auth/AdminAuthProvider"
 
 /**
- * Preview role toggle from the mock ("Viewing as Super Admin / Company Admin").
- * Drives the raw tool-I/O gating on the run trace — super admins see raw
- * input/output, company admins see a locked summary. This is a UI preview of
- * the real gate; the live version keys off the authenticated session role.
+ * Mirrors the authenticated admin session for presentation. The backend remains
+ * authoritative for trace redaction and all admin authorization decisions.
  */
 type RoleContextValue = {
   isSuper: boolean
-  toggle: () => void
   label: string
 }
 
 const RoleContext = createContext<RoleContextValue | null>(null)
 
 export function RoleProvider({ children }: { children: ReactNode }) {
-  const [isSuper, setIsSuper] = useState(true)
+  const { session } = useAdminAuth()
+  const isSuper = session?.role === "SUPER_ADMIN"
   const value = useMemo<RoleContextValue>(
-    () => ({ isSuper, toggle: () => setIsSuper((v) => !v), label: isSuper ? "Super Admin" : "Company Admin" }),
+    () => ({ isSuper, label: isSuper ? "Super Admin" : "Company Admin" }),
     [isSuper],
   )
   return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>

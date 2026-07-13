@@ -530,30 +530,38 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
     if (!user) throw routeError(404, 'User not found');
     if (!company) throw routeError(404, 'Company not found');
 
-    const existing = await deps.prisma.adminMembership.findFirst({
-      where: {
-        userId: payload.userId,
-        companyId: payload.companyId,
-        role: 'COMPANY_ADMIN',
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    // Keep the platform-only promotion endpoint compatible with the company
+    // role invariant: each user has one authoritative active membership per
+    // company. Without this normalization a prior MEMBER row could remain
+    // active beside a new COMPANY_ADMIN row and produce nondeterministic reads.
+    await deps.prisma.$transaction(async (tx) => {
+      const memberships = await tx.adminMembership.findMany({
+        where: { userId: payload.userId, companyId: payload.companyId, isActive: true },
+        select: { id: true },
+        orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+      });
+      const primary = memberships[0];
+      if (!primary) {
+        await tx.adminMembership.create({
+          data: {
+            userId: payload.userId,
+            companyId: payload.companyId,
+            role: 'COMPANY_ADMIN',
+            isActive: true,
+          },
+        });
+        return;
+      }
 
-    if (existing) {
-      await deps.prisma.adminMembership.update({
-        where: { id: existing.id },
-        data: { isActive: true },
+      await tx.adminMembership.updateMany({
+        where: { userId: payload.userId, companyId: payload.companyId, isActive: true },
+        data: { isActive: false },
       });
-    } else {
-      await deps.prisma.adminMembership.create({
-        data: {
-          userId: payload.userId,
-          companyId: payload.companyId,
-          role: 'COMPANY_ADMIN',
-          isActive: true,
-        },
+      await tx.adminMembership.update({
+        where: { id: primary.id },
+        data: { role: 'COMPANY_ADMIN', isActive: true },
       });
-    }
+    });
 
     deps.auditService.record({
       actorId: actorSession.userId,

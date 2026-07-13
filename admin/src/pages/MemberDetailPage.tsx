@@ -8,6 +8,11 @@ import { useRuns } from "@/cursor/use-ai-ops"
 import { compact, usd, useCompanyScope, useDirectory, useMemberSpend } from "@/cursor/use-spend"
 import { PROXY_MODELS, useProxyPolicy, useSaveProxyPolicy } from "@/cursor/use-proxy-policy"
 import { useProxyAudit } from "@/cursor/use-proxy"
+import { companyMembersApi, type CompanyMemberRole } from "@/lib/api"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 export function MemberDetailPage() {
   const { userId } = useParams()
@@ -27,6 +32,9 @@ export function MemberDetailPage() {
   const [budget, setBudget] = useState("")
   const [rate, setRate] = useState("")
   const [models, setModels] = useState<string[]>(["deepseek-v4-flash"])
+  const [manageOpen, setManageOpen] = useState(false)
+  const [roleDraft, setRoleDraft] = useState<CompanyMemberRole>("MEMBER")
+  const [savingRole, setSavingRole] = useState(false)
 
   useEffect(() => {
     const p = policy.data
@@ -76,6 +84,29 @@ export function MemberDetailPage() {
   const openRun = (runId: string) =>
     navigate(`/ai-ops/runs/${runId}`, { state: { from: "person", personId: userId, personName: name } })
 
+  const openManage = () => {
+    setRoleDraft(role === "COMPANY_ADMIN" ? "COMPANY_ADMIN" : "MEMBER")
+    setManageOpen(true)
+  }
+
+  const saveRole = async () => {
+    if (!userId) return
+    setSavingRole(true)
+    try {
+      await companyMembersApi.updateRole(userId, {
+        role: roleDraft,
+        ...(companyId ? { companyId } : {}),
+      }, token ?? undefined)
+      await dir.refetch()
+      setManageOpen(false)
+      toast.success("Member role updated", { description: roleDraft === "COMPANY_ADMIN" ? "Company admin access granted." : "Company admin access removed." })
+    } catch {
+      // The API client has already shown the server's actionable error.
+    } finally {
+      setSavingRole(false)
+    }
+  }
+
   return (
     <div className="page">
       <div className="crumbs">
@@ -92,7 +123,7 @@ export function MemberDetailPage() {
             {role ? <><span>·</span><span className="badge">{role}</span></> : null}
           </div>
         </div>
-        <button className="btn" type="button"><SlidersHorizontal size={15} /> Manage</button>
+        <button className="btn" type="button" onClick={openManage}><SlidersHorizontal size={15} /> Manage</button>
       </div>
 
       <div className="grid g4">
@@ -174,6 +205,30 @@ export function MemberDetailPage() {
           </div>
         ) : null}
       </div>
+
+      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+        <DialogContent className="border-border/40 bg-mat sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-[15px] font-semibold">Manage member</DialogTitle>
+            <DialogDescription className="text-[12px]">Set this person’s company-level access. Department roles are managed from the Department page.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground" htmlFor="company-role">Company role</Label>
+            <Select value={roleDraft} onValueChange={(value) => setRoleDraft(value as CompanyMemberRole)}>
+              <SelectTrigger id="company-role" className="h-9 bg-card text-[13px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="MEMBER">Member</SelectItem>
+                <SelectItem value="COMPANY_ADMIN">Company Admin</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[12px] text-muted-foreground">A company must always retain at least one active Company Admin. Super Admin is platform-only and cannot be assigned here.</p>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" size="sm" className="h-8 text-[12px]" onClick={() => setManageOpen(false)} disabled={savingRole}>Cancel</Button>
+            <Button type="button" size="sm" className="h-8 bg-emphasis text-[12px] font-semibold text-emphasis-foreground hover:bg-emphasis/90" onClick={() => void saveRole()} disabled={savingRole || roleDraft === role}>{savingRole ? "Saving…" : "Save role"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="grid g2 mt24">
         <div className="section">

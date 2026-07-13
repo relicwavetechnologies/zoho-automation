@@ -6,7 +6,7 @@ import { RoleProvider } from "@/cursor/role-context"
 /**
  * Cursor-design app shell — mirrors the html-plans mock exactly. The root
  * carries `.cur` (design-system scope + fonts/canvas) and `.app` (flex layout).
- * RoleProvider backs the "Viewing as …" toggle that gates raw trace I/O.
+ * RoleProvider reflects the authenticated role for presentation-only trace UI.
  */
 export function AdminShell() {
   return (

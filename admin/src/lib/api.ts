@@ -68,6 +68,20 @@ export const api = {
     request<T>(path, { method: "GET" }, token),
 };
 
+export type CompanyMemberRole = "MEMBER" | "COMPANY_ADMIN";
+
+export const companyMembersApi = {
+  updateRole: (
+    userId: string,
+    input: { role: CompanyMemberRole; companyId?: string },
+    token?: string,
+  ) => api.put<{ userId: string; companyId: string; role: CompanyMemberRole }>(
+    `/api/admin/company/members/${userId}/role`,
+    input,
+    token,
+  ),
+};
+
 export type CreateAgentInput = {
   name: string;
   description?: string;
