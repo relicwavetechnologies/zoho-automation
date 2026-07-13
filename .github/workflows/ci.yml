@@ -233,6 +233,23 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "test -r '${DEPLOY_DIR}/.env.development.local' && command -v docker >/dev/null && docker compose version >/dev/null"
 
+      - name: Authorize development tunnel keys
+        run: |
+          scp -i ~/.ssh/id_ed25519 \
+            infra/development/developer-authorized-keys \
+            "${DIVO_DEV_USER}@${DIVO_DEV_HOST}:/tmp/divo-development-authorized-keys"
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          touch ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          while IFS= read -r key; do
+            [[ -z "${key}" ]] && continue
+            grep -qxF "${key}" ~/.ssh/authorized_keys || printf '%s\n' "${key}" >> ~/.ssh/authorized_keys
+          done < /tmp/divo-development-authorized-keys
+          rm -f /tmp/divo-development-authorized-keys
+          REMOTE
+
       - name: Upload development configuration
         run: |
           ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \

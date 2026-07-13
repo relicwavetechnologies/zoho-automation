@@ -16,7 +16,7 @@
     "test": "node --import tsx --test 'tests/**/*.test.ts'",
     "test:unit": "node --import tsx --test 'tests/tools/**/*.test.ts'",
     "test:integration": "node --import tsx --test 'tests/integration/**/*.test.ts'",
-    "dev:e2e": "bash scripts/dev.sh",
+    "dev:e2e": "bash scripts/db-tunnel.sh start && bash scripts/dev.sh",
     "stop": "bash scripts/stop.sh"
   },
   "dependencies": {
