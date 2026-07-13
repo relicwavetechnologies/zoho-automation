@@ -54,6 +54,10 @@ vi.mock('@/containers/DivoWorkspaceSelector', () => ({
   default: () => <div data-testid="workspace-selector" />,
 }))
 
+vi.mock('@/components/finance-quick-starts/FinanceQuickStarts', () => ({
+  FinanceQuickStarts: () => <div data-testid="finance-quick-starts" />,
+}))
+
 vi.mock('@/containers/SetupScreen', () => ({
   default: () => <div data-testid="setup-screen" />,
 }))

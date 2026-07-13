@@ -104,6 +104,7 @@ import { LiveApprovalComposer } from '@/components/approval-preview/LiveApproval
 import { PermissionRulesPopover } from '@/components/approval-preview/PermissionRulesPopover'
 import { usePiApproval } from '@/hooks/usePiApproval'
 import type { PiApprovalRequest } from '@/lib/pi/approval'
+import type { DivoQuickStartPlan } from '@/lib/divo-finance-quick-start'
 
 type ChatInputProps = {
   className?: string
@@ -124,6 +125,11 @@ type ChatInputProps = {
   ) => void
   onStop?: () => void
   chatStatus?: ChatStatus
+  quickStartRequest?: {
+    id: string
+    prompt: string
+    plan: DivoQuickStartPlan
+  } | null
 }
 
 type TauriDragDropPayload = {
@@ -352,6 +358,7 @@ const ChatInput = memo(function ChatInput({
   onSubmit,
   onStop,
   chatStatus,
+  quickStartRequest,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const skillReferenceSearchRef = useRef<HTMLInputElement>(null)
@@ -642,13 +649,16 @@ const ChatInput = memo(function ChatInput({
   const mcpExtension = extensionManager.get<MCPExtension>(ExtensionTypeEnum.MCP)
   const MCPToolComponent = mcpExtension?.getToolComponent?.()
 
-  const handleSendMessage = async (prompt: string) => {
+  const handleSendMessage = async (
+    prompt: string,
+    quickStartPlan?: DivoQuickStartPlan
+  ) => {
     const skillReferencesForSend = normalizeDivoSkillReferences(
       selectedSkillReferences
     )
     const submitOptions =
-      skillReferencesForSend.length > 0
-        ? { skillReferences: skillReferencesForSend }
+      skillReferencesForSend.length > 0 || quickStartPlan
+        ? { skillReferences: skillReferencesForSend, quickStartPlan }
         : undefined
 
     if (!selectedModel) {
@@ -747,6 +757,7 @@ const ChatInput = memo(function ChatInput({
         text: prompt,
         files: [] as Array<{ type: string; mediaType: string; url: string }>,
         skillReferences: skillReferencesForSend,
+        quickStartPlan,
       }
 
       if (isTemporaryChat) {
@@ -835,6 +846,19 @@ const ChatInput = memo(function ChatInput({
       // processing is complete.
     }
   }
+
+  const lastQuickStartRequestRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (
+      !quickStartRequest ||
+      lastQuickStartRequestRef.current === quickStartRequest.id
+    ) return
+    lastQuickStartRequestRef.current = quickStartRequest.id
+    void handleSendMessage(quickStartRequest.prompt, quickStartRequest.plan)
+    // The request id is the one-shot ownership boundary. Ordinary composer
+    // renders must not replay a compiled request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quickStartRequest?.id])
 
   const activateShareMemoryCommand = () => {
     setSkillReferenceDrawerOpen(false)

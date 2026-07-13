@@ -44,6 +44,10 @@ import {
   buildDivoSkillReferenceContext,
   readDivoSkillReferencesFromMetadata,
 } from '@/lib/divo-skill-reference-context'
+import {
+  buildDivoQuickStartContext,
+  readDivoQuickStartPlan,
+} from '@/lib/divo-finance-quick-start'
 
 export type TokenUsageCallback = (
   usage: LanguageModelUsage,
@@ -532,6 +536,15 @@ function extractLatestUserSkillReferenceContext(messages: UIMessage[]): string {
     return buildDivoSkillReferenceContext(
       readDivoSkillReferencesFromMetadata(message.metadata)
     )
+  }
+  return ''
+}
+
+function extractLatestUserQuickStartContext(messages: UIMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role !== 'user') continue
+    return buildDivoQuickStartContext(readDivoQuickStartPlan(message.metadata))
   }
   return ''
 }
@@ -1542,8 +1555,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     const userRequest = extractLatestUserText(strippedMessages).trim()
     const skillReferenceContext =
       extractLatestUserSkillReferenceContext(strippedMessages)
+    const quickStartContext =
+      extractLatestUserQuickStartContext(strippedMessages)
     const attachmentContext = this.buildPiAttachmentRoutingContext(files, options)
-    return [attachmentContext, skillReferenceContext, userRequest]
+    return [attachmentContext, quickStartContext, skillReferenceContext, userRequest]
       .filter((part) => part.length > 0)
       .join('\n\n')
   }

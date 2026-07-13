@@ -1,4 +1,5 @@
 import type { DivoSkillSearchResult } from '@/lib/divo-skill-search'
+import type { DivoQuickStartPlan } from '@/lib/divo-finance-quick-start'
 
 export const DIVO_SKILL_REFERENCES_METADATA_KEY = 'divoSkillReferences'
 
@@ -9,6 +10,7 @@ export type DivoSkillReference = Pick<
 
 export type DivoSkillReferenceSubmitOptions = {
   skillReferences?: DivoSkillReference[]
+  quickStartPlan?: DivoQuickStartPlan
 }
 
 export function normalizeDivoSkillReferences(

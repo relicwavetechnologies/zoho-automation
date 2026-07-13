@@ -126,6 +126,7 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_set_session,
         core::divo::commands::divo_clear_session,
         core::divo::commands::divo_get_session_status,
+        core::divo::commands::divo_get_runtime_context,
         core::divo::commands::divo_validate_session,
         core::divo::commands::divo_set_department,
         core::divo::commands::divo_gateway_request,

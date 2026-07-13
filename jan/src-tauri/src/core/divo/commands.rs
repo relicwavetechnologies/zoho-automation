@@ -16,7 +16,8 @@ use crate::core::app::commands::get_jan_data_folder_path;
 use crate::core::pi::env::write_divo_env_file;
 
 use super::runtime_context::{
-    clear_runtime_context, runtime_context_path, write_runtime_context, DivoRuntimeContext,
+    clear_runtime_context, read_runtime_context, runtime_context_path, write_runtime_context,
+    DivoRuntimeContext,
 };
 use super::session::{
     clear_divo_session, load_divo_session, save_divo_session, DivoDepartment, DivoSession,
@@ -607,6 +608,17 @@ pub async fn divo_get_session_status<R: Runtime>(
     Ok(load_divo_session(&app)?
         .map(session_status)
         .unwrap_or_else(disconnected_session_status))
+}
+
+/// Return the locally cached, backend-authored runtime context. This exposes
+/// capability hints to the desktop UI without exposing the member token or
+/// moving permission decisions out of the backend.
+#[tauri::command]
+pub fn divo_get_runtime_context<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Option<DivoRuntimeContext>, String> {
+    let data_folder = get_jan_data_folder_path(app);
+    read_runtime_context(&runtime_context_path(&pi_agent_dir(&data_folder)))
 }
 
 /// Verify that the locally stored Divo member session is still accepted by the

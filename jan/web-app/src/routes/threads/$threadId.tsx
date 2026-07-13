@@ -88,6 +88,7 @@ import {
   type DivoSkillReference,
   type DivoSkillReferenceSubmitOptions,
 } from '@/lib/divo-skill-reference-context'
+import { DIVO_QUICK_START_METADATA_KEY } from '@/lib/divo-finance-quick-start'
 
 const CHAT_STATUS = {
   STREAMING: 'streaming',
@@ -883,6 +884,9 @@ function ThreadDetail() {
         skillReferences.length > 0
           ? { [DIVO_SKILL_REFERENCES_METADATA_KEY]: skillReferences }
           : {}
+      const quickStartMetadata = options?.quickStartPlan
+        ? { [DIVO_QUICK_START_METADATA_KEY]: options.quickStartPlan }
+        : {}
 
       // Cancel any in-flight title summarization so it doesn't compete with this request
       titleAbortRef.current?.abort()
@@ -965,6 +969,7 @@ function ThreadDetail() {
         previewMessage.metadata = {
           ...(previewMessage.metadata ?? {}),
           ...skillReferenceMetadata,
+          ...quickStartMetadata,
         }
         const previewUI =
           convertThreadMessagesToUIMessages([previewMessage])
@@ -1053,6 +1058,7 @@ function ThreadDetail() {
       baseUserMessage.metadata = {
         ...(baseUserMessage.metadata ?? {}),
         ...skillReferenceMetadata,
+        ...quickStartMetadata,
       }
       // Once a thread has branches, link new turns into the active path so the
       // assistant reply attaches to this message. Legacy threads stay linear.
@@ -1217,10 +1223,12 @@ function ThreadDetail() {
             text: string
             files?: Array<{ type: string; mediaType: string; url: string }>
             skillReferences?: DivoSkillReference[]
+            quickStartPlan?: DivoSkillReferenceSubmitOptions['quickStartPlan']
           }
 
           await processAndSendMessage(message.text, message.files, {
             skillReferences: message.skillReferences,
+            quickStartPlan: message.quickStartPlan,
           })
         } catch (error) {
           console.error('Failed to parse initial message:', error)

@@ -77,6 +77,16 @@ pub fn write_runtime_context(path: &Path, context: &DivoRuntimeContext) -> Resul
     fs::rename(&temporary, path).map_err(|e| e.to_string())
 }
 
+pub fn read_runtime_context(path: &Path) -> Result<Option<DivoRuntimeContext>, String> {
+    match fs::read(path) {
+        Ok(serialized) => serde_json::from_slice(&serialized)
+            .map(Some)
+            .map_err(|error| error.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 pub fn clear_runtime_context(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
