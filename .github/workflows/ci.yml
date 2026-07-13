@@ -259,6 +259,10 @@ jobs:
              DIVO_DEV_ENV_FILE=.env.development.local \
              DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.development.local up -d --wait divo-dev-postgres divo-dev-redis-queue divo-dev-redis-cache divo-dev-redis-memory && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
              docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm prisma db push --skip-generate && \
              DIVO_DEV_ENV_FILE=.env.development.local \
              DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
