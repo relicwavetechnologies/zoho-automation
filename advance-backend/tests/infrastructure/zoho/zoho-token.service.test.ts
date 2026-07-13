@@ -469,6 +469,7 @@ describe('ZohoTokenService', () => {
         assert.equal(result.refreshToken, 'new-rt');
         assert.equal(result.expiresIn,    3600);
         assert.deepEqual(result.scopes, ['ZohoCRM.modules.ALL', 'ZohoBooks.fullaccess.all']);
+        assert.equal(result.accountsBaseUrl, BASE_ENV.ZOHO_ACCOUNTS_BASE_URL);
       } finally {
         globalThis.fetch = origFetch;
       }

@@ -56,6 +56,12 @@ interface ZohoClientCredentials {
   accountsBaseUrl: string;
 }
 
+export interface ZohoConnectionAuthContext {
+  readonly accessToken: string;
+  readonly accountsBaseUrl: string;
+  readonly apiBaseUrl: string;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const connKey    = (companyId: string, env: string) => `${companyId}:${env}`;
@@ -199,25 +205,22 @@ export class ZohoTokenService {
     readonly connectionId: string;
     readonly minimumAccess: IntegrationGrantAccess;
   }): Promise<string> {
+    return (await this.getValidConnectionAuth(input)).accessToken;
+  }
+
+  /**
+   * Resolve an accessible connection's token together with its Zoho data-centre
+   * endpoints. The access check intentionally happens before token-cache reads:
+   * a cached token must never grant another user access to the connection.
+   */
+  async getValidConnectionAuth(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: IntegrationGrantAccess;
+  }): Promise<ZohoConnectionAuthContext> {
     if (!this.integrationConnectionRepo) {
       throw new Error('Zoho integration connection repository not configured');
-    }
-
-    const now = Date.now();
-    const key = integrationConnKey(input.connectionId);
-
-    const mem = this.memCache.get(key);
-    if (mem && now + REFRESH_BUFFER_MS < mem.expiresAtMs) {
-      return mem.token;
-    }
-
-    const redisResult = await this.cache.get<CachedZohoToken>(integrationRedisKey(input.connectionId));
-    if (redisResult.ok && redisResult.value) {
-      const r = redisResult.value;
-      if (typeof r.token === 'string' && r.token && typeof r.expiresAtMs === 'number' && now + REFRESH_BUFFER_MS < r.expiresAtMs) {
-        this.memCache.set(key, r);
-        return r.token;
-      }
     }
 
     const connResult = await this.integrationConnectionRepo.findAccessibleZohoConnection(input);
@@ -225,13 +228,32 @@ export class ZohoTokenService {
     const conn = connResult.value;
     if (!conn) throw new Error('Zoho connection not found or access denied');
 
+    const now = Date.now();
+    const key = integrationConnKey(input.connectionId);
+    const endpoints = this.resolveConnectionEndpoints(conn);
+
+    const mem = this.memCache.get(key);
+    if (mem && now + REFRESH_BUFFER_MS < mem.expiresAtMs) {
+      return { accessToken: mem.token, ...endpoints };
+    }
+
+    const redisResult = await this.cache.get<CachedZohoToken>(integrationRedisKey(input.connectionId));
+    if (redisResult.ok && redisResult.value) {
+      const r = redisResult.value;
+      if (typeof r.token === 'string' && r.token && typeof r.expiresAtMs === 'number' && now + REFRESH_BUFFER_MS < r.expiresAtMs) {
+        this.memCache.set(key, r);
+        return { accessToken: r.token, ...endpoints };
+      }
+    }
+
     if (conn.accessToken && conn.accessTokenExpiresAt && now + REFRESH_BUFFER_MS < conn.accessTokenExpiresAt.getTime()) {
       const expiresAtMs = conn.accessTokenExpiresAt.getTime();
       await this.storeIntegrationInCache(input.connectionId, conn.accessToken, expiresAtMs);
-      return conn.accessToken;
+      return { accessToken: conn.accessToken, ...endpoints };
     }
 
-    return this.forceRefreshIntegrationConnection(conn);
+    const accessToken = await this.forceRefreshIntegrationConnection(conn);
+    return { accessToken, ...endpoints };
   }
 
   /** Exchange an authorization code for tokens and store them. Returns scopes + expiry. */
@@ -240,7 +262,7 @@ export class ZohoTokenService {
     environment:       string;
     authorizationCode: string;
     redirectUri?:      string;
-  }): Promise<{ accessToken: string; refreshToken?: string; expiresIn: number; scopes: string[]; apiDomain?: string; tokenType?: string }> {
+  }): Promise<{ accessToken: string; refreshToken?: string; expiresIn: number; scopes: string[]; accountsBaseUrl: string; apiDomain?: string; tokenType?: string }> {
     const credentials = await this.resolveCredentials(opts.companyId);
     const redirectUri = (opts.redirectUri ?? credentials.redirectUri ?? '').trim();
 
@@ -267,12 +289,32 @@ export class ZohoTokenService {
       ...(payload.refresh_token ? { refreshToken: payload.refresh_token } : {}),
       expiresIn,
       scopes: (payload.scope ?? '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean),
+      accountsBaseUrl: credentials.accountsBaseUrl,
       ...(payload.api_domain ? { apiDomain: payload.api_domain } : {}),
       ...(payload.token_type ? { tokenType: payload.token_type } : {}),
     };
   }
 
   // ── Private ───────────────────────────────────────────────────────────────
+
+  private resolveConnectionEndpoints(conn: DecryptedIntegrationConnection): {
+    accountsBaseUrl: string;
+    apiBaseUrl: string;
+  } {
+    const meta = conn.tokenMetadata ?? {};
+    const accountsBaseUrl = typeof meta['accountsBaseUrl'] === 'string' && meta['accountsBaseUrl'].trim()
+      ? meta['accountsBaseUrl'].trim().replace(/\/$/, '')
+      : this.accountsBase.replace(/\/$/, '');
+    const metadataApiBase = typeof meta['apiBaseUrl'] === 'string' && meta['apiBaseUrl'].trim()
+      ? meta['apiBaseUrl'].trim()
+      : typeof meta['apiDomain'] === 'string' && meta['apiDomain'].trim()
+        ? meta['apiDomain'].trim()
+        : this.env.ZOHO_API_BASE_URL;
+    return {
+      accountsBaseUrl,
+      apiBaseUrl: metadataApiBase.replace(/\/$/, ''),
+    };
+  }
 
   private forceRefresh(companyId: string, environment: string): Promise<string> {
     const key = connKey(companyId, environment);

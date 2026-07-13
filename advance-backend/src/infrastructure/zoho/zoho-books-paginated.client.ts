@@ -136,16 +136,20 @@ export class ZohoBooksPaginatedClient {
     init:      RequestInit = {},
     auth:      ZohoConnectionAuth = {},
   ): Promise<T> {
-    const token = auth.connectionId && auth.userId
-      ? await this.tokenService.getValidTokenForConnection({
+    const connectionAuth = auth.connectionId && auth.userId
+      ? await this.tokenService.getValidConnectionAuth({
         companyId,
         userId: auth.userId,
         connectionId: auth.connectionId,
         minimumAccess: auth.minimumAccess ?? 'read_only',
       })
-      : await this.tokenService.getValidToken(companyId);
+      : null;
+    const token = connectionAuth?.accessToken ?? await this.tokenService.getValidToken(companyId);
+    const booksBase = connectionAuth
+      ? `${connectionAuth.apiBaseUrl}/books/v3`
+      : this.booksBase;
     const sep   = path.includes('?') ? '&' : '?';
-    const url   = `${this.booksBase}${path}${sep}`;
+    const url   = `${booksBase}${path}${sep}`;
 
     const res = await fetch(url, {
       ...init,

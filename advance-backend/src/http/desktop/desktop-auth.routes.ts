@@ -1163,7 +1163,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         accessTokenExpiresAt: expiresAt,
         scopes: tokens.scopes.length ? tokens.scopes : DEFAULT_ZOHO_SCOPES,
         ...(tokens.apiDomain ? { apiDomain: tokens.apiDomain } : {}),
-        accountsBaseUrl: deps.env.ZOHO_ACCOUNTS_BASE_URL,
+        accountsBaseUrl: tokens.accountsBaseUrl,
         apiBaseUrl,
         environment: 'prod',
         initialAccess: 'admin',

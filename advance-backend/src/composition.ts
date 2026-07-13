@@ -603,22 +603,25 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     integrationConnectionRepo,
   );
 
-  async function resolveZohoToken(
+  async function resolveZohoAuth(
     companyId: string,
     userId?: string,
     connectionId?: string,
     minimumAccess: 'read_only' | 'read_write' = 'read_only',
-  ): Promise<string | null> {
+  ): Promise<{ accessToken: string; apiBaseUrl: string } | null> {
     if (!zohoTokenService.isConfigured()) {
       logger.warn('zoho.token.not_configured', { companyId });
       return null;
     }
     try {
-      const token = connectionId && userId
-        ? await zohoTokenService.getValidTokenForConnection({ companyId, userId, connectionId, minimumAccess })
-        : await zohoTokenService.getValidToken(companyId);
-      logger.info('zoho.token.resolved', { companyId, connectionId, hasToken: !!token });
-      return token;
+      const auth = connectionId && userId
+        ? await zohoTokenService.getValidConnectionAuth({ companyId, userId, connectionId, minimumAccess })
+        : {
+          accessToken: await zohoTokenService.getValidToken(companyId),
+          apiBaseUrl: env.ZOHO_API_BASE_URL.replace(/\/$/, ''),
+        };
+      logger.info('zoho.token.resolved', { companyId, connectionId, hasToken: !!auth.accessToken });
+      return auth;
     } catch (e) {
       logger.error('zoho.token.resolve_failed', { companyId, error: e instanceof Error ? e.message : String(e) });
       return null;
@@ -627,14 +630,20 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const zohoBooksOrgCache = new Map<string, { organizationId: string; expiresAtMs: number }>();
 
-  async function resolveZohoBooksOrganizationId(companyId: string, token: string): Promise<string | null> {
-    const cached = zohoBooksOrgCache.get(companyId);
+  async function resolveZohoBooksOrganizationId(
+    companyId: string,
+    token: string,
+    apiBaseUrl: string,
+    connectionId?: string,
+  ): Promise<string | null> {
+    const cacheKey = connectionId ?? companyId;
+    const cached = zohoBooksOrgCache.get(cacheKey);
     if (cached && cached.expiresAtMs > Date.now()) {
       return cached.organizationId;
     }
 
     try {
-      const apiRoot = env.ZOHO_API_BASE_URL.replace(/\/$/, '');
+      const apiRoot = apiBaseUrl.replace(/\/$/, '');
       const res = await fetch(`${apiRoot}/books/v3/organizations`, {
         headers: { Authorization: `Zoho-oauthtoken ${token}` },
       });
@@ -662,7 +671,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         return null;
       }
 
-      zohoBooksOrgCache.set(companyId, {
+      zohoBooksOrgCache.set(cacheKey, {
         organizationId,
         expiresAtMs: Date.now() + 10 * 60 * 1000,
       });
@@ -677,8 +686,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }
 
   const getZohoCrmClient = async (companyId: string, userId: string, connectionId?: string) => {
-    const token = await resolveZohoToken(companyId, userId, connectionId);
-    return token ? new ZohoCrmClient(token, env.ZOHO_API_BASE_URL) : null;
+    const auth = await resolveZohoAuth(companyId, userId, connectionId);
+    return auth ? new ZohoCrmClient(auth.accessToken, auth.apiBaseUrl) : null;
   };
 
   const getZohoBooksClient = async (
@@ -687,10 +696,17 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     connectionId?: string,
     minimumAccess: 'read_only' | 'read_write' = 'read_only',
   ) => {
-    const token = await resolveZohoToken(companyId, userId, connectionId, minimumAccess);
-    if (!token) return null;
-    const organizationId = await resolveZohoBooksOrganizationId(companyId, token);
-    return organizationId ? new ZohoBooksClient(token, organizationId, env.ZOHO_API_BASE_URL) : null;
+    const auth = await resolveZohoAuth(companyId, userId, connectionId, minimumAccess);
+    if (!auth) return null;
+    const organizationId = await resolveZohoBooksOrganizationId(
+      companyId,
+      auth.accessToken,
+      auth.apiBaseUrl,
+      connectionId,
+    );
+    return organizationId
+      ? new ZohoBooksClient(auth.accessToken, organizationId, auth.apiBaseUrl)
+      : null;
   };
 
   // ── Cloudinary adapter (graceful no-op when credentials absent) ──────────

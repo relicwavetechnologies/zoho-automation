@@ -112,15 +112,19 @@ export class ZohoCrmPaginatedClient {
     init:      RequestInit = {},
     auth:      ZohoConnectionAuth = {},
   ): Promise<T | null> {
-    const token = auth.connectionId && auth.userId
-      ? await this.tokenService.getValidTokenForConnection({
+    const connectionAuth = auth.connectionId && auth.userId
+      ? await this.tokenService.getValidConnectionAuth({
         companyId,
         userId: auth.userId,
         connectionId: auth.connectionId,
         minimumAccess: auth.minimumAccess ?? 'read_only',
       })
-      : await this.tokenService.getValidToken(companyId);
-    const url = `${this.crmBase}${path}`;
+      : null;
+    const token = connectionAuth?.accessToken ?? await this.tokenService.getValidToken(companyId);
+    const crmBase = connectionAuth
+      ? `${connectionAuth.apiBaseUrl}/crm/v6`
+      : this.crmBase;
+    const url = `${crmBase}${path}`;
 
     const res = await fetch(url, {
       ...init,

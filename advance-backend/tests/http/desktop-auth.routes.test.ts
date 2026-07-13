@@ -139,6 +139,62 @@ describe('desktop auth routes', () => {
     assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'zoho-1', provider: 'zoho' }]);
   });
 
+  it('stores the Zoho accounts domain used for the OAuth exchange', async () => {
+    let storedConnection: Record<string, unknown> | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      organizations: [{ organization_id: 'org-1', name: 'India Books', is_default_org: true }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    try {
+      const router = createDesktopAuthRoutes(makeDeps({
+        env: {
+          ZOHO_API_BASE_URL: 'https://www.zohoapis.com',
+          ZOHO_ACCOUNTS_BASE_URL: 'https://accounts.zoho.com',
+        },
+        zohoTokenService: {
+          isConfigured: () => true,
+          getAuthorizeConfig: async () => ({
+            clientId: 'client-1',
+            accountsBaseUrl: 'https://accounts.zoho.in',
+          }),
+          exchangeAuthorizationCode: async () => ({
+            accessToken: 'token-1',
+            refreshToken: 'refresh-1',
+            expiresIn: 3600,
+            scopes: ['ZohoBooks.fullaccess.all'],
+            accountsBaseUrl: 'https://accounts.zoho.in',
+            apiDomain: 'https://www.zohoapis.in',
+          }),
+        },
+        zohoConnectionRepo: {
+          upsertFromExchange: async () => ({ ok: true, value: {} }),
+        },
+        connectionRepo: {
+          listAccessibleZohoConnections: async () => ({ ok: true, value: [] }),
+          upsertZohoConnection: async (input: Record<string, unknown>) => {
+            storedConnection = input;
+            return { ok: true, value: { id: 'connection-1' } };
+          },
+        },
+      }));
+
+      const authorize = await callRoute(router, 'GET', '/zoho/authorize-url', {
+        locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+      });
+      const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+      const callback = await callRoute(router, 'GET', '/zoho/callback', {
+        query: { code: 'code-1', state },
+      });
+
+      assert.equal(callback.status, 200);
+      assert.equal(storedConnection?.['accountsBaseUrl'], 'https://accounts.zoho.in');
+      assert.equal(storedConnection?.['apiBaseUrl'], 'https://www.zohoapis.in');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('refuses to disconnect a connection without admin access', async () => {
     let revoked = false;
     const router = createDesktopAuthRoutes(makeDeps({
