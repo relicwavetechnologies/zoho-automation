@@ -20,6 +20,7 @@ import { renderInstructions } from '@/lib/instructionTemplate'
 import {
   Conversation,
   ConversationContent,
+  ConversationPinSpacer,
   ConversationScrollButton,
 } from '@/components/ai-elements/conversation'
 import { invoke } from '@tauri-apps/api/core'
@@ -737,6 +738,39 @@ function ThreadDetail() {
       scrollReasoningToBottom()
     }
   }, [status, chatMessages, scrollReasoningToBottom])
+
+  // Pin the latest user turn to the top of the viewport on send, so its reply
+  // (working status + answer) streams into view without a manual scroll. Only
+  // fires for genuine sends — loading a thread keeps the normal bottom view.
+  const lastUserMessageId = useMemo(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      if (chatMessages[i].role === 'user') return chatMessages[i].id
+    }
+    return null
+  }, [chatMessages])
+
+  const [pinId, setPinId] = useState<string | null>(null)
+  const [pinNonce, setPinNonce] = useState(0)
+  const seenUserMessageRef = useRef<string | null>(null)
+
+  // Reset pinning when switching threads so a freshly opened thread shows its
+  // latest answer at the bottom rather than pinning a historical turn.
+  useEffect(() => {
+    setPinId(null)
+    setPinNonce(0)
+    seenUserMessageRef.current = null
+  }, [threadId])
+
+  useEffect(() => {
+    if (!lastUserMessageId) return
+    if (lastUserMessageId === seenUserMessageRef.current) return
+    const isFreshSend = status === 'submitted' || status === 'streaming'
+    seenUserMessageRef.current = lastUserMessageId
+    if (isFreshSend) {
+      setPinId(lastUserMessageId)
+      setPinNonce((n) => n + 1)
+    }
+  }, [lastUserMessageId, status])
 
   useEffect(() => {
     setCurrentThreadId(threadId)
@@ -1805,24 +1839,25 @@ function ThreadDetail() {
                 )
                   return null
                 return (
-                  <MessageItem
-                    key={message.id}
-                    message={message}
-                    isFirstMessage={isFirstMessage}
-                    isLastMessage={isLastMessage}
-                    status={effectiveStatus}
-                    reasoningContainerRef={reasoningContainerRef}
-                    isReasoningAtBottom={isReasoningAtBottom}
-                    onReasoningScroll={handleReasoningScroll}
-                    onReasoningScrollToBottom={forceScrollReasoningToBottom}
-                    onRegenerate={handleRegenerate}
-                    onEdit={handleEditMessage}
-                    onDelete={handleDeleteMessage}
-                    versionInfo={versionInfoById[message.id]}
-                    onSwitchVersion={handleSwitchVersion}
-                    isAnimating={!pendingContinueMessage}
-                    hideActions={!!pendingContinueMessage}
-                  />
+                  <div key={message.id} data-message-id={message.id}>
+                    <MessageItem
+                      message={message}
+                      isFirstMessage={isFirstMessage}
+                      isLastMessage={isLastMessage}
+                      status={effectiveStatus}
+                      reasoningContainerRef={reasoningContainerRef}
+                      isReasoningAtBottom={isReasoningAtBottom}
+                      onReasoningScroll={handleReasoningScroll}
+                      onReasoningScrollToBottom={forceScrollReasoningToBottom}
+                      onRegenerate={handleRegenerate}
+                      onEdit={handleEditMessage}
+                      onDelete={handleDeleteMessage}
+                      versionInfo={versionInfoById[message.id]}
+                      onSwitchVersion={handleSwitchVersion}
+                      isAnimating={!pendingContinueMessage}
+                      hideActions={!!pendingContinueMessage}
+                    />
+                  </div>
                 )
               })}
               {pendingContinueMessage && status === 'submitted' && (
@@ -1942,6 +1977,7 @@ function ThreadDetail() {
                   </div>
                 </div>
               )}
+              <ConversationPinSpacer pinId={pinId} nonce={pinNonce} />
             </ConversationContent>
             <ConversationScrollButton />
           </Conversation>
