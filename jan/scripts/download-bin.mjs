@@ -120,14 +120,19 @@ async function downloadAndExtract(url, archivePath, extractDir) {
 
 function getJson(url) {
   return new Promise((resolve, reject) => {
+    const githubToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN
+    const headers = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'jan-app',
+      'X-GitHub-Api-Version': '2022-11-28',
+    }
+    if (githubToken) headers.Authorization = `Bearer ${githubToken}`
+
     https
       .get(
         url,
         {
-          headers: {
-            Accept: 'application/vnd.github+json',
-            'User-Agent': 'jan-app',
-          },
+          headers,
         },
         (response) => {
           if (
