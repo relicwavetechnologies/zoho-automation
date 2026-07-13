@@ -271,9 +271,12 @@ jobs:
              docker image prune -af --filter 'label=com.divo.environment=development'"
 
       - name: Smoke test the local stack and HTTPS route
+        env:
+          BACKEND_IMAGE: ${{ needs.publish-development-images.outputs.backend-image }}
+          ADMIN_IMAGE: ${{ needs.publish-development-images.outputs.admin-image }}
         run: |
           ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
-            "DIVO_DEV_DOMAIN='${DIVO_DEV_DOMAIN}' DEPLOY_DIR='${DEPLOY_DIR}' bash -s" <<'REMOTE'
+            "DIVO_DEV_DOMAIN='${DIVO_DEV_DOMAIN}' DEPLOY_DIR='${DEPLOY_DIR}' DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' bash -s" <<'REMOTE'
           set -euo pipefail
 
           for attempt in $(seq 1 30); do
