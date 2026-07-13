@@ -1031,6 +1031,47 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     }
   });
 
+  router.delete('/google/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      if (!connectionId) {
+        res.status(400).json({ success: false, message: 'connectionId is required' });
+        return;
+      }
+
+      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Google connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Google connection' });
+        return;
+      }
+
+      const result = await deps.connectionRepo.revokeConnection({
+        companyId,
+        connectionId,
+        provider: 'google_workspace',
+      });
+      if (!result.ok) {
+        res.status(500).json({ success: false, message: result.error.message });
+        return;
+      }
+      if (!result.value) {
+        res.status(404).json({ success: false, message: 'Google connection not found' });
+        return;
+      }
+      res.json({ success: true, message: 'Google connection disconnected' });
+    } catch (e) {
+      log.error('google.connection.disconnect.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
   router.get('/zoho/authorize-url', memberAuth, async (_req: Request, res: Response) => {
     try {
       const userId    = res.locals['userId'] as string;
@@ -1328,6 +1369,47 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
     } catch (e) {
       log.error('zoho.manage.revoke.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.delete('/zoho/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      if (!connectionId) {
+        res.status(400).json({ success: false, message: 'connectionId is required' });
+        return;
+      }
+
+      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Zoho connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Zoho connection' });
+        return;
+      }
+
+      const result = await deps.connectionRepo.revokeConnection({
+        companyId,
+        connectionId,
+        provider: 'zoho',
+      });
+      if (!result.ok) {
+        res.status(500).json({ success: false, message: result.error.message });
+        return;
+      }
+      if (!result.value) {
+        res.status(404).json({ success: false, message: 'Zoho connection not found' });
+        return;
+      }
+      res.json({ success: true, message: 'Zoho connection disconnected' });
+    } catch (e) {
+      log.error('zoho.connection.disconnect.error', { error: String(e) });
       res.status(500).json({ success: false, message: String(e) });
     }
   });

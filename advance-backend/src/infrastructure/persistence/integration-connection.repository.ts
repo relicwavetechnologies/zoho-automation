@@ -401,6 +401,28 @@ export class IntegrationConnectionRepository {
     }
   }
 
+  async revokeConnection(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+    readonly provider: IntegrationProvider;
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      const result = await this.db.integrationConnection.updateMany({
+        where: {
+          id:        input.connectionId,
+          companyId: input.companyId,
+          provider:  input.provider,
+          status:    'connected',
+          revokedAt: null,
+        },
+        data: { status: 'revoked', revokedAt: new Date() },
+      });
+      return ok(result.count > 0);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.revokeConnection', e));
+    }
+  }
+
   async listAccessibleGoogleConnections(input: {
     readonly companyId: string;
     readonly userId: string;

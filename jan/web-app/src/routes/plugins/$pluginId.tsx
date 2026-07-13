@@ -342,6 +342,8 @@ export function PluginDetailRoute() {
   const { pluginId } = Route.useParams()
   const [addOpen, setAddOpen] = useState(false)
   const [manageConnection, setManageConnection] = useState<DivoConnection | null>(null)
+  const [disconnectConnection, setDisconnectConnection] = useState<DivoConnection | null>(null)
+  const [connectionActionId, setConnectionActionId] = useState<string | null>(null)
   const [connectionState, setConnectionState] = useState<ConnectionState>({
     status: 'loading',
     connections: [],
@@ -498,6 +500,39 @@ export function PluginDetailRoute() {
     }
     openManageConnection(connection)
   }
+  const reconnectGoogle = async (connection: DivoConnection) => {
+    setConnectionActionId(connection.id)
+    try {
+      const authorizeUrl = await invoke<string>('divo_google_authorize_url')
+      await openExternalUrl(authorizeUrl)
+      toast.success('Google sign-in opened', {
+        description: `Choose ${connection.accountEmail} to reconnect this account.`,
+      })
+      setTimeout(() => void loadConnections(), 1500)
+    } catch (reconnectError) {
+      toast.error('Could not reconnect Google', { description: String(reconnectError) })
+    } finally {
+      setConnectionActionId(null)
+    }
+  }
+  const confirmDisconnectGoogle = async () => {
+    if (!disconnectConnection) return
+    const connection = disconnectConnection
+    setConnectionActionId(connection.id)
+    try {
+      await invoke('divo_google_disconnect_connection', {
+        connectionId: connection.id,
+        connection_id: connection.id,
+      })
+      setDisconnectConnection(null)
+      toast.success('Google connection disconnected')
+      await loadConnections()
+    } catch (disconnectError) {
+      toast.error('Could not disconnect Google', { description: String(disconnectError) })
+    } finally {
+      setConnectionActionId(null)
+    }
+  }
 
   return (
     <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
@@ -634,6 +669,9 @@ export function PluginDetailRoute() {
                   key={connection.id}
                   connection={connection}
                   onManage={() => openManageConnection(connection)}
+                  onReconnect={() => void reconnectGoogle(connection)}
+                  onDisconnect={() => setDisconnectConnection(connection)}
+                  busy={connectionActionId === connection.id}
                 />
               ))}
             </div>
@@ -688,6 +726,13 @@ export function PluginDetailRoute() {
           if (!open) setManageConnection(null)
         }}
         onChanged={() => void loadConnections()}
+      />
+      <DisconnectConnectionDialog
+        providerLabel="Google Workspace"
+        connection={disconnectConnection}
+        busy={Boolean(disconnectConnection && connectionActionId === disconnectConnection.id)}
+        onConfirm={() => void confirmDisconnectGoogle()}
+        onOpenChange={(open) => { if (!open) setDisconnectConnection(null) }}
       />
     </div>
   )
@@ -1059,6 +1104,8 @@ function ZohoPluginDetail({
   const [isBusy, setIsBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [manageConnection, setManageConnection] = useState<DivoConnection | null>(null)
+  const [disconnectConnection, setDisconnectConnection] = useState<DivoConnection | null>(null)
+  const [connectionActionId, setConnectionActionId] = useState<string | null>(null)
 
   const loadStatus = useCallback(async () => {
     setIsLoading(true)
@@ -1096,7 +1143,7 @@ function ZohoPluginDetail({
     void loadStatus()
   }, [loadStatus])
 
-  const connectZoho = async () => {
+  const connectZoho = async (connection?: DivoConnection) => {
     if (divoSession.status !== 'connected') {
       onReconnectDivo()
       return
@@ -1105,7 +1152,9 @@ function ZohoPluginDetail({
     try {
       const authorizeUrl = await invoke<string>('divo_zoho_authorize_url')
       await openExternalUrl(authorizeUrl)
-      toast.success('Zoho sign-in opened')
+      toast.success('Zoho sign-in opened', connection ? {
+        description: `Reconnect ${connection.accountEmail}.`,
+      } : undefined)
       setTimeout(() => void loadStatus(), 1500)
     } catch (connectError) {
       toast.error('Zoho connection failed', { description: String(connectError) })
@@ -1124,6 +1173,25 @@ function ZohoPluginDetail({
       toast.error('Could not disconnect Zoho', { description: String(disconnectError) })
     } finally {
       setIsBusy(false)
+    }
+  }
+
+  const confirmDisconnectZoho = async () => {
+    if (!disconnectConnection) return
+    const connection = disconnectConnection
+    setConnectionActionId(connection.id)
+    try {
+      await invoke('divo_zoho_disconnect_connection', {
+        connectionId: connection.id,
+        connection_id: connection.id,
+      })
+      setDisconnectConnection(null)
+      toast.success('Zoho connection disconnected')
+      await loadStatus()
+    } catch (disconnectError) {
+      toast.error('Could not disconnect Zoho', { description: String(disconnectError) })
+    } finally {
+      setConnectionActionId(null)
     }
   }
 
@@ -1229,6 +1297,9 @@ function ZohoPluginDetail({
                   key={connection.id}
                   connection={connection}
                   onManage={() => setManageConnection(connection)}
+                  onReconnect={() => void connectZoho(connection)}
+                  onDisconnect={() => setDisconnectConnection(connection)}
+                  busy={connectionActionId === connection.id}
                 />
               ))
             ) : connected && legacyConnection ? (
@@ -1314,6 +1385,13 @@ function ZohoPluginDetail({
 	        }}
 	        onChanged={() => void loadStatus()}
 	      />
+	      <DisconnectConnectionDialog
+	        providerLabel="Zoho"
+	        connection={disconnectConnection}
+	        busy={Boolean(disconnectConnection && connectionActionId === disconnectConnection.id)}
+	        onConfirm={() => void confirmDisconnectZoho()}
+	        onOpenChange={(open) => { if (!open) setDisconnectConnection(null) }}
+	      />
 	    </div>
 	  )
 	}
@@ -1350,9 +1428,15 @@ function Metric({ value, label }: { value: string; label: string }) {
 function ConnectionCard({
   connection,
   onManage,
+  onReconnect,
+  onDisconnect,
+  busy = false,
 }: {
   connection: DivoConnection
   onManage: () => void
+  onReconnect: () => void
+  onDisconnect: () => void
+  busy?: boolean
 }) {
   const isShared = connection.kind === 'company_shared'
   const isReadOnly = connection.access === 'read_only'
@@ -1380,15 +1464,20 @@ function ConnectionCard({
         </div>
 
         <div className="flex items-center gap-2">
-          {connection.status === 'needs_attention' ? (
-            <Button variant="outline" size="sm">
+          {connection.access === 'admin' ? (
+            <>
+            <Button variant="outline" size="sm" onClick={onReconnect} disabled={busy} aria-label={`Reconnect ${connection.label}`}>
               <RefreshCw className="size-4" />
               Reconnect
             </Button>
-          ) : connection.access === 'admin' ? (
-            <Button variant="outline" size="sm" onClick={onManage}>
+            <Button variant="outline" size="sm" onClick={onManage} disabled={busy} aria-label={`Manage ${connection.label}`}>
               Manage
             </Button>
+            <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={onDisconnect} disabled={busy} aria-label={`Disconnect ${connection.label}`}>
+              <Trash2 className="size-4" />
+              Disconnect
+            </Button>
+            </>
           ) : null}
         </div>
       </div>
@@ -1422,6 +1511,41 @@ function ConnectionCard({
         ))}
       </div>
     </article>
+  )
+}
+
+function DisconnectConnectionDialog({
+  providerLabel,
+  connection,
+  busy,
+  onConfirm,
+  onOpenChange,
+}: {
+  providerLabel: string
+  connection: DivoConnection | null
+  busy: boolean
+  onConfirm: () => void
+  onOpenChange: (open: boolean) => void
+}) {
+  return (
+    <Dialog open={Boolean(connection)} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Disconnect {providerLabel}?</DialogTitle>
+          <DialogDescription>
+            {connection
+              ? `${connection.accountEmail} will stop being available to Divo. Other connected accounts are not affected.`
+              : 'This connection will stop being available to Divo.'}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button>
+          <Button variant="destructive" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Disconnecting…' : 'Disconnect connection'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

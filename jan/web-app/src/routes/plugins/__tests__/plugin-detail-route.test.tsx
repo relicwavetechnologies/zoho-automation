@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   getInventory: vi.fn(),
   invoke: vi.fn(),
   navigate: vi.fn(),
+  openUrl: vi.fn(),
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -16,7 +17,7 @@ vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => h.navigate,
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: h.invoke }))
-vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
+vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: h.openUrl }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('lucide-react', () => {
   const Icon = () => null
@@ -138,6 +139,34 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
     })
   })
 
+  it('reconnects and disconnects only the selected Google connection', async () => {
+    const openWindow = vi.spyOn(window, 'open').mockImplementation(() => null)
+    h.getInventory.mockResolvedValue({ tools: [baseTool] })
+    h.invoke.mockImplementation((command: string) => {
+      if (command === 'divo_get_session_status') return Promise.resolve(connectedSession)
+      if (command === 'divo_google_status') return Promise.resolve(googleStatus)
+      if (command === 'divo_google_authorize_url') return Promise.resolve('https://accounts.google.com/reconnect')
+      if (command === 'divo_google_disconnect_connection') return Promise.resolve({ success: true })
+      return Promise.resolve({ success: true })
+    })
+    render(<PluginDetailRoute />)
+
+    const reconnectButton = await screen.findByRole('button', { name: 'Reconnect Work Gmail' })
+    fireEvent.click(reconnectButton)
+    await waitFor(() => expect(openWindow).toHaveBeenCalledWith(
+      'https://accounts.google.com/reconnect',
+      '_blank',
+      'noopener,noreferrer',
+    ))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Work Gmail' }))
+    expect(screen.getByRole('heading', { name: 'Disconnect Google Workspace?' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect connection' }))
+    await waitFor(() => expect(commandCalls('divo_google_disconnect_connection')).toEqual([
+      ['divo_google_disconnect_connection', { connectionId: 'google-1', connection_id: 'google-1' }],
+    ]))
+  })
+
   it('surfaces Google auth remediation without retrying status in a loop', async () => {
     h.getInventory.mockResolvedValue({ tools: [baseTool] })
     h.invoke.mockImplementation((command: string) => {
@@ -191,6 +220,35 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
       expect(commandCalls('divo_get_session_status')).toHaveLength(1)
       expect(commandCalls('divo_zoho_status')).toHaveLength(1)
     })
+  })
+
+  it('reconnects and disconnects only the selected Zoho connection', async () => {
+    const openWindow = vi.spyOn(window, 'open').mockImplementation(() => null)
+    h.pluginId = 'zoho'
+    h.getInventory.mockResolvedValue({ tools: [{ ...baseTool, tool: { ...baseTool.tool, toolId: 'zohoCrm', name: 'Zoho CRM' } }] })
+    h.invoke.mockImplementation((command: string) => {
+      if (command === 'divo_get_session_status') return Promise.resolve(connectedSession)
+      if (command === 'divo_zoho_status') return Promise.resolve(zohoStatus)
+      if (command === 'divo_zoho_authorize_url') return Promise.resolve('https://accounts.zoho.com/reconnect')
+      if (command === 'divo_zoho_disconnect_connection') return Promise.resolve({ success: true })
+      return Promise.resolve({ success: true })
+    })
+    render(<PluginDetailRoute />)
+
+    const reconnectButton = await screen.findByRole('button', { name: 'Reconnect Zoho Finance' })
+    fireEvent.click(reconnectButton)
+    await waitFor(() => expect(openWindow).toHaveBeenCalledWith(
+      'https://accounts.zoho.com/reconnect',
+      '_blank',
+      'noopener,noreferrer',
+    ))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Zoho Finance' }))
+    expect(screen.getByRole('heading', { name: 'Disconnect Zoho?' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect connection' }))
+    await waitFor(() => expect(commandCalls('divo_zoho_disconnect_connection')).toEqual([
+      ['divo_zoho_disconnect_connection', { connectionId: 'zoho-1', connection_id: 'zoho-1' }],
+    ]))
   })
 
   it('shows Zoho error remediation and only retries when requested', async () => {

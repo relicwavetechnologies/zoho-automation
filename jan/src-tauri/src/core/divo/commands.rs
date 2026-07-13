@@ -1081,6 +1081,27 @@ pub async fn divo_google_revoke_access<R: Runtime>(
     .await
 }
 
+/// Disconnect one Google connection without affecting the user's other accounts.
+#[tauri::command]
+pub async fn divo_google_disconnect_connection<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/google/connections/{connection_id}"),
+        None,
+        "Google disconnect connection",
+    )
+    .await
+}
+
 /// Start Zoho OAuth for the stored Divo member session.
 #[tauri::command]
 pub async fn divo_zoho_authorize_url<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
@@ -1199,6 +1220,27 @@ pub async fn divo_zoho_revoke_access<R: Runtime>(
         &format!("/zoho/connections/{connection_id}/grants/{grant_id}"),
         None,
         "Zoho revoke access",
+    )
+    .await
+}
+
+/// Disconnect one Zoho connection without affecting the company's other accounts.
+#[tauri::command]
+pub async fn divo_zoho_disconnect_connection<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/zoho/connections/{connection_id}"),
+        None,
+        "Zoho disconnect connection",
     )
     .await
 }

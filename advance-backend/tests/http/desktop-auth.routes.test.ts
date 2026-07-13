@@ -42,9 +42,9 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
 
 async function callRoute(
   router: ReturnType<typeof createDesktopAuthRoutes>,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   path: string,
-  opts: { query?: Record<string, string>; locals?: Record<string, unknown> } = {},
+  opts: { query?: Record<string, string>; params?: Record<string, string>; locals?: Record<string, unknown> } = {},
 ): Promise<{ status: number; body: any }> {
   return new Promise((resolve) => {
     let status = 200;
@@ -53,7 +53,7 @@ async function callRoute(
     const req = {
       method,
       path,
-      params: {},
+      params: opts.params ?? {},
       query: opts.query ?? {},
       body: {},
       headers: {},
@@ -79,6 +79,85 @@ async function callRoute(
 }
 
 describe('desktop auth routes', () => {
+  const connectionPrisma = (provider: 'google_workspace' | 'zoho') => ({
+    integrationConnection: {
+      findFirst: async () => ({
+        id: `${provider}-1`,
+        label: 'Finance account',
+        accountEmail: 'finance@example.com',
+        accountName: 'Finance',
+        ownerType: 'company',
+        ownerUserId: null,
+        createdBy: 'admin-1',
+        scopes: [],
+        connectedAt: new Date('2026-07-01T00:00:00.000Z'),
+        ownerUser: null,
+        grants: [],
+      }),
+    },
+    adminMembership: { findMany: async () => [] },
+    department: { findMany: async () => [] },
+    departmentRole: { findMany: async () => [] },
+    company: { findUnique: async () => ({ id: 'company-1', name: 'Acme' }) },
+  });
+
+  it('disconnects only the selected Google connection for an admin accessor', async () => {
+    const revoked: unknown[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: connectionPrisma('google_workspace'),
+      connectionRepo: {
+        listAccessibleGoogleConnections: async () => ({ ok: true, value: [{ connectionId: 'google_workspace-1', access: 'admin' }] }),
+        revokeConnection: async (input: unknown) => { revoked.push(input); return { ok: true, value: true }; },
+      },
+    }));
+
+    const result = await callRoute(router, 'DELETE', '/google/connections/:connectionId', {
+      params: { connectionId: 'google_workspace-1' },
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'google_workspace-1', provider: 'google_workspace' }]);
+  });
+
+  it('disconnects only the selected Zoho connection for an admin accessor', async () => {
+    const revoked: unknown[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: connectionPrisma('zoho'),
+      connectionRepo: {
+        listAccessibleZohoConnections: async () => ({ ok: true, value: [{ connectionId: 'zoho-1', access: 'admin' }] }),
+        revokeConnection: async (input: unknown) => { revoked.push(input); return { ok: true, value: true }; },
+      },
+    }));
+
+    const result = await callRoute(router, 'DELETE', '/zoho/connections/:connectionId', {
+      params: { connectionId: 'zoho-1' },
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'zoho-1', provider: 'zoho' }]);
+  });
+
+  it('refuses to disconnect a connection without admin access', async () => {
+    let revoked = false;
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: connectionPrisma('google_workspace'),
+      connectionRepo: {
+        listAccessibleGoogleConnections: async () => ({ ok: true, value: [{ connectionId: 'google_workspace-1', access: 'read_only' }] }),
+        revokeConnection: async () => { revoked = true; return { ok: true, value: true }; },
+      },
+    }));
+
+    const result = await callRoute(router, 'DELETE', '/google/connections/:connectionId', {
+      params: { connectionId: 'google_workspace-1' },
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.status, 403);
+    assert.equal(revoked, false);
+  });
+
   it('builds Lark authorize URL with email/task/offline scopes and desktop callback URI', async () => {
     const router = createDesktopAuthRoutes(makeDeps());
     const result = await callRoute(router, 'GET', '/lark/authorize-url');
