@@ -8,8 +8,10 @@ import { invoke } from '@tauri-apps/api/core'
  * (admin-governed `allowedModels`). This store:
  *  - fetches the member's allowed models on demand (`refreshOptions`),
  *  - remembers the user's chosen model locally,
- *  - pushes the choice into the running Pi runtime via `pi_set_model`, and
- *  - re-applies it after each `pi_start` (`applyToRuntime`).
+ *  - pushes the choice into any running Pi runtime via `pi_set_model`.
+ *
+ * New runtimes receive this choice with their owned prompt; `pi_start` only
+ * records runtime configuration and does not create a process by itself.
  *
  * The input-bar toggle is shown only when more than one model is allowed.
  */
@@ -22,7 +24,7 @@ export const DIVO_MODELS = {
 export type DivoModelId = keyof typeof DIVO_MODELS
 
 /** Pi's provider id for these models; the proxy canonicalizes the model id. */
-const DIVO_MODEL_PROVIDER = 'deepseek'
+export const DIVO_MODEL_PROVIDER = 'deepseek'
 const DEFAULT_MODEL: DivoModelId = 'deepseek-v4-flash'
 const STORAGE_KEY = 'divo.preferredModel'
 
@@ -59,7 +61,6 @@ type DivoModelState = {
   loaded: boolean
   refreshOptions: () => Promise<void>
   setModel: (model: DivoModelId) => Promise<void>
-  applyToRuntime: () => Promise<void>
 }
 
 export const useDivoModel = create<DivoModelState>((set, get) => ({
@@ -109,15 +110,8 @@ export const useDivoModel = create<DivoModelState>((set, get) => ({
     try {
       await pushModelToRuntime(model)
     } catch {
-      // Pi may not be running yet; the choice is re-applied on the next start.
-    }
-  },
-
-  applyToRuntime: async () => {
-    try {
-      await pushModelToRuntime(get().selectedModel)
-    } catch {
-      /* best-effort */
+      // Pi may not be running yet; its next owned prompt applies this stored
+      // selection before the model receives user text.
     }
   },
 }))

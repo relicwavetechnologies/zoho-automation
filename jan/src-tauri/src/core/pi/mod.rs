@@ -54,8 +54,13 @@ pub async fn pi_prompt(
     thread_id: String,
     run_id: String,
     message: String,
+    provider: Option<String>,
+    model_id: Option<String>,
 ) -> Result<(), String> {
-    state.manager.prompt(thread_id, run_id, message).await
+    state
+        .manager
+        .prompt_with_model(thread_id, run_id, message, provider, model_id)
+        .await
 }
 
 /// Abort exactly the active Pi thread/run pair.

@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { UIMessageChunk } from 'ai'
 import { consumePiApprovalEvent, usePiApproval } from '@/hooks/usePiApproval'
-import { useDivoModel } from '@/hooks/useDivoModel'
+import { DIVO_MODEL_PROVIDER, useDivoModel } from '@/hooks/useDivoModel'
 import {
   PI_TRACE_TIMELINE_METADATA_KEY,
   closePiUiMessageBlocks,
@@ -42,9 +42,6 @@ async function ensurePiStarted(threadId: string): Promise<void> {
     threadId,
     thread_id: threadId,
   })
-  // Apply the user's model preference to the freshly-admitted runtime so every
-  // run uses the chosen model. Best-effort — never blocks the prompt.
-  await useDivoModel.getState().applyToRuntime()
 }
 
 export function createPiMessageStream(options: {
@@ -203,12 +200,20 @@ export function createPiMessageStream(options: {
         // Keep this check adjacent to the prompt invocation: cancellation can
         // arrive while any of the startup boundaries above are pending.
         if (startupWasCancelledOrStale()) return
+        const { selectedModel } = useDivoModel.getState()
         await invoke('pi_prompt', {
           threadId,
           thread_id: threadId,
           runId,
           run_id: runId,
           message,
+          // The backend remains the authority for allowed models. Sending the
+          // selected model with this owned prompt lets Rust set it on a newly
+          // spawned runtime before the first request, rather than broadcasting
+          // to an empty runtime pool during pi_start.
+          provider: DIVO_MODEL_PROVIDER,
+          modelId: selectedModel,
+          model_id: selectedModel,
         })
       } catch (error) {
         if (!startupWasCancelledOrStale()) {

@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{oneshot, Mutex, Notify};
 use uuid::Uuid;
@@ -961,6 +961,7 @@ impl PiManager {
         capacity_changed: &Notify,
     ) -> Result<serde_json::Value, String> {
         let id = uuid::Uuid::new_v4().to_string();
+        let started_at = Instant::now();
         let command_name = command
             .get("type")
             .and_then(|value| value.as_str())
@@ -980,24 +981,76 @@ impl PiManager {
             state.pending.insert(
                 id.clone(),
                 PendingRpc {
-                    command: command_name,
+                    command: command_name.clone(),
                     owner,
                     tx,
                 },
             );
         }
+        // Do not include the command payload: prompt text and extension values can
+        // contain user data. Command, slot, correlation id, and duration are enough
+        // to diagnose a stalled runtime without exposing that data in app logs.
+        log::debug!(
+            "divo.pi.rpc.start command={} slot_thread_id={} rpc_id={}",
+            command_name,
+            slot.thread_id,
+            id
+        );
         if let Err(error) = Self::write_stdin(slot, &serialized) {
             slot.state.lock().unwrap().pending.remove(&id);
             capacity_changed.notify_waiters();
+            log::warn!(
+                "divo.pi.rpc.write_failed command={} slot_thread_id={} rpc_id={} elapsed_ms={} error={}",
+                command_name,
+                slot.thread_id,
+                id,
+                started_at.elapsed().as_millis(),
+                error
+            );
             return Err(error);
         }
         match tokio::time::timeout(Duration::from_secs(60), rx).await {
-            Ok(Ok(Ok(value))) => Ok(value),
-            Ok(Ok(Err(error))) => Err(error),
-            Ok(Err(_)) => Err("Pi RPC channel closed".into()),
+            Ok(Ok(Ok(value))) => {
+                log::debug!(
+                    "divo.pi.rpc.complete command={} slot_thread_id={} rpc_id={} elapsed_ms={}",
+                    command_name,
+                    slot.thread_id,
+                    id,
+                    started_at.elapsed().as_millis()
+                );
+                Ok(value)
+            }
+            Ok(Ok(Err(error))) => {
+                log::warn!(
+                    "divo.pi.rpc.failed command={} slot_thread_id={} rpc_id={} elapsed_ms={} error={}",
+                    command_name,
+                    slot.thread_id,
+                    id,
+                    started_at.elapsed().as_millis(),
+                    error
+                );
+                Err(error)
+            }
+            Ok(Err(_)) => {
+                log::warn!(
+                    "divo.pi.rpc.channel_closed command={} slot_thread_id={} rpc_id={} elapsed_ms={}",
+                    command_name,
+                    slot.thread_id,
+                    id,
+                    started_at.elapsed().as_millis()
+                );
+                Err("Pi RPC channel closed".into())
+            }
             Err(_) => {
                 slot.state.lock().unwrap().pending.remove(&id);
                 capacity_changed.notify_waiters();
+                log::warn!(
+                    "divo.pi.rpc.timeout command={} slot_thread_id={} rpc_id={} timeout_secs=60 elapsed_ms={}",
+                    command_name,
+                    slot.thread_id,
+                    id,
+                    started_at.elapsed().as_millis()
+                );
                 Err("Pi RPC timed out".into())
             }
         }
@@ -1101,6 +1154,11 @@ impl PiManager {
             )
         })?;
         let pid = child.id();
+        log::info!(
+            "divo.pi.runtime.spawned slot_thread_id={} pid={}",
+            slot.thread_id,
+            pid
+        );
         let stdin = child.stdin.take().ok_or("Failed to capture Pi stdin")?;
         let stdout = child.stdout.take().ok_or("Failed to capture Pi stdout")?;
         let stderr = child.stderr.take().ok_or("Failed to capture Pi stderr")?;
@@ -1322,6 +1380,17 @@ impl PiManager {
             clear_run_context_path(run_context_path);
             if let Some(pending) = pending {
                 let owner = pending.owner.clone();
+                log::debug!(
+                    "divo.pi.rpc.response command={} slot_thread_id={} rpc_id={} success={} run_id={}",
+                    pending.command,
+                    slot.thread_id,
+                    id,
+                    success,
+                    owner
+                        .as_ref()
+                        .map(|owner| owner.run_id.as_str())
+                        .unwrap_or("-")
+                );
                 let result = if success {
                     Ok(value
                         .get("data")
@@ -1343,45 +1412,24 @@ impl PiManager {
                     };
                     Self::emit(app, clear_owner.as_ref().or(owner.as_ref()), event);
                 }
+            } else {
+                log::debug!(
+                    "divo.pi.rpc.unmatched_response slot_thread_id={} rpc_id={} success={}",
+                    slot.thread_id,
+                    id,
+                    success
+                );
             }
             return;
         }
         if event_type.as_deref() == Some("extension_ui_request") {
-            // The response path holds this same lock while it flushes the
-            // current decision and commits an always-allow grant. Without it,
-            // Pi could emit the next Bash request in the tiny interval between
-            // the flush and that commit, causing an unnecessary second card.
-            let _lifecycle = slot.lifecycle.blocking_lock();
-            if let Some(failure) = Self::handle_extension_ui_request(
-                slot,
-                value,
-                |owner, event| Self::emit(app, Some(owner), event),
-                |response| Self::write_stdin(slot, &response.to_string()),
-            ) {
-                let ExtensionUiResponseFailure {
-                    owner,
-                    request_id,
-                    error,
-                } = failure;
-                log::warn!(
-                    "divo.pi.approval.auto_response_failed request_id={} error={}",
-                    request_id,
-                    error
-                );
-                if let Some(owner) = owner.as_ref() {
-                    Self::emit(
-                        app,
-                        Some(owner),
-                        serde_json::json!({
-                            "type": "pi_approval_delivery_failed",
-                            "request_id": request_id,
-                            "message": format!(
-                                "The local Divo runtime could not automatically approve this Bash command. Stop the run and send the request again. ({error})"
-                            ),
-                        }),
-                    );
-                }
-            }
+            // Pi sends extension UI events before its first `get_state`
+            // response. Startup holds this slot's lifecycle lock while it
+            // awaits that response, so taking the same lock on this stdout
+            // reader would deadlock the reader and hide every later RPC
+            // response. Serialize the approval work asynchronously instead:
+            // the reader must always stay free to drain Pi stdout.
+            Self::dispatch_extension_ui_request(slot.clone(), app.clone(), value);
             return;
         }
         if event_type.is_some() {
@@ -1400,6 +1448,72 @@ impl PiManager {
             }
             return;
         }
+    }
+
+    /// Process UI requests in lifecycle order without ever blocking the Pi
+    /// stdout reader. A confirmation and its user response still share the
+    /// slot lifecycle lock, preserving the task-level Bash approval guarantee.
+    fn dispatch_extension_ui_request(
+        slot: Arc<RuntimeSlot>,
+        app: AppHandle,
+        value: serde_json::Value,
+    ) {
+        let request_id = value
+            .get("id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-")
+            .to_string();
+        let method = value
+            .get("method")
+            .and_then(|value| value.as_str())
+            .unwrap_or("-")
+            .to_string();
+        log::debug!(
+            "divo.pi.extension_ui.queued slot_thread_id={} request_id={} method={}",
+            slot.thread_id,
+            request_id,
+            method
+        );
+
+        tauri::async_runtime::spawn(async move {
+            let _lifecycle = slot.lifecycle.lock().await;
+            log::debug!(
+                "divo.pi.extension_ui.processing slot_thread_id={} request_id={} method={}",
+                slot.thread_id,
+                request_id,
+                method
+            );
+            if let Some(failure) = Self::handle_extension_ui_request(
+                &slot,
+                value,
+                |owner, event| Self::emit(&app, Some(owner), event),
+                |response| Self::write_stdin(&slot, &response.to_string()),
+            ) {
+                let ExtensionUiResponseFailure {
+                    owner,
+                    request_id,
+                    error,
+                } = failure;
+                log::warn!(
+                    "divo.pi.approval.auto_response_failed request_id={} error={}",
+                    request_id,
+                    error
+                );
+                if let Some(owner) = owner.as_ref() {
+                    Self::emit(
+                        &app,
+                        Some(owner),
+                        serde_json::json!({
+                            "type": "pi_approval_delivery_failed",
+                            "request_id": request_id,
+                            "message": format!(
+                                "The local Divo runtime could not automatically approve this Bash command. Stop the run and send the request again. ({error})"
+                            ),
+                        }),
+                    );
+                }
+            }
+        });
     }
 
     /// The named-extension branch of `handle_line`, separated only so tests
@@ -1519,8 +1633,34 @@ impl PiManager {
         run_id: String,
         message: String,
     ) -> Result<(), String> {
+        self.prompt_with_model(thread_id, run_id, message, None, None)
+            .await
+    }
+
+    /// Start the owning thread runtime if necessary, apply its chosen model,
+    /// and then admit the prompt. Model selection belongs here rather than in
+    /// `pi_start`: starting only records configuration, while this path is the
+    /// one that actually creates a per-thread Pi process.
+    pub async fn prompt_with_model(
+        &self,
+        thread_id: String,
+        run_id: String,
+        message: String,
+        provider: Option<String>,
+        model_id: Option<String>,
+    ) -> Result<(), String> {
         let owner = RunOwner::new(thread_id, run_id)?;
+        log::info!(
+            "divo.pi.prompt.begin thread_id={} run_id={}",
+            owner.thread_id,
+            owner.run_id
+        );
         if self.pool.lock().await.cancelled_runs.remove(&owner) {
+            log::warn!(
+                "divo.pi.prompt.cancelled_before_admission thread_id={} run_id={}",
+                owner.thread_id,
+                owner.run_id
+            );
             return Err("Pi prompt was cancelled before runtime admission".into());
         }
         #[cfg(test)]
@@ -1536,11 +1676,29 @@ impl PiManager {
             .acquire_slot(&owner.thread_id, Some(owner.clone()))
             .await?;
         let slot = lease.slot().clone();
+        log::debug!(
+            "divo.pi.prompt.slot_acquired thread_id={} run_id={} slot_thread_id={}",
+            owner.thread_id,
+            owner.run_id,
+            slot.thread_id
+        );
         let _lifecycle = slot.lifecycle.lock().await;
         if self.pool.lock().await.cancelled_runs.remove(&owner) {
+            log::warn!(
+                "divo.pi.prompt.cancelled_during_admission thread_id={} run_id={} slot_thread_id={}",
+                owner.thread_id,
+                owner.run_id,
+                slot.thread_id
+            );
             return Err("Pi prompt was cancelled during runtime admission".into());
         }
         if slot.state.lock().unwrap().process.is_none() {
+            log::info!(
+                "divo.pi.prompt.runtime_start thread_id={} run_id={} slot_thread_id={}",
+                owner.thread_id,
+                owner.run_id,
+                slot.thread_id
+            );
             Self::spawn_slot(
                 &slot,
                 &self.config().await?,
@@ -1548,6 +1706,31 @@ impl PiManager {
                 self.pool.clone(),
             )
             .await?;
+        }
+        match (provider.as_deref(), model_id.as_deref()) {
+            (Some(provider), Some(model_id)) => {
+                log::debug!(
+                    "divo.pi.prompt.model_apply provider={} model_id={} thread_id={} run_id={} slot_thread_id={}",
+                    provider,
+                    model_id,
+                    owner.thread_id,
+                    owner.run_id,
+                    slot.thread_id
+                );
+                Self::send_rpc(
+                    &slot,
+                    serde_json::json!({
+                        "type": "set_model",
+                        "provider": provider,
+                        "modelId": model_id,
+                    }),
+                    None,
+                    &self.capacity_changed,
+                )
+                .await?;
+            }
+            (None, None) => {}
+            _ => return Err("Pi model provider and model id must be supplied together".into()),
         }
         {
             let mut state = slot.state.lock().unwrap();
@@ -1572,6 +1755,21 @@ impl PiManager {
             &self.capacity_changed,
         )
         .await;
+        match &result {
+            Ok(_) => log::info!(
+                "divo.pi.prompt.accepted thread_id={} run_id={} slot_thread_id={}",
+                owner.thread_id,
+                owner.run_id,
+                slot.thread_id
+            ),
+            Err(error) => log::warn!(
+                "divo.pi.prompt.failed thread_id={} run_id={} slot_thread_id={} error={}",
+                owner.thread_id,
+                owner.run_id,
+                slot.thread_id,
+                error
+            ),
+        }
         if result.is_err() {
             let run_context_path = {
                 let mut state = slot.state.lock().unwrap();
@@ -1587,6 +1785,11 @@ impl PiManager {
 
     pub async fn abort(&self, thread_id: String, run_id: String) -> Result<(), String> {
         let owner = RunOwner::new(thread_id, run_id)?;
+        log::info!(
+            "divo.pi.abort.begin thread_id={} run_id={}",
+            owner.thread_id,
+            owner.run_id
+        );
         {
             let pool = self.pool.lock().await;
             if let Some(waiter) = pool.waiters.iter().find(|waiter| {
@@ -1595,6 +1798,11 @@ impl PiManager {
             }) {
                 waiter.state.store(WAITER_CANCELLED, Ordering::Release);
                 self.wake_capacity();
+                log::info!(
+                    "divo.pi.abort.cancelled_waiter thread_id={} run_id={}",
+                    owner.thread_id,
+                    owner.run_id
+                );
                 return Ok(());
             }
         }
@@ -1602,12 +1810,20 @@ impl PiManager {
         let Some(slot) = slot else {
             self.pool.lock().await.cancelled_runs.insert(owner);
             self.wake_capacity();
+            log::info!("divo.pi.abort.recorded_before_admission");
             return Ok(());
         };
+        log::debug!(
+            "divo.pi.abort.slot_found thread_id={} run_id={} slot_thread_id={}",
+            owner.thread_id,
+            owner.run_id,
+            slot.thread_id
+        );
         let _lifecycle = slot.lifecycle.lock().await;
         if slot.state.lock().unwrap().active_run.is_none() {
             self.pool.lock().await.cancelled_runs.insert(owner);
             self.wake_capacity();
+            log::info!("divo.pi.abort.recorded_without_active_run");
             return Ok(());
         }
         require_active_run(
@@ -1626,14 +1842,30 @@ impl PiManager {
         self.revoke_slot_bash_rule(&slot).await;
         let app = self.config().await?.app;
         Self::emit_reconciliations(&app, reconciliations, "run_aborted");
-        Self::send_rpc(
+        let result = Self::send_rpc(
             &slot,
             serde_json::json!({"type":"abort"}),
             None,
             &self.capacity_changed,
         )
         .await
-        .map(|_| ())
+        .map(|_| ());
+        match &result {
+            Ok(_) => log::info!(
+                "divo.pi.abort.accepted thread_id={} run_id={} slot_thread_id={}",
+                owner.thread_id,
+                owner.run_id,
+                slot.thread_id
+            ),
+            Err(error) => log::warn!(
+                "divo.pi.abort.failed thread_id={} run_id={} slot_thread_id={} error={}",
+                owner.thread_id,
+                owner.run_id,
+                slot.thread_id,
+                error
+            ),
+        }
+        result
     }
 
     pub async fn stop(&self) {
@@ -1820,19 +2052,55 @@ impl PiManager {
                 .map(|(_, slot)| slot.clone())
                 .collect()
         };
+        log::info!(
+            "divo.pi.model_sync.begin provider={} model_id={} running_slots={}",
+            provider,
+            model_id,
+            slots.len()
+        );
         for slot in &slots {
-            Self::send_rpc(
+            log::debug!(
+                "divo.pi.model_sync.slot_begin provider={} model_id={} slot_thread_id={}",
+                provider,
+                model_id,
+                slot.thread_id
+            );
+            let result = Self::send_rpc(
                 slot,
                 serde_json::json!({
                     "type": "set_model",
-                    "provider": provider,
-                    "modelId": model_id,
+                    "provider": provider.clone(),
+                    "modelId": model_id.clone(),
                 }),
                 None,
                 &self.capacity_changed,
             )
-            .await?;
+            .await;
+            match result {
+                Ok(_) => log::debug!(
+                    "divo.pi.model_sync.slot_complete provider={} model_id={} slot_thread_id={}",
+                    provider,
+                    model_id,
+                    slot.thread_id
+                ),
+                Err(error) => {
+                    log::warn!(
+                        "divo.pi.model_sync.slot_failed provider={} model_id={} slot_thread_id={} error={}",
+                        provider,
+                        model_id,
+                        slot.thread_id,
+                        error
+                    );
+                    return Err(error);
+                }
+            }
         }
+        log::info!(
+            "divo.pi.model_sync.complete provider={} model_id={} running_slots={}",
+            provider,
+            model_id,
+            slots.len()
+        );
         Ok(())
     }
 

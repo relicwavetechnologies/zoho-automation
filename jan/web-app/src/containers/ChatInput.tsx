@@ -22,7 +22,6 @@ import {
   IconMusic,
   IconVideo,
   IconBrain,
-  IconTool,
   IconCodeCircle2,
   IconPlayerStopFilled,
   IconX,
@@ -35,7 +34,6 @@ import { generateId } from 'ai'
 import { useMessageQueue } from '@/stores/message-queue-store'
 import { QueuedMessageChip } from '@/containers/QueuedMessageBubble'
 import { computeActivePath, hasBranching } from '@/lib/message-branching'
-import { SamplerPopover } from '@/containers/SamplerPopover'
 import { DivoModelToggle } from '@/containers/DivoModelToggle'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { useGeneralSetting } from '@/hooks/useGeneralSetting'
@@ -54,16 +52,13 @@ import {
   SESSION_STORAGE_PREFIX,
 } from '@/constants/chat'
 import { useAssistant } from '@/hooks/useAssistant'
-import DropdownToolsAvailable from '@/containers/DropdownToolsAvailable'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { useTools } from '@/hooks/useTools'
 import { TokenCounter } from '@/components/TokenCounter'
 import { useMessages } from '@/hooks/useMessages'
 import { useShallow } from 'zustand/react/shallow'
-import { McpExtensionToolLoader } from './McpExtensionToolLoader'
 import {
   ExtensionTypeEnum,
-  MCPExtension,
   fs,
   VectorDBExtension,
 } from '@janhq/core'
@@ -383,7 +378,6 @@ const ChatInput = memo(function ChatInput({
   )
   const serviceHub = useServiceHub()
   const abortControllers = useAppState((state) => state.abortControllers)
-  const tools = useAppState((state) => state.tools)
   const cancelToolCall = useAppState((state) => state.cancelToolCall)
   const prompt = usePrompt((state) => state.prompt)
   const setPrompt = usePrompt((state) => state.setPrompt)
@@ -482,10 +476,6 @@ const ChatInput = memo(function ChatInput({
   )
   const updateProvider = useModelProvider((state) => state.updateProvider)
   const [message, setMessage] = useState('')
-  const [dropdownToolsAvailable, setDropdownToolsAvailable] = useState(false)
-  const [tooltipShown, setTooltipShown] = useState<
-    'tools' | false
-  >(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [hasMmproj, setHasMmproj] = useState(false)
   const activeModels = useAppState(useShallow((state) => state.activeModels))
@@ -641,14 +631,6 @@ const ChatInput = memo(function ChatInput({
     checkMmprojSupport()
   }, [selectedModel, selectedModel?.capabilities, selectedProvider, serviceHub])
 
-  // Check if there are active MCP servers
-  const hasActiveMCPServers =
-    tools.filter((tool) => tool.server !== 'Jan Browser MCP').length > 0
-
-  // Get MCP extension and its custom component
-  const extensionManager = ExtensionManager.getInstance()
-  const mcpExtension = extensionManager.get<MCPExtension>(ExtensionTypeEnum.MCP)
-  const MCPToolComponent = mcpExtension?.getToolComponent?.()
 
   const handleSendMessage = async (
     prompt: string,
@@ -950,12 +932,6 @@ const ChatInput = memo(function ChatInput({
       textareaRef.current.focus()
     }
   }, [])
-
-  useEffect(() => {
-    if (tooltipShown && dropdownToolsAvailable) {
-      setTooltipShown(false)
-    }
-  }, [dropdownToolsAvailable, tooltipShown])
 
   // Focus when thread changes
   useEffect(() => {
@@ -2616,7 +2592,7 @@ const ChatInput = memo(function ChatInput({
             <div className="px-1 flex items-center gap-1 flex-1 min-w-0">
               <div
                 className={cn(
-                  'px-1 flex items-center w-full gap-1',
+                  'flex items-center gap-1',
                   isComposerBusy && 'opacity-50 pointer-events-none'
                 )}
               >
@@ -2693,7 +2669,14 @@ const ChatInput = memo(function ChatInput({
                     </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                <PermissionRulesPopover threadId={displayedThreadId} />
+              </div>
+              <PermissionRulesPopover threadId={displayedThreadId} />
+              <div
+                className={cn(
+                  'flex min-w-0 flex-1 items-center gap-1',
+                  isComposerBusy && 'opacity-50 pointer-events-none'
+                )}
+              >
                 {!initialMessage && threadId && (
                   <FinanceQuickStarts
                     variant="launcher"
@@ -2702,10 +2685,6 @@ const ChatInput = memo(function ChatInput({
                     }
                   />
                 )}
-                <SamplerPopover
-                  providerId={selectedProvider}
-                  modelId={selectedModel?.id}
-                />
                 <DivoModelToggle disabled={isComposerBusy} />
                 {!effectiveAgentMode && hasJanBrowserMCPConfig && modelSupportsBrowser && (
                   <Tooltip>
@@ -2768,70 +2747,6 @@ const ChatInput = memo(function ChatInput({
                   </Tooltip>
                 )}
 
-                {!effectiveAgentMode && selectedModel?.capabilities?.includes('tools') &&
-                  hasActiveMCPServers &&
-                  (MCPToolComponent ? (
-                    // Use custom MCP component
-                    <McpExtensionToolLoader
-                      tools={tools}
-                      hasActiveMCPServers={hasActiveMCPServers}
-                      selectedModelHasTools={
-                        selectedModel?.capabilities?.includes('tools') ?? false
-                      }
-                      initialMessage={initialMessage}
-                      MCPToolComponent={MCPToolComponent}
-                    />
-                  ) : (
-                    // Use default tools dropdown
-                    <Tooltip
-                      open={tooltipShown === 'tools'}
-                      onOpenChange={(newValue) => newValue ? setTooltipShown('tools') : setTooltipShown(false)}
-                    >
-                      <TooltipTrigger
-                        asChild
-                        disabled={dropdownToolsAvailable}
-                      >
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={(e) => {
-                            setDropdownToolsAvailable(false)
-                            e.stopPropagation()
-                          }}
-                        >
-                          <DropdownToolsAvailable
-                            initialMessage={initialMessage}
-                            onOpenChange={(isOpen) => {
-                              setDropdownToolsAvailable(isOpen)
-                              if (isOpen) {
-                                setTooltipShown(false)
-                              }
-                            }}
-                          >
-                            {() => {
-                              return (
-                                <div
-                                  className={cn(
-                                    'p-1 flex items-center justify-center rounded-sm transition-all duration-200 ease-in-out gap-1 cursor-pointer',
-                                  )}
-                                >
-                                  <IconTool
-                                    size={18}
-                                    className={cn(
-                                      'text-muted-foreground',
-                                    )}
-                                  />
-                                </div>
-                              )
-                            }}
-                          </DropdownToolsAvailable>
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>{t('tools')}</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  ))}
 
                 {!effectiveAgentMode && selectedModel?.capabilities?.includes('web_search') && (
                   <Tooltip>

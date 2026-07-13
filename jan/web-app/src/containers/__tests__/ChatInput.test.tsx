@@ -987,6 +987,25 @@ describe('ChatInput', () => {
     expect(btns.length).toBeGreaterThan(0)
   })
 
+  it('keeps Bash permission rules interactive while streaming', async () => {
+    tauriCoreMock.invoke.mockImplementation((command: string) => {
+      if (command === 'pi_get_permission_rules') {
+        return Promise.resolve({ bashAlwaysAllow: false })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    renderInput({ chatStatus: 'streaming' })
+
+    const trigger = screen.getByTestId('permission-rules-trigger')
+    expect(trigger.closest('.pointer-events-none')).toBeNull()
+
+    fireEvent.click(trigger)
+
+    expect(await screen.findByText('Permission rules')).toBeInTheDocument()
+    expect(screen.getByText('Bash commands')).toBeInTheDocument()
+  })
+
   it('calls onStop when stop button clicked during streaming', () => {
     promptState = ''
     const onStop = vi.fn()

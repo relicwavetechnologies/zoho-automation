@@ -16,6 +16,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }))
 
 import { usePiApproval } from '@/hooks/usePiApproval'
+import { useDivoModel } from '@/hooks/useDivoModel'
 import { createPiMessageStream } from '../pi-stream'
 
 beforeEach(() => {
@@ -34,6 +35,11 @@ beforeEach(() => {
     }
   )
   usePiApproval.setState({ queues: {} })
+  useDivoModel.setState({
+    allowedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+    selectedModel: 'deepseek-v4-flash',
+    loaded: true,
+  })
 })
 
 describe('createPiMessageStream run ownership', () => {
@@ -72,6 +78,30 @@ describe('createPiMessageStream run ownership', () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith(
       'pi_prompt',
       expect.anything()
+    )
+  })
+
+  it('includes the selected model with a new thread prompt', async () => {
+    useDivoModel.setState({ selectedModel: 'deepseek-v4-pro' })
+    const stream = createPiMessageStream({
+      threadId: 'thread-1',
+      message: 'use deeper reasoning',
+      abortSignal: undefined,
+      isStale: () => false,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({
+          threadId: 'thread-1',
+          provider: 'deepseek',
+          modelId: 'deepseek-v4-pro',
+          model_id: 'deepseek-v4-pro',
+        })
+      )
     )
   })
 
