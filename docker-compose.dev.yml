@@ -1,0 +1,137 @@
+name: divo-dev
+
+x-default-logging: &default-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+    compress: "true"
+
+services:
+  divo-dev-postgres:
+    image: postgres:16-alpine
+    env_file:
+      - ${DIVO_DEV_ENV_FILE:-/dev/null}
+    environment:
+      POSTGRES_DB: ${DIVO_DEV_POSTGRES_DB:-divo_dev}
+      POSTGRES_USER: ${DIVO_DEV_POSTGRES_USER:-divo_dev_app}
+      POSTGRES_PASSWORD: ${DIVO_DEV_POSTGRES_PASSWORD:?DIVO_DEV_POSTGRES_PASSWORD is required}
+    volumes:
+      - divo_dev_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - divo-dev-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  divo-dev-backend:
+    image: ${DIVO_DEV_BACKEND_IMAGE:?DIVO_DEV_BACKEND_IMAGE is required}
+    env_file:
+      - ${DIVO_DEV_ENV_FILE:-/dev/null}
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      APP_BASE_URL: ${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}
+      BACKEND_PUBLIC_URL: ${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}
+      REDIS_URL: redis://divo-dev-redis-cache:6379/0
+      REDIS_QUEUE_URL: redis://divo-dev-redis-queue:6379/0
+      REDIS_CACHE_URL: redis://divo-dev-redis-cache:6379/0
+      REDIS_MEMORY_URL: redis://divo-dev-redis-memory:6379/0
+    depends_on:
+      divo-dev-postgres:
+        condition: service_healthy
+      divo-dev-redis-queue:
+        condition: service_healthy
+      divo-dev-redis-cache:
+        condition: service_healthy
+      divo-dev-redis-memory:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${DIVO_DEV_BACKEND_PORT:-13001}:3001"
+    restart: unless-stopped
+    networks:
+      - divo-dev-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 5
+
+  divo-dev-admin:
+    image: ${DIVO_DEV_ADMIN_IMAGE:?DIVO_DEV_ADMIN_IMAGE is required}
+    depends_on:
+      divo-dev-backend:
+        condition: service_started
+    ports:
+      - "127.0.0.1:${DIVO_DEV_ADMIN_PORT:-18081}:80"
+    restart: unless-stopped
+    networks:
+      - divo-dev-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  divo-dev-redis-queue:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - divo_dev_redis_queue_data:/data
+    restart: unless-stopped
+    networks:
+      - divo-dev-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  divo-dev-redis-cache:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "300", "10"]
+    volumes:
+      - divo_dev_redis_cache_data:/data
+    restart: unless-stopped
+    networks:
+      - divo-dev-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  divo-dev-redis-memory:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "300", "10"]
+    volumes:
+      - divo_dev_redis_memory_data:/data
+    restart: unless-stopped
+    networks:
+      - divo-dev-internal
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+networks:
+  divo-dev-internal:
+    driver: bridge
+
+volumes:
+  divo_dev_postgres_data:
+  divo_dev_redis_queue_data:
+  divo_dev_redis_cache_data:
+  divo_dev_redis_memory_data:

@@ -4,9 +4,11 @@ on:
   pull_request:
     branches:
       - main
+      - dev
   push:
     branches:
       - main
+      - dev
   workflow_dispatch:
 
 permissions:
@@ -128,3 +130,172 @@ jobs:
 
       - name: Validate Compose config
         run: DIVO_ENV_FILE=/dev/null docker compose --env-file .env.production.example config >/dev/null
+
+      - name: Validate development Compose config
+        run: |
+          DIVO_DEV_ENV_FILE=/dev/null \
+          DIVO_DEV_BACKEND_IMAGE=divo-backend:ci \
+          DIVO_DEV_ADMIN_IMAGE=divo-admin:ci \
+          DIVO_DEV_POSTGRES_PASSWORD=ci-placeholder \
+          DIVO_DEV_PUBLIC_URL=https://app-dev.103.172.92.187.sslip.io \
+          docker compose -f docker-compose.dev.yml config >/dev/null
+
+  publish-development-images:
+    name: publish-development-images
+    runs-on: ubuntu-latest
+    needs:
+      - docker-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.image-tag }}
+      backend-image: ${{ steps.meta.outputs.backend-image }}
+      admin-image: ${{ steps.meta.outputs.admin-image }}
+    steps:
+      - name: Resolve image metadata
+        id: meta
+        run: |
+          IMAGE_TAG="dev-${GITHUB_SHA}"
+          BACKEND_IMAGE="ghcr.io/relicwavetechnologies/zoho-automation/backend:${IMAGE_TAG}"
+          ADMIN_IMAGE="ghcr.io/relicwavetechnologies/zoho-automation/admin:${IMAGE_TAG}"
+
+          echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "backend-image=${BACKEND_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "admin-image=${ADMIN_IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push backend image
+        run: |
+          docker build \
+            --label com.divo.environment=development \
+            -t "${{ steps.meta.outputs.backend-image }}" \
+            -t ghcr.io/relicwavetechnologies/zoho-automation/backend:dev-latest \
+            ./advance-backend
+
+          docker push "${{ steps.meta.outputs.backend-image }}"
+          docker push ghcr.io/relicwavetechnologies/zoho-automation/backend:dev-latest
+
+      - name: Build and push admin image
+        run: |
+          docker build \
+            --label com.divo.environment=development \
+            --build-arg VITE_API_BASE_URL="" \
+            -t "${{ steps.meta.outputs.admin-image }}" \
+            -t ghcr.io/relicwavetechnologies/zoho-automation/admin:dev-latest \
+            ./admin
+
+          docker push "${{ steps.meta.outputs.admin-image }}"
+          docker push ghcr.io/relicwavetechnologies/zoho-automation/admin:dev-latest
+
+  deploy-development:
+    name: deploy-development
+    runs-on: ubuntu-latest
+    needs:
+      - publish-development-images
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_DIR: /opt/divo-dev
+      DIVO_DEV_DOMAIN: app-dev.103.172.92.187.sslip.io
+    steps:
+      - name: Validate deployment secrets
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          test -n "${VPS_HOST}"
+          test -n "${VPS_PASSWORD}"
+          test -n "${VPS_USER}"
+
+      - name: Install SSH password helper
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Verify development environment is provisioned
+        env:
+          SSHPASS: ${{ secrets.VPS_PASSWORD }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+            "test -r '${DEPLOY_DIR}/.env.development.local' && command -v docker >/dev/null && docker compose version >/dev/null"
+
+      - name: Upload development configuration
+        env:
+          SSHPASS: ${{ secrets.VPS_PASSWORD }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+            "install -d -m 700 '${DEPLOY_DIR}'"
+          sshpass -e scp -o StrictHostKeyChecking=accept-new \
+            docker-compose.dev.yml \
+            "${VPS_USER}@${VPS_HOST}:${DEPLOY_DIR}/docker-compose.yml"
+
+      - name: Pull images, migrate, and restart
+        env:
+          BACKEND_IMAGE: ${{ needs.publish-development-images.outputs.backend-image }}
+          ADMIN_IMAGE: ${{ needs.publish-development-images.outputs.admin-image }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SSHPASS: ${{ secrets.VPS_PASSWORD }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          printf '%s' "${GHCR_TOKEN}" | sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+            "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+            "cd '${DEPLOY_DIR}' && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.development.local pull && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm prisma db push --skip-generate && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.development.local up -d --no-build --remove-orphans && \
+             docker image prune -af --filter 'label=com.divo.environment=development'"
+
+      - name: Smoke test the local stack and HTTPS route
+        env:
+          SSHPASS: ${{ secrets.VPS_PASSWORD }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+            "DIVO_DEV_DOMAIN='${DIVO_DEV_DOMAIN}' DEPLOY_DIR='${DEPLOY_DIR}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 http://127.0.0.1:13001/health >/dev/null \
+              && curl -fsS --max-time 10 http://127.0.0.1:18081/ >/dev/null \
+              && curl -fsS --max-time 15 --resolve "${DIVO_DEV_DOMAIN}:443:127.0.0.1" "https://${DIVO_DEV_DOMAIN}/" >/dev/null; then
+              cd "${DEPLOY_DIR}"
+              docker compose --env-file .env.development.local ps
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          cd "${DEPLOY_DIR}"
+          docker compose --env-file .env.development.local ps
+          docker compose --env-file .env.development.local logs --tail=160 divo-dev-backend divo-dev-admin
+          exit 1
+          REMOTE
