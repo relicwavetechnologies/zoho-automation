@@ -1446,7 +1446,7 @@ describe('GatewayDispatcher', () => {
     const registry = new ToolRegistry();
     registry.register(createWebSearchTool({
       client: {
-        search: async (query: string, limit = 5) => [{
+        search: async (_companyId: string, query: string, limit = 5) => [{
           title: `Result for ${query}`,
           url: 'https://example.com/search-result',
           snippet: `limit=${limit}`,
