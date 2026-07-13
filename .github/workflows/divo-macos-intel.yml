@@ -43,6 +43,9 @@ jobs:
           corepack prepare yarn@4.5.3 --activate
           yarn config set -H enableImmutableInstalls false
 
+      - name: Install dependencies
+        run: yarn install
+
       - name: Install Intel Rust target
         run: rustup target add x86_64-apple-darwin
 
