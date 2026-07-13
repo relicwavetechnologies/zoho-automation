@@ -667,6 +667,30 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
   });
 
   /**
+   * The LLM models this member is allowed to use through the proxy. Drives the
+   * desktop model toggle: the client shows a switch only when more than one
+   * model is returned. Defaults to Flash-only when no policy is set, mirroring
+   * the proxy gate. The proxy remains authoritative — this is a UI hint.
+   */
+  router.get('/model-options', memberAuth, async (_req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const policy = await deps.prisma.memberProxyPolicy.findUnique({
+        where: { userId },
+        select: { allowedModels: true, blocked: true },
+      });
+      const allowedModels =
+        policy && policy.allowedModels.length > 0 ? policy.allowedModels : ['deepseek-v4-flash'];
+      res.json({
+        success: true,
+        data: { allowedModels, blocked: policy?.blocked ?? false },
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  /**
    * Desktop boot context. This intentionally stays outside gateway discovery:
    * it is fetched at session lifecycle boundaries and cached locally by Jan,
    * rather than fetched by Pi for each agent run.

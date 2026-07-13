@@ -24,12 +24,59 @@ import {
   useMemo,
   useState,
 } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import { Streamdown } from 'streamdown'
 import { Shimmer } from './shimmer'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export type ChainOfThoughtStepStatus = 'complete' | 'active' | 'pending'
+
+// ── Streaming status label helpers ─────────────────────────────────────────
+
+/**
+ * Derive the human tool name from a tool part type, mirroring ToolHeader so the
+ * rolling status label matches the "Used {tool}" copy in the expanded trace.
+ */
+export const toolTypeToName = (toolType: string): string =>
+  toolType.split('-').slice(1).join('-').replaceAll('_', ' ')
+
+/** Short, calm status shown while a tool step is the current one. */
+export const toolStatusLabel = (toolType: string): string =>
+  `Using ${toolTypeToName(toolType) || 'tool'}…`
+
+// ── RollingStatus ───────────────────────────────────────────────────────────
+
+export type RollingStatusProps = {
+  /** The current status line. Changing it rolls the old line up and the new in. */
+  label: string
+}
+
+/**
+ * A single-line status that rolls: the current line slides up and out as the
+ * next slides in from below, with a shimmer on the live line. Keys on `label`
+ * so identical consecutive labels don't re-animate.
+ */
+export const RollingStatus = memo(({ label }: RollingStatusProps) => (
+  <span className="relative flex-1 min-w-0 h-5 overflow-hidden block">
+    <AnimatePresence initial={false}>
+      <motion.span
+        key={label}
+        initial={{ y: '110%', opacity: 0 }}
+        animate={{ y: '0%', opacity: 1 }}
+        exit={{ y: '-110%', opacity: 0 }}
+        transition={{ duration: 0.42, ease: [0.22, 0.61, 0.36, 1] }}
+        className="absolute inset-0 flex items-center"
+      >
+        <Shimmer as="span" duration={2} className="capitalize truncate">
+          {label}
+        </Shimmer>
+      </motion.span>
+    </AnimatePresence>
+  </span>
+))
+
+RollingStatus.displayName = 'RollingStatus'
 
 // ── Context ────────────────────────────────────────────────────────────────
 
@@ -143,6 +190,11 @@ export type ChainOfThoughtHeaderProps = ComponentProps<
   title?: string
   /** Label shown while streaming, e.g. "Working...". Defaults to "Reasoning...". */
   streamingLabel?: string
+  /**
+   * Live, per-step status shown while streaming. When provided, it rolls
+   * (current line up, next in) in place of the static `streamingLabel`.
+   */
+  statusLabel?: string
   /** Past-tense verb for the completed state, e.g. "Worked". Defaults to "Thought". */
   completedVerb?: string
 }
@@ -152,11 +204,13 @@ export const ChainOfThoughtHeader = memo(
     className,
     title,
     streamingLabel = 'Reasoning...',
+    statusLabel,
     completedVerb = 'Thought',
     children,
     ...props
   }: ChainOfThoughtHeaderProps) => {
     const { isStreaming, isOpen, duration } = useChainOfThought()
+    const streaming = isStreaming || duration === 0
 
     return (
       <CollapsibleTrigger
@@ -168,9 +222,13 @@ export const ChainOfThoughtHeader = memo(
       >
         {children ?? (
           <>
-            <SparklesIcon className="size-4" />
-            {isStreaming || duration === 0 ? (
-              <Shimmer duration={1}>{streamingLabel}</Shimmer>
+            <SparklesIcon className="size-4 shrink-0" />
+            {streaming ? (
+              statusLabel ? (
+                <RollingStatus label={statusLabel} />
+              ) : (
+                <Shimmer duration={1}>{streamingLabel}</Shimmer>
+              )
             ) : title ? (
               <p>{title}</p>
             ) : duration === undefined ? (
@@ -182,7 +240,7 @@ export const ChainOfThoughtHeader = memo(
             )}
             <ChevronDownIcon
               className={cn(
-                'size-4 transition-transform',
+                'size-4 shrink-0 transition-transform',
                 isOpen ? 'rotate-180' : 'rotate-0'
               )}
             />

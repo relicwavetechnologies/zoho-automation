@@ -26,7 +26,11 @@ vi.mock('streamdown', () => ({
 vi.mock('@/components/ai-elements/chain-of-thought', () => ({
   ChainOfThought: ({ children }: any) => <div data-testid="cot">{children}</div>,
   ChainOfThoughtContent: ({ children }: any) => <div>{children}</div>,
-  ChainOfThoughtHeader: () => <div>CoT Header</div>,
+  ChainOfThoughtHeader: ({ statusLabel }: any) => (
+    <div>CoT Header{statusLabel ? `: ${statusLabel}` : ''}</div>
+  ),
+  toolStatusLabel: (toolType: string) =>
+    `Using ${toolType.split('-').slice(1).join('-').replaceAll('_', ' ') || 'tool'}…`,
 }))
 
 // Stub Tool

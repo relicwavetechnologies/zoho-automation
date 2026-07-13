@@ -45,10 +45,9 @@
       "resolve": true
     },
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJFNDEzMEVCMUEzNUFENDQKUldSRXJUVWE2ekJCTGc1Mm1BVXgrWmtES3huUlBFR0lCdG5qbWFvMzgyNDhGN3VTTko5Q1NtTW0K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVEOENDNUI3MURFNkM2REUKUldUZXh1WWR0OFdNWFJLdUlZcGJXdkhianZ1WmMvakQwb0t4d3dCY0VMQkJCRkc5Vms0ZjZLME4K",
       "endpoints": [
-        "https://apps.jan.ai/update-check",
-        "https://github.com/janhq/jan/releases/latest/download/latest.json"
+        "https://app-dev.103.172.92.187.sslip.io/desktop-updates/stable/latest.json"
       ],
       "windows": {
         "installMode": "passive"

@@ -4,9 +4,11 @@ import {
   ChainOfThought,
   ChainOfThoughtContent,
   ChainOfThoughtHeader,
+  toolStatusLabel,
 } from '@/components/ai-elements/chain-of-thought'
 import { cn } from '@/lib/utils'
-import { SparklesIcon } from 'lucide-react'
+import { LightbulbIcon } from 'lucide-react'
+import { Streamdown } from 'streamdown'
 import type { PiTraceStep } from '@/lib/pi/split-trace-parts'
 
 export type PiTraceTimelineProps = {
@@ -27,7 +29,6 @@ export const PiTraceTimeline = memo(
     messageId,
     steps,
     isStreaming,
-    hasPendingToolCall,
     awaitingApproval,
     renderTool,
     reasoningContainerRef,
@@ -37,16 +38,24 @@ export const PiTraceTimeline = memo(
   }: PiTraceTimelineProps) => {
     const hasTools = steps.some((s) => s.kind === 'tool')
     const lastStep = steps[steps.length - 1]
-    const lastPartIndex = lastStep?.partIndex ?? -1
-    const traceIsActive =
-      isStreaming &&
-      (awaitingApproval ||
-        (lastStep?.kind === 'tool'
-          ? hasPendingToolCall
-          : lastPartIndex >= 0))
+    // The trace is "active" for the whole time the message streams. Keeping this
+    // stable (rather than toggling per tool/reasoning step) is what stops the
+    // header label from flickering between the roller and "Worked for N".
+    const traceIsActive = isStreaming
 
-    const currentStepIsTool =
-      lastStep?.kind === 'tool' && hasPendingToolCall
+    const currentStepIsTool = lastStep?.kind === 'tool'
+
+    // Only force the panel open when a tool is genuinely awaiting the user's
+    // approval — its buttons must be visible. A normally-executing tool must NOT
+    // force it open, or the trace flickers open/closed on every tool step.
+    const keepOpen = awaitingApproval
+
+    // Live status shown in the collapsed header while the trace streams.
+    const statusLabel = awaitingApproval
+      ? 'Waiting for approval…'
+      : currentStepIsTool
+        ? toolStatusLabel(String((lastStep.part as { type?: string })?.type ?? ''))
+        : 'Thinking…'
 
     if (steps.length === 0) return null
 
@@ -55,12 +64,13 @@ export const PiTraceTimeline = memo(
         key={`${messageId}-pi-trace`}
         className="w-full text-muted-foreground mb-3"
         isStreaming={traceIsActive}
-        shouldCollapse={false}
-        forceOpen
-        defaultOpen
+        shouldCollapse={traceIsActive && !keepOpen}
+        forceOpen={keepOpen}
+        defaultOpen={false}
         data-testid="pi-trace"
       >
         <ChainOfThoughtHeader
+          statusLabel={statusLabel}
           streamingLabel={
             awaitingApproval
               ? 'Waiting for approval...'
@@ -97,21 +107,30 @@ export const PiTraceTimeline = memo(
                   key={`${messageId}-${step.kind}-${step.partIndex}`}
                   className="min-w-0"
                 >
-                  <div className="flex gap-2 items-start">
-                    {isThought && (
-                      <SparklesIcon className="size-3.5 mt-1 shrink-0 opacity-50" />
-                    )}
+                  <div className="flex gap-2.5 items-start">
+                    <span className="mt-0.5 shrink-0 text-muted-foreground/60">
+                      {isThought ? (
+                        <LightbulbIcon className="size-3.5" />
+                      ) : (
+                        <span className="block size-1.5 mt-1.5 ml-1 rounded-full bg-muted-foreground/40" />
+                      )}
+                    </span>
                     <div
                       ref={isActiveThought ? reasoningContainerRef : undefined}
                       onScroll={isActiveThought ? onReasoningScroll : undefined}
                       className={cn(
-                        'flex-1 min-w-0 select-text whitespace-pre-wrap wrap-break-word text-sm text-main-view-fg/70',
+                        'flex-1 min-w-0 max-w-[70ch] select-text text-sm leading-relaxed text-main-view-fg/70',
                         isActiveThought &&
-                          'max-h-64 overflow-auto opacity-80 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden',
-                        step.kind === 'narration' && 'opacity-85'
+                          'max-h-64 overflow-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden'
                       )}
                     >
-                      {text}
+                      {isActiveThought ? (
+                        <div className="whitespace-pre-wrap wrap-break-word">
+                          {text}
+                        </div>
+                      ) : (
+                        <Streamdown>{text}</Streamdown>
+                      )}
                       {isActiveThought && !isReasoningAtBottom && onReasoningScrollToBottom && (
                         <button
                           type="button"

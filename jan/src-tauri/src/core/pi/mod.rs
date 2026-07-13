@@ -93,6 +93,18 @@ pub async fn pi_get_pool_state(state: State<'_, PiState>) -> Result<serde_json::
     Ok(state.manager.get_pool_state().await)
 }
 
+/// Switch the model Pi uses (e.g. deepseek-v4-flash / deepseek-v4-pro). The
+/// desktop calls this when the user flips the model toggle and again after each
+/// runtime starts, so the preferred model is used on every run.
+#[tauri::command]
+pub async fn pi_set_model(
+    state: State<'_, PiState>,
+    provider: String,
+    model_id: String,
+) -> Result<(), String> {
+    state.manager.set_model(provider, model_id).await
+}
+
 /// Resolve a pending named Pi extension UI request for its owning thread/run
 /// pair. A response for an earlier run is rejected.
 #[tauri::command]

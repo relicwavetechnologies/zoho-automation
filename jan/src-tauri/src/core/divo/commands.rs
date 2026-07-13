@@ -1258,6 +1258,20 @@ pub async fn divo_tools_inventory<R: Runtime>(app: AppHandle<R>) -> Result<Value
     .await
 }
 
+/// The LLM models this member may use through the proxy (admin-governed). The
+/// desktop shows a model toggle only when more than one is returned.
+#[tauri::command]
+pub async fn divo_get_model_options<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/model-options",
+        None,
+        "Divo model options",
+    )
+    .await
+}
+
 fn require_divo_tool_identifier<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
     let value = value.trim();
     if value.is_empty() {

@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { UIMessageChunk } from 'ai'
 import { consumePiApprovalEvent, usePiApproval } from '@/hooks/usePiApproval'
+import { useDivoModel } from '@/hooks/useDivoModel'
 import {
   PI_TRACE_TIMELINE_METADATA_KEY,
   closePiUiMessageBlocks,
@@ -41,6 +42,9 @@ async function ensurePiStarted(threadId: string): Promise<void> {
     threadId,
     thread_id: threadId,
   })
+  // Apply the user's model preference to the freshly-admitted runtime so every
+  // run uses the chosen model. Best-effort — never blocks the prompt.
+  await useDivoModel.getState().applyToRuntime()
 }
 
 export function createPiMessageStream(options: {

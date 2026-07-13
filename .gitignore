@@ -20,3 +20,7 @@ graphify-out/
 .env.production.local
 .env.*.local
 .context/secrets/
+
+# Local desktop release output and updater signing material.
+jan/local-dmg/
+jan/release-output/

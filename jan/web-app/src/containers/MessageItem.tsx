@@ -8,6 +8,7 @@ import {
   ChainOfThought,
   ChainOfThoughtContent,
   ChainOfThoughtHeader,
+  toolStatusLabel,
 } from '@/components/ai-elements/chain-of-thought'
 import {
   Tool,
@@ -27,9 +28,11 @@ import {
   IconPaperclip,
   IconArrowDown,
   IconAlertTriangle,
+  IconBulb,
   IconChevronLeft,
   IconChevronRight,
 } from '@tabler/icons-react'
+import { Streamdown } from 'streamdown'
 import { EditMessageDialog } from '@/containers/dialogs/EditMessageDialog'
 import { DeleteMessageDialog } from '@/containers/dialogs/DeleteMessageDialog'
 import TokenSpeedIndicator from '@/containers/TokenSpeedIndicator'
@@ -481,9 +484,11 @@ export const MessageItem = memo(
       const groupIsStreaming =
         isStreaming && lastEntryIndex === message.parts.length - 1
 
-      // Keep the trace expanded while a tool is still running or awaiting the
-      // user's approval — collapsing it would hide the approval controls.
-      const keepOpen = hasPendingToolCall || awaitingApproval || showFullTimeline
+      // Force the trace open only when a tool is awaiting the user's approval
+      // (its controls must be visible) or a full timeline is requested. A
+      // normally-executing tool must NOT force it open, or the trace flickers
+      // open/closed on every tool step while streaming.
+      const keepOpen = awaitingApproval || showFullTimeline
 
       const isMeaningfulEntry = ({ part }: PartEntry) => {
         if (part.type === CONTENT_TYPE.REASONING || part.type === CONTENT_TYPE.TEXT) {
@@ -502,20 +507,30 @@ export const MessageItem = memo(
       // Streaming label reflects the current step, not whether the whole trace
       // ever used a tool — otherwise it sticks on "Using tools…" once the model
       // resumes reasoning after a tool call.
-      const currentStepIsTool =
-        meaningful.length > 0 &&
-        meaningful[meaningful.length - 1].part.type.startsWith('tool-')
+      const currentStep =
+        meaningful.length > 0 ? meaningful[meaningful.length - 1].part : null
+      const currentStepIsTool = Boolean(
+        currentStep?.type.startsWith('tool-')
+      )
+
+      // Live status shown in the collapsed header while the group streams.
+      const statusLabel = awaitingApproval
+        ? 'Waiting for approval…'
+        : currentStepIsTool
+          ? toolStatusLabel(currentStep.type)
+          : 'Thinking…'
 
       return (
         <ChainOfThought
           key={groupKey}
           className="w-full text-muted-foreground"
           isStreaming={groupIsStreaming}
-          shouldCollapse={hasFollowingContent && !keepOpen}
+          shouldCollapse={(hasFollowingContent || groupIsStreaming) && !keepOpen}
           forceOpen={keepOpen}
-          defaultOpen={true}
+          defaultOpen={!groupIsStreaming}
         >
           <ChainOfThoughtHeader
+            statusLabel={statusLabel}
             streamingLabel={currentStepIsTool ? 'Using tools...' : 'Reasoning...'}
             completedVerb={hasTools ? 'Worked' : 'Thought'}
           />
@@ -531,41 +546,53 @@ export const MessageItem = memo(
                 return (
                   <div
                     key={`${message.id}-r-${partIndex}`}
-                    className="relative"
+                    className="flex gap-2.5 items-start"
                   >
-                    {partIsStreaming && (
-                      <div className="absolute top-0 left-0 right-0 h-8 bg-linear-to-br from-neutral-50 mask-t-from-98% dark:from-background to-transparent pointer-events-none z-10" />
-                    )}
-                    <div
-                      ref={partIsStreaming ? reasoningContainerRef : null}
-                      onScroll={
-                        partIsStreaming ? onReasoningScroll : undefined
-                      }
-                      className={twMerge(
-                        'w-full overflow-auto relative',
-                        partIsStreaming
-                          ? 'max-h-64 opacity-70 mt-2 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden'
-                          : 'h-auto opacity-100'
+                    <IconBulb className="size-3.5 mt-0.5 shrink-0 text-muted-foreground/60" />
+                    <div className="relative flex-1 min-w-0 max-w-[70ch]">
+                      {partIsStreaming && (
+                        <div className="absolute top-0 left-0 right-0 h-8 bg-linear-to-br from-neutral-50 mask-t-from-98% dark:from-background to-transparent pointer-events-none z-10" />
                       )}
-                    >
                       <div
-                        dir="auto"
-                        className="select-text whitespace-pre-wrap wrap-break-word text-sm text-main-view-fg/70"
+                        ref={partIsStreaming ? reasoningContainerRef : null}
+                        onScroll={
+                          partIsStreaming ? onReasoningScroll : undefined
+                        }
+                        className={twMerge(
+                          'w-full overflow-auto relative',
+                          partIsStreaming
+                            ? 'max-h-64 opacity-70 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden'
+                            : 'h-auto opacity-100'
+                        )}
                       >
-                        {part.text}
+                        {partIsStreaming ? (
+                          <div
+                            dir="auto"
+                            className="select-text whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-main-view-fg/70"
+                          >
+                            {part.text}
+                          </div>
+                        ) : (
+                          <div
+                            dir="auto"
+                            className="select-text text-sm leading-relaxed text-main-view-fg/70"
+                          >
+                            <Streamdown>{part.text}</Streamdown>
+                          </div>
+                        )}
                       </div>
+                      {partIsStreaming && !isReasoningAtBottom && (
+                        <Button
+                          className="absolute bottom-2 left-[50%] translate-x-[-50%] rounded-full size-7 z-10"
+                          onClick={onReasoningScrollToBottom}
+                          size="icon"
+                          type="button"
+                          variant="outline"
+                        >
+                          <IconArrowDown className="size-3" />
+                        </Button>
+                      )}
                     </div>
-                    {partIsStreaming && !isReasoningAtBottom && (
-                      <Button
-                        className="absolute bottom-2 left-[50%] translate-x-[-50%] rounded-full size-7 z-10"
-                        onClick={onReasoningScrollToBottom}
-                        size="icon"
-                        type="button"
-                        variant="outline"
-                      >
-                        <IconArrowDown className="size-3" />
-                      </Button>
-                    )}
                   </div>
                 )
               }
@@ -576,10 +603,15 @@ export const MessageItem = memo(
                 return (
                   <div
                     key={`${message.id}-it-${partIndex}`}
-                    dir="auto"
-                    className="select-text whitespace-pre-wrap wrap-break-word text-sm text-main-view-fg/70"
+                    className="flex gap-2.5 items-start"
                   >
-                    {part.text}
+                    <span className="block size-1.5 mt-2 ml-1 shrink-0 rounded-full bg-muted-foreground/40" />
+                    <div
+                      dir="auto"
+                      className="flex-1 min-w-0 max-w-[70ch] select-text text-sm leading-relaxed text-main-view-fg/70"
+                    >
+                      <Streamdown>{part.text}</Streamdown>
+                    </div>
                   </div>
                 )
               }

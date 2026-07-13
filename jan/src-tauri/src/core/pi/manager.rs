@@ -1759,6 +1759,35 @@ impl PiManager {
         .await
     }
 
+    /// Switch the active model on every running Pi runtime. The backend proxy
+    /// remains authoritative over which models are allowed; this only changes
+    /// which model id Pi sends. No-op when nothing is running — the desktop
+    /// re-applies the preference after each `pi_start`.
+    pub async fn set_model(&self, provider: String, model_id: String) -> Result<(), String> {
+        let slots: Vec<std::sync::Arc<RuntimeSlot>> = {
+            let pool = self.pool.lock().await;
+            pool.slots
+                .iter()
+                .filter(|(_, slot)| slot.state.lock().unwrap().process.is_some())
+                .map(|(_, slot)| slot.clone())
+                .collect()
+        };
+        for slot in &slots {
+            Self::send_rpc(
+                slot,
+                serde_json::json!({
+                    "type": "set_model",
+                    "provider": provider,
+                    "modelId": model_id,
+                }),
+                None,
+                &self.capacity_changed,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn get_pool_state(&self) -> serde_json::Value {
         let pool = self.pool.lock().await;
         serde_json::json!({"poolCapacity":RUNTIME_POOL_CAPACITY,"runtimes":pool.slots.values().map(|slot| { let state=slot.state.lock().unwrap(); serde_json::json!({"threadId":slot.thread_id,"running":state.process.is_some(),"activeRunId":state.active_run.as_ref().map(|owner| owner.run_id.clone()),"pendingUi":state.pending_extension_ui.len(),"admissionLeases":state.admission_leases,"pendingRpcs":state.pending.len()}) }).collect::<Vec<_>>(),"waiting":pool.waiters.iter().filter(|waiter| waiter.state.load(Ordering::Acquire) == WAITER_QUEUED).count()})

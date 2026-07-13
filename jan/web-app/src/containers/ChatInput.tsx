@@ -36,6 +36,7 @@ import { useMessageQueue } from '@/stores/message-queue-store'
 import { QueuedMessageChip } from '@/containers/QueuedMessageBubble'
 import { computeActivePath, hasBranching } from '@/lib/message-branching'
 import { SamplerPopover } from '@/containers/SamplerPopover'
+import { DivoModelToggle } from '@/containers/DivoModelToggle'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import { useGeneralSetting } from '@/hooks/useGeneralSetting'
 import { useModelProvider } from '@/hooks/useModelProvider'
@@ -2705,6 +2706,7 @@ const ChatInput = memo(function ChatInput({
                   providerId={selectedProvider}
                   modelId={selectedModel?.id}
                 />
+                <DivoModelToggle disabled={isComposerBusy} />
                 {!effectiveAgentMode && hasJanBrowserMCPConfig && modelSupportsBrowser && (
                   <Tooltip>
                     <TooltipTrigger asChild>
