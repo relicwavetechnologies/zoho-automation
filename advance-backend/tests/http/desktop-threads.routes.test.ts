@@ -100,7 +100,11 @@ describe('desktop threads routes', () => {
           role: 'MEMBER',
           revokedAt: null,
           expiresAt: new Date(Date.now() + 60_000),
+          user: { email: 'member@example.test' },
         }),
+      },
+      adminMembership: {
+        findFirst: async () => ({ role: 'MEMBER' }),
       },
       desktopWorkspace: {
         findFirst: async () => null,

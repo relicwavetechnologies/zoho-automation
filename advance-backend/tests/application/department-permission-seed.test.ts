@@ -6,6 +6,7 @@ import {
   TOOL_SUPPORTED_ACTIONS,
   type CanonicalToolId,
 } from '../../src/domain/tools/tool-id.ts';
+import { isFixedToolPolicy } from '../../src/domain/tools/tool-policy.ts';
 
 describe('memberTemplateGrants', () => {
   it('includes only MEMBER-enabled tools and all of their supported actions', () => {
@@ -14,6 +15,12 @@ describe('memberTemplateGrants', () => {
 
     for (const [toolId, defaults] of Object.entries(TOOL_DEFAULT_PERMISSIONS)) {
       const actions = TOOL_SUPPORTED_ACTIONS[toolId as CanonicalToolId];
+      if (isFixedToolPolicy(toolId)) {
+        for (const action of actions) {
+          assert.ok(!keys.has(`${toolId}:${action}`), `fixed-policy tool must not be seeded: ${toolId}:${action}`);
+        }
+        continue;
+      }
       if (defaults.MEMBER) {
         for (const action of actions) {
           assert.ok(keys.has(`${toolId}:${action}`), `expected grant ${toolId}:${action}`);

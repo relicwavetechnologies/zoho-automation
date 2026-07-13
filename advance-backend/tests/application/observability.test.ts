@@ -279,9 +279,16 @@ describe('ExecutionQueryService', () => {
     createdAt: now,
   };
 
+  const queryRepoDefaults = {
+    aggregateRunStats: async (runIds: string[]) =>
+      new Map(runIds.map((id) => [id, { turns: 0, models: [] }])),
+    resolveUsers: async () => new Map(),
+  };
+
   describe('listRuns()', () => {
     it('returns RunSummaryDto array with computed durationMs', async () => {
       const repo = {
+        ...queryRepoDefaults,
         listByCompany: async () => [fakeRun],
         findById:      async () => fakeRun,
         listEvents:    async () => [],
@@ -297,6 +304,7 @@ describe('ExecutionQueryService', () => {
 
     it('durationMs is null when finishedAt is null', async () => {
       const repo = {
+        ...queryRepoDefaults,
         listByCompany: async () => [{ ...fakeRun, finishedAt: null }],
       } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
@@ -307,6 +315,7 @@ describe('ExecutionQueryService', () => {
     it('caps limit at 200', async () => {
       let capturedLimit = 0;
       const repo = {
+        ...queryRepoDefaults,
         listByCompany: async (args: any) => { capturedLimit = args.limit; return []; },
       } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
@@ -324,7 +333,7 @@ describe('ExecutionQueryService', () => {
     });
 
     it('includes userId, threadId, chatId, agentTarget', async () => {
-      const repo = { findById: async () => fakeRun } as any;
+      const repo = { ...queryRepoDefaults, findById: async () => fakeRun } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
       const result = await svc.getRun({ id: 'run-1', companyId: 'co-1', isSuperAdmin: false });
       assert.equal(result!.userId, 'u-1');
