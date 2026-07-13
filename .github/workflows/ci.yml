@@ -207,56 +207,47 @@ jobs:
     env:
       DEPLOY_DIR: /opt/divo-dev
       DIVO_DEV_DOMAIN: app-dev.103.172.92.187.sslip.io
+      DIVO_DEV_HOST: 103.172.92.187
+      DIVO_DEV_USER: deploy
     steps:
       - name: Validate deployment secrets
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
-          VPS_USER: ${{ secrets.VPS_USER }}
+          DIVO_DEV_SSH_KEY: ${{ secrets.DIVO_DEV_SSH_KEY }}
         run: |
-          test -n "${VPS_HOST}"
-          test -n "${VPS_PASSWORD}"
-          test -n "${VPS_USER}"
+          test -n "${DIVO_DEV_SSH_KEY}"
 
-      - name: Install SSH password helper
+      - name: Configure SSH
+        env:
+          DIVO_DEV_SSH_KEY: ${{ secrets.DIVO_DEV_SSH_KEY }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y sshpass
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${DIVO_DEV_SSH_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' '103.172.92.187 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICer9x9ARy2oBqzIGOALmDDLZPwpIfEmbXuutFu53Nuy' >> ~/.ssh/known_hosts
 
       - name: Verify development environment is provisioned
-        env:
-          SSHPASS: ${{ secrets.VPS_PASSWORD }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
         run: |
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "test -r '${DEPLOY_DIR}/.env.development.local' && command -v docker >/dev/null && docker compose version >/dev/null"
 
       - name: Upload development configuration
-        env:
-          SSHPASS: ${{ secrets.VPS_PASSWORD }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
         run: |
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "install -d -m 700 '${DEPLOY_DIR}'"
-          sshpass -e scp -o StrictHostKeyChecking=accept-new \
+          scp -i ~/.ssh/id_ed25519 \
             docker-compose.dev.yml \
-            "${VPS_USER}@${VPS_HOST}:${DEPLOY_DIR}/docker-compose.yml"
+            "${DIVO_DEV_USER}@${DIVO_DEV_HOST}:${DEPLOY_DIR}/docker-compose.yml"
 
       - name: Pull images, migrate, and restart
         env:
           BACKEND_IMAGE: ${{ needs.publish-development-images.outputs.backend-image }}
           ADMIN_IMAGE: ${{ needs.publish-development-images.outputs.admin-image }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SSHPASS: ${{ secrets.VPS_PASSWORD }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
         run: |
-          printf '%s' "${GHCR_TOKEN}" | sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+          printf '%s' "${GHCR_TOKEN}" | ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
 
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "cd '${DEPLOY_DIR}' && \
              DIVO_DEV_ENV_FILE=.env.development.local \
              DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
@@ -273,12 +264,8 @@ jobs:
              docker image prune -af --filter 'label=com.divo.environment=development'"
 
       - name: Smoke test the local stack and HTTPS route
-        env:
-          SSHPASS: ${{ secrets.VPS_PASSWORD }}
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
         run: |
-          sshpass -e ssh -o StrictHostKeyChecking=accept-new "${VPS_USER}@${VPS_HOST}" \
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "DIVO_DEV_DOMAIN='${DIVO_DEV_DOMAIN}' DEPLOY_DIR='${DEPLOY_DIR}' bash -s" <<'REMOTE'
           set -euo pipefail
 
