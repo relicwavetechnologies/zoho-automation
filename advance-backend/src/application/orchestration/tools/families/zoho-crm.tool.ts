@@ -137,7 +137,7 @@ async function executeScriptMode(
     crmClient:  ZohoCrmPaginatedClient;
     cloudinary: CloudinaryAdapter;
     csvLinkTtl?: number;
-    requesterEmail?: string;
+    requesterEmail?: string | undefined;
   },
 ): Promise<Result<Res, ToolError>> {
   const { companyId } = ctx.runContext;

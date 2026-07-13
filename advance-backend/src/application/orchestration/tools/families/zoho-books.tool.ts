@@ -341,7 +341,7 @@ const singleDateValue = (input: string): string => parseDateFilter(input).to;
 async function executeScriptMode(
   args: Args,
   ctx: ToolExecutionContext,
-  scriptDeps: { booksClient: ZohoBooksPaginatedClient; cloudinary: CloudinaryAdapter; csvLinkTtl?: number | undefined; scopeFilter?: Record<string, unknown>; requesterEmail?: string },
+  scriptDeps: { booksClient: ZohoBooksPaginatedClient; cloudinary: CloudinaryAdapter; csvLinkTtl?: number | undefined; scopeFilter?: Record<string, unknown>; requesterEmail?: string | undefined },
 ): Promise<Result<Res, ToolError>> {
   const { companyId } = ctx.runContext;
   const moduleName = listOpToModule[args.op]! as ZohoBooksModule;
