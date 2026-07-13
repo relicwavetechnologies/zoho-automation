@@ -9,7 +9,7 @@ if [[ ! -d "$APP_BUNDLE" ]]; then
   exit 1
 fi
 
-required_files=(bun uv jan-cli sqlite-vec.dylib)
+required_files=(bun uv sqlite-vec.dylib)
 for required_file in "${required_files[@]}"; do
   if ! find "$APP_BUNDLE" -type f -name "$required_file" -print -quit | grep -q .; then
     echo "Required native component is missing: $required_file" >&2
@@ -17,8 +17,8 @@ for required_file in "${required_files[@]}"; do
   fi
 done
 
-if [[ "$REQUIRED_ARCH" == "x86_64" ]] && find "$APP_BUNDLE" -name 'mlx-server' -print -quit | grep -q .; then
-  echo "Intel package must not contain the Apple-Silicon-only mlx-server" >&2
+if find "$APP_BUNDLE" -name 'mlx-server' -print -quit | grep -q .; then
+  echo "Divo package must not contain the removed local MLX server" >&2
   exit 1
 fi
 

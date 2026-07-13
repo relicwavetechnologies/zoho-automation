@@ -1,24 +1,72 @@
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, Settings2 } from 'lucide-react'
 
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import type { DivoToolInventoryItem } from '@/lib/divo-tools'
 import type { ToolPresentationGroup } from '@/lib/tool-presentation'
 import { cn } from '@/lib/utils'
 
-export function ToolCatalogueCard({ group, onOpen }: { group: ToolPresentationGroup; onOpen: () => void }) {
+type Props = {
+  group: ToolPresentationGroup
+  onManage: () => void
+  onOpenDetails: () => void
+}
+
+export function ToolCatalogueCard({ group, onManage, onOpenDetails }: Props) {
+  const readiness = groupReadiness(group.childTools)
+  const canManage = group.childTools.some(item => item.managementScopes.length > 0)
+  const approvalCount = group.childTools.filter(item => item.tool.hitlRequired).length
+
   return (
-    <button data-tool-card type="button" data-child-count={group.childTools.length} onClick={onOpen} className="group flex h-80 max-h-80 flex-col overflow-hidden rounded-lg border border-border/70 bg-card/30 p-4 text-left transition-colors hover:bg-accent/50 sm:h-72 sm:max-h-72">
-      <span data-card-content className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <span className="mb-4 flex size-10 shrink-0 items-center justify-center rounded-md border bg-muted/50"><group.Icon className={cn('size-5', group.iconClassName)} /></span>
-        <span data-card-title className="block line-clamp-2 break-all text-base font-medium">{group.title}</span>
-        <span data-card-purpose className="mt-1 block line-clamp-2 break-all text-sm text-muted-foreground">{group.description}</span>
-        <span data-card-preview className="mt-4 block line-clamp-2 break-all text-xs font-medium text-foreground">{childToolPreview(group.childTools)}</span>
-        <span data-card-summary className="mt-3 block space-y-1 overflow-hidden text-xs text-muted-foreground">
-          <span className="block line-clamp-1 break-all">Access · {accessSummary(group.childTools)}</span>
-          <span className="block line-clamp-1 break-all">Management · {managementSummary(group.childTools)}</span>
-        </span>
-      </span>
-      <span data-card-action className="mt-3 flex shrink-0 items-center gap-1 border-t border-border/60 pt-3 text-xs font-medium text-foreground">Open details <ArrowRight aria-hidden="true" className="size-3.5 transition-transform group-hover:translate-x-0.5" /></span>
-    </button>
+    <Card
+      data-tool-card
+      data-child-count={group.childTools.length}
+      className="group flex min-h-56 flex-col overflow-hidden border-border/70 bg-card/40 shadow-none transition-colors hover:border-border hover:bg-card/70"
+    >
+      <CardHeader className="gap-3 p-4 pb-2">
+        <div className="flex items-start justify-between gap-3">
+          <span className="flex size-10 items-center justify-center rounded-lg border bg-muted/40">
+            <group.Icon className={cn('size-5', group.iconClassName)} />
+          </span>
+          <Badge variant={readiness.variant}>{readiness.label}</Badge>
+        </div>
+        <div data-card-content className="flex min-h-0 flex-col gap-1 overflow-hidden">
+          <CardTitle data-card-title className="line-clamp-2 break-all text-base">{group.title}</CardTitle>
+          <CardDescription data-card-purpose className="line-clamp-2 break-all text-xs">{group.description}</CardDescription>
+        </div>
+      </CardHeader>
+
+      <CardContent className="flex flex-1 flex-col gap-3 p-4 pt-1">
+        <p data-card-preview className="line-clamp-2 break-all text-xs font-medium text-foreground">
+          {childToolPreview(group.childTools)}
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          <Badge variant="outline">{actionCount(group.childTools)} action groups</Badge>
+          {approvalCount > 0 ? <Badge variant="outline">{approvalCount} approval-gated</Badge> : null}
+        </div>
+      </CardContent>
+
+      <CardFooter className="flex gap-2 border-t border-border/60 p-3">
+        {canManage ? (
+          <Button className="flex-1" variant="outline" size="sm" onClick={onManage}>
+            <Settings2 data-icon="inline-start" />
+            Manage access
+          </Button>
+        ) : null}
+        <Button data-card-action className={cn(canManage ? '' : 'flex-1')} variant="ghost" size="sm" onClick={onOpenDetails}>
+          Details
+          <ArrowRight data-icon="inline-end" />
+        </Button>
+      </CardFooter>
+    </Card>
   )
 }
 
@@ -30,19 +78,13 @@ function childToolPreview(items: DivoToolInventoryItem[]): string {
   return `${names.join(' · ')}${remaining > 0 ? ` · +${remaining} more` : ''}`
 }
 
-function accessSummary(items: DivoToolInventoryItem[]): string {
-  const originCount = items.reduce((total, item) => total + item.origins.length, 0)
-  const actionCount = new Set(items.flatMap(item => item.origins.flatMap(origin => 'allowedActions' in origin ? origin.allowedActions : []))).size
-  return `${originCount} ${countLabel(originCount, 'source')} · ${actionCount} ${countLabel(actionCount, 'action group')}`
+function actionCount(items: DivoToolInventoryItem[]): number {
+  return new Set(items.flatMap(item => item.origins.flatMap(origin => 'allowedActions' in origin ? origin.allowedActions : []))).size
 }
 
-function managementSummary(items: DivoToolInventoryItem[]): string {
-  const scopeCount = items.reduce((total, item) => total + item.managementScopes.length, 0)
-  const approvalCount = items.filter(item => item.tool.hitlRequired).length
-  const connectionCount = items.filter(item => item.readiness === 'connection_required' || item.readiness === 'admin_connection_required').length
-  return `${scopeCount} ${countLabel(scopeCount, 'scope')} · ${approvalCount} approval-gated · ${connectionCount} connection ${connectionCount === 1 ? 'issue' : 'issues'}`
-}
-
-function countLabel(count: number, singular: string): string {
-  return count === 1 ? singular : `${singular}s`
+function groupReadiness(items: DivoToolInventoryItem[]): { label: string; variant: 'secondary' | 'outline' | 'destructive' } {
+  if (items.some(item => item.readiness === 'connection_required')) return { label: 'Connection needed', variant: 'destructive' }
+  if (items.some(item => item.readiness === 'admin_connection_required')) return { label: 'Admin connection needed', variant: 'destructive' }
+  if (items.every(item => item.readiness === 'not_applicable')) return { label: 'Fixed policy', variant: 'outline' }
+  return { label: 'Ready', variant: 'secondary' }
 }

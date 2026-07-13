@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { useThreads } from '../useThreads'
+import { useChatSessions } from '@/stores/chat-session-store'
+import { useAppState } from '@/hooks/useAppState'
+import { usePiApproval } from '@/hooks/usePiApproval'
+import { DIVO_THREAD_MODEL } from '@/lib/pi/constants'
+
+const mockInvoke = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }))
 
 // Mock the services
 vi.mock('@/services/threads', () => ({
@@ -62,10 +70,16 @@ describe('useThreads', () => {
     })
 
     expect(Object.keys(result.current.threads)).toHaveLength(2)
-    expect(result.current.threads['thread1']).toEqual(threads[0])
-    expect(result.current.threads['thread2']).toEqual(threads[1])
+    expect(result.current.threads['thread1']).toEqual({
+      ...threads[0],
+      model: DIVO_THREAD_MODEL,
+    })
+    expect(result.current.threads['thread2']).toEqual({
+      ...threads[1],
+      model: DIVO_THREAD_MODEL,
+    })
   })
-  it('should set threads with cortex model migrated', () => {
+  it('should migrate legacy thread models to the Divo runtime', () => {
     const { result } = renderHook(() => useThreads())
 
     const threads = [
@@ -88,10 +102,8 @@ describe('useThreads', () => {
     })
 
     expect(Object.keys(result.current.threads)).toHaveLength(2)
-    expect(result.current.threads['thread1'].model.id).toEqual('thread1/free')
-    expect(result.current.threads['thread1'].model.provider).toEqual('llamacpp')
-    expect(result.current.threads['thread2'].model.id).toEqual('thread2/test')
-    expect(result.current.threads['thread2'].model.provider).toEqual('llamacpp')
+    expect(result.current.threads['thread1'].model).toEqual(DIVO_THREAD_MODEL)
+    expect(result.current.threads['thread2'].model).toEqual(DIVO_THREAD_MODEL)
   })
 
   it('should set current thread ID', () => {
@@ -114,7 +126,10 @@ describe('useThreads', () => {
       result.current.setCurrentThreadId('thread1')
     })
 
-    expect(result.current.getCurrentThread()).toEqual(thread)
+    expect(result.current.getCurrentThread()).toEqual({
+      ...thread,
+      model: DIVO_THREAD_MODEL,
+    })
   })
 
   it('should return undefined when getting current thread with no ID', () => {
@@ -132,7 +147,10 @@ describe('useThreads', () => {
       result.current.setThreads([thread])
     })
 
-    expect(result.current.getThreadById('thread1')).toEqual(thread)
+    expect(result.current.getThreadById('thread1')).toEqual({
+      ...thread,
+      model: DIVO_THREAD_MODEL,
+    })
     expect(result.current.getThreadById('nonexistent')).toBeUndefined()
   })
 
@@ -218,6 +236,16 @@ describe('useThreads', () => {
       result.current.setThreads(threads)
     })
 
+    const removeSession = vi.spyOn(useChatSessions.getState(), 'removeSession')
+    const clearThreadState = vi.spyOn(
+      useAppState.getState(),
+      'clearThreadState'
+    )
+    const discardApproval = vi.spyOn(
+      usePiApproval.getState(),
+      'discardThreadAfterAbort'
+    )
+
     expect(Object.keys(result.current.threads)).toHaveLength(2)
 
     act(() => {
@@ -225,6 +253,13 @@ describe('useThreads', () => {
     })
 
     expect(result.current.threads).toEqual({})
+    expect(removeSession).toHaveBeenCalledWith('thread1')
+    expect(removeSession).toHaveBeenCalledWith('thread2')
+    expect(clearThreadState).toHaveBeenCalledWith('thread1')
+    expect(clearThreadState).toHaveBeenCalledWith('thread2')
+    expect(discardApproval).toHaveBeenCalledWith('thread1')
+    expect(discardApproval).toHaveBeenCalledWith('thread2')
+    expect(mockInvoke).toHaveBeenCalledWith('pi_stop')
   })
 
   it('should unstar all threads', () => {

@@ -4,7 +4,6 @@ import {
   FileSpreadsheet,
   FileText,
   Github,
-  HardDrive,
   Mail,
   Megaphone,
   MessageSquare,
@@ -15,7 +14,13 @@ import {
   Users,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
-import { GmailIcon, ZohoIcon } from '@/components/brand-icons'
+import {
+  GmailIcon,
+  GoogleCalendarIcon,
+  GoogleDriveIcon,
+  GoogleIcon,
+  ZohoIcon,
+} from '@/components/brand-icons'
 
 export type DivoPluginCategory = 'connector' | 'skill' | 'data_source'
 
@@ -81,7 +86,7 @@ export const divoPlugins: DivoPlugin[] = [
     name: 'Google Workspace',
     category: 'connector',
     description: 'Connect Gmail, Drive, and Calendar accounts.',
-    icon: GmailIcon,
+    icon: GoogleIcon,
     accentClassName: 'bg-card border-border/70',
     featured: true,
     enabled: true,
@@ -192,8 +197,8 @@ export const pluginSkills: DivoPluginSkill[] = [
 
 export const googleWorkspaceServices = [
   { name: 'Gmail', icon: GmailIcon, description: 'Read, search, draft, and send email based on access.' },
-  { name: 'Drive', icon: HardDrive, description: 'Search files, inspect metadata, and read shared docs.' },
-  { name: 'Calendar', icon: CalendarDays, description: 'Read schedules and create events when allowed.' },
+  { name: 'Drive', icon: GoogleDriveIcon, description: 'Search files, inspect metadata, and read shared docs.' },
+  { name: 'Calendar', icon: GoogleCalendarIcon, description: 'Read schedules and create events when allowed.' },
 ]
 
 export const pluginAutomationCards = [

@@ -36,13 +36,13 @@ export function AiOpsPage() {
   const isSuperAdmin = session?.role === "SUPER_ADMIN"
   const kpis = useAiOpsKpis(token, companyId)
   const runs = useRuns(token, { channel: channel || undefined, status: status || undefined })
-  const byModel = useSpendByModel(token, 30, companyId)
-  const spendMembers = useSpendMembers(token, 30, companyId)
+  const byModel = useSpendByModel(token, 30, companyId, channel || undefined)
+  const spendMembers = useSpendMembers(token, 30, companyId, channel || undefined)
   const dir = useDirectory(token, companyId)
-  const tokenSummary = useTokenUsageSummary(token, companyId)
-  const tokenMembers = useTokenUsageMembers(token, companyId)
+  const tokenSummary = useTokenUsageSummary(token, companyId, channel || undefined)
+  const tokenMembers = useTokenUsageMembers(token, companyId, channel || undefined)
   const modelTargets = useModelTargets(token)
-  const runtime = useRuntimeTasks(token, companyId)
+  const runtime = useRuntimeTasks(token, companyId, channel || undefined)
 
   const deptByUser = useMemo(
     () => new Map((dir.data ?? []).map((d) => [d.userId, d.departmentNames?.[0] ?? "—"])),
@@ -89,12 +89,20 @@ export function AiOpsPage() {
         ))}
       </div>
 
+      {tab !== "models" ? (
+        <div className="filters">
+          <select className="select" value={channel} onChange={(e) => setChannel(e.target.value)}>
+            <option value="">All channels</option><option value="desktop">desktop</option><option value="lark">lark</option><option value="web">web</option>
+          </select>
+          <span className="muted" style={{ fontSize: "12px" }}>
+            {channel === "lark" ? "Lark · pinned to DeepSeek V4 Flash" : channel ? `${channel} activity only` : "Company-wide activity"}
+          </span>
+        </div>
+      ) : null}
+
       {tab === "runs" ? (
         <>
           <div className="filters">
-            <select className="select" value={channel} onChange={(e) => setChannel(e.target.value)}>
-              <option value="">All channels</option><option value="desktop">desktop</option><option value="lark">lark</option><option value="web">web</option>
-            </select>
             <select className="select" value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="">All status</option><option value="completed">completed</option><option value="failed">failed</option><option value="running">running</option>
             </select>
@@ -237,6 +245,10 @@ export function AiOpsPage() {
           <div className="stub">Model routing is visible to Super Admins only.</div>
         ) : (
           <div className="section">
+            <div className="card" style={{ marginBottom: "14px", padding: "14px 16px" }}>
+              <b>Lark channel model</b>
+              <div className="muted" style={{ marginTop: "4px" }}>DeepSeek V4 Flash · pinned by backend policy · not changed by routing targets below</div>
+            </div>
             <header><h3>Model routing targets</h3><p>Provider / model per routing tier</p></header>
             <table>
               <thead>

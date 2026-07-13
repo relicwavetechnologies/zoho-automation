@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { useThreads } from '../useThreads'
+import { DIVO_THREAD_MODEL } from '@/lib/pi/constants'
+
+const mockInvoke = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }))
 
 vi.mock('@/services/threads', () => ({
   createThread: vi.fn(),
@@ -87,6 +92,9 @@ describe('useThreads - coverage', () => {
       created = await result.current.createThread({ id: 'm1', provider: 'openai' } as any)
     })
 
+    expect(mockCreateThread).toHaveBeenCalledWith(
+      expect.objectContaining({ model: DIVO_THREAD_MODEL })
+    )
     expect(created.id).toBe('test-ulid-123')
     expect(result.current.currentThreadId).toBe('test-ulid-123')
   })
@@ -177,7 +185,7 @@ describe('useThreads - coverage', () => {
       result.current.updateCurrentThreadModel({ id: 'm2', provider: 'p2' } as any)
     })
 
-    expect(result.current.threads['t1'].model?.id).toBe('m2')
+    expect(result.current.threads['t1'].model).toEqual(DIVO_THREAD_MODEL)
   })
 
   it('should not update model when no current thread', () => {
@@ -371,7 +379,7 @@ describe('useThreads - coverage', () => {
       ])
     })
 
-    expect(result.current.threads['t1'].model).toBeUndefined()
+    expect(result.current.threads['t1'].model).toEqual(DIVO_THREAD_MODEL)
   })
 
   it('should handle setThreads with non-llamacpp provider', () => {
@@ -383,8 +391,7 @@ describe('useThreads - coverage', () => {
       ])
     })
 
-    expect(result.current.threads['t1'].model?.id).toBe('gpt-4')
-    expect(result.current.threads['t1'].model?.provider).toBe('openai')
+    expect(result.current.threads['t1'].model).toEqual(DIVO_THREAD_MODEL)
   })
 
   it('setCurrentThreadId should not re-set if same', () => {

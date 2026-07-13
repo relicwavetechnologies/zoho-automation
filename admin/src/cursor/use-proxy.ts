@@ -15,6 +15,8 @@ export type KeySource = "company" | "platform" | "env"
 
 export interface ProxyStatus {
   enabled: boolean
+  desktopProxyEnabled: boolean
+  larkEnabled: boolean
   configured: boolean
   source: KeySource | null
   scope: KeyScope | null
@@ -87,13 +89,18 @@ export interface ProxyMetrics {
   lastUsedAt: string | null
 }
 
-export function useProxyMetrics(token: string | null, companyId?: string) {
+export function useProxyMetrics(token: string | null, companyId?: string, channel?: string) {
   const scope = getAdminQueryScope(token)
   return useQuery({
-    queryKey: ["admin", scope, "proxy-metrics", companyId ?? ""] as const,
+    queryKey: ["admin", scope, "proxy-metrics", companyId ?? "", channel ?? "all"] as const,
     enabled: Boolean(token),
     refetchInterval: 15_000,
-    queryFn: () => api.get<ProxyMetrics>(scoped("/api/admin/proxy/metrics", companyId), token!),
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (companyId) params.set("companyId", companyId)
+      if (channel) params.set("channel", channel)
+      return api.get<ProxyMetrics>(`/api/admin/proxy/metrics${params.size ? `?${params}` : ""}`, token!)
+    },
   })
 }
 
@@ -105,6 +112,9 @@ export interface AuditEntry {
   userId: string
   user: string
   model: string
+  channel: string
+  provider: string
+  agentTarget: string
   tokens: number
   costUsd: number
   latencyMs: number
@@ -116,7 +126,7 @@ export interface AuditEntry {
 export function useProxyAudit(
   token: string | null,
   companyId?: string,
-  opts?: { limit?: number; decision?: AuditDecision; userId?: string },
+  opts?: { limit?: number; decision?: AuditDecision; userId?: string; channel?: string },
 ) {
   const scope = getAdminQueryScope(token)
   const params = new URLSearchParams()
@@ -124,9 +134,10 @@ export function useProxyAudit(
   if (opts?.limit) params.set("limit", String(opts.limit))
   if (opts?.decision) params.set("decision", opts.decision)
   if (opts?.userId) params.set("userId", opts.userId)
+  if (opts?.channel) params.set("channel", opts.channel)
   const qs = params.toString()
   return useQuery({
-    queryKey: ["admin", scope, "proxy-audit", companyId ?? "", opts?.decision ?? "all", opts?.userId ?? "all", opts?.limit ?? 50] as const,
+    queryKey: ["admin", scope, "proxy-audit", companyId ?? "", opts?.decision ?? "all", opts?.userId ?? "all", opts?.channel ?? "all", opts?.limit ?? 50] as const,
     enabled: Boolean(token),
     refetchInterval: 15_000,
     queryFn: () => api.get<AuditEntry[]>(`/api/admin/proxy/audit${qs ? `?${qs}` : ""}`, token!),

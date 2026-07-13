@@ -1,6 +1,4 @@
 pub mod app;
-#[cfg(feature = "cli")]
-pub mod cli;
 pub mod divo;
 pub mod downloads;
 pub mod extensions;

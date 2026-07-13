@@ -197,7 +197,7 @@ export function FinanceQuickStarts({ onSubmit, variant = 'home' }: Props) {
 
   return (
     <section
-      className={cn(variant === 'home' ? 'mt-5' : 'inline-flex')}
+      className={cn(variant === 'home' ? 'mt-6' : 'inline-flex')}
       data-testid="finance-quick-starts"
       data-variant={variant}
     >
@@ -248,10 +248,10 @@ export function FinanceQuickStarts({ onSubmit, variant = 'home' }: Props) {
         </Popover>
       ) : (
         <>
-          <div className="mb-2.5 flex items-center justify-between px-1">
-            <div>
+          <div className="mb-3 flex items-center justify-between gap-3 px-1">
+            <div className="min-w-0">
               <p className="text-sm font-medium">Finance quick starts</p>
-              <p className="text-xs text-muted-foreground">
+              <p className="truncate text-xs text-muted-foreground">
                 Exact Zoho Books routes, ready for your details
               </p>
             </div>
@@ -262,8 +262,9 @@ export function FinanceQuickStarts({ onSubmit, variant = 'home' }: Props) {
                 onSelect={setSelectedConnectionId}
               />
             ) : connection ? (
-              <span className="max-w-48 truncate rounded-full border bg-card px-3 py-1 text-xs text-muted-foreground">
-                {displayConnection(connection)}
+              <span className="inline-flex max-w-52 shrink-0 items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs text-muted-foreground">
+                <Building2 className="size-3 shrink-0" />
+                <span className="truncate">{displayConnection(connection)}</span>
               </span>
             ) : null}
           </div>
@@ -421,7 +422,7 @@ function QuickStartGrid({ groups, onOpen, compact = false }: {
   compact?: boolean
 }) {
   return (
-    <div className={cn('grid grid-cols-2 gap-2', !compact && 'lg:grid-cols-4')}>
+    <div className={cn('grid grid-cols-2 gap-3', !compact && 'lg:grid-cols-4')}>
       {groups.map(([group, items]) => {
         const Icon = GROUP_ICONS[group] ?? ReceiptText
         return (
@@ -429,19 +430,19 @@ function QuickStartGrid({ groups, onOpen, compact = false }: {
             key={group}
             type="button"
             className={cn(
-              'group rounded-2xl border bg-card/70 p-3 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              compact ? 'min-h-20' : 'min-h-24'
+              'group flex flex-col rounded-xl border border-border/60 bg-card/60 p-4 text-left transition-colors hover:border-border hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              compact ? 'min-h-20' : 'min-h-[112px]'
             )}
             onClick={() => onOpen(items[0])}
           >
             <span className={cn('flex items-start justify-between', compact ? 'mb-2' : 'mb-3')}>
-              <span className="flex size-8 items-center justify-center rounded-lg border bg-background">
+              <span className="flex size-9 items-center justify-center rounded-lg border bg-background">
                 <Icon className="size-4 text-muted-foreground" />
               </span>
-              <ArrowRight className="size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+              <ArrowRight className="size-4 -translate-x-1 text-muted-foreground opacity-0 transition-all group-hover:translate-x-0 group-hover:opacity-100" />
             </span>
             <span className="block text-sm font-medium">{group}</span>
-            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+            <span className="mt-1 line-clamp-2 block text-xs leading-relaxed text-muted-foreground">
               {items.map((item) => item.title).join(' · ')}
             </span>
           </button>

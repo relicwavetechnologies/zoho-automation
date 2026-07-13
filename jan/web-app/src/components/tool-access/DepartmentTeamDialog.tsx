@@ -27,14 +27,17 @@ import {
 
 type Props = {
   department: { id: string; name: string }
+  initialFocus?: DepartmentTeamDialogFocus
   open: boolean
   onOpenChange: (open: boolean) => void
   onChanged: () => void
 }
 
+export type DepartmentTeamDialogFocus = 'overview' | 'roles' | 'people'
+
 const roleSlug = (name: string) => name.trim().toUpperCase().replace(/\s+/g, '_').replace(/[^A-Z0-9_]/g, '').slice(0, 40)
 
-export function DepartmentTeamDialog({ department, open, onOpenChange, onChanged }: Props) {
+export function DepartmentTeamDialog({ department, initialFocus = 'overview', open, onOpenChange, onChanged }: Props) {
   const [snapshot, setSnapshot] = useState<DepartmentManagementSnapshot | null>(null)
   const [query, setQuery] = useState('')
   const [candidates, setCandidates] = useState<DepartmentCandidate[]>([])
@@ -132,7 +135,7 @@ export function DepartmentTeamDialog({ department, open, onOpenChange, onChanged
               <span className="text-xs text-muted-foreground">{snapshot.roles.length} roles</span>
             </div>
             <div className="mt-3 flex gap-2">
-              <Input value={roleName} onChange={event => setRoleName(event.target.value)} placeholder="New role name" disabled={saving} />
+              <Input autoFocus={initialFocus === 'roles'} value={roleName} onChange={event => setRoleName(event.target.value)} placeholder="New role name" disabled={saving} />
               <Button size="sm" onClick={createRole} disabled={!roleName.trim() || saving}><Plus className="size-4" />Create</Button>
             </div>
             <div className="mt-3 space-y-2">
@@ -148,7 +151,7 @@ export function DepartmentTeamDialog({ department, open, onOpenChange, onChanged
 
           <section className="rounded-lg border border-border/70 p-4">
             <div><h3 className="text-sm font-medium">Add people</h3><p className="mt-1 text-xs text-muted-foreground">Search the synced directory. People outside this workspace remain visible but cannot be added.</p></div>
-            <div className="mt-3 flex gap-2"><div className="relative flex-1"><Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" /><Input className="pl-9" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void search() }} placeholder="Search by name or email" disabled={loading} /></div><Button variant="outline" onClick={() => void search()} disabled={!query.trim() || loading}>Search</Button></div>
+            <div className="mt-3 flex gap-2"><div className="relative flex-1"><Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" /><Input autoFocus={initialFocus === 'people'} className="pl-9" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void search() }} placeholder="Search by name or email" disabled={loading} /></div><Button variant="outline" onClick={() => void search()} disabled={!query.trim() || loading}>Search</Button></div>
             {candidates.length ? <div className="mt-3 max-h-48 overflow-y-auto rounded-md border border-border/60">
               {candidates.map(candidate => {
                 const canAdd = Boolean(candidate.userId && candidate.isWorkspaceMember && !candidate.isAlreadyAssigned && selectedRoleId)

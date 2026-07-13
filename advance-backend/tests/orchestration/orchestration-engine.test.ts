@@ -147,6 +147,8 @@ describe('OrchestrationEngine', () => {
           started.push('supervisor');
           assert.equal(input.memoryContext, 'remembered context');
           assert.ok(input.groupContext?.includes('Alice'));
+          assert.equal((input.model as { modelId?: string } | undefined)?.modelId, 'deepseek-v4-flash');
+          assert.equal(typeof input.resolveModel, 'function');
           return ok({
             finalReply: { kind: 'final', text: 'done', format: 'text' },
             toolsCalled: [],
@@ -157,6 +159,9 @@ describe('OrchestrationEngine', () => {
           throw new Error('not used');
         },
       } as unknown as OrchestrationEngineDeps['supervisor'],
+      larkInference: {
+        createModel: () => ({ modelId: 'deepseek-v4-flash' }),
+      } as unknown as NonNullable<OrchestrationEngineDeps['larkInference']>,
       logger: createLogger(loggerEvents),
       clock,
     };

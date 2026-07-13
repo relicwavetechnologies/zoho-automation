@@ -8,6 +8,9 @@ import { ExtensionManager } from '@/lib/extension'
 import { ExtensionTypeEnum, VectorDBExtension } from '@janhq/core'
 import { useChatSessions } from '@/stores/chat-session-store'
 import { useAppState } from '@/hooks/useAppState'
+import { usePiApproval } from '@/hooks/usePiApproval'
+import { invoke } from '@tauri-apps/api/core'
+import { DIVO_THREAD_MODEL } from '@/lib/pi/constants'
 
 type ThreadState = {
   threads: Record<string, Thread>
@@ -56,30 +59,41 @@ const cleanupVectorDB = async (threadId: string) => {
   }
 }
 
+const cleanupThreadRuntime = (threadId: string) => {
+  useAgentMode.getState().removeThread(threadId)
+  // stop() propagates through the AI SDK abort signal to the exact Pi
+  // thread/run pair before the session is removed from the client store.
+  useChatSessions.getState().removeSession(threadId)
+  useAppState.getState().clearThreadState(threadId)
+  // A process stop or an already-finished stream may leave a presentation-only
+  // approval queued briefly. Deleted threads must never retain actionable UI.
+  usePiApproval.getState().discardThreadAfterAbort(threadId)
+}
+
 export const useThreads = create<ThreadState>()((set, get) => ({
   threads: {},
   searchIndex: null,
   setThreads: (threads) => {
     const threadMap = threads.reduce(
       (acc: Record<string, Thread>, thread) => {
-        acc[thread.id] = {
+        const normalizedThread: Thread = {
           ...thread,
-          model: thread.model
-            ? {
-                provider:
-                  thread.model?.provider?.replace('llama.cpp', 'llamacpp') ??
-                  'llamacpp',
-                // Cortex migration: take first two parts of the ID (the last is file name which is not needed)
-                id:
-                  thread.model?.provider === 'llama.cpp' ||
-                  thread.model?.provider === 'llamacpp'
-                    ? thread.model?.id
-                        ?.split(':')
-                        .slice(0, 2)
-                        .join(getServiceHub().path().sep())
-                    : thread.model?.id,
-              }
-            : undefined,
+          model: { ...DIVO_THREAD_MODEL },
+        }
+        acc[thread.id] = normalizedThread
+
+        if (
+          thread.model?.provider !== DIVO_THREAD_MODEL.provider ||
+          thread.model?.id !== DIVO_THREAD_MODEL.id
+        ) {
+          void Promise.resolve(
+            getServiceHub().threads().updateThread(normalizedThread)
+          ).catch((error) =>
+            console.warn(
+              `[Threads] Failed to migrate ${thread.id} to the Divo runtime:`,
+              error
+            )
+          )
         }
         return acc
       },
@@ -157,9 +171,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { [threadId]: _, ...remainingThreads } = state.threads
 
-      useAgentMode.getState().removeThread(threadId)
-      useChatSessions.getState().removeSession(threadId)
-      useAppState.getState().clearThreadState(threadId)
+      cleanupThreadRuntime(threadId)
       cleanupVectorDB(threadId)
       getServiceHub().threads().deleteThread(threadId)
 
@@ -196,9 +208,19 @@ export const useThreads = create<ThreadState>()((set, get) => ({
 
       // Delete threads and clean up their vector DB collections
       threadsToDeleteIds.forEach((threadId) => {
+        cleanupThreadRuntime(threadId)
         cleanupVectorDB(threadId)
         getServiceHub().threads().deleteThread(threadId)
       })
+
+      // When no chat survives, tear down Pi's cached runtime pool too. Thread
+      // directories remove persisted sessions; stopping the pool removes any
+      // deleted conversation still resident in a Bun process.
+      if (threadsToKeepIds.length === 0) {
+        void invoke('pi_stop').catch((error) => {
+          console.warn('[Threads] Failed to stop Pi after deleting all chats:', error)
+        })
+      }
 
       // Keep favorite threads and threads with project metadata
       const remainingThreads = threadsToKeepIds.reduce(
@@ -227,11 +249,13 @@ export const useThreads = create<ThreadState>()((set, get) => ({
       const allThreadIds = Object.keys(state.threads)
 
       allThreadIds.forEach((threadId) => {
-        useAgentMode.getState().removeThread(threadId)
-        useChatSessions.getState().removeSession(threadId)
-        useAppState.getState().clearThreadState(threadId)
+        cleanupThreadRuntime(threadId)
         cleanupVectorDB(threadId)
         getServiceHub().threads().deleteThread(threadId)
+      })
+
+      void invoke('pi_stop').catch((error) => {
+        console.warn('[Threads] Failed to stop Pi while clearing chats:', error)
       })
 
       return {
@@ -254,8 +278,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
       )
 
       threadsToDeleteIds.forEach((threadId) => {
-        useChatSessions.getState().removeSession(threadId)
-        useAppState.getState().clearThreadState(threadId)
+        cleanupThreadRuntime(threadId)
         cleanupVectorDB(threadId)
         getServiceHub().threads().deleteThread(threadId)
       })
@@ -309,7 +332,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
     if (threadId !== get().currentThreadId) set({ currentThreadId: threadId })
   },
   createThread: async (
-    model,
+    _model,
     title,
     assistant,
     projectMetadata,
@@ -318,7 +341,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
     const newThread: Thread = {
       id: isTemporary ? TEMPORARY_CHAT_ID : ulid(),
       title: title ?? (isTemporary ? 'Temporary Chat' : 'New Thread'),
-      model,
+      model: { ...DIVO_THREAD_MODEL },
       updated: Date.now() / 1000,
       assistants: assistant ? [assistant] : [],
       ...(projectMetadata &&
@@ -380,20 +403,20 @@ export const useThreads = create<ThreadState>()((set, get) => ({
       }
     })
   },
-  updateCurrentThreadModel: (model) => {
+  updateCurrentThreadModel: (_model) => {
     set((state) => {
       if (!state.currentThreadId) return { ...state }
       const currentThread = state.getCurrentThread()
       if (currentThread)
         getServiceHub()
           .threads()
-          .updateThread({ ...currentThread, model })
+          .updateThread({ ...currentThread, model: { ...DIVO_THREAD_MODEL } })
       return {
         threads: {
           ...state.threads,
           [state.currentThreadId as string]: {
             ...state.threads[state.currentThreadId as string],
-            model,
+            model: { ...DIVO_THREAD_MODEL },
           },
         },
       }

@@ -5,6 +5,9 @@ import { describe, it } from 'node:test'
 const packageJson = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf8')
 )
+const macosConfig = JSON.parse(
+  readFileSync(new URL('../src-tauri/tauri.macos.conf.json', import.meta.url), 'utf8')
+)
 
 function mustVendorBeforeTauri(scriptName) {
   const script = packageJson.scripts[scriptName]
@@ -21,20 +24,43 @@ describe('desktop package scripts', () => {
     for (const platform of ['win32', 'linux', 'darwin']) {
       mustVendorBeforeTauri(`build:tauri:${platform}`)
     }
+    mustVendorBeforeTauri('build:tauri:darwin:aarch64')
     mustVendorBeforeTauri('build:tauri:darwin:x86_64')
   })
 
   it('uses explicit and isolated architecture targets for macOS packages', () => {
     assert.match(packageJson.scripts['build:tauri:darwin'], /JAN_MACOS_TARGET=universal/)
-    assert.match(packageJson.scripts['build:tauri:darwin'], /tauri\.macos\.mlx\.conf\.json/)
+    assert.match(packageJson.scripts['build:tauri:darwin'], /tauri\.macos\.conf\.json/)
+    assert.match(packageJson.scripts['build:tauri:darwin:aarch64'], /JAN_MACOS_TARGET=aarch64/)
+    assert.match(packageJson.scripts['build:tauri:darwin:aarch64'], /--target aarch64-apple-darwin/)
+    assert.match(packageJson.scripts['build:tauri:darwin:aarch64'], /--bundles app/)
+    assert.match(packageJson.scripts['build:tauri:darwin:aarch64'], /tauri\.macos\.conf\.json/)
     assert.match(packageJson.scripts['build:tauri:darwin:x86_64'], /JAN_MACOS_TARGET=x86_64/)
     assert.match(packageJson.scripts['build:tauri:darwin:x86_64'], /--target x86_64-apple-darwin/)
+    assert.match(packageJson.scripts['build:tauri:darwin:x86_64'], /--bundles app/)
     assert.match(
       packageJson.scripts['build:tauri:darwin:x86_64'],
       /JAN_MACOS_TARGET=x86_64 yarn vendor:pi/
     )
     assert.doesNotMatch(packageJson.scripts['build:tauri:darwin:x86_64'], /mlx/i)
+    assert.match(packageJson.scripts['build:tauri:plugin:api:darwin'], /--exclude @janhq\/tauri-plugin-mlx-api/)
     assert.match(packageJson.scripts['build:tauri:plugin:api:darwin:x86_64'], /yarn install/)
+    assert.match(packageJson.scripts['build:extensions:darwin:aarch64'], /yarn install/)
+    assert.match(packageJson.scripts['build:extensions:darwin:aarch64'], /--exclude @janhq\/mlx-extension/)
+    assert.match(packageJson.scripts['build:extensions:darwin:x86_64'], /--exclude @janhq\/mlx-extension/)
+  })
+
+  it('ships the Divo runtime resources without local model binaries', () => {
+    const resources = macosConfig.bundle.resources
+    for (const requiredResource of [
+      'resources/bin/sqlite-vec.dylib',
+      'resources/pi/node_modules/**/*',
+      'resources/lark-cli/**/*',
+    ]) {
+      assert.ok(resources.includes(requiredResource), `${requiredResource} must be bundled`)
+    }
+    assert.ok(!resources.some((resource) => resource.includes('jan-cli')))
+    assert.ok(!resources.some((resource) => resource.includes('mlx')))
   })
 
   it('vendors Pi before the desktop development runtime starts', () => {

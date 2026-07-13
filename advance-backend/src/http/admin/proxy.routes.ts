@@ -66,6 +66,10 @@ function resolveCompanyId(res: Response, providedId?: string): string {
 }
 const qCompany = (req: Request, res: Response) =>
   resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+const qChannel = (req: Request): string | undefined => {
+  const value = typeof req.query.channel === 'string' ? req.query.channel : undefined;
+  return value && ['desktop', 'lark', 'web'].includes(value) ? value : undefined;
+};
 
 const bodyCompany = (req: Request, res: Response) => {
   const provided = typeof (req.body as { companyId?: unknown })?.companyId === 'string' ? (req.body as { companyId: string }).companyId : undefined;
@@ -94,7 +98,7 @@ export function createProxyRoutes(deps: ProxyRoutesDeps): Router {
   router.get('/status', asyncRoute(async (req, res) => {
     const companyId = qCompany(req, res);
     const status = await store.status(companyId);
-    success(res, { ...status, enabled: deps.enabled, upstream: upstreamHost, canEncrypt: store.canEncrypt() });
+    success(res, { ...status, enabled: true, desktopProxyEnabled: deps.enabled, larkEnabled: true, upstream: upstreamHost, canEncrypt: store.canEncrypt() });
   }));
 
   // ─── PUT /key — save / rotate ───────────────────────────────────────
@@ -105,7 +109,7 @@ export function createProxyRoutes(deps: ProxyRoutesDeps): Router {
     const createdBy = res.locals['userId'] as string | undefined;
     const status = await store.save({ scope: body.scope, companyId, plaintextKey: body.key, createdBy });
     deps.logger.info('proxy.key.saved', { companyId, scope: body.scope, by: createdBy });
-    success(res, { ...status, enabled: deps.enabled, upstream: upstreamHost, canEncrypt: store.canEncrypt() });
+    success(res, { ...status, enabled: true, desktopProxyEnabled: deps.enabled, larkEnabled: true, upstream: upstreamHost, canEncrypt: store.canEncrypt() });
   }));
 
   // ─── DELETE /key — remove ───────────────────────────────────────────
@@ -115,24 +119,26 @@ export function createProxyRoutes(deps: ProxyRoutesDeps): Router {
     const companyId = bodyCompany(req, res);
     const status = await store.remove({ scope: body.scope, companyId });
     deps.logger.info('proxy.key.removed', { companyId, scope: body.scope });
-    success(res, { ...status, enabled: deps.enabled, upstream: upstreamHost, canEncrypt: store.canEncrypt() });
+    success(res, { ...status, enabled: true, desktopProxyEnabled: deps.enabled, larkEnabled: true, upstream: upstreamHost, canEncrypt: store.canEncrypt() });
   }));
 
   // ─── GET /metrics — proxy health over the last 24h ──────────────────
   router.get('/metrics', asyncRoute(async (req, res) => {
     const companyId = qCompany(req, res);
+    const channel = qChannel(req);
+    const requestWhere = { companyId, ...(channel ? { channel } : {}) };
     const since24h = new Date(Date.now() - 24 * 3_600_000);
     const [agg, todayCount, denied, last] = await Promise.all([
       prisma.proxyRequestLog.aggregate({
-        where:  { companyId, createdAt: { gte: since24h } },
+        where:  { ...requestWhere, createdAt: { gte: since24h } },
         _count: { id: true },
         _avg:   { latencyMs: true },
         _sum:   { cacheHitTokens: true, cacheMissTokens: true, outputTokens: true },
       }),
-      prisma.proxyRequestLog.count({ where: { companyId, createdAt: { gte: startOfToday() } } }),
-      prisma.proxyRequestLog.count({ where: { companyId, createdAt: { gte: since24h }, decision: 'denied' } }),
+      prisma.proxyRequestLog.count({ where: { ...requestWhere, createdAt: { gte: startOfToday() } } }),
+      prisma.proxyRequestLog.count({ where: { ...requestWhere, createdAt: { gte: since24h }, decision: 'denied' } }),
       // "Last used" = last time the proxy actually routed to upstream (allowed), not a denial/503.
-      prisma.proxyRequestLog.findFirst({ where: { companyId, decision: 'allowed' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
+      prisma.proxyRequestLog.findFirst({ where: { ...requestWhere, decision: 'allowed' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
     ]);
     const total = agg._count.id;
     const tokens = (agg._sum.cacheHitTokens ?? 0) + (agg._sum.cacheMissTokens ?? 0) + (agg._sum.outputTokens ?? 0);
@@ -153,9 +159,10 @@ export function createProxyRoutes(deps: ProxyRoutesDeps): Router {
     const decisionQ = typeof req.query.decision === 'string' ? req.query.decision : undefined;
     const decision = decisionQ === 'allowed' || decisionQ === 'denied' ? decisionQ : undefined;
     const userId = typeof req.query.userId === 'string' && req.query.userId ? req.query.userId : undefined;
+    const channel = qChannel(req);
 
     const rows = await prisma.proxyRequestLog.findMany({
-      where:   { companyId, ...(decision ? { decision } : {}), ...(userId ? { userId } : {}) },
+      where:   { companyId, ...(decision ? { decision } : {}), ...(userId ? { userId } : {}), ...(channel ? { channel } : {}) },
       orderBy: { createdAt: 'desc' },
       take:    limit,
     });
@@ -171,6 +178,9 @@ export function createProxyRoutes(deps: ProxyRoutesDeps): Router {
       userId:    r.userId,
       user:      nameById.get(r.userId) ?? r.userId,
       model:     r.model,
+      channel:   r.channel,
+      provider:  r.provider,
+      agentTarget: r.agentTarget,
       tokens:    r.cacheHitTokens + r.cacheMissTokens + r.outputTokens,
       costUsd:   costUsd(r.model, { cacheMissIn: r.cacheMissTokens, cacheHitIn: r.cacheHitTokens, output: r.outputTokens }),
       latencyMs: r.latencyMs,

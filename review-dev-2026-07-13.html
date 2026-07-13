@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Divo Dex · Local Runtime Removal Audit</title>
+    <style>
+      :root {
+        --bg: #0c0f14;
+        --panel: #131820;
+        --panel-2: #191f29;
+        --ink: #f3f6fb;
+        --muted: #a3adbd;
+        --line: #2a3341;
+        --accent: #ff784f;
+        --accent-soft: rgba(255, 120, 79, .13);
+        --good: #34d399;
+        --warn: #fbbf24;
+        --bad: #fb7185;
+        --blue: #60a5fa;
+        --radius: 16px;
+        --radius-sm: 10px;
+        --shadow: 0 16px 48px rgba(0,0,0,.24);
+        --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body { margin: 0; color: var(--ink); background: var(--bg); font-family: var(--font-sans); line-height: 1.5; }
+      .shell { max-width: 1220px; margin: 0 auto; padding: 32px 28px 72px; }
+      .eyebrow { color: var(--accent); text-transform: uppercase; letter-spacing: .12em; font-size: 11px; font-weight: 800; }
+      h1 { font-size: clamp(30px, 5vw, 52px); letter-spacing: -.045em; margin: 8px 0 10px; line-height: 1.06; }
+      h2 { letter-spacing: -.025em; margin: 0 0 12px; font-size: 22px; }
+      h3 { letter-spacing: -.015em; margin: 0 0 8px; font-size: 17px; }
+      p { margin: 0 0 12px; color: var(--muted); }
+      .lede { max-width: 880px; font-size: 18px; }
+      .topline, .stats, .grid, .finding-grid { display: grid; gap: 14px; }
+      .topline { grid-template-columns: 1fr auto; align-items: end; }
+      .run { font-size: 12px; color: var(--muted); text-align: right; }
+      .run strong { color: var(--ink); }
+      .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 28px 0; }
+      .stat, .card, .finding { border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); }
+      .stat { padding: 16px; }
+      .stat b { display: block; font-size: 27px; letter-spacing: -.04em; }
+      .stat span { color: var(--muted); font-size: 13px; }
+      .card { padding: 22px; }
+      .grid { grid-template-columns: 1.08fr .92fr; margin: 20px 0; }
+      .flow { display: grid; grid-template-columns: 1fr 32px 1fr 32px 1fr; align-items: center; gap: 8px; margin-top: 14px; }
+      .node { min-height: 112px; padding: 14px; border: 1px solid var(--line); background: var(--panel-2); border-radius: var(--radius-sm); }
+      .node b { display: block; }
+      .node small { color: var(--muted); display: block; margin-top: 5px; }
+      .node.red { border-color: rgba(251,113,133,.55); background: rgba(251,113,133,.08); }
+      .node.green { border-color: rgba(52,211,153,.45); background: rgba(52,211,153,.08); }
+      .arrow { color: var(--muted); text-align: center; font-size: 22px; }
+      .callout { border-left: 3px solid var(--accent); padding: 11px 13px; background: var(--accent-soft); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; color: #f8d1c3; font-size: 14px; }
+      .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 12px; }
+      button { appearance: none; border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; color: var(--muted); background: var(--panel-2); font: inherit; font-size: 13px; cursor: pointer; }
+      button:hover, button.active { color: var(--ink); border-color: var(--accent); background: var(--accent-soft); }
+      .finding-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .finding { padding: 18px; position: relative; overflow: hidden; }
+      .finding.hidden { display: none; }
+      .finding::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--line); }
+      .finding.high::before { background: var(--good); }
+      .finding.guard::before { background: var(--warn); }
+      .finding.keep::before { background: var(--blue); }
+      .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+      .tag { border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; }
+      .tag.high { color: var(--good); border-color: rgba(52,211,153,.5); }
+      .tag.guard { color: var(--warn); border-color: rgba(251,191,36,.5); }
+      .tag.keep { color: var(--blue); border-color: rgba(96,165,250,.5); }
+      /* Confidence-dot pattern required by the review workflow. */
+      .cdot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
+      .cdot-high { background: var(--good); box-shadow: 0 0 0 3px rgba(52,211,153,.12); }
+      .cdot-medium { background: var(--warn); box-shadow: 0 0 0 3px rgba(251,191,36,.12); }
+      .cdot-low { background: var(--muted); }
+      code, pre { font-family: var(--font-mono); }
+      pre { margin: 13px 0 0; padding: 13px; overflow: auto; border: 1px solid var(--line); background: #0a0d12; border-radius: var(--radius-sm); color: #c9d4e5; font-size: 12px; line-height: 1.55; }
+      .minus { color: #fda4af; } .plus { color: #86efac; } .note { color: #93c5fd; }
+      .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+      table { width: 100%; border-collapse: collapse; min-width: 760px; background: var(--panel); }
+      th, td { padding: 13px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+      th { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+      tr:last-child td { border-bottom: 0; }
+      .size { white-space: nowrap; font-weight: 750; }
+      .recommendations { counter-reset: rec; display: grid; gap: 10px; }
+      .recommendation { display: grid; grid-template-columns: 34px 1fr; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel-2); }
+      .recommendation::before { counter-increment: rec; content: counter(rec); width: 26px; height: 26px; display: grid; place-items: center; color: var(--bg); background: var(--accent); border-radius: 50%; font-size: 13px; font-weight: 800; }
+      .evidence { font-size: 13px; color: var(--muted); }
+      .footer { margin-top: 32px; color: var(--muted); font-size: 13px; }
+      @media (max-width: 850px) { .stats, .finding-grid, .grid { grid-template-columns: 1fr; } .flow { grid-template-columns: 1fr; } .arrow { transform: rotate(90deg); } .topline { grid-template-columns: 1fr; } .run { text-align: left; } }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <div class="topline">
+        <div>
+          <div class="eyebrow">Evidence-based package audit</div>
+          <h1>Remove Jan’s local-model stack. Keep the Divo agent.</h1>
+          <p class="lede">Divo Dex currently ships and starts Jan’s local inference architecture even though its production path is Pi + Divo gateway + advance-backend. The safe first cut is clear; the rest should be treated as a separately measured slimming phase.</p>
+        </div>
+        <div class="run"><strong>Reviewed:</strong> dev workspace + installed ARM build<br />13 Jul 2026 · scope: packaging, startup, runtime ownership</div>
+      </div>
+
+      <section class="stats" aria-label="Audit summary">
+        <div class="stat"><b>687 MB</b><span>installed ARM app</span></div>
+        <div class="stat"><b>61.3 MB</b><span>direct, high-confidence bundled removal</span></div>
+        <div class="stat"><b>78 MB</b><span>unused llama.cpp cache already created locally</span></div>
+        <div class="stat"><b>410 MB</b><span>Pi runtime — do not delete wholesale</span></div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <div class="eyebrow">What the log proves</div>
+          <h2>A zero-model local server starts anyway</h2>
+          <p>The supplied startup log records backend/Divo requests succeeding, then local Llama.cpp backend detection and a local router start. It reports <code>Available models (0)</code> and still starts a <code>llama-server</code> process. That is unused work, extra startup failure surface, and an unnecessary local cache.</p>
+          <div class="callout">This is not a theory about unused code: the released ARM build is executing it on each launch with no local model loaded.</div>
+        </article>
+        <article class="card">
+          <div class="eyebrow">Target runtime</div>
+          <h2>Keep this authority boundary</h2>
+          <div class="flow" aria-label="Divo runtime diagram">
+            <div class="node"><b>Divo Dex UI</b><small>session, composer, approvals, local file UX</small></div>
+            <div class="arrow">→</div>
+            <div class="node green"><b>Bundled Pi + Bun</b><small>agent loop and Divo gateway extension</small></div>
+            <div class="arrow">→</div>
+            <div class="node green"><b>advance-backend</b><small>model API, tools, OAuth, RBAC, RAG, audit</small></div>
+          </div>
+          <div class="flow" style="margin-top:10px">
+            <div class="node red"><b>Delete from this path</b><small>MLX, Llama.cpp router, local model UI/downloads, local-model Jan CLI</small></div>
+            <div class="arrow">↛</div>
+            <div class="node"><b>Local inference</b><small>no product requirement remains</small></div>
+            <div class="arrow">↛</div>
+            <div class="node"><b>Downloaded model cache</b><small>no longer created</small></div>
+          </div>
+        </article>
+      </section>
+
+      <section>
+        <div class="eyebrow">Findings</div>
+        <h2>Confidence-ranked removal map</h2>
+        <div class="toolbar" aria-label="Finding filter">
+          <button class="active" data-filter="all">All findings</button>
+          <button data-filter="high">High confidence</button>
+          <button data-filter="guard">Needs product decision</button>
+          <button data-filter="keep">Keep</button>
+        </div>
+        <div class="finding-grid" id="findings">
+          <article class="finding high" data-kind="high">
+            <div class="meta"><span class="cdot cdot-high"></span><span class="tag high">High confidence</span><span class="tag">−57.7 MB ARM</span></div>
+            <h3>Remove MLX local inference end-to-end</h3>
+            <p>The ARM build explicitly compiles and bundles <code>mlx-server</code> plus its Swift bundle, registers <code>tauri_plugin_mlx</code>, and packages the MLX extension. It only exists to serve local Apple Silicon models.</p>
+            <pre><span class="minus">- resources/bin/mlx-server                 54 MB</span>
+<span class="minus">- resources/bin/mlx-swift_Cmlx.bundle       3.7 MB</span>
+<span class="minus">- build:mlx-server / tauri.macos.mlx.conf.json</span>
+<span class="minus">- tauri_plugin_mlx::init()</span></pre>
+          </article>
+          <article class="finding high" data-kind="high">
+            <div class="meta"><span class="cdot cdot-high"></span><span class="tag high">High confidence</span><span class="tag">removes cold-start process</span></div>
+            <h3>Remove Llama.cpp router, extension, and model-download flow</h3>
+            <p><code>src-tauri/src/lib.rs</code> registers the plugin and shutdown handlers; the attached log proves it launches despite zero models. Hub/model-provider, local download, hardware, and router error UI are all Jan-only product surface.</p>
+            <pre><span class="minus">- .plugin(tauri_plugin_llamacpp::init())</span>
+<span class="minus">- llama router lifecycle / exit cleanup</span>
+<span class="minus">- local model providers: llamacpp + mlx</span>
+<span class="minus">- Hub local-model download and hardware UI</span>
+<span class="plus">+ Pi always uses the backend model API through Divo</span></pre>
+            <p class="evidence">The 78 MB Llama.cpp folder is runtime data, not 78 MB inside the DMG. Removing this path prevents it being downloaded and started; measure the app-binary saving separately.</p>
+          </article>
+          <article class="finding high" data-kind="high">
+            <div class="meta"><span class="cdot cdot-high"></span><span class="tag high">High confidence</span><span class="tag">−3.6 MB</span></div>
+            <h3>Remove the bundled <code>jan-cli</code> binary and its auto-install</h3>
+            <p>Its own command description is “Serve local AI models … no cloud required.” It is built into the app, shipped under resources, and automatically installed onto the user’s PATH at startup. That conflicts with Divo’s backend-only model architecture.</p>
+            <pre><span class="minus">- [[bin]] jan-cli</span>
+<span class="minus">- core::setup::setup_jan_cli(...)</span>
+<span class="minus">- install_jan_cli / uninstall_jan_cli commands</span>
+<span class="minus">- resources/bin/jan-cli                    3.6 MB</span></pre>
+          </article>
+          <article class="finding high" data-kind="high">
+            <div class="meta"><span class="cdot cdot-high"></span><span class="tag high">High confidence</span><span class="tag">cleanup</span></div>
+            <h3>Stop shipping local-model extension installers</h3>
+            <p>After inference is removed, the Llama.cpp and MLX installer archives must go too; otherwise an old Jan path can be reintroduced later. Their bytes are small, but leaving them is misleading and weakens the product boundary.</p>
+            <pre><span class="minus">- janhq-llamacpp-extension-*.tgz</span>
+<span class="minus">- janhq-mlx-extension-*.tgz</span>
+<span class="note"># remove their build/test scripts at the same time</span></pre>
+          </article>
+          <article class="finding guard" data-kind="guard">
+            <div class="meta"><span class="cdot cdot-medium"></span><span class="tag guard">Needs product decision</span><span class="tag">potential −49 MB</span></div>
+            <h3>Do not remove <code>uv</code> yet</h3>
+            <p><code>uv</code> is 49 MB, but it supports Jan’s generic local MCP servers, including <code>mcp-server-fetch</code>. Divo already instructs Pi to use backend research for company work, so this is a strong next candidate—but local MCP/browser workflows still reference it.</p>
+            <p class="evidence">Safe only after the product explicitly disables generic local MCP servers or migrates their supported use cases to backend-owned capabilities.</p>
+          </article>
+          <article class="finding guard" data-kind="guard">
+            <div class="meta"><span class="cdot cdot-medium"></span><span class="tag guard">Needs product decision</span><span class="tag">potential −40 MB</span></div>
+            <h3>Do not remove bundled Lark CLI yet</h3>
+            <p>The app actively bootstraps a private <code>lark-cli</code> wrapper into Pi’s PATH and has a UI for local Lark connection setup. That is not local model code, and it remains a live desktop feature even if backend Lark is preferred for company work.</p>
+            <p class="evidence">It becomes removable only after local/personal Lark is deliberately removed and every route uses the backend gateway.</p>
+          </article>
+          <article class="finding guard" data-kind="guard">
+            <div class="meta"><span class="cdot cdot-medium"></span><span class="tag guard">Needs tracing</span><span class="tag">avoid accidental attachment regression</span></div>
+            <h3>Keep local RAG/vector plugins for this first cut</h3>
+            <p>They are wired into attachment ingestion and RAG tools in the current web app. They may be obsolete for Divo’s backend-owned RAG, but deleting them without first redirecting attachments to the backend would break document handling.</p>
+            <p class="evidence">Treat this as phase 2: define the backend document/attachment contract, migrate it, then remove local embedding/vector code.</p>
+          </article>
+          <article class="finding keep" data-kind="keep">
+            <div class="meta"><span class="cdot cdot-high"></span><span class="tag keep">Keep</span><span class="tag">60 MB but required</span></div>
+            <h3>Keep Bun and the core Pi runtime</h3>
+            <p>Bun is the process that runs bundled Pi. Pi is the Divo agent loop that invokes the constrained backend gateway. Neither is a local model runtime. Removing them would remove chat execution, not just Jan’s inference stack.</p>
+            <pre><span class="plus">+ Contents/MacOS/bun                         60 MB</span>
+<span class="plus">+ resources/pi                               410 MB</span>
+<span class="note"># optimize Pi separately; do not delete it as “local model” code</span></pre>
+          </article>
+        </div>
+      </section>
+
+      <section style="margin-top:28px">
+        <div class="eyebrow">Measured package map</div>
+        <h2>Where the current ARM build weight is</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Component</th><th>Installed size</th><th>Classification</th><th>Decision</th></tr></thead>
+            <tbody>
+              <tr><td>Full installed Divo Dex app</td><td class="size">687 MB</td><td>baseline</td><td>Measure after each phase</td></tr>
+              <tr><td>Bundled Pi runtime</td><td class="size">410 MB</td><td>agent runtime</td><td>Keep now; prune docs/examples first, then evaluate a custom Pi distribution</td></tr>
+              <tr><td>MLX server + Swift bundle</td><td class="size">57.7 MB</td><td>local inference</td><td><strong>Remove now</strong></td></tr>
+              <tr><td>Jan local-model CLI</td><td class="size">3.6 MB</td><td>local inference</td><td><strong>Remove now</strong></td></tr>
+              <tr><td>Bundled Bun</td><td class="size">60 MB</td><td>Pi runtime dependency</td><td>Keep</td></tr>
+              <tr><td>Bundled uv</td><td class="size">49 MB</td><td>generic local MCP</td><td>Decision after MCP scope is explicit</td></tr>
+              <tr><td>Bundled Lark CLI</td><td class="size">40 MB</td><td>local/personal Lark feature</td><td>Keep until feature is retired</td></tr>
+              <tr><td>Llama.cpp runtime cache in user data</td><td class="size">78 MB</td><td>unused local inference state</td><td><strong>Stop creating it; offer one-time cleanup</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="grid" style="margin-top:28px">
+        <article class="card">
+          <div class="eyebrow">Low-risk implementation order</div>
+          <h2>One disciplined removal PR</h2>
+          <div class="recommendations">
+            <div class="recommendation"><div><strong>Introduce a Divo runtime feature boundary.</strong><br /><span class="evidence">Make Pi/backend the only model path. Remove the startup call that initializes model providers and any zero-model router start.</span></div></div>
+            <div class="recommendation"><div><strong>Remove MLX and Llama.cpp together.</strong><br /><span class="evidence">Delete their plugins, resources, build steps, extension packages, routes, and tests in the same PR so no orphaned entry point survives.</span></div></div>
+            <div class="recommendation"><div><strong>Remove jan-cli and its PATH installer.</strong><br /><span class="evidence">Also remove user-facing local-model CLI settings/help. Do not leave a dormant executable in the bundle.</span></div></div>
+            <div class="recommendation"><div><strong>Build ARM and Intel, then compare artifacts.</strong><br /><span class="evidence">Smoke test first chat, attachment OCR, Divo gateway invocation, OAuth reconnect, and quit/relaunch. Record DMG and installed-app deltas.</span></div></div>
+            <div class="recommendation"><div><strong>Only then evaluate Pi, uv, Lark, and local RAG.</strong><br /><span class="evidence">Those are separate product capability decisions, not cleanup of an unused model runtime.</span></div></div>
+          </div>
+        </article>
+        <article class="card">
+          <div class="eyebrow">Guardrails</div>
+          <h2>What not to do</h2>
+          <ul style="margin:0; padding-left:20px; color:var(--muted)">
+            <li>Do not delete Pi just because it is large. It runs the actual agent loop.</li>
+            <li>Do not delete local RAG/vector support before attachment handling is explicitly migrated to the backend.</li>
+            <li>Do not remove <code>uv</code> or Lark CLI until their supported local workflows are turned off by product decision.</li>
+            <li>Do not strip arbitrary provider packages from Pi’s third-party <code>node_modules</code>. That needs a reproducible slim distribution and Pi smoke tests.</li>
+            <li>Do not claim a 78 MB DMG reduction for Llama.cpp: that 78 MB is currently downloaded runtime state, not bundled DMG content.</li>
+          </ul>
+          <div class="callout" style="margin-top:18px">The first removal phase has an immediate, defensible direct bundle target of at least 61.3 MB on ARM, plus elimination of the unwanted local-server startup and 78 MB local cache creation.</div>
+        </article>
+      </section>
+      <p class="footer">Evidence inspected: <code>jan/src-tauri/src/lib.rs</code>, <code>jan/src-tauri/Cargo.toml</code>, macOS Tauri bundle configs, <code>jan/package.json</code>, Pi runtime/vendor scripts, local Lark runtime, installed ARM app layout, and the supplied startup log. No production code was changed by this audit.</p>
+    </main>
+    <script>
+      const buttons = [...document.querySelectorAll('[data-filter]')];
+      const findings = [...document.querySelectorAll('.finding')];
+      buttons.forEach((button) => button.addEventListener('click', () => {
+        const kind = button.dataset.filter;
+        buttons.forEach((item) => item.classList.toggle('active', item === button));
+        findings.forEach((item) => item.classList.toggle('hidden', kind !== 'all' && item.dataset.kind !== kind));
+      }));
+    </script>
+  </body>
+</html>

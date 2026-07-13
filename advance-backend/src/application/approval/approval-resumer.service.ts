@@ -127,7 +127,10 @@ export class ApprovalResumerService {
     };
 
     // Load last conversation turn for context (so supervisor isn't flying blind)
-    const historyResult = await this.deps.conversationRepo.getHistory(chatId, 6);
+    const historyResult = await this.deps.conversationRepo.getHistory(chatId, 6, {
+      companyId: identity.companyId,
+      channel: 'lark',
+    });
     const lastUserMsg = historyResult.ok
       ? (historyResult.value.filter(t => t.role === 'user').at(-1)?.content ?? userMessageForResume)
       : userMessageForResume;

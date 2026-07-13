@@ -1650,6 +1650,9 @@ model ProxyRequestLog {
   userId          String
   executionRunId  String?
   model           String
+  channel         String   @default("desktop")
+  provider        String   @default("deepseek")
+  agentTarget     String   @default("pi")
   decision        String   // 'allowed' | 'denied'
   reason          String?  // gate reason / error type when not allowed
   httpStatus      Int      // status returned to the caller
@@ -1662,6 +1665,7 @@ model ProxyRequestLog {
 
   @@index([companyId, createdAt])
   @@index([companyId, userId, createdAt])
+  @@index([companyId, channel, createdAt])
 }
 
 model SupervisorTodo {

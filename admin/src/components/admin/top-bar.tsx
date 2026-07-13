@@ -1,4 +1,4 @@
-import { Bell, Moon, Plus, Search, Sun } from "lucide-react"
+import { Bell, Moon, Search, Sun } from "lucide-react"
 import { useRole } from "@/cursor/role-context"
 import { useTheme } from "@/lib/use-theme"
 
@@ -18,7 +18,6 @@ export function TopBar() {
           {isDark ? <Sun size={16} /> : <Moon size={16} />}
         </div>
         <div className="icon-btn" title="Notifications"><Bell size={16} /></div>
-        <button className="btn primary" type="button"><Plus size={15} /> Invite</button>
       </div>
     </div>
   )

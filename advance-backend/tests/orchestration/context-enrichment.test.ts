@@ -137,14 +137,14 @@ describe('compactTurn', () => {
     assert.ok(compacted.content.endsWith('...'));
   });
 
-  it('minimizes [Actions] format to called tool names only', () => {
+  it('minimizes [Actions] format to the user-facing reply, never internal tool names', () => {
     const compacted = compactTurn(makeTurn('assistant', enrichedContent), 'minimal');
-    assert.equal(compacted.content, '[Called: agent_lark_ops, agent_zoho_ops]');
+    assert.equal(compacted.content, 'Task created and deal updated.');
   });
 
-  it('minimizes [Execution] format to called tool names only', () => {
+  it('minimizes [Execution] format to the user-facing reply, never internal tool names', () => {
     const compacted = compactTurn(makeTurn('assistant', executionContent), 'minimal');
-    assert.equal(compacted.content, '[Called: agent_lark_ops, agent_zoho_ops]');
+    assert.equal(compacted.content, 'Task created and deal updated.');
   });
 
   it('minimizes plain user turns to 80 characters', () => {

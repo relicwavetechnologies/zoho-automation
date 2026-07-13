@@ -44,17 +44,29 @@ function ManagedToolAccess({ item, onUpdated }: { item: DivoToolInventoryItem; o
   const [snapshot, setSnapshot] = useState<ToolManageSnapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState<{ key: string; generation: number } | null>(null)
-  const generation = useRef(new CommittedToolAccessGeneration<DivoToolInventoryItem>())
+  // Identity is tracked by the stable tool id + scope key, not the `item` object
+  // reference. A parent inventory refresh re-supplies an equivalent `item` with a
+  // new reference; keying on the object would blank and refetch the snapshot on
+  // every refresh, so toggling one permission would appear to reload the page.
+  const generation = useRef(new CommittedToolAccessGeneration<string>())
+  const toolId = item.tool.toolId
   const scope = useMemo(
     () => item.managementScopes.find(candidate => scopeKey(candidate) === selectedScopeKey) ?? item.managementScopes[0] ?? null,
     [item, selectedScopeKey],
   )
   const currentScopeKey = scopeKey(scope)
   const lifecycleCandidate = useMemo(
-    () => generation.current.candidate(item, currentScopeKey),
-    [currentScopeKey, item],
+    () => generation.current.candidate(toolId, currentScopeKey),
+    [currentScopeKey, toolId],
   )
   const activeSaving = saving?.generation === generation.current.current ? saving.key : null
+
+  // Read the latest item/scope inside the snapshot effect without making them
+  // effect dependencies, so an equivalent-but-new `item` reference does not retrigger a load.
+  const itemRef = useRef(item)
+  itemRef.current = item
+  const scopeRef = useRef(scope)
+  scopeRef.current = scope
 
   useLayoutEffect(() => {
     lifecycleCandidate.commit()
@@ -67,14 +79,16 @@ function ManagedToolAccess({ item, onUpdated }: { item: DivoToolInventoryItem; o
   useEffect(() => {
     let active = true
     const snapshotGeneration = generation.current.current
-    if (!scope) return () => { active = false }
+    const activeScope = scopeRef.current
+    if (!activeScope) return () => { active = false }
     setSnapshot(null)
     setError(null)
-    void getDivoToolManageSnapshot(item.tool.toolId, scope)
+    void getDivoToolManageSnapshot(itemRef.current.tool.toolId, activeScope)
       .then(result => { if (active && generation.current.current === snapshotGeneration) setSnapshot(result) })
       .catch(loadError => { if (active && generation.current.current === snapshotGeneration) setError(String(loadError)) })
     return () => { active = false }
-  }, [item, scope])
+    // Refetch only when the tool or scope actually changes — not on every parent refresh.
+  }, [toolId, currentScopeKey])
 
   const update = async (key: string, action: () => Promise<ToolManageSnapshot>) => {
     const mutationGeneration = generation.current.current

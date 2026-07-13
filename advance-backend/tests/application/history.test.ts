@@ -177,6 +177,41 @@ describe('HistoryService.loadWindow', () => {
     assert.ok(ids.includes('t3'));
     assert.ok(ids.includes('t5'));
   });
+
+  it('filters legacy internal tool markers before building the model prompt', async () => {
+    const turns = [
+      makeTurn('t1', 'assistant', '[Called: agent_context_agent]'),
+      makeTurn('t2', 'user', 'research bikes in Delhi'),
+    ];
+    const svc = new HistoryService({ conversationRepo: makeRepo(turns), logger: noopLogger });
+    const result = await svc.loadWindow(CHAT_ID, { filterPoison: false });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.value.turns.map(turn => turn.id), ['t2']);
+  });
+
+  it('drops orphaned assistant-only history created by legacy split writes', async () => {
+    const turns = [
+      makeTurn('t1', 'assistant', 'orphan one'),
+      makeTurn('t2', 'assistant', 'orphan two'),
+      makeTurn('t3', 'user', 'first coherent user turn'),
+      makeTurn('t4', 'assistant', 'coherent answer'),
+    ];
+    const svc = new HistoryService({ conversationRepo: makeRepo(turns), logger: noopLogger });
+    const result = await svc.loadWindow(CHAT_ID, { filterPoison: false });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.value.turns.map(turn => turn.id), ['t3', 't4']);
+  });
+
+  it('returns a clean window when the scoped conversation contains only orphaned assistants', async () => {
+    const turns = [makeTurn('t1', 'assistant', 'orphan one'), makeTurn('t2', 'assistant', 'orphan two')];
+    const svc = new HistoryService({ conversationRepo: makeRepo(turns), logger: noopLogger });
+    const result = await svc.loadWindow(CHAT_ID, { filterPoison: false });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.value.turns, []);
+  });
 });
 
 describe('HistoryService.appendTurn', () => {
@@ -196,5 +231,18 @@ describe('HistoryService.appendTurn', () => {
     assert.ok(recorded !== null);
     assert.equal(recorded!.turn.content, 'hello');
     assert.equal(recorded!.turn.role, 'user');
+  });
+
+  it('propagates the canonical company/channel scope to persistence', async () => {
+    let recordedScope: { companyId: string; channel: string } | undefined;
+    const repo: ConversationRepoPort = {
+      getHistory: async () => ok([]),
+      appendTurn: async (_chatId, _turn, scope) => { recordedScope = scope; return ok(undefined); },
+    } as any;
+    const svc = new HistoryService({ conversationRepo: repo, logger: noopLogger });
+    await svc.appendTurn(CHAT_ID, {
+      role: 'user', content: 'hello', timestamp: new Date().toISOString(),
+    }, { companyId: 'company-1', channel: 'lark' });
+    assert.deepEqual(recordedScope, { companyId: 'company-1', channel: 'lark' });
   });
 });

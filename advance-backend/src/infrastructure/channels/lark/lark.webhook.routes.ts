@@ -301,6 +301,7 @@ async function processInBackground(
     cache: CachePort;
     chatContextService?: LarkChatContextService;
     cloudinaryAdapter?: CloudinaryAdapter;
+    prisma?: PrismaClient;
   },
   log: Logger,
   approvalGate?: ApprovalGateService,
@@ -390,6 +391,35 @@ async function processInBackground(
   }
 
   const identity = identityResult.value;
+  if (deps.prisma) {
+    try {
+      await deps.prisma.runtimeConversation.upsert({
+        where: {
+          companyId_channel_channelConversationKey: {
+            companyId: identity.companyId,
+            channel: 'lark',
+            channelConversationKey: String(incoming.chatId),
+          },
+        },
+        create: {
+          companyId: identity.companyId,
+          channel: 'lark',
+          channelConversationKey: String(incoming.chatId),
+          rawChannelKey: String(incoming.chatId),
+          createdByUserId: identity.userId,
+          ...(identity.email ? { createdByEmail: identity.email } : {}),
+          ...(identity.activeDepartmentId ? { departmentId: identity.activeDepartmentId } : {}),
+          refsJson: { chatType: incoming.chatType, larkOpenId: incoming.userExternalId },
+        },
+        update: {
+          updatedAt: new Date(),
+          ...(identity.activeDepartmentId ? { departmentId: identity.activeDepartmentId } : {}),
+        },
+      });
+    } catch (error) {
+      log.warn('webhook.runtime_conversation.upsert_failed', { error: String(error), chatId: incoming.chatId });
+    }
+  }
   const runContext = {
     companyId:      asCompanyId(identity.companyId),
     userId:         asUserId(identity.userId),

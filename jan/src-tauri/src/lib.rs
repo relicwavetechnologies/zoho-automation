@@ -60,9 +60,6 @@ macro_rules! invoke_commands_with_extras {
         core::system::commands::read_logs,
         core::system::commands::is_library_available,
         core::system::commands::launch_claude_code_with_config,
-        core::system::commands::check_jan_cli_installed,
-        core::system::commands::install_jan_cli,
-        core::system::commands::uninstall_jan_cli,
         core::system::commands::clear_claude_code_env,
         // Server commands
         core::server::commands::start_server,
@@ -174,84 +171,13 @@ macro_rules! invoke_commands_with_extras {
 }
 
 #[cfg(not(feature = "cli"))]
-static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-#[cfg(not(feature = "cli"))]
-static GRACEFUL_IN_PROGRESS: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-#[cfg(not(feature = "cli"))]
-static BUSY_MODELS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
 #[cfg(not(feature = "cli"))]
 #[tauri::command]
 async fn confirm_exit<R: tauri::Runtime>(_app_handle: tauri::AppHandle<R>) {
-    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         std::process::exit(0);
     });
-}
-
-#[cfg(not(feature = "cli"))]
-fn is_llamacpp_router_running<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
-    use tauri::Manager;
-    app.try_state::<std::sync::Arc<tauri_plugin_llamacpp::LlamacppState>>()
-        .map(|s| s.router_pid.load(std::sync::atomic::Ordering::SeqCst) != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(feature = "cli"))]
-fn reemit_busy_if_any<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
-    let busy = BUSY_MODELS.lock().map(|g| g.clone()).unwrap_or_default();
-    if !busy.is_empty() {
-        let _ = app_handle.emit("llamacpp-busy-on-exit", &busy);
-    }
-}
-
-#[cfg(not(feature = "cli"))]
-async fn handle_graceful_exit<R: tauri::Runtime>(
-    app_handle: tauri::AppHandle<R>,
-    source: &'static str,
-    exit_code: i32,
-) {
-    use std::sync::atomic::Ordering;
-    let mut emitted = false;
-    loop {
-        if SHUTTING_DOWN.load(Ordering::SeqCst) {
-            return;
-        }
-        match tauri_plugin_llamacpp::try_graceful_stop_router(app_handle.clone(), 1).await {
-            Ok(None) => {
-                if let Ok(mut g) = BUSY_MODELS.lock() {
-                    g.clear();
-                }
-                SHUTTING_DOWN.store(true, Ordering::SeqCst);
-                app_handle.exit(exit_code);
-                return;
-            }
-            Ok(Some(busy)) => {
-                if let Ok(mut g) = BUSY_MODELS.lock() {
-                    *g = busy.clone();
-                }
-                if !emitted {
-                    log::warn!("{}: {} model(s) busy: {:?}", source, busy.len(), busy);
-                    if let Err(e) = app_handle.emit("llamacpp-busy-on-exit", &busy) {
-                        log::warn!("emit llamacpp-busy-on-exit failed: {}", e);
-                        SHUTTING_DOWN.store(true, Ordering::SeqCst);
-                        app_handle.exit(exit_code);
-                        return;
-                    }
-                    emitted = true;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
-            Err(e) => {
-                log::warn!("{}: try_graceful_stop_router failed: {}", source, e);
-                SHUTTING_DOWN.store(true, Ordering::SeqCst);
-                app_handle.exit(exit_code);
-                return;
-            }
-        }
-    }
 }
 
 #[cfg(not(feature = "cli"))]
@@ -275,18 +201,12 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_llamacpp::init())
         .plugin(tauri_plugin_vector_db::init())
         .plugin(tauri_plugin_rag::init());
 
     #[cfg(feature = "deep-link")]
     {
         app_builder = app_builder.plugin(tauri_plugin_deep_link::init());
-    }
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        app_builder = app_builder.plugin(tauri_plugin_mlx::init());
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -328,6 +248,7 @@ pub fn run() {
         })
         .manage(core::pi::init())
         .setup(|app| {
+            core::divo::migration::migrate_legacy_divo_stores(app.handle())?;
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Debug)
@@ -398,8 +319,6 @@ pub fn run() {
             }
 
             setup_mcp(app);
-            #[cfg(desktop)]
-            setup::setup_jan_cli(app.handle().clone(), stored_version != app_version);
             setup::setup_theme_listener(app)?;
             Ok(())
         })
@@ -407,49 +326,6 @@ pub fn run() {
         .expect("error while running tauri application");
     // Handle app lifecycle events
     app.run(|app, event| {
-        use std::sync::atomic::Ordering;
-        if let RunEvent::WindowEvent {
-            event: tauri::WindowEvent::CloseRequested { api, .. },
-            label,
-            ..
-        } = &event
-        {
-            if label == "main"
-                && !SHUTTING_DOWN.load(Ordering::SeqCst)
-                && is_llamacpp_router_running(app)
-            {
-                api.prevent_close();
-                let _ = app.emit("llamacpp-close-attempt", ());
-                if GRACEFUL_IN_PROGRESS.swap(true, Ordering::SeqCst) {
-                    reemit_busy_if_any(app);
-                    return;
-                }
-                let app_handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    handle_graceful_exit(app_handle, "CloseRequested", 0).await;
-                    GRACEFUL_IN_PROGRESS.store(false, Ordering::SeqCst);
-                });
-                return;
-            }
-        }
-        if let RunEvent::ExitRequested { api, code, .. } = &event {
-            if SHUTTING_DOWN.load(Ordering::SeqCst) || !is_llamacpp_router_running(app) {
-                return;
-            }
-            api.prevent_exit();
-            let _ = app.emit("llamacpp-close-attempt", ());
-            if GRACEFUL_IN_PROGRESS.swap(true, Ordering::SeqCst) {
-                reemit_busy_if_any(app);
-                return;
-            }
-            let app_handle = app.clone();
-            let exit_code = code.unwrap_or(0);
-            tauri::async_runtime::spawn(async move {
-                handle_graceful_exit(app_handle, "ExitRequested", exit_code).await;
-                GRACEFUL_IN_PROGRESS.store(false, Ordering::SeqCst);
-            });
-            return;
-        }
         if let RunEvent::Exit = event {
             let app_handle = app.clone();
 
@@ -479,7 +355,6 @@ pub fn run() {
             tokio::task::block_in_place(|| {
                 tauri::async_runtime::block_on(async {
                     use crate::core::mcp::helpers::background_cleanup_mcp_servers;
-                    use tauri_plugin_llamacpp::cleanup_llama_processes;
 
                     let state = app_handle.state::<AppState>();
 
@@ -490,22 +365,6 @@ pub fn run() {
                     {
                         Ok(_) => log::info!("MCP cleanup completed successfully"),
                         Err(_) => log::warn!("MCP cleanup timed out after 10 seconds"),
-                    }
-
-                    if let Err(e) = cleanup_llama_processes(app_handle.clone()).await {
-                        log::warn!("Failed to shut down llama-server router: {}", e);
-                    } else {
-                        log::info!("Llama-server router shut down successfully");
-                    }
-
-                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                    {
-                        use tauri_plugin_mlx::cleanup_mlx_processes;
-                        if let Err(e) = cleanup_mlx_processes(app_handle.clone()).await {
-                            log::warn!("Failed to cleanup MLX processes: {}", e);
-                        } else {
-                            log::info!("MLX processes cleaned up successfully");
-                        }
                     }
 
                     log::info!("App cleanup completed");

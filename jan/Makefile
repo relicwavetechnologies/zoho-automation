@@ -238,6 +238,17 @@ else
 	@exit 1
 endif
 
+# Build the CLI helper for the standalone Apple Silicon macOS package.
+build-cli-macos-aarch64:
+ifeq ($(DETECTED_OS),Darwin)
+	cd src-tauri && cargo build --release --features cli --bin jan-cli --target aarch64-apple-darwin
+	cp src-tauri/target/aarch64-apple-darwin/release/jan-cli src-tauri/resources/bin/jan-cli
+	chmod +x src-tauri/resources/bin/jan-cli
+else
+	@echo "Apple Silicon macOS CLI builds require a macOS host"
+	@exit 1
+endif
+
 # Debug build for local dev (faster, native arch only)
 build-cli-dev:
 	$(call MKDIR,'src-tauri/resources/bin')	

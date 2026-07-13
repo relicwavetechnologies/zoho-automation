@@ -6,11 +6,7 @@ import { useTranslation } from '@/i18n/react-i18next-compat'
 import { useTools } from '@/hooks/useTools'
 import { cn } from '@/lib/utils'
 
-import { useModelProvider } from '@/hooks/useModelProvider'
-import SetupScreen from '@/containers/SetupScreen'
 import { route } from '@/constants/routes'
-import { predefinedProviders } from '@/constants/providers'
-import { providerHasRemoteApiKeys } from '@/lib/provider-api-keys'
 
 type ThreadModel = {
   id: string
@@ -41,7 +37,6 @@ export const Route = createFileRoute(route.home as any)({
 
 function Index() {
   const { t } = useTranslation()
-  const { providers } = useModelProvider()
   const search = useSearch({ from: route.home as any })
   const threadModel = search.threadModel
   const { setCurrentThreadId } = useThreads()
@@ -49,34 +44,9 @@ function Index() {
     useState<FinanceQuickStartRequest | null>(null)
   useTools()
 
-  // Conditional to check if there are any valid providers
-  // required min 1 api_key or 1 model in llama.cpp or jan provider
-  // Custom providers (not in predefinedProviders) don't require api_key but need models
-  const hasValidProviders = providers.some((provider) => {
-    const isPredefinedProvider = predefinedProviders.some(
-      (p) => p.provider === provider.provider
-    )
-
-    // Custom providers don't need API key validation but must have models
-    if (!isPredefinedProvider) {
-      return provider.models.length > 0
-    }
-
-    // Predefined providers need either API key or models (for llamacpp/jan)
-    return (
-      providerHasRemoteApiKeys(provider) ||
-      (provider.provider === 'llamacpp' && provider.models.length) ||
-      (provider.provider === 'jan' && provider.models.length)
-    )
-  })
-
   useEffect(() => {
     setCurrentThreadId(undefined)
   }, [setCurrentThreadId])
-
-  if (!hasValidProviders) {
-    return <SetupScreen />
-  }
 
   return (
     <div className="flex h-full flex-col justify-center">

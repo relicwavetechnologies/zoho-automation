@@ -64,6 +64,9 @@ import { ExecutionRepository } from './infrastructure/persistence/execution.repo
 import { ExecutionQueryService } from './application/observability/execution-query.service';
 import { AuditService } from './application/observability/audit.service';
 import { TokenUsageService } from './application/observability/token-usage.service';
+import { ProxyKeyStore } from './application/proxy/proxy-key.store';
+import { LlmProxyService } from './application/proxy/llm-proxy.service';
+import { LarkInferenceService } from './application/proxy/lark-inference.service';
 import { SkillRepository } from './infrastructure/persistence/skill.repository';
 import { SkillsService } from './application/context-search/skills.service';
 import { SkillCatalogService } from './application/skills/skill-catalog.service';
@@ -217,6 +220,8 @@ export interface Container {
   executionQueryService: ExecutionQueryService;
   auditService: AuditService;
   tokenUsageService: TokenUsageService;
+  proxyKeyStore: ProxyKeyStore;
+  llmProxyService: LlmProxyService;
   // HITL approval
   approvalGate: ApprovalGateService;
   approvalCardHandler: LarkApprovalCardHandler;
@@ -271,6 +276,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   });
   const auditService       = new AuditService(prisma, logger.child({ service: 'audit' }));
   const tokenUsageService  = new TokenUsageService(prisma, logger.child({ service: 'token-usage' }));
+  const proxyKeyStore = new ProxyKeyStore({
+    prisma,
+    logger,
+    encryptionKey: env.PROXY_KEY_ENCRYPTION_KEY ?? env.ZOHO_TOKEN_ENCRYPTION_KEY,
+    envFallbackKey: env.DEEPSEEK_API_KEY,
+  });
+  const llmProxyService = new LlmProxyService(prisma, logger.child({ service: 'llm-proxy-policy' }));
+  const larkInferenceService = new LarkInferenceService({
+    store: proxyKeyStore,
+    policy: llmProxyService,
+    logger,
+    baseUrl: env.DEEPSEEK_BASE_URL,
+  });
 
   // ── Repos ──────────────────────────────────────────────────────────────
   const companyRoleRepo       = new CompanyRoleRepository(prisma);
@@ -1018,6 +1036,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     fastPathModel: model,
     chatContext: chatContextService,
     conversationSummarizer,
+    larkInference: larkInferenceService,
     logger: logger.child({ service: 'engine' }),
     clock:  systemClock,
   });
@@ -1140,6 +1159,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     executionQueryService,
     auditService,
     tokenUsageService,
+    proxyKeyStore,
+    llmProxyService,
     // HITL approval
     approvalGate,
     approvalCardHandler,

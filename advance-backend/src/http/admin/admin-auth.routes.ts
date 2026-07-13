@@ -14,6 +14,7 @@ type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 type AdminSessionDto = {
   userId: string;
   companyId?: string;
+  companyName?: string;
   role: AdminRole;
   sessionId: string;
   expiresAt: string;
@@ -571,6 +572,15 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
 
   router.get('/me', asyncRoute(async (req, res) => {
     const session = await resolveAdminSession(deps.prisma, deps.env, req);
+    // Company admins are scoped to one company; surface its name for the UI.
+    // Super admins have no single company, so companyName stays undefined.
+    if (session.companyId) {
+      const company = await deps.prisma.company.findUnique({
+        where: { id: session.companyId },
+        select: { name: true },
+      });
+      if (company?.name) session.companyName = company.name;
+    }
     success(res, session, 'Admin session resolved');
   }));
 

@@ -885,6 +885,34 @@ describe('ThreadDetail route', () => {
     expect(screen.getByTestId('prompt-progress')).toBeInTheDocument()
   })
 
+  it('keeps PromptProgress visible after streaming starts but before Pi emits visible activity', () => {
+    h.chatState.status = 'streaming'
+    h.chatState.messages = [
+      {
+        id: 'assistant-start',
+        role: 'assistant',
+        parts: [],
+        metadata: { piTraceTimeline: true },
+      },
+    ]
+    renderComponent()
+    expect(screen.getByTestId('prompt-progress')).toBeInTheDocument()
+  })
+
+  it('hides PromptProgress once visible assistant activity arrives', () => {
+    h.chatState.status = 'streaming'
+    h.chatState.messages = [
+      {
+        id: 'assistant-working',
+        role: 'assistant',
+        parts: [{ type: 'reasoning', text: 'Reading the request' }],
+        metadata: { piTraceTimeline: true },
+      },
+    ]
+    renderComponent()
+    expect(screen.queryByTestId('prompt-progress')).not.toBeInTheDocument()
+  })
+
   it('processes an initial message from sessionStorage on mount', async () => {
     sessionStorage.setItem(
       'initial-message-thread-1',

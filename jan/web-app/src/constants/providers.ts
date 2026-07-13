@@ -1,3 +1,5 @@
+import { PI_MODEL_ID, PI_PROVIDER_ID } from '@/lib/pi/constants'
+
 export const anthropicProviderSettings = [
   {
     key: 'api-key',
@@ -56,11 +58,11 @@ export const predefinedProviders = [
     active: true,
     api_key: '',
     base_url: '',
-    provider: 'pi',
+    provider: PI_PROVIDER_ID,
     settings: [],
     models: [
       {
-        id: 'pi-agent',
+        id: PI_MODEL_ID,
         name: 'Divo',
         version: '1.0',
         description:

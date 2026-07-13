@@ -45,11 +45,12 @@ export function GuardrailsPage() {
     removeKey.mutate({ keyScope: effScope }, { onSuccess: () => toast.success("Key removed") })
   }
 
-  const metricsQ = useProxyMetrics(token, companyId)
+  const [channel, setChannel] = useState("")
+  const metricsQ = useProxyMetrics(token, companyId, channel || undefined)
   const metrics = metricsQ.data
 
   const [auditFilter, setAuditFilter] = useState<AuditDecision | "all">("all")
-  const auditQ = useProxyAudit(token, companyId, { limit: 60, ...(auditFilter === "all" ? {} : { decision: auditFilter }) })
+  const auditQ = useProxyAudit(token, companyId, { limit: 60, ...(channel ? { channel } : {}), ...(auditFilter === "all" ? {} : { decision: auditFilter }) })
 
   const membersQ = useSpendMembers(token, 30, companyId)
   const policiesQ = useProxyPolicies(token, companyId)
@@ -247,6 +248,9 @@ export function GuardrailsPage() {
             <p>Every proxied request with its allow / deny decision — block abusers right here.</p>
           </div>
           <div style={{ display: "flex", gap: "6px" }}>
+            <select className="select" value={channel} onChange={(e) => setChannel(e.target.value)}>
+              <option value="">All channels</option><option value="desktop">desktop</option><option value="lark">lark</option>
+            </select>
             {(["all", "allowed", "denied"] as const).map((f) => (
               <button key={f} className="btn" type="button" onClick={() => setAuditFilter(f)}
                 style={auditFilter === f ? { color: "var(--cur-primary)", borderColor: "color-mix(in srgb, var(--cur-primary) 45%, transparent)" } : { color: "var(--cur-muted)" }}>
@@ -257,18 +261,19 @@ export function GuardrailsPage() {
         </header>
         <table>
           <thead>
-            <tr><th>Time</th><th>User</th><th>Model</th><th className="right">Tokens</th><th className="right">Cost</th><th className="right">Latency</th><th>Decision</th><th></th></tr>
+            <tr><th>Time</th><th>User</th><th>Channel</th><th>Model</th><th className="right">Tokens</th><th className="right">Cost</th><th className="right">Latency</th><th>Decision</th><th></th></tr>
           </thead>
           <tbody>
             {auditQ.isLoading ? (
-              <tr><td colSpan={8} className="muted" style={{ padding: "24px", textAlign: "center" }}>Loading audit…</td></tr>
+              <tr><td colSpan={9} className="muted" style={{ padding: "24px", textAlign: "center" }}>Loading audit…</td></tr>
             ) : (auditQ.data ?? []).length === 0 ? (
-              <tr><td colSpan={8} className="muted" style={{ padding: "24px", textAlign: "center" }}>No proxied requests yet.</td></tr>
+              <tr><td colSpan={9} className="muted" style={{ padding: "24px", textAlign: "center" }}>No model requests yet.</td></tr>
             ) : (
               auditQ.data!.map((e) => (
                 <tr key={e.id}>
                   <td className="mono muted">{new Date(e.createdAt).toLocaleTimeString()}</td>
                   <td>{e.user}</td>
+                  <td className="muted">{e.channel}</td>
                   <td className="mono">{e.model}</td>
                   <td className="right mono">{e.tokens ? compact(e.tokens) : "—"}</td>
                   <td className="right">{e.costUsd ? usd(e.costUsd) : "—"}</td>

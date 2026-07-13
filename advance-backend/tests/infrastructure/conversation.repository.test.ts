@@ -4,6 +4,7 @@ import { ConversationRepository } from '../../src/infrastructure/persistence/con
 import type { CachePort } from '../../src/shared/cache.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import type { Turn } from '../../src/domain/conversation/turn.ts';
+import { conversationCacheKey } from '../../src/domain/conversation/conversation-scope.ts';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -13,6 +14,7 @@ function makeTurn(id: string, role: Turn['role'], content: string): Turn {
 
 const CHAT_KEY = 'chat_001';
 const CACHE_KEY = `history:v2:${CHAT_KEY}`;
+const SCOPE = { companyId: 'company-1', channel: 'lark' } as const;
 
 const turn1 = makeTurn('t1', 'user', 'hello');
 const turn2 = makeTurn('t2', 'assistant', 'hi!');
@@ -81,6 +83,32 @@ function makeFailingCache(): CachePort {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('ConversationRepository.getHistory', () => {
+  it('uses the compound company/channel/chat identity and a scoped cache key', async () => {
+    let query: any = null;
+    const db = makeDb({
+      runtimeConversation: {
+        findUnique: async (input: unknown) => {
+          query = input;
+          return { id: 'company-conv', messages: [makeMessage(turn1)] };
+        },
+        findFirst: async () => { throw new Error('unscoped lookup must not run'); },
+        create: async () => ({ id: 'company-conv' }),
+        update: async () => ({ lastMessageSequence: 1 }),
+      },
+    });
+    const cache = makeCache();
+    const repo = new ConversationRepository(db as any, cache);
+
+    const result = await repo.getHistory(CHAT_KEY, 40, SCOPE);
+    assert.ok(result.ok);
+    assert.deepEqual(query.where.companyId_channel_channelConversationKey, {
+      companyId: 'company-1', channel: 'lark', channelConversationKey: CHAT_KEY,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(cache.store.has(conversationCacheKey(CHAT_KEY, SCOPE)));
+    assert.ok(!cache.store.has(CACHE_KEY));
+  });
+
   it('cache miss: queries Prisma and populates cache', async () => {
     let dbCalls = 0;
     const db = makeDb({
@@ -199,6 +227,32 @@ describe('ConversationRepository.getHistory', () => {
 });
 
 describe('ConversationRepository.appendTurn', () => {
+  it('writes and invalidates only the scoped company conversation', async () => {
+    let lookup: any = null;
+    const scopedCacheKey = conversationCacheKey(CHAT_KEY, SCOPE);
+    const cache = makeCache(new Map([[scopedCacheKey, [turn1]], [CACHE_KEY, [turn1]]]));
+    const db = makeDb({
+      runtimeConversation: {
+        findUnique: async (input: unknown) => { lookup = input; return { id: 'company-conv' }; },
+        findFirst: async () => { throw new Error('unscoped lookup must not run'); },
+        create: async () => ({ id: 'company-conv' }),
+        update: async () => ({ lastMessageSequence: 2 }),
+      },
+    });
+    const repo = new ConversationRepository(db as any, cache);
+
+    const result = await repo.appendTurn(CHAT_KEY, {
+      role: 'user', content: 'scoped message', timestamp: new Date().toISOString(),
+    }, SCOPE);
+    assert.ok(result.ok);
+    assert.deepEqual(lookup.where.companyId_channel_channelConversationKey, {
+      companyId: 'company-1', channel: 'lark', channelConversationKey: CHAT_KEY,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(cache.delCalls.includes(scopedCacheKey));
+    assert.ok(!cache.delCalls.includes(CACHE_KEY));
+  });
+
   it('invalidates cache after successful append', async () => {
     const cache = makeCache(new Map([[CACHE_KEY, [turn1]]]));
     const repo = new ConversationRepository(makeDb() as any, cache);

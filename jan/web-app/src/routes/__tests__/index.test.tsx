@@ -5,16 +5,9 @@ import '@testing-library/jest-dom'
 import React from 'react'
 
 const h = vi.hoisted(() => ({
-  providers: [] as any[],
   search: { threadModel: undefined as any },
   setCurrentThreadId: vi.fn(),
   useTools: vi.fn(),
-  providerHasRemoteApiKeys: vi.fn(() => false),
-  predefinedProviders: [
-    { provider: 'openai' },
-    { provider: 'llamacpp' },
-    { provider: 'jan' },
-  ],
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -24,10 +17,6 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@/i18n/react-i18next-compat', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
-}))
-
-vi.mock('@/hooks/useModelProvider', () => ({
-  useModelProvider: () => ({ providers: h.providers }),
 }))
 
 vi.mock('@/hooks/useThreads', () => ({
@@ -58,20 +47,8 @@ vi.mock('@/components/finance-quick-starts/FinanceQuickStarts', () => ({
   FinanceQuickStarts: () => <div data-testid="finance-quick-starts" />,
 }))
 
-vi.mock('@/containers/SetupScreen', () => ({
-  default: () => <div data-testid="setup-screen" />,
-}))
-
 vi.mock('@/lib/utils', () => ({
   cn: (...c: any[]) => c.filter(Boolean).join(' '),
-}))
-
-vi.mock('@/lib/provider-api-keys', () => ({
-  providerHasRemoteApiKeys: (p: any) => h.providerHasRemoteApiKeys(p),
-}))
-
-vi.mock('@/constants/providers', () => ({
-  predefinedProviders: h.predefinedProviders,
 }))
 
 vi.mock('@/constants/routes', () => ({
@@ -88,9 +65,7 @@ const renderComponent = () => {
 describe('Index route', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    h.providers = []
     h.search = { threadModel: undefined }
-    h.providerHasRemoteApiKeys.mockReturnValue(false)
   })
 
   it('validateSearch returns threadModel from search params', () => {
@@ -104,23 +79,7 @@ describe('Index route', () => {
     expect(result.threadModel).toBeUndefined()
   })
 
-  it('renders SetupScreen when no valid providers exist', () => {
-    h.providers = []
-    renderComponent()
-    expect(screen.getByTestId('setup-screen')).toBeInTheDocument()
-    expect(screen.queryByTestId('chat-input')).not.toBeInTheDocument()
-  })
-
-  it('renders SetupScreen when predefined provider has no api key and no models', () => {
-    h.providers = [{ provider: 'openai', models: [] }]
-    h.providerHasRemoteApiKeys.mockReturnValue(false)
-    renderComponent()
-    expect(screen.getByTestId('setup-screen')).toBeInTheDocument()
-  })
-
-  it('renders chat UI when predefined provider has api key', () => {
-    h.providers = [{ provider: 'openai', models: [] }]
-    h.providerHasRemoteApiKeys.mockReturnValue(true)
+  it('renders the Divo chat UI when no local or remote model is configured', () => {
     renderComponent()
     expect(screen.getByTestId('chat-input')).toBeInTheDocument()
     expect(screen.getByTestId('header-page')).toBeInTheDocument()
@@ -128,34 +87,7 @@ describe('Index route', () => {
     expect(screen.getByText('chat:description')).toBeInTheDocument()
   })
 
-  it('renders chat UI when llamacpp provider has models', () => {
-    h.providers = [{ provider: 'llamacpp', models: [{ id: 'x' }] }]
-    h.providerHasRemoteApiKeys.mockReturnValue(false)
-    renderComponent()
-    expect(screen.getByTestId('chat-input')).toBeInTheDocument()
-  })
-
-  it('renders chat UI when jan provider has models', () => {
-    h.providers = [{ provider: 'jan', models: [{ id: 'j' }] }]
-    renderComponent()
-    expect(screen.getByTestId('chat-input')).toBeInTheDocument()
-  })
-
-  it('renders chat UI for custom provider with models, no api key required', () => {
-    h.providers = [{ provider: 'custom-xyz', models: [{ id: 'c' }] }]
-    renderComponent()
-    expect(screen.getByTestId('chat-input')).toBeInTheDocument()
-  })
-
-  it('renders SetupScreen for custom provider with no models', () => {
-    h.providers = [{ provider: 'custom-xyz', models: [] }]
-    renderComponent()
-    expect(screen.getByTestId('setup-screen')).toBeInTheDocument()
-  })
-
   it('passes threadModel from search into ChatInput without exposing the model selector', () => {
-    h.providers = [{ provider: 'openai', models: [] }]
-    h.providerHasRemoteApiKeys.mockReturnValue(true)
     h.search = { threadModel: { id: 'gpt-x', provider: 'openai' } }
     renderComponent()
     expect(screen.getByTestId('workspace-selector')).toBeInTheDocument()
@@ -164,8 +96,6 @@ describe('Index route', () => {
   })
 
   it('calls setCurrentThreadId(undefined) and useTools on mount', () => {
-    h.providers = [{ provider: 'openai', models: [] }]
-    h.providerHasRemoteApiKeys.mockReturnValue(true)
     renderComponent()
     expect(h.setCurrentThreadId).toHaveBeenCalledWith(undefined)
     expect(h.useTools).toHaveBeenCalled()

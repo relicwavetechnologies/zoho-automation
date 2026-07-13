@@ -91,13 +91,13 @@ export function App() {
           <Route path="agents" element={<Legacy><AgentsPage /></Legacy>} />
           <Route path="memories" element={<Legacy><MemoriesPage /></Legacy>} />
           <Route path="settings" element={<Legacy><SettingsPage /></Legacy>} />
-          <Route path="rbac" element={<Navigate to="/settings?tab=governance" replace />} />
+          <Route path="rbac" element={<Navigate to="/settings" replace />} />
           <Route path="executions" element={<Navigate to="/ai-ops?tab=executions" replace />} />
           <Route path="token-usage" element={<Navigate to="/ai-ops" replace />} />
           <Route path="integrations" element={<Navigate to="/settings" replace />} />
-          <Route path="audit" element={<Navigate to="/settings?tab=audit" replace />} />
-          <Route path="controls" element={<Navigate to="/settings?tab=controls" replace />} />
-          <Route path="vector-requests" element={<Navigate to="/settings?tab=permissions" replace />} />
+          <Route path="audit" element={<Navigate to="/settings" replace />} />
+          <Route path="controls" element={<Navigate to="/settings" replace />} />
+          <Route path="vector-requests" element={<Navigate to="/settings" replace />} />
           <Route path="ai-models" element={<Navigate to="/ai-ops?tab=models" replace />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

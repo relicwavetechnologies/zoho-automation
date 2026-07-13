@@ -53,12 +53,12 @@ export interface CompanyDaily {
   cacheSavingsPct: number
 }
 
-export function useCompanyDaily(token: string | null, days = 14, companyId?: string) {
+export function useCompanyDaily(token: string | null, days = 14, companyId?: string, channel?: string) {
   const scope = getAdminQueryScope(token)
   return useQuery({
-    queryKey: ["admin", scope, "spend-company-daily", days, companyId ?? ""] as const,
+    queryKey: ["admin", scope, "spend-company-daily", days, companyId ?? "", channel ?? "all"] as const,
     enabled: Boolean(token),
-    queryFn: () => api.get<CompanyDaily>(scoped("/api/admin/spend/company-daily", { days, companyId }), token!),
+    queryFn: () => api.get<CompanyDaily>(scoped("/api/admin/spend/company-daily", { days, companyId, channel }), token!),
   })
 }
 
@@ -73,12 +73,12 @@ export interface ModelSpend {
   costUsd: number
 }
 
-export function useSpendByModel(token: string | null, days = 30, companyId?: string) {
+export function useSpendByModel(token: string | null, days = 30, companyId?: string, channel?: string) {
   const scope = getAdminQueryScope(token)
   return useQuery({
-    queryKey: ["admin", scope, "spend-by-model", days, companyId ?? ""] as const,
+    queryKey: ["admin", scope, "spend-by-model", days, companyId ?? "", channel ?? "all"] as const,
     enabled: Boolean(token),
-    queryFn: () => api.get<ModelSpend[]>(scoped("/api/admin/spend/by-model", { days, companyId }), token!),
+    queryFn: () => api.get<ModelSpend[]>(scoped("/api/admin/spend/by-model", { days, companyId, channel }), token!),
   })
 }
 
@@ -104,12 +104,12 @@ export interface MembersSpendResponse {
   }
 }
 
-export function useSpendMembers(token: string | null, days = 30, companyId?: string) {
+export function useSpendMembers(token: string | null, days = 30, companyId?: string, channel?: string) {
   const scope = getAdminQueryScope(token)
   return useQuery({
-    queryKey: ["admin", scope, "spend-members", days, companyId ?? ""] as const,
+    queryKey: ["admin", scope, "spend-members", days, companyId ?? "", channel ?? "all"] as const,
     enabled: Boolean(token),
-    queryFn: () => api.get<MembersSpendResponse>(scoped("/api/admin/spend/members", { days, companyId }), token!),
+    queryFn: () => api.get<MembersSpendResponse>(scoped("/api/admin/spend/members", { days, companyId, channel }), token!),
   })
 }
 

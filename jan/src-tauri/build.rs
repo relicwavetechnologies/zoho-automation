@@ -1,8 +1,5 @@
 fn main() {
-    #[cfg(not(feature = "cli"))]
-    {
-        tauri_build::build();
-    }
+    tauri_build::build();
 
     #[cfg(target_os = "macos")]
     {

@@ -168,6 +168,10 @@ type SearchParams = {
 // as route.threadsDetail
 export const Route = createFileRoute('/threads/$threadId')({
   component: ThreadDetail,
+  // ThreadDetail owns several refs and callbacks tied to one chat lifecycle.
+  // Remounting on param changes is a second boundary behind the transport's
+  // own ownership check, preventing route-local state from leaking A -> B.
+  remountDeps: ({ params }) => params.threadId,
   validateSearch: (search: Record<string, unknown>): SearchParams => {
     return {
       threadModel: search.threadModel as ThreadModel | undefined,
@@ -705,9 +709,21 @@ function ThreadDetail() {
     reset: resetReasoningScroll,
   } = useAutoScroll()
 
-  const lastIsAssistant = useMemo(() => {
+  const lastAssistantHasVisibleActivity = useMemo(() => {
     const last = chatMessages[chatMessages.length - 1]
-    return !!last && last.role === 'assistant'
+    if (!last || last.role !== 'assistant') return false
+    return last.parts.some((part) => {
+      if (part.type === 'text' || part.type === 'reasoning') {
+        return Boolean(
+          'text' in part &&
+            typeof part.text === 'string' &&
+            part.text.trim()
+        )
+      }
+      // A tool or file card is already a visible activity indicator. Unknown
+      // protocol markers remain invisible and must not suppress “Working…”.
+      return part.type.startsWith('tool-') || part.type === 'file'
+    })
   }, [chatMessages])
 
   useEffect(() => {
@@ -1843,12 +1859,14 @@ function ThreadDetail() {
               {!oomError &&
                 !backendError &&
                 !contextLimitError &&
-                status === CHAT_STATUS.SUBMITTED && (
+                (status === CHAT_STATUS.SUBMITTED ||
+                  status === CHAT_STATUS.STREAMING) && (
                 <div className="flex flex-row items-center gap-2">
                   {pendingContinueMessage && (
                     <Shimmer duration={1}>Growing the Mind...</Shimmer>
                   )}
-                  {!pendingContinueMessage && !lastIsAssistant && (
+                  {!pendingContinueMessage &&
+                    !lastAssistantHasVisibleActivity && (
                     <PromptProgress />
                   )}
                 </div>

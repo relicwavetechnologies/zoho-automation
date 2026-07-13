@@ -39,15 +39,12 @@ import { encodeVideoSentinel, parseVideoDataUrl } from '@/lib/video-sentinel'
 import { extractFilesFromPrompt, type FileMetadata } from '@/lib/fileMetadata'
 import { isPredefinedRemoteProvider, getProviderApiType } from '@/lib/providerCaps'
 import { createPiMessageStream } from './pi-stream'
+import { PI_MODEL_ID, PI_PROVIDER_ID } from './pi/constants'
 import { paramsSettings } from '@/lib/predefinedParams'
 import {
   buildDivoSkillReferenceContext,
   readDivoSkillReferencesFromMetadata,
 } from '@/lib/divo-skill-reference-context'
-import {
-  buildDivoQuickStartContext,
-  readDivoQuickStartPlan,
-} from '@/lib/divo-finance-quick-start'
 
 export type TokenUsageCallback = (
   usage: LanguageModelUsage,
@@ -540,15 +537,6 @@ function extractLatestUserSkillReferenceContext(messages: UIMessage[]): string {
   return ''
 }
 
-function extractLatestUserQuickStartContext(messages: UIMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i]
-    if (message.role !== 'user') continue
-    return buildDivoQuickStartContext(readDivoQuickStartPlan(message.metadata))
-  }
-  return ''
-}
-
 /**
  * Wraps a UIMessageChunk stream so that when the first `text-start` chunk
  * arrives, a `text-delta` carrying `prefixText` is immediately injected into
@@ -932,23 +920,44 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         ? (options.body as { __divoOnStreamAccepted: () => void })
             .__divoOnStreamAccepted
         : undefined
-    const threadId = this.threadId ?? options.chatId
+    const requestThreadId = options.chatId.trim()
+    if (!requestThreadId) {
+      throw new Error('A chat thread id is required.')
+    }
+    if (this.threadId && this.threadId !== requestThreadId) {
+      throw new Error(
+        `Chat transport ownership mismatch: expected thread "${this.threadId}", received "${requestThreadId}".`
+      )
+    }
+    // The AI SDK request is the invocation boundary and therefore the final
+    // authority for routing this run. The constructor id is an invariant check,
+    // never a value that may override a different request owner.
+    const threadId = requestThreadId
     const myGeneration = ++this.streamGeneration
     // Capture the effective provider name early so the Anthropic serial
     // tool-use repair later uses the same value that was used to create the
     // model, even if the user switches provider mid-request.
-    const selectedModelForRequest = useModelProvider.getState().selectedModel
-    const modelId = selectedModelForRequest?.id
-    const providerId = useModelProvider.getState().selectedProvider
-    const effectiveProviderName = providerId
+    // Divo Desktop has no direct local/third-party generation path. Resolve Pi
+    // explicitly so stale Jan localStorage or thread metadata cannot bypass the
+    // backend-owned capability gateway in packaged builds.
+    const providerId = PI_PROVIDER_ID
+    // Pi is the fixed Divo runtime, not a user-configured Jan provider. The
+    // provider roster hydrates asynchronously on launch, so it can briefly be
+    // empty even though Pi is fully available. Use it only for optional model
+    // metadata; it must never gate a Divo request.
     const provider = useModelProvider.getState().getProviderByName(providerId)
-    if (!this.serviceHub || !modelId || !provider) {
-      throw new Error('ServiceHub not initialized or model/provider missing.')
+    const selectedModelForRequest =
+      provider?.models?.find((model) => model.id === PI_MODEL_ID) ??
+      useModelProvider.getState().selectedModel
+    const modelId = PI_MODEL_ID
+    const effectiveProviderName = providerId
+    if (!this.serviceHub || !modelId) {
+      throw new Error('ServiceHub not initialized or Pi model missing.')
     }
 
     this.lastUserMessage = extractLatestUserText(options.messages)
 
-    if (providerId === 'pi') {
+    if (providerId === PI_PROVIDER_ID) {
       const userMessage = this.buildPiUserMessage(options.messages, {
         modelSupportsVision:
           selectedModelForRequest?.capabilities?.includes('vision') ?? false,
@@ -980,6 +989,13 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
           useAppState.getState().clearPiThreadRunState(threadId, runId)
         },
       }), onSubmissionAccepted)
+    }
+
+    // The branch below is retained for the legacy transport implementation.
+    // It is unreachable for Divo because providerId is fixed to Pi above, but
+    // unlike Pi it requires a concrete Jan provider configuration.
+    if (!provider) {
+      throw new Error('Model provider is not configured.')
     }
 
     // Non-Pi providers still use this legacy bridge for model-loader progress.
@@ -1555,10 +1571,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
     const userRequest = extractLatestUserText(strippedMessages).trim()
     const skillReferenceContext =
       extractLatestUserSkillReferenceContext(strippedMessages)
-    const quickStartContext =
-      extractLatestUserQuickStartContext(strippedMessages)
     const attachmentContext = this.buildPiAttachmentRoutingContext(files, options)
-    return [attachmentContext, quickStartContext, skillReferenceContext, userRequest]
+    return [attachmentContext, skillReferenceContext, userRequest]
       .filter((part) => part.length > 0)
       .join('\n\n')
   }

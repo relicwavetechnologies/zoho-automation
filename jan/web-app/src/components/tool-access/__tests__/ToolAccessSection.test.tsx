@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const h = vi.hoisted(() => ({
   getInventory: vi.fn(),
+  getDepartmentSnapshot: vi.fn(),
   getSnapshot: vi.fn(),
   setGlobal: vi.fn(),
   setDepartmentMember: vi.fn(),
@@ -17,7 +18,14 @@ vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (config: unknown) => config,
   useNavigate: () => h.navigate,
 }))
-vi.mock('lucide-react', () => ({ ArrowRight: () => null, Brain: () => null, MessageSquare: () => null, RefreshCw: () => null, Search: () => null }))
+vi.mock('lucide-react', async importOriginal => ({
+  ...await importOriginal<typeof import('lucide-react')>(),
+  ArrowRight: () => null,
+  Brain: () => null,
+  MessageSquare: () => null,
+  RefreshCw: () => null,
+  Search: () => null,
+}))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/components/ui/button', () => ({ Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button> }))
 vi.mock('@/components/ui/input', () => ({ Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} /> }))
@@ -28,6 +36,7 @@ vi.mock('@/constants/routes', () => ({ route: { plugins: { detail: '/plugins/$pl
 vi.mock('@/lib/divo-tools', async importOriginal => ({
   ...await importOriginal<typeof import('@/lib/divo-tools')>(),
   getDivoToolsInventory: h.getInventory,
+  getDivoDepartmentManageSnapshot: h.getDepartmentSnapshot,
   getDivoToolManageSnapshot: h.getSnapshot,
   setDivoGlobalToolAction: h.setGlobal,
   setDivoDepartmentRoleToolAction: vi.fn(),
@@ -141,7 +150,14 @@ function RemountableSectionHarness() {
 }
 
 describe('ToolAccessSection lifecycle and presentation', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    h.getDepartmentSnapshot.mockResolvedValue({
+      department: { id: 'operations', name: 'Operations', slug: 'operations', description: null, status: 'active' },
+      roles: [],
+      memberships: [],
+    })
+  })
 
   it('does not replace the selected department snapshot with a stale global mutation success', async () => {
     const mutation = deferred<GlobalToolManageSnapshot>()
@@ -154,6 +170,21 @@ describe('ToolAccessSection lifecycle and presentation', () => {
 
     await waitFor(() => expect(screen.getByText('Operations role access')).toBeInTheDocument())
     expect(screen.queryByText('Company role access')).not.toBeInTheDocument()
+  })
+
+  it('does not refetch the snapshot when the parent re-supplies an equivalent items reference', async () => {
+    h.getSnapshot.mockImplementation((_toolId: string, scope: { kind: string }) => Promise.resolve(scope.kind === 'global' ? globalSnapshot : departmentSnapshot))
+    const { rerender } = render(<ToolAccessSection items={[item]} onUpdated={h.onUpdated} />)
+    await screen.findByText('Company role access')
+    expect(h.getSnapshot).toHaveBeenCalledTimes(1)
+
+    // A background inventory refresh hands down a fresh array + object with the same tool id.
+    rerender(<ToolAccessSection items={[{ ...item, managementScopes: [...item.managementScopes] }]} onUpdated={h.onUpdated} />)
+
+    // The snapshot must not be reloaded (no blank/flash), and the grid stays rendered.
+    await waitFor(() => expect(screen.getByText('Company role access')).toBeInTheDocument())
+    expect(screen.queryByText('Loading current access')).not.toBeInTheDocument()
+    expect(h.getSnapshot).toHaveBeenCalledTimes(1)
   })
 
   it('does not refresh a stale global scope after its mutation is rejected', async () => {
@@ -319,16 +350,18 @@ describe('ToolAccessSection lifecycle and presentation', () => {
     h.getInventory.mockResolvedValueOnce({ tools: [completeItem] })
     render(<PluginsRoute />)
 
-    const card = await screen.findByRole('button', { name: /Google Workspace/ })
-    expect(screen.getByRole('img', { name: 'Gmail' })).toBeInTheDocument()
+    const card = (await screen.findByText('Google Workspace')).closest('[data-tool-card]')!
+    expect(screen.getByRole('img', { name: 'Google' })).toBeInTheDocument()
     expect(card).toHaveAttribute('data-child-count', '1')
-    expect(card).toHaveClass('h-80', 'max-h-80', 'sm:h-72', 'sm:max-h-72', 'overflow-hidden')
-    expect(card).toHaveTextContent('Access · 4 sources · 3 action groups')
-    expect(card).toHaveTextContent('Management · 2 scopes · 1 approval-gated · 1 connection issue')
-    expect(card).toHaveTextContent('Open details')
+    expect(card).toHaveClass('min-h-56', 'overflow-hidden')
+    expect(card).toHaveTextContent('3 action groups')
+    expect(card).toHaveTextContent('1 approval-gated')
+    expect(card).toHaveTextContent('Admin connection needed')
+    expect(card).toHaveTextContent('Manage access')
+    expect(card).toHaveTextContent('Details')
     expect(card).not.toHaveTextContent('Local approval policy.')
 
-    fireEvent.click(card)
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
     expect(h.navigate).toHaveBeenCalledWith({ to: '/plugins/$pluginId', params: { pluginId: 'google-workspace' } })
   })
 
@@ -345,13 +378,13 @@ describe('ToolAccessSection lifecycle and presentation', () => {
     h.getInventory.mockResolvedValueOnce({ tools: childTools })
     render(<PluginsRoute />)
 
-    const card = await screen.findByRole('button', { name: /Lark/ })
+    const card = (await screen.findByText('Lark')).closest('[data-tool-card]')!
     expect(card).toHaveAttribute('data-child-count', '7')
-    expect(card).toHaveClass('h-80', 'max-h-80', 'sm:h-72', 'sm:max-h-72', 'overflow-hidden')
+    expect(card).toHaveClass('min-h-56', 'overflow-hidden')
     expect(card).toHaveTextContent('Lark Messaging · Lark Contacts · Lark Tasks · +4 more')
     expect(card).not.toHaveTextContent('Lark Calendar')
-    expect(card).toHaveTextContent('Access · 7 sources · 1 action group')
-    expect(card).toHaveTextContent('Management · 14 scopes · 0 approval-gated · 0 connection issues')
+    expect(card).toHaveTextContent('1 action groups')
+    expect(card).toHaveTextContent('Manage access')
     expect(card.querySelectorAll('[data-tool-id]')).toHaveLength(0)
   })
 
@@ -363,18 +396,16 @@ describe('ToolAccessSection lifecycle and presentation', () => {
     })
     render(<PluginsRoute />)
 
-    const card = await screen.findByRole('button', { name: /Open details/ })
-    expect(card).toHaveClass('h-80', 'max-h-80', 'sm:h-72', 'sm:max-h-72', 'overflow-hidden')
-    expect(card.querySelector('[data-card-content]')).toHaveClass('min-h-0', 'flex-1', 'overflow-hidden')
+    await waitFor(() => expect(document.querySelector('[data-tool-card]')).toBeInTheDocument())
+    const card = document.querySelector('[data-tool-card]')!
+    expect(card).toHaveClass('min-h-56', 'overflow-hidden')
+    expect(card.querySelector('[data-card-content]')).toHaveClass('min-h-0', 'overflow-hidden')
     expect(card.querySelector('[data-card-title]')).toHaveClass('line-clamp-2', 'break-all')
     expect(card.querySelector('[data-card-purpose]')).toHaveClass('line-clamp-2', 'break-all')
     expect(card.querySelector('[data-card-preview]')).toHaveClass('line-clamp-2', 'break-all')
-    expect(card.querySelectorAll('[data-card-summary] > span')).toHaveLength(2)
-    expect(card.querySelector('[data-card-summary] > span')).toHaveClass('line-clamp-1', 'break-all')
-    expect(card.querySelector('[data-card-action]')).toHaveClass('shrink-0')
-    expect(card.querySelector('[data-card-action]')).toHaveTextContent('Open details')
+    expect(card.querySelector('[data-card-action]')).toHaveTextContent('Details')
 
-    fireEvent.click(card)
+    fireEvent.click(card.querySelector('[data-card-action]')!)
     expect(h.navigate).toHaveBeenCalledWith({ to: '/plugins/$pluginId', params: { pluginId: 'tool-pathologicalTool' } })
   })
 

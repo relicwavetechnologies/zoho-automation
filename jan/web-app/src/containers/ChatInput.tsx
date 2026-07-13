@@ -52,7 +52,6 @@ import {
   SESSION_STORAGE_KEY,
   SESSION_STORAGE_PREFIX,
 } from '@/constants/chat'
-import { defaultModel } from '@/lib/models'
 import { useAssistant } from '@/hooks/useAssistant'
 import DropdownToolsAvailable from '@/containers/DropdownToolsAvailable'
 import { useServiceHub } from '@/hooks/useServiceHub'
@@ -87,7 +86,7 @@ import {
 import JanBrowserExtensionDialog from '@/containers/dialogs/JanBrowserExtensionDialog'
 import { useJanBrowserExtension } from '@/hooks/useJanBrowserExtension'
 import { useAgentMode } from '@/hooks/useAgentMode'
-import { PI_PROVIDER_ID } from '@/lib/pi'
+import { DIVO_THREAD_MODEL, PI_PROVIDER_ID } from '@/lib/pi'
 import {
   SkillReferenceChips,
   SkillReferenceDrawer,
@@ -811,10 +810,7 @@ const ChatInput = memo(function ChatInput({
         setCurrentAssistant(assistant)
 
         const newThread = await createThread(
-          {
-            id: selectedModel?.id ?? defaultModel(selectedProvider),
-            provider: selectedProvider,
-          },
+          { ...DIVO_THREAD_MODEL },
           prompt, // Use prompt as thread title
           assistant,
           projectMetadata

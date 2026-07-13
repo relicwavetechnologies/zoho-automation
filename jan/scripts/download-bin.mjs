@@ -257,12 +257,17 @@ async function stageMacSqliteVec(architectures, target) {
   const staged = new Map()
 
   for (const architecture of architectures) {
-    const url = overrideUrl || (await sqliteVecAssetUrl(architecture.nodeArch))
-    if (!url) throw new Error(`No sqlite-vec asset found for ${architecture.triple}`)
-
     const archive = path.join(TEMP_DIR, `sqlite-vec-${architecture.triple}.tar.gz`)
     const extractDir = path.join(TEMP_DIR, `sqlite-vec-extract-${architecture.triple}`)
-    await downloadAndExtract(url, archive, extractDir)
+    if (!fs.existsSync(archive)) {
+      const url = overrideUrl || (await sqliteVecAssetUrl(architecture.nodeArch))
+      if (!url) throw new Error(`No sqlite-vec asset found for ${architecture.triple}`)
+      await download(url, archive)
+    } else {
+      console.log(`Reusing cached sqlite-vec archive for ${architecture.triple}`)
+    }
+    if (!fs.existsSync(extractDir)) await decompress(archive, extractDir)
+
     const source = findFile(extractDir, '.dylib')
     if (!source) throw new Error(`No sqlite-vec dylib found for ${architecture.triple}`)
 

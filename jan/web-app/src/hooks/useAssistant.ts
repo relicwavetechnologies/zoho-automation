@@ -2,6 +2,7 @@ import { getServiceHub } from '@/hooks/useServiceHub'
 import { Assistant as CoreAssistant } from '@janhq/core'
 import { create } from 'zustand'
 import { localStorageKey } from '@/constants/localStorage'
+import { RESPONSE_LANGUAGE_INSTRUCTIONS } from '@/lib/response-language-instructions'
 
 interface AssistantState {
   assistants: Assistant[]
@@ -35,7 +36,7 @@ export const defaultAssistant: Assistant = {
   avatar: '👋',
   description:
     "Divo Dex is a helpful desktop assistant that can reason through complex tasks and use tools to complete them on the user's behalf.",
-  instructions: `You must output your response in the exact language used in the latest user message. Do not provide translations or switch languages unless explicitly instructed to do so. If the input is mostly English, respond in English.
+  instructions: `${RESPONSE_LANGUAGE_INSTRUCTIONS}
 
 When handling user queries:
 

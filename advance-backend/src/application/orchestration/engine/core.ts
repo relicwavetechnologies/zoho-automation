@@ -29,6 +29,7 @@ import { classifyMessage, runFastPath } from './fast-path';
 import { buildExecutionSummary } from './execution-summary';
 import { assessReplyQuality, buildPresentationContext, cleanReplyText } from './reply-quality';
 import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
+import type { LarkInferenceService } from '../../proxy/lark-inference.service';
 import { formatGroupContextForPrompt, formatGroupContextMultimodal } from '../../chat-context/group-context-formatter';
 import type { GroupChatWindow } from '../../../domain/conversation/group-context';
 import {
@@ -36,6 +37,7 @@ import {
   debugMemoryContext, debugGroupContext, debugFinalReply, debugRunEnd,
 } from '../../../shared/debug-run-log';
 import { generateText } from 'ai';
+import type { ConversationScope } from '../../../domain/conversation/conversation-scope';
 
 const MEM0_SEARCH_TIMEOUT_MS = 500;
 
@@ -89,6 +91,8 @@ export interface OrchestrationEngineDeps {
   chatContext?: LarkChatContextService;
   /** When provided, fires background conversation summarization after each turn (DMs only). */
   conversationSummarizer?: ConversationSummarizer;
+  /** Backend-owned DeepSeek Flash model factory for first-class Lark runs. */
+  larkInference?: LarkInferenceService;
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────
@@ -99,6 +103,10 @@ export class OrchestrationEngine {
   async run(input: EngineInput): Promise<Result<EngineOutput, AppError>> {
     const { incoming, runContext, conversation, channelAdapter, approvalGate, existingStatusMessageId } = input;
     const runStartMs = this.deps.clock.nowMs();
+    const conversationScope: ConversationScope = {
+      companyId: String(runContext.companyId),
+      channel: runContext.channel,
+    };
 
     const log = this.deps.logger.child({
       chatId:    incoming.chatId,
@@ -131,10 +139,11 @@ export class OrchestrationEngine {
         const runId = await this.deps.executionRepo.create({
           companyId:  runContext.companyId,
           channel:    runContext.channel,
-          entrypoint: 'lark_webhook',
+          entrypoint: runContext.channel === 'lark' ? 'lark_webhook' : `${runContext.channel}_channel`,
           ...(runContext.userId    ? { userId:     runContext.userId }              : {}),
           ...(runContext.requestId ? { requestId:  runContext.requestId }           : {}),
           ...(incoming.chatId     ? { chatId:     String(incoming.chatId) }        : {}),
+          ...(incoming.chatId     ? { threadId:   String(incoming.chatId) }        : {}),
           ...(incoming.messageId  ? { messageId:  String(incoming.messageId) }     : {}),
         });
         tracer = new OrchestrationTracer(runId, this.deps.executionRepo, log, runStartMs);
@@ -152,6 +161,19 @@ export class OrchestrationEngine {
         log.warn('engine.trace.create_failed', { error: String(e) });
       }
     }
+
+    // Lark is intentionally pinned to DeepSeek V4 Flash. This per-run wrapper
+    // resolves backend-held credentials, enforces shared policy and records every
+    // model call against the same ExecutionRun created above.
+    const larkModel = runContext.channel === 'lark' && this.deps.larkInference
+      ? this.deps.larkInference.createModel({
+        runContext,
+        ...(tracer ? { executionRunId: tracer.executionRunId } : {}),
+        ...(tracer ? { tracer } : {}),
+        threadId: String(incoming.chatId),
+        agentTarget: 'lark.orchestration',
+      })
+      : undefined;
 
     // ── 1. Resolve permissions ─────────────────────────────────────────────
     const permQuery: PermissionQuery = {
@@ -277,7 +299,7 @@ export class OrchestrationEngine {
         ? Promise.resolve({ ok: true as const, value: { turns: [], truncated: false, tokenEstimate: 0 } })
         : this.deps.history.loadWindow(
             incoming.chatId as unknown as ChatId,
-            { filterPoison: true, perm, includeSummary: true },
+            { filterPoison: true, perm, includeSummary: true, scope: conversationScope },
           ),
       isScheduledDelivery
         ? Promise.resolve(undefined)
@@ -309,7 +331,7 @@ export class OrchestrationEngine {
       const fastResult = await runFastPath({
         userMessage: incoming.text,
         history:     history.turns.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),
-        model:       this.deps.fastPathModel,
+        model:       larkModel ?? this.deps.fastPathModel,
         log,
       });
 
@@ -320,16 +342,16 @@ export class OrchestrationEngine {
       // Sequential append — sequence ordering matters (user before assistant).
       await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
         role: 'user', content: incoming.text, timestamp: incoming.timestamp,
-      });
+      }, conversationScope);
       await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
         role: 'assistant', content: fastResult.text,
         timestamp: this.deps.clock.now().toISOString(),
-      });
+      }, conversationScope);
 
       if (incoming.chatType !== 'group' && this.deps.conversationSummarizer) {
         const chatIdStr = String(incoming.chatId);
         setImmediate(() => {
-          this.deps.conversationSummarizer!.maybeSummarize(chatIdStr)
+          this.deps.conversationSummarizer!.maybeSummarize(chatIdStr, conversationScope)
             .catch(e => log.warn('engine.summarization.failed', { error: String(e) }));
         });
       }
@@ -396,6 +418,11 @@ export class OrchestrationEngine {
       ...(inlineImageUrls.length > 0 ? { inlineImageUrls } : {}),
       chatId:         String(conversation.chatId),
       abortSignal:    abortController.signal,
+      ...(larkModel ? {
+        model: larkModel,
+        // Dynamic root-agent model overrides are ignored for Lark by design.
+        resolveModel: async () => larkModel,
+      } : {}),
     });
 
     if (abortController.signal.aborted) {
@@ -461,7 +488,7 @@ export class OrchestrationEngine {
           toolResults,
         });
         const synthesized = await generateText({
-          model: this.deps.supervisor.getModel(),
+          model: larkModel ?? this.deps.supervisor.getModel(),
           system: `You are presenting the results of completed actions to the user. Rules:
 - Write the final user-facing outcome, not a process update.
 - Use completed/past-tense language for actions that already ran.
@@ -505,12 +532,12 @@ export class OrchestrationEngine {
       role:      'user',
       content:   incoming.text,
       timestamp: incoming.timestamp,
-    });
+    }, conversationScope);
     await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
       role:      'assistant',
       content:   assistantHistoryContent,
       timestamp: this.deps.clock.now().toISOString(),
-    });
+    }, conversationScope);
 
     // ── 6b. Background conversation summarization (DMs only) ─────────────
     if (
@@ -520,7 +547,7 @@ export class OrchestrationEngine {
     ) {
       const chatIdStr = String(incoming.chatId);
       setImmediate(() => {
-        this.deps.conversationSummarizer!.maybeSummarize(chatIdStr)
+        this.deps.conversationSummarizer!.maybeSummarize(chatIdStr, conversationScope)
           .catch(e => log.warn('engine.summarization.failed', { error: String(e) }));
       });
     }

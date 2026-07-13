@@ -10,6 +10,11 @@ import {
   parseApiKeyFallbacks,
   serializeApiKeyFallbacks,
 } from '@/lib/provider-api-keys'
+import {
+  DIVO_THREAD_MODEL,
+  PI_MODEL_ID,
+  PI_PROVIDER_ID,
+} from '@/lib/pi/constants'
 
 const API_KEY_FALLBACKS_MIGRATION_FLAG = 'api_key_fallbacks_migrated_to_settings'
 
@@ -36,8 +41,14 @@ export const useModelProvider = create<ModelProviderState>()(
   persist(
     (set, get) => ({
       providers: [],
-      selectedProvider: 'llamacpp',
-      selectedModel: null,
+      selectedProvider: PI_PROVIDER_ID,
+      selectedModel: {
+        id: PI_MODEL_ID,
+        name: 'Divo',
+        version: '1.0',
+        description: 'Divo backend-owned agent runtime.',
+        capabilities: ['completion', 'tools'],
+      },
       deletedModels: [],
       getModelBy: (modelId: string) => {
         const provider = get().providers.find(
@@ -819,9 +830,20 @@ export const useModelProvider = create<ModelProviderState>()(
           })
         }
 
+        if (version <= 17) {
+          state.selectedProvider = DIVO_THREAD_MODEL.provider
+          state.selectedModel =
+            state.providers
+              ?.find(
+                (provider) => provider.provider === DIVO_THREAD_MODEL.provider
+              )
+              ?.models.find((model) => model.id === DIVO_THREAD_MODEL.id) ??
+            null
+        }
+
         return state
       },
-      version: 17,
+      version: 18,
     }
   )
 )

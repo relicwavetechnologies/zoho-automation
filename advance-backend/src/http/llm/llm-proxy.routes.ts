@@ -13,16 +13,15 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { LlmProxyService, type DeepSeekUsage } from '../../application/proxy/llm-proxy.service';
 import { canonicalModel } from '../../application/observability/pricing';
 import type { ProxyKeyStore } from '../../application/proxy/proxy-key.store';
 
 export interface LlmProxyRoutesDeps {
-  prisma:  PrismaClient;
   logger:  Logger;
   store:   ProxyKeyStore;   // resolves the DeepSeek key server-side (never leaves the backend)
+  service: LlmProxyService; // shared with Lark so policy/rate accounting has one authority
   baseUrl: string;          // e.g. https://api.deepseek.com
 }
 
@@ -55,7 +54,7 @@ function extractFinal(sse: string): { usage: DeepSeekUsage | null; model: string
 
 export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
   const router = Router();
-  const svc = new LlmProxyService(deps.prisma, deps.logger);
+  const svc = deps.service;
   const log = deps.logger.child({ service: 'llm-proxy' });
 
   router.post('/v1/chat/completions', async (req: Request, res: Response): Promise<void> => {

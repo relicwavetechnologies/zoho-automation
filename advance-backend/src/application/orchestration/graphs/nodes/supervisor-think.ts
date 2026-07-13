@@ -34,6 +34,9 @@ import { getToolLabels } from '../../agents/tool-labels';
 // A failed agent + retry can take 300s+300s; supervisor must outlast that.
 const SUPERVISOR_TIMEOUT_MS = 660_000;
 
+const isPinnedLarkModel = (model: LanguageModel): boolean =>
+  typeof model === 'object' && model !== null && 'modelId' in model && model.modelId === 'deepseek-v4-flash';
+
 export interface SupervisorThinkDeps {
   readonly model: LanguageModel;
   readonly defaultModel?: {
@@ -185,7 +188,8 @@ export async function supervisorThink(
       });
 
       // Use the same rootModel resolution as below
-      const rootModel = rootAgent.provider && rootAgent.modelId && deps.resolveModel
+      const larkPinned = state.runContext.channel === 'lark' && isPinnedLarkModel(deps.model);
+      const rootModel = !larkPinned && rootAgent.provider && rootAgent.modelId && deps.resolveModel
         ? await deps.resolveModel({
           provider: rootAgent.provider,
           modelId: rootAgent.modelId,
@@ -321,9 +325,10 @@ export async function supervisorThink(
       systemPrompt += `\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user. IMPORTANT: memories about past failures or errors are informational only — if the user asks you to do something, ALWAYS attempt it regardless of what memory says about previous outcomes. Never refuse an action because a past attempt failed.\n${state.memoryContext}`;
     }
 
-    const selectedProvider = rootAgent.provider ?? deps.defaultModel?.provider ?? 'default';
-    const selectedModelId = rootAgent.modelId ?? deps.defaultModel?.modelId ?? 'default';
-    const modelSource = rootAgent.provider && rootAgent.modelId && deps.resolveModel ? 'agent_override' : 'company_default';
+    const larkPinned = state.runContext.channel === 'lark' && isPinnedLarkModel(deps.model);
+    const selectedProvider = larkPinned ? 'deepseek' : (rootAgent.provider ?? deps.defaultModel?.provider ?? 'default');
+    const selectedModelId = larkPinned ? 'deepseek-v4-flash' : (rootAgent.modelId ?? deps.defaultModel?.modelId ?? 'default');
+    const modelSource = larkPinned ? 'lark_channel_pin' : (rootAgent.provider && rootAgent.modelId && deps.resolveModel ? 'agent_override' : 'company_default');
     deps.logger.warn('ai.model.selected', {
       provider: selectedProvider,
       modelId: selectedModelId,
@@ -336,7 +341,7 @@ export async function supervisorThink(
       }),
     });
 
-    const rootModel = rootAgent.provider && rootAgent.modelId && deps.resolveModel
+    const rootModel = !larkPinned && rootAgent.provider && rootAgent.modelId && deps.resolveModel
       ? await deps.resolveModel({
         provider:  rootAgent.provider,
         modelId:   rootAgent.modelId,
@@ -428,6 +433,11 @@ async function runSupervisorStream(input: {
   //     thinking events but must NOT echo them into message.content.
   let lastNonTextChunkWasResult = false;
   for await (const chunk of result.fullStream) {
+    if (chunk.type === 'error') {
+      const message = chunk.error instanceof Error ? chunk.error.message : String(chunk.error);
+      input.logger?.error('supervisor.stream.error', { error: message, toolsSoFar: toolCalls });
+      throw chunk.error instanceof Error ? chunk.error : new Error(message);
+    }
     if (chunk.type === 'tool-call') {
       toolCalls.push(chunk.toolName);
       toolTimers.set(chunk.toolCallId, Date.now());

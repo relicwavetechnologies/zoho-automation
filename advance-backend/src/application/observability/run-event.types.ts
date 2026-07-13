@@ -19,6 +19,7 @@ export type RunPhase =
   | 'routing'
   | 'plan'
   | 'execute'
+  | 'model'
   | 'synthesis'
   | 'complete'
   | 'error';
@@ -31,6 +32,7 @@ export type ActorType =
   | 'specialist'
   | 'executor'
   | 'tool'
+  | 'model'
   | 'mem0'
   | 'synthesis';
 
@@ -55,6 +57,7 @@ export type RunEventType =
   | 'supervisor_started'
   | 'tool_call_started'
   | 'tool_call_finished'
+  | 'model_call'
   | 'supervisor_complete'
   | 'memory_extracted'
   | 'delivery_failed';
@@ -177,6 +180,14 @@ export interface MemoryExtractedPayload {
   scopes:          Array<{ scope: string; count: number }>;
 }
 
+export interface ModelCallPayload {
+  provider: string;
+  model: string;
+  channel: string;
+  agentTarget: string;
+  usage: { input: number; output: number; cacheRead: number };
+}
+
 export interface RunFailedPayload {
   stage:  string;
   reason: string;
@@ -203,6 +214,7 @@ export type RunEventPayload =
   | SupervisorStartedPayload
   | ToolCallStartedPayload
   | ToolCallFinishedPayload
+  | ModelCallPayload
   | SupervisorCompletePayload
   | MemoryExtractedPayload;
 

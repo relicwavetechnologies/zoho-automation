@@ -16,7 +16,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import type { PrismaClient } from '../../generated/prisma';
+import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { costUsd } from '../../application/observability/pricing';
 
@@ -64,6 +64,10 @@ const qDays = (req: Request, def: number, max: number): number => {
 };
 const qCompany = (req: Request, res: Response) =>
   resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+const qChannel = (req: Request): string | undefined => {
+  const value = typeof req.query.channel === 'string' ? req.query.channel : undefined;
+  return value && ['desktop', 'lark', 'web'].includes(value) ? value : undefined;
+};
 const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 const startOfMonth = () => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d; };
 
@@ -103,6 +107,7 @@ export function createSpendRoutes(deps: SpendRoutesDeps): Router {
   // ─── GET /company-daily ─────────────────────────────────────────────
   router.get('/company-daily', asyncRoute(async (req, res) => {
     const companyId = qCompany(req, res);
+    const channel = qChannel(req);
     const days = qDays(req, 14, 90);
     const now = new Date();
     const from = new Date(now.getTime() - days * 86_400_000);
@@ -111,23 +116,24 @@ export function createSpendRoutes(deps: SpendRoutesDeps): Router {
     const [todayByModel, windowAgg, runsToday, dailyRows] = await Promise.all([
       prisma.aiTokenUsage.groupBy({
         by: ['modelId'],
-        where: { companyId, createdAt: { gte: today } },
+        where: { companyId, createdAt: { gte: today }, ...(channel ? { channel } : {}) },
         _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
         orderBy: { modelId: 'asc' },
       }),
       prisma.aiTokenUsage.aggregate({
-        where: { companyId, createdAt: { gte: from } },
+        where: { companyId, createdAt: { gte: from }, ...(channel ? { channel } : {}) },
         _sum: { actualInputTokens: true, cacheReadInputTokens: true },
       }),
-      prisma.executionRun.count({ where: { companyId, startedAt: { gte: today } } }),
-      prisma.$queryRaw<DailyModelRow[]>`
+      prisma.executionRun.count({ where: { companyId, startedAt: { gte: today }, ...(channel ? { channel } : {}) } }),
+      prisma.$queryRaw<DailyModelRow[]>(Prisma.sql`
         SELECT date_trunc('day', "createdAt") AS day, "modelId" AS model,
           COALESCE(SUM("actualInputTokens"), 0)::float AS miss,
           COALESCE(SUM("cacheReadInputTokens"), 0)::float AS hit,
           COALESCE(SUM("actualOutputTokens"), 0)::float AS out
         FROM "AiTokenUsage"
         WHERE "companyId" = ${companyId} AND "createdAt" >= ${from}
-        GROUP BY day, model ORDER BY day ASC`,
+          ${channel ? Prisma.sql`AND "channel" = ${channel}` : Prisma.empty}
+        GROUP BY day, model ORDER BY day ASC`),
     ]);
 
     const spendToday = todayByModel.reduce((sum, m) => sum + priceSum(m.modelId, m._sum), 0);
@@ -145,12 +151,13 @@ export function createSpendRoutes(deps: SpendRoutesDeps): Router {
   // ─── GET /by-model ──────────────────────────────────────────────────
   router.get('/by-model', asyncRoute(async (req, res) => {
     const companyId = qCompany(req, res);
+    const channel = qChannel(req);
     const days = qDays(req, 30, 90);
     const from = new Date(Date.now() - days * 86_400_000);
 
     const byModel = await prisma.aiTokenUsage.groupBy({
       by: ['modelId', 'provider'],
-      where: { companyId, createdAt: { gte: from } },
+      where: { companyId, createdAt: { gte: from }, ...(channel ? { channel } : {}) },
       _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
       _count: { id: true },
       orderBy: { modelId: 'asc' },
@@ -174,6 +181,7 @@ export function createSpendRoutes(deps: SpendRoutesDeps): Router {
   // ─── GET /members ───────────────────────────────────────────────────
   router.get('/members', asyncRoute(async (req, res) => {
     const companyId = qCompany(req, res);
+    const channel = qChannel(req);
     const days = qDays(req, 30, 90);
     const from = new Date(Date.now() - days * 86_400_000);
     const today = startOfToday();
@@ -181,19 +189,19 @@ export function createSpendRoutes(deps: SpendRoutesDeps): Router {
     const [windowRows, todayRows, runsByUser] = await Promise.all([
       prisma.aiTokenUsage.groupBy({
         by: ['userId', 'modelId'],
-        where: { companyId, createdAt: { gte: from } },
+        where: { companyId, createdAt: { gte: from }, ...(channel ? { channel } : {}) },
         _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
         orderBy: { userId: 'asc' },
       }),
       prisma.aiTokenUsage.groupBy({
         by: ['userId', 'modelId'],
-        where: { companyId, createdAt: { gte: today } },
+        where: { companyId, createdAt: { gte: today }, ...(channel ? { channel } : {}) },
         _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
         orderBy: { userId: 'asc' },
       }),
       prisma.executionRun.groupBy({
         by: ['userId'],
-        where: { companyId, startedAt: { gte: from }, userId: { not: null } },
+        where: { companyId, startedAt: { gte: from }, userId: { not: null }, ...(channel ? { channel } : {}) },
         _count: { id: true },
         orderBy: { userId: 'asc' },
       }),
@@ -255,6 +263,7 @@ export function createSpendRoutes(deps: SpendRoutesDeps): Router {
   // ─── GET /members/:userId ───────────────────────────────────────────
   router.get('/members/:userId', asyncRoute(async (req, res) => {
     const companyId = qCompany(req, res);
+    const channel = qChannel(req);
     const userId = req.params.userId;
     if (!userId) throw routeError(400, 'userId is required');
     const days = qDays(req, 30, 90);
@@ -265,35 +274,36 @@ export function createSpendRoutes(deps: SpendRoutesDeps): Router {
     const [byModel, todayByModel, mtdByModel, runs, user, policy, sparkRows] = await Promise.all([
       prisma.aiTokenUsage.groupBy({
         by: ['modelId'],
-        where: { companyId, userId, createdAt: { gte: from } },
+        where: { companyId, userId, createdAt: { gte: from }, ...(channel ? { channel } : {}) },
         _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
         _count: { id: true },
         orderBy: { modelId: 'asc' },
       }),
       prisma.aiTokenUsage.groupBy({
         by: ['modelId'],
-        where: { companyId, userId, createdAt: { gte: today } },
+        where: { companyId, userId, createdAt: { gte: today }, ...(channel ? { channel } : {}) },
         _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
         orderBy: { modelId: 'asc' },
       }),
       // Calendar month-to-date — matches the proxy gate's budget window exactly.
       prisma.aiTokenUsage.groupBy({
         by: ['modelId'],
-        where: { companyId, userId, createdAt: { gte: startOfMonth() } },
+        where: { companyId, userId, createdAt: { gte: startOfMonth() }, ...(channel ? { channel } : {}) },
         _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
         orderBy: { modelId: 'asc' },
       }),
-      prisma.executionRun.count({ where: { companyId, userId, startedAt: { gte: from } } }),
+      prisma.executionRun.count({ where: { companyId, userId, startedAt: { gte: from }, ...(channel ? { channel } : {}) } }),
       prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
       prisma.memberTokenPolicy.findUnique({ where: { userId } }),
-      prisma.$queryRaw<DailyModelRow[]>`
+      prisma.$queryRaw<DailyModelRow[]>(Prisma.sql`
         SELECT date_trunc('day', "createdAt") AS day, "modelId" AS model,
           COALESCE(SUM("actualInputTokens"), 0)::float AS miss,
           COALESCE(SUM("cacheReadInputTokens"), 0)::float AS hit,
           COALESCE(SUM("actualOutputTokens"), 0)::float AS out
         FROM "AiTokenUsage"
         WHERE "companyId" = ${companyId} AND "userId" = ${userId} AND "createdAt" >= ${sparkFrom}
-        GROUP BY day, model ORDER BY day ASC`,
+          ${channel ? Prisma.sql`AND "channel" = ${channel}` : Prisma.empty}
+        GROUP BY day, model ORDER BY day ASC`),
     ]);
 
     const spend30d = byModel.reduce((s, m) => s + priceSum(m.modelId, m._sum), 0);

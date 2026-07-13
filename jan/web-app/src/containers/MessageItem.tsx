@@ -784,7 +784,7 @@ export const MessageItem = memo(
         {isLastMessage &&
           message.role === 'assistant' &&
           !awaitingApproval &&
-          (hasPendingToolCall || status === CHAT_STATUS.SUBMITTED) && (
+          hasPendingToolCall && (
             <PromptProgress hideIdle={hasPendingToolCall} />
           )}
 

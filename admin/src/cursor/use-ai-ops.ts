@@ -103,11 +103,11 @@ export interface AiOpsKpis {
 }
 
 // ─── Runtime tab (runs surfaced as "tasks") ──────────────────────────────────
-export function useRuntimeTasks(token: string | null, companyId?: string) {
+export function useRuntimeTasks(token: string | null, companyId?: string, channel?: string) {
   const scope = getAdminQueryScope(token)
-  const suffix = companyId ? `&companyId=${encodeURIComponent(companyId)}` : ""
+  const suffix = `${companyId ? `&companyId=${encodeURIComponent(companyId)}` : ""}${channel ? `&channel=${encodeURIComponent(channel)}` : ""}`
   return useQuery({
-    queryKey: ["admin", scope, "runtime-tasks", companyId ?? ""] as const,
+    queryKey: ["admin", scope, "runtime-tasks", companyId ?? "", channel ?? "all"] as const,
     enabled: Boolean(token),
     queryFn: async (): Promise<RunRowView[]> => {
       const runs = await api.get<RunSummaryDto[]>(`/api/admin/runtime/tasks?limit=50${suffix}`, token!)
@@ -134,21 +134,21 @@ export interface TokenUsageMember {
   usagePct: number
 }
 
-export function useTokenUsageSummary(token: string | null, companyId?: string) {
+export function useTokenUsageSummary(token: string | null, companyId?: string, channel?: string) {
   const scope = getAdminQueryScope(token)
-  const suffix = companyId ? `&companyId=${encodeURIComponent(companyId)}` : ""
+  const suffix = `${companyId ? `&companyId=${encodeURIComponent(companyId)}` : ""}${channel ? `&channel=${encodeURIComponent(channel)}` : ""}`
   return useQuery({
-    queryKey: ["admin", scope, "token-usage-summary", companyId ?? ""] as const,
+    queryKey: ["admin", scope, "token-usage-summary", companyId ?? "", channel ?? "all"] as const,
     enabled: Boolean(token),
     queryFn: () => api.get<TokenUsageSummary>(`/api/admin/token-usage/summary?days=30${suffix}`, token!),
   })
 }
 
-export function useTokenUsageMembers(token: string | null, companyId?: string) {
+export function useTokenUsageMembers(token: string | null, companyId?: string, channel?: string) {
   const scope = getAdminQueryScope(token)
-  const suffix = companyId ? `&companyId=${encodeURIComponent(companyId)}` : ""
+  const suffix = `${companyId ? `&companyId=${encodeURIComponent(companyId)}` : ""}${channel ? `&channel=${encodeURIComponent(channel)}` : ""}`
   return useQuery({
-    queryKey: ["admin", scope, "token-usage-members", companyId ?? ""] as const,
+    queryKey: ["admin", scope, "token-usage-members", companyId ?? "", channel ?? "all"] as const,
     enabled: Boolean(token),
     queryFn: async (): Promise<TokenUsageMember[]> => {
       const res = await api.get<{ members: TokenUsageMember[] }>(`/api/admin/token-usage/members?days=30${suffix}`, token!)

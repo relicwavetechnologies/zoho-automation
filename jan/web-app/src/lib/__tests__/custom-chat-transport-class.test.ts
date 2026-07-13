@@ -226,10 +226,74 @@ describe('CustomChatTransport', () => {
     expect(true).toBe(true)
   })
 
-  it('isolates concurrent Pi transport streams and removes only the terminal listener', async () => {
+  it('rejects a cross-thread request before Pi receives it', async () => {
     mockState.selectedModel = { id: 'divo-pi' }
     mockState.selectedProvider = 'pi'
     mockState.provider = { id: 'pi' }
+
+    await expect(
+      transport.sendMessages({
+        chatId: 'thread-2',
+        messages: [
+          {
+            id: 'message-2',
+            role: 'user',
+            parts: [{ type: 'text', text: 'run in thread 2' }],
+          },
+        ],
+        abortSignal: undefined,
+        trigger: 'submit-message',
+        messageId: undefined,
+      } as any)
+    ).rejects.toThrow(
+      'Chat transport ownership mismatch: expected thread "thread-1", received "thread-2".'
+    )
+
+    expect(
+      piRuntime.invoke.mock.calls.some(([command]) => command === 'pi_prompt')
+    ).toBe(false)
+    expect(useAppState.getState().busyThreads).toEqual({})
+  })
+
+  it('starts Pi before the asynchronously hydrated provider roster is available', async () => {
+    // The Divo composer is usable as soon as the desktop session is ready.
+    // Provider discovery happens in a separate async effect, so an empty
+    // roster must not prevent the fixed Pi runtime from receiving a prompt.
+    mockState.selectedModel = null
+    mockState.selectedProvider = ''
+    mockState.provider = null
+
+    await transport.sendMessages({
+      chatId: 'thread-1',
+      messages: [
+        {
+          id: 'message-1',
+          role: 'user',
+          parts: [{ type: 'text', text: 'hi' }],
+        },
+      ],
+      abortSignal: undefined,
+      trigger: 'submit-message',
+      messageId: undefined,
+    } as any)
+
+    await vi.waitFor(() =>
+      expect(piRuntime.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-1', message: 'hi' })
+      )
+    )
+  })
+
+  it('isolates concurrent Pi transport streams and removes only the terminal listener', async () => {
+    // Reproduce the packaged-app regression: Jan localStorage selected an
+    // OpenRouter model. Divo transport must still dispatch both runs to Pi.
+    mockState.selectedModel = { id: 'deepseek/deepseek-v4-pro' }
+    mockState.selectedProvider = 'openrouter'
+    mockState.provider = {
+      id: 'pi',
+      models: [{ id: 'pi-agent', capabilities: ['completion', 'tools'] }],
+    }
     useAppState.setState({ busyThreads: {}, piThreadRunStates: {} })
 
     const first = new CustomChatTransport(undefined, 'thread-a')

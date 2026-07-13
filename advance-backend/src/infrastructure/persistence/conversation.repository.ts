@@ -5,10 +5,11 @@ import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 import type { Turn } from '../../domain/conversation/turn';
 import type { CachePort } from '../../shared/cache';
+import type { ConversationScope } from '../../domain/conversation/conversation-scope';
+import { conversationCacheKey, conversationUniqueKey } from '../../domain/conversation/conversation-scope';
 
 const HISTORY_CACHE_TTL = 300; // 5 min; invalidated on every appendTurn
 const HISTORY_CACHE_WINDOW = 60;
-const historyCacheKey = (chatId: string) => `history:v2:${chatId}`;
 
 function latestTurns(turns: readonly Turn[], limit: number): Turn[] {
   return turns.slice(Math.max(0, turns.length - limit));
@@ -22,16 +23,16 @@ export interface ConversationMeta {
 }
 
 export interface ConversationRepoPort {
-  getHistory(chatId: string, limit?: number): Promise<Result<Turn[], InfraError>>;
-  appendTurn(chatId: string, turn: Omit<Turn, 'id'>, meta?: { companyId?: string; channel?: string }): Promise<Result<Turn, InfraError>>;
-  clearHistory(chatId: string): Promise<Result<void, InfraError>>;
-  getConversationMeta(chatId: string): Promise<Result<ConversationMeta | null, InfraError>>;
+  getHistory(chatId: string, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
+  appendTurn(chatId: string, turn: Omit<Turn, 'id'>, scope?: ConversationScope): Promise<Result<Turn, InfraError>>;
+  clearHistory(chatId: string, scope?: ConversationScope): Promise<Result<void, InfraError>>;
+  getConversationMeta(chatId: string, scope?: ConversationScope): Promise<Result<ConversationMeta | null, InfraError>>;
   updateSummary(conversationId: string, data: {
     summaryJson: unknown;
     summaryUpdatedAt: Date;
     lastSummarizedSequence: number;
   }): Promise<Result<void, InfraError>>;
-  getHistoryAfterSequence(chatId: string, afterSequence: number, limit?: number): Promise<Result<Turn[], InfraError>>;
+  getHistoryAfterSequence(chatId: string, afterSequence: number, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
 }
 
 export class ConversationRepository implements ConversationRepoPort {
@@ -40,10 +41,11 @@ export class ConversationRepository implements ConversationRepoPort {
     private readonly cache?: CachePort,
   ) {}
 
-  async getHistory(chatId: string, limit = 40): Promise<Result<Turn[], InfraError>> {
+  async getHistory(chatId: string, limit = 40, scope?: ConversationScope): Promise<Result<Turn[], InfraError>> {
+    const cacheKey = conversationCacheKey(chatId, scope);
     // Cache read — cache stores the full window; apply limit in memory.
     if (this.cache) {
-      const cached = await this.cache.get<Turn[]>(historyCacheKey(chatId));
+      const cached = await this.cache.get<Turn[]>(cacheKey);
       if (cached.ok && cached.value !== null) {
         return ok(latestTurns(cached.value, limit));
       }
@@ -51,15 +53,15 @@ export class ConversationRepository implements ConversationRepoPort {
 
     try {
       const dbLimit = Math.max(limit, HISTORY_CACHE_WINDOW);
-      const conv = await this.db.runtimeConversation.findFirst({
-        where: { channelConversationKey: chatId },
-        include: {
-          messages: {
-            orderBy: { sequence: 'desc' },
-            take: dbLimit,
-          },
-        },
-      });
+      const conv = scope
+        ? await this.db.runtimeConversation.findUnique({
+          where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+          include: { messages: { orderBy: { sequence: 'desc' }, take: dbLimit } },
+        })
+        : await this.db.runtimeConversation.findFirst({
+          where: { channelConversationKey: chatId },
+          include: { messages: { orderBy: { sequence: 'desc' }, take: dbLimit } },
+        });
       if (!conv) return ok([]);
       const messages = [...conv.messages].reverse();
       const turns: Turn[] = messages.map(r => {
@@ -80,7 +82,7 @@ export class ConversationRepository implements ConversationRepoPort {
       });
       // Populate cache — fire-and-forget; don't block the caller.
       if (this.cache && turns.length > 0) {
-        void this.cache.set(historyCacheKey(chatId), turns, HISTORY_CACHE_TTL);
+        void this.cache.set(cacheKey, turns, HISTORY_CACHE_TTL);
       }
       return ok(latestTurns(turns, limit));
     } catch (e) {
@@ -91,16 +93,19 @@ export class ConversationRepository implements ConversationRepoPort {
   async appendTurn(
     chatId: string,
     turn: Omit<Turn, 'id'>,
-    meta?: { companyId?: string; channel?: string },
+    scope?: ConversationScope,
   ): Promise<Result<Turn, InfraError>> {
     try {
-      const companyId = meta?.companyId ?? 'system';
-      const channel = meta?.channel ?? 'lark';
+      const companyId = scope?.companyId ?? 'system';
+      const channel = scope?.channel ?? 'lark';
+      const cacheKey = conversationCacheKey(chatId, scope);
 
       // Find or create the conversation
-      let conv = await this.db.runtimeConversation.findFirst({
-        where: { channelConversationKey: chatId },
-      });
+      let conv = scope
+        ? await this.db.runtimeConversation.findUnique({
+          where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+        })
+        : await this.db.runtimeConversation.findFirst({ where: { channelConversationKey: chatId } });
 
       if (!conv) {
         try {
@@ -114,9 +119,11 @@ export class ConversationRepository implements ConversationRepoPort {
           });
         } catch {
           // Race: another concurrent request created the conversation first — re-fetch.
-          const refetched = await this.db.runtimeConversation.findFirst({
-            where: { channelConversationKey: chatId },
-          });
+          const refetched = scope
+            ? await this.db.runtimeConversation.findUnique({
+              where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+            })
+            : await this.db.runtimeConversation.findFirst({ where: { channelConversationKey: chatId } });
           if (!refetched) throw new Error(`conversation_repo: failed to find or create conv for chatId=${chatId}`);
           conv = refetched;
         }
@@ -159,7 +166,7 @@ export class ConversationRepository implements ConversationRepoPort {
       if (row.toolResultJson !== null) (appended as unknown as Record<string, unknown>)['toolOutcome'] = row.toolResultJson;
       // Invalidate history cache so next getHistory() fetches fresh turns.
       if (this.cache) {
-        void this.cache.del(historyCacheKey(chatId));
+        void this.cache.del(cacheKey);
       }
       return ok(appended);
     } catch (e) {
@@ -167,11 +174,13 @@ export class ConversationRepository implements ConversationRepoPort {
     }
   }
 
-  async clearHistory(chatId: string): Promise<Result<void, InfraError>> {
+  async clearHistory(chatId: string, scope?: ConversationScope): Promise<Result<void, InfraError>> {
     try {
-      const conv = await this.db.runtimeConversation.findFirst({
-        where: { channelConversationKey: chatId },
-      });
+      const conv = scope
+        ? await this.db.runtimeConversation.findUnique({
+          where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+        })
+        : await this.db.runtimeConversation.findFirst({ where: { channelConversationKey: chatId } });
       if (conv) {
         await this.db.runtimeConversationMessage.deleteMany({ where: { conversationId: conv.id } });
         await this.db.runtimeConversation.update({
@@ -184,7 +193,7 @@ export class ConversationRepository implements ConversationRepoPort {
         });
       }
       if (this.cache) {
-        void this.cache.del(historyCacheKey(chatId));
+        void this.cache.del(conversationCacheKey(chatId, scope));
       }
       return ok(undefined);
     } catch (e) {
@@ -192,17 +201,20 @@ export class ConversationRepository implements ConversationRepoPort {
     }
   }
 
-  async getConversationMeta(chatId: string): Promise<Result<ConversationMeta | null, InfraError>> {
+  async getConversationMeta(chatId: string, scope?: ConversationScope): Promise<Result<ConversationMeta | null, InfraError>> {
     try {
-      const conv = await this.db.runtimeConversation.findFirst({
-        where: { channelConversationKey: chatId },
-        select: {
-          id: true,
-          summaryJson: true,
-          lastSummarizedSequence: true,
-          lastMessageSequence: true,
-        },
-      });
+      const select = {
+        id: true,
+        summaryJson: true,
+        lastSummarizedSequence: true,
+        lastMessageSequence: true,
+      } as const;
+      const conv = scope
+        ? await this.db.runtimeConversation.findUnique({
+          where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+          select,
+        })
+        : await this.db.runtimeConversation.findFirst({ where: { channelConversationKey: chatId }, select });
       if (!conv) return ok(null);
       return ok({
         id: conv.id,
@@ -238,18 +250,22 @@ export class ConversationRepository implements ConversationRepoPort {
     chatId: string,
     afterSequence: number,
     limit = 60,
+    scope?: ConversationScope,
   ): Promise<Result<Turn[], InfraError>> {
     try {
-      const conv = await this.db.runtimeConversation.findFirst({
-        where: { channelConversationKey: chatId },
-        include: {
-          messages: {
-            where: { sequence: { gt: afterSequence } },
-            orderBy: { sequence: 'desc' },
-            take: limit,
+      const conv = scope
+        ? await this.db.runtimeConversation.findUnique({
+          where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+          include: {
+            messages: { where: { sequence: { gt: afterSequence } }, orderBy: { sequence: 'desc' }, take: limit },
           },
-        },
-      });
+        })
+        : await this.db.runtimeConversation.findFirst({
+          where: { channelConversationKey: chatId },
+          include: {
+            messages: { where: { sequence: { gt: afterSequence } }, orderBy: { sequence: 'desc' }, take: limit },
+          },
+        });
       if (!conv) return ok([]);
       const messages = [...conv.messages].reverse();
       const turns: Turn[] = messages.map(r => ({

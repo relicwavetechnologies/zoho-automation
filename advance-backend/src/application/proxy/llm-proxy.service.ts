@@ -179,18 +179,24 @@ export class LlmProxyService {
     provider:    string;
     usage:       DeepSeekUsage;
     agentTarget?: string;
+    channel?:    string;
+    threadId?:   string;
+    mode?:       string;
+    recordEvent?: boolean;
   }): Promise<void> {
     const u = input.usage;
     const cacheHit = u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0;
     const cacheMiss = u.prompt_cache_miss_tokens ?? Math.max(0, (u.prompt_tokens ?? 0) - cacheHit);
     const output = u.completion_tokens ?? 0;
 
-    const seq = await this.repo.nextSequence(input.executionId);
-    await this.repo.appendEvent({
-      executionId: input.executionId, sequence: seq, phase: 'model', eventType: 'model_call',
-      actorType: 'model', actorKey: input.model, title: input.model, status: 'ok',
-      payload: { provider: input.provider, model: input.model, usage: { input: cacheMiss, output, cacheRead: cacheHit } },
-    });
+    if (input.recordEvent !== false) {
+      const seq = await this.repo.nextSequence(input.executionId);
+      await this.repo.appendEvent({
+        executionId: input.executionId, sequence: seq, phase: 'model', eventType: 'model_call',
+        actorType: 'model', actorKey: input.model, title: input.model, status: 'ok',
+        payload: { provider: input.provider, model: input.model, usage: { input: cacheMiss, output, cacheRead: cacheHit } },
+      });
+    }
 
     await this.tokens.recordForRun({
       executionRunId: input.executionId,
@@ -199,7 +205,9 @@ export class LlmProxyService {
       agentTarget:    input.agentTarget ?? 'pi',
       modelId:        input.model,
       provider:       input.provider,
-      channel:        'desktop',
+      channel:        input.channel ?? 'desktop',
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      ...(input.mode ? { mode: input.mode } : {}),
       actualInputTokens:    cacheMiss,
       actualOutputTokens:   output,
       cacheReadInputTokens: cacheHit,
@@ -221,6 +229,9 @@ export class LlmProxyService {
     usage?:       DeepSeekUsage | null;
     latencyMs:    number;
     keySource?:   string | null;
+    channel?:     string;
+    provider?:    string;
+    agentTarget?: string;
   }): Promise<void> {
     try {
       const u = input.usage;
@@ -241,6 +252,9 @@ export class LlmProxyService {
           outputTokens:    output,
           latencyMs:       Math.max(0, Math.round(input.latencyMs)),
           keySource:       input.keySource ?? null,
+          channel:         input.channel ?? 'desktop',
+          provider:        input.provider ?? 'deepseek',
+          agentTarget:     input.agentTarget ?? 'pi',
         },
       });
     } catch (e) {

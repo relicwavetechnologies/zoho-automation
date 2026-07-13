@@ -4,9 +4,12 @@ import type { CachePort } from '../../../shared/cache';
 import type { ConversationRepoPort } from '../../../infrastructure/persistence/conversation.repository';
 import type { ConversationSummary } from '../../../domain/conversation/conversation-summary';
 import { HISTORY_POLICY } from '../../../domain/conversation/history-policy';
+import type { ConversationScope } from '../../../domain/conversation/conversation-scope';
+import { conversationCacheKey } from '../../../domain/conversation/conversation-scope';
 
 const LOCK_TTL_SECONDS = 60;
-const lockKey = (chatId: string) => `convsummary:lock:${chatId}`;
+const lockKey = (chatId: string, scope?: ConversationScope) =>
+  `convsummary:lock:${conversationCacheKey(chatId, scope)}`;
 
 const SUMMARIZE_SYSTEM = `Extract durable facts from older conversation turns between a user and Divo (an AI operations assistant).
 The goal is to compress older history into structured memory so the conversation can continue with full context but fewer tokens.
@@ -46,19 +49,20 @@ export interface ConversationSummarizerDeps {
 export class ConversationSummarizer {
   constructor(private readonly deps: ConversationSummarizerDeps) {}
 
-  async maybeSummarize(chatId: string): Promise<void> {
-    const lockResult = await this.deps.cache.setNx(lockKey(chatId), 1, LOCK_TTL_SECONDS);
+  async maybeSummarize(chatId: string, scope?: ConversationScope): Promise<void> {
+    const key = lockKey(chatId, scope);
+    const lockResult = await this.deps.cache.setNx(key, 1, LOCK_TTL_SECONDS);
     if (!lockResult.ok || !lockResult.value) return;
 
     try {
-      await this.checkAndSummarize(chatId);
+      await this.checkAndSummarize(chatId, scope);
     } finally {
-      void this.deps.cache.del(lockKey(chatId));
+      void this.deps.cache.del(key);
     }
   }
 
-  private async checkAndSummarize(chatId: string): Promise<void> {
-    const metaResult = await this.deps.conversationRepo.getConversationMeta(chatId);
+  private async checkAndSummarize(chatId: string, scope?: ConversationScope): Promise<void> {
+    const metaResult = await this.deps.conversationRepo.getConversationMeta(chatId, scope);
     if (!metaResult.ok || !metaResult.value) return;
 
     const meta = metaResult.value;
@@ -67,7 +71,7 @@ export class ConversationSummarizer {
     if (unsummarizedTurns < HISTORY_POLICY.MIN_TURNS_BEFORE_SUMMARIZATION) return;
 
     const histResult = await this.deps.conversationRepo.getHistoryAfterSequence(
-      chatId, meta.lastSummarizedSequence, 60,
+      chatId, meta.lastSummarizedSequence, 60, scope,
     );
     if (!histResult.ok) return;
     const turns = histResult.value;

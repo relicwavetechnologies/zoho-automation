@@ -68,6 +68,7 @@ import type { Mem0Service } from '../../memory/mem0.service';
 import { buildToolFinishedPayload, isErrorOutput } from '../agent-runners/tool-trace';
 import { debugSupervisorEntry, debugGraphInvoke, debugGraphOutput } from '../../../shared/debug-run-log';
 import type { GroupContextContentPart } from '../../../domain/conversation/group-context';
+import { isInternalHistoryMarker } from '../../../domain/conversation/internal-history-marker';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -97,6 +98,9 @@ export interface SupervisorInput {
   inlineImageUrls?: readonly string[];
   chatId?:        string;
   abortSignal?:   AbortSignal;
+  /** Per-run model authority. Lark supplies a backend-governed pinned model here. */
+  model?:          LanguageModel;
+  resolveModel?:   SupervisorDeps['resolveModel'];
 }
 
 export interface SupervisorOutput {
@@ -123,6 +127,8 @@ interface DynamicGraphRunInput {
   readonly tracer?: OrchestrationTracer;
   readonly statusChannel?: StatusChannel;
   readonly aggregator?: RunStatusAggregator;
+  readonly model?: LanguageModel;
+  readonly resolveModel?: SupervisorDeps['resolveModel'];
 }
 
 // ─── Deps ────────────────────────────────────────────────────────────────────
@@ -168,7 +174,9 @@ export class SupervisorAgent {
       perm, runContext, statusChannel, aggregator, permittedTools, tracer,
       approvalGate, memoryContext, conversationSummary, groupContext, groupContextParts, groupContextSystemHeader, inlineImageUrls, chatId,
     } = input;
-    const { model, agentResolver, todoRepo, prisma, logger, clock } = this.deps;
+    const { agentResolver, todoRepo, prisma, logger, clock } = this.deps;
+    const model = input.model ?? this.deps.model;
+    const resolveModel = input.resolveModel ?? this.deps.resolveModel;
 
     const log = logger.child({ service: 'supervisor', userId: runContext.userId });
 
@@ -202,6 +210,8 @@ export class SupervisorAgent {
         ...(tracer ? { tracer } : {}),
         statusChannel,
         aggregator,
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.resolveModel ? { resolveModel: input.resolveModel } : {}),
       });
 
       if (graphResult.ok) {
@@ -268,7 +278,7 @@ export class SupervisorAgent {
     const { geminiApiKey } = this.deps;
     const agentCtx = {
       model,
-      ...(this.deps.resolveModel ? { resolveModel: this.deps.resolveModel } : {}),
+      ...(resolveModel ? { resolveModel } : {}),
       allTools: permittedTools,
       perm,
       runContext,
@@ -481,6 +491,7 @@ export class SupervisorAgent {
               });
               const lastTool = innerCalled[innerCalled.length - 1];
               if (lastTool) aggregator.recordFailure(lastTool, errorMsg);
+              throw chunk.error instanceof Error ? chunk.error : new Error(errorMsg);
             }
           }
 
@@ -558,6 +569,15 @@ export class SupervisorAgent {
     }
 
     // ── 6. Ensure we have some reply text ─────────────────────────────────────
+    if (isInternalHistoryMarker(finalText)) {
+      log.error('supervisor.internal_history_marker_rejected', { reply: finalText });
+      return err(new OrchestrationError({
+        stage: 'synthesize',
+        reason: 'llm_invalid_output',
+        message: 'Supervisor returned internal conversation metadata instead of a user response.',
+      }));
+    }
+
     if (!finalText.trim()) {
       log.warn('supervisor.empty_reply', {
         toolsCalled,
@@ -612,10 +632,10 @@ export class SupervisorAgent {
       }));
     }
 
-    const graph = this.deps.dynamicSupervisorGraph ?? buildDynamicSupervisorGraph({
-      model: this.deps.model,
+    const graph = (!input.model && !input.resolveModel ? this.deps.dynamicSupervisorGraph : undefined) ?? buildDynamicSupervisorGraph({
+      model: input.model ?? this.deps.model,
       ...(this.deps.defaultModel ? { defaultModel: this.deps.defaultModel } : {}),
-      ...(this.deps.resolveModel ? { resolveModel: this.deps.resolveModel } : {}),
+      ...((input.resolveModel ?? this.deps.resolveModel) ? { resolveModel: (input.resolveModel ?? this.deps.resolveModel)! } : {}),
       agentCatalogCache: this.deps.agentCatalogCache,
       todoRepo: this.deps.todoRepo,
       prisma: this.deps.prisma,
@@ -696,6 +716,18 @@ export class SupervisorAgent {
     }
 
     const finalText = (output.supervisorResult ?? 'Done.').trim() || 'Done.';
+    if (isInternalHistoryMarker(finalText)) {
+      input.tracer?.emit({
+        phase: 'error', eventType: 'run_failed', actorType: 'supervisor',
+        title: 'Internal history marker rejected', status: 'error',
+        payload: { stage: 'synthesis', reason: 'internal_history_marker' },
+      });
+      return err(new OrchestrationError({
+        stage: 'synthesize',
+        reason: 'llm_invalid_output',
+        message: 'Supervisor returned internal conversation metadata instead of a user response.',
+      }));
+    }
     input.tracer?.emit({
       phase: 'complete', eventType: 'supervisor_complete',
       actorType: 'supervisor', title: 'Dynamic supervisor graph complete',
