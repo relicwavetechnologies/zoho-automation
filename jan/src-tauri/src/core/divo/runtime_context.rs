@@ -8,6 +8,44 @@ pub const DIVO_RUNTIME_CONTEXT_FILE: &str = "divo-runtime-context.json";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct DivoCapabilitySkill {
+    pub id: String,
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DivoCapabilityTool {
+    pub tool_id: String,
+    pub actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DivoZohoConnectionHint {
+    pub accessible_count: usize,
+    pub connection_id: Option<String>,
+    pub label: Option<String>,
+    pub access: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DivoCapabilityBootstrap {
+    pub version: u8,
+    pub department_function: String,
+    pub company_role: String,
+    pub department_role: String,
+    pub preferred_skills: Vec<DivoCapabilitySkill>,
+    pub preferred_tools: Vec<DivoCapabilityTool>,
+    pub routing_hints: Vec<String>,
+    pub zoho_connection: Option<DivoZohoConnectionHint>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DivoRuntimeContext {
     pub department_id: Option<String>,
     pub department_name: Option<String>,
@@ -15,6 +53,8 @@ pub struct DivoRuntimeContext {
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub departments: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_bootstrap: Option<DivoCapabilityBootstrap>,
 }
 
 pub fn runtime_context_path(agent_dir: &Path) -> PathBuf {
@@ -59,6 +99,29 @@ mod tests {
             persona_prompt: "Use verified records.".to_string(),
             version: Some("2026-07-11T00:00:00.000Z".to_string()),
             departments: vec!["Finance".to_string(), "Operations".to_string()],
+            capability_bootstrap: Some(DivoCapabilityBootstrap {
+                version: 1,
+                department_function: "finance".to_string(),
+                company_role: "MEMBER".to_string(),
+                department_role: "FINANCE_MANAGER".to_string(),
+                preferred_skills: vec![DivoCapabilitySkill {
+                    id: "skill-finance".to_string(),
+                    slug: "finance-ops-core".to_string(),
+                    name: "Finance Ops Core".to_string(),
+                    description: "Route broad finance questions.".to_string(),
+                }],
+                preferred_tools: vec![DivoCapabilityTool {
+                    tool_id: "zohoBooks".to_string(),
+                    actions: vec!["read".to_string()],
+                }],
+                routing_hints: vec!["Unpaid invoices use Zoho Books.".to_string()],
+                zoho_connection: Some(DivoZohoConnectionHint {
+                    accessible_count: 1,
+                    connection_id: Some("connection-1".to_string()),
+                    label: Some("Finance Books".to_string()),
+                    access: Some("read_write".to_string()),
+                }),
+            }),
         };
 
         write_runtime_context(&path, &context).unwrap();
@@ -81,6 +144,7 @@ mod tests {
             persona_prompt: String::new(),
             version: None,
             departments: vec!["Finance".to_string(), "Operations".to_string()],
+            capability_bootstrap: None,
         };
 
         write_runtime_context(&path, &context).unwrap();

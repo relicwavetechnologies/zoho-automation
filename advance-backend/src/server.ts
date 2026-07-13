@@ -377,6 +377,8 @@ export const createServer = (c: Container) => {
       zohoConnectionRepo:     c.zohoConnectionRepo,
       larkUserAuthLinkRepo:   c.larkUserAuthLinkRepo,
       connectionRepo:         c.integrationConnectionRepo,
+      permissions:            c.permissions,
+      skillCatalog:           c.skillCatalog,
       logger:                 c.logger,
       env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,

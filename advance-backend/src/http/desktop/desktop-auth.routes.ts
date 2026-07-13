@@ -11,6 +11,11 @@ import type { IntegrationConnectionRepository } from '../../infrastructure/persi
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
+import type { PermissionService } from '../../application/permissions/permission.service';
+import type { SkillCatalogService } from '../../application/skills/skill-catalog.service';
+import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
+import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
+import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 
 export interface DesktopAuthRoutesDeps {
   prisma:                 PrismaClient;
@@ -20,6 +25,8 @@ export interface DesktopAuthRoutesDeps {
   zohoConnectionRepo:     ZohoConnectionRepository;
   larkUserAuthLinkRepo:   LarkUserAuthLinkRepository;
   connectionRepo:         IntegrationConnectionRepository;
+  permissions:            PermissionService;
+  skillCatalog:           SkillCatalogService;
   logger:                 Logger;
   env:                    TypedEnv;
   memberJwtSecret:        string;
@@ -705,6 +712,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
             select: {
               id: true,
               name: true,
+              slug: true,
               agentConfig: {
                 select: {
                   desktopPersonaPrompt: true,
@@ -724,6 +732,47 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       const config = membership.department.agentConfig;
       const active = config?.isActive === true;
+      let capabilityBootstrap;
+      if (isFinanceDepartment(membership.department.name, membership.department.slug)) {
+        try {
+          const companyRole = String(res.locals['aiRole'] ?? 'MEMBER');
+          const permissionResult = await deps.permissions.resolve({
+            companyId: asCompanyId(companyId),
+            userId: asUserId(userId),
+            companyRole: asCompanyRoleSlug(companyRole),
+            departmentId: asDepartmentId(membership.department.id),
+            channel: 'desktop',
+          });
+          if (permissionResult.ok) {
+            const [visibleSkills, zohoConnectionsResult] = await Promise.all([
+              deps.skillCatalog.listVisible({
+                companyId,
+                departmentId: membership.department.id,
+                permission: permissionResult.value,
+              }),
+              deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId }),
+            ]);
+            capabilityBootstrap = buildDesktopCapabilityBootstrap({
+              departmentName: membership.department.name,
+              departmentSlug: membership.department.slug,
+              companyRole,
+              permission: permissionResult.value,
+              visibleSkills,
+              ...(zohoConnectionsResult.ok ? {
+                zohoConnections: zohoConnectionsResult.value.map(connection => ({
+                  connectionId: connection.connectionId,
+                  label: connection.label,
+                  access: connection.access,
+                })),
+              } : {}),
+            });
+          }
+        } catch (error) {
+          log.warn('runtime_context.capability_bootstrap_failed', {
+            error: String(error), userId, companyId, departmentId,
+          });
+        }
+      }
       res.json({
         success: true,
         data: {
@@ -731,6 +780,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           departmentName: membership.department.name,
           personaPrompt: active ? config.desktopPersonaPrompt : '',
           version: active ? config.updatedAt.toISOString() : null,
+          ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
         },
       });
     } catch (e) {

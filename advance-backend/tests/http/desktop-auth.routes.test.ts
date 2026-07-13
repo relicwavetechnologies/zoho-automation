@@ -23,7 +23,15 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     ),
     googleOAuthService: {} as any,
     larkUserAuthLinkRepo: {} as any,
-    connectionRepo: {} as any,
+    connectionRepo: {
+      listAccessibleZohoConnections: async () => ({ ok: true, value: [] }),
+    } as any,
+    permissions: {
+      resolve: async () => ({ ok: false, error: new Error('not configured in test') }),
+    } as any,
+    skillCatalog: {
+      listVisible: async () => [],
+    } as any,
     logger: noopLogger,
     memberJwtSecret: 'test-member-secret-32-bytes-long',
     backendPublicUrl: 'https://backend.example.com',
@@ -131,6 +139,83 @@ describe('desktop auth routes', () => {
 
     assert.equal(result.status, 403);
     assert.equal(result.body.success, false);
+  });
+
+  it('returns a permission-filtered Finance capability bootstrap', async () => {
+    const allowedActionsByTool = new Map([
+      ['zohoBooks', new Set(['read', 'create'])],
+      ['zohoCrm', new Set(['read'])],
+      ['webSearch', new Set(['read'])],
+    ]);
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        departmentMembership: {
+          findFirst: async () => ({
+            department: {
+              id: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
+              name: 'Finance',
+              slug: 'finance',
+              agentConfig: null,
+            },
+          }),
+        },
+      },
+      permissions: {
+        resolve: async () => ({
+          ok: true,
+          value: {
+            allowedToolIds: new Set(['zohoBooks', 'zohoCrm', 'webSearch']),
+            allowedActionsByTool,
+            decisions: [],
+            department: { roleSlug: 'FINANCE_MANAGER' },
+          },
+        }),
+      },
+      skillCatalog: {
+        listVisible: async () => [{
+          id: 'skill-finance',
+          slug: 'finance-ops-core',
+          name: 'Finance Ops Core',
+          description: 'Route broad finance questions.',
+          instructions: 'Backend recipe',
+          toolIds: ['zohoBooks', 'zohoCrm'],
+        }],
+      },
+      connectionRepo: {
+        listAccessibleZohoConnections: async () => ({
+          ok: true,
+          value: [{
+            connectionId: 'zoho-connection-1',
+            label: 'Finance Books',
+            access: 'read_write',
+          }],
+        }),
+      },
+    }));
+
+    const result = await callRoute(router, 'GET', '/runtime-context', {
+      query: { departmentId: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd' },
+      locals: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+      },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.capabilityBootstrap.departmentFunction, 'finance');
+    assert.equal(result.body.data.capabilityBootstrap.departmentRole, 'FINANCE_MANAGER');
+    assert.deepEqual(result.body.data.capabilityBootstrap.preferredTools, [
+      { toolId: 'zohoBooks', actions: ['read', 'create'] },
+      { toolId: 'zohoCrm', actions: ['read'] },
+      { toolId: 'webSearch', actions: ['read'] },
+    ]);
+    assert.deepEqual(result.body.data.capabilityBootstrap.zohoConnection, {
+      accessibleCount: 1,
+      connectionId: 'zoho-connection-1',
+      label: 'Finance Books',
+      access: 'read_write',
+    });
   });
 
   it('returns no persona when the department agent config is disabled', async () => {

@@ -5,8 +5,11 @@ const DEPARTMENT_PERSONA_OPEN_TAG = "<divo_department_persona>";
 const DEPARTMENT_PERSONA_CLOSE_TAG = "</divo_department_persona>";
 const MEMBER_DEPARTMENTS_OPEN_TAG = "<divo_member_departments>";
 const MEMBER_DEPARTMENTS_CLOSE_TAG = "</divo_member_departments>";
+const CAPABILITY_BOOTSTRAP_OPEN_TAG = "<divo_capability_bootstrap>";
+const CAPABILITY_BOOTSTRAP_CLOSE_TAG = "</divo_capability_bootstrap>";
 const departmentPersonaBlock = /\n?<divo_department_persona>[\s\S]*?<\/divo_department_persona>\n?/g;
 const memberDepartmentsBlock = /\n?<divo_member_departments>[\s\S]*?<\/divo_member_departments>\n?/g;
+const capabilityBootstrapBlock = /\n?<divo_capability_bootstrap>[\s\S]*?<\/divo_capability_bootstrap>\n?/g;
 const MAX_MEMBER_DEPARTMENTS = 50;
 const MAX_MEMBER_DEPARTMENT_NAME_LENGTH = 120;
 
@@ -16,6 +19,31 @@ export interface DivoDepartmentPersonaContext {
 	personaPrompt?: string | null;
 	version?: string | null;
 	departments?: string[] | null;
+	capabilityBootstrap?: DivoCapabilityBootstrap | null;
+}
+
+export interface DivoCapabilityBootstrap {
+	version: 1;
+	departmentFunction: "finance";
+	companyRole: string;
+	departmentRole: string;
+	preferredSkills: Array<{
+		id: string;
+		slug: string;
+		name: string;
+		description: string;
+	}>;
+	preferredTools: Array<{
+		toolId: string;
+		actions: string[];
+	}>;
+	routingHints: string[];
+	zohoConnection?: {
+		accessibleCount: number;
+		connectionId?: string;
+		label?: string;
+		access?: string;
+	};
 }
 
 export async function readDepartmentPersonaContext(
@@ -28,13 +56,15 @@ export async function readDepartmentPersonaContext(
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 		const data = parsed as Record<string, unknown>;
 		const departments = parseMemberDepartmentNames(data.departments);
-		if (typeof data.personaPrompt !== "string" && departments.length === 0) return null;
+		const capabilityBootstrap = parseCapabilityBootstrap(data.capabilityBootstrap);
+		if (typeof data.personaPrompt !== "string" && departments.length === 0 && !capabilityBootstrap) return null;
 		return {
 			departmentId: typeof data.departmentId === "string" ? data.departmentId : null,
 			departmentName: typeof data.departmentName === "string" ? data.departmentName : null,
 			personaPrompt: typeof data.personaPrompt === "string" ? data.personaPrompt : null,
 			version: typeof data.version === "string" ? data.version : null,
 			departments,
+			...(capabilityBootstrap ? { capabilityBootstrap } : {}),
 		};
 	} catch {
 		return null;
@@ -49,16 +79,72 @@ export function composeDivoSystemPrompt(
 	const withoutDivoContext = systemPrompt
 		.replace(departmentPersonaBlock, "")
 		.replace(memberDepartmentsBlock, "")
+		.replace(capabilityBootstrapBlock, "")
 		.trim();
 	const withCompanyPersona = withoutDivoContext.includes(COMPANY_PERSONA_TAG)
 		? withoutDivoContext
 		: [withoutDivoContext, companyPersonaPrompt].filter(Boolean).join("\n\n");
 	const departmentPersona = formatDepartmentPersona(departmentContext);
+	const capabilityBootstrap = formatCapabilityBootstrap(departmentContext?.capabilityBootstrap);
 	const memberDepartments = formatMemberDepartments(departmentContext);
 
-	return [withCompanyPersona, departmentPersona, memberDepartments]
+	return [withCompanyPersona, departmentPersona, capabilityBootstrap, memberDepartments]
 		.filter(Boolean)
 		.join("\n\n");
+}
+
+function formatCapabilityBootstrap(bootstrap: DivoCapabilityBootstrap | null | undefined): string | null {
+	if (!bootstrap) return null;
+
+	const lines = [
+		CAPABILITY_BOOTSTRAP_OPEN_TAG,
+		"This is a compact backend-generated, RBAC-filtered routing cache. It is guidance, not a permission grant; the backend must still validate every invocation.",
+		`Department function: ${safeInline(bootstrap.departmentFunction)}`,
+		`Company role: ${safeInline(bootstrap.companyRole)}`,
+		`Department role: ${safeInline(bootstrap.departmentRole)}`,
+	];
+
+	if (bootstrap.preferredSkills.length > 0) {
+		lines.push("", "Preferred skill fast paths:");
+		for (const skill of bootstrap.preferredSkills) {
+			lines.push(`- ${safeInline(skill.name)} [skillId=${safeInline(skill.id)}]: ${safeInline(skill.description)}`);
+		}
+	}
+
+	if (bootstrap.preferredTools.length > 0) {
+		lines.push("", "Preferred permitted tools:");
+		for (const tool of bootstrap.preferredTools) {
+			lines.push(`- ${safeInline(tool.toolId)}: ${tool.actions.map(safeInline).join(", ")}`);
+		}
+	}
+
+	if (bootstrap.zohoConnection) {
+		const connection = bootstrap.zohoConnection;
+		if (connection.accessibleCount === 1 && connection.connectionId) {
+			lines.push(
+				"",
+				`Zoho account fast path: exactly one accessible account, ${safeInline(connection.label ?? "Zoho account")} [connectionId=${safeInline(connection.connectionId)}, access=${safeInline(connection.access ?? "unknown")}]. Use this cached connectionId directly; backend validation remains authoritative.`,
+			);
+		} else {
+			lines.push("", `Accessible Zoho accounts: ${connection.accessibleCount}. Use connections.list when account choice is required.`);
+		}
+	}
+
+	if (bootstrap.routingHints.length > 0) {
+		lines.push("", "Fast routing:");
+		for (const hint of bootstrap.routingHints) lines.push(`- ${safeInline(hint)}`);
+	}
+
+	lines.push(
+		"",
+		"Routing policy:",
+		"- When the current request clearly matches a fast route above, skip divo_skill_resolve.",
+		"- Invoke the permitted backend tool directly when the exact operation is given above.",
+		"- When a specialist skillId is given above, call skills.get for that exact skill directly and skip resolver discovery.",
+		"- Use divo_skill_resolve for ambiguous, cross-domain, unsupported, or out-of-profile requests.",
+		CAPABILITY_BOOTSTRAP_CLOSE_TAG,
+	);
+	return lines.join("\n");
 }
 
 function formatDepartmentPersona(context: DivoDepartmentPersonaContext | null): string | null {
@@ -103,4 +189,82 @@ These are exact department names from the authenticated member's desktop session
 
 ${names.map((name) => `- ${name}`).join("\n")}
 ${MEMBER_DEPARTMENTS_CLOSE_TAG}`;
+}
+
+function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap | null {
+	if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+	const raw = candidate as Record<string, unknown>;
+	if (raw.version !== 1 || raw.departmentFunction !== "finance") return null;
+	const companyRole = boundedString(raw.companyRole, 120);
+	const departmentRole = boundedString(raw.departmentRole, 120);
+	if (!companyRole || !departmentRole) return null;
+
+	const preferredSkills = Array.isArray(raw.preferredSkills)
+		? raw.preferredSkills.slice(0, 4).flatMap((item) => {
+			if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+			const skill = item as Record<string, unknown>;
+			const id = boundedString(skill.id, 200);
+			const slug = boundedString(skill.slug, 160);
+			const name = boundedString(skill.name, 160);
+			const description = boundedString(skill.description, 500);
+			return id && slug && name && description ? [{ id, slug, name, description }] : [];
+		})
+		: [];
+
+	const preferredTools = Array.isArray(raw.preferredTools)
+		? raw.preferredTools.slice(0, 8).flatMap((item) => {
+			if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+			const tool = item as Record<string, unknown>;
+			const toolId = boundedString(tool.toolId, 120);
+			const actions = Array.isArray(tool.actions)
+				? tool.actions.slice(0, 8).flatMap(action => boundedString(action, 40) ?? [])
+				: [];
+			return toolId && actions.length > 0 ? [{ toolId, actions }] : [];
+		})
+		: [];
+
+	const routingHints = Array.isArray(raw.routingHints)
+		? raw.routingHints.slice(0, 12).flatMap(hint => boundedString(hint, 500) ?? [])
+		: [];
+
+	let zohoConnection: DivoCapabilityBootstrap["zohoConnection"];
+	if (raw.zohoConnection && typeof raw.zohoConnection === "object" && !Array.isArray(raw.zohoConnection)) {
+		const connection = raw.zohoConnection as Record<string, unknown>;
+		if (Number.isInteger(connection.accessibleCount) && Number(connection.accessibleCount) >= 0) {
+			zohoConnection = {
+				accessibleCount: Math.min(Number(connection.accessibleCount), 1000),
+				...(boundedString(connection.connectionId, 200) ? { connectionId: boundedString(connection.connectionId, 200)! } : {}),
+				...(boundedString(connection.label, 200) ? { label: boundedString(connection.label, 200)! } : {}),
+				...(boundedString(connection.access, 80) ? { access: boundedString(connection.access, 80)! } : {}),
+			};
+		}
+	}
+
+	return {
+		version: 1,
+		departmentFunction: "finance",
+		companyRole,
+		departmentRole,
+		preferredSkills,
+		preferredTools,
+		routingHints,
+		...(zohoConnection ? { zohoConnection } : {}),
+	};
+}
+
+function boundedString(value: unknown, maxLength: number): string | null {
+	if (typeof value !== "string") return null;
+	const normalized = value.trim().replace(/\s+/g, " ");
+	if (!normalized || normalized.length > maxLength) return null;
+	return normalized;
+}
+
+function safeInline(value: string): string {
+	return value
+		.replaceAll(CAPABILITY_BOOTSTRAP_OPEN_TAG, "[capability block start]")
+		.replaceAll(CAPABILITY_BOOTSTRAP_CLOSE_TAG, "[capability block end]")
+		.replaceAll("<", "[")
+		.replaceAll(">", "]")
+		.replace(/[\r\n]+/g, " ")
+		.trim();
 }

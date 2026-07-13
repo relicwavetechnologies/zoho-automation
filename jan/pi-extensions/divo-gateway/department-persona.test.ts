@@ -71,6 +71,64 @@ describe("department persona", () => {
 		assert.doesNotMatch(prompt, /<divo_department_persona>/);
 	});
 
+	it("injects a compact Finance fast path and replaces stale capability context", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "divo-capability-"));
+		const path = join(directory, "runtime-context.json");
+		await writeFile(path, JSON.stringify({
+			departmentId: "dept-finance",
+			departmentName: "Finance",
+			capabilityBootstrap: {
+				version: 1,
+				departmentFunction: "finance",
+				companyRole: "MEMBER",
+				departmentRole: "FINANCE_MANAGER",
+				preferredSkills: [{
+					id: "skill-finance",
+					slug: "finance-ops-core",
+					name: "Finance Ops Core",
+					description: "Route broad finance questions.",
+				}],
+				preferredTools: [{ toolId: "zohoBooks", actions: ["read", "create"] }],
+				routingHints: ["Unpaid invoices -> invoke zohoBooks with op build_overdue_report."],
+				zohoConnection: {
+					accessibleCount: 1,
+					connectionId: "connection-1",
+					label: "Finance Books",
+					access: "read_write",
+				},
+			},
+		}));
+
+		const context = await readDepartmentPersonaContext(path);
+		const first = composeDivoSystemPrompt("Base prompt", COMPANY_PROMPT, context);
+		assert.match(first, /<divo_capability_bootstrap>/);
+		assert.match(first, /Department function: finance/);
+		assert.match(first, /Finance Ops Core \[skillId=skill-finance\]/);
+		assert.match(first, /connectionId=connection-1/);
+		assert.match(first, /skip divo_skill_resolve/);
+
+		const refreshed = composeDivoSystemPrompt(first, COMPANY_PROMPT, {
+			departmentName: "Engineering",
+			departments: ["Engineering"],
+		});
+		assert.doesNotMatch(refreshed, /<divo_capability_bootstrap>/);
+		assert.doesNotMatch(refreshed, /connection-1/);
+	});
+
+	it("rejects malformed capability bootstrap data", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "divo-capability-invalid-"));
+		const path = join(directory, "runtime-context.json");
+		await writeFile(path, JSON.stringify({
+			capabilityBootstrap: {
+				version: 1,
+				departmentFunction: "finance",
+				companyRole: "",
+				departmentRole: "FINANCE_MANAGER",
+			},
+		}));
+		assert.equal(await readDepartmentPersonaContext(path), null);
+	});
+
 	it("omits malformed or empty cached guidance", async () => {
 		assert.equal(await readDepartmentPersonaContext("/does/not/exist"), null);
 		const prompt = composeDivoSystemPrompt("Base prompt", COMPANY_PROMPT, {

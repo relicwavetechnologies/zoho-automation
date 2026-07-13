@@ -93,6 +93,7 @@ fn member_departments_runtime_context(session: &DivoSession) -> DivoRuntimeConte
         persona_prompt: String::new(),
         version: None,
         departments: member_department_names(session),
+        capability_bootstrap: None,
     }
 }
 

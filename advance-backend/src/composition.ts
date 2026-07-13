@@ -198,6 +198,7 @@ export interface Container {
   deptToolPermRepo: DeptToolPermissionRepository;
   deptUserOverrideRepo: DeptUserOverrideRepository;
   toolRegistry: ToolRegistry;
+  skillCatalog: SkillCatalogService;
   // Agent admin CRUD
   agentAdminService:      AgentAdminService;
   agentCatalogCache:      AgentCatalogCache;
@@ -1104,6 +1105,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     deptToolPermRepo,
     deptUserOverrideRepo,
     toolRegistry,
+    skillCatalog,
     // Agent admin CRUD
     agentAdminService,
     agentCatalogCache,
