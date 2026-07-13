@@ -48,6 +48,7 @@ import { handleZohoList, type ZohoListCsvColumn } from '../../../zoho/zoho-list-
 import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../../infrastructure/zoho/zoho-books-paginated.client';
 import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../../infrastructure/zoho/zoho-books-schema.cache';
 import { runInSandbox, arrayToCsv, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
+import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../../shared/zoho-personalization';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
@@ -340,7 +341,7 @@ const singleDateValue = (input: string): string => parseDateFilter(input).to;
 async function executeScriptMode(
   args: Args,
   ctx: ToolExecutionContext,
-  scriptDeps: { booksClient: ZohoBooksPaginatedClient; cloudinary: CloudinaryAdapter; csvLinkTtl?: number | undefined; scopeFilter?: Record<string, unknown> },
+  scriptDeps: { booksClient: ZohoBooksPaginatedClient; cloudinary: CloudinaryAdapter; csvLinkTtl?: number | undefined; scopeFilter?: Record<string, unknown>; requesterEmail?: string },
 ): Promise<Result<Res, ToolError>> {
   const { companyId } = ctx.runContext;
   const moduleName = listOpToModule[args.op]! as ZohoBooksModule;
@@ -372,7 +373,10 @@ async function executeScriptMode(
   const currencyUtils = buildCurrencyUtilities(rates);
 
   const schema = getModuleSchema(moduleName);
-  const enriched = injectSyntheticFields(fetchResult.items, schema, currencyUtils);
+  const scopedItems = scriptDeps.requesterEmail
+    ? filterZohoRecordsByEmail(fetchResult.items, scriptDeps.requesterEmail)
+    : fetchResult.items;
+  const enriched = injectSyntheticFields(scopedItems, schema, currencyUtils);
 
   const items = enriched.map(item => {
     const slim: Record<string, unknown> = {};
@@ -390,7 +394,7 @@ async function executeScriptMode(
 
   ctx.logger.info('zohoBooks.script_mode.run', {
     companyId, module: moduleName,
-    recordsFetched: items.length, truncated: fetchResult.truncated,
+    recordsFetched: items.length, sourceRecordsFetched: fetchResult.items.length, truncated: fetchResult.truncated,
   });
 
   let sandboxResult;
@@ -542,14 +546,35 @@ export const createZohoBooksTool = (deps: {
     };
 
     const zohoReadScope = ctx.perm.department?.zohoReadScope ?? 'show_all';
-    const requesterEmail = ctx.runContext.requesterEmail?.trim().toLowerCase();
-    const isPersonalized = zohoReadScope === 'personalized' && !!requesterEmail;
-    if (isPersonalized) {
+    const requesterEmail = normalizedEmail(ctx.runContext.requesterEmail);
+    const personalizedScope = zohoReadScope === 'personalized';
+    if (personalizedScope && !requesterEmail) {
+      return err(new ToolError({
+        toolId: 'zohoBooks',
+        reason: 'permission_denied',
+        message: 'Personalized Zoho access requires the signed-in member email.',
+      }));
+    }
+    if (personalizedScope) {
       ctx.logger.info('zoho_books.scope.personalized', { requesterEmail, op: args.op });
+      if (!readOps.has(args.op)) {
+        return err(new ToolError({
+          toolId: 'zohoBooks',
+          reason: 'permission_denied',
+          message: 'Zoho write actions are unavailable while this role is restricted to personalized data.',
+        }));
+      }
     }
 
     // ── Report operations (use financeOps — deep pagination + CSV) ──────────
     if (args.op === 'build_overdue_report') {
+      if (personalizedScope) {
+        return err(new ToolError({
+          toolId: 'zohoBooks',
+          reason: 'permission_denied',
+          message: 'Overdue reports aggregate department-wide invoices and are unavailable for personalized Zoho access.',
+        }));
+      }
       ctx.onProgress?.('Building overdue invoice report…');
       try {
         const report = await deps.financeOps.buildOverdueReport({
@@ -576,7 +601,7 @@ export const createZohoBooksTool = (deps: {
       }
     }
 
-    const scopeFilter: Record<string, unknown> = isPersonalized ? { email: requesterEmail } : {};
+    const scopeFilter: Record<string, unknown> = personalizedScope ? { email: requesterEmail! } : {};
 
     // ── Script mode (auto-escalate list ops to exhaustive fetch + sandbox) ──
     if (args.script) {
@@ -586,7 +611,7 @@ export const createZohoBooksTool = (deps: {
           booksClient: deps.booksClient,
           cloudinary:  deps.cloudinary,
           csvLinkTtl:  deps.csvLinkTtl,
-          ...(isPersonalized ? { scopeFilter } : {}),
+          ...(personalizedScope ? { scopeFilter, requesterEmail: requesterEmail! } : {}),
         });
       }
       return err(new ToolError({
@@ -603,7 +628,7 @@ export const createZohoBooksTool = (deps: {
           booksClient: deps.booksClient,
           cloudinary:  deps.cloudinary,
           csvLinkTtl:  deps.csvLinkTtl,
-          ...(isPersonalized ? { scopeFilter } : {}),
+          ...(personalizedScope ? { scopeFilter, requesterEmail: requesterEmail! } : {}),
         },
       );
     }
@@ -721,7 +746,9 @@ export const createZohoBooksTool = (deps: {
 
         case 'get_invoice': {
           if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for get_invoice' }));
-          return ok({ success: true, data: formatZohoResult(await client.getInvoice(args.invoiceId)) });
+          const invoice = await client.getInvoice(args.invoiceId);
+          if (personalizedScope && !recordMatchesZohoEmail(invoice, requesterEmail!)) return ok({ success: true, data: null, message: 'Invoice not found' });
+          return ok({ success: true, data: formatZohoResult(invoice) });
         }
 
         case 'create_invoice': {
@@ -776,7 +803,9 @@ export const createZohoBooksTool = (deps: {
 
         case 'get_contact': {
           if (!args.contactId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'contactId required for get_contact' }));
-          return ok({ success: true, data: formatZohoResult(await client.getContact(args.contactId)) });
+          const contact = await client.getContact(args.contactId);
+          if (personalizedScope && !recordMatchesZohoEmail(contact, requesterEmail!)) return ok({ success: true, data: null, message: 'Contact not found' });
+          return ok({ success: true, data: formatZohoResult(contact) });
         }
 
         case 'list_expenses':
@@ -827,6 +856,7 @@ export const createZohoBooksTool = (deps: {
           }));
 
         case 'get_chart_of_accounts': {
+          if (personalizedScope) return err(new ToolError({ toolId: 'zohoBooks', reason: 'permission_denied', message: 'Chart of accounts is unavailable for personalized Zoho access.' }));
           const data = await deps.booksClient.getEndpoint({
             companyId,
             ...connectionContext,
@@ -837,6 +867,7 @@ export const createZohoBooksTool = (deps: {
         }
 
         case 'get_account_balance': {
+          if (personalizedScope) return err(new ToolError({ toolId: 'zohoBooks', reason: 'permission_denied', message: 'Account balances are unavailable for personalized Zoho access.' }));
           const data = args.accountId
             ? await deps.booksClient.getEndpoint({
               companyId,
@@ -883,6 +914,7 @@ export const createZohoBooksTool = (deps: {
         }
 
         case 'get_tax_summary': {
+          if (personalizedScope) return err(new ToolError({ toolId: 'zohoBooks', reason: 'permission_denied', message: 'Tax summaries are unavailable for personalized Zoho access.' }));
           const data = await deps.booksClient.getEndpoint({
             companyId,
             ...connectionContext,

@@ -8,6 +8,9 @@ import {
   type DeptRoleView,
 } from '../departments/department-admin.service';
 import type { AuditService } from '../observability/audit.service';
+import type { PermissionService } from '../permissions/permission.service';
+import { ManagerApprovalConfigSchema, type ManagerApprovalConfig } from '../approval/approval.types';
+import { getDesktopToolPolicy } from '../../domain/tools/tool-policy';
 
 export type DesktopDepartmentActor = {
   userId: string;
@@ -24,9 +27,12 @@ export class DesktopDepartmentManagementError extends Error {
 
 export type DepartmentManagementSnapshot = Pick<DeptDetail, 'department' | 'roles' | 'memberships'>;
 
+export type DepartmentManagerApprovalPolicy = Pick<ManagerApprovalConfig, 'enabled' | 'requiredActions'>;
+
 type DepartmentManagerServiceDeps = {
   prisma: PrismaClient;
   departmentAdminService: DepartmentAdminService;
+  permissions: PermissionService;
   auditService: AuditService;
   logger: Logger;
 };
@@ -198,5 +204,92 @@ export class DesktopDepartmentManagementService {
     if (!result.ok) this.throwResultError(result);
     this.audit(actor, departmentId, 'department_manager.membership.removed', { userId });
     return result.value;
+  }
+
+  async managerApprovalPolicy(actor: DesktopDepartmentActor, departmentId: string): Promise<DepartmentManagerApprovalPolicy> {
+    await this.requireManager(actor, departmentId);
+    const config = await this.deps.prisma.departmentAgentConfig.findFirst({
+      where: { departmentId, department: { companyId: actor.companyId, status: 'active' } },
+      select: { managerApprovalJson: true },
+    });
+    if (!config) throw new DesktopDepartmentManagementError('not_found', 'Department approval configuration is not available');
+    const parsed = ManagerApprovalConfigSchema.safeParse(config.managerApprovalJson ?? {});
+    if (!parsed.success) throw new DesktopDepartmentManagementError('invalid', 'Department approval configuration is invalid');
+    return { enabled: parsed.data.enabled, requiredActions: parsed.data.requiredActions };
+  }
+
+  async setManagerApprovalPolicy(
+    actor: DesktopDepartmentActor,
+    departmentId: string,
+    input: DepartmentManagerApprovalPolicy,
+  ): Promise<DepartmentManagerApprovalPolicy> {
+    await this.requireManager(actor, departmentId);
+    const normalized = this.normalizeManagerApprovalPolicy(input);
+    await this.revalidateManager(actor, departmentId);
+
+    const config = await this.deps.prisma.departmentAgentConfig.findFirst({
+      where: { departmentId, department: { companyId: actor.companyId, status: 'active' } },
+      select: { id: true, managerApprovalJson: true },
+    });
+    if (!config) throw new DesktopDepartmentManagementError('not_found', 'Department approval configuration is not available');
+    const current = ManagerApprovalConfigSchema.safeParse(config.managerApprovalJson ?? {});
+    if (!current.success) throw new DesktopDepartmentManagementError('invalid', 'Department approval configuration is invalid');
+
+    await this.deps.prisma.departmentAgentConfig.update({
+      where: { id: config.id },
+      data: {
+        managerApprovalJson: {
+          ...current.data,
+          enabled: normalized.enabled,
+          requiredActions: normalized.requiredActions,
+          // The desktop manages exact tool/action gates. Retire broad legacy
+          // selectors here so the visible policy is the effective policy.
+          requiredActionGroups: [],
+          requiredToolIds: [],
+        },
+        updatedBy: actor.userId,
+      },
+    });
+    await this.deps.permissions.invalidateDept(actor.companyId, departmentId);
+    this.audit(actor, departmentId, 'department_manager.approval_policy.updated', { requiredActionCount: normalized.requiredActions.reduce((count, entry) => count + entry.actions.length, 0) });
+    return normalized;
+  }
+
+  async setZohoPersonalizedScope(
+    actor: DesktopDepartmentActor,
+    departmentId: string,
+    roleId: string,
+    personalized: boolean,
+  ): Promise<{ roleId: string; zohoReadScope: 'personalized' | 'show_all' }> {
+    await this.requireManager(actor, departmentId);
+    const role = await this.deps.prisma.departmentRole.findFirst({
+      where: { id: roleId, departmentId, department: { companyId: actor.companyId, status: 'active' } },
+      select: { id: true },
+    });
+    if (!role) throw new DesktopDepartmentManagementError('not_found', 'Department role not found');
+    await this.revalidateManager(actor, departmentId);
+    const zohoReadScope = personalized ? 'personalized' as const : 'show_all' as const;
+    await this.deps.prisma.departmentRole.update({ where: { id: role.id }, data: { zohoReadScope } });
+    await this.deps.permissions.invalidateDept(actor.companyId, departmentId);
+    this.audit(actor, departmentId, 'department_manager.zoho_scope.updated', { roleId, zohoReadScope });
+    return { roleId, zohoReadScope };
+  }
+
+  private normalizeManagerApprovalPolicy(input: DepartmentManagerApprovalPolicy): DepartmentManagerApprovalPolicy {
+    const byTool = new Map<string, Set<string>>();
+    for (const entry of input.requiredActions) {
+      const policy = getDesktopToolPolicy(entry.toolId);
+      if (policy?.kind !== 'configurable') throw new DesktopDepartmentManagementError('invalid', `Unsupported approval tool: ${entry.toolId}`);
+      for (const action of entry.actions) {
+        if (action === 'read' || !policy.supportedActions.includes(action)) {
+          throw new DesktopDepartmentManagementError('invalid', `Unsupported approval action: ${entry.toolId}.${action}`);
+        }
+        const actions = byTool.get(entry.toolId) ?? new Set<string>();
+        actions.add(action);
+        byTool.set(entry.toolId, actions);
+      }
+    }
+    const requiredActions = [...byTool.entries()].map(([toolId, actions]) => ({ toolId, actions: [...actions].sort() }));
+    return { enabled: input.enabled && requiredActions.length > 0, requiredActions };
   }
 }

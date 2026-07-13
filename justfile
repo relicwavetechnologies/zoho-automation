@@ -1,6 +1,12 @@
 default:
     @just --list --unsorted
 
+# Run workspace type checks without pnpm's non-interactive package reconciliation.
+# Uses each project's already-installed TypeScript binary; no extra memory is needed.
+typecheck:
+    cd advance-backend && ./node_modules/.bin/tsc --noEmit -p tsconfig.json
+    cd jan/web-app && ./node_modules/.bin/tsc -b
+
 # Build, sign, notarize, staple, and verify ARM64 and Intel macOS DMGs.
 # Pass aarch64 or x86_64 to build only one architecture.
 local-dmg target="all":

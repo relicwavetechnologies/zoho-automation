@@ -22,6 +22,14 @@ const roleCreateSchema = z.object({
 const roleUpdateSchema = z.object({ name: z.string().trim().min(1).max(100) }).strict();
 const membershipSchema = z.object({ userId: z.string().trim().min(1), roleId: z.string().trim().min(1) }).strict();
 const candidateQuerySchema = z.object({ query: z.string().trim().min(1).max(120) });
+const managerApprovalSchema = z.object({
+  enabled: z.boolean(),
+  requiredActions: z.array(z.object({
+    toolId: z.string().trim().min(1).max(120),
+    actions: z.array(z.string().trim().min(1).max(60)).max(20),
+  }).strict()).max(50),
+}).strict();
+const zohoScopeSchema = z.object({ personalized: z.boolean() }).strict();
 
 function actor(res: Response) {
   return { userId: res.locals.userId as string, companyId: res.locals.companyId as string };
@@ -49,6 +57,22 @@ export function createDesktopDepartmentRoutes(deps: DesktopDepartmentRoutesDeps)
     const parsed = candidateQuerySchema.safeParse(req.query);
     if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'query is required' }); return; }
     try { res.json(await deps.service.searchCandidates(actor(res), req.params.departmentId!, parsed.data.query)); } catch (error) { respondError(res, error); }
+  });
+
+  router.get('/departments/:departmentId/manager-approval', memberAuth, async (req: Request, res: Response) => {
+    try { res.json(await deps.service.managerApprovalPolicy(actor(res), req.params.departmentId!)); } catch (error) { respondError(res, error); }
+  });
+
+  router.put('/departments/:departmentId/manager-approval', memberAuth, async (req: Request, res: Response) => {
+    const parsed = managerApprovalSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'enabled and requiredActions are required' }); return; }
+    try { res.json(await deps.service.setManagerApprovalPolicy(actor(res), req.params.departmentId!, parsed.data)); } catch (error) { respondError(res, error); }
+  });
+
+  router.put('/departments/:departmentId/roles/:roleId/zoho-scope', memberAuth, async (req: Request, res: Response) => {
+    const parsed = zohoScopeSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'personalized is required' }); return; }
+    try { res.json(await deps.service.setZohoPersonalizedScope(actor(res), req.params.departmentId!, req.params.roleId!, parsed.data.personalized)); } catch (error) { respondError(res, error); }
   });
 
   router.post('/departments/:departmentId/roles', memberAuth, async (req: Request, res: Response) => {

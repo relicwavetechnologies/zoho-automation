@@ -991,6 +991,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const desktopDepartmentManagementService = new DesktopDepartmentManagementService({
     prisma,
     departmentAdminService,
+    permissions,
     auditService,
     logger: logger.child({ service: 'desktop-department-management' }),
   });

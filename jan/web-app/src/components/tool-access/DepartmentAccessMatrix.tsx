@@ -11,7 +11,11 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
   getDivoToolManageSnapshot,
+  getDivoDepartmentManagerApproval,
+  setDivoDepartmentManagerApproval,
   setDivoDepartmentRoleToolAction,
+  setDivoDepartmentZohoPersonalizedScope,
+  type DepartmentManagerApprovalPolicy,
   type DepartmentManagementRole,
   type DepartmentToolManageSnapshot,
   type DivoToolInventoryItem,
@@ -30,6 +34,11 @@ export function DepartmentAccessMatrix({ department, items, query, roles, onUpda
   const [loading, setLoading] = useState(true)
   const [failedCount, setFailedCount] = useState(0)
   const [saving, setSaving] = useState<string | null>(null)
+  const [approvalPolicy, setApprovalPolicy] = useState<DepartmentManagerApprovalPolicy | null>(null)
+  const [approvalError, setApprovalError] = useState<string | null>(null)
+  const [approvalSaving, setApprovalSaving] = useState<string | null>(null)
+  const [zohoScopes, setZohoScopes] = useState<Record<string, 'personalized' | 'show_all'>>({})
+  const [zohoScopeSaving, setZohoScopeSaving] = useState<string | null>(null)
   const requestGeneration = useRef(0)
 
   const manageableItems = useMemo(() => items.filter(item => item.managementScopes.some(scope => scope.kind === 'department' && scope.department.id === department.id)), [department.id, items])
@@ -47,19 +56,29 @@ export function DepartmentAccessMatrix({ department, items, query, roles, onUpda
   departmentRef.current = department
   const manageableItemsRef = useRef(manageableItems)
   manageableItemsRef.current = manageableItems
+  const rolesRef = useRef(roles)
+  rolesRef.current = roles
 
   const load = useCallback(async () => {
     const generation = ++requestGeneration.current
     setLoading(true)
     const activeDepartment = departmentRef.current
-    const results = await Promise.allSettled(manageableItemsRef.current.map(async item => {
+    const [results, approvalResult] = await Promise.all([
+      Promise.allSettled(manageableItemsRef.current.map(async item => {
       const snapshot = await getDivoToolManageSnapshot(item.tool.toolId, { kind: 'department', department: activeDepartment })
       if (snapshot.scope.kind !== 'department') throw new Error('Expected department access snapshot')
       return [item.tool.toolId, snapshot as DepartmentToolManageSnapshot] as const
-    }))
+      })),
+      getDivoDepartmentManagerApproval(activeDepartment.id)
+        .then(policy => ({ policy, error: null }))
+        .catch(error => ({ policy: null, error: String(error) })),
+    ])
     if (requestGeneration.current !== generation) return
     setSnapshots(Object.fromEntries(results.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])))
     setFailedCount(results.filter(result => result.status === 'rejected').length)
+    setApprovalPolicy(approvalResult.policy)
+    setApprovalError(approvalResult.error)
+    setZohoScopes(Object.fromEntries(rolesRef.current.map(role => [role.id, role.zohoReadScope === 'show_all' ? 'show_all' : 'personalized'])))
     setLoading(false)
   }, [])
 
@@ -93,6 +112,46 @@ export function DepartmentAccessMatrix({ department, items, query, roles, onUpda
     }
   }
 
+  const requiresManagerApproval = (toolId: string, actionGroup: string) => approvalPolicy?.enabled === true && approvalPolicy.requiredActions.some(entry => entry.toolId === toolId && entry.actions.includes(actionGroup))
+
+  const updateApproval = async (toolId: string, actionGroup: string, required: boolean) => {
+    if (!approvalPolicy) return
+    const key = `${toolId}:${actionGroup}`
+    setApprovalSaving(key)
+    const selected = new Map(approvalPolicy.requiredActions.map(entry => [entry.toolId, new Set(entry.actions)]))
+    const actions = selected.get(toolId) ?? new Set<string>()
+    if (required) actions.add(actionGroup)
+    else actions.delete(actionGroup)
+    if (actions.size) selected.set(toolId, actions)
+    else selected.delete(toolId)
+    const requiredActions = [...selected.entries()].map(([selectedToolId, selectedActions]) => ({ toolId: selectedToolId, actions: [...selectedActions].sort() }))
+    const next = { enabled: requiredActions.length > 0, requiredActions }
+    try {
+      setApprovalPolicy(await setDivoDepartmentManagerApproval(department.id, next))
+      toast.success(required ? 'Manager approval required' : 'Manager approval removed')
+    } catch (error) {
+      toast.error('Could not update manager approval', { description: String(error) })
+      await load()
+    } finally {
+      setApprovalSaving(null)
+    }
+  }
+
+  const updateZohoScope = async (role: DepartmentManagementRole, personalized: boolean) => {
+    setZohoScopeSaving(role.id)
+    try {
+      const next = await setDivoDepartmentZohoPersonalizedScope(department.id, role.id, personalized)
+      setZohoScopes(current => ({ ...current, [role.id]: next.zohoReadScope }))
+      onUpdated()
+      toast.success(personalized ? 'Zoho data is now personalised' : 'Zoho data is now department-wide')
+    } catch (error) {
+      toast.error('Could not update Zoho data scope', { description: String(error) })
+      await load()
+    } finally {
+      setZohoScopeSaving(null)
+    }
+  }
+
   if (!manageableItems.length) return <MatrixState title="No department-managed tools" description={`Divo did not return any tools that ${department.name} managers can configure.`} />
   if (loading) return <Card className="border-border/70 bg-card/30 shadow-none"><CardHeader><CardTitle className="text-base">Loading access map</CardTitle><CardDescription>Checking each tool against current Divo policy.</CardDescription></CardHeader><CardContent className="flex flex-col gap-3">{[0, 1, 2, 3].map(item => <Skeleton className="h-10 w-full" key={item} />)}</CardContent></Card>
 
@@ -103,6 +162,13 @@ export function DepartmentAccessMatrix({ department, items, query, roles, onUpda
           <AlertTriangle />
           <AlertTitle>Some tool policies could not be loaded</AlertTitle>
           <AlertDescription>{failedCount} tool {failedCount === 1 ? 'snapshot is' : 'snapshots are'} missing from this map. <Button variant="link" size="sm" onClick={() => void load()}><RefreshCw data-icon="inline-start" />Retry</Button></AlertDescription>
+        </Alert>
+      ) : null}
+      {approvalError ? (
+        <Alert>
+          <AlertTriangle />
+          <AlertTitle>Manager approval controls are unavailable</AlertTitle>
+          <AlertDescription>Approval rules could not be loaded, so those switches are disabled. <Button variant="link" size="sm" onClick={() => void load()}><RefreshCw data-icon="inline-start" />Retry</Button></AlertDescription>
         </Alert>
       ) : null}
       <Card className="overflow-hidden border-border/70 bg-card/30 shadow-none">
@@ -116,6 +182,7 @@ export function DepartmentAccessMatrix({ department, items, query, roles, onUpda
               <TableRow>
                 <TableHead className="min-w-56">Tool capability</TableHead>
                 {roles.map(role => <TableHead className="min-w-32 text-center" key={role.id}>{role.name}</TableHead>)}
+                <TableHead className="min-w-40 text-center">Manager approval</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -141,10 +208,27 @@ export function DepartmentAccessMatrix({ department, items, query, roles, onUpda
                       </TableCell>
                     )
                   })}
+                  <TableCell className="text-center">
+                    {actionGroup === 'read' ? <span className="text-xs text-muted-foreground">Not needed</span> : (
+                      <Switch aria-label={`Require manager approval for ${item.tool.name} ${actionGroup}`} checked={requiresManagerApproval(item.tool.toolId, actionGroup)} loading={approvalSaving === `${item.tool.toolId}:${actionGroup}`} disabled={approvalSaving !== null || approvalPolicy === null} onCheckedChange={required => void updateApproval(item.tool.toolId, actionGroup, required)} />
+                    )}
+                  </TableCell>
                 </TableRow>
-              )) : <TableRow><TableCell colSpan={roles.length + 1} className="h-28 text-center text-muted-foreground">No tool capabilities match this search.</TableCell></TableRow>}
+              )) : <TableRow><TableCell colSpan={roles.length + 2} className="h-28 text-center text-muted-foreground">No tool capabilities match this search.</TableCell></TableRow>}
             </TableBody>
           </Table>
+        </CardContent>
+      </Card>
+      <Card className="border-border/70 bg-card/30 shadow-none">
+        <CardHeader className="gap-1 p-4">
+          <CardTitle className="text-base">Zoho data visibility</CardTitle>
+          <CardDescription>When enabled, members in the role receive only Zoho records that match their signed-in email. Turn it off to allow the department’s wider Zoho data.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-2 p-4 pt-0 sm:grid-cols-2">
+          {roles.map(role => {
+            const personalized = (zohoScopes[role.id] ?? role.zohoReadScope) !== 'show_all'
+            return <div className="flex items-center justify-between gap-3 rounded-md border border-border/70 p-3" key={role.id}><div><p className="text-sm font-medium">{role.name}</p><p className="text-xs text-muted-foreground">{personalized ? 'Personal data only' : 'All department data'}</p></div><Switch aria-label={`${role.name} personalised Zoho data`} checked={personalized} loading={zohoScopeSaving === role.id} disabled={zohoScopeSaving !== null} onCheckedChange={checked => void updateZohoScope(role, checked)} /></div>
+          })}
         </CardContent>
       </Card>
     </div>

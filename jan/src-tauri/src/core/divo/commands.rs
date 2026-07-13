@@ -1510,6 +1510,68 @@ pub async fn divo_department_manage_snapshot<R: Runtime>(
     .await
 }
 
+/// Load the per-department manager approval policy shown in the Access Map.
+#[tauri::command]
+pub async fn divo_department_manager_approval<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        reqwest::Method::GET,
+        &format!("/departments/{department_id}/manager-approval"),
+        None,
+        "Divo department manager approval policy",
+        true,
+    )
+    .await
+}
+
+/// Persist exact tool/action manager approval gates for one managed department.
+#[tauri::command]
+pub async fn divo_department_set_manager_approval<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+    enabled: bool,
+    required_actions: Value,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        reqwest::Method::PUT,
+        &format!("/departments/{department_id}/manager-approval"),
+        Some(json!({ "enabled": enabled, "requiredActions": required_actions })),
+        "Divo department manager approval update",
+        true,
+    )
+    .await
+}
+
+/// Set whether a department role's Zoho reads are email-personalised.
+#[tauri::command]
+pub async fn divo_department_set_zoho_personalized_scope<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+    role_id: String,
+    personalized: bool,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    let role_id = require_divo_tool_identifier(&role_id, "roleId")?;
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        reqwest::Method::PUT,
+        &format!("/departments/{department_id}/roles/{role_id}/zoho-scope"),
+        Some(json!({ "personalized": personalized })),
+        "Divo department Zoho data scope update",
+        true,
+    )
+    .await
+}
+
 /// Search the synced directory for an authorised department-management flow.
 #[tauri::command]
 pub async fn divo_department_search_candidates<R: Runtime>(

@@ -23,6 +23,7 @@ import type {
   ZohoBooksListResult,
   ZohoBooksOrg,
 } from '../../application/context-search/context-search.ports';
+import { filterZohoRecordsByEmail, isPersonalizedZohoScope, normalizedEmail, recordMatchesZohoEmail } from '../../shared/zoho-personalization';
 
 export class ZohoBooksSearchAdapter implements ZohoBooksPort {
   constructor(private readonly client: ZohoBooksPaginatedClient) {}
@@ -47,6 +48,8 @@ export class ZohoBooksSearchAdapter implements ZohoBooksPort {
     page:                     number;
     perPage:                  number;
   }): Promise<ZohoBooksListResult> {
+    const requesterEmail = normalizedEmail(input.requesterEmail);
+    if (isPersonalizedZohoScope(input.departmentZohoReadScope) && !requesterEmail) return { allowed: false, records: [] };
     let result: PaginatedResult;
     try {
       result = await this.client.listRecords({
@@ -64,7 +67,9 @@ export class ZohoBooksSearchAdapter implements ZohoBooksPort {
     return {
       allowed:        true,
       organizationId: result.organizationId,
-      records:        result.items,
+      records:        requesterEmail && isPersonalizedZohoScope(input.departmentZohoReadScope)
+        ? filterZohoRecordsByEmail(result.items, requesterEmail)
+        : result.items,
     };
   }
 
@@ -80,6 +85,8 @@ export class ZohoBooksSearchAdapter implements ZohoBooksPort {
     page:                     number;
     perPage:                  number;
   }): Promise<ZohoBooksListResult> {
+    const requesterEmail = normalizedEmail(input.requesterEmail);
+    if (isPersonalizedZohoScope(input.departmentZohoReadScope) && !requesterEmail) return { allowed: false, records: [] };
     let result: PaginatedResult;
     try {
       result = await this.client.listRecords({
@@ -97,7 +104,9 @@ export class ZohoBooksSearchAdapter implements ZohoBooksPort {
     return {
       allowed:        true,
       organizationId: result.organizationId,
-      records:        result.items,
+      records:        requesterEmail && isPersonalizedZohoScope(input.departmentZohoReadScope)
+        ? filterZohoRecordsByEmail(result.items, requesterEmail)
+        : result.items,
     };
   }
 
@@ -112,6 +121,8 @@ export class ZohoBooksSearchAdapter implements ZohoBooksPort {
     module:                   'contacts' | 'invoices';
     recordId:                 string;
   }): Promise<{ allowed: boolean; organizationId?: string; record?: Record<string, unknown> }> {
+    const requesterEmail = normalizedEmail(input.requesterEmail);
+    if (isPersonalizedZohoScope(input.departmentZohoReadScope) && !requesterEmail) return { allowed: false };
     const record = await this.client.getRecord({
       companyId:  input.companyId,
       moduleName: input.module,
@@ -120,6 +131,7 @@ export class ZohoBooksSearchAdapter implements ZohoBooksPort {
     });
 
     if (!record) return { allowed: true };
+    if (requesterEmail && isPersonalizedZohoScope(input.departmentZohoReadScope) && !recordMatchesZohoEmail(record, requesterEmail)) return { allowed: true };
 
     const orgId = await this.client.resolveOrganizationId(input.companyId, input.organizationId);
     return { allowed: true, organizationId: orgId, record };

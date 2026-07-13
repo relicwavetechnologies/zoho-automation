@@ -134,7 +134,10 @@ export interface ContextSearchOutput {
 export interface ContextFetchInput {
   readonly companyId: string;
   readonly userId: string;
+  readonly requesterEmail?: string;
+  readonly requesterAiRole?: string;
   readonly departmentId?: string;
+  readonly departmentZohoReadScope?: string;
   readonly workspacePath?: string;
   readonly chunkRef: string;
 }

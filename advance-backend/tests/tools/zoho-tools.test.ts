@@ -114,6 +114,39 @@ describe('zohoCrm tool', () => {
       assert.equal(r.ok, true);
     });
 
+    it('personalized scope returns only records with the signed-in email', async () => {
+      const scopedClient = {
+        ...fakePaginatedCrmClient,
+        listRecords: async () => ({
+          items: [
+            { id: 'lead-owned', Email: 'member@example.com' },
+            { id: 'lead-other', Email: 'other@example.com' },
+          ],
+          hasMore: false,
+          page: 1,
+        }),
+      } as unknown as ZohoCrmPaginatedClient;
+      const tool = createZohoCrmTool({ getClient: yesClient, crmClient: scopedClient, crmOps: fakeCrmOps, cloudinary: fakeCloudinary });
+      const personalized = makeCtx('zohoCrm', ['read'], { requesterEmail: 'member@example.com' });
+      (personalized.perm as any).department = { zohoReadScope: 'personalized' };
+
+      const r = await tool.execute({ op: 'list', module: 'Leads' }, personalized);
+
+      assert.equal(r.ok, true);
+      assert.deepEqual((r as any).value.data.map((record: { id: string }) => record.id), ['lead-owned']);
+    });
+
+    it('personalized scope fails closed when the member email is missing', async () => {
+      const tool = makeCrmTool();
+      const personalized = makeCtx('zohoCrm', ['read']);
+      (personalized.perm as any).department = { zohoReadScope: 'personalized' };
+
+      const r = await tool.execute({ op: 'list', module: 'Leads' }, personalized);
+
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'permission_denied');
+    });
+
     it('search: ok with criteria', async () => {
       const tool = makeCrmTool();
       const r = await tool.execute({ op: 'search', module: 'Leads', criteria: '(Last_Name:contains:Alice)' }, ctx);
@@ -309,6 +342,43 @@ describe('zohoBooks tool', () => {
       const tool = makeBooksTool(yesClient);
       const r = await tool.execute({ op: 'list_invoices' }, ctx);
       assert.equal(r.ok, true);
+    });
+
+    it('personalized scope filters Books records after Zoho responds', async () => {
+      const booksClient = {
+        listAllRecords: async () => ({
+          organizationId: 'org-1',
+          items: [
+            { invoice_id: 'inv-owned', email: 'member@example.com', total: 10 },
+            { invoice_id: 'inv-other', email: 'other@example.com', total: 20 },
+          ],
+          truncated: false,
+        }),
+      } as unknown as ZohoBooksPaginatedClient;
+      const tool = createZohoBooksTool({
+        getClient: yesClient,
+        financeOps: fakeFinanceOps as ZohoFinanceOps,
+        booksClient,
+        cloudinary: { isAvailable: false, uploadCsvBuffer: async () => null } as any,
+      });
+      const personalized = makeCtx('zohoBooks', ['read'], { requesterEmail: 'member@example.com' });
+      (personalized.perm as any).department = { zohoReadScope: 'personalized' };
+
+      const r = await tool.execute({ op: 'list_invoices' }, personalized);
+
+      assert.equal(r.ok, true);
+      assert.deepEqual((r as any).value.data.map((record: { invoice_id: string }) => record.invoice_id), ['inv-owned']);
+    });
+
+    it('personalized scope rejects aggregate Books reports', async () => {
+      const tool = makeBooksTool(yesClient);
+      const personalized = makeCtx('zohoBooks', ['read'], { requesterEmail: 'member@example.com' });
+      (personalized.perm as any).department = { zohoReadScope: 'personalized' };
+
+      const r = await tool.execute({ op: 'build_overdue_report' }, personalized);
+
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'permission_denied');
     });
 
     it('get_invoice: ok with invoice', async () => {

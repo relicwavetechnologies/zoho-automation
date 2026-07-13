@@ -1130,7 +1130,10 @@ export class ContextSearchBroker {
       const module = sourceType === 'books_invoice' ? 'invoices' : 'contacts';
       const res = await this.deps.zohoBooks.getRecord({
         companyId: input.companyId, userId: input.userId,
+        ...opt('requesterEmail', input.requesterEmail),
+        ...opt('requesterAiRole', input.requesterAiRole),
         ...opt('departmentId', input.departmentId),
+        ...opt('departmentZohoReadScope', input.departmentZohoReadScope),
         ...opt('organizationId', orgId || undefined),
         module, recordId,
       });

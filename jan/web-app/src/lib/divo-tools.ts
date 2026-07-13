@@ -109,6 +109,11 @@ export type DepartmentManagementSnapshot = {
   memberships: DepartmentManagementMember[]
 }
 
+export type DepartmentManagerApprovalPolicy = {
+  enabled: boolean
+  requiredActions: Array<{ toolId: string; actions: string[] }>
+}
+
 export type DepartmentCandidate = {
   channelIdentityId: string
   userId?: string
@@ -184,6 +189,29 @@ export function setDivoDepartmentMemberToolAction(
 
 export function getDivoDepartmentManageSnapshot(departmentId: string): Promise<DepartmentManagementSnapshot> {
   return invoke<DepartmentManagementSnapshot>('divo_department_manage_snapshot', { departmentId })
+}
+
+export function getDivoDepartmentManagerApproval(departmentId: string): Promise<DepartmentManagerApprovalPolicy> {
+  return invoke<DepartmentManagerApprovalPolicy>('divo_department_manager_approval', { departmentId })
+}
+
+export function setDivoDepartmentManagerApproval(
+  departmentId: string,
+  policy: DepartmentManagerApprovalPolicy,
+): Promise<DepartmentManagerApprovalPolicy> {
+  return invoke<DepartmentManagerApprovalPolicy>('divo_department_set_manager_approval', {
+    departmentId,
+    enabled: policy.enabled,
+    requiredActions: policy.requiredActions,
+  })
+}
+
+export function setDivoDepartmentZohoPersonalizedScope(
+  departmentId: string,
+  roleId: string,
+  personalized: boolean,
+): Promise<{ roleId: string; zohoReadScope: 'personalized' | 'show_all' }> {
+  return invoke('divo_department_set_zoho_personalized_scope', { departmentId, roleId, personalized })
 }
 
 export function searchDivoDepartmentCandidates(departmentId: string, query: string): Promise<DepartmentCandidate[]> {

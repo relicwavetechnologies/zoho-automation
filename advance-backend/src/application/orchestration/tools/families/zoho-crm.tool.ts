@@ -39,6 +39,7 @@ import type { ZohoCrmPaginatedClient }     from '../../../../infrastructure/zoho
 import { getCrmModuleSchema, injectCrmSyntheticFields, toCrmSchemaHint } from '../../../../infrastructure/zoho/zoho-crm-schema.cache';
 import { runInSandbox, arrayToCsv, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { parseDateFilter } from '../../../zoho/zoho-filter.utils';
+import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../../shared/zoho-personalization';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
@@ -136,6 +137,7 @@ async function executeScriptMode(
     crmClient:  ZohoCrmPaginatedClient;
     cloudinary: CloudinaryAdapter;
     csvLinkTtl?: number;
+    requesterEmail?: string;
   },
 ): Promise<Result<Res, ToolError>> {
   const { companyId } = ctx.runContext;
@@ -160,14 +162,17 @@ async function executeScriptMode(
   }
 
   const schema = getCrmModuleSchema(moduleName);
-  const items = injectCrmSyntheticFields(fetchResult.items, schema);
+  const scopedRecords = scriptDeps.requesterEmail
+    ? filterZohoRecordsByEmail(fetchResult.items, scriptDeps.requesterEmail)
+    : fetchResult.items;
+  const items = injectCrmSyntheticFields(scopedRecords, schema);
   const schemaHint = toCrmSchemaHint(schema, items[0]);
 
   ctx.onProgress?.(`Processing ${items.length} ${moduleName}…`);
 
   ctx.logger.info('zohoCrm.script_mode.run', {
     companyId, module: moduleName,
-    recordsFetched: items.length, truncated: fetchResult.truncated,
+    recordsFetched: items.length, sourceRecordsFetched: fetchResult.items.length, truncated: fetchResult.truncated,
   });
 
   let sandboxResult;
@@ -313,9 +318,29 @@ export const createZohoCrmTool = (deps: {
     const connectionContext = {
       ...(args.connectionId ? { connectionId: args.connectionId, userId } : {}),
     };
+    const personalizedScope = ctx.perm.department?.zohoReadScope === 'personalized';
+    const requesterEmail = normalizedEmail(ctx.runContext.requesterEmail);
+    if (personalizedScope && !requesterEmail) {
+      return err(new ToolError({
+        toolId: 'zohoCrm',
+        reason: 'permission_denied',
+        message: 'Personalized Zoho access requires the signed-in member email.',
+      }));
+    }
+    if (personalizedScope && !readOps.has(args.op)) {
+      return err(new ToolError({
+        toolId: 'zohoCrm',
+        reason: 'permission_denied',
+        message: 'Zoho write actions are unavailable while this role is restricted to personalized data.',
+      }));
+    }
+    if (personalizedScope) {
+      ctx.logger.info('zoho_crm.scope.personalized', { requesterEmail, op: args.op });
+    }
 
     // ── Report operations ─────────────────────────────────────────────────────
     if (args.op === 'build_pipeline_summary') {
+      if (personalizedScope) return err(new ToolError({ toolId: 'zohoCrm', reason: 'permission_denied', message: 'Pipeline summaries are unavailable for personalized Zoho access.' }));
       ctx.onProgress?.('Building CRM pipeline summary…');
       try {
         const report = await deps.crmOps.buildPipelineSummary({ companyId, ...connectionContext });
@@ -336,6 +361,7 @@ export const createZohoCrmTool = (deps: {
     }
 
     if (args.op === 'build_lead_report') {
+      if (personalizedScope) return err(new ToolError({ toolId: 'zohoCrm', reason: 'permission_denied', message: 'Lead reports are unavailable for personalized Zoho access.' }));
       ctx.onProgress?.('Building CRM lead report…');
       try {
         const report = await deps.crmOps.buildLeadReport({ companyId, ...connectionContext });
@@ -356,6 +382,7 @@ export const createZohoCrmTool = (deps: {
     }
 
     if (args.op === 'build_deal_forecast') {
+      if (personalizedScope) return err(new ToolError({ toolId: 'zohoCrm', reason: 'permission_denied', message: 'Deal forecasts are unavailable for personalized Zoho access.' }));
       ctx.onProgress?.('Building deal forecast…');
       try {
         const closingFrom = args.closingFrom ? parseDateFilter(args.closingFrom).from : undefined;
@@ -388,6 +415,7 @@ export const createZohoCrmTool = (deps: {
         crmClient:  deps.crmClient,
         cloudinary: deps.cloudinary,
         ...(deps.csvLinkTtl !== undefined ? { csvLinkTtl: deps.csvLinkTtl } : {}),
+        ...(personalizedScope ? { requesterEmail: requesterEmail! } : {}),
       });
     }
 
@@ -408,12 +436,13 @@ export const createZohoCrmTool = (deps: {
           ctx.onProgress?.(`Listing ${mod}…`);
 
           if (args.exportAll) {
-            const { items, truncated } = await deps.crmClient.listAllRecords({
+            const { items: sourceItems, truncated } = await deps.crmClient.listAllRecords({
               companyId, ...connectionContext, module: mod,
               ...(args.sortBy ? { sortBy: args.sortBy } : {}),
               ...(args.sortOrder ? { sortOrder: args.sortOrder } : {}),
             });
 
+            const items = personalizedScope ? filterZohoRecordsByEmail(sourceItems, requesterEmail!) : sourceItems;
             let csvLink: string | undefined;
             let csvPublicId: string | undefined;
             let csvExpiresAt: string | undefined;
@@ -462,10 +491,11 @@ export const createZohoCrmTool = (deps: {
             ...(args.sortOrder ? { sortOrder: args.sortOrder } : {}),
           });
 
+          const items = personalizedScope ? filterZohoRecordsByEmail(result.items, requesterEmail!) : result.items;
           return ok({
             success: true,
-            data: formatCrmResult(result.items),
-            message: `Found ${result.items.length} ${mod} record(s).`,
+            data: formatCrmResult(items),
+            message: `Found ${items.length} ${mod} record(s).`,
             hasMore: result.hasMore,
           });
         }
@@ -475,7 +505,7 @@ export const createZohoCrmTool = (deps: {
           if (!args.recordId) return err(new ToolError({ toolId: 'zohoCrm', reason: 'bad_args', message: 'recordId is required for get' }));
           ctx.onProgress?.(`Fetching ${mod} record…`);
           const record = await deps.crmClient.getRecord({ companyId, ...connectionContext, module: mod, recordId: args.recordId });
-          if (!record) return ok({ success: true, data: null, message: 'Record not found' });
+          if (!record || (personalizedScope && !recordMatchesZohoEmail(record, requesterEmail!))) return ok({ success: true, data: null, message: 'Record not found' });
           return ok({ success: true, data: formatCrmResult(record) });
         }
 
@@ -488,11 +518,12 @@ export const createZohoCrmTool = (deps: {
             criteria: args.criteria,
             perPage: args.limit ?? 25,
           });
+          const items = personalizedScope ? filterZohoRecordsByEmail(result.items, requesterEmail!) : result.items;
           return ok({
             success: true,
-            data: formatCrmResult(result.items),
-            message: result.items.length > 0
-              ? `Found ${result.items.length} ${mod} record(s).`
+            data: formatCrmResult(items),
+            message: items.length > 0
+              ? `Found ${items.length} ${mod} record(s).`
               : `No ${mod} records matched the search criteria.`,
             hasMore: result.hasMore,
           });
@@ -507,11 +538,12 @@ export const createZohoCrmTool = (deps: {
             query: args.query,
             perPage: args.limit ?? 25,
           });
+          const items = personalizedScope ? filterZohoRecordsByEmail(result.items, requesterEmail!) : result.items;
           return ok({
             success: true,
-            data: formatCrmResult(result.items),
-            message: result.items.length > 0
-              ? `Found ${result.items.length} ${mod} record(s) matching "${args.query}".`
+            data: formatCrmResult(items),
+            message: items.length > 0
+              ? `Found ${items.length} ${mod} record(s) matching "${args.query}".`
               : `No ${mod} records found matching "${args.query}".`,
             hasMore: result.hasMore,
           });
