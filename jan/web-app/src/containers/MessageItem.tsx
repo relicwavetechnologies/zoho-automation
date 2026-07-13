@@ -8,7 +8,6 @@ import {
   ChainOfThought,
   ChainOfThoughtContent,
   ChainOfThoughtHeader,
-  toolStatusLabel,
 } from '@/components/ai-elements/chain-of-thought'
 import {
   Tool,
@@ -490,48 +489,29 @@ export const MessageItem = memo(
       // open/closed on every tool step while streaming.
       const keepOpen = awaitingApproval || showFullTimeline
 
-      const isMeaningfulEntry = ({ part }: PartEntry) => {
-        if (part.type === CONTENT_TYPE.REASONING || part.type === CONTENT_TYPE.TEXT) {
-          return Boolean(part.text && part.text.trim())
-        }
-        return part.type.startsWith('tool-') && 'state' in part
-      }
-      const meaningful = entries.filter(isMeaningfulEntry)
-      // Default providers: show only the active step while streaming.
-      // Pi trace: append-only timeline — every step stays visible.
+      // While streaming, keep the group open and show the model's talking
+      // (interstitial text) and tool runs live, but fold away the raw reasoning —
+      // it's revealed only when the completed group is expanded. When the turn
+      // finishes (or the answer arrives), the whole group collapses into
+      // "Worked/Thought for N seconds".
       const visibleEntries =
-        groupIsStreaming && meaningful.length > 0 && !showFullTimeline
-          ? [meaningful[meaningful.length - 1]]
+        groupIsStreaming && !showFullTimeline
+          ? entries.filter((e) => e.part.type !== CONTENT_TYPE.REASONING)
           : entries
-
-      // Streaming label reflects the current step, not whether the whole trace
-      // ever used a tool — otherwise it sticks on "Using tools…" once the model
-      // resumes reasoning after a tool call.
-      const currentStep =
-        meaningful.length > 0 ? meaningful[meaningful.length - 1].part : null
-      const currentStepIsTool = Boolean(
-        currentStep?.type.startsWith('tool-')
-      )
-
-      // Live status shown in the collapsed header while the group streams.
-      const statusLabel = awaitingApproval
-        ? 'Waiting for approval…'
-        : currentStepIsTool
-          ? toolStatusLabel(currentStep.type)
-          : 'Thinking…'
 
       return (
         <ChainOfThought
           key={groupKey}
           className="w-full text-muted-foreground"
           isStreaming={groupIsStreaming}
-          shouldCollapse={(hasFollowingContent || groupIsStreaming) && !keepOpen}
+          shouldCollapse={(hasFollowingContent || !groupIsStreaming) && !keepOpen}
           forceOpen={keepOpen}
-          defaultOpen={!groupIsStreaming}
+          defaultOpen={groupIsStreaming}
         >
           <ChainOfThoughtHeader
-            statusLabel={statusLabel}
-            streamingLabel={currentStepIsTool ? 'Using tools...' : 'Reasoning...'}
+            streamingLabel={
+              awaitingApproval ? 'Waiting for approval...' : 'Working...'
+            }
             completedVerb={hasTools ? 'Worked' : 'Thought'}
           />
           <ChainOfThoughtContent>
@@ -597,21 +577,17 @@ export const MessageItem = memo(
                 )
               }
 
-              // Interstitial narration emitted between steps — fold into the trace
+              // Interstitial narration = the model's talking. Full foreground,
+              // like a real message — reads as active work, not idle thinking.
               if (part.type === CONTENT_TYPE.TEXT) {
                 if (!part.text || part.text.trim() === '') return null
                 return (
                   <div
                     key={`${message.id}-it-${partIndex}`}
-                    className="flex gap-2.5 items-start"
+                    dir="auto"
+                    className="min-w-0 max-w-[72ch] select-text text-[15px] leading-relaxed text-main-view-fg"
                   >
-                    <span className="block size-1.5 mt-2 ml-1 shrink-0 rounded-full bg-muted-foreground/40" />
-                    <div
-                      dir="auto"
-                      className="flex-1 min-w-0 max-w-[70ch] select-text text-sm leading-relaxed text-main-view-fg/70"
-                    >
-                      <Streamdown>{part.text}</Streamdown>
-                    </div>
+                    <Streamdown>{part.text}</Streamdown>
                   </div>
                 )
               }
@@ -635,15 +611,38 @@ export const MessageItem = memo(
       // Pi agent messages: chronological trace + final answer (Pi CLI layout).
       if (isPiTraceTimeline && message.role === 'assistant') {
         const { traceSteps, answerPartIndices } = splitPiMessageParts(parts)
-        const tracePartIndices = new Set(
-          traceSteps.map((step) => step.partIndex)
-        )
+        const answerIndexSet = new Set(answerPartIndices)
 
-        if (traceSteps.length > 0) {
+        // While the turn streams, keep the still-forming answer inside the live
+        // trace (as narration) so text doesn't jump in and out as the split
+        // reclassifies "answer" vs "narration" on each new tool call. When the
+        // turn finishes, the answer splits out below and the trace rolls up into
+        // "Worked for N seconds".
+        let steps = traceSteps
+        if (isStreaming && answerPartIndices.length > 0) {
+          const answerAsNarration = answerPartIndices
+            .map((i) => {
+              const p = parts[i] as { type?: string; text?: string }
+              return p?.type === CONTENT_TYPE.TEXT && p.text?.trim()
+                ? { kind: 'narration' as const, partIndex: i, text: String(p.text) }
+                : null
+            })
+            .filter(
+              (s): s is { kind: 'narration'; partIndex: number; text: string } =>
+                s !== null
+            )
+          steps = [...traceSteps, ...answerAsNarration].sort(
+            (a, b) => a.partIndex - b.partIndex
+          )
+        }
+
+        const tracePartIndices = new Set(steps.map((step) => step.partIndex))
+
+        if (steps.length > 0) {
           elements.push(
             <PiTraceTimeline
               messageId={message.id}
-              steps={traceSteps}
+              steps={steps}
               isStreaming={isStreaming}
               hasPendingToolCall={hasPendingToolCall}
               awaitingApproval={awaitingApproval}
@@ -656,18 +655,21 @@ export const MessageItem = memo(
           )
         }
 
-        const answerIndexSet = new Set(answerPartIndices)
-        for (let i = 0; i < parts.length; i++) {
-          if (!answerIndexSet.has(i) || tracePartIndices.has(i)) continue
-          const part = parts[i]
-          if (part.type === CONTENT_TYPE.TEXT) {
-            const node = renderTextPart(
-              part as { type: 'text'; text: string },
-              i
-            )
-            if (node) elements.push(node)
-          } else if (part.type === CONTENT_TYPE.FILE) {
-            elements.push(renderFilePart(part as any, i))
+        // The deliverable answer renders outside the trace only once the turn is
+        // done — during streaming it lives inside the trace (above).
+        if (!isStreaming) {
+          for (let i = 0; i < parts.length; i++) {
+            if (!answerIndexSet.has(i) || tracePartIndices.has(i)) continue
+            const part = parts[i]
+            if (part.type === CONTENT_TYPE.TEXT) {
+              const node = renderTextPart(
+                part as { type: 'text'; text: string },
+                i
+              )
+              if (node) elements.push(node)
+            } else if (part.type === CONTENT_TYPE.FILE) {
+              elements.push(renderFilePart(part as any, i))
+            }
           }
         }
 
