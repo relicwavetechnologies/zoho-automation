@@ -33,8 +33,8 @@ default = [
 ]
 hardware = ["dep:tauri-plugin-hardware"]
 deep-link = ["dep:tauri-plugin-deep-link"]
-# MLX (tauri-plugin-mlx) is Apple-Silicon-only; it's a macOS-target dependency
-# (see [target.'cfg(target_os = "macos")'.dependencies]) rather than a feature.
+# The MLX runtime is Apple-Silicon-only. The crate remains a macOS dependency so
+# Tauri can validate the shared MLX capability schema for both macOS targets.
 desktop = [
     "deep-link",
     "hardware",
@@ -161,7 +161,7 @@ gtk = "0.18"
 libc = "0.2.172"
 windows-sys = { version = "0.60.2", features = ["Win32_Storage_FileSystem"] }
 
-# MLX runs only on Apple Silicon, so the plugin is built solely for macOS.
+# Runtime initialization is separately gated to Apple Silicon in src/lib.rs.
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-mlx = { path = "./plugins/tauri-plugin-mlx" }
 

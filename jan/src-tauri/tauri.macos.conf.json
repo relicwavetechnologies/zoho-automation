@@ -33,9 +33,8 @@
     "resources": [
       "resources/pre-install/**/*",
       "resources/LICENSE",
-      "resources/bin/mlx-server",
-      "resources/bin/mlx-swift_Cmlx.bundle",
       "resources/bin/jan-cli",
+      "resources/bin/sqlite-vec.dylib",
       "resources/pi/package.json",
       "resources/pi/pi-chrome-devtools-bridge.mjs",
       "resources/pi/agent-template/**/*",

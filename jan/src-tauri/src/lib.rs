@@ -284,7 +284,7 @@ pub fn run() {
         app_builder = app_builder.plugin(tauri_plugin_deep_link::init());
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         app_builder = app_builder.plugin(tauri_plugin_mlx::init());
     }
@@ -498,7 +498,7 @@ pub fn run() {
                         log::info!("Llama-server router shut down successfully");
                     }
 
-                    #[cfg(target_os = "macos")]
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     {
                         use tauri_plugin_mlx::cleanup_mlx_processes;
                         if let Err(e) = cleanup_mlx_processes(app_handle.clone()).await {

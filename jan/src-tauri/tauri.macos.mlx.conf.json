@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": [
+      "resources/bin/mlx-server",
+      "resources/bin/mlx-swift_Cmlx.bundle"
+    ]
+  }
+}

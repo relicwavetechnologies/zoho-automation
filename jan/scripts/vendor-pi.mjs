@@ -2,8 +2,10 @@
  * Vendor Pi runtime into src-tauri/resources/pi for bundled dev + release builds.
  * Run via: yarn vendor:pi
  */
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -29,6 +31,136 @@ function rmrf(dir) {
 function copyDir(src, dest) {
   fs.mkdirSync(path.dirname(dest), { recursive: true })
   fs.cpSync(src, dest, { recursive: true })
+}
+
+function collectDirectories(root, shouldRemove, matches = []) {
+  if (!fs.existsSync(root)) return matches
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const fullPath = path.join(root, entry.name)
+    if (shouldRemove(entry.name)) matches.push(fullPath)
+    else collectDirectories(fullPath, shouldRemove, matches)
+  }
+  return matches
+}
+
+function prepareMacNativePackages(resourcesPiDir) {
+  const target = process.env.JAN_MACOS_TARGET
+  if (!['x86_64', 'aarch64', 'universal'].includes(target)) return
+
+  const recheckPackage = JSON.parse(
+    fs.readFileSync(path.join(resourcesPiDir, 'node_modules/recheck/package.json'), 'utf8')
+  )
+  const packages =
+    target === 'universal'
+      ? ['recheck-macos-arm64', 'recheck-macos-x64']
+      : [target === 'x86_64' ? 'recheck-macos-x64' : 'recheck-macos-arm64']
+
+  for (const packageName of packages) {
+    const version = recheckPackage.optionalDependencies?.[packageName]
+    if (!version) throw new Error(`Unable to resolve ${packageName} from recheck`)
+    execFileSync(
+      'npm',
+      [
+        'install',
+        '--no-save',
+        '--omit=dev',
+        '--no-package-lock',
+        '--force',
+        `${packageName}@${version}`,
+      ],
+      {
+        cwd: resourcesPiDir,
+        stdio: 'inherit',
+      }
+    )
+  }
+
+  if (target === 'universal') return
+
+  const excludedArchitecture = target === 'x86_64' ? 'arm64' : 'x64'
+  const excludedNames =
+    excludedArchitecture === 'arm64'
+      ? ['darwin-arm64', 'darwin_arm64', 'macos-arm64']
+      : ['darwin-x64', 'darwin_x64', 'macos-x64']
+  const directories = collectDirectories(
+    path.join(resourcesPiDir, 'node_modules'),
+    (name) => excludedNames.some((excludedName) => name.includes(excludedName))
+  ).sort((left, right) => right.length - left.length)
+
+  for (const directory of directories) {
+    console.log(`Removing non-target Pi native package: ${path.relative(resourcesPiDir, directory)}`)
+    rmrf(directory)
+  }
+}
+
+function prepareMacLarkCli(resourcesLarkCliDir) {
+  const target = process.env.JAN_MACOS_TARGET
+  if (!['x86_64', 'aarch64', 'universal'].includes(target)) return
+
+  const packageDir = path.join(resourcesLarkCliDir, 'node_modules/@larksuite/cli')
+  const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'))
+  const checksums = fs.readFileSync(path.join(packageDir, 'checksums.txt'), 'utf8')
+  const architectures =
+    target === 'universal'
+      ? ['arm64', 'amd64']
+      : [target === 'x86_64' ? 'amd64' : 'arm64']
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jan-lark-cli-'))
+  const binaries = new Map()
+
+  try {
+    for (const architecture of architectures) {
+      const archiveName = `lark-cli-${packageJson.version}-darwin-${architecture}.tar.gz`
+      const expectedHash = checksums
+        .split('\n')
+        .find((line) => line.trim().endsWith(`  ${archiveName}`))
+        ?.trim()
+        .split(/\s+/)[0]
+      if (!expectedHash) throw new Error(`Missing checksum for ${archiveName}`)
+
+      const archivePath = path.join(tempDir, archiveName)
+      execFileSync(
+        'curl',
+        [
+          '--fail',
+          '--location',
+          '--silent',
+          '--show-error',
+          '--output',
+          archivePath,
+          `https://github.com/larksuite/cli/releases/download/v${packageJson.version}/${archiveName}`,
+        ],
+        { stdio: 'inherit' }
+      )
+      const actualHash = crypto
+        .createHash('sha256')
+        .update(fs.readFileSync(archivePath))
+        .digest('hex')
+      if (actualHash !== expectedHash) throw new Error(`Checksum mismatch for ${archiveName}`)
+
+      const extractDir = path.join(tempDir, architecture)
+      fs.mkdirSync(extractDir, { recursive: true })
+      execFileSync('tar', ['-xzf', archivePath, '-C', extractDir])
+      binaries.set(architecture, path.join(extractDir, 'lark-cli'))
+    }
+
+    const destination = path.join(packageDir, 'bin/lark-cli')
+    if (target === 'universal') {
+      execFileSync('lipo', [
+        '-create',
+        binaries.get('arm64'),
+        binaries.get('amd64'),
+        '-output',
+        destination,
+      ])
+    } else {
+      fs.copyFileSync(binaries.values().next().value, destination)
+    }
+    fs.chmodSync(destination, 0o755)
+    console.log(`Staged Lark CLI for ${target}`)
+  } finally {
+    rmrf(tempDir)
+  }
 }
 
 function patchBundledPiReadTool(resourcesPiDir) {
@@ -81,6 +213,7 @@ execSync('npm install --omit=dev --no-package-lock', {
   cwd: resourcesPi,
   stdio: 'inherit',
 })
+prepareMacNativePackages(resourcesPi)
 
 const cliJs = path.join(
   resourcesPi,
@@ -178,6 +311,7 @@ execSync('npm install --omit=dev --no-package-lock', {
   cwd: resourcesLarkCli,
   stdio: 'inherit',
 })
+prepareMacLarkCli(resourcesLarkCli)
 
 const larkCli = path.join(
   resourcesLarkCli,

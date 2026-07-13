@@ -21,6 +21,19 @@ describe('desktop package scripts', () => {
     for (const platform of ['win32', 'linux', 'darwin']) {
       mustVendorBeforeTauri(`build:tauri:${platform}`)
     }
+    mustVendorBeforeTauri('build:tauri:darwin:x86_64')
+  })
+
+  it('uses explicit and isolated architecture targets for macOS packages', () => {
+    assert.match(packageJson.scripts['build:tauri:darwin'], /JAN_MACOS_TARGET=universal/)
+    assert.match(packageJson.scripts['build:tauri:darwin'], /tauri\.macos\.mlx\.conf\.json/)
+    assert.match(packageJson.scripts['build:tauri:darwin:x86_64'], /JAN_MACOS_TARGET=x86_64/)
+    assert.match(packageJson.scripts['build:tauri:darwin:x86_64'], /--target x86_64-apple-darwin/)
+    assert.match(
+      packageJson.scripts['build:tauri:darwin:x86_64'],
+      /JAN_MACOS_TARGET=x86_64 yarn vendor:pi/
+    )
+    assert.doesNotMatch(packageJson.scripts['build:tauri:darwin:x86_64'], /mlx/i)
   })
 
   it('vendors Pi before the desktop development runtime starts', () => {
