@@ -9,6 +9,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { pruneBundledPiNonRuntimeFiles } from './pi-vendor-utils.mjs'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const janRoot = path.resolve(__dirname, '..')
 const versions = JSON.parse(
@@ -223,6 +225,8 @@ if (!fs.existsSync(cliJs)) {
   throw new Error(`Pi CLI missing after install: ${cliJs}`)
 }
 patchBundledPiReadTool(resourcesPi)
+const prunedPiFiles = pruneBundledPiNonRuntimeFiles(resourcesPi)
+console.log(`Pruned ${prunedPiFiles} non-runtime Pi declaration/source-map files`)
 
 // Stage pi-mcp-adapter where Pi's package manager expects it under the agent dir.
 const agentNpmDir = path.join(resourcesPi, 'agent-npm')

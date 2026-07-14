@@ -38,13 +38,21 @@ jobs:
           corepack prepare yarn@4.5.3 --activate
           yarn config set -H enableImmutableInstalls false
 
+      - name: Create short source path for NSIS
+        shell: pwsh
+        run: |
+          New-Item -ItemType Junction -Path 'D:\divo' -Target $env:GITHUB_WORKSPACE | Out-Null
+
       - name: Install dependencies
+        working-directory: D:\divo\jan
         run: yarn install
 
       - name: Verify Windows bundle contract
+        working-directory: D:\divo\jan
         run: yarn test:package-scripts
 
       - name: Build Windows x64 installers
+        working-directory: D:\divo\jan
         run: yarn build:windows:x64
         env:
           NODE_OPTIONS: --max-old-space-size=6144
