@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
 import {
   Archive,
   Boxes,
@@ -246,6 +246,107 @@ const GranteeIcon = ({ type, size = 15 }: { type: SkillGranteeType; size?: numbe
   type === "user" ? <User size={size} /> : type === "department" ? <Building2 size={size} />
     : type === "role" ? <ShieldCheck size={size} /> : <Boxes size={size} />
 
+// ── In-app prompt / confirm modals (replace the native browser dialogs) ──────
+type PromptOpts = { title: string; description?: string; defaultValue?: string; placeholder?: string; confirmLabel?: string }
+type ConfirmOpts = { title: string; body?: string; confirmLabel?: string }
+type DialogState =
+  | { kind: "prompt"; opts: PromptOpts; resolve: (v: string | null) => void }
+  | { kind: "confirm"; opts: ConfirmOpts; resolve: (v: boolean) => void }
+  | null
+
+const SkillsUiContext = createContext<{
+  prompt: (opts: PromptOpts) => Promise<string | null>
+  confirm: (opts: ConfirmOpts) => Promise<boolean>
+} | null>(null)
+
+function useSkillsUi() {
+  const ctx = useContext(SkillsUiContext)
+  if (!ctx) throw new Error("useSkillsUi must be used within SkillsUiProvider")
+  return ctx
+}
+
+/** Provides promise-based prompt()/confirm() backed by proper in-app modals. */
+function SkillsUiProvider({ children }: { children: ReactNode }) {
+  const [dialog, setDialog] = useState<DialogState>(null)
+  const api = useMemo(
+    () => ({
+      prompt: (opts: PromptOpts) => new Promise<string | null>((resolve) => setDialog({ kind: "prompt", opts, resolve })),
+      confirm: (opts: ConfirmOpts) => new Promise<boolean>((resolve) => setDialog({ kind: "confirm", opts, resolve })),
+    }),
+    [],
+  )
+  const settle = (result: string | null | boolean) => {
+    setDialog((cur) => {
+      if (cur) (cur.resolve as (v: string | null | boolean) => void)(result)
+      return null
+    })
+  }
+  return (
+    <SkillsUiContext.Provider value={api}>
+      {children}
+      {dialog?.kind === "prompt" && (
+        <PromptModal opts={dialog.opts} onSubmit={(v) => settle(v)} onCancel={() => settle(null)} />
+      )}
+      {dialog?.kind === "confirm" && (
+        <ConfirmModal opts={dialog.opts} onConfirm={() => settle(true)} onCancel={() => settle(false)} />
+      )}
+    </SkillsUiContext.Provider>
+  )
+}
+
+function PromptModal({ opts, onSubmit, onCancel }: { opts: PromptOpts; onSubmit: (v: string) => void; onCancel: () => void }) {
+  const [value, setValue] = useState(opts.defaultValue ?? "")
+  const submit = () => { const v = value.trim(); if (v) onSubmit(v) }
+  return (
+    <div className="sl-modal-scrim" onClick={onCancel}>
+      <div className="sl-modal card" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+        <div className="sl-modal-head">
+          <div>
+            <h2 className="display" style={{ fontSize: 19 }}>{opts.title}</h2>
+            {opts.description && <p className="muted" style={{ fontSize: 13, marginTop: 4 }}>{opts.description}</p>}
+          </div>
+          <button className="sl-icon-btn" onClick={onCancel} aria-label="Close"><X size={18} /></button>
+        </div>
+        <input
+          autoFocus
+          className="sl-input"
+          value={value}
+          placeholder={opts.placeholder}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit()
+            if (e.key === "Escape") onCancel()
+          }}
+        />
+        <div className="sl-modal-foot">
+          <button className="btn" onClick={onCancel}>Cancel</button>
+          <button className="btn primary" onClick={submit} disabled={!value.trim()}>{opts.confirmLabel ?? "Create"}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ConfirmModal({ opts, onConfirm, onCancel }: { opts: ConfirmOpts; onConfirm: () => void; onCancel: () => void }) {
+  return (
+    <div className="sl-modal-scrim" onClick={onCancel}>
+      <div className="sl-modal card" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+        <div className="sl-modal-head">
+          <div>
+            <h2 className="display" style={{ fontSize: 19 }}>{opts.title}</h2>
+            {opts.body && <p className="muted" style={{ fontSize: 13, marginTop: 4, lineHeight: 1.5 }}>{opts.body}</p>}
+          </div>
+          <button className="sl-icon-btn" onClick={onCancel} aria-label="Close"><X size={18} /></button>
+        </div>
+        <div className="sl-modal-foot">
+          <button className="btn" onClick={onCancel}>Cancel</button>
+          <button className="btn primary" onClick={onConfirm}>{opts.confirmLabel ?? "Confirm"}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Manage-access modal: share a skill with user/dept/role/company ───────────
 function SkillAccessModal({ skillName, access, onClose }: {
   skillName: string
@@ -367,6 +468,7 @@ function FolderDetail({ node, root, actions, toolLabel }: {
   actions: ReturnType<typeof useSkillsLabData>
   toolLabel: (id: string) => string
 }) {
+  const ui = useSkillsUi()
   const path = pathTo(root, node.id)?.join("  /  ") ?? node.name
   const skills = collectSkills(node)
   const subfolders = node.children.filter((c) => c.kind !== "skill").length
@@ -381,9 +483,13 @@ function FolderDetail({ node, root, actions, toolLabel }: {
     [root, node.id, node.departmentId],
   )
 
-  const promptNewFolder = () => {
-    const name = window.prompt(`New folder inside "${node.name}"`)
-    if (!name?.trim()) return
+  const promptNewFolder = async () => {
+    const name = await ui.prompt({
+      title: `New folder in “${node.name}”`,
+      placeholder: "Folder name",
+      confirmLabel: "Create folder",
+    })
+    if (!name) return
     if (node.kind === "company") void actions.createFolder({ name, departmentId: null })
     else if (node.kind === "department") void actions.createFolder({ name, departmentId: node.departmentId })
     else void actions.createFolder({ name, parentId: node.id })
@@ -402,14 +508,18 @@ function FolderDetail({ node, root, actions, toolLabel }: {
         <div style={{ display: "flex", gap: 8 }}>
           {isFolder && (
             <>
-              <button className="btn" onClick={() => {
-                const name = window.prompt("Rename folder", node.name)
-                if (name?.trim() && name !== node.name) void actions.renameFolder(node.id, name)
+              <button className="btn" onClick={async () => {
+                const name = await ui.prompt({ title: "Rename folder", defaultValue: node.name, confirmLabel: "Rename" })
+                if (name && name !== node.name) void actions.renameFolder(node.id, name)
               }}><Pencil size={14} /> Rename</button>
               <MovePicker options={moveOptions} label="Move" onMove={(f) => actions.moveFolder(node.id, f)} />
-              <button className="btn" onClick={() => {
-                if (window.confirm(`Archive "${node.name}"? Sub-folders are archived and their skills fall back to the root.`))
-                  void actions.archiveFolder(node.id)
+              <button className="btn" onClick={async () => {
+                const ok = await ui.confirm({
+                  title: `Archive “${node.name}”?`,
+                  body: "Sub-folders are archived too, and their skills fall back to the root.",
+                  confirmLabel: "Archive",
+                })
+                if (ok) void actions.archiveFolder(node.id)
               }}><Archive size={14} /> Archive</button>
             </>
           )}
@@ -622,7 +732,16 @@ function SkillDetail({ node, root, actions, toolLabel }: {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 export function SkillsLabPage() {
+  return (
+    <SkillsUiProvider>
+      <SkillsLabInner />
+    </SkillsUiProvider>
+  )
+}
+
+function SkillsLabInner() {
   const { session } = useAdminAuth()
+  const ui = useSkillsUi()
   const data = useSkillsLabData()
   const toolLabel = useToolLabels()
   const companyName = session?.companyName ?? "Company skills"
@@ -693,13 +812,17 @@ export function SkillsLabPage() {
                 />
               </div>
               <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
-                <button className="btn" style={{ height: 30, flex: 1, fontSize: 12 }} onClick={() => {
-                  const name = window.prompt("New company-wide folder")
-                  if (name?.trim()) void data.createFolder({ name, departmentId: null })
+                <button className="btn" style={{ height: 30, flex: 1, fontSize: 12 }} onClick={async () => {
+                  const name = await ui.prompt({ title: "New company-wide folder", placeholder: "Folder name", confirmLabel: "Create folder" })
+                  if (name) void data.createFolder({ name, departmentId: null })
                 }}><FolderPlus size={13} /> Folder</button>
-                <button className="btn" style={{ height: 30, flex: 1, fontSize: 12 }} title="Organize existing loose skills into starter folders" onClick={() => {
-                  if (window.confirm("Backfill: create starter folders (Shared + General per department) and place loose skills into them?"))
-                    void data.backfill()
+                <button className="btn" style={{ height: 30, flex: 1, fontSize: 12 }} title="Organize existing loose skills into starter folders" onClick={async () => {
+                  const ok = await ui.confirm({
+                    title: "Backfill starter folders?",
+                    body: "Creates a Shared folder and a General folder per department, then places loose skills into them. Safe to run repeatedly.",
+                    confirmLabel: "Run backfill",
+                  })
+                  if (ok) void data.backfill()
                 }}><FilePlus2 size={13} /> Backfill</button>
               </div>
               <label className="sl-arch-toggle">
@@ -791,6 +914,12 @@ function SkillsLabStyles() {
       .cur .sl-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
         border-radius: 8px; border: 1px solid transparent; background: none; color: var(--cur-muted); cursor: pointer; flex-shrink: 0; }
       .cur .sl-icon-btn:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+      .cur .sl-input { width: 100%; height: 38px; margin-top: 10px; padding: 0 12px; border-radius: 9px;
+        border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface); color: var(--cur-ink);
+        font-size: 13.5px; outline: none; }
+      .cur .sl-input:focus { border-color: color-mix(in srgb, var(--cur-primary) 55%, transparent);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-primary) 16%, transparent); }
+      .cur .sl-modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
       .cur .sl-candidates { margin-top: 12px; max-height: 220px; overflow: auto; border: 1px solid var(--cur-hairline);
         border-radius: 9px; }
       .cur .sl-candidate { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 9px 12px;
