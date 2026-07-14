@@ -313,9 +313,10 @@ execSync('npm install --omit=dev --no-package-lock', {
 })
 prepareMacLarkCli(resourcesLarkCli)
 
+const larkCliBinaryName = process.platform === 'win32' ? 'lark-cli.exe' : 'lark-cli'
 const larkCli = path.join(
   resourcesLarkCli,
-  'node_modules/@larksuite/cli/bin/lark-cli'
+  `node_modules/@larksuite/cli/bin/${larkCliBinaryName}`
 )
 if (!fs.existsSync(larkCli)) {
   throw new Error(`Lark CLI missing after install: ${larkCli}`)

@@ -13,8 +13,11 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use super::home::DivoHomeLayout;
 
-pub const LARK_CLI_RESOURCE_REL: &str =
-    "resources/lark-cli/node_modules/@larksuite/cli/bin/lark-cli";
+pub const LARK_CLI_RESOURCE_REL: &str = if cfg!(windows) {
+    "resources/lark-cli/node_modules/@larksuite/cli/bin/lark-cli.exe"
+} else {
+    "resources/lark-cli/node_modules/@larksuite/cli/bin/lark-cli"
+};
 
 const LARK_CLI_HOME_DIR: &str = "lark-cli-home";
 const LARK_CLI_WRAPPER_DIR: &str = "local-tools/bin";
@@ -126,18 +129,8 @@ pub fn ensure_lark_cli_wrapper(
     let home_path = resolve_lark_cli_home()?;
     let wrapper_dir = agent_dir.join(LARK_CLI_WRAPPER_DIR);
     fs::create_dir_all(&wrapper_dir).map_err(|e| e.to_string())?;
-    let wrapper_path = wrapper_dir.join("lark-cli");
-
-    let script = format!(
-        "#!/bin/sh\n\
-export HOME={home}\n\
-export XDG_CONFIG_HOME={home}/.config\n\
-export XDG_CACHE_HOME={home}/.cache\n\
-export XDG_DATA_HOME={home}/.local/share\n\
-exec {cli} \"$@\"\n",
-        home = shell_quote(&home_path),
-        cli = shell_quote(&cli_path),
-    );
+    let (wrapper_name, script) = lark_cli_wrapper_contents(&cli_path, &home_path, cfg!(windows));
+    let wrapper_path = wrapper_dir.join(wrapper_name);
     fs::write(&wrapper_path, script).map_err(|e| e.to_string())?;
 
     #[cfg(unix)]
@@ -153,9 +146,56 @@ exec {cli} \"$@\"\n",
     Ok(Some(wrapper_path))
 }
 
+fn lark_cli_wrapper_contents(
+    cli_path: &Path,
+    home_path: &Path,
+    windows: bool,
+) -> (&'static str, String) {
+    if windows {
+        let home = windows_env_value(home_path);
+        let cli = windows_env_value(cli_path);
+        return (
+            "lark-cli.cmd",
+            format!(
+                "@echo off\r\n\
+setlocal\r\n\
+set \"HOME={home}\"\r\n\
+set \"USERPROFILE={home}\"\r\n\
+set \"APPDATA={home}\\AppData\\Roaming\"\r\n\
+set \"LOCALAPPDATA={home}\\AppData\\Local\"\r\n\
+set \"XDG_CONFIG_HOME={home}\\.config\"\r\n\
+set \"XDG_CACHE_HOME={home}\\.cache\"\r\n\
+set \"XDG_DATA_HOME={home}\\.local\\share\"\r\n\
+\"{cli}\" %*\r\n\
+exit /b %ERRORLEVEL%\r\n"
+            ),
+        );
+    }
+
+    (
+        "lark-cli",
+        format!(
+            "#!/bin/sh\n\
+export HOME={home}\n\
+export XDG_CONFIG_HOME={home}/.config\n\
+export XDG_CACHE_HOME={home}/.cache\n\
+export XDG_DATA_HOME={home}/.local/share\n\
+exec {cli} \"$@\"\n",
+            home = shell_quote(home_path),
+            cli = shell_quote(cli_path),
+        ),
+    )
+}
+
 fn shell_quote(path: &Path) -> String {
     let raw = path.to_string_lossy();
     format!("'{}'", raw.replace('\'', "'\\''"))
+}
+
+fn windows_env_value(path: &Path) -> String {
+    // Windows paths cannot contain a double quote. Removing it defensively
+    // keeps the generated `set "KEY=value"` command syntactically safe.
+    path.to_string_lossy().replace('"', "")
 }
 
 fn resolve_runtime<R: Runtime>(app: &AppHandle<R>) -> Result<LocalLarkRuntime, String> {
@@ -174,11 +214,18 @@ fn resolve_runtime<R: Runtime>(app: &AppHandle<R>) -> Result<LocalLarkRuntime, S
 
 fn lark_command(runtime: &LocalLarkRuntime) -> Command {
     let mut cmd = Command::new(&runtime.cli_path);
-    cmd.env("HOME", &runtime.home_path)
-        .env("XDG_CONFIG_HOME", runtime.home_path.join(".config"))
-        .env("XDG_CACHE_HOME", runtime.home_path.join(".cache"))
-        .env("XDG_DATA_HOME", runtime.home_path.join(".local/share"));
+    apply_lark_home_env(&mut cmd, &runtime.home_path);
     cmd
+}
+
+fn apply_lark_home_env(cmd: &mut Command, home_path: &Path) {
+    cmd.env("HOME", home_path)
+        .env("USERPROFILE", home_path)
+        .env("APPDATA", home_path.join("AppData/Roaming"))
+        .env("LOCALAPPDATA", home_path.join("AppData/Local"))
+        .env("XDG_CONFIG_HOME", home_path.join(".config"))
+        .env("XDG_CACHE_HOME", home_path.join(".cache"))
+        .env("XDG_DATA_HOME", home_path.join(".local/share"));
 }
 
 fn load_lark_app_credentials() -> Option<LarkAppCredentials> {
@@ -687,6 +734,17 @@ mod tests {
     fn shell_quote_escapes_single_quotes() {
         let path = PathBuf::from("/tmp/a'b");
         assert_eq!(shell_quote(&path), "'/tmp/a'\\''b'");
+    }
+
+    #[test]
+    fn windows_lark_wrapper_isolated_and_invokes_exe() {
+        let cli = PathBuf::from(r"C:\Program Files\Divo Dex\resources\lark-cli.exe");
+        let home = PathBuf::from(r"C:\Users\Divo\AppData\Roaming\Divo");
+        let (name, script) = lark_cli_wrapper_contents(&cli, &home, true);
+
+        assert_eq!(name, "lark-cli.cmd");
+        assert!(script.contains(r#"set "USERPROFILE=C:\Users\Divo"#));
+        assert!(script.contains("lark-cli.exe\" %*"));
     }
 
     #[test]

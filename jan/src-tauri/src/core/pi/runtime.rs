@@ -73,33 +73,56 @@ impl PiRuntimePaths {
     }
 }
 
-/// `externalBin` bun lands next to the app binary in dev (`target/debug/bun`).
-/// Release macOS: `Contents/MacOS/bun`. Packaged resources: `resources/bin/bun`.
+/// `externalBin` Bun lands next to the app binary in dev. Packaged Windows
+/// installers put it in `resources/bin/bun.exe`; macOS places it beside the
+/// app executable. Keep these candidates explicit because Tauri's resource
+/// directory layout differs across bundle targets.
 fn resolve_bundled_bun(resource_dir: &Path) -> Option<PathBuf> {
+    bundled_bun_candidates(resource_dir, cfg!(windows))
+        .into_iter()
+        .find(|p| p.exists())
+}
+
+fn bundled_bun_candidates(resource_dir: &Path, windows: bool) -> Vec<PathBuf> {
+    let bun_name = if windows { "bun.exe" } else { "bun" };
+    let sidecar_name = if windows {
+        "bun-x86_64-pc-windows-msvc.exe"
+    } else {
+        "bun"
+    };
+
     let mut candidates: Vec<PathBuf> = vec![
-        resource_dir.join("resources/bin/bun"),
-        resource_dir.join("bun"),
+        // Tauri resource glob layout.
+        resource_dir.join("resources/bin").join(bun_name),
+        // Windows NSIS layout and source-tree/dev resource layout.
+        resource_dir.join("bin").join(bun_name),
+        // Tauri externalBin layout.
+        resource_dir.join(bun_name),
+        resource_dir.join(sidecar_name),
     ];
 
     if let Some(parent) = resource_dir.parent() {
-        candidates.push(parent.join("bun"));
-        #[cfg(target_os = "macos")]
-        candidates.push(parent.join("MacOS/bun"));
+        candidates.push(parent.join(bun_name));
+        candidates.push(parent.join(sidecar_name));
+        if !windows {
+            candidates.push(parent.join("MacOS/bun"));
+        }
     }
 
     // Dev: resource_dir is often `target/debug/resources`
     if resource_dir.file_name().is_some_and(|n| n == "resources") {
         if let Some(parent) = resource_dir.parent() {
-            candidates.push(parent.join("bun"));
+            candidates.push(parent.join(bun_name));
+            candidates.push(parent.join(sidecar_name));
         }
     }
 
     // Fallback: source tree (`src-tauri/resources/bin/bun`) when running `tauri dev`
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        candidates.push(PathBuf::from(manifest).join("resources/bin/bun"));
+        candidates.push(PathBuf::from(manifest).join("resources/bin").join(bun_name));
     }
 
-    candidates.into_iter().find(|p| p.exists())
+    candidates
 }
 
 fn default_pi_settings_json() -> &'static str {
@@ -422,6 +445,16 @@ mod tests {
         assert_eq!(found.as_deref(), Some(bun_path.as_path()));
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bundled_bun_candidates_include_windows_installer_and_sidecar_layouts() {
+        let resource_dir = PathBuf::from(r"C:\Program Files\Divo Dex\resources");
+        let candidates = bundled_bun_candidates(&resource_dir, true);
+
+        assert!(candidates.contains(&resource_dir.join("bin/bun.exe")));
+        assert!(candidates.contains(&resource_dir.join("bun-x86_64-pc-windows-msvc.exe")));
+        assert!(candidates.contains(&resource_dir.parent().unwrap().join("bun.exe")));
     }
 
     #[test]

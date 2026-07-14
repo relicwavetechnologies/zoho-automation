@@ -30,7 +30,18 @@
   },
   "bundle": {
     "targets": ["nsis", "msi"],
-    "resources": ["resources/pre-install/**/*", "resources/LICENSE"],
+    "resources": [
+      "resources/pre-install/**/*",
+      "resources/LICENSE",
+      "resources/pi/package.json",
+      "resources/pi/pi-chrome-devtools-bridge.mjs",
+      "resources/pi/agent-template/**/*",
+      "resources/pi/agent-npm/**/*",
+      "resources/pi-extensions/**/*",
+      "resources/pi-skills/**/*",
+      "resources/pi/node_modules/**/*",
+      "resources/lark-cli/**/*"
+    ],
     "externalBin": ["resources/bin/bun", "resources/bin/uv"],
     "windows": {
       "webviewInstallMode": {

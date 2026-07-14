@@ -66,4 +66,16 @@ describe('desktop package scripts', () => {
   it('vendors Pi before the desktop development runtime starts', () => {
     assert.match(packageJson.scripts['dev:tauri'], /yarn vendor:pi/)
   })
+
+  it('has a complete Windows x64 build without unused local-model extensions', () => {
+    const script = packageJson.scripts['build:windows:x64']
+    assert.equal(typeof script, 'string')
+    assert.match(script, /build:tauri:plugin:api:win32/)
+    assert.match(script, /build:extensions:win32/)
+    assert.match(script, /build:tauri:win32/)
+    assert.match(packageJson.scripts['build:tauri:plugin:api:win32'], /yarn install/)
+    assert.match(packageJson.scripts['build:extensions:win32'], /yarn install/)
+    assert.match(packageJson.scripts['build:extensions:win32'], /--exclude @janhq\/llamacpp-extension/)
+    assert.match(packageJson.scripts['build:extensions:win32'], /--exclude @janhq\/mlx-extension/)
+  })
 })
