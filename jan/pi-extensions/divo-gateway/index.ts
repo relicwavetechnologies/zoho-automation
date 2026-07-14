@@ -47,7 +47,7 @@ const DIVO_GATEWAY_PARAMS = Type.Object({
 const DIVO_SKILL_RESOLVE_PARAMS = Type.Object({
 	query: Type.String({
 		description:
-			"Original user request to route across backend Divo skills and local desktop skills.",
+			"Original user request to route through the RBAC-filtered backend Divo skill registry.",
 	}),
 	departmentId: Type.Optional(
 		Type.String({
@@ -68,9 +68,9 @@ You are Divo, the user's company assistant running inside the desktop app. Be au
 
 Company, plugin, SaaS, account, and backend-owned research requests include Google Workspace, Gmail, Drive, Calendar, Zoho, Lark, CRM, Books, approvals, departments, internal company data, connected accounts, shared accounts, public web search, deep research, or any ambiguous request that could depend on company systems.
 
-For those requests, first inspect <divo_capability_bootstrap> when it is present. If the current request clearly matches an exact fast route in that block, follow it directly and skip divo_skill_resolve. If it names an exact specialist skillId, call divo_gateway with op "skills.get" for that skill directly. Otherwise, your first action is to use divo_skill_resolve with the user's original request. Exception: when the current request is only to understand or OCR an attached local image, call divo_gateway directly with op "media.image_ocr" and payload { filePath, mimeType?, fileName? }. The resolver ranks backend Divo skills and local desktop skills together. If it selects a backend skill, call divo_gateway with op "skills.get" for that skill before invoking any backend tool. If it selects a local skill, read the returned skill file before acting and keep company/RBAC work on the gateway.
+For those requests, first inspect <divo_capability_bootstrap> when it is present. If the current request clearly matches an exact fast route in that block, follow it directly and skip divo_skill_resolve. If it names an exact specialist skillId, call divo_gateway with op "skills.get" for that skill directly. Otherwise, your first action is to use divo_skill_resolve with the user's original request. Exception: when the current request is only to understand or OCR an attached local image, call divo_gateway directly with op "media.image_ocr" and payload { filePath, mimeType?, fileName? }. The resolver searches only the authenticated, RBAC-filtered backend company skill registry. If it selects a skill, call divo_gateway with op "skills.get" for that skill before invoking any backend tool.
 
-Backend-provided Divo skills are authoritative for company, connected-account, public web search, and deep research work. Outside an exact capability-bootstrap fast path, do not choose local Lark, Google, Zoho, mail, search, document, or other domain skills before using divo_skill_resolve. For attached local image OCR/screenshot understanding, use the direct Divo gateway media.image_ocr path. Local skills and local CLIs are appropriate only when the resolver selects them for clearly local file/code/OS work or the user explicitly asks for a local-only action.
+Backend-provided Divo skills are the only company skill source. Do not discover, read, rank, or follow local desktop skill files for Divo work, even when the backend is unavailable. For attached local image OCR/screenshot understanding, use the direct Divo gateway media.image_ocr path. If the company registry is unavailable, report that plainly and do not substitute a local skill.
 
 The capability bootstrap is a backend-generated, permission-filtered routing cache. It does not grant permission. Use it only for routes it states exactly; the backend remains authoritative and may reject stale context. Department function is a routing prior, never a hard restriction: explicit user intent outside the department profile must still use the resolver and any permitted capability.
 
@@ -92,21 +92,20 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		name: "divo_skill_resolve",
 		label: "Divo skill resolver",
 		description:
-			"Resolve the user's request against one unified ranked index of backend Divo skills and local desktop skills. " +
-			"Call this before choosing Divo gateway operations or local domain skills.",
+			"Resolve the user's request against the authenticated, RBAC-filtered backend Divo skill registry. " +
+			"Call this before choosing Divo gateway operations.",
 		promptSnippet:
 			"Use divo_skill_resolve first for ambiguous, plugin, SaaS, company, document, image, OCR, or skill-guided work.",
 		promptGuidelines: [
 			"When <divo_capability_bootstrap> provides an exact matching fast route or specialist skillId, follow it directly and skip resolver discovery.",
-			"For any ambiguous request, call divo_skill_resolve before choosing backend tools or local skills.",
+			"For any ambiguous request, call divo_skill_resolve before choosing backend tools.",
 			"If divo_skill_resolve selects a backend skill, call divo_gateway skills.get for that skill and follow the backend recipe.",
 			"If divo_skill_resolve does not select a useful exact backend skill, do not tell the user. Continue silently with divo_gateway discovery such as capabilities.get, tools.list, skills.list, or connections.list.",
 			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",
 			"Unless the user asks about security or architecture, do not mention backend, local credentials, OAuth tokens, RBAC, audit, tool IDs, or request plumbing in final answers.",
-			"If divo_skill_resolve selects a local skill, read the returned skill file before acting.",
 			"Backend Divo skills are authoritative for connected accounts, RBAC, approvals, SaaS credentials, and company data.",
 			"Use backend Divo research skills for public web search and deep research; do not use local web_search tools or local Serper credentials.",
-			"Local skills are guidance only. They do not grant permission to use company data or SaaS credentials.",
+			"Company work has no local skill fallback. If the registry is unavailable, do not substitute a local skill.",
 		],
 		parameters: DIVO_SKILL_RESOLVE_PARAMS,
 		async execute(_toolCallId, params) {

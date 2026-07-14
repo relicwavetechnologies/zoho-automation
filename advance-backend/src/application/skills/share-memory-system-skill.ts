@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Prisma } from '../../generated/prisma';
+import { recordSkillRegistryMutation } from './skill-registry-versioning';
 
 export const SHARE_MEMORY_SKILL_SLUG = 'share-memory';
 
@@ -50,7 +51,7 @@ export function buildShareMemorySystemSkill(companyId: string): ShareMemorySyste
 }
 
 export async function provisionShareMemorySystemSkill(
-  db: Pick<Prisma.TransactionClient, 'skill'>,
+  db: Pick<Prisma.TransactionClient, 'skill' | 'skillVersion' | 'skillRegistryRevision'>,
   companyId: string,
 ): Promise<{ id: string }> {
   const existing = await db.skill.findFirst({
@@ -64,16 +65,18 @@ export async function provisionShareMemorySystemSkill(
   if (existing && !existing.isSystem) return existing;
 
   const create = buildShareMemorySystemSkill(companyId);
-  return db.skill.upsert({
+  const skill = await db.skill.upsert({
     where: { id: existing?.id ?? create.id },
     create,
     update: {
       ...SHARE_MEMORY_SKILL_FIELDS,
       toolIds: [...SHARE_MEMORY_SKILL_FIELDS.toolIds],
       tags: [...SHARE_MEMORY_SKILL_FIELDS.tags],
+      revision: { increment: 1 },
     },
-    select: { id: true },
   });
+  await recordSkillRegistryMutation(db, skill, 'system');
+  return { id: skill.id };
 }
 
 function deterministicShareMemorySkillId(companyId: string): string {

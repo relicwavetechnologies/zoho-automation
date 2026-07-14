@@ -13,9 +13,7 @@ export interface DepartmentMembershipRow {
   departmentCompanyId: string;
   zohoReadScope: string;
   systemPrompt?: string | null;
-  skillsMarkdown?: string | null;
   managerApprovalJson?: unknown;
-  zohoRateLimitJson?: unknown;
 }
 
 export interface ActiveDepartmentMembershipRow {
@@ -69,9 +67,7 @@ export class DepartmentRepository implements DepartmentRepoPort {
         departmentCompanyId: m.department.companyId,
         zohoReadScope: m.role.zohoReadScope,
         systemPrompt: m.department.agentConfig?.systemPrompt ?? null,
-        skillsMarkdown: m.department.agentConfig?.skillsMarkdown ?? null,
         managerApprovalJson: m.department.agentConfig?.managerApprovalJson ?? null,
-        zohoRateLimitJson: m.department.agentConfig?.zohoRateLimitJson ?? null,
       });
     } catch (e) {
       return err(wrapInfra('prisma', 'getDepartmentMembership', e));

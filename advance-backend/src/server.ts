@@ -18,6 +18,7 @@ import { PermissionWriteService } from './application/permissions/permission-wri
 import { createFilesRouter } from './http/files/files.routes';
 import { createAgentsRoutes } from './http/agents/agents.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
+import { createSkillRegistryRoutes } from './http/admin/skill-registry.routes';
 import { createMemoryRoutes } from './http/admin/memory.routes';
 import { createCompanyRoutes } from './http/admin/company.routes';
 import { createAuditRoutes } from './http/admin/audit.routes';
@@ -374,6 +375,7 @@ export const createServer = (c: Container) => {
       prisma:                 c.prisma,
       larkOAuthService:       c.larkOAuthService,
       googleOAuthService:     c.googleOAuthService,
+      canvaMcpOAuthService:   c.canvaMcpOAuthService,
       zohoTokenService:       c.zohoTokenService,
       zohoConnectionRepo:     c.zohoConnectionRepo,
       larkUserAuthLinkRepo:   c.larkUserAuthLinkRepo,
@@ -458,7 +460,19 @@ export const createServer = (c: Container) => {
     adminAuth,
     createDepartmentRoutes({
       deptAdminService: c.departmentAdminService,
+      auditService:      c.auditService,
       logger:           c.logger,
+    }),
+  );
+
+  // Skill Registry admin (Skills Lab)
+  app.use(
+    '/api/admin/skill-registry',
+    adminAuth,
+    createSkillRegistryRoutes({
+      skillRegistryService: c.skillRegistryAdminService,
+      auditService:         c.auditService,
+      logger:               c.logger,
     }),
   );
 

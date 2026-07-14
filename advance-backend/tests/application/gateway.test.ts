@@ -95,10 +95,23 @@ function makeSkillPublishingPrisma() {
           name: args.data.name,
           scope: args.data.scope,
           departmentId: args.data.departmentId,
+          companyId: args.data.companyId,
+          summary: args.data.summary,
+          markdown: args.data.markdown,
           toolIds: args.data.toolIds,
+          tags: args.data.tags,
           status: 'active',
+          revision: 1,
+          createdBy: args.data.createdBy,
+          updatedBy: args.data.updatedBy,
         };
       },
+    },
+    skillVersion: {
+      upsert: async () => ({}),
+    },
+    skillRegistryRevision: {
+      upsert: async () => ({}),
     },
   };
 
@@ -856,6 +869,7 @@ describe('GatewayDispatcher', () => {
     description: 'Allowed skill',
     instructions: 'Do allowed things',
     toolIds: ['fakeTool'],
+    revision: 1,
   };
   const blockedSkill: CatalogSkill = {
     id: 'blocked-skill',
@@ -864,6 +878,7 @@ describe('GatewayDispatcher', () => {
     description: 'Blocked skill',
     instructions: 'Do blocked things',
     toolIds: ['zohoCrm'],
+    revision: 1,
   };
 
   function makeDispatcher(perm = makeAllowedPerm('fakeTool', ['read'])) {
@@ -933,6 +948,54 @@ describe('GatewayDispatcher', () => {
       connectedAt: '2026-01-01T00:00:00.000Z',
       lastUsedAt: null,
     }]);
+  });
+
+  it('returns shared Canva connections only when Canva RBAC is allowed', async () => {
+    const perm = makeAllowedPerm('canvaDesign', ['read']);
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(perm),
+      toolRegistry: new ToolRegistry(),
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: new ToolRegistry(),
+        permissions: makePermissionService(perm),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      connectionRegistry: {
+        listAccessibleCanvaConnections: async () => ok([{
+          connectionId: 'conn-canva-1',
+          provider: 'canva',
+          label: 'Marketing Canva',
+          ownerType: 'user',
+          ownerUserId: 'manager-1',
+          access: 'read_write',
+          scopes: [],
+          connectedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }]),
+      },
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'connections.list',
+      payload: { provider: 'canva' },
+    }, member);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual((result.data as any).connections[0], {
+      connectionId: 'conn-canva-1',
+      provider: 'canva',
+      label: 'Marketing Canva',
+      accountEmail: null,
+      accountName: null,
+      ownerType: 'user',
+      ownerUserId: 'manager-1',
+      access: 'read_write',
+      scopes: [],
+      connectedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+    });
   });
 
   it('returns unknown_op for unsupported operation', async () => {

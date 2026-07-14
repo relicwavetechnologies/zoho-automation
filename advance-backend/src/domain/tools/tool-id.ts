@@ -12,6 +12,7 @@ export const CANONICAL_TOOL_IDS = [
   'googleGmail',
   'googleDrive',
   'googleCalendar',
+  'canvaDesign',
   'zohoCrm',
   'zohoBooks',
   'contextSearch',
@@ -29,7 +30,7 @@ export const CANONICAL_TOOL_IDS = [
 
 export type CanonicalToolId = typeof CANONICAL_TOOL_IDS[number];
 
-export type ToolFamily = 'lark' | 'google' | 'zoho' | 'context' | 'skills' | 'memory' | 'rag' | 'data' | 'execution';
+export type ToolFamily = 'lark' | 'google' | 'canva' | 'zoho' | 'context' | 'skills' | 'memory' | 'rag' | 'data' | 'execution';
 
 export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   larkMessaging:  'lark',
@@ -42,6 +43,7 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   googleGmail:    'google',
   googleDrive:    'google',
   googleCalendar: 'google',
+  canvaDesign:    'canva',
   zohoCrm:        'zoho',
   zohoBooks:      'zoho',
   contextSearch:  'context',
@@ -65,6 +67,7 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   googleGmail:    ['read', 'send', 'update'],
   googleDrive:    ['read', 'create', 'update'],
   googleCalendar: ['read', 'create', 'update', 'delete'],
+  canvaDesign:    ['read', 'create', 'update'],
   zohoCrm:        ['read', 'create', 'update', 'delete'],
   zohoBooks:      ['read', 'create', 'update', 'delete'],
   contextSearch:  ['read'],
@@ -88,6 +91,7 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   googleGmail:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   googleDrive:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   googleCalendar: { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
+  canvaDesign:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   zohoCrm:        { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   zohoBooks:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   contextSearch:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },

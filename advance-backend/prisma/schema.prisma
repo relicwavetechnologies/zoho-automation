@@ -156,6 +156,9 @@ model Company {
   promptProfile               CompanyPromptProfile?
   departments                 Department[]
   skills                      Skill[]
+  skillFolders                SkillFolder[]
+  skillAccessGrants           SkillAccessGrant[]
+  skillRegistryRevision       SkillRegistryRevision?
   zohoConnections             ZohoConnection[]
   zohoConnectionProfiles      ZohoConnectionProfile[]
   zohoSyncJobs                ZohoSyncJob[]
@@ -826,6 +829,7 @@ model Department {
   updatedAt          DateTime                     @updatedAt
   agentConfig        DepartmentAgentConfig?
   skills             Skill[]
+  skillFolders       SkillFolder[]
   roles              DepartmentRole[]
   memberships        DepartmentMembership[]
   toolPermissions    DepartmentToolPermission[]
@@ -843,6 +847,8 @@ model Skill {
   company      Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   departmentId String?
   department   Department? @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  folderId     String?
+  folder       SkillFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
   scope        String
   name         String
   slug         String
@@ -853,14 +859,127 @@ model Skill {
   status       String      @default("active")
   isSystem     Boolean     @default(false)
   sortOrder    Int         @default(0)
+  revision     Int         @default(1)
   createdBy    String?
   updatedBy    String?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
+  versions     SkillVersion[]
+  aliases      SkillAlias[]
+  capabilities SkillCapability[]
+  accessGrants SkillAccessGrant[]
 
   @@index([companyId, scope, status, sortOrder])
   @@index([departmentId, status, sortOrder])
+  @@index([folderId, status, sortOrder])
   @@index([companyId, scope, slug])
+}
+
+// Folder rows are the source of truth for the admin tree. Skills remain
+// addressable by stable IDs and slugs even when moved between folders.
+model SkillFolder {
+  id           String       @id @default(uuid())
+  companyId    String
+  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId String?
+  department   Department?  @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  parentId     String?
+  parent       SkillFolder? @relation("SkillFolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children     SkillFolder[] @relation("SkillFolderTree")
+  name         String
+  slug         String
+  status       String       @default("active")
+  sortOrder    Int          @default(0)
+  createdBy    String?
+  updatedBy    String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  skills       Skill[]
+
+  @@index([companyId, departmentId, parentId, status, sortOrder])
+}
+
+// Immutable content snapshots. Current skill fields are the only live recipe;
+// versions support audit, rollback, and future publishing workflows.
+model SkillVersion {
+  id           String   @id @default(uuid())
+  skillId      String
+  skill        Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  revision     Int
+  name         String
+  summary      String
+  markdown     String
+  toolIds      String[] @default([])
+  tags         String[] @default([])
+  scope        String
+  departmentId String?
+  status       String
+  createdBy    String?
+  source       String   @default("publish")
+  createdAt    DateTime @default(now())
+
+  @@unique([skillId, revision])
+  @@index([skillId, createdAt])
+}
+
+// Aliases are stable lookup names for a skill. They are not authorization
+// inputs; the resolved current skill remains the policy-bearing record.
+model SkillAlias {
+  id        String   @id @default(uuid())
+  skillId   String
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  alias     String
+  createdAt DateTime @default(now())
+
+  @@unique([skillId, alias])
+  @@index([alias])
+}
+
+// Registry metadata for future action-level publishing. Until its write UI is
+// live, Skill.toolIds remains the sole enforced required-capability list.
+model SkillCapability {
+  id          String   @id @default(uuid())
+  skillId     String
+  skill       Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  toolId      String
+  actionGroup String   @default("any")
+  requirement String   @default("required")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([skillId, toolId, actionGroup])
+  @@index([toolId, requirement])
+}
+
+// Monotonic company revision returned with all skill discovery responses.
+// Desktops use it for observability; their cache stays deliberately short.
+model SkillRegistryRevision {
+  companyId String   @id
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  revision  Int      @default(1)
+  updatedAt DateTime @updatedAt
+}
+
+// Per-skill RBAC. A skill is usable ONLY by grantees with an explicit grant
+// here — deny-by-default. Grantees are polymorphic (mirrors
+// IntegrationConnectionGrant): a whole company, a department, a department
+// role, or an individual user. granteeId is a bare id (no FK) so a single row
+// shape covers every axis. Company admins manage grants from the Skills Lab;
+// this is independent of tool-level permissions (which still gate individual
+// tool invocations at execution time).
+model SkillAccessGrant {
+  id          String   @id @default(uuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  skillId     String
+  skill       Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  granteeType String   // 'user' | 'department' | 'role' | 'company'
+  granteeId   String
+  grantedBy   String?
+  createdAt   DateTime @default(now())
+
+  @@unique([skillId, granteeType, granteeId])
+  @@index([companyId, granteeType, granteeId])
 }
 
 model DepartmentAgentConfig {
@@ -869,8 +988,6 @@ model DepartmentAgentConfig {
   department          Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   systemPrompt        String
   desktopPersonaPrompt String    @default("")
-  skillsMarkdown      String
-  zohoRateLimitJson   Json?
   managerApprovalJson Json?
   isActive            Boolean    @default(true)
   createdBy           String

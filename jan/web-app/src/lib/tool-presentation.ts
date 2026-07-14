@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import type { ComponentType } from 'react'
 
-import { GoogleIcon, LarkIcon, ZohoIcon } from '@/components/brand-icons'
+import { CanvaIcon, GoogleIcon, LarkIcon, ZohoIcon } from '@/components/brand-icons'
 import type { DivoToolInventoryItem } from './divo-tools'
 
 export type ToolPresentationGroup = {
@@ -23,6 +23,7 @@ export type ToolPresentationGroup = {
 
 const providers = [
   { id: 'google-workspace', title: 'Google Workspace', description: 'Gmail, Drive, and Calendar tools.', Icon: GoogleIcon, toolIds: ['googleGmail', 'googleDrive', 'googleCalendar'] },
+  { id: 'canva', title: 'Canva', description: 'Design, asset, folder, and export tools.', Icon: CanvaIcon, toolIds: ['canvaDesign'] },
   { id: 'zoho', title: 'Zoho', description: 'CRM and Books tools.', Icon: ZohoIcon, iconClassName: 'h-5 w-7', toolIds: ['zohoCrm', 'zohoBooks'] },
   { id: 'lark-personal', title: 'Lark', description: 'Company collaboration tools.', Icon: LarkIcon, toolIds: ['larkMessaging', 'larkContacts', 'larkTask', 'larkCalendar', 'larkDoc', 'larkBase', 'larkApproval'] },
   { id: 'tool-memory', title: 'Memory', description: 'Company memory and knowledge tools.', Icon: Brain, toolIds: ['memoryPublishing', 'memoryRecall'] },

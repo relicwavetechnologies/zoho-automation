@@ -55,8 +55,14 @@ describe('admin auth company signup provisioning', () => {
         findFirst: async () => null,
         upsert: async (args: any) => {
           capturedUpsert = args;
-          return { id: args.create.id };
+          return { ...args.create, revision: 1, createdBy: null, updatedBy: null };
         },
+      },
+      skillVersion: {
+        upsert: async () => ({}),
+      },
+      skillRegistryRevision: {
+        upsert: async () => ({}),
       },
       adminMembership: {
         create: async ({ data }: any) => ({ id: 'membership-1', ...data }),

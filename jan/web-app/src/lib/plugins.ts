@@ -19,6 +19,7 @@ import {
   GoogleCalendarIcon,
   GoogleDriveIcon,
   GoogleIcon,
+  CanvaIcon,
   ZohoIcon,
 } from '@/components/brand-icons'
 
@@ -87,6 +88,16 @@ export const divoPlugins: DivoPlugin[] = [
     category: 'connector',
     description: 'Connect Gmail, Drive, and Calendar accounts.',
     icon: GoogleIcon,
+    accentClassName: 'bg-card border-border/70',
+    featured: true,
+    enabled: true,
+  },
+  {
+    id: 'canva',
+    name: 'Canva',
+    category: 'connector',
+    description: 'Connect and share Canva design workspaces through Divo.',
+    icon: CanvaIcon,
     accentClassName: 'bg-card border-border/70',
     featured: true,
     enabled: true,

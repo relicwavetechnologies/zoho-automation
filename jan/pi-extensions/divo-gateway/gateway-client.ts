@@ -33,7 +33,9 @@ export interface GatewayResponseBody {
 }
 
 const MAX_INLINE_IMAGE_BYTES = 1_250_000;
-const SKILL_CACHE_TTL_MS = 35 * 60 * 1000;
+// Registry responses are company policy, not a local source of truth. Keep a
+// tiny read-through cache only to avoid repeated calls in one agent turn.
+const SKILL_CACHE_TTL_MS = 2 * 60 * 1000;
 
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
 	".gif": "image/gif",
@@ -294,6 +296,20 @@ function skillCacheKey(
 			tokenCacheKey(config.memberToken),
 			departmentId ?? "",
 			skillId,
+		].join("|");
+	}
+
+	if (request.op === "skills.search") {
+		const payload = asRecord(request.payload);
+		const query = getString(payload?.query);
+		if (!query) return null;
+		return [
+			"skills.search",
+			config.backendUrl,
+			tokenCacheKey(config.memberToken),
+			departmentId ?? "",
+			query,
+			String(payload?.limit ?? ""),
 		].join("|");
 	}
 

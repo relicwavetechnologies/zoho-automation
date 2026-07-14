@@ -22,6 +22,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
       'https://backend.example.com/api/lark/auth/callback',
     ),
     googleOAuthService: {} as any,
+    canvaMcpOAuthService: {} as any,
     larkUserAuthLinkRepo: {} as any,
     connectionRepo: {
       listAccessibleZohoConnections: async () => ({ ok: true, value: [] }),
@@ -79,7 +80,7 @@ async function callRoute(
 }
 
 describe('desktop auth routes', () => {
-  const connectionPrisma = (provider: 'google_workspace' | 'zoho') => ({
+  const connectionPrisma = (provider: 'google_workspace' | 'zoho' | 'canva') => ({
     integrationConnection: {
       findFirst: async () => ({
         id: `${provider}-1`,
@@ -99,6 +100,30 @@ describe('desktop auth routes', () => {
     department: { findMany: async () => [] },
     departmentRole: { findMany: async () => [] },
     company: { findUnique: async () => ({ id: 'company-1', name: 'Acme' }) },
+  });
+
+  it('carries a user-provided Canva connection name through the OAuth state', async () => {
+    let authorization: { attemptId: string; state: string } | null = null;
+    const router = createDesktopAuthRoutes(makeDeps({
+      canvaMcpOAuthService: {
+        isConfigured: () => true,
+        beginAuthorization: async (input: { attemptId: string; state: string }) => {
+          authorization = input;
+          return 'https://mcp.canva.com/authorize';
+        },
+      },
+    }));
+
+    const result = await callRoute(router, 'GET', '/canva/authorize-url', {
+      query: { label: 'Marketing workspace' },
+      locals: { userId: 'user-1', companyId: 'company-1' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.authorizeUrl, 'https://mcp.canva.com/authorize');
+    assert.ok(authorization);
+    const payload = JSON.parse(Buffer.from(authorization.state.split('.')[1]!, 'base64url').toString('utf8'));
+    assert.equal(payload.label, 'Marketing workspace');
   });
 
   it('disconnects only the selected Google connection for an admin accessor', async () => {
@@ -137,6 +162,25 @@ describe('desktop auth routes', () => {
 
     assert.equal(result.status, 200);
     assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'zoho-1', provider: 'zoho' }]);
+  });
+
+  it('disconnects only the selected shared Canva connection for an admin accessor', async () => {
+    const revoked: unknown[] = [];
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: connectionPrisma('canva'),
+      connectionRepo: {
+        listAccessibleCanvaConnections: async () => ({ ok: true, value: [{ connectionId: 'canva-1', access: 'admin' }] }),
+        revokeConnection: async (input: unknown) => { revoked.push(input); return { ok: true, value: true }; },
+      },
+    }));
+
+    const result = await callRoute(router, 'DELETE', '/canva/connections/:connectionId', {
+      params: { connectionId: 'canva-1' },
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'canva-1', provider: 'canva' }]);
   });
 
   it('stores the Zoho accounts domain used for the OAuth exchange', async () => {

@@ -26,6 +26,7 @@ function makeService(options: {
   logger?: { error: (event: string, data?: Record<string, unknown>) => void };
   resolve?: (query: any) => Promise<any>;
   overrideRows?: Array<{ userId: string; actionGroup: string; allowed: boolean }>;
+  canvaConnections?: Array<unknown>;
 } = {}) {
   const writes: Array<Record<string, unknown>> = [];
   const invalidations: string[] = [];
@@ -100,6 +101,7 @@ function makeService(options: {
     },
     connectionRepo: {
       listAccessibleGoogleConnections: async () => ({ ok: true as const, value: [] }),
+      listAccessibleCanvaConnections: async () => ({ ok: true as const, value: options.canvaConnections ?? [] }),
       listAccessibleZohoConnections: async () => ({ ok: true as const, value: [] }),
     } as any,
     toolRegistry: {
@@ -123,6 +125,16 @@ describe('DesktopToolAccessService', () => {
     assert.deepEqual(lark.managementScopes, [{ kind: 'department', department: { id: 'ops', name: 'Ops' } }]);
     assert.equal(result.tools.find(entry => entry.tool.toolId === 'memoryRecall')?.origins[0].kind, 'system');
     assert.equal(result.tools.find(entry => entry.tool.toolId === 'runCommand')?.origins[0].kind, 'local');
+  });
+
+  it('shows Canva as needing a personal or shared connection until one is accessible', async () => {
+    const canva = { ...tool, toolId: 'canvaDesign', name: 'Canva', category: 'design', domain: 'canva' };
+    const runtimeToolIds = ['larkTask', 'canvaDesign', 'memoryRecall', 'runCommand'];
+    const disconnected = makeService({ registeredTools: [canva], runtimeToolIds });
+    assert.equal((await disconnected.service.inventory(actor)).tools[0]?.readiness, 'connection_required');
+
+    const connected = makeService({ registeredTools: [canva], runtimeToolIds, canvaConnections: [{ connectionId: 'canva-1' }] });
+    assert.equal((await connected.service.inventory(actor)).tools[0]?.readiness, 'ready');
   });
 
   it('denies cross-department writes and rechecks a stale manager before writing', async () => {

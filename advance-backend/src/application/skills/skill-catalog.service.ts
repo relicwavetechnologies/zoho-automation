@@ -10,6 +10,7 @@ export interface CatalogSkill {
   readonly description: string;
   readonly instructions: string;
   readonly toolIds: readonly string[];
+  readonly revision: number;
 }
 
 export interface CatalogSkillSearchResult {
@@ -33,6 +34,7 @@ export class SkillCatalogService {
     companyId: string;
     departmentId?: string;
     permission: PermissionResult;
+    grantedSkillIds?: ReadonlySet<string>;
     limit?: number;
   }): Promise<CatalogSkill[]> {
     const result = await this.deps.repo.list({
@@ -45,7 +47,7 @@ export class SkillCatalogService {
       return [];
     }
     return result.value
-      .filter((row) => this.isVisibleByPermission(row, input.permission))
+      .filter((row) => this.isVisible(row, input.permission, input.grantedSkillIds))
       .map(toCatalogSkill);
   }
 
@@ -53,6 +55,7 @@ export class SkillCatalogService {
     companyId: string;
     departmentId?: string;
     permission: PermissionResult;
+    grantedSkillIds?: ReadonlySet<string>;
     query: string;
     limit: number;
   }): Promise<CatalogSkillSearchResult[]> {
@@ -67,7 +70,7 @@ export class SkillCatalogService {
       return [];
     }
     return result.value
-      .filter((row) => this.isVisibleByPermission(row, input.permission))
+      .filter((row) => this.isVisible(row, input.permission, input.grantedSkillIds))
       .map((row) => {
         const skill = toCatalogSkill(row);
         return { skill, score: scoreSkill(skill, tokenize(input.query)) };
@@ -81,6 +84,7 @@ export class SkillCatalogService {
     companyId: string;
     departmentId?: string;
     permission: PermissionResult;
+    grantedSkillIds?: ReadonlySet<string>;
     skillId: string;
   }): Promise<CatalogSkill | null> {
     const result = await this.deps.repo.findById({
@@ -96,7 +100,7 @@ export class SkillCatalogService {
       });
       return null;
     }
-    if (!result.value || !this.isVisibleByPermission(result.value, input.permission)) {
+    if (!result.value || !this.isVisible(result.value, input.permission, input.grantedSkillIds)) {
       return null;
     }
     return toCatalogSkill(result.value);
@@ -123,8 +127,32 @@ export class SkillCatalogService {
     return result.value ? toCatalogSkill(result.value) : null;
   }
 
-  private isVisibleByPermission(row: SkillRow, permission: PermissionResult): boolean {
-    return row.toolIds.some((toolId) => permission.allowedToolIds.has(asToolId(toolId)));
+  async registryRevision(companyId: string): Promise<number> {
+    const result = await this.deps.repo.registryRevision(companyId);
+    if (!result.ok) {
+      this.log.warn('skills.catalog.registry_revision.failed', {
+        companyId,
+        error: result.error.message,
+      });
+      return 1;
+    }
+    return result.value;
+  }
+
+  /**
+   * Skill visibility gate. When `grantedSkillIds` is provided (skill-RBAC
+   * enforcement is on), visibility is deny-by-default: the skill must be
+   * explicitly granted to the member. Otherwise the legacy rule applies —
+   * visible iff the member can use every required tool.
+   */
+  private isVisible(
+    row: SkillRow,
+    permission: PermissionResult,
+    grantedSkillIds?: ReadonlySet<string>,
+  ): boolean {
+    if (grantedSkillIds) return grantedSkillIds.has(row.id);
+    return row.toolIds.length > 0
+      && row.toolIds.every((toolId) => permission.allowedToolIds.has(asToolId(toolId)));
   }
 }
 
@@ -136,6 +164,7 @@ function toCatalogSkill(row: SkillRow): CatalogSkill {
     description: row.summary,
     instructions: row.markdown,
     toolIds: [...row.toolIds],
+    revision: row.revision,
   };
 }
 

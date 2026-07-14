@@ -15,7 +15,7 @@ export const MEMORY_PUBLISHING_REGISTERED_TOOL = {
   ],
 } as const;
 
-type ProvisioningDatabase = Pick<PrismaClient, 'company' | 'registeredTool' | 'skill'>;
+type ProvisioningDatabase = Pick<PrismaClient, 'company' | 'registeredTool' | 'skill' | 'skillVersion' | 'skillRegistryRevision'>;
 
 export async function provisionShareMemoryForExistingCompanies(
   db: ProvisioningDatabase,
@@ -54,7 +54,7 @@ export async function provisionShareMemoryForExistingCompanies(
       continue;
     }
     await provisionShareMemorySystemSkill(
-      db as Pick<Prisma.TransactionClient, 'skill'>,
+      db as Pick<Prisma.TransactionClient, 'skill' | 'skillVersion' | 'skillRegistryRevision'>,
       company.id,
     );
     if (existingSkill) skillsUpdated += 1;

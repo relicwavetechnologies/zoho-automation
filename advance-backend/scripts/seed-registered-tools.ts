@@ -33,6 +33,18 @@ const TOOLS: ToolSeed[] = [
   { toolId: 'googleGmail', name: 'Gmail', description: 'Send, reply, draft and search email with attachments.', category: 'communication', domain: 'google', hitlRequired: true },
   { toolId: 'googleDrive', name: 'Google Drive', description: 'List, read and download Drive files.', category: 'documents', domain: 'google' },
   { toolId: 'googleCalendar', name: 'Google Calendar', description: 'List, create and update Google Calendar events.', category: 'calendar', domain: 'google' },
+  {
+    toolId: 'canvaDesign',
+    name: 'Canva',
+    description: 'Search, create, and update Canva designs through a connected Canva account.',
+    category: 'design',
+    domain: 'canva',
+    guardrails: [
+      'Uses an OAuth connection selected by its connection ID',
+      'Canva credentials remain server-side',
+      'Each operation is authorized by the backend before the Canva MCP is called',
+    ],
+  },
   { toolId: 'zohoCrm', name: 'Zoho CRM', description: 'Read and write Zoho CRM records, pipeline and lead reports.', category: 'crm', domain: 'zoho' },
   { toolId: 'zohoBooks', name: 'Zoho Books', description: 'Read and write invoices, bills and expenses; financial reports.', category: 'finance', domain: 'zoho' },
   { toolId: 'contextSearch', name: 'Context Search', description: 'RAG search over ingested company documents.', category: 'knowledge', domain: 'context' },

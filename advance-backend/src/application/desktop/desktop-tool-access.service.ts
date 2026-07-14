@@ -109,7 +109,7 @@ export class DesktopToolAccessService {
   async inventory(actor: Actor) {
     const liveRole = await this.liveCompanyRole(actor);
     if (!liveRole) throw new DesktopToolAccessError('forbidden');
-    const [registered, memberships, google, zoho] = await Promise.all([
+    const [registered, memberships, google, canva, zoho] = await Promise.all([
       this.deps.prisma.registeredTool.findMany({
         where: { deprecated: false },
         select: { toolId: true, name: true, description: true, category: true, domain: true, hitlRequired: true },
@@ -121,6 +121,7 @@ export class DesktopToolAccessService {
         orderBy: { department: { name: 'asc' } },
       }),
       this.deps.connectionRepo.listAccessibleGoogleConnections({ companyId: actor.companyId, userId: actor.userId }),
+      this.deps.connectionRepo.listAccessibleCanvaConnections({ companyId: actor.companyId, userId: actor.userId }),
       this.deps.connectionRepo.listAccessibleZohoConnections({ companyId: actor.companyId, userId: actor.userId }),
     ]);
     const companyResult = await this.deps.permissions.resolve({ companyId: asCompanyId(actor.companyId), userId: asUserId(actor.userId), companyRole: liveRole as any, channel: 'desktop' });
@@ -134,6 +135,7 @@ export class DesktopToolAccessService {
     if (departmentResults.some(({ result }) => !result.ok)) throw new DesktopToolAccessError('internal');
 
     const googleReady = google.ok && google.value.length > 0;
+    const canvaReady = canva.ok && canva.value.length > 0;
     const zohoReady = zoho.ok && zoho.value.length > 0;
     const canManageGlobal = COMPANY_ADMIN_ROLES.has(liveRole);
     const managedDepartments = new Set(memberships.filter(m => m.role.slug === 'MANAGER').map(m => m.departmentId));
@@ -158,6 +160,8 @@ export class DesktopToolAccessService {
       if (globalActions.length === 0 && departmentOrigins.length === 0 && managementScopes.length === 0) continue;
       const readiness = tool.toolId.startsWith('google')
         ? (googleReady ? 'ready' : 'connection_required')
+        : tool.toolId.startsWith('canva')
+          ? (canvaReady ? 'ready' : 'connection_required')
         : tool.toolId.startsWith('zoho')
           ? (zohoReady ? 'ready' : canManageGlobal ? 'connection_required' : 'admin_connection_required')
           : 'not_applicable';

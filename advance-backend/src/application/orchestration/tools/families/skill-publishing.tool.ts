@@ -9,6 +9,7 @@ import type { ToolActionGroup } from '../../../../domain/permissions/tool-action
 import { asToolId } from '../../../../shared/ids';
 import { SKILL_SUMMARY_MAX_CHARS } from '../../../skills/skill-limits';
 import { unknownSkillToolIds } from '../../../skills/skill-tool-validation';
+import { recordSkillRegistryMutation } from '../../../skills/skill-registry-versioning';
 
 const toolIdsSchema = z.array(z.string().min(1).max(120)).min(1).max(50);
 
@@ -173,18 +174,22 @@ export const createSkillPublishingTool = (deps: {
           createdBy: ctx.runContext.userId,
           updatedBy: ctx.runContext.userId,
         },
-        select: {
-          id: true,
-          slug: true,
-          name: true,
-          scope: true,
-          departmentId: true,
-          toolIds: true,
-          status: true,
-        },
       });
 
-      return ok({ operation: 'publish', skill });
+      await recordSkillRegistryMutation(deps.prisma, skill);
+
+      return ok({
+        operation: 'publish',
+        skill: {
+          id: skill.id,
+          slug: skill.slug,
+          name: skill.name,
+          scope: skill.scope,
+          departmentId: skill.departmentId,
+          toolIds: skill.toolIds,
+          status: skill.status,
+        },
+      });
     } catch (e) {
       return err(new ToolError({
         toolId: 'skillPublishing',

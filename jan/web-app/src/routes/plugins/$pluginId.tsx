@@ -56,7 +56,7 @@ async function openExternalUrl(url: string): Promise<void> {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-type GoogleStatusConnection = {
+type CloudStatusConnection = {
   connectionId: string
   label: string
   accountEmail: string | null
@@ -68,11 +68,11 @@ type GoogleStatusConnection = {
   lastUsedAt: string | null
 }
 
-type GoogleStatusResponse = {
+type CloudStatusResponse = {
   success: boolean
   data?: {
     connected: boolean
-    connections: GoogleStatusConnection[]
+    connections: CloudStatusConnection[]
   }
   message?: string
 }
@@ -126,7 +126,58 @@ type GoogleManageResponse = {
   message?: string
 }
 
-type ManageAccessProvider = 'google' | 'zoho'
+type ManageAccessProvider = 'google' | 'zoho' | 'canva'
+
+type CloudProviderConfig = {
+  provider: Extract<ManageAccessProvider, 'google' | 'canva'>
+  pluginId: 'google-workspace' | 'canva'
+  label: 'Google Workspace' | 'Canva'
+  connectionLabel: 'Google' | 'Canva'
+  accountFallback: string
+  commands: {
+    authorize: string
+    status: string
+    disconnect: string
+  }
+}
+
+const cloudProviders: Record<CloudProviderConfig['pluginId'], CloudProviderConfig> = {
+  'google-workspace': {
+    provider: 'google',
+    pluginId: 'google-workspace',
+    label: 'Google Workspace',
+    connectionLabel: 'Google',
+    accountFallback: 'Google account',
+    commands: {
+      authorize: 'divo_google_authorize_url',
+      status: 'divo_google_status',
+      disconnect: 'divo_google_disconnect_connection',
+    },
+  },
+  canva: {
+    provider: 'canva',
+    pluginId: 'canva',
+    label: 'Canva',
+    connectionLabel: 'Canva',
+    accountFallback: 'Canva connection',
+    commands: {
+      authorize: 'divo_canva_authorize_url',
+      status: 'divo_canva_status',
+      disconnect: 'divo_canva_disconnect_connection',
+    },
+  },
+}
+
+const canvaServices = [
+  { name: 'Designs', description: 'Search, generate, edit, and export approved designs.', icon: CalendarDays },
+  { name: 'Assets & folders', description: 'Find assets and organize design work with Divo.', icon: KeyRound },
+  { name: 'Collaboration', description: 'Read and add design comments through shared access.', icon: Users },
+]
+
+function getCloudProvider(pluginId: string): CloudProviderConfig | null {
+  if (pluginId === 'google-workspace' || pluginId === 'canva') return cloudProviders[pluginId]
+  return null
+}
 
 type ZohoStatusResponse = {
   success: boolean
@@ -220,23 +271,23 @@ function isDivoAuthError(error: unknown): boolean {
   )
 }
 
-function toConnectionModel(connection: GoogleStatusConnection): DivoConnection {
-  const account = connection.accountEmail ?? connection.accountName ?? 'Google account'
+function toConnectionModel(connection: CloudStatusConnection, provider: CloudProviderConfig): DivoConnection {
+  const account = connection.accountEmail ?? connection.accountName ?? provider.accountFallback
   const isShared = connection.ownerType === 'company'
   const scopeLabels = formatGoogleScopes(connection.scopes)
 
   return {
     id: connection.connectionId,
-    pluginId: 'google-workspace',
+    pluginId: provider.pluginId,
     label: connection.label || account,
     accountEmail: account,
     kind: isShared ? 'company_shared' : 'personal',
     status: 'connected',
     access: connection.access,
     owner: connection.accountName ?? account,
-    scopes: scopeLabels.length ? scopeLabels : ['Google Workspace'],
+    scopes: scopeLabels.length ? scopeLabels : [provider.label],
     piAlias: connection.label || account,
-    recommendedFor: buildConnectionRecommendation(connection.access, scopeLabels),
+    recommendedFor: buildConnectionRecommendation(connection.access, scopeLabels, provider.label),
     lastUsedAt: formatRelativeDate(connection.lastUsedAt),
     connectedAt: connection.connectedAt,
   }
@@ -266,8 +317,8 @@ function toZohoConnectionModel(connection: NonNullable<ZohoStatusResponse['data'
   }
 }
 
-function buildConnectionRecommendation(access: DivoConnectionAccess, scopes: string[]): string {
-  const services = scopes.length ? scopes.join(', ') : 'Google Workspace'
+function buildConnectionRecommendation(access: DivoConnectionAccess, scopes: string[], fallback: string): string {
+  const services = scopes.length ? scopes.join(', ') : fallback
   if (access === 'read_only') return `Read-only access for ${services}.`
   if (access === 'admin') return `Admin access for ${services}.`
   return `Read/write access for ${services}.`
@@ -355,6 +406,7 @@ export function PluginDetailRoute() {
   const [toolInventoryError, setToolInventoryError] = useState<string | null>(null)
   const inventoryRequestGeneration = useRef(0)
   const plugin = getPlugin(pluginId)
+  const cloudProvider = getCloudProvider(pluginId)
 
   const invalidateInventoryRequests = useCallback(() => {
     inventoryRequestGeneration.current++
@@ -410,7 +462,7 @@ export function PluginDetailRoute() {
 
   const loadConnections = useCallback(async () => {
     if (!liveGroup) return []
-    if (pluginId !== 'google-workspace') {
+    if (!cloudProvider) {
       setConnectionState({ status: 'ready', connections: [] })
       return []
     }
@@ -422,21 +474,22 @@ export function PluginDetailRoute() {
       return []
     }
 
-    console.debug('[DivoPlugins] google_status.start')
+    console.debug('[DivoPlugins] cloud_status.start', { provider: cloudProvider.provider })
     try {
-      const response = await invoke<GoogleStatusResponse>('divo_google_status')
+      const response = await invoke<CloudStatusResponse>(cloudProvider.commands.status)
       if (!response.success) {
-        throw new Error(response.message ?? 'Google status request failed')
+        throw new Error(response.message ?? `${cloudProvider.label} status request failed`)
       }
 
-      const connections = (response.data?.connections ?? []).map(toConnectionModel)
-      console.debug('[DivoPlugins] google_status.ok', {
+      const connections = (response.data?.connections ?? []).map(connection => toConnectionModel(connection, cloudProvider))
+      console.debug('[DivoPlugins] cloud_status.ok', {
+        provider: cloudProvider.provider,
         connectionCount: connections.length,
       })
       setConnectionState({ status: 'ready', connections })
       return connections
     } catch (error) {
-      console.error('[DivoPlugins] google_status.failed', error)
+      console.error('[DivoPlugins] cloud_status.failed', { provider: cloudProvider.provider, error })
       if (isDivoAuthError(error)) {
         setDivoSession({
           status: 'disconnected',
@@ -450,7 +503,7 @@ export function PluginDetailRoute() {
       }))
       return []
     }
-  }, [liveGroup, pluginId, refreshDivoSession])
+  }, [cloudProvider, liveGroup, refreshDivoSession])
 
   useEffect(() => {
     void loadConnections()
@@ -474,6 +527,7 @@ export function PluginDetailRoute() {
   }
 
   if (pluginId === 'tool-webSearch') return <WebSearchPluginDetail group={liveGroup} onBack={() => navigate({ to: route.plugins.index } as any)} onUpdated={() => void loadToolInventory()} />
+  if (!cloudProvider) return <FallbackToolDetail group={liveGroup} onBack={() => navigate({ to: route.plugins.index } as any)} onUpdated={() => void loadToolInventory()} />
   if (!plugin) return <FallbackToolDetail group={liveGroup} onBack={() => navigate({ to: route.plugins.index } as any)} onUpdated={() => void loadToolInventory()} />
 
   const Icon = plugin.icon
@@ -482,7 +536,7 @@ export function PluginDetailRoute() {
   const sharedCount = connections.filter((connection) => connection.kind === 'company_shared').length
   const activeCount = connections.filter((connection) => connection.status === 'connected').length
   const adminConnections = connections.filter((connection) => connection.access === 'admin')
-  const canManageGoogle = divoSession.status === 'connected'
+  const canManageConnections = divoSession.status === 'connected'
   const openDivoSettings = () => navigate({ to: route.settings.divo } as any)
   const openManageConnection = (connection: DivoConnection) => {
     if (connection.access !== 'admin') {
@@ -496,40 +550,40 @@ export function PluginDetailRoute() {
   const openFirstManageableConnection = () => {
     const connection = adminConnections[0]
     if (!connection) {
-      toast.error('No admin-managed Google connection')
+      toast.error(`No admin-managed ${cloudProvider.label} connection`)
       return
     }
     openManageConnection(connection)
   }
-  const reconnectGoogle = async (connection: DivoConnection) => {
+  const reconnectConnection = async (connection: DivoConnection) => {
     setConnectionActionId(connection.id)
     try {
-      const authorizeUrl = await invoke<string>('divo_google_authorize_url')
+      const authorizeUrl = await invoke<string>(cloudProvider.commands.authorize)
       await openExternalUrl(authorizeUrl)
-      toast.success('Google sign-in opened', {
+      toast.success(`${cloudProvider.label} sign-in opened`, {
         description: `Choose ${connection.accountEmail} to reconnect this account.`,
       })
       setTimeout(() => void loadConnections(), 1500)
     } catch (reconnectError) {
-      toast.error('Could not reconnect Google', { description: String(reconnectError) })
+      toast.error(`Could not reconnect ${cloudProvider.label}`, { description: String(reconnectError) })
     } finally {
       setConnectionActionId(null)
     }
   }
-  const confirmDisconnectGoogle = async () => {
+  const confirmDisconnectConnection = async () => {
     if (!disconnectConnection) return
     const connection = disconnectConnection
     setConnectionActionId(connection.id)
     try {
-      await invoke('divo_google_disconnect_connection', {
+      await invoke(cloudProvider.commands.disconnect, {
         connectionId: connection.id,
         connection_id: connection.id,
       })
       setDisconnectConnection(null)
-      toast.success('Google connection disconnected')
+      toast.success(`${cloudProvider.label} connection disconnected`)
       await loadConnections()
     } catch (disconnectError) {
-      toast.error('Could not disconnect Google', { description: String(disconnectError) })
+      toast.error(`Could not disconnect ${cloudProvider.label}`, { description: String(disconnectError) })
     } finally {
       setConnectionActionId(null)
     }
@@ -561,10 +615,10 @@ export function PluginDetailRoute() {
               ) : null}
               <Button
                 size="sm"
-                onClick={() => (canManageGoogle ? setAddOpen(true) : openDivoSettings())}
+                onClick={() => (canManageConnections ? setAddOpen(true) : openDivoSettings())}
               >
                 <Plus className="size-4" />
-                {canManageGoogle ? 'Add connection' : 'Connect Divo'}
+                {canManageConnections ? 'Add connection' : 'Connect Divo'}
               </Button>
             </div>
           </div>
@@ -584,7 +638,7 @@ export function PluginDetailRoute() {
                   {plugin.name}
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Connect multiple Google accounts, expose the right account to Divo,
+                  Connect multiple {cloudProvider.label} accounts, expose the right account to Divo,
                   and keep shared company access controlled by backend grants.
                 </p>
               </div>
@@ -616,10 +670,10 @@ export function PluginDetailRoute() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => (canManageGoogle ? setAddOpen(true) : openDivoSettings())}
+                  onClick={() => (canManageConnections ? setAddOpen(true) : openDivoSettings())}
                 >
                   <Plus className="size-4" />
-                  {canManageGoogle ? 'Add' : 'Connect Divo'}
+                  {canManageConnections ? 'Add' : 'Connect Divo'}
                 </Button>
               </div>
             </div>
@@ -633,10 +687,10 @@ export function PluginDetailRoute() {
               ) : null}
               {divoSession.status === 'disconnected' ? (
                 <ConnectionListState
-                  title="Connect Divo to manage Google Workspace"
+                  title={`Connect Divo to manage ${cloudProvider.label}`}
                   description={
                     divoSession.message ??
-                    'Google connections are owned by the Divo backend, so desktop must be signed in first.'
+                    `${cloudProvider.label} connections are owned by the Divo backend, so desktop must be signed in first.`
                   }
                   action={
                     <Button size="sm" onClick={openDivoSettings}>
@@ -647,21 +701,21 @@ export function PluginDetailRoute() {
               ) : null}
               {divoSession.status === 'connected' && connectionState.status === 'loading' && connections.length === 0 ? (
                 <ConnectionListState
-                  title="Loading Google connections"
+                  title={`Loading ${cloudProvider.connectionLabel} connections`}
                   description="Checking the Divo backend for accounts available to this desktop session."
                 />
               ) : null}
               {divoSession.status === 'connected' && connectionState.status === 'error' ? (
                 <ConnectionListState
-                  title="Could not load Google connections"
+                  title={`Could not load ${cloudProvider.connectionLabel} connections`}
                   description={connectionState.error}
                   action={<Button size="sm" onClick={() => void loadConnections()}>Retry</Button>}
                 />
               ) : null}
               {divoSession.status === 'connected' && connectionState.status === 'ready' && connections.length === 0 ? (
                 <ConnectionListState
-                  title="No Google connections yet"
-                  description="Connect a Google account to make it available to Divo through the backend."
+                  title={`No ${cloudProvider.connectionLabel} connections yet`}
+                  description={`Connect a ${cloudProvider.connectionLabel} account to make it available to Divo through the backend.`}
                   action={<Button size="sm" onClick={() => setAddOpen(true)}>Add connection</Button>}
                 />
               ) : null}
@@ -670,7 +724,7 @@ export function PluginDetailRoute() {
                   key={connection.id}
                   connection={connection}
                   onManage={() => openManageConnection(connection)}
-                  onReconnect={() => void reconnectGoogle(connection)}
+                  onReconnect={() => void reconnectConnection(connection)}
                   onDisconnect={() => setDisconnectConnection(connection)}
                   busy={connectionActionId === connection.id}
                 />
@@ -682,7 +736,7 @@ export function PluginDetailRoute() {
             <div className="rounded-lg border border-border/70 bg-card/30 p-4">
               <h2 className="text-sm font-medium">Available services</h2>
               <div className="mt-3 space-y-3">
-                {googleWorkspaceServices.map((service) => {
+                {(cloudProvider.provider === 'canva' ? canvaServices : googleWorkspaceServices).map((service) => {
                   const ServiceIcon = service.icon
                   return (
                     <div key={service.name} className="flex gap-3">
@@ -709,6 +763,7 @@ export function PluginDetailRoute() {
 
       <AddConnectionDialog
         open={addOpen}
+        provider={cloudProvider}
         divoSession={divoSession}
         onConnected={async () => {
           const previousConnections = connections
@@ -722,6 +777,7 @@ export function PluginDetailRoute() {
         onOpenChange={setAddOpen}
       />
       <ManageAccessDialog
+        provider={cloudProvider.provider}
         connection={manageConnection}
         onOpenChange={(open) => {
           if (!open) setManageConnection(null)
@@ -729,10 +785,10 @@ export function PluginDetailRoute() {
         onChanged={() => void loadConnections()}
       />
       <DisconnectConnectionDialog
-        providerLabel="Google Workspace"
+        providerLabel={cloudProvider.label}
         connection={disconnectConnection}
         busy={Boolean(disconnectConnection && connectionActionId === disconnectConnection.id)}
-        onConfirm={() => void confirmDisconnectGoogle()}
+        onConfirm={() => void confirmDisconnectConnection()}
         onOpenChange={(open) => { if (!open) setDisconnectConnection(null) }}
       />
     </div>
@@ -1676,13 +1732,19 @@ function ManageAccessDialog({
   const [access, setAccess] = useState<DivoConnectionAccess>('read_only')
   const [query, setQuery] = useState('')
   const open = Boolean(connection)
-  const providerLabel = provider === 'zoho' ? 'Zoho' : 'Google'
+  const providerLabel = provider === 'zoho' ? 'Zoho' : provider === 'canva' ? 'Canva' : 'Google'
   const commandNames = provider === 'zoho'
     ? {
       manage: 'divo_zoho_manage_access',
       grant: 'divo_zoho_grant_access',
       revoke: 'divo_zoho_revoke_access',
     }
+    : provider === 'canva'
+      ? {
+        manage: 'divo_canva_manage_access',
+        grant: 'divo_canva_grant_access',
+        revoke: 'divo_canva_revoke_access',
+      }
     : {
       manage: 'divo_google_manage_access',
       grant: 'divo_google_grant_access',
@@ -2008,51 +2070,57 @@ function GrantIcon({ type }: { type: GoogleManageGranteeType }) {
 
 function AddConnectionDialog({
   open,
+  provider,
   divoSession,
   onConnected,
   onReconnect,
   onOpenChange,
 }: {
   open: boolean
+  provider: CloudProviderConfig
   divoSession: DivoSessionState
   onConnected: () => void | Promise<void>
   onReconnect: () => void
   onOpenChange: (open: boolean) => void
 }) {
   const [isStartingOAuth, setIsStartingOAuth] = useState(false)
+  const [connectionLabel, setConnectionLabel] = useState('')
 
-  const handleContinueWithGoogle = async () => {
+  const handleContinue = async () => {
     if (divoSession.status !== 'connected') {
       toast.error('Connect Divo first', {
-        description: 'Google connections are stored and authorized through the Divo backend.',
+        description: `${provider.label} connections are stored and authorized through the Divo backend.`,
       })
       onReconnect()
       return
     }
 
     setIsStartingOAuth(true)
-    console.debug('[DivoPlugins] google_oauth.start')
+    console.debug('[DivoPlugins] cloud_oauth.start', { provider: provider.provider })
     try {
-      const authorizeUrl = await invoke<string>('divo_google_authorize_url')
-      console.debug('[DivoPlugins] google_oauth.authorize_url_received', {
+      const authorizeUrl = provider.provider === 'canva'
+        ? await invoke<string>(provider.commands.authorize, { label: connectionLabel.trim() || 'Canva connection' })
+        : await invoke<string>(provider.commands.authorize)
+      console.debug('[DivoPlugins] cloud_oauth.authorize_url_received', {
+        provider: provider.provider,
         hasUrl: Boolean(authorizeUrl),
       })
       await openExternalUrl(authorizeUrl)
-      console.debug('[DivoPlugins] google_oauth.browser_opened')
-      toast.success('Google sign-in opened')
+      console.debug('[DivoPlugins] cloud_oauth.browser_opened', { provider: provider.provider })
+      toast.success(`${provider.label} sign-in opened`)
       onOpenChange(false)
       setTimeout(() => void onConnected(), 1500)
     } catch (error) {
-      console.error('[DivoPlugins] google_oauth.failed', error)
+      console.error('[DivoPlugins] cloud_oauth.failed', { provider: provider.provider, error })
       if (isDivoAuthError(error)) {
         toast.error('Reconnect Divo to continue', {
-          description: 'Your desktop session expired before Google OAuth could start.',
+          description: `Your desktop session expired before ${provider.label} OAuth could start.`,
         })
         onOpenChange(false)
         onReconnect()
         return
       }
-      toast.error('Google connection failed', {
+      toast.error(`${provider.label} connection failed`, {
         description: String(error),
       })
     } finally {
@@ -2064,7 +2132,7 @@ function AddConnectionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100svh-64px)] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Add Google Workspace connection</DialogTitle>
+          <DialogTitle>Add {provider.label} connection</DialogTitle>
           <DialogDescription>
             OAuth will be handled by Divo backend. This UI is ready for personal
             accounts and admin-shared company accounts.
@@ -2077,7 +2145,7 @@ function AddConnectionDialog({
               <div className="flex gap-2">
                 <Lock className="mt-0.5 size-4 shrink-0 text-amber-300" />
                 <p className="text-xs leading-5 text-amber-100">
-                  Connect Divo before starting Google OAuth. The backend needs
+                  Connect Divo before starting {provider.label} OAuth. The backend needs
                   your Divo company session to save and authorize this connection.
                 </p>
               </div>
@@ -2086,8 +2154,21 @@ function AddConnectionDialog({
           <ConnectionOption
             icon={User}
             title="Connect account"
-            description="OAuth creates a backend-owned Google connection with admin access for you."
+            description={`OAuth creates a backend-owned ${provider.label} connection with admin access for you.`}
           />
+          {provider.provider === 'canva' ? (
+            <label className="grid gap-1.5 text-sm font-medium">
+              Connection name
+              <input
+                className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none"
+                value={connectionLabel}
+                maxLength={120}
+                onChange={(event) => setConnectionLabel(event.target.value)}
+                placeholder="e.g. Brand team or Marketing workspace"
+              />
+              <span className="text-xs font-normal leading-5 text-muted-foreground">Use a name your team will recognize when selecting or sharing this connection.</span>
+            </label>
+          ) : null}
           <ConnectionOption
             icon={Users}
             title="Share after connect"
@@ -2108,13 +2189,13 @@ function AddConnectionDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={() => void handleContinueWithGoogle()} disabled={isStartingOAuth}>
+          <Button onClick={() => void handleContinue()} disabled={isStartingOAuth}>
             <KeyRound className="size-4" />
             {divoSession.status !== 'connected'
               ? 'Connect Divo first'
               : isStartingOAuth
-                ? 'Opening Google...'
-                : 'Continue with Google'}
+                ? `Opening ${provider.label}...`
+                : `Continue with ${provider.label}`}
             <ExternalLink className="size-4" />
           </Button>
         </DialogFooter>

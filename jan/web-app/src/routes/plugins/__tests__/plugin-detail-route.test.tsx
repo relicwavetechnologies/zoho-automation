@@ -43,6 +43,7 @@ vi.mock('@/lib/divo-tools', async importOriginal => ({
 vi.mock('@/lib/plugins', () => ({
   getPlugin: (id: string) => ({
     'google-workspace': { id, name: 'Google Workspace', description: 'Google tools', icon: () => <svg aria-label="Google provider logo" />, accentClassName: '', iconClassName: '' },
+    canva: { id, name: 'Canva', description: 'Canva tools', icon: () => <svg aria-label="Canva provider logo" />, accentClassName: '', iconClassName: '' },
     zoho: { id, name: 'Zoho', description: 'Zoho tools', icon: () => <svg aria-label="Zoho provider logo" />, accentClassName: '', iconClassName: '' },
     'lark-personal': { id, name: 'Lark Personal', description: 'Lark tools', icon: () => <svg aria-label="Lark provider logo" />, accentClassName: '', iconClassName: '' },
   })[id] ?? null,
@@ -77,6 +78,14 @@ const zohoStatus = {
     canManage: true,
     connections: [{ connectionId: 'zoho-1', label: 'Zoho Finance', accountEmail: 'finance@example.com', accountName: 'Finance', ownerType: 'company', access: 'admin', scopes: ['ZohoCRM.modules.ALL'], connectedAt: '2026-07-01T00:00:00.000Z', lastUsedAt: '2026-07-12T00:00:00.000Z' }],
     legacyConnection: null,
+  },
+}
+
+const canvaStatus = {
+  success: true,
+  data: {
+    connected: true,
+    connections: [{ connectionId: 'canva-1', label: 'Brand Design Team', accountEmail: null, accountName: null, ownerType: 'company', access: 'admin', scopes: ['design:content:read'], connectedAt: '2026-07-01T00:00:00.000Z', lastUsedAt: '2026-07-12T00:00:00.000Z' }],
   },
 }
 
@@ -164,6 +173,36 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect connection' }))
     await waitFor(() => expect(commandCalls('divo_google_disconnect_connection')).toEqual([
       ['divo_google_disconnect_connection', { connectionId: 'google-1', connection_id: 'google-1' }],
+    ]))
+  })
+
+  it('uses the same managed connection flow for Canva', async () => {
+    const openWindow = vi.spyOn(window, 'open').mockImplementation(() => null)
+    h.pluginId = 'canva'
+    h.getInventory.mockResolvedValue({ tools: [{ ...baseTool, tool: { ...baseTool.tool, toolId: 'canvaDesign', name: 'Canva Design', description: 'Designs' } }] })
+    h.invoke.mockImplementation((command: string) => {
+      if (command === 'divo_get_session_status') return Promise.resolve(connectedSession)
+      if (command === 'divo_canva_status') return Promise.resolve(canvaStatus)
+      if (command === 'divo_canva_authorize_url') return Promise.resolve('https://mcp.canva.com/authorize')
+      if (command === 'divo_canva_disconnect_connection') return Promise.resolve({ success: true })
+      return Promise.resolve({ success: true })
+    })
+    render(<PluginDetailRoute />)
+
+    expect((await screen.findAllByText('Brand Design Team')).length).toBeGreaterThan(0)
+    expect(screen.getByText('design:content:read')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect Brand Design Team' }))
+    await waitFor(() => expect(openWindow).toHaveBeenCalledWith(
+      'https://mcp.canva.com/authorize',
+      '_blank',
+      'noopener,noreferrer',
+    ))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect Brand Design Team' }))
+    expect(screen.getByRole('heading', { name: 'Disconnect Canva?' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect connection' }))
+    await waitFor(() => expect(commandCalls('divo_canva_disconnect_connection')).toEqual([
+      ['divo_canva_disconnect_connection', { connectionId: 'canva-1', connection_id: 'canva-1' }],
     ]))
   })
 

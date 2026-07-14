@@ -281,7 +281,8 @@ for (const name of fs.readdirSync(resourcesExtensions)) {
   })
 }
 
-// Copy Jan-owned Pi skills. Runtime installs these into ~/.divo/skills/company.
+// Copy Jan-owned Pi skills. Runtime loads only the bundled divo-gateway router
+// skill; company skills are fetched from the authenticated backend registry.
 rmrf(resourcesSkills)
 fs.mkdirSync(resourcesSkills, { recursive: true })
 if (fs.existsSync(sourceSkills)) {

@@ -21,11 +21,14 @@ describe('Share Memory provisioning', () => {
       skill: {
         findFirst: async ({ where }: { where: { companyId: string } }) =>
           where.companyId === 'company-2' ? { id: 'existing-skill', isSystem: false } : null,
-        upsert: async ({ create }: { create: unknown }) => {
+        upsert: async ({ create }: { create: Record<string, unknown> }) => {
           createdSkills.push(create);
-          return { id: 'new-skill' };
+          // recordSkillRegistryMutation snapshots the returned row.
+          return { id: 'new-skill', revision: 1, createdBy: null, updatedBy: null, ...create };
         },
       },
+      skillVersion: { upsert: async () => ({}) },
+      skillRegistryRevision: { upsert: async () => ({}) },
     } as any;
 
     const result = await provisionShareMemoryForExistingCompanies(db);

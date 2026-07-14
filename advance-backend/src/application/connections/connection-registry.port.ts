@@ -1,7 +1,7 @@
 import type { InfraError } from '../../shared/errors';
 import type { Result } from '../../shared/result';
 
-export type ConnectionProvider = 'google_workspace' | 'zoho';
+export type ConnectionProvider = 'google_workspace' | 'zoho' | 'canva';
 export type ConnectionAccess = 'read_only' | 'read_write' | 'admin';
 export type ConnectionOwnerType = 'user' | 'company';
 
@@ -25,6 +25,10 @@ export interface ConnectionRegistryPort {
     readonly userId: string;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleZohoConnections(input: {
+    readonly companyId: string;
+    readonly userId: string;
+  }): Promise<Result<AccessibleConnection[], InfraError>>;
+  listAccessibleCanvaConnections(input: {
     readonly companyId: string;
     readonly userId: string;
   }): Promise<Result<AccessibleConnection[], InfraError>>;

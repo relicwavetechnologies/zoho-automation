@@ -7,7 +7,6 @@ use super::browser::{
     build_chrome_devtools_mcp_server, chrome_devtools_enabled, current_browser_cdp_fingerprint,
     mcp_config_needs_browser_upgrade, resolve_browser_user_data_dir,
 };
-use crate::core::divo::home::DivoHomeLayout;
 use crate::core::divo::local_lark::ensure_lark_cli_wrapper;
 
 const PI_AGENT_DIR_NAME: &str = "pi-agent";
@@ -29,7 +28,7 @@ pub struct PiRuntimePaths {
     pub bun: PathBuf,
     pub cli_js: PathBuf,
     pub agent_dir: PathBuf,
-    pub skill_dirs: Vec<PathBuf>,
+    pub trusted_skill_dirs: Vec<PathBuf>,
     pub lark_cli_wrapper: Option<PathBuf>,
     /// CDP WebSocket fingerprint — changes when the browser restarts debugging.
     pub browser_cdp_fingerprint: Option<String>,
@@ -59,14 +58,14 @@ impl PiRuntimePaths {
 
         let agent_dir = data_folder.join(PI_AGENT_DIR_NAME);
         bootstrap_agent_dir(&resource_dir, &agent_dir, &bun)?;
-        let skill_dirs = bootstrap_divo_skill_dirs(&resource_dir)?;
+        let trusted_skill_dirs = resolve_trusted_skill_dirs(&resource_dir)?;
         let lark_cli_wrapper = ensure_lark_cli_wrapper(&resource_dir, &agent_dir)?;
 
         Ok(PiRuntimePaths {
             bun,
             cli_js,
             agent_dir,
-            skill_dirs,
+            trusted_skill_dirs,
             lark_cli_wrapper,
             browser_cdp_fingerprint: current_browser_cdp_fingerprint(),
         })
@@ -223,15 +222,24 @@ fn bootstrap_agent_dir(resource_dir: &Path, agent_dir: &Path, bun: &Path) -> Res
     Ok(())
 }
 
-fn bootstrap_divo_skill_dirs(resource_dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let layout = DivoHomeLayout::resolve()?;
-    layout.ensure()?;
-
-    if let Some(skills_src) = resolve_bundled_skills_dir(resource_dir) {
-        sync_dir_contents(&skills_src, &layout.company_skills_dir)?;
+/// Only the read-only bundled router skill is loaded into Pi. Company skills
+/// themselves are resolved through the authenticated backend registry; no
+/// writable user or local company skill directory is passed to Pi.
+fn resolve_trusted_skill_dirs(resource_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let skills_root = resolve_bundled_skills_dir(resource_dir).ok_or_else(|| {
+        format!(
+            "Bundled Divo gateway skill directory was not found under {}",
+            resource_dir.display(),
+        )
+    })?;
+    let gateway_skill_dir = skills_root.join("divo-gateway");
+    if !gateway_skill_dir.join("SKILL.md").is_file() {
+        return Err(format!(
+            "Bundled Divo gateway skill is missing at {}",
+            gateway_skill_dir.display(),
+        ));
     }
-
-    Ok(vec![layout.company_skills_dir, layout.user_skills_dir])
+    Ok(vec![gateway_skill_dir])
 }
 
 fn resolve_bundled_skills_dir(resource_dir: &Path) -> Option<PathBuf> {
@@ -466,6 +474,24 @@ mod tests {
 
         let found = resolve_bundled_skills_dir(&tmp);
         assert_eq!(found.as_deref(), Some(skills_dir.as_path()));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn trusted_skill_dirs_include_only_the_bundled_gateway_router() {
+        let tmp =
+            std::env::temp_dir().join(format!("jan-pi-trusted-skills-test-{}", std::process::id()));
+        let skills_dir = tmp.join(BUNDLED_SKILLS_REL);
+        let gateway_dir = skills_dir.join("divo-gateway");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&gateway_dir).unwrap();
+        fs::write(gateway_dir.join("SKILL.md"), b"gateway").unwrap();
+        fs::create_dir_all(skills_dir.join("local-lark")).unwrap();
+        fs::write(skills_dir.join("local-lark/SKILL.md"), b"local").unwrap();
+
+        let trusted = resolve_trusted_skill_dirs(&tmp).unwrap();
+        assert_eq!(trusted, vec![gateway_dir]);
 
         let _ = fs::remove_dir_all(&tmp);
     }

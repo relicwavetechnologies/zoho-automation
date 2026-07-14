@@ -4,6 +4,24 @@ type BrandIconProps = SVGProps<SVGSVGElement> & {
   title?: string
 }
 
+/** Compact Canva-style mark for the local desktop catalogue. */
+export function CanvaIcon({ title = 'Canva', ...props }: BrandIconProps) {
+  const gradientSuffix = useId().replaceAll(':', '')
+  const gradientId = `canva-${gradientSuffix}`
+  return (
+    <svg viewBox="0 0 48 48" role="img" aria-label={title} {...props}>
+      <defs>
+        <linearGradient id={gradientId} x1="7" y1="41" x2="41" y2="7" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#00C4CC" />
+          <stop offset="1" stopColor="#7D2AE8" />
+        </linearGradient>
+      </defs>
+      <circle cx="24" cy="24" r="21" fill={`url(#${gradientId})`} />
+      <path d="M32.3 16.2c-1.7-1.4-3.8-2.1-6.1-2.1-5.7 0-10.3 4.4-10.3 9.9 0 5.6 4.6 9.9 10.3 9.9 2.4 0 4.5-.7 6.1-2.1l-1.8-2.4c-1.2.9-2.6 1.4-4.2 1.4-3.7 0-6.5-2.8-6.5-6.8s2.8-6.8 6.5-6.8c1.5 0 3 .5 4.2 1.4z" fill="white" />
+    </svg>
+  )
+}
+
 /** Official Gmail 2026 product mark, bundled locally for offline desktop use. */
 export function GmailIcon({ title = 'Gmail', ...props }: BrandIconProps) {
   const gradientSuffix = useId().replaceAll(':', '')

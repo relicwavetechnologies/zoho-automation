@@ -42,6 +42,8 @@ import { ContextSearchBroker } from './application/context-search/context-search
 import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
 import { LarkUserAuthLinkRepository } from './infrastructure/persistence/lark-user-auth-link.repository';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
+import { CanvaMcpOAuthService } from './infrastructure/canva/canva-mcp-oauth.service';
+import { CanvaMcpClient } from './infrastructure/canva/canva-mcp.client';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
 import { CompanySerperConnectionRepository } from './infrastructure/persistence/company-serper-connection.repository';
 import { CompanySerperService } from './application/web-search/company-serper.service';
@@ -72,6 +74,7 @@ import { LarkInferenceService } from './application/proxy/lark-inference.service
 import { SkillRepository } from './infrastructure/persistence/skill.repository';
 import { SkillsService } from './application/context-search/skills.service';
 import { SkillCatalogService } from './application/skills/skill-catalog.service';
+import { SkillRegistryAdminService } from './application/skills/skill-registry-admin.service';
 
 // Application
 import { PermissionServiceImpl } from './application/permissions/permission.service';
@@ -129,6 +132,7 @@ import { createLarkApprovalTool } from './application/orchestration/tools/famili
 import { createGoogleGmailTool } from './application/orchestration/tools/families/google-gmail.tool';
 import { createGoogleDriveTool } from './application/orchestration/tools/families/google-drive.tool';
 import { createGoogleCalendarTool } from './application/orchestration/tools/families/google-calendar.tool';
+import { createCanvaDesignTool } from './application/orchestration/tools/families/canva-design.tool';
 import { createZohoCrmTool } from './application/orchestration/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/orchestration/tools/families/zoho-books.tool';
 import { createContextSearchTool } from './application/orchestration/tools/families/context-search.tool';
@@ -204,6 +208,7 @@ export interface Container {
   deptUserOverrideRepo: DeptUserOverrideRepository;
   toolRegistry: ToolRegistry;
   skillCatalog: SkillCatalogService;
+  skillRegistryAdminService: SkillRegistryAdminService;
   // Agent admin CRUD
   agentAdminService:      AgentAdminService;
   agentCatalogCache:      AgentCatalogCache;
@@ -214,6 +219,7 @@ export interface Container {
   larkUserAuthLinkRepo: LarkUserAuthLinkRepository;
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
+  canvaMcpOAuthService: CanvaMcpOAuthService;
   integrationConnectionRepo: IntegrationConnectionRepository;
   companySerperConnectionRepo: CompanySerperConnectionRepository;
   companySerperService: CompanySerperService;
@@ -538,6 +544,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // ── Google OAuth + connection registry ───────────────────────────────────
   const integrationConnectionRepo = new IntegrationConnectionRepository(prisma, env);
   const googleOAuthService        = new GoogleOAuthService({ env, cache, logger: logger.child({ service: 'google-oauth' }) });
+  const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: memoryCache, logger });
 
   async function resolveGoogleAuthClient(input: {
     readonly companyId: string;
@@ -589,6 +596,58 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     } catch {
       return null;
     }
+  }
+
+  async function getCanvaMcpClient(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: 'read_only' | 'read_write';
+  }): Promise<CanvaMcpClient | null> {
+    if (!canvaMcpOAuthService.isConfigured()) return null;
+    const connection = await integrationConnectionRepo.findAccessibleCanvaConnection(input);
+    if (!connection.ok || !connection.value?.accessToken) return null;
+    let accessToken = connection.value.accessToken;
+    const expiresSoon = connection.value.accessTokenExpiresAt
+      ? connection.value.accessTokenExpiresAt.getTime() <= Date.now() + 60_000
+      : false;
+    if (expiresSoon && connection.value.refreshToken) {
+      try {
+        const metadata = connection.value.tokenMetadata ?? {};
+        const refreshed = await canvaMcpOAuthService.refreshConnectionTokens({
+          accessToken,
+          refreshToken: connection.value.refreshToken,
+          ...(connection.value.tokenType ? { tokenType: connection.value.tokenType } : {}),
+          scopes: connection.value.scopes,
+          ...(metadata['oauthClientInformation'] ? { clientInformation: metadata['oauthClientInformation'] as any } : {}),
+          ...(metadata['oauthDiscoveryState'] ? { discoveryState: metadata['oauthDiscoveryState'] as any } : {}),
+        });
+        accessToken = refreshed.accessToken;
+        await integrationConnectionRepo.updateCanvaTokens({
+          companyId: input.companyId,
+          connectionId: input.connectionId,
+          accessToken: refreshed.accessToken,
+          ...(refreshed.refreshToken ? { refreshToken: refreshed.refreshToken } : {}),
+          tokenType: refreshed.tokenType,
+          ...(refreshed.expiresIn ? { accessTokenExpiresAt: new Date(Date.now() + refreshed.expiresIn * 1000) } : {}),
+          scopes: refreshed.scopes,
+          tokenMetadata: {
+            ...(refreshed.clientInformation ? { oauthClientInformation: refreshed.clientInformation } : {}),
+            ...(refreshed.discoveryState ? { oauthDiscoveryState: refreshed.discoveryState } : {}),
+          },
+        });
+      } catch (error) {
+        logger.warn('canva.connection.refresh_failed', {
+          companyId: input.companyId,
+          userId: input.userId,
+          connectionId: input.connectionId,
+          error: String(error),
+        });
+        return null;
+      }
+    }
+    await integrationConnectionRepo.touchLastUsed(input.connectionId);
+    return new CanvaMcpClient(accessToken, env.CANVA_MCP_URL);
   }
 
   const getGmailClient = async (input: {
@@ -832,6 +891,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     repo: skillRepo,
     logger,
   });
+  const skillRegistryAdminService = new SkillRegistryAdminService({
+    prisma,
+    logger: logger.child({ service: 'skill-registry-admin' }),
+  });
 
   // ── Context search broker ─────────────────────────────────────────────────
   const contextSearchBroker = new ContextSearchBroker({
@@ -930,6 +993,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }));
   toolRegistry.register(createGoogleDriveTool({ getClient: getDriveClient }));
   toolRegistry.register(createGoogleCalendarTool({ getClient: getCalendarClient }));
+  toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   toolRegistry.register(createZohoCrmTool({
     getClient:   getZohoCrmClient,
     crmClient:   zohoPaginatedCrmClient,
@@ -1100,6 +1164,35 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'gateway-local-approval' }),
   });
   const mediaOcr = new MediaOcrService(env, logger);
+  // Per-skill RBAC. Deny-by-default at the gateway: a member sees/uses only
+  // skills explicitly granted to them (directly, or via a department, role, or
+  // company grant). This is the live model — ungranted skills are not discoverable.
+  const skillAccessEnforcement = {
+    listGrantedSkillIds: async (companyId: string, userId: string): Promise<ReadonlySet<string>> => {
+      // A member's grants come from four axes: the whole company, any department
+      // they belong to, any department role they hold, or a direct user grant.
+      const memberships = await prisma.departmentMembership.findMany({
+        where: { userId, status: 'active', department: { companyId, status: 'active' } },
+        select: { departmentId: true, roleId: true },
+      });
+      const departmentIds = memberships.map((m) => m.departmentId);
+      const roleIds = memberships.map((m) => m.roleId);
+      const grants = await prisma.skillAccessGrant.findMany({
+        where: {
+          companyId,
+          OR: [
+            { granteeType: 'company', granteeId: companyId },
+            { granteeType: 'user', granteeId: userId },
+            ...(departmentIds.length ? [{ granteeType: 'department', granteeId: { in: departmentIds } }] : []),
+            ...(roleIds.length ? [{ granteeType: 'role', granteeId: { in: roleIds } }] : []),
+          ],
+        },
+        select: { skillId: true },
+      });
+      return new Set(grants.map((g) => g.skillId));
+    },
+  };
+
   const gatewayDispatcher = new GatewayDispatcher({
     permissions,
     toolRegistry,
@@ -1108,6 +1201,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     localApprovalIntents,
     connectionRegistry: integrationConnectionRepo,
     mediaOcr,
+    skillAccessEnforcement,
+    auditService,
     logger: logger.child({ service: 'gateway-dispatcher' }),
   });
 
@@ -1151,6 +1246,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     deptUserOverrideRepo,
     toolRegistry,
     skillCatalog,
+    skillRegistryAdminService,
     // Agent admin CRUD
     agentAdminService,
     agentCatalogCache,
@@ -1161,6 +1257,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     larkUserAuthLinkRepo,
     // OAuth surfaces
     googleOAuthService,
+    canvaMcpOAuthService,
     integrationConnectionRepo,
     companySerperConnectionRepo,
     companySerperService,

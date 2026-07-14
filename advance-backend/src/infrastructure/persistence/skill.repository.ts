@@ -15,6 +15,7 @@ export interface SkillRow {
   readonly tags: string[];
   readonly companyId: string;
   readonly departmentId: string | null;
+  readonly revision: number;
 }
 
 export interface SkillRepoPort {
@@ -36,6 +37,8 @@ export interface SkillRepoPort {
     departmentId?: string;
     skillId: string;
   }): Promise<Result<SkillRow | null, InfraError>>;
+
+  registryRevision(companyId: string): Promise<Result<number, InfraError>>;
 }
 
 const SELECT = {
@@ -50,6 +53,7 @@ const SELECT = {
   tags:         true,
   companyId:    true,
   departmentId: true,
+  revision:     true,
 } as const;
 
 function visibilityWhere(departmentId?: string) {
@@ -145,6 +149,18 @@ export class SkillRepository implements SkillRepoPort {
       return ok(row ?? null);
     } catch (e) {
       return err(wrapInfra('prisma', 'skill.findById', e));
+    }
+  }
+
+  async registryRevision(companyId: string): Promise<Result<number, InfraError>> {
+    try {
+      const row = await this.db.skillRegistryRevision.findUnique({
+        where: { companyId },
+        select: { revision: true },
+      });
+      return ok(row?.revision ?? 1);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'skill.registry_revision', e));
     }
   }
 }

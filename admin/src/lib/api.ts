@@ -641,3 +641,165 @@ export type BooksModulePermission = {
   module: string;
   enabled: boolean;
 };
+
+// ─── Skill Registry (Skills Lab) ──────────────────────────────────────────────
+
+export type SkillRegistrySkillNode = {
+  id: string;
+  name: string;
+  slug: string;
+  summary: string;
+  toolIds: string[];
+  tags: string[];
+  status: string;
+  scope: string;
+  departmentId: string | null;
+  folderId: string | null;
+  isSystem: boolean;
+  revision: number;
+  updatedAt: string;
+};
+
+export type SkillRegistryFolderNode = {
+  id: string;
+  name: string;
+  slug: string;
+  departmentId: string | null;
+  parentId: string | null;
+  status: string;
+  children: SkillRegistryFolderNode[];
+  skills: SkillRegistrySkillNode[];
+};
+
+export type SkillRegistryRoot = {
+  folders: SkillRegistryFolderNode[];
+  skills: SkillRegistrySkillNode[];
+};
+
+export type SkillRegistryTree = {
+  registryRevision: number;
+  companyWide: SkillRegistryRoot;
+  departments: (SkillRegistryRoot & { id: string; name: string })[];
+};
+
+export type SkillDetail = {
+  id: string;
+  name: string;
+  slug: string;
+  summary: string;
+  markdown: string;
+  toolIds: string[];
+  tags: string[];
+  aliases: string[];
+  status: string;
+  scope: string;
+  departmentId: string | null;
+  departmentName: string | null;
+  folderId: string | null;
+  folderPath: string[];
+  isSystem: boolean;
+  revision: number;
+  createdBy: string | null;
+  updatedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SkillGranteeType = "user" | "department" | "role" | "company";
+export type SkillGranteeCandidate = {
+  granteeId: string;
+  label: string;
+  detail: string | null;
+};
+export type SkillGrant = {
+  granteeType: SkillGranteeType;
+  granteeId: string;
+  label: string;
+  detail: string | null;
+  grantedBy: string | null;
+  createdAt: string;
+};
+export type SkillAccess = {
+  skillId: string;
+  scope: string;
+  departmentId: string | null;
+  grants: SkillGrant[];
+  candidates: {
+    users: SkillGranteeCandidate[];
+    departments: SkillGranteeCandidate[];
+    roles: SkillGranteeCandidate[];
+    company: SkillGranteeCandidate | null;
+  };
+};
+
+export type SkillAuditEntry = {
+  id: string;
+  action: string;
+  actorId: string;
+  outcome: string;
+  metadata: unknown;
+  createdAt: string;
+};
+
+export type SkillRegistryFolder = {
+  id: string;
+  name: string;
+  slug: string;
+  departmentId: string | null;
+  parentId: string | null;
+  status: string;
+};
+
+const withCompany = (path: string, companyId?: string): string =>
+  companyId ? `${path}${path.includes("?") ? "&" : "?"}companyId=${encodeURIComponent(companyId)}` : path;
+
+// companyId (super-admin only) travels in the query on GET and the body on writes.
+const body = (payload: Record<string, unknown>, companyId?: string) =>
+  companyId ? { ...payload, companyId } : payload;
+
+const REGISTRY_BASE = "/api/admin/skill-registry";
+
+export const skillRegistryApi = {
+  tree: (opts: { includeArchived?: boolean; companyId?: string } = {}, token?: string) =>
+    api.get<SkillRegistryTree>(
+      withCompany(`${REGISTRY_BASE}/tree${opts.includeArchived ? "?includeArchived=true" : ""}`, opts.companyId),
+      token,
+    ),
+  skill: (skillId: string, companyId?: string, token?: string) =>
+    api.get<SkillDetail>(withCompany(`${REGISTRY_BASE}/skills/${skillId}`, companyId), token),
+  access: (skillId: string, companyId?: string, token?: string) =>
+    api.get<SkillAccess>(withCompany(`${REGISTRY_BASE}/skills/${skillId}/access`, companyId), token),
+  grantAccess: (skillId: string, granteeType: SkillGranteeType, granteeId: string, companyId?: string, token?: string) =>
+    api.post<SkillGrant>(`${REGISTRY_BASE}/skills/${skillId}/access`, body({ granteeType, granteeId }, companyId), token),
+  revokeAccess: (skillId: string, granteeType: SkillGranteeType, granteeId: string, companyId?: string, token?: string) =>
+    api.delete<{ skillId: string; granteeType: SkillGranteeType; granteeId: string }>(
+      withCompany(`${REGISTRY_BASE}/skills/${skillId}/access/${granteeType}/${granteeId}`, companyId),
+      {},
+      token,
+    ),
+  audit: (skillId: string, companyId?: string, token?: string) =>
+    api.get<SkillAuditEntry[]>(withCompany(`${REGISTRY_BASE}/skills/${skillId}/audit`, companyId), token),
+  createFolder: (
+    input: { name: string; parentId?: string | null; departmentId?: string | null },
+    companyId?: string,
+    token?: string,
+  ) => api.post<SkillRegistryFolder>(`${REGISTRY_BASE}/folders`, body(input, companyId), token),
+  renameFolder: (folderId: string, name: string, companyId?: string, token?: string) =>
+    api.put<SkillRegistryFolder>(`${REGISTRY_BASE}/folders/${folderId}`, body({ name }, companyId), token),
+  moveFolder: (folderId: string, parentId: string | null, companyId?: string, token?: string) =>
+    api.post<SkillRegistryFolder>(`${REGISTRY_BASE}/folders/${folderId}/move`, body({ parentId }, companyId), token),
+  archiveFolder: (folderId: string, companyId?: string, token?: string) =>
+    api.post<{ archivedFolders: number; detachedSkills: number }>(
+      `${REGISTRY_BASE}/folders/${folderId}/archive`,
+      body({}, companyId),
+      token,
+    ),
+  moveSkill: (skillId: string, folderId: string | null, companyId?: string, token?: string) =>
+    api.post<{ skillId: string; folderId: string | null }>(
+      `${REGISTRY_BASE}/skills/${skillId}/move`,
+      body({ folderId }, companyId),
+      token,
+    ),
+  backfill: (companyId?: string, token?: string) =>
+    api.post<{ foldersCreated: number; skillsPlaced: number }>(`${REGISTRY_BASE}/backfill`, body({}, companyId), token),
+};

@@ -28,10 +28,12 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { DepartmentAdminService } from '../../application/departments/department-admin.service';
 import { SKILL_SUMMARY_MAX_CHARS } from '../../application/skills/skill-limits';
+import type { AuditService } from '../../application/observability/audit.service';
 import type { Logger } from '../../shared/logger';
 
 export interface DepartmentRoutesDeps {
   deptAdminService: DepartmentAdminService;
+  auditService?:       Pick<AuditService, 'record'>;
   logger:           Logger;
 }
 
@@ -106,8 +108,6 @@ const updateDeptSchema = z.object({
 const updateConfigSchema = z.object({
   systemPrompt:    z.string().max(20000),
   desktopPersonaPrompt: z.string().max(6000).optional(),
-  skillsMarkdown:  z.string().max(40000),
-  zohoRateLimit:   z.unknown().optional(),
   managerApproval: z.unknown().optional(),
   isActive:        z.boolean().optional(),
 });
@@ -139,6 +139,7 @@ const upsertSkillSchema = z.object({
   toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
   tags:     z.array(z.string().min(1).max(60)).max(20).optional(),
   status:   z.enum(['active', 'archived']).optional(),
+  folderId: z.string().uuid().nullish(),
 });
 
 const updateSkillSchema = z.object({
@@ -148,6 +149,7 @@ const updateSkillSchema = z.object({
   toolIds:  z.array(z.string().min(1).max(120)).max(50).optional(),
   tags:     z.array(z.string().min(1).max(60)).max(20).optional(),
   status:   z.enum(['active', 'archived']).optional(),
+  folderId: z.string().uuid().nullish(),
 });
 
 const allowedSchema = z.object({ allowed: z.boolean() });
@@ -322,8 +324,16 @@ export function createDepartmentRoutes(deps: DepartmentRoutesDeps): Router {
   router.post('/:id/skills/:skillId/archive', asyncRoute(async (req, res) => {
     const { id, skillId } = req.params as { id: string; skillId: string };
     const companyId       = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
-    const result          = await svc.archiveSkill(id, companyId, skillId);
+    const userId          = resolveUserId(res);
+    const result          = await svc.archiveSkill(id, companyId, skillId, userId);
     if (!result.ok) { resolveServiceError(res, result.error); return; }
+    deps.auditService?.record({
+      actorId: userId,
+      companyId,
+      action: 'skill.archive',
+      outcome: 'success',
+      metadata: { departmentId: id, skillId },
+    });
     success(res, result.value, 'Department skill archived');
   }));
 

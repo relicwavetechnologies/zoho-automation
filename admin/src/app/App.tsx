@@ -17,6 +17,7 @@ import { OverviewPage } from "@/pages/OverviewPage"
 import { GuardrailsPage } from "@/pages/GuardrailsPage"
 import { RunDetailPage } from "@/pages/RunDetailPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
+import { SkillsLabPage } from "@/pages/SkillsLabPage"
 import { SettingsPage } from "@/pages/SettingsPage"
 
 type ProtectedProps = {
@@ -86,6 +87,7 @@ export function App() {
           <Route path="departments" element={<Legacy><DepartmentsPage /></Legacy>} />
           <Route path="ai-ops" element={<AiOpsPage />} />
           <Route path="ai-ops/runs/:runId" element={<RunDetailPage />} />
+          <Route path="skills" element={<SkillsLabPage />} />
           <Route path="guardrails" element={<GuardrailsPage />} />
           <Route path="ai-providers" element={<Legacy><AiProvidersPage /></Legacy>} />
           <Route path="agents" element={<Legacy><AgentsPage /></Legacy>} />

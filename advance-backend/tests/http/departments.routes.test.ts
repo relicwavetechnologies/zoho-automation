@@ -141,7 +141,7 @@ function makeService(overrides: Partial<DepartmentAdminService> = {}): Departmen
     createDepartment:    async () => ({ ok: true, value: fakeDept }),
     updateDepartment:    async () => ({ ok: true, value: fakeDept }),
     archiveDepartment:   async () => ({ ok: true, value: { id: 'dept-1', status: 'archived' } }),
-    updateConfig:        async () => ({ ok: true, value: { departmentId: 'dept-1', systemPrompt: '', desktopPersonaPrompt: '', skillsMarkdown: '', isActive: true, updatedAt: '2025-01-01T00:00:00.000Z' } }),
+    updateConfig:        async () => ({ ok: true, value: { departmentId: 'dept-1', systemPrompt: '', desktopPersonaPrompt: '', isActive: true, updatedAt: '2025-01-01T00:00:00.000Z' } }),
     createRole:          async () => ({ ok: true, value: fakeRole }),
     updateRole:          async () => ({ ok: true, value: fakeRole }),
     deleteRole:          async () => ({ ok: true, value: { deleted: true } }),
@@ -311,7 +311,6 @@ describe('PUT /:id/config', () => {
   const validConfig = {
     systemPrompt: 'You are helpful.',
     desktopPersonaPrompt: 'Prefer in-chat summaries.',
-    skillsMarkdown: '# Skills',
   };
 
   it('returns 200 on success', async () => {
@@ -324,7 +323,7 @@ describe('PUT /:id/config', () => {
 
   it('returns 400 when systemPrompt is missing', async () => {
     const { status } = await callRoute(makeRouter(), 'PUT', '/dept-1/config', {
-      body: { skillsMarkdown: '# Skills' },
+      body: {},
     });
     assert.equal(status, 400);
   });
@@ -333,7 +332,6 @@ describe('PUT /:id/config', () => {
     const { status } = await callRoute(makeRouter(), 'PUT', '/dept-1/config', {
       body: {
         systemPrompt: 'You are helpful.',
-        skillsMarkdown: '# Skills',
         desktopPersonaPrompt: 'x'.repeat(6001),
       },
     });

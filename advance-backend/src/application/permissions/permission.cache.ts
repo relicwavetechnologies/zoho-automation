@@ -36,9 +36,7 @@ export interface CachedMembershipRow {
   roleName:             string;
   zohoReadScope:        string;
   systemPrompt?:        string | null;
-  skillsMarkdown?:      string | null;
   managerApprovalJson?: unknown;
-  zohoRateLimitJson?:   unknown;
 }
 
 export class PermissionCache {
@@ -155,9 +153,7 @@ export const serializePermissionResult = (r: PermissionResult): CachedPermission
       roleSlug: r.department.roleSlug,
       zohoReadScope: r.department.zohoReadScope,
       ...(r.department.systemPrompt !== undefined ? { systemPrompt: r.department.systemPrompt } : {}),
-      ...(r.department.skillsMarkdown !== undefined ? { skillsMarkdown: r.department.skillsMarkdown } : {}),
       ...(r.department.managerApprovalJson !== undefined ? { managerApprovalJson: r.department.managerApprovalJson } : {}),
-      ...(r.department.zohoRateLimitJson !== undefined ? { zohoRateLimitJson: r.department.zohoRateLimitJson } : {}),
     },
   } : {}),
 });
@@ -177,9 +173,7 @@ export const deserializePermissionResult = (c: CachedPermissionResult): Permissi
         roleSlug: asDepartmentRoleSlug(c.department.roleSlug),
         zohoReadScope: c.department.zohoReadScope === 'show_all' ? 'show_all' : 'personalized',
         ...(c.department.systemPrompt !== undefined ? { systemPrompt: c.department.systemPrompt } : {}),
-        ...(c.department.skillsMarkdown !== undefined ? { skillsMarkdown: c.department.skillsMarkdown } : {}),
         ...(c.department.managerApprovalJson !== undefined ? { managerApprovalJson: c.department.managerApprovalJson } : {}),
-        ...(c.department.zohoRateLimitJson !== undefined ? { zohoRateLimitJson: c.department.zohoRateLimitJson } : {}),
       }
     : undefined;
   return {

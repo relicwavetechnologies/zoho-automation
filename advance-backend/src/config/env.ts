@@ -135,6 +135,13 @@ const EnvSchema = z.object({
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
   GOOGLE_OAUTH_REDIRECT_URI:  z.string().optional(),
 
+  // ── Canva remote MCP OAuth ───────────────────────────────────────────────
+  // Canva allows the redirect URI only after its MCP access review. The client
+  // metadata URL is optional for DCR fallback but should be set for CIMD.
+  CANVA_MCP_URL:                 z.string().default('https://mcp.canva.com/mcp'),
+  CANVA_MCP_REDIRECT_URI:        z.string().optional(),
+  CANVA_MCP_CLIENT_METADATA_URL: z.string().optional(),
+
   // ── Zoho OAuth ────────────────────────────────────────────────────────────
   ZOHO_CLIENT_ID:            z.string().optional(),
   ZOHO_CLIENT_SECRET:        z.string().optional(),

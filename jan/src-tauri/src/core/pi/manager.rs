@@ -1138,12 +1138,12 @@ impl PiManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(&config.workspace_dir);
-        for skill_dir in &runtime.skill_dirs {
+        for skill_dir in &runtime.trusted_skill_dirs {
             command.arg("--skill").arg(skill_dir);
         }
         apply_provider_env(&mut command, &runtime.agent_dir);
         apply_divo_gateway_env(&mut command, &runtime.agent_dir);
-        apply_divo_skill_env(&mut command, &runtime.skill_dirs);
+        apply_divo_skill_env(&mut command, &runtime.trusted_skill_dirs);
         apply_divo_workspace_env(&mut command, &config.workspace_dir, &layout);
         apply_local_lark_env(&mut command, runtime.lark_cli_wrapper.as_deref());
         let mut child = command.spawn().map_err(|error| {

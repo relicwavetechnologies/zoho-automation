@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
 import type { GoogleOAuthService } from '../../infrastructure/google/google-oauth.service';
+import type { CanvaMcpOAuthService } from '../../infrastructure/canva/canva-mcp-oauth.service';
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
 import type { LarkUserAuthLinkRepository } from '../../infrastructure/persistence/lark-user-auth-link.repository';
@@ -21,6 +22,7 @@ export interface DesktopAuthRoutesDeps {
   prisma:                 PrismaClient;
   larkOAuthService:       LarkOAuthService;
   googleOAuthService:     GoogleOAuthService;
+  canvaMcpOAuthService:   CanvaMcpOAuthService;
   zohoTokenService:       ZohoTokenService;
   zohoConnectionRepo:     ZohoConnectionRepository;
   larkUserAuthLinkRepo:   LarkUserAuthLinkRepository;
@@ -39,14 +41,15 @@ interface StatePayload {
   nonce: string;
   userId?: string;
   companyId?: string;
+  label?: string;
   sessionId?: string;
   exp?: number;
 }
 
 const DESKTOP_PROTOCOL = 'cursorr';
 const HANDOFF_TTL_MS   = 5 * 60 * 1000;
-const GOOGLE_GRANT_ACCESSES = new Set(['read_only', 'read_write', 'admin']);
-const GOOGLE_GRANTEE_TYPES = new Set(['user', 'department', 'role', 'company']);
+const CONNECTION_GRANT_ACCESSES = new Set(['read_only', 'read_write', 'admin']);
+const CONNECTION_GRANTEE_TYPES = new Set(['user', 'department', 'role', 'company']);
 const COMPANY_ADMIN_ROLES = new Set(['COMPANY_ADMIN', 'SUPER_ADMIN']);
 const DEFAULT_ZOHO_SCOPES = [
   'ZohoCRM.modules.ALL',
@@ -138,16 +141,18 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     logger:    deps.logger,
   });
 
-  const buildGoogleConnectionManagePayload = async (
+  const buildConnectionManagePayload = async (
     connectionId: string,
     userId: string,
     companyId: string,
     role: string,
-    provider: 'google_workspace' | 'zoho' = 'google_workspace',
+    provider: 'google_workspace' | 'zoho' | 'canva' = 'google_workspace',
   ) => {
     const accessible = provider === 'zoho'
       ? await deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId })
-      : await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
+      : provider === 'canva'
+        ? await deps.connectionRepo.listAccessibleCanvaConnections({ userId, companyId })
+        : await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
     if (!accessible.ok) throw new Error(accessible.error.message);
     const summary = accessible.value.find(connection => connection.connectionId === connectionId);
 
@@ -941,7 +946,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role);
       if (!payload) {
         res.status(404).json({ success: false, message: 'Google connection not found' });
         return;
@@ -972,12 +977,12 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         res.status(400).json({ success: false, message: 'connectionId, granteeType, granteeId, and access are required' });
         return;
       }
-      if (!GOOGLE_GRANTEE_TYPES.has(granteeType) || !GOOGLE_GRANT_ACCESSES.has(access)) {
+      if (!CONNECTION_GRANTEE_TYPES.has(granteeType) || !CONNECTION_GRANT_ACCESSES.has(access)) {
         res.status(400).json({ success: false, message: 'Invalid grantee type or access level' });
         return;
       }
 
-      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role);
       if (!manageable) {
         res.status(404).json({ success: false, message: 'Google connection not found' });
         return;
@@ -1011,7 +1016,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role);
       res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
     } catch (e) {
       log.error('google.manage.grant.error', { error: String(e) });
@@ -1031,7 +1036,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role);
       if (!manageable) {
         res.status(404).json({ success: false, message: 'Google connection not found' });
         return;
@@ -1047,7 +1052,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role);
       res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
     } catch (e) {
       log.error('google.manage.revoke.error', { error: String(e) });
@@ -1066,7 +1071,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role);
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role);
       if (!manageable) {
         res.status(404).json({ success: false, message: 'Google connection not found' });
         return;
@@ -1092,6 +1097,257 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       res.json({ success: true, message: 'Google connection disconnected' });
     } catch (e) {
       log.error('google.connection.disconnect.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  // ── Canva MCP OAuth + shared connection management ───────────────────────
+  // OAuth material is backend-owned. Shared grants only expose this opaque
+  // connection ID; callers never receive a Canva access or refresh token.
+  router.get('/canva/authorize-url', memberAuth, async (req: Request, res: Response) => {
+    try {
+      if (!deps.canvaMcpOAuthService.isConfigured()) {
+        res.status(503).json({ success: false, message: 'Canva MCP OAuth is not configured' });
+        return;
+      }
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const requestedLabel = typeof req.query['label'] === 'string'
+        ? req.query['label'].trim().slice(0, 120)
+        : '';
+      const attemptId = randomBytes(24).toString('hex');
+      const state = signJwt(
+        { kind: 'desktop_canva_connect', nonce: attemptId, userId, companyId, ...(requestedLabel ? { label: requestedLabel } : {}) },
+        deps.memberJwtSecret,
+        600,
+      );
+      const authorizeUrl = await deps.canvaMcpOAuthService.beginAuthorization({ attemptId, state });
+      res.json({ success: true, data: { authorizeUrl } });
+    } catch (e) {
+      log.error('canva.authorize-url.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.get('/canva/callback', async (req: Request, res: Response) => {
+    const code = typeof req.query['code'] === 'string' ? req.query['code'] : undefined;
+    const state = typeof req.query['state'] === 'string' ? req.query['state'] : undefined;
+    const oauthError = typeof req.query['error'] === 'string' ? req.query['error'] : undefined;
+    if (oauthError) {
+      res.status(400).type('text/plain').send(`Canva connection cancelled: ${oauthError}`);
+      return;
+    }
+    if (!code || !state) {
+      res.status(400).type('text/plain').send('Canva connection failed: missing OAuth code or state.');
+      return;
+    }
+
+    const payload = verifyJwt(state, deps.memberJwtSecret);
+    if (!payload || payload.kind !== 'desktop_canva_connect' || !payload.nonce || !payload.userId || !payload.companyId) {
+      res.status(400).type('text/plain').send('Canva connection failed: invalid or expired state.');
+      return;
+    }
+
+    try {
+      const tokens = await deps.canvaMcpOAuthService.completeAuthorization({
+        attemptId: payload.nonce,
+        code,
+      });
+      const connection = await deps.connectionRepo.upsertCanvaConnection({
+        companyId: payload.companyId,
+        ownerType: 'user',
+        ownerUserId: payload.userId,
+        createdBy: payload.userId,
+        // Canva MCP does not promise a profile endpoint. Keep this stable OAuth
+        // authorization ID as the provider account key until a canonical subject is exposed.
+        externalAccountId: `mcp-oauth:${payload.nonce}`,
+        label: typeof payload.label === 'string' && payload.label.trim()
+          ? payload.label.trim().slice(0, 120)
+          : 'Canva connection',
+        accessToken: tokens.accessToken,
+        ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+        tokenType: tokens.tokenType,
+        ...(tokens.expiresIn ? { accessTokenExpiresAt: new Date(Date.now() + tokens.expiresIn * 1000) } : {}),
+        scopes: tokens.scopes,
+        tokenMetadata: {
+          ...(tokens.clientInformation ? { oauthClientInformation: tokens.clientInformation } : {}),
+          ...(tokens.discoveryState ? { oauthDiscoveryState: tokens.discoveryState } : {}),
+        },
+        initialAccess: 'admin',
+      });
+      if (!connection.ok) throw new Error(connection.error.message);
+      await deps.canvaMcpOAuthService.clearAttempt(payload.nonce);
+      log.info('canva.callback.success', {
+        companyId: payload.companyId,
+        userId: payload.userId,
+        connectionId: connection.value.id,
+      });
+      res.type('text/plain').send('Canva connected successfully. You can close this window and return to Divo Desktop.');
+    } catch (e) {
+      log.error('canva.callback.error', { error: String(e) });
+      res.status(500).type('text/plain').send('Canva connection failed. Return to Divo and try again.');
+    }
+  });
+
+  router.get('/canva/status', memberAuth, async (_req: Request, res: Response) => {
+    const userId = res.locals['userId'] as string;
+    const companyId = res.locals['companyId'] as string;
+    const connections = await deps.connectionRepo.listAccessibleCanvaConnections({ userId, companyId });
+    if (!connections.ok) {
+      res.status(500).json({ success: false, message: connections.error.message });
+      return;
+    }
+    res.json({
+      success: true,
+      data: {
+        connected: connections.value.length > 0,
+        connections: connections.value.map(connection => ({
+          connectionId: connection.connectionId,
+          label: connection.label,
+          accountEmail: connection.accountEmail ?? null,
+          accountName: connection.accountName ?? null,
+          ownerType: connection.ownerType,
+          ownerUserId: connection.ownerUserId ?? null,
+          access: connection.access,
+          scopes: connection.scopes,
+          connectedAt: connection.connectedAt.toISOString(),
+          lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+        })),
+      },
+    });
+  });
+
+  router.get('/canva/connections/:connectionId/manage', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'canva');
+      if (!payload) {
+        res.status(404).json({ success: false, message: 'Canva connection not found' });
+        return;
+      }
+      if ('forbidden' in payload) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Canva connection' });
+        return;
+      }
+      res.json({ success: true, data: payload });
+    } catch (e) {
+      log.error('canva.manage.read.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.post('/canva/connections/:connectionId/grants', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const body = req.body as { granteeType?: string; granteeId?: string; access?: string };
+      const granteeType = body.granteeType?.trim();
+      const granteeId = body.granteeId?.trim();
+      const access = body.access?.trim();
+      if (!connectionId || !granteeType || !granteeId || !access) {
+        res.status(400).json({ success: false, message: 'connectionId, granteeType, granteeId, and access are required' });
+        return;
+      }
+      if (!CONNECTION_GRANTEE_TYPES.has(granteeType) || !CONNECTION_GRANT_ACCESSES.has(access)) {
+        res.status(400).json({ success: false, message: 'Invalid grantee type or access level' });
+        return;
+      }
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'canva');
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Canva connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Canva connection' });
+        return;
+      }
+      const candidates = manageable.candidates;
+      const isKnownGrantee =
+        (granteeType === 'user' && candidates.users.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'department' && candidates.departments.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'role' && candidates.roles.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'company' && candidates.company?.id === granteeId);
+      if (!isKnownGrantee) {
+        res.status(400).json({ success: false, message: 'Selected grantee is not part of this company' });
+        return;
+      }
+      const granted = await deps.connectionRepo.grantConnection({
+        companyId,
+        connectionId,
+        granteeType: granteeType as 'user' | 'department' | 'role' | 'company',
+        granteeId,
+        access: access as 'read_only' | 'read_write' | 'admin',
+        grantedBy: userId,
+      });
+      if (!granted.ok) {
+        res.status(500).json({ success: false, message: granted.error.message });
+        return;
+      }
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'canva');
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('canva.manage.grant.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.delete('/canva/connections/:connectionId/grants/:grantId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const grantId = String(req.params['grantId'] ?? '');
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'canva');
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Canva connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Canva connection' });
+        return;
+      }
+      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId });
+      if (!revoked.ok) {
+        res.status(500).json({ success: false, message: revoked.error.message });
+        return;
+      }
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'canva');
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('canva.manage.revoke_grant.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.delete('/canva/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'canva');
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Canva connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Canva connection' });
+        return;
+      }
+      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'canva' });
+      if (!revoked.ok) {
+        res.status(500).json({ success: false, message: revoked.error.message });
+        return;
+      }
+      res.json({ success: true, message: 'Canva connection disconnected' });
+    } catch (e) {
+      log.error('canva.connection.disconnect.error', { error: String(e) });
       res.status(500).json({ success: false, message: String(e) });
     }
   });
@@ -1283,7 +1539,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
       if (!payload) {
         res.status(404).json({ success: false, message: 'Zoho connection not found' });
         return;
@@ -1314,12 +1570,12 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         res.status(400).json({ success: false, message: 'connectionId, granteeType, granteeId, and access are required' });
         return;
       }
-      if (!GOOGLE_GRANTEE_TYPES.has(granteeType) || !GOOGLE_GRANT_ACCESSES.has(access)) {
+      if (!CONNECTION_GRANTEE_TYPES.has(granteeType) || !CONNECTION_GRANT_ACCESSES.has(access)) {
         res.status(400).json({ success: false, message: 'Invalid grantee type or access level' });
         return;
       }
 
-      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
       if (!manageable) {
         res.status(404).json({ success: false, message: 'Zoho connection not found' });
         return;
@@ -1353,7 +1609,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
       res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
     } catch (e) {
       log.error('zoho.manage.grant.error', { error: String(e) });
@@ -1373,7 +1629,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
       if (!manageable) {
         res.status(404).json({ success: false, message: 'Zoho connection not found' });
         return;
@@ -1389,7 +1645,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const payload = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
       res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
     } catch (e) {
       log.error('zoho.manage.revoke.error', { error: String(e) });
@@ -1408,7 +1664,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const manageable = await buildGoogleConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'zoho');
       if (!manageable) {
         res.status(404).json({ success: false, message: 'Zoho connection not found' });
         return;

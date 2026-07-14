@@ -34,4 +34,12 @@ export const adminQueryKeys = {
     ["admin", scope, "execution-run", runId] as const,
   executionEvents: (scope: string, runId: string) =>
     ["admin", scope, "execution-events", runId] as const,
+  skillRegistryTree: (scope: string, companyId: string, includeArchived: boolean) =>
+    ["admin", scope, "skill-registry-tree", companyId, includeArchived] as const,
+  skillDetail: (scope: string, skillId: string) =>
+    ["admin", scope, "skill-detail", skillId] as const,
+  skillAccess: (scope: string, skillId: string) =>
+    ["admin", scope, "skill-access", skillId] as const,
+  skillAudit: (scope: string, skillId: string) =>
+    ["admin", scope, "skill-audit", skillId] as const,
 }

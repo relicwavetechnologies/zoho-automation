@@ -96,7 +96,7 @@ export function PluginsRoute() {
   // role to decide whether to expose the administration workspace.
   const hasManagementAccess = (inventory ?? []).some(item => item.managementScopes.length > 0)
   const personalGroups = useMemo(
-    () => allGroups.filter(group => group.id === 'google-workspace'),
+    () => allGroups.filter(group => group.id === 'google-workspace' || group.id === 'canva'),
     [allGroups],
   )
   const managedGroup = managedGroupId ? allGroups.find(group => group.id === managedGroupId) ?? null : null
@@ -196,15 +196,15 @@ function PersonalToolsView({ groups, onOpenDetails }: { groups: ToolPresentation
   return (
     <section className="flex max-w-xl flex-col gap-3" aria-label="Your tools">
       <div>
-        <h2 className="text-base font-medium">Your Google Workspace</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Connect and manage the Google account you use with Divo.</p>
+        <h2 className="text-base font-medium">Your connections</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Connect and manage the services you use with Divo.</p>
       </div>
       {groups.length > 0 ? (
         <div className="grid gap-3 sm:grid-cols-2">
           {groups.map(group => <ToolCatalogueCard key={group.id} group={group} onManage={() => undefined} onOpenDetails={() => onOpenDetails(group)} />)}
         </div>
       ) : (
-        <ToolsState compact title="Google Workspace is not available" description="Ask your company admin to enable Google Workspace for your role." />
+        <ToolsState compact title="Connections are not available" description="Ask your company admin to enable a connection for your role." />
       )}
     </section>
   )

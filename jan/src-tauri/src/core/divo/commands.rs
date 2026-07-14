@@ -1119,6 +1119,137 @@ pub async fn divo_google_disconnect_connection<R: Runtime>(
     .await
 }
 
+/// Start Canva MCP OAuth for the stored Divo member session. The member token
+/// remains in Rust; the web layer receives only the public authorize URL.
+#[tauri::command]
+pub async fn divo_canva_authorize_url<R: Runtime>(
+    app: AppHandle<R>,
+    label: Option<String>,
+) -> Result<String, String> {
+    let path = if let Some(label) = label.filter(|value| !value.trim().is_empty()) {
+        let mut url = reqwest::Url::parse("https://desktop.divo.invalid/canva/authorize-url")
+            .map_err(|error| format!("Could not prepare Canva authorize URL: {error}"))?;
+        url.query_pairs_mut().append_pair("label", label.trim());
+        format!("/canva/authorize-url?{}", url.query().unwrap_or_default())
+    } else {
+        "/canva/authorize-url".to_string()
+    };
+    let parsed = divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        &path,
+        None,
+        "Canva authorize URL",
+    )
+    .await?;
+
+    parsed
+        .get("data")
+        .and_then(|data| data.get("authorizeUrl"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("Canva authorize URL response missing data.authorizeUrl: {parsed}"))
+}
+
+/// Read Canva connections visible to the stored Divo member session.
+#[tauri::command]
+pub async fn divo_canva_status<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/canva/status",
+        None,
+        "Canva status",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_canva_manage_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        &format!("/canva/connections/{connection_id}/manage"),
+        None,
+        "Canva manage access",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_canva_grant_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grantee_type: String,
+    grantee_id: String,
+    access: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        &format!("/canva/connections/{connection_id}/grants"),
+        Some(json!({
+            "granteeType": grantee_type,
+            "granteeId": grantee_id,
+            "access": access,
+        })),
+        "Canva grant access",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_canva_revoke_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grant_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    let grant_id = grant_id.trim();
+    if connection_id.is_empty() || grant_id.is_empty() {
+        return Err("connectionId and grantId are required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/canva/connections/{connection_id}/grants/{grant_id}"),
+        None,
+        "Canva revoke access",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_canva_disconnect_connection<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/canva/connections/{connection_id}"),
+        None,
+        "Canva disconnect connection",
+    )
+    .await
+}
+
 /// List company-owned Web Search (Serper) connections. API keys never leave the backend.
 #[tauri::command]
 pub async fn divo_serper_connections<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {

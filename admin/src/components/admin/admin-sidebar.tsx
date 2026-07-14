@@ -5,6 +5,7 @@ import {
   Building2,
   Diamond,
   LayoutDashboard,
+  Library,
   LogOut,
   Settings,
   Shield,
@@ -28,6 +29,7 @@ const NAV: { label: string; items: { to: string; icon: LucideIcon; label: string
     label: "Operations",
     items: [
       { to: "/ai-ops", icon: Activity, label: "AI Ops" },
+      { to: "/skills", icon: Library, label: "Skills Lab" },
       { to: "/guardrails", icon: Shield, label: "Guardrails" },
       { to: "/agents", icon: Bot, label: "Agents" },
     ],
