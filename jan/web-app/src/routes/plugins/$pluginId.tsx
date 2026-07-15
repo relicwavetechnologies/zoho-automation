@@ -126,13 +126,13 @@ type GoogleManageResponse = {
   message?: string
 }
 
-type ManageAccessProvider = 'google' | 'zoho' | 'canva'
+type ManageAccessProvider = 'google' | 'zoho' | 'canva' | 'lark'
 
 type CloudProviderConfig = {
-  provider: Extract<ManageAccessProvider, 'google' | 'canva'>
-  pluginId: 'google-workspace' | 'canva'
-  label: 'Google Workspace' | 'Canva'
-  connectionLabel: 'Google' | 'Canva'
+  provider: Extract<ManageAccessProvider, 'google' | 'canva' | 'lark'>
+  pluginId: 'google-workspace' | 'canva' | 'lark'
+  label: 'Google Workspace' | 'Canva' | 'Lark'
+  connectionLabel: 'Google' | 'Canva' | 'Lark'
   accountFallback: string
   commands: {
     authorize: string
@@ -166,6 +166,18 @@ const cloudProviders: Record<CloudProviderConfig['pluginId'], CloudProviderConfi
       disconnect: 'divo_canva_disconnect_connection',
     },
   },
+  lark: {
+    provider: 'lark',
+    pluginId: 'lark',
+    label: 'Lark',
+    connectionLabel: 'Lark',
+    accountFallback: 'Lark account',
+    commands: {
+      authorize: 'divo_lark_authorize_url',
+      status: 'divo_lark_status',
+      disconnect: 'divo_lark_disconnect_connection',
+    },
+  },
 }
 
 const canvaServices = [
@@ -174,8 +186,14 @@ const canvaServices = [
   { name: 'Collaboration', description: 'Read and add design comments through shared access.', icon: Users },
 ]
 
+const larkServices = [
+  { name: 'Messaging & contacts', description: 'Read permitted chats and send approved messages through the selected Lark connection.', icon: Users },
+  { name: 'Calendar & tasks', description: 'Read schedules and manage tasks when the shared connection and Divo policy allow it.', icon: CalendarDays },
+  { name: 'Docs, Base & approvals', description: 'Work with authorised documents, Bases, and approval flows through Divo controls.', icon: KeyRound },
+]
+
 function getCloudProvider(pluginId: string): CloudProviderConfig | null {
-  if (pluginId === 'google-workspace' || pluginId === 'canva') return cloudProviders[pluginId]
+  if (pluginId === 'google-workspace' || pluginId === 'canva' || pluginId === 'lark') return cloudProviders[pluginId]
   return null
 }
 
@@ -216,38 +234,6 @@ type DivoSessionStatus = {
   email?: string
   name?: string
   expiresAt?: string
-}
-
-type LocalLarkStatus = {
-  installed: boolean
-  configured: boolean
-  connected: boolean
-  accountLabel?: string
-  statusText?: string
-  cliPath?: string
-  homePath: string
-  usesConfiguredApp: boolean
-  version?: string
-  error?: string
-}
-
-type LocalLarkSetupStart = {
-  started: boolean
-  completed: boolean
-  authorizeUrl?: string
-}
-
-type LocalLarkSetupStatus = {
-  running: boolean
-  completed: boolean
-  success: boolean
-  output: string
-}
-
-type LocalLarkAuthStart = {
-  authorizeUrl: string
-  deviceCode?: string
-  raw: unknown
 }
 
 type ConnectionState =
@@ -515,11 +501,6 @@ export function PluginDetailRoute() {
   if (!toolInventory) return <DetailInventoryState title="Loading tool details" description="Checking your current Divo tool inventory." />
   if (!liveGroup) return <DetailInventoryState title="Tool unavailable" description="This detail URL is not available in your current Divo tool inventory." />
 
-  if (pluginId === 'lark-personal' && plugin) {
-    return (
-      <LocalLarkPluginDetail plugin={plugin!} onBack={() => navigate({ to: route.plugins.index } as any)} accessContent={<ToolAccessSection items={liveGroup.childTools} embedded onUpdated={() => void loadToolInventory()} />} />
-    )
-  }
   if (pluginId === 'zoho' && plugin) {
     return (
       <ZohoPluginDetail plugin={plugin!} onBack={() => navigate({ to: route.plugins.index } as any)} onReconnectDivo={() => navigate({ to: route.settings.divo } as any)} accessContent={<ToolAccessSection items={liveGroup.childTools} embedded onUpdated={() => void loadToolInventory()} />} />
@@ -736,7 +717,7 @@ export function PluginDetailRoute() {
             <div className="rounded-lg border border-border/70 bg-card/30 p-4">
               <h2 className="text-sm font-medium">Available services</h2>
               <div className="mt-3 space-y-3">
-                {(cloudProvider.provider === 'canva' ? canvaServices : googleWorkspaceServices).map((service) => {
+                {(cloudProvider.provider === 'canva' ? canvaServices : cloudProvider.provider === 'lark' ? larkServices : googleWorkspaceServices).map((service) => {
                   const ServiceIcon = service.icon
                   return (
                     <div key={service.name} className="flex gap-3">
@@ -876,327 +857,6 @@ function WebSearchPluginDetail({ group, onBack, onUpdated }: { group: NonNullabl
     <section className="rounded-lg border border-border/70 p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-medium">Company connections</h2><p className="mt-1 text-sm text-muted-foreground">Keys remain encrypted on the backend and are never displayed here.</p></div><Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4" />Refresh</Button></div><div className="mt-4 space-y-3">{connections.map((connection, index) => <div key={connection.id} className="flex items-center justify-between gap-4 rounded-md border border-border/70 p-4"><div><div className="flex items-center gap-2 font-medium"><span className={cn('size-2 rounded-full', connection.status === 'connected' ? 'bg-emerald-400' : 'bg-muted-foreground')} />{connection.label}{index === 0 && connection.status === 'connected' ? <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">Default</span> : null}</div><p className="mt-1 text-xs text-muted-foreground">{connection.lastFailureCode ? `Last issue: ${connection.lastFailureCode}` : connection.lastSucceededAt ? 'Validated and ready' : 'Not yet used'}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={() => void toggle(connection)}>{connection.status === 'connected' ? 'Disable' : 'Enable'}</Button><Button size="sm" variant="ghost" disabled={busy} className="text-destructive hover:text-destructive" onClick={() => void remove(connection.id)}><Trash2 className="size-4" />Disconnect</Button></div></div>)}{!loading && connections.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">No company Web Search connection yet.</p> : null}</div></section>
     <ToolAccessSection items={group.childTools} embedded onUpdated={onUpdated} />
   </main></div>
-}
-
-function LocalLarkPluginDetail({
-  plugin,
-  onBack,
-  accessContent,
-}: {
-  plugin: NonNullable<ReturnType<typeof getPlugin>>
-  onBack: () => void
-  accessContent?: ReactNode
-}) {
-  const Icon = plugin.icon
-  const [status, setStatus] = useState<LocalLarkStatus | null>(null)
-  const [statusError, setStatusError] = useState<string | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [isBusy, setIsBusy] = useState(false)
-  const [setupOutput, setSetupOutput] = useState('')
-  const [deviceCode, setDeviceCode] = useState<string | null>(null)
-
-  const loadStatus = useCallback(async () => {
-    setIsLoading(true)
-    setStatusError(null)
-    try {
-      const next = await invoke<LocalLarkStatus>('divo_lark_local_status')
-      setStatus(next)
-    } catch (error) {
-      setStatus(null)
-      setStatusError(String(error))
-      toast.error('Could not read Lark status', { description: String(error) })
-    } finally {
-      setIsLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void loadStatus()
-  }, [loadStatus])
-
-  const startSetup = async () => {
-    setIsBusy(true)
-    try {
-      const result = await invoke<LocalLarkSetupStart>('divo_lark_local_setup_start')
-      if (result.authorizeUrl) {
-        await openExternalUrl(result.authorizeUrl)
-        toast.success('Lark setup opened')
-        return
-      }
-      if (result.completed) {
-        toast.success('Lark app configured')
-        await loadStatus()
-        await startAuth()
-        return
-      }
-      toast.message('Lark setup started')
-    } catch (error) {
-      toast.error('Lark setup failed', { description: String(error) })
-    } finally {
-      setIsBusy(false)
-    }
-  }
-
-  const checkSetup = async () => {
-    setIsBusy(true)
-    try {
-      const result = await invoke<LocalLarkSetupStatus>('divo_lark_local_setup_status')
-      setSetupOutput(result.output)
-      if (result.running) {
-        toast.message('Lark setup is still waiting in the browser')
-        return
-      }
-      if (result.completed && result.success) {
-        toast.success('Lark CLI setup completed')
-        await loadStatus()
-        return
-      }
-      toast.error('Lark setup has not completed yet')
-    } catch (error) {
-      toast.error('Could not check Lark setup', { description: String(error) })
-    } finally {
-      setIsBusy(false)
-    }
-  }
-
-  const startAuth = async () => {
-    setIsBusy(true)
-    try {
-      const result = await invoke<LocalLarkAuthStart>('divo_lark_local_auth_start')
-      setDeviceCode(result.deviceCode ?? null)
-      await openExternalUrl(result.authorizeUrl)
-      toast.success('Lark authorization opened')
-    } catch (error) {
-      toast.error('Lark authorization failed', { description: String(error) })
-    } finally {
-      setIsBusy(false)
-    }
-  }
-
-  const completeAuth = async () => {
-    if (!deviceCode) {
-      toast.error('Start Lark authorization first')
-      return
-    }
-    setIsBusy(true)
-    try {
-      await invoke('divo_lark_local_auth_complete', {
-        deviceCode,
-        device_code: deviceCode,
-      })
-      setDeviceCode(null)
-      toast.success('Lark connected')
-      await loadStatus()
-    } catch (error) {
-      toast.error('Could not complete Lark authorization', { description: String(error) })
-    } finally {
-      setIsBusy(false)
-    }
-  }
-
-  const disconnect = async () => {
-    setIsBusy(true)
-    try {
-      await invoke('divo_lark_local_disconnect')
-      setDeviceCode(null)
-      toast.success('Lark disconnected')
-      await loadStatus()
-    } catch (error) {
-      toast.error('Could not disconnect Lark', { description: String(error) })
-    } finally {
-      setIsBusy(false)
-    }
-  }
-
-  const connected = Boolean(status?.connected)
-  const configured = Boolean(status?.configured)
-  const installed = Boolean(status?.installed)
-
-  return (
-    <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
-      <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-6 lg:px-8">
-        <header className="flex flex-col gap-5 rounded-lg border border-border/70 bg-card/30 p-5">
-          <div className="flex items-center justify-between gap-4">
-            <Button variant="ghost" size="sm" onClick={onBack}>
-              <ArrowLeft className="size-4" />
-              Tools
-            </Button>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => void loadStatus()}>
-                <RotateCw className="size-4" />
-                Refresh
-              </Button>
-              {connected ? (
-                <Button variant="outline" size="sm" onClick={() => void disconnect()} disabled={isBusy}>
-                  Disconnect
-                </Button>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
-            <div className="flex gap-4">
-              <div
-                className={cn(
-                  'flex size-14 items-center justify-center rounded-lg border',
-                  plugin.accentClassName
-                )}
-              >
-                <Icon className={cn('size-7', plugin.iconClassName)} />
-              </div>
-              <div>
-                <h1 className="text-2xl font-medium tracking-normal">
-                  {plugin.name}
-                </h1>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Connect a personal Lark account to the bundled desktop CLI. This stays local to
-                  this device and is exposed to Divo as an isolated `lark-cli` command.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid min-w-72 grid-cols-3 gap-2">
-              <Metric value={statusError ? 'Unknown' : installed ? 'Yes' : 'No'} label="Bundled" />
-              <Metric value={statusError ? 'Unknown' : status?.usesConfiguredApp ? 'Org app' : configured ? 'Ready' : 'Setup'} label="CLI app" />
-              <Metric value={statusError ? 'Unknown' : connected ? 'On' : 'Off'} label="Account" />
-            </div>
-          </div>
-        </header>
-
-        <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="space-y-4">
-            <div>
-              <h2 className="text-lg font-medium">Local connection</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                The Desktop app uses its bundled Lark CLI and an isolated local home, never your
-                global Mac `lark-cli` install.
-              </p>
-            </div>
-
-            {isLoading ? (
-              <ConnectionListState
-                title="Checking local Lark"
-                description="Reading bundled CLI state from the Divo local tool home."
-              />
-            ) : null}
-
-            {!isLoading && statusError ? (
-              <ConnectionListState
-                title="Could not read Lark status"
-                description={statusError}
-                action={<Button size="sm" onClick={() => void loadStatus()}>Retry</Button>}
-              />
-            ) : null}
-
-            {!isLoading && !statusError && !installed ? (
-              <ConnectionListState
-                title="Lark CLI is not bundled yet"
-                description="Run the Jan vendoring step so the desktop app can package @larksuite/cli."
-              />
-            ) : null}
-
-            {!isLoading && !statusError && installed ? (
-              <article className="rounded-lg border border-border/70 bg-card/30 p-4">
-                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <StatusDot status={connected ? 'connected' : 'disconnected'} />
-                      <h3 className="text-sm font-medium">
-                        {status?.accountLabel ?? 'Lark local account'}
-                      </h3>
-                      <Badge tone="neutral">Personal</Badge>
-                      <Badge tone={connected ? 'green' : configured ? 'amber' : 'neutral'}>
-                        {connected ? 'Connected' : configured ? 'Needs auth' : 'Needs setup'}
-                      </Badge>
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                      {status?.statusText ??
-                        'Available to Divo through the desktop-local lark-cli wrapper.'}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {!configured ? (
-                      <>
-                        <Button size="sm" onClick={() => void startSetup()} disabled={isBusy}>
-                          <KeyRound className="size-4" />
-                          {status?.usesConfiguredApp ? 'Connect Lark' : 'Set up Lark'}
-                          {status?.usesConfiguredApp ? null : <ExternalLink className="size-4" />}
-                        </Button>
-                        {status?.usesConfiguredApp ? null : (
-                          <Button variant="outline" size="sm" onClick={() => void checkSetup()} disabled={isBusy}>
-                            Check setup
-                          </Button>
-                        )}
-                      </>
-                    ) : !connected ? (
-                      <>
-                        <Button size="sm" onClick={() => void startAuth()} disabled={isBusy}>
-                          <KeyRound className="size-4" />
-                          Authorize Lark
-                          <ExternalLink className="size-4" />
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => void completeAuth()}
-                          disabled={isBusy || !deviceCode}
-                        >
-                          I approved
-                        </Button>
-                      </>
-                    ) : (
-                      <Button variant="outline" size="sm" onClick={() => void disconnect()} disabled={isBusy}>
-                        Disconnect
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="mt-4 grid gap-3 border-t border-border/70 pt-4 md:grid-cols-3">
-                  <ConnectionFact icon={ShieldCheck} label="Runtime" value="bundled lark-cli" />
-                  <ConnectionFact
-                    icon={Lock}
-                    label="Local home"
-                    value={status?.homePath ?? 'Not initialized'}
-                  />
-                  <ConnectionFact
-                    icon={Check}
-                    label="Version"
-                    value={status?.version ?? 'Unknown'}
-                  />
-                </div>
-
-                {setupOutput ? (
-                  <pre className="mt-4 max-h-40 overflow-auto rounded-md border border-border/70 bg-background/50 p-3 text-xs text-muted-foreground">
-                    {setupOutput}
-                  </pre>
-                ) : null}
-              </article>
-            ) : null}
-          </div>
-
-          <aside className="space-y-4">
-            <div className="rounded-lg border border-border/70 bg-card/30 p-4">
-              <h2 className="text-sm font-medium">Divo orchestration</h2>
-              <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                Divo receives `DIVO_LARK_CLI`, `DIVO_LARK_CLI_HOME`, and a first-in-PATH wrapper.
-                Lark tasks can call `lark-cli` directly without using your global shell install.
-              </p>
-              <div className="mt-3 space-y-2 text-xs text-muted-foreground">
-                <p className="rounded-md border border-border/70 bg-background/40 p-2">
-                  Personal Lark stays local to this desktop.
-                </p>
-                <p className="rounded-md border border-border/70 bg-background/40 p-2">
-                  Company/shared SaaS access still goes through the Divo backend gateway.
-                </p>
-              </div>
-            </div>
-          </aside>
-        </section>
-        {accessContent}
-      </main>
-    </div>
-  )
 }
 
 function ZohoPluginDetail({
@@ -1732,7 +1392,7 @@ function ManageAccessDialog({
   const [access, setAccess] = useState<DivoConnectionAccess>('read_only')
   const [query, setQuery] = useState('')
   const open = Boolean(connection)
-  const providerLabel = provider === 'zoho' ? 'Zoho' : provider === 'canva' ? 'Canva' : 'Google'
+  const providerLabel = provider === 'zoho' ? 'Zoho' : provider === 'canva' ? 'Canva' : provider === 'lark' ? 'Lark' : 'Google'
   const commandNames = provider === 'zoho'
     ? {
       manage: 'divo_zoho_manage_access',
@@ -1745,6 +1405,12 @@ function ManageAccessDialog({
         grant: 'divo_canva_grant_access',
         revoke: 'divo_canva_revoke_access',
       }
+      : provider === 'lark'
+        ? {
+          manage: 'divo_lark_manage_access',
+          grant: 'divo_lark_grant_access',
+          revoke: 'divo_lark_revoke_access',
+        }
     : {
       manage: 'divo_google_manage_access',
       grant: 'divo_google_grant_access',

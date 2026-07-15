@@ -13,7 +13,7 @@ import type { KnowledgeShareService } from '../../../application/knowledge-share
 import type { ChatMessageSerializer } from '../../../application/orchestration/chat-message-serializer';
 import type { Mem0Service } from '../../../application/memory/mem0.service';
 import type { LarkOAuthService } from '../../lark/lark-oauth.service';
-import type { LarkUserAuthLinkRepository } from '../../persistence/lark-user-auth-link.repository';
+import type { IntegrationConnectionRepository } from '../../persistence/integration-connection.repository';
 import type { CachePort } from '../../../shared/cache';
 import { asCompanyId, asUserId, asCorrelationId, asDepartmentId } from '../../../shared/ids';
 import { asCompanyRoleSlug } from '../../../domain/permissions/company-role';
@@ -30,6 +30,7 @@ import type { PrismaClient } from '../../../generated/prisma';
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
 import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
+import type { LarkContactsClient } from './clients/lark-contacts.client';
 
 export const createLarkWebhookRoutes = (deps: {
   adapter: LarkChannelAdapter;
@@ -44,14 +45,15 @@ export const createLarkWebhookRoutes = (deps: {
   knowledgeShareService?: KnowledgeShareService;
   shareResolverService?: ShareResolverService;
   mem0?: Mem0Service;
-  larkOAuthService?:     LarkOAuthService;
-  larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
+  larkOAuthService?: LarkOAuthService;
+  connectionRepo?: IntegrationConnectionRepository;
   cache: CachePort;
   /** Per-chat message serializer — ensures only one engine.run() per chat at a time. */
   serializer: ChatMessageSerializer;
   chatContextService?: LarkChatContextService;
   prisma?: PrismaClient;
   cloudinaryAdapter?: CloudinaryAdapter;
+  larkContactsClient?: Pick<LarkContactsClient, 'getUser'>;
 }): Router => {
   const router = Router();
   const log = deps.logger.child({ route: 'lark-webhook' });
@@ -207,9 +209,10 @@ export const createLarkWebhookRoutes = (deps: {
     deps.serializer.run(String(incoming.chatId), (signal) =>
       processInBackground(incoming, event, {
         ...deps,
-        ...(deps.larkOAuthService     ? { larkOAuthService:     deps.larkOAuthService }     : {}),
-        ...(deps.larkUserAuthLinkRepo ? { larkUserAuthLinkRepo: deps.larkUserAuthLinkRepo } : {}),
-        ...(deps.chatContextService   ? { chatContextService:   deps.chatContextService }   : {}),
+        ...(deps.larkOAuthService ? { larkOAuthService: deps.larkOAuthService } : {}),
+        ...(deps.connectionRepo ? { connectionRepo: deps.connectionRepo } : {}),
+        ...(deps.chatContextService ? { chatContextService: deps.chatContextService } : {}),
+        ...(deps.larkContactsClient ? { larkContactsClient: deps.larkContactsClient } : {}),
       }, log, deps.approvalGate, deps.knowledgeShareService, signal),
     );
   };
@@ -296,12 +299,13 @@ async function processInBackground(
     env: TypedEnv;
     ingestionQueue?: IngestionQueue;
     mem0?: Mem0Service;
-    larkOAuthService?:     LarkOAuthService;
-    larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
+    larkOAuthService?: LarkOAuthService;
+    connectionRepo?: IntegrationConnectionRepository;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
     cloudinaryAdapter?: CloudinaryAdapter;
     prisma?: PrismaClient;
+    larkContactsClient?: Pick<LarkContactsClient, 'getUser'>;
   },
   log: Logger,
   approvalGate?: ApprovalGateService,
@@ -346,6 +350,7 @@ async function processInBackground(
       correlationId,
     };
 
+    await bootstrapLarkFirstTouchIdentity(incoming.userExternalId, rawEvent, deps, log);
     const pending = await deps.channelIdentityRepo.prepareLarkLogin(incoming.userExternalId);
     if (pending.ok && pending.value?.status === 'ready') {
       const loginUrl = await createLarkLoginUrl({
@@ -613,6 +618,86 @@ async function processInBackground(
   await storeGroupAssistantSnapshot({ incoming, identity, deps, result, log });
 }
 
+export async function bootstrapLarkFirstTouchIdentity(
+  larkOpenId: string,
+  rawEvent: Record<string, unknown>,
+  deps: {
+    prisma?: PrismaClient;
+    larkContactsClient?: Pick<LarkContactsClient, 'getUser'>;
+  },
+  log: Logger,
+): Promise<boolean> {
+  if (!deps.prisma || !deps.larkContactsClient) return false;
+
+  const header = rawEvent['header'] as Record<string, unknown> | undefined;
+  const event = rawEvent['event'] as Record<string, unknown> | undefined;
+  const tenantKey = [header?.['tenant_key'], event?.['tenant_key'], rawEvent['tenant_key']]
+    .find((value) => typeof value === 'string' && value.trim()) as string | undefined;
+  if (!tenantKey) return false;
+
+  const binding = await deps.prisma.larkTenantBinding.findFirst({
+    where: { larkTenantKey: tenantKey, isActive: true },
+    select: { companyId: true },
+  });
+  if (!binding) {
+    log.warn('webhook.first_touch.unbound_tenant', { tenantKey, larkOpenId });
+    return false;
+  }
+
+  try {
+    const user = await deps.larkContactsClient.getUser(larkOpenId);
+    if (!user || user.openId !== larkOpenId) {
+      log.warn('webhook.first_touch.user_mismatch', {
+        larkOpenId,
+        returnedOpenId: user?.openId ?? null,
+        companyId: binding.companyId,
+      });
+      return false;
+    }
+
+    await deps.prisma.channelIdentity.upsert({
+      where: {
+        channel_externalUserId_companyId: {
+          channel: 'lark',
+          externalUserId: larkOpenId,
+          companyId: binding.companyId,
+        },
+      },
+      create: {
+        companyId: binding.companyId,
+        channel: 'lark',
+        externalUserId: larkOpenId,
+        externalTenantId: tenantKey,
+        larkOpenId,
+        displayName: user.displayName,
+        email: user.email ?? null,
+        aiRole: 'MEMBER',
+        aiRoleSource: 'first_touch',
+        syncedAiRole: 'MEMBER',
+        sourceRoles: [],
+      },
+      update: {
+        externalTenantId: tenantKey,
+        displayName: user.displayName,
+        ...(user.email ? { email: user.email } : {}),
+      },
+    });
+    log.info('webhook.first_touch.identity_bootstrapped', {
+      companyId: binding.companyId,
+      larkOpenId,
+      hasEmail: !!user.email,
+    });
+    return true;
+  } catch (error) {
+    log.warn('webhook.first_touch.failed', {
+      companyId: binding.companyId,
+      larkOpenId,
+      error: String(error),
+    });
+    return false;
+  }
+}
+
 async function handleSlashCommand(args: {
   text: string;
   incoming: IncomingMessage;
@@ -624,8 +709,8 @@ async function handleSlashCommand(args: {
     conversationRepo: ConversationRepoPort;
     logger: Logger;
     mem0?: Mem0Service;
-    larkOAuthService?:     LarkOAuthService;
-    larkUserAuthLinkRepo?: LarkUserAuthLinkRepository;
+    larkOAuthService?: LarkOAuthService;
+    connectionRepo?: IntegrationConnectionRepository;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
     prisma?: PrismaClient;
@@ -766,12 +851,12 @@ async function handleSlashCommand(args: {
 
   // ── /logout — revoke stored user token ──────────────────────────────────────
   if (cmd === '/logout') {
-    if (!deps.larkUserAuthLinkRepo) {
+    if (!deps.connectionRepo) {
       await reply('User OAuth is not configured on this server.');
       return;
     }
-    const result = await deps.larkUserAuthLinkRepo.revoke(identity.userId, identity.companyId);
-    if (result.ok && result.value) {
+    const result = await deps.connectionRepo.revokeLarkConnectionsForUser(identity.companyId, identity.userId);
+    if (result.ok && result.value > 0) {
       log.info('webhook.command.logout.ok', { userId: identity.userId, correlationId });
       await reply('Disconnected. Your personal Lark token has been removed — actions will now run as the Divo bot.');
     } else {
@@ -782,11 +867,14 @@ async function handleSlashCommand(args: {
 
   // ── /status — show connection status ────────────────────────────────────────
   if (cmd === '/status') {
-    if (!deps.larkUserAuthLinkRepo) {
+    if (!deps.connectionRepo) {
       await reply('User OAuth is not configured on this server.');
       return;
     }
-    const link = await deps.larkUserAuthLinkRepo.findByUserId(identity.userId, identity.companyId);
+    const link = await deps.connectionRepo.findOwnedLarkConnection({
+      userId: identity.userId,
+      companyId: identity.companyId,
+    });
     if (!link.ok || !link.value) {
       await reply('❌ Not connected. Type /login to connect your Lark account.');
       return;
@@ -798,8 +886,8 @@ async function handleSlashCommand(args: {
       : 'unknown';
     await reply(
       `**Lark account status**\n` +
-      `• Name: ${rec.larkName ?? '—'}\n` +
-      `• Email: ${rec.larkEmail}\n` +
+      `• Name: ${rec.accountName ?? '—'}\n` +
+      `• Email: ${rec.accountEmail ?? '—'}\n` +
       `• Token: ${expired ? '⚠️ Expired — type /login to refresh' : '✅ Valid'}\n` +
       `• Expires: ${expiry}`,
     );

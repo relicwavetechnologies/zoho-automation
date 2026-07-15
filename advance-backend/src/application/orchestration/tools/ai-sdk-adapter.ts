@@ -22,6 +22,7 @@ import type { PermissionResult } from '../../permissions/permission.types';
 import type { RunContext } from '../../../domain/orchestration/run-context';
 import type { ApprovalGateService } from '../../approval/approval-gate.service';
 import { formatAmount, formatDate } from '../../zoho/zoho-format.utils';
+import { googleWorkspaceProductByToolId } from '../../google/google-workspace-mcp-manifest';
 
 export interface AdapterContext {
   runContext:    RunContext;
@@ -151,7 +152,7 @@ export function toAISdkTools(
 export function buildArgsSummary(toolId: string, action: string, args: unknown): string {
   try {
     const a = args as Record<string, unknown>;
-    if (toolId === 'googleGmail') return buildGmailArgsSummary(action, a);
+    if (googleWorkspaceProductByToolId(toolId)) return buildGoogleWorkspaceArgsSummary(toolId, action, a);
     const parts: string[] = [`${toolId}.${action}`];
     // Append the most human-readable fields if present
     for (const key of ['to', 'subject', 'title', 'name', 'query', 'module', 'chatId', 'calendarId']) {
@@ -184,48 +185,27 @@ export function buildArgsSummary(toolId: string, action: string, args: unknown):
   }
 }
 
-function buildGmailArgsSummary(action: string, a: Record<string, unknown>): string {
-  const op = typeof a['op'] === 'string' ? a['op'] : action;
-  const parts: string[] = [`googleGmail.${op}`];
-  const to = stringArray(a['to']);
-  const cc = stringArray(a['cc']);
-  const bcc = stringArray(a['bcc']);
-  const subject = typeof a['subject'] === 'string' ? a['subject'] : undefined;
-  const body = typeof a['bodyText'] === 'string'
-    ? a['bodyText']
-    : typeof a['body'] === 'string'
-      ? a['body']
-      : '';
-  const messageCount = stringArray(a['messageIds']).length + (typeof a['messageId'] === 'string' ? 1 : 0);
-
-  if (to.length) parts.push(`to=${to.join(', ').slice(0, 120)}`);
-  if (cc.length) parts.push(`cc=${cc.length}`);
-  if (bcc.length) parts.push(`bcc=${bcc.length}`);
-  if (subject) parts.push(`subject=${subject.slice(0, 120)}`);
-  if (body) parts.push(`preview=${body.replace(/\s+/g, ' ').slice(0, 180)}`);
-  if (typeof a['bodyHtml'] === 'string') parts.push('html=yes');
-  if (typeof a['templateId'] === 'string') parts.push(`template=${a['templateId']}`);
-  if (typeof a['draftId'] === 'string') parts.push('draft=yes');
-  if (messageCount > 0) parts.push(`messages=${messageCount}`);
-  const attachments = Array.isArray(a['attachments']) ? a['attachments'] : [];
-  if (attachments.length) {
-    parts.push(`attachments=${attachments.length}`);
-    const sources = Array.from(new Set(
-      attachments
-        .map(attachment => attachment && typeof attachment === 'object' && !Array.isArray(attachment)
-          ? (attachment as Record<string, unknown>)['source']
-          : undefined)
-        .filter((source): source is string => typeof source === 'string' && source.length > 0),
-    ));
-    if (sources.length) parts.push(`sources=${sources.join(',')}`);
+function buildGoogleWorkspaceArgsSummary(
+  toolId: string,
+  action: string,
+  args: Record<string, unknown>,
+): string {
+  const nativeTool = typeof args['nativeTool'] === 'string' ? args['nativeTool'] : action;
+  const input = args['input'] && typeof args['input'] === 'object' && !Array.isArray(args['input'])
+    ? args['input'] as Record<string, unknown>
+    : {};
+  const parts = [`${toolId}.${nativeTool}`];
+  for (const key of [
+    'to', 'cc', 'bcc', 'subject', 'title', 'name', 'query', 'calendar_id',
+    'event_id', 'document_id', 'spreadsheet_id', 'presentation_id', 'form_id',
+  ]) {
+    if (input[key] === undefined) continue;
+    const value = Array.isArray(input[key]) ? input[key].join(', ') : String(input[key]);
+    parts.push(`${key}=${value.replace(/\s+/g, ' ').slice(0, 120)}`);
   }
-
-  const labels = [...stringArray(a['labelNames']), ...stringArray(a['labelIds'])];
-  if (labels.length) parts.push(`labels=${labels.join(', ').slice(0, 120)}`);
-
+  const body = input['body'] ?? input['body_text'] ?? input['text'];
+  if (typeof body === 'string' && body.trim()) {
+    parts.push(`preview=${body.replace(/\s+/g, ' ').slice(0, 180)}`);
+  }
   return parts.join(' | ');
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }

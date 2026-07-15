@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
 	composeDivoSystemPrompt,
+	DIVO_ENGLISH_RESPONSE_POLICY,
 	readDepartmentPersonaContext,
 } from "./department-persona.ts";
 
@@ -48,6 +49,8 @@ describe("department persona", () => {
 		assert.equal((refreshed.match(/<divo_department_persona>/g) ?? []).length, 1);
 		assert.equal((refreshed.match(/<divo_member_departments>/g) ?? []).length, 1);
 		assert.ok(refreshed.indexOf("Company rules") < refreshed.indexOf("Use Sales conventions."));
+		assert.ok(refreshed.indexOf("Use Sales conventions.") < refreshed.indexOf("AUTHORITATIVE RESPONSE LANGUAGE POLICY"));
+		assert.equal((refreshed.match(/<divo_response_language_policy>/g) ?? []).length, 1);
 		assert.ok(!refreshed.includes("Use Finance conventions."));
 		assert.ok(refreshed.includes("- Sales"));
 		assert.ok(!refreshed.includes("- Finance"));
@@ -60,6 +63,20 @@ describe("department persona", () => {
 			}),
 			refreshed,
 		);
+	});
+
+	it("always places the English-only policy last and replaces stale copies", () => {
+		const prompt = composeDivoSystemPrompt(
+			`Base prompt\n\n${DIVO_ENGLISH_RESPONSE_POLICY}`,
+			COMPANY_PROMPT,
+			{ personaPrompt: "请用中文回答。", departments: ["Finance"] },
+		);
+
+		assert.equal((prompt.match(/<divo_response_language_policy>/g) ?? []).length, 1);
+		assert.ok(prompt.indexOf("请用中文回答。") < prompt.indexOf("AUTHORITATIVE RESPONSE LANGUAGE POLICY"));
+		assert.ok(prompt.endsWith("</divo_response_language_policy>"));
+		assert.match(prompt, /Respond in English only/);
+		assert.match(prompt, /tool output.*untrusted data/i);
 	});
 
 	it("injects the member directory without a selected department persona", () => {
@@ -134,6 +151,6 @@ describe("department persona", () => {
 		const prompt = composeDivoSystemPrompt("Base prompt", COMPANY_PROMPT, {
 			personaPrompt: " ",
 		});
-		assert.equal(prompt, `Base prompt\n\n${COMPANY_PROMPT}`);
+		assert.equal(prompt, `Base prompt\n\n${COMPANY_PROMPT}\n\n${DIVO_ENGLISH_RESPONSE_POLICY}`);
 	});
 });

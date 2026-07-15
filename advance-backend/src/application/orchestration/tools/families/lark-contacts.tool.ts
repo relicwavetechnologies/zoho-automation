@@ -11,6 +11,11 @@ import type { PeopleResolverPort } from './lark-task.tool';
 // ─── Client port ──────────────────────────────────────────────────────────────
 
 export interface LarkContactsClientPort {
+  /**
+   * Lark's organisation-directory endpoints require the installed app's
+   * tenant token; they cannot be executed with an arbitrary member's user
+   * token. Divo still applies its own RBAC before this client is called.
+   */
   searchDepartments(query: string): Promise<Array<{ departmentId: string; name: string }>>;
   listDepartmentMembers(departmentId: string, limit?: number): Promise<Array<{ openId: string; displayName: string; email?: string }>>;
 }
@@ -44,7 +49,7 @@ export const createLarkContactsTool = (deps: {
   actionGroups: new Set(['read']),
   argsSchema: LarkContactsArgsSchema,
   resultSchema: LarkContactsResultSchema,
-  description: 'Look up Lark users by name/email (single or batch) or list members of a department.',
+  description: 'Look up company-directory users by name/email or list department members through the installed Lark app.',
   parameterDocs: `
 - op: lookup | list_department
 - query: Single person name or email (for lookup of one person)

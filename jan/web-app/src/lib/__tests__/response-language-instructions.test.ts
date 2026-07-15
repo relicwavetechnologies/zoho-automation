@@ -6,12 +6,12 @@ import {
 } from '../response-language-instructions'
 
 describe('response language instructions', () => {
-  it('requires Roman-script Hinglish for Hindi messages', () => {
+  it('requires English for every user-facing response', () => {
     expect(RESPONSE_LANGUAGE_INSTRUCTIONS).toContain(
-      'reply in natural Hinglish written only in the Roman/Latin alphabet'
+      'Respond in English only'
     )
     expect(RESPONSE_LANGUAGE_INSTRUCTIONS).toContain(
-      'Do not use Devanagari script'
+      'Never switch to Chinese or another language'
     )
   })
 
@@ -19,7 +19,7 @@ describe('response language instructions', () => {
     const result = appendResponseLanguageInstructions('You are Divo Dex.')
 
     expect(result).toContain('You are Divo Dex.\n\nResponse language rules:')
-    expect(result).toContain('unless the user explicitly asks for Hindi in Devanagari')
+    expect(result).toContain('silently rewrite any non-English generated prose into English')
   })
 
   it('still supplies the rule when no assistant prompt is configured', () => {

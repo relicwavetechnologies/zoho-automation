@@ -10,6 +10,7 @@ import { asToolId } from '../../../../shared/ids';
 import { SKILL_SUMMARY_MAX_CHARS } from '../../../skills/skill-limits';
 import { unknownSkillToolIds } from '../../../skills/skill-tool-validation';
 import { recordSkillRegistryMutation } from '../../../skills/skill-registry-versioning';
+import { larkSkillEnglishOnlyError } from '../../../skills/lark-skill-language-policy';
 
 const toolIdsSchema = z.array(z.string().min(1).max(120)).min(1).max(50);
 
@@ -74,6 +75,7 @@ export const createSkillPublishingTool = (deps: {
     'scope: company or department. Department publishing uses departmentId or the active gateway department.',
     'markdown: complete SKILL.md content. The backend stores shared skills as markdown.',
     'toolIds: backend gateway tools the skill requires, e.g. webSearch, zohoBooks, larkTask.',
+    'Lark skills must be written in English. Translate all Lark skill content to English before publishing.',
   ].join('\n'),
 
   permissionCheck(args: Args, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -125,6 +127,22 @@ export const createSkillPublishingTool = (deps: {
       const slug = normalizeSlug(args.slug ?? args.name);
       if (!slug) {
         return err(new ToolError({ toolId: 'skillPublishing', reason: 'bad_args', message: 'Skill slug could not be derived.' }));
+      }
+
+      const languageError = larkSkillEnglishOnlyError({
+        slug,
+        name: args.name,
+        summary: args.summary ?? '',
+        markdown: args.markdown,
+        toolIds: args.toolIds,
+        tags: args.tags ?? [],
+      });
+      if (languageError) {
+        return err(new ToolError({
+          toolId: 'skillPublishing',
+          reason: 'bad_args',
+          message: languageError,
+        }));
       }
 
       const scope = args.scope === 'company' ? 'global' : 'department';

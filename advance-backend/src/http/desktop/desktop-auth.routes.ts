@@ -7,7 +7,6 @@ import type { GoogleOAuthService } from '../../infrastructure/google/google-oaut
 import type { CanvaMcpOAuthService } from '../../infrastructure/canva/canva-mcp-oauth.service';
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
-import type { LarkUserAuthLinkRepository } from '../../infrastructure/persistence/lark-user-auth-link.repository';
 import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
@@ -25,7 +24,6 @@ export interface DesktopAuthRoutesDeps {
   canvaMcpOAuthService:   CanvaMcpOAuthService;
   zohoTokenService:       ZohoTokenService;
   zohoConnectionRepo:     ZohoConnectionRepository;
-  larkUserAuthLinkRepo:   LarkUserAuthLinkRepository;
   connectionRepo:         IntegrationConnectionRepository;
   permissions:            PermissionService;
   skillCatalog:           SkillCatalogService;
@@ -43,6 +41,8 @@ interface StatePayload {
   companyId?: string;
   label?: string;
   sessionId?: string;
+  /** Exact OAuth callback used to mint this signed state. */
+  redirectUri?: string;
   exp?: number;
 }
 
@@ -97,6 +97,49 @@ function verifyJwt(token: string, secret: string): StatePayload | null {
   return payload;
 }
 
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+/**
+ * OAuth must return to the backend that the desktop actually selected. For a
+ * local Desktop URL, use the request host instead of a machine-wide .env value
+ * that may still point at a deployed environment. For deployed hosts, retain
+ * the configured public origin so TLS termination cannot downgrade HTTPS.
+ */
+function resolveDesktopCallbackBase(req: Request, configuredPublicUrl: string): string {
+  const configured = configuredPublicUrl.replace(/\/+$/, '');
+  let configuredUrl: URL | null = null;
+  try {
+    configuredUrl = new URL(configured);
+  } catch {
+    return configured;
+  }
+
+  const hostHeader = req.headers.host;
+  const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (!host) return configuredUrl.origin;
+
+  try {
+    const requestProtocol = req.protocol === 'https' ? 'https' : 'http';
+    const requestUrl = new URL(`${requestProtocol}://${host}`);
+    if (isLoopbackHost(requestUrl.hostname)) return requestUrl.origin;
+    if (requestUrl.host === configuredUrl.host) return configuredUrl.origin;
+  } catch {
+    // Fall through to the configured safe public origin.
+  }
+
+  return configuredUrl.origin;
+}
+
+function larkRedirectUri(req: Request, configuredPublicUrl: string, callbackPath: string): string {
+  return `${resolveDesktopCallbackBase(req, configuredPublicUrl)}${callbackPath}`;
+}
+
+function isSyntheticLarkIdentityEmail(email: string): boolean {
+  return email.toLowerCase().endsWith('@identity.divo.invalid');
+}
+
 async function issueDesktopSession(
   deps: DesktopAuthRoutesDeps,
   userId: string,
@@ -146,12 +189,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     userId: string,
     companyId: string,
     role: string,
-    provider: 'google_workspace' | 'zoho' | 'canva' = 'google_workspace',
+    provider: 'google_workspace' | 'zoho' | 'canva' | 'lark' = 'google_workspace',
   ) => {
     const accessible = provider === 'zoho'
       ? await deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId })
       : provider === 'canva'
         ? await deps.connectionRepo.listAccessibleCanvaConnections({ userId, companyId })
+        : provider === 'lark'
+          ? await deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId })
         : await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
     if (!accessible.ok) throw new Error(accessible.error.message);
     const summary = accessible.value.find(connection => connection.connectionId === connectionId);
@@ -290,13 +335,17 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           label: 'Read-only',
           description: provider === 'zoho'
             ? 'Can read Zoho CRM and Books data allowed by Zoho scopes.'
-            : 'Can read Gmail, Drive, and Calendar data allowed by Google scopes.',
+            : provider === 'lark'
+              ? 'Can read Lark data allowed by this connection’s scopes.'
+            : 'Can read connected Google Workspace data allowed by Google scopes.',
         },
         {
           value: 'read_write',
           label: 'Read/write',
           description: provider === 'zoho'
             ? 'Can read plus create, update, send, or delete through approved Zoho tools.'
+            : provider === 'lark'
+              ? 'Can read plus create, update, send, or delete through approved Lark tools.'
             : 'Can read plus create, update, send, or delete through approved Google tools.',
         },
         { value: 'admin', label: 'Admin', description: 'Can use the connection and manage who else has access.' },
@@ -333,7 +382,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
   // ── Lark OAuth (no auth) ──────────────────────────────────────────────────
 
-  router.get('/lark/authorize-url', async (_req: Request, res: Response) => {
+  router.get('/lark/authorize-url', async (req: Request, res: Response) => {
     try {
       if (!deps.larkOAuthService.isConfigured()) {
         res.status(503).json({ success: false, message: 'Lark OAuth not configured' });
@@ -341,13 +390,13 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
 
       const nonce = randomBytes(16).toString('hex');
+      const redirectUri = larkRedirectUri(req, deps.backendPublicUrl, '/api/desktop/auth/lark/callback');
       const state = signJwt(
-        { kind: 'desktop_lark_login', nonce },
+        { kind: 'desktop_lark_login', nonce, redirectUri },
         deps.memberJwtSecret,
         600,
       );
 
-      const redirectUri = `${deps.backendPublicUrl}/api/desktop/auth/lark/callback`;
       const authorizeUrl = deps.larkOAuthService.getAuthorizeUrl(state, { redirectUri });
 
       res.json({ success: true, data: { authorizeUrl, redirectUri, nonce } });
@@ -425,7 +474,8 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const redirectUri = `${deps.backendPublicUrl}/api/desktop/auth/lark/callback`;
+      const redirectUri = payload.redirectUri
+        ?? `${deps.backendPublicUrl.replace(/\/+$/, '')}/api/desktop/auth/lark/callback`;
       const tokenBundle = await deps.larkOAuthService.exchangeCode(code, redirectUri);
       log.info('lark.exchange.token_bundle', {
         larkEmail: tokenBundle.larkEmail, larkName: tokenBundle.larkName,
@@ -452,13 +502,25 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
 
       if (!user && tokenBundle.larkOpenId) {
-        const existingLink = await deps.prisma.larkUserAuthLink.findFirst({
-          where: { larkOpenId: tokenBundle.larkOpenId, companyId, revokedAt: null },
-          select: { userId: true },
+        const existingConnection = await deps.connectionRepo.findLarkConnectionOwner({
+          larkOpenId: tokenBundle.larkOpenId,
+          companyId,
         });
-        if (existingLink) {
-          user = await deps.prisma.user.findUnique({ where: { id: existingLink.userId } });
+        if (existingConnection.ok && existingConnection.value) {
+          user = await deps.prisma.user.findUnique({ where: { id: existingConnection.value.userId } });
         }
+      }
+
+      // Older builds created placeholder users when Lark omitted email. Those
+      // records are not proof of a Divo identity and must never silently turn a
+      // company admin into a fresh Member. A real, pre-linked Divo owner remains
+      // valid even when Lark does not return email on a later refresh/login.
+      if (!email && user && isSyntheticLarkIdentityEmail(user.email)) {
+        log.warn('lark.exchange.synthetic_identity_rejected', {
+          userId: user.id,
+          larkOpenId: tokenBundle.larkOpenId,
+        });
+        user = null;
       }
 
       if (!user) {
@@ -469,7 +531,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           });
           res.status(400).json({
             success: false,
-            message: 'Lark did not return an email. Check that the Lark app has email scope enabled and published, then sign in again.',
+            message: 'Lark did not return an email. Confirm contact:contact.base:readonly, contact:user.email:readonly, and contact:user.employee:readonly are enabled and published, and that the Lark profile has a work email.',
           });
           return;
         }
@@ -498,22 +560,30 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         ? new Date(Date.now() + tokenBundle.refreshTokenExpiresIn * 1000)
         : new Date(Date.now() + 30 * 24 * 3600 * 1000);
 
-      const upsertResult = await deps.larkUserAuthLinkRepo.upsert({
-        userId:    user.id,
-        companyId,
-        larkTenantKey: tenantKey,
-        larkOpenId:    tokenBundle.larkOpenId,
-        larkUserId:    tokenBundle.larkUserId ?? null,
-        larkEmail:     email || user.email,
-        larkName:      tokenBundle.larkName ?? null,
-        accessToken:   tokenBundle.accessToken,
-        refreshToken:  tokenBundle.refreshToken ?? '',
-        tokenType:     tokenBundle.tokenType ?? 'Bearer',
-        accessTokenExpiresAt:  accessExpiry,
-        refreshTokenExpiresAt: refreshExpiry,
-      });
-      if (!upsertResult.ok) {
-        log.error('lark.exchange.upsert_failed', { error: String(upsertResult.error) });
+      // A Lark sign-in is also a company-managed Lark connection. The generic
+      // registry is the only token and sharing authority.
+      if (tokenBundle.larkOpenId) {
+        const connectionResult = await deps.connectionRepo.upsertLarkConnection({
+          companyId,
+          ownerType: 'user',
+          ownerUserId: user.id,
+          createdBy: user.id,
+          larkOpenId: tokenBundle.larkOpenId,
+          larkUserId: tokenBundle.larkUserId,
+          larkTenantKey: tokenBundle.tenantKey,
+          larkEmail: email,
+          larkName: tokenBundle.larkName,
+          accessToken: tokenBundle.accessToken,
+          refreshToken: tokenBundle.refreshToken,
+          tokenType: tokenBundle.tokenType,
+          accessTokenExpiresAt: accessExpiry,
+          refreshTokenExpiresAt: refreshExpiry,
+          scopes: tokenBundle.scope?.split(/\s+/).filter(Boolean) ?? [],
+          initialAccess: 'admin',
+        });
+        if (!connectionResult.ok) {
+          log.error('lark.exchange.connection_upsert_failed', { error: String(connectionResult.error) });
+        }
       }
 
       const session = await issueDesktopSession(deps, user.id, companyId, role, {
@@ -638,10 +708,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         where: { companyId, memberships: { some: { userId } } },
         select: { id: true, name: true },
       });
-      const larkLink = await deps.prisma.larkUserAuthLink.findFirst({
-        where: { userId, companyId, revokedAt: null },
-        select: { larkOpenId: true, larkUserId: true, larkEmail: true, larkName: true, larkTenantKey: true },
-      });
+      const larkConnections = await deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId });
       const googleConnections = await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
 
       res.json({
@@ -652,7 +719,18 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           email: user?.email,
           name:  user?.name,
           departments,
-          lark:   larkLink ?? null,
+          lark: larkConnections.ok ? {
+            connected: larkConnections.value.length > 0,
+            connections: larkConnections.value.map(connection => ({
+              connectionId: connection.connectionId,
+              label: connection.label,
+              accountEmail: connection.accountEmail ?? null,
+              accountName: connection.accountName ?? null,
+              ownerType: connection.ownerType,
+              access: connection.access,
+              scopes: connection.scopes,
+            })),
+          } : null,
           google: googleConnections.ok ? {
             connected:   googleConnections.value.length > 0,
             connections: googleConnections.value.map(connection => ({
@@ -826,6 +904,205 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       select: { id: true, name: true },
     });
     res.json({ success: true, data: departments });
+  });
+
+  // Company-managed Lark accounts. This is deliberately separate from the
+  // desktop login callback so a member can connect additional Lark accounts.
+  router.get('/lark/connections/authorize-url', memberAuth, async (req: Request, res: Response) => {
+    try {
+      if (!deps.larkOAuthService.isConfigured()) {
+        res.status(503).json({ success: false, message: 'Lark OAuth not configured' });
+        return;
+      }
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const redirectUri = larkRedirectUri(req, deps.backendPublicUrl, '/api/desktop/auth/lark/connections/callback');
+      const state = signJwt(
+        {
+          kind: 'desktop_lark_connect', nonce: randomBytes(16).toString('hex'), userId, companyId, redirectUri,
+        },
+        deps.memberJwtSecret,
+        600,
+      );
+      const authorizeUrl = deps.larkOAuthService.getAuthorizeUrl(state, { redirectUri });
+      res.json({ success: true, data: { authorizeUrl, redirectUri } });
+    } catch (e) {
+      log.error('lark.connection.authorize_url.error', { error: String(e) });
+      res.status(500).json({ success: false, message: 'Failed to generate Lark authorize URL' });
+    }
+  });
+
+  router.get('/lark/connections/callback', async (req: Request, res: Response) => {
+    try {
+      const { code, state, error: oauthError } = req.query;
+      if (oauthError) {
+        res.type('text/plain').send('Lark connection cancelled. You can close this window.');
+        return;
+      }
+      if (!code || !state) {
+        res.status(400).type('text/plain').send('Missing code or state.');
+        return;
+      }
+      const payload = verifyJwt(String(state), deps.memberJwtSecret);
+      if (!payload || payload.kind !== 'desktop_lark_connect' || !payload.userId || !payload.companyId) {
+        res.status(400).type('text/plain').send('Invalid or expired state.');
+        return;
+      }
+      const redirectUri = payload.redirectUri
+        ?? `${deps.backendPublicUrl.replace(/\/+$/, '')}/api/desktop/auth/lark/connections/callback`;
+      const tokens = await deps.larkOAuthService.exchangeCode(String(code), redirectUri);
+      if (!tokens.larkOpenId) throw new Error('Lark did not return an account identity');
+      const accessTokenExpiresAt = new Date(Date.now() + tokens.expiresIn * 1000);
+      const refreshTokenExpiresAt = tokens.refreshTokenExpiresIn
+        ? new Date(Date.now() + tokens.refreshTokenExpiresIn * 1000)
+        : null;
+      const connection = await deps.connectionRepo.upsertLarkConnection({
+        companyId: payload.companyId,
+        ownerType: 'user',
+        ownerUserId: payload.userId,
+        createdBy: payload.userId,
+        larkOpenId: tokens.larkOpenId,
+        larkUserId: tokens.larkUserId,
+        larkTenantKey: tokens.tenantKey,
+        larkEmail: tokens.larkEmail,
+        larkName: tokens.larkName,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        tokenType: tokens.tokenType,
+        accessTokenExpiresAt,
+        refreshTokenExpiresAt,
+        scopes: tokens.scope?.split(/\s+/).filter(Boolean) ?? [],
+        initialAccess: 'admin',
+      });
+      if (!connection.ok) throw new Error(connection.error.message);
+      res.type('text/plain').send('Lark connection added. You can close this window and return to Divo.');
+    } catch (e) {
+      log.error('lark.connection.callback.error', { error: String(e) });
+      res.status(500).type('text/plain').send('Lark connection failed. You can close this window and try again.');
+    }
+  });
+
+  router.get('/lark/status', memberAuth, async (_req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const connections = await deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId });
+      if (!connections.ok) {
+        res.status(500).json({ success: false, message: connections.error.message });
+        return;
+      }
+      res.json({
+        success: true,
+        data: {
+          connected: connections.value.length > 0,
+          connections: connections.value.map(connection => ({
+            connectionId: connection.connectionId,
+            label: connection.label,
+            accountEmail: connection.accountEmail ?? null,
+            accountName: connection.accountName ?? null,
+            ownerType: connection.ownerType,
+            access: connection.access,
+            scopes: connection.scopes,
+            connectedAt: connection.connectedAt.toISOString(),
+            lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+          })),
+        },
+      });
+    } catch (e) {
+      log.error('lark.connection.status.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.get('/lark/connections/:connectionId/manage', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const payload = await buildConnectionManagePayload(String(req.params['connectionId'] ?? ''), userId, companyId, role, 'lark');
+      if (!payload) { res.status(404).json({ success: false, message: 'Lark connection not found' }); return; }
+      if ('forbidden' in payload) { res.status(403).json({ success: false, message: 'You do not have admin access to this Lark connection' }); return; }
+      res.json({ success: true, data: payload });
+    } catch (e) {
+      log.error('lark.manage.read.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.post('/lark/connections/:connectionId/grants', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const body = req.body as { granteeType?: string; granteeId?: string; access?: string };
+      const granteeType = body.granteeType?.trim();
+      const granteeId = body.granteeId?.trim();
+      const access = body.access?.trim();
+      if (!connectionId || !granteeType || !granteeId || !access) {
+        res.status(400).json({ success: false, message: 'connectionId, granteeType, granteeId, and access are required' }); return;
+      }
+      if (!CONNECTION_GRANTEE_TYPES.has(granteeType) || !CONNECTION_GRANT_ACCESSES.has(access)) {
+        res.status(400).json({ success: false, message: 'Invalid grantee type or access level' }); return;
+      }
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'lark');
+      if (!manageable) { res.status(404).json({ success: false, message: 'Lark connection not found' }); return; }
+      if ('forbidden' in manageable) { res.status(403).json({ success: false, message: 'You do not have admin access to this Lark connection' }); return; }
+      const candidates = manageable.candidates;
+      const isKnownGrantee =
+        (granteeType === 'user' && candidates.users.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'department' && candidates.departments.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'role' && candidates.roles.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'company' && candidates.company?.id === granteeId);
+      if (!isKnownGrantee) { res.status(400).json({ success: false, message: 'Selected grantee is not part of this company' }); return; }
+      const granted = await deps.connectionRepo.grantConnection({
+        companyId, connectionId, granteeType: granteeType as 'user' | 'department' | 'role' | 'company', granteeId,
+        access: access as 'read_only' | 'read_write' | 'admin', grantedBy: userId,
+      });
+      if (!granted.ok) { res.status(500).json({ success: false, message: granted.error.message }); return; }
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'lark');
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('lark.manage.grant.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.delete('/lark/connections/:connectionId/grants/:grantId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'lark');
+      if (!manageable) { res.status(404).json({ success: false, message: 'Lark connection not found' }); return; }
+      if ('forbidden' in manageable) { res.status(403).json({ success: false, message: 'You do not have admin access to this Lark connection' }); return; }
+      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId: String(req.params['grantId'] ?? '') });
+      if (!revoked.ok) { res.status(500).json({ success: false, message: revoked.error.message }); return; }
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'lark');
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('lark.manage.revoke_grant.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.delete('/lark/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'lark');
+      if (!manageable) { res.status(404).json({ success: false, message: 'Lark connection not found' }); return; }
+      if ('forbidden' in manageable) { res.status(403).json({ success: false, message: 'You do not have admin access to this Lark connection' }); return; }
+      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'lark' });
+      if (!revoked.ok) { res.status(500).json({ success: false, message: revoked.error.message }); return; }
+      res.json({ success: true, message: 'Lark connection disconnected' });
+    } catch (e) {
+      log.error('lark.connection.disconnect.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
   });
 
   router.get('/google/authorize-url', memberAuth, async (_req: Request, res: Response) => {
@@ -1755,10 +2032,8 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     try {
       const userId    = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
-      await deps.prisma.larkUserAuthLink.updateMany({
-        where: { userId, companyId, revokedAt: null },
-        data:  { revokedAt: new Date() },
-      });
+      const revoked = await deps.connectionRepo.revokeLarkConnectionsForUser(companyId, userId);
+      if (!revoked.ok) throw new Error(revoked.error.message);
       res.json({ success: true, message: 'Lark account unlinked' });
     } catch (e) {
       res.status(500).json({ success: false, message: String(e) });

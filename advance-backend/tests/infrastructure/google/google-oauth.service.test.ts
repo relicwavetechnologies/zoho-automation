@@ -12,6 +12,7 @@ import 'dotenv/config';
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { GoogleOAuthService } from '../../../src/infrastructure/google/google-oauth.service';
+import { GOOGLE_SCOPE, GOOGLE_WORKSPACE_OAUTH_SCOPES } from '../../../src/domain/google/google-workspace-scope';
 import type { CachePort } from '../../../src/shared/cache';
 import { ok } from '../../../src/shared/result';
 
@@ -95,6 +96,17 @@ describe('GoogleOAuthService', () => {
       assert(url.includes('state=abc123'));
       assert(url.includes('access_type=offline'));
       assert(url.includes('response_type=code'));
+    });
+
+    it('requests the reviewed complete Workspace scope set from Divo OAuth', () => {
+      const url = new URL(svc.getAuthorizeUrl({ state: 'scope-test' }));
+      const scopes = new Set((url.searchParams.get('scope') ?? '').split(' '));
+      assert.deepEqual(scopes, new Set(GOOGLE_WORKSPACE_OAUTH_SCOPES));
+      assert(scopes.has(GOOGLE_SCOPE.sheetsFull));
+      assert(scopes.has(GOOGLE_SCOPE.docsFull));
+      assert(scopes.has(GOOGLE_SCOPE.slidesFull));
+      assert(scopes.has(GOOGLE_SCOPE.formsResponsesReadonly));
+      assert(scopes.has(GOOGLE_SCOPE.scriptProjects));
     });
 
     it('uses provided redirectUri', () => {

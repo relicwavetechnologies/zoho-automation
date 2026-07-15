@@ -27,6 +27,7 @@ function makeService(options: {
   resolve?: (query: any) => Promise<any>;
   overrideRows?: Array<{ userId: string; actionGroup: string; allowed: boolean }>;
   canvaConnections?: Array<unknown>;
+  larkConnections?: Array<unknown>;
 } = {}) {
   const writes: Array<Record<string, unknown>> = [];
   const invalidations: string[] = [];
@@ -103,6 +104,7 @@ function makeService(options: {
       listAccessibleGoogleConnections: async () => ({ ok: true as const, value: [] }),
       listAccessibleCanvaConnections: async () => ({ ok: true as const, value: options.canvaConnections ?? [] }),
       listAccessibleZohoConnections: async () => ({ ok: true as const, value: [] }),
+      listAccessibleLarkConnections: async () => ({ ok: true as const, value: options.larkConnections ?? [] }),
     } as any,
     toolRegistry: {
       byId: (toolId: string) => (options.runtimeToolIds ?? ['larkTask', 'memoryRecall', 'runCommand']).includes(toolId) ? {} : undefined,
@@ -134,6 +136,18 @@ describe('DesktopToolAccessService', () => {
     assert.equal((await disconnected.service.inventory(actor)).tools[0]?.readiness, 'connection_required');
 
     const connected = makeService({ registeredTools: [canva], runtimeToolIds, canvaConnections: [{ connectionId: 'canva-1' }] });
+    assert.equal((await connected.service.inventory(actor)).tools[0]?.readiness, 'ready');
+  });
+
+  it('requires a shared Lark connection only for Lark APIs that support user tokens', async () => {
+    const contacts = { ...tool, toolId: 'larkContacts', name: 'Lark Contacts' };
+    const runtimeToolIds = ['larkTask', 'larkContacts', 'memoryRecall', 'runCommand'];
+    const disconnected = makeService({ registeredTools: [tool, contacts], runtimeToolIds });
+    const tools = (await disconnected.service.inventory(actor)).tools;
+    assert.equal(tools.find(entry => entry.tool.toolId === 'larkTask')?.readiness, 'connection_required');
+    assert.equal(tools.find(entry => entry.tool.toolId === 'larkContacts')?.readiness, 'ready');
+
+    const connected = makeService({ registeredTools: [tool], runtimeToolIds, larkConnections: [{ connectionId: 'lark-1' }] });
     assert.equal((await connected.service.inventory(actor)).tools[0]?.readiness, 'ready');
   });
 

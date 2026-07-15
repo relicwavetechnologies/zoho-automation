@@ -13,15 +13,14 @@
  *   TTL:  (expiresIn - 60) seconds (60s safety buffer)
  *   Stored value: { token: string; expiresAtMs: number }
  *
- * Token exchange/refresh stays as direct HTTP. Runtime Google clients receive a
- * google-auth-library OAuth2Client so SDK-backed tools can refresh safely.
+ * Token exchange/refresh stays in Divo. Runtime operations receive only a
+ * short-lived access token through the private Workspace MCP adapter.
  */
 
-import { OAuth2Client } from 'google-auth-library';
-import type { Credentials } from 'google-auth-library';
 import type { Logger } from '../../shared/logger';
 import type { CachePort } from '../../shared/cache';
 import type { TypedEnv } from '../../config/env';
+import { GOOGLE_WORKSPACE_OAUTH_SCOPES } from '../../domain/google/google-workspace-scope';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -30,19 +29,7 @@ const GOOGLE_TOKEN_URL       = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USERINFO_URL    = 'https://openidconnect.googleapis.com/v1/userinfo';
 const TOKEN_EXPIRY_BUFFER_MS = 60_000; // 60 s buffer before actual expiry
 
-const DEFAULT_SCOPES = [
-  'openid',
-  'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/userinfo.profile',
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.compose',
-  'https://www.googleapis.com/auth/gmail.send',
-  'https://www.googleapis.com/auth/gmail.modify',
-  'https://www.googleapis.com/auth/drive.readonly',
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/calendar.readonly',
-  'https://www.googleapis.com/auth/calendar.events',
-] as const;
+const DEFAULT_SCOPES = GOOGLE_WORKSPACE_OAUTH_SCOPES;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -111,23 +98,6 @@ export class GoogleOAuthService {
 
   getScopes(): string[] {
     return [...DEFAULT_SCOPES];
-  }
-
-  createOAuth2Client(input: {
-    readonly refreshToken: string;
-    readonly accessToken?: string;
-    readonly accessTokenExpiresAt?: Date;
-    readonly tokenType?: string;
-  }): OAuth2Client {
-    this.assertConfigured('createOAuth2Client');
-
-    const client = new OAuth2Client(this.clientId, this.clientSecret, this.redirectUri);
-    const credentials: Credentials = { refresh_token: input.refreshToken };
-    if (input.accessToken) credentials.access_token = input.accessToken;
-    if (input.accessTokenExpiresAt) credentials.expiry_date = input.accessTokenExpiresAt.getTime();
-    if (input.tokenType) credentials.token_type = input.tokenType;
-    client.setCredentials(credentials);
-    return client;
   }
 
   private resolveRedirectUri(env: TypedEnv): string {

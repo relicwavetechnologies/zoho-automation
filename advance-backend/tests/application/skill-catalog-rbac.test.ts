@@ -82,3 +82,26 @@ describe('SkillCatalogService — grant-based visibility (the live model)', () =
     assert.equal(books, null); // tool-usable but not granted → hidden
   });
 });
+
+describe('SkillCatalogService — Lark language safety', () => {
+  const unsafeLark = {
+    ...row('sk-lark-chinese', ['larkDoc']),
+    name: 'Lark 文档',
+    summary: '创建文档',
+    markdown: '# Lark 文档\n\n创建一份文档。',
+    tags: ['lark', '文档'],
+  };
+
+  it('fails closed when a Chinese Lark skill bypasses application write validation', async () => {
+    const service = new SkillCatalogService({ repo: makeRepo([unsafeLark]), logger: noopLogger });
+    const grantedSkillIds = new Set([unsafeLark.id]);
+
+    const listed = await service.listVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds });
+    const fetched = await service.getVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds, skillId: unsafeLark.id });
+    const inScope = await service.getInScope({ companyId: 'co', departmentId: 'dep', skillId: unsafeLark.id });
+
+    assert.deepEqual(listed, []);
+    assert.equal(fetched, null);
+    assert.equal(inScope, null);
+  });
+});

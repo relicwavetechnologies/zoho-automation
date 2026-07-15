@@ -68,7 +68,7 @@ export const skillsSearchPayloadSchema = z.object({
 });
 
 export const connectionsListPayloadSchema = z.object({
-  provider: z.enum(['google_workspace', 'zoho', 'canva']).optional(),
+  provider: z.enum(['google_workspace', 'zoho', 'canva', 'lark']).optional(),
 });
 
 export interface GatewayErrorBody {

@@ -121,6 +121,73 @@ describe('larkTask tool', () => {
       assert.equal(r.ok, true);
     });
 
+    it('uses the selected managed connection instead of the base client', async () => {
+      let resolvedConnectionId: string | undefined;
+      let baseClientCalled = false;
+      const tool = createLarkTaskTool({
+        client: { ...fakeClient, listTasks: async () => { baseClientCalled = true; return []; } },
+        userTokenResolver: {
+          resolve: async (input) => {
+            resolvedConnectionId = input.connectionId;
+            assert.equal(input.minimumAccess, 'read_only');
+            return 'managed-user-token';
+          },
+        },
+        createUserClient: (token) => {
+          assert.equal(token, 'managed-user-token');
+          return { ...fakeClient, listTasks: async () => [task] };
+        },
+      });
+      const r = await tool.execute({ op: 'list', connectionId: '11111111-1111-4111-8111-111111111111' }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal(resolvedConnectionId, '11111111-1111-4111-8111-111111111111');
+      assert.equal(baseClientCalled, false);
+    });
+
+    it('does not fall back to the base client when managed Lark access is unavailable', async () => {
+      let baseClientCalled = false;
+      const tool = createLarkTaskTool({
+        client: { ...fakeClient, listTasks: async () => { baseClientCalled = true; return []; } },
+        userTokenResolver: { resolve: async () => null },
+        createUserClient: () => fakeClient,
+      });
+      const r = await tool.execute({ op: 'list' }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'unrecoverable');
+      assert.equal(baseClientCalled, false);
+    });
+
+    it('returns structured connection choices rather than guessing between shared Lark accounts', async () => {
+      const tool = createLarkTaskTool({
+        client: fakeClient,
+        userTokenResolver: {
+          resolve: async () => ({
+            status: 'choose_connection' as const,
+            connections: [
+              { connectionId: '11111111-1111-4111-8111-111111111111', label: 'Finance', access: 'read_only' as const },
+              { connectionId: '22222222-2222-4222-8222-222222222222', label: 'Personal', access: 'admin' as const },
+            ],
+          }),
+        },
+        createUserClient: () => fakeClient,
+      });
+
+      const result = await tool.execute({ op: 'list' }, ctx);
+
+      assert.equal(result.ok, true);
+      assert.deepEqual((result as any).value, {
+        success: false,
+        message: 'Choose a Lark connection before continuing.',
+        data: {
+          code: 'lark_connection_selection_required',
+          connections: [
+            { connectionId: '11111111-1111-4111-8111-111111111111', label: 'Finance', access: 'read_only' },
+            { connectionId: '22222222-2222-4222-8222-222222222222', label: 'Personal', access: 'admin' },
+          ],
+        },
+      });
+    });
+
     it('infra throws → upstream_failure, never throws', async () => {
       const throwing = { ...fakeClient, createTask: async () => { throw new Error('API down'); } };
       const tool = createLarkTaskTool({ client: throwing });
@@ -327,7 +394,7 @@ describe('larkCalendar tool', () => {
 describe('larkDoc tool', () => {
   const fakeClient = {
     getDoc:       async () => ({ title: 'Doc', content: '...' }),
-    createDoc:    async () => ({ docToken: 'doc-abc' }),
+    createDoc:    async () => ({ docToken: 'doc-abc', url: 'https://example.larksuite.com/docx/doc-abc' }),
     appendBlock:  async () => {},
     listBlocks:   async () => [{ type: 'text', content: 'hello' }],
   };
@@ -373,11 +440,29 @@ describe('larkDoc tool', () => {
       assert.equal(r.ok, false);
     });
 
-    it('create: ok with docToken', async () => {
+    it('create: returns the canonical Lark URL with the doc token', async () => {
       const tool = createLarkDocTool({ client: fakeClient });
       const r = await tool.execute({ op: 'create', title: 'New Doc' }, ctx);
       assert.equal(r.ok, true);
       assert.equal((r as any).value.docToken, 'doc-abc');
+      assert.equal((r as any).value.url, 'https://example.larksuite.com/docx/doc-abc');
+      assert.deepEqual((r as any).value.data, {
+        title: 'New Doc',
+        docToken: 'doc-abc',
+        url: 'https://example.larksuite.com/docx/doc-abc',
+      });
+    });
+
+    it('create: remains successful when canonical URL lookup is unavailable', async () => {
+      const tool = createLarkDocTool({
+        client: { ...fakeClient, createDoc: async () => ({ docToken: 'doc-abc' }) },
+      });
+      const r = await tool.execute({ op: 'create', title: 'New Doc' }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.docToken, 'doc-abc');
+      assert.equal((r as any).value.url, undefined);
+      assert.match((r as any).value.message, /Doc created/);
     });
 
     it('create: bad_args when title missing', async () => {

@@ -156,11 +156,23 @@ jobs:
              DIVO_ENV_FILE=.env.production.local \
              DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
-             docker compose --env-file .env.production.local pull divo-backend divo-admin && \
+             docker compose --env-file .env.production.local pull divo-backend divo-admin google-workspace-mcp && \
              DIVO_ENV_FILE=.env.production.local \
              DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
              docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm prisma db push --skip-generate && \
+             DIVO_ENV_FILE=.env.production.local \
+             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm tsx scripts/seed-registered-tools.ts && \
+             DIVO_ENV_FILE=.env.production.local \
+             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm provision:google-workspace-skills && \
+             DIVO_ENV_FILE=.env.production.local \
+             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm seed:dynamic-agents && \
              DIVO_ENV_FILE=.env.production.local \
              DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
@@ -187,6 +199,6 @@ jobs:
           done
 
           docker compose --env-file .env.production.local ps
-          docker compose --env-file .env.production.local logs --tail=120 divo-backend divo-admin
+          docker compose --env-file .env.production.local logs --tail=120 divo-backend divo-admin google-workspace-mcp
           exit 1
           REMOTE

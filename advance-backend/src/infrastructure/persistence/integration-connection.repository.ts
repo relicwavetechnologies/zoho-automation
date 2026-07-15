@@ -4,7 +4,7 @@ import { encryptToken, decryptToken } from '../shared/token.crypto';
 import { err, ok, type Result } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 
-export type IntegrationProvider = 'google_workspace' | 'zoho' | 'canva';
+export type IntegrationProvider = 'google_workspace' | 'zoho' | 'canva' | 'lark';
 export type IntegrationOwnerType = 'user' | 'company';
 export type IntegrationGrantAccess = 'read_only' | 'read_write' | 'admin';
 export type IntegrationGranteeType = 'user' | 'department' | 'role' | 'company';
@@ -89,9 +89,31 @@ export interface UpsertCanvaConnectionInput {
   readonly initialAccess?: IntegrationGrantAccess;
 }
 
+/** A user-authorised Lark account. One Divo member may own multiple accounts. */
+export interface UpsertLarkConnectionInput {
+  readonly companyId: string;
+  readonly ownerType: IntegrationOwnerType;
+  readonly ownerUserId?: string;
+  readonly createdBy?: string;
+  readonly label?: string;
+  readonly larkOpenId: string;
+  readonly larkUserId?: string | null;
+  readonly larkTenantKey?: string | null;
+  readonly larkEmail?: string | null;
+  readonly larkName?: string | null;
+  readonly accessToken: string;
+  readonly refreshToken?: string | null;
+  readonly tokenType?: string | null;
+  readonly accessTokenExpiresAt?: Date | null;
+  readonly refreshTokenExpiresAt?: Date | null;
+  readonly scopes: string[];
+  readonly initialAccess?: IntegrationGrantAccess;
+}
+
 const GOOGLE_PROVIDER: IntegrationProvider = 'google_workspace';
 const ZOHO_PROVIDER: IntegrationProvider = 'zoho';
 const CANVA_PROVIDER: IntegrationProvider = 'canva';
+const LARK_PROVIDER: IntegrationProvider = 'lark';
 
 const splitScopes = (scope?: string | null): string[] =>
   scope?.split(' ').map(s => s.trim()).filter(Boolean) ?? [];
@@ -441,6 +463,88 @@ export class IntegrationConnectionRepository {
     }
   }
 
+  async upsertLarkConnection(
+    input: UpsertLarkConnectionInput,
+  ): Promise<Result<DecryptedIntegrationConnection, InfraError>> {
+    try {
+      const encryptedAccess = encryptToken(input.accessToken, this.key);
+      const encryptedRefresh = input.refreshToken ? encryptToken(input.refreshToken, this.key) : undefined;
+      const externalAccountId = input.larkOpenId.trim();
+      const accountEmail = input.larkEmail?.trim().toLowerCase() ?? null;
+      const accountName = input.larkName?.trim() ?? accountEmail ?? null;
+      const label = input.label?.trim() || `${accountName ?? accountEmail ?? 'Lark'} connection`;
+      const key = dedupeKey({
+        provider: LARK_PROVIDER,
+        ownerType: input.ownerType,
+        ownerUserId: input.ownerUserId,
+        accountEmail: input.larkEmail ?? undefined,
+        externalAccountId,
+      });
+      const tokenMetadata = {
+        larkOpenId: externalAccountId,
+        ...(input.larkUserId ? { larkUserId: input.larkUserId } : {}),
+        ...(input.larkTenantKey ? { larkTenantKey: input.larkTenantKey } : {}),
+      };
+
+      const record = await this.db.integrationConnection.upsert({
+        where: { companyId_dedupeKey: { companyId: input.companyId, dedupeKey: key } },
+        create: {
+          companyId:             input.companyId,
+          provider:              LARK_PROVIDER,
+          ownerType:             input.ownerType,
+          ownerUserId:           input.ownerType === 'user' ? input.ownerUserId ?? null : null,
+          label,
+          accountEmail,
+          accountName,
+          externalAccountId,
+          dedupeKey:             key,
+          status:                'connected',
+          scopes:                input.scopes,
+          accessTokenEncrypted:  encryptedAccess.cipherText,
+          ...(encryptedRefresh ? { refreshTokenEncrypted: encryptedRefresh.cipherText } : {}),
+          tokenType:             input.tokenType ?? null,
+          accessTokenExpiresAt:  input.accessTokenExpiresAt ?? null,
+          refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
+          tokenMetadata:         tokenMetadata as Prisma.InputJsonValue,
+          createdBy:             input.createdBy ?? input.ownerUserId ?? null,
+          connectedAt:           new Date(),
+        },
+        update: {
+          label,
+          accountEmail,
+          accountName,
+          externalAccountId,
+          status:                'connected',
+          scopes:                input.scopes,
+          accessTokenEncrypted:  encryptedAccess.cipherText,
+          ...(encryptedRefresh ? { refreshTokenEncrypted: encryptedRefresh.cipherText } : {}),
+          tokenType:             input.tokenType ?? null,
+          accessTokenExpiresAt:  input.accessTokenExpiresAt ?? null,
+          refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
+          tokenMetadata:         tokenMetadata as Prisma.InputJsonValue,
+          revokedAt:             null,
+          connectedAt:           new Date(),
+        },
+      });
+
+      const initialUserGrant = input.ownerType === 'user' ? input.ownerUserId : input.createdBy;
+      if (initialUserGrant) {
+        await this.grantConnection({
+          companyId: input.companyId,
+          connectionId: record.id,
+          granteeType: 'user',
+          granteeId: initialUserGrant,
+          access: input.initialAccess ?? 'admin',
+          grantedBy: input.createdBy ?? initialUserGrant,
+        });
+      }
+
+      return ok(this.decrypt(record));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.upsertLarkConnection', e));
+    }
+  }
+
   async grantConnection(input: {
     readonly companyId: string;
     readonly connectionId: string;
@@ -615,6 +719,138 @@ export class IntegrationConnectionRepository {
       return ok(record ? this.decrypt(record) : null);
     } catch (e) {
       return err(wrapInfra('prisma', 'IntegrationConnection.findAccessibleGoogleConnection', e));
+    }
+  }
+
+  async listAccessibleLarkConnections(input: {
+    readonly companyId: string;
+    readonly userId: string;
+  }): Promise<Result<ConnectionSummary[], InfraError>> {
+    return this.listAccessibleProviderConnections(input, LARK_PROVIDER);
+  }
+
+  async findAccessibleLarkConnection(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: IntegrationGrantAccess;
+  }): Promise<Result<DecryptedIntegrationConnection | null, InfraError>> {
+    try {
+      const accessible = await this.listAccessibleLarkConnections({
+        companyId: input.companyId,
+        userId: input.userId,
+      });
+      if (!accessible.ok) return accessible;
+      const summary = accessible.value.find(connection => connection.connectionId === input.connectionId);
+      if (!summary || accessRank[summary.access] < accessRank[input.minimumAccess]) return ok(null);
+      const record = await this.db.integrationConnection.findFirst({
+        where: {
+          id: input.connectionId,
+          companyId: input.companyId,
+          provider: LARK_PROVIDER,
+          revokedAt: null,
+          status: 'connected',
+        },
+      });
+      return ok(record ? this.decrypt(record) : null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.findAccessibleLarkConnection', e));
+    }
+  }
+
+  async updateLarkTokens(input: {
+    readonly connectionId: string;
+    readonly accessToken: string;
+    readonly refreshToken?: string | null;
+    readonly tokenType?: string | null;
+    readonly accessTokenExpiresAt?: Date | null;
+    readonly refreshTokenExpiresAt?: Date | null;
+  }): Promise<Result<void, InfraError>> {
+    try {
+      const access = encryptToken(input.accessToken, this.key).cipherText;
+      const refresh = input.refreshToken ? encryptToken(input.refreshToken, this.key).cipherText : null;
+      const updated = await this.db.integrationConnection.updateMany({
+        where: { id: input.connectionId, provider: LARK_PROVIDER, status: 'connected', revokedAt: null },
+        data: {
+          accessTokenEncrypted: access,
+          ...(input.refreshToken !== undefined ? { refreshTokenEncrypted: refresh } : {}),
+          ...(input.tokenType !== undefined ? { tokenType: input.tokenType } : {}),
+          ...(input.accessTokenExpiresAt !== undefined ? { accessTokenExpiresAt: input.accessTokenExpiresAt } : {}),
+          ...(input.refreshTokenExpiresAt !== undefined ? { refreshTokenExpiresAt: input.refreshTokenExpiresAt } : {}),
+          lastUsedAt: new Date(),
+        },
+      });
+      if (updated.count !== 1) return err(wrapInfra('prisma', 'IntegrationConnection.updateLarkTokens', new Error('Lark connection not found')));
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.updateLarkTokens', e));
+    }
+  }
+
+  /** Canonical Lark identity lookup used by desktop sign-in and inbound chat. */
+  async findLarkConnectionOwner(input: {
+    readonly companyId: string;
+    readonly larkOpenId: string;
+  }): Promise<Result<{ userId: string } | null, InfraError>> {
+    try {
+      const row = await this.db.integrationConnection.findFirst({
+        where: {
+          companyId: input.companyId,
+          provider: LARK_PROVIDER,
+          externalAccountId: input.larkOpenId,
+          ownerUserId: { not: null },
+          status: 'connected',
+          revokedAt: null,
+        },
+        select: { ownerUserId: true },
+        orderBy: { updatedAt: 'desc' },
+      });
+      return ok(row?.ownerUserId ? { userId: row.ownerUserId } : null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.findLarkConnectionOwner', e));
+    }
+  }
+
+  /** Owner-only details for status surfaces; shared tokens are never exposed. */
+  async findOwnedLarkConnection(input: {
+    readonly companyId: string;
+    readonly userId: string;
+  }): Promise<Result<DecryptedIntegrationConnection | null, InfraError>> {
+    try {
+      const row = await this.db.integrationConnection.findFirst({
+        where: {
+          companyId: input.companyId,
+          provider: LARK_PROVIDER,
+          ownerUserId: input.userId,
+          status: 'connected',
+          revokedAt: null,
+        },
+        orderBy: { updatedAt: 'desc' },
+      });
+      return ok(row ? this.decrypt(row) : null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.findOwnedLarkConnection', e));
+    }
+  }
+
+  async revokeLarkConnectionsForUser(
+    companyId: string,
+    userId: string,
+  ): Promise<Result<number, InfraError>> {
+    try {
+      const result = await this.db.integrationConnection.updateMany({
+        where: {
+          companyId,
+          provider: LARK_PROVIDER,
+          ownerUserId: userId,
+          status: 'connected',
+          revokedAt: null,
+        },
+        data: { status: 'revoked', revokedAt: new Date() },
+      });
+      return ok(result.count);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.revokeLarkConnectionsForUser', e));
     }
   }
 
@@ -817,6 +1053,64 @@ export class IntegrationConnectionRepository {
       return ok(undefined);
     } catch (e) {
       return err(wrapInfra('prisma', 'IntegrationConnection.touchLastUsed', e));
+    }
+  }
+
+  private async listAccessibleProviderConnections(
+    input: { readonly companyId: string; readonly userId: string },
+    provider: IntegrationProvider,
+  ): Promise<Result<ConnectionSummary[], InfraError>> {
+    try {
+      const memberships = await this.db.departmentMembership.findMany({
+        where: { userId: input.userId, status: 'active', department: { companyId: input.companyId, status: 'active' } },
+        select: { departmentId: true, roleId: true },
+      });
+      const departmentIds = memberships.map(membership => membership.departmentId);
+      const departmentRoleIds = memberships.map(membership => membership.roleId);
+      const adminMembership = await this.db.adminMembership.findFirst({
+        where: { userId: input.userId, companyId: input.companyId, isActive: true },
+        select: { role: true },
+      });
+      const grantOr = [
+        { granteeType: 'user', granteeId: input.userId },
+        { granteeType: 'company', granteeId: input.companyId },
+        ...(departmentIds.length ? [{ granteeType: 'department', granteeId: { in: departmentIds } }] : []),
+        ...(departmentRoleIds.length ? [{ granteeType: 'role', granteeId: { in: departmentRoleIds } }] : []),
+        ...(adminMembership?.role ? [{ granteeType: 'role', granteeId: adminMembership.role }] : []),
+      ];
+      const rows = await this.db.integrationConnection.findMany({
+        where: {
+          companyId: input.companyId,
+          provider,
+          revokedAt: null,
+          status: 'connected',
+          OR: [
+            { ownerUserId: input.userId },
+            { grants: { some: { revokedAt: null, OR: grantOr } } },
+          ],
+        },
+        include: { grants: { where: { revokedAt: null, OR: grantOr }, select: { access: true } } },
+        orderBy: [{ ownerType: 'asc' }, { updatedAt: 'desc' }],
+      });
+      return ok(rows.map(row => {
+        const directOwnerAccess: IntegrationGrantAccess[] = row.ownerUserId === input.userId ? ['admin'] : [];
+        const grantAccess = row.grants.map(grant => grant.access as IntegrationGrantAccess);
+        return {
+          connectionId: row.id,
+          provider: row.provider as IntegrationProvider,
+          label: row.label,
+          ...(row.accountEmail ? { accountEmail: row.accountEmail } : {}),
+          ...(row.accountName ? { accountName: row.accountName } : {}),
+          ownerType: row.ownerType as IntegrationOwnerType,
+          ...(row.ownerUserId ? { ownerUserId: row.ownerUserId } : {}),
+          access: bestAccess([...directOwnerAccess, ...grantAccess]),
+          scopes: row.scopes,
+          connectedAt: row.connectedAt,
+          ...(row.lastUsedAt ? { lastUsedAt: row.lastUsedAt } : {}),
+        };
+      }));
+    } catch (e) {
+      return err(wrapInfra('prisma', `IntegrationConnection.listAccessible(${provider})`, e));
     }
   }
 

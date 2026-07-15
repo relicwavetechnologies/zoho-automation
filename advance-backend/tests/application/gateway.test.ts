@@ -625,7 +625,7 @@ describe('LocalApprovalIntentService', () => {
     assert.equal(executed.length, 1);
   });
 
-  it('returns deterministic Gmail and Zoho presentation payloads for the UI registry', async () => {
+  it('returns deterministic Google Workspace and Zoho presentation payloads for the UI registry', async () => {
     const registry = new ToolRegistry();
     registry.register({
       ...makeFakeTool(),
@@ -634,10 +634,9 @@ describe('LocalApprovalIntentService', () => {
       actionGroups: new Set(['send']),
       argsSchema: z.object({
         connectionId: z.string(),
-        op: z.literal('send'),
-        to: z.array(z.string()),
-        subject: z.string(),
-        body: z.string(),
+        op: z.literal('call'),
+        nativeTool: z.literal('send_gmail_message'),
+        input: z.record(z.unknown()),
       }),
       permissionCheck: () => ok('send'),
     } as Tool<unknown, unknown>);
@@ -676,23 +675,29 @@ describe('LocalApprovalIntentService', () => {
       toolId: 'googleGmail',
       args: {
         connectionId: 'google-1',
-        op: 'send',
-        to: ['maya@example.com'],
-        subject: 'Q3 rollout',
-        body: 'Hi Maya',
+        op: 'call',
+        nativeTool: 'send_gmail_message',
+        input: {
+          to: ['maya@example.com'],
+          subject: 'Q3 rollout',
+          body: 'Hi Maya',
+        },
       },
     });
     assert.deepEqual((gmail.data as any).presentation, {
-      kind: 'gmail.send',
-      provider: 'gmail',
+      kind: 'google.gmail.send_gmail_message',
+      provider: 'google',
       title: 'Review email before sending',
       action: 'send',
-      operation: 'send',
+      operation: 'send_gmail_message',
       details: {
         connectionId: 'google-1',
-        to: ['maya@example.com'],
-        subject: 'Q3 rollout',
-        body: 'Hi Maya',
+        nativeTool: 'send_gmail_message',
+        input: {
+          to: ['maya@example.com'],
+          subject: 'Q3 rollout',
+          body: 'Hi Maya',
+        },
       },
     });
 
@@ -993,6 +998,55 @@ describe('GatewayDispatcher', () => {
       ownerUserId: 'manager-1',
       access: 'read_write',
       scopes: [],
+      connectedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+    });
+  });
+
+  it('returns accessible Lark connections only when at least one Lark tool is allowed', async () => {
+    const perm = makeAllowedPerm('larkCalendar', ['read']);
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(perm),
+      toolRegistry: new ToolRegistry(),
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: new ToolRegistry(),
+        permissions: makePermissionService(perm),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      connectionRegistry: {
+        listAccessibleLarkConnections: async () => ok([{
+          connectionId: 'conn-lark-1',
+          provider: 'lark',
+          label: 'Finance Lark',
+          accountName: 'Finance manager',
+          ownerType: 'user',
+          ownerUserId: 'manager-1',
+          access: 'read_only',
+          scopes: ['calendar:calendar:readonly'],
+          connectedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }]),
+      },
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'connections.list',
+      payload: { provider: 'lark' },
+    }, member);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual((result.data as any).connections[0], {
+      connectionId: 'conn-lark-1',
+      provider: 'lark',
+      label: 'Finance Lark',
+      accountEmail: null,
+      accountName: 'Finance manager',
+      ownerType: 'user',
+      ownerUserId: 'manager-1',
+      access: 'read_only',
+      scopes: ['calendar:calendar:readonly'],
       connectedAt: '2026-01-01T00:00:00.000Z',
       lastUsedAt: null,
     });

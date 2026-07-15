@@ -7,7 +7,10 @@ import type { LarkContactRecord } from '../../application/context-search/context
 import type { CachePort } from '../../shared/cache';
 
 const LARK_IDENTITY_TTL = 900; // 15 min — identity almost never changes; invalidated on OAuth success
-const identityCacheKey = (larkOpenId: string) => `lark:id:v1:${larkOpenId}`;
+// v2 selects the canonical Divo owner when historical duplicate Lark
+// connections exist. The version bump prevents a previously cached legacy
+// owner from surviving the corrected resolution semantics.
+const identityCacheKey = (larkOpenId: string) => `lark:id:v2:${larkOpenId}`;
 
 export interface ChannelIdentityRow {
   id: string;
@@ -106,7 +109,17 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
     if (this.cache) {
       const cached = await this.cache.get<ResolvedUserIdentity>(identityCacheKey(larkOpenId));
       if (cached.ok && cached.value !== null) {
-        return ok(cached.value);
+        const membership = await this.db.adminMembership.findFirst({
+          where: {
+            userId: cached.value.userId,
+            companyId: cached.value.companyId,
+            isActive: true,
+          },
+          select: { role: true },
+          orderBy: { updatedAt: 'desc' },
+        });
+        if (!membership) return ok(null);
+        return ok({ ...cached.value, aiRole: membership.role });
       }
     }
 
@@ -117,21 +130,55 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
       });
       if (!ci) return ok(null);
 
-      const authLink = await this.db.larkUserAuthLink.findFirst({
-        where: { larkOpenId },
-        select: { userId: true },
+      const connections = await this.db.integrationConnection.findMany({
+        where: {
+          companyId: ci.companyId,
+          provider: 'lark',
+          externalAccountId: larkOpenId,
+          ownerUserId: { not: null },
+          status: 'connected',
+          revokedAt: null,
+        },
+        select: {
+          ownerUserId: true,
+          ownerUser: { select: { email: true } },
+        },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
       });
-      if (!authLink) return ok(null);
+
+      const identityEmail = ci.email?.trim().toLowerCase();
+      const emailMatchedOwner = identityEmail
+        ? connections.find(connection => connection.ownerUser?.email.trim().toLowerCase() === identityEmail)
+        : undefined;
+      const distinctOwnerIds = Array.from(new Set(
+        connections
+          .map(connection => connection.ownerUserId)
+          .filter((ownerUserId): ownerUserId is string => Boolean(ownerUserId)),
+      ));
+      const ownerUserId = emailMatchedOwner?.ownerUserId
+        ?? (distinctOwnerIds.length === 1 ? distinctOwnerIds[0] : undefined);
+      if (!ownerUserId) return ok(null);
+
+      const membership = await this.db.adminMembership.findFirst({
+        where: {
+          userId: ownerUserId,
+          companyId: ci.companyId,
+          isActive: true,
+        },
+        select: { role: true },
+        orderBy: { updatedAt: 'desc' },
+      });
+      if (!membership) return ok(null);
 
       const deptPref = await this.db.userDepartmentPreference.findUnique({
-        where: { userId: authLink.userId },
+        where: { userId: ownerUserId },
         select: { activeDepartmentId: true },
       });
 
       const resolved: ResolvedUserIdentity = {
-        userId: authLink.userId,
+        userId: ownerUserId,
         companyId: ci.companyId,
-        aiRole: ci.aiRole,
+        aiRole: membership.role,
         channel: ci.channel,
         larkOpenId,
         ...(ci.displayName ? { displayName: ci.displayName } : {}),
@@ -189,11 +236,12 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
       });
 
       if (existingUser) {
+        const membership = await this.ensureActiveCompanyMembership(existingUser.id, ci.companyId);
         return ok({
           status: 'ready',
           userId: existingUser.id,
           companyId: ci.companyId,
-          aiRole: ci.aiRole,
+          aiRole: membership.role,
           larkOpenId: ci.larkOpenId,
           ...(displayName ? { displayName } : {}),
           email,
@@ -201,22 +249,28 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         });
       }
 
-      const user = await this.db.user.create({
-        data: {
-          email,
-          // Lark-first users authenticate through OAuth. This random password is
-          // intentionally not user-facing and cannot be guessed for password login.
-          password: `lark-oauth-pending:${randomBytes(32).toString('hex')}`,
-          ...(displayName ? { name: displayName } : {}),
-        },
-        select: { id: true },
+      const user = await this.db.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            email,
+            // Lark-first users authenticate through OAuth. This random password is
+            // intentionally not user-facing and cannot be guessed for password login.
+            password: `lark-oauth-pending:${randomBytes(32).toString('hex')}`,
+            ...(displayName ? { name: displayName } : {}),
+          },
+          select: { id: true },
+        });
+        await tx.adminMembership.create({
+          data: { userId: created.id, companyId: ci.companyId, role: 'MEMBER', isActive: true },
+        });
+        return created;
       });
 
       return ok({
         status: 'ready',
         userId: user.id,
         companyId: ci.companyId,
-        aiRole: ci.aiRole,
+        aiRole: 'MEMBER',
         larkOpenId: ci.larkOpenId,
         ...(displayName ? { displayName } : {}),
         email,
@@ -231,17 +285,30 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
     userId: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
     try {
-      const authLink = await this.db.larkUserAuthLink.findFirst({
-        where: { userId },
-        select: { larkOpenId: true },
+      const connection = await this.db.integrationConnection.findFirst({
+        where: {
+          ownerUserId: userId,
+          provider: 'lark',
+          status: 'connected',
+          revokedAt: null,
+        },
+        select: { externalAccountId: true },
+        orderBy: { updatedAt: 'desc' },
       });
-      if (!authLink?.larkOpenId) return ok(null);
+      if (!connection?.externalAccountId) return ok(null);
 
       const ci = await this.db.channelIdentity.findFirst({
-        where: { channel: 'lark', larkOpenId: authLink.larkOpenId },
+        where: { channel: 'lark', larkOpenId: connection.externalAccountId },
         select: { aiRole: true, channel: true, companyId: true },
       });
       if (!ci) return ok(null);
+
+      const membership = await this.db.adminMembership.findFirst({
+        where: { userId, companyId: ci.companyId, isActive: true },
+        select: { role: true },
+        orderBy: { updatedAt: 'desc' },
+      });
+      if (!membership) return ok(null);
 
       const deptPref = await this.db.userDepartmentPreference.findUnique({
         where: { userId },
@@ -251,14 +318,31 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
       return ok({
         userId,
         companyId:  ci.companyId,
-        aiRole:     ci.aiRole,
+        aiRole:     membership.role,
         channel:    ci.channel,
-        larkOpenId: authLink.larkOpenId,
+        larkOpenId: connection.externalAccountId,
         ...(deptPref?.activeDepartmentId ? { activeDepartmentId: deptPref.activeDepartmentId } : {}),
       });
     } catch (e) {
       return err(wrapInfra('prisma', 'resolveByUserId', e));
     }
+  }
+
+  private async ensureActiveCompanyMembership(
+    userId: string,
+    companyId: string,
+  ): Promise<{ role: string }> {
+    const existing = await this.db.adminMembership.findFirst({
+      where: { userId, companyId, isActive: true },
+      select: { role: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (existing) return existing;
+
+    return this.db.adminMembership.create({
+      data: { userId, companyId, role: 'MEMBER', isActive: true },
+      select: { role: true },
+    });
   }
 
   /** Full-text search over Lark contacts for a company. Implements LarkContactPort. */

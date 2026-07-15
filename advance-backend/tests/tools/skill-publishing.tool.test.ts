@@ -15,15 +15,14 @@ function makePrisma(existing: { id: string } | null = null) {
         created = args.data;
         return {
           id: 'skill-1',
-          slug: args.data.slug,
-          name: args.data.name,
-          scope: args.data.scope,
-          departmentId: args.data.departmentId,
-          toolIds: args.data.toolIds,
+          ...args.data,
           status: 'active',
+          revision: 1,
         };
       },
     },
+    skillVersion: { upsert: async () => ({}) },
+    skillRegistryRevision: { upsert: async () => ({}) },
   };
   return { prisma: prisma as never, getCreated: () => created };
 }
@@ -153,6 +152,26 @@ describe('skillPublishing tool', () => {
 
     assert.equal(result.ok, false);
     assert.match((result as any).error.message, /Unknown skill toolIds: notARealTool/);
+    assert.equal(getCreated(), null);
+  });
+
+  it('rejects Chinese Lark skill content before it reaches storage', async () => {
+    const { prisma, getCreated } = makePrisma();
+    const tool = createSkillPublishingTool({ prisma });
+
+    const result = await tool.execute({
+      operation: 'publish',
+      scope: 'company',
+      name: 'Lark Meeting Notes',
+      summary: '创建会议纪要',
+      markdown: '# Lark Meeting Notes\n\nUse this skill to 创建会议纪要.',
+      toolIds: ['larkDoc'],
+      tags: ['lark', '文档'],
+    }, makeCtx('skillPublishing', ['create'], { companyRole: asCompanyRoleSlug('COMPANY_ADMIN') }));
+
+    assert.equal(result.ok, false);
+    assert.match((result as any).error.message, /must be stored in English/);
+    assert.match((result as any).error.message, /summary, markdown, tags/);
     assert.equal(getCreated(), null);
   });
 

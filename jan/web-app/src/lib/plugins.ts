@@ -6,7 +6,6 @@ import {
   Github,
   Mail,
   Megaphone,
-  MessageSquare,
   Puzzle,
   Search,
   ShieldCheck,
@@ -20,6 +19,7 @@ import {
   GoogleDriveIcon,
   GoogleIcon,
   CanvaIcon,
+  LarkIcon,
   ZohoIcon,
 } from '@/components/brand-icons'
 
@@ -86,7 +86,7 @@ export const divoPlugins: DivoPlugin[] = [
     id: 'google-workspace',
     name: 'Google Workspace',
     category: 'connector',
-    description: 'Connect Gmail, Drive, and Calendar accounts.',
+    description: 'Connect complete Google Workspace accounts through Divo.',
     icon: GoogleIcon,
     accentClassName: 'bg-card border-border/70',
     featured: true,
@@ -114,12 +114,12 @@ export const divoPlugins: DivoPlugin[] = [
     enabled: true,
   },
   {
-    id: 'lark-personal',
-    name: 'Lark Personal',
+    id: 'lark',
+    name: 'Lark',
     category: 'connector',
-    description: 'Use a local Lark CLI account from this desktop only.',
-    icon: MessageSquare,
-    accentClassName: 'text-cyan-300 bg-cyan-300/10 border-cyan-300/20',
+    description: 'Connect and share company-managed Lark accounts through Divo.',
+    icon: LarkIcon,
+    accentClassName: 'bg-card border-border/70',
     featured: true,
     enabled: true,
   },
@@ -210,6 +210,14 @@ export const googleWorkspaceServices = [
   { name: 'Gmail', icon: GmailIcon, description: 'Read, search, draft, and send email based on access.' },
   { name: 'Drive', icon: GoogleDriveIcon, description: 'Search files, inspect metadata, and read shared docs.' },
   { name: 'Calendar', icon: GoogleCalendarIcon, description: 'Read schedules and create events when allowed.' },
+  { name: 'Docs', icon: FileText, description: 'Create, edit, format, export, and comment on documents.' },
+  { name: 'Sheets', icon: FileSpreadsheet, description: 'Create, read, write, format, and manage spreadsheets.' },
+  { name: 'Slides', icon: Megaphone, description: 'Create, inspect, render, and update presentations.' },
+  { name: 'Forms', icon: FileText, description: 'Create forms and inspect responses when allowed.' },
+  { name: 'Tasks', icon: ShieldCheck, description: 'Read and manage task lists and tasks.' },
+  { name: 'Contacts', icon: Users, description: 'Search and manage contacts and groups.' },
+  { name: 'Chat', icon: Mail, description: 'Read spaces and messages or send messages when allowed.' },
+  { name: 'Apps Script', icon: GoogleIcon, description: 'Inspect, update, deploy, and run Apps Script projects.' },
 ]
 
 export const pluginAutomationCards = [

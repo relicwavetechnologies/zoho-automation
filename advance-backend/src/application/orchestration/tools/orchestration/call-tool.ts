@@ -24,8 +24,17 @@ const inputSchema = z.object({
 export function createCallToolTool(
   registry: ToolRegistry,
   adapterCtx: AdapterContext,
+  allowedToolIds?: ReadonlySet<string>,
+  onDecision?: (event: {
+    toolId: string;
+    outcome: 'success' | 'failure';
+    status: string;
+    action?: string;
+  }) => void,
 ) {
-  const availableIds = registry.ids().join(', ');
+  const availableIds = registry.ids()
+    .filter((toolId) => !allowedToolIds || allowedToolIds.has(String(toolId)))
+    .join(', ');
 
   return dynamicTool({
     description:
@@ -42,10 +51,20 @@ export function createCallToolTool(
 
       adapterCtx.logger.info('call_tool.invoke', { toolId });
 
+      if (allowedToolIds && !allowedToolIds.has(toolId)) {
+        adapterCtx.logger.warn('call_tool.permission_denied', {
+          toolId,
+          reason: 'Tool is not present in the request-scoped permitted tool set',
+        });
+        onDecision?.({ toolId, outcome: 'failure', status: 'permission_denied' });
+        return `permission_denied: tool "${toolId}" is not available for the current member.`;
+      }
+
       // ── Look up tool ─────────────────────────────────────────────────────
       const tool = registry.byId(toolId as never);
       if (!tool) {
         adapterCtx.logger.warn('call_tool.unknown_tool', { toolId });
+        onDecision?.({ toolId, outcome: 'failure', status: 'unknown_tool' });
         return `error: unknown toolId "${toolId}". Available tools: ${availableIds}`;
       }
 
@@ -56,6 +75,7 @@ export function createCallToolTool(
           .map(e => `${e.path.join('.') || '(root)'}: ${e.message}`)
           .join('; ');
         adapterCtx.logger.warn('call_tool.invalid_args', { toolId, issues });
+        onDecision?.({ toolId, outcome: 'failure', status: 'invalid_args' });
         return `error: invalid args for "${toolId}" — ${issues}`;
       }
 
@@ -68,6 +88,7 @@ export function createCallToolTool(
           toolId,
           reason: permCheck.error.message,
         });
+        onDecision?.({ toolId, outcome: 'failure', status: 'permission_denied' });
         return `permission_denied: ${permCheck.error.message}`;
       }
 
@@ -94,6 +115,7 @@ export function createCallToolTool(
             action,
             approvalId: decision.approvalId,
           });
+          onDecision?.({ toolId, action, outcome: 'success', status: 'approval_pending' });
           return `approval_pending: ${decision.message}`;
         }
 
@@ -103,6 +125,7 @@ export function createCallToolTool(
             action,
             approvalId: decision.approvalId,
           });
+          onDecision?.({ toolId, action, outcome: 'failure', status: 'approval_rejected' });
           return `approval_rejected: ${decision.message}`;
         }
 
@@ -112,6 +135,7 @@ export function createCallToolTool(
             action,
             reason: decision.message,
           });
+          onDecision?.({ toolId, action, outcome: 'failure', status: 'approval_misconfigured' });
           return `approval_misconfigured: ${decision.message}`;
         }
 
@@ -135,10 +159,12 @@ export function createCallToolTool(
           toolId,
           reason: result.error.message,
         });
+        onDecision?.({ toolId, action, outcome: 'failure', status: 'tool_error' });
         return `error: ${result.error.message}`;
       }
 
       const val = result.value;
+      onDecision?.({ toolId, action, outcome: 'success', status: 'executed' });
       return typeof val === 'string' ? val : JSON.stringify(val);
     },
   });

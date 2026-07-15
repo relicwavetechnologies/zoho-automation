@@ -208,7 +208,7 @@ describe('LiveApprovalComposer', () => {
     expect(onStop).toHaveBeenCalledOnce()
   })
 
-  it('offers active-run always allow only for Bash requests', () => {
+  it('offers persistent always allow only for Bash requests', () => {
     const onAlwaysAllowBash = vi.fn()
     const bashRequest = request(
       'bash.execute',
@@ -235,11 +235,11 @@ describe('LiveApprovalComposer', () => {
     )
 
     expect(
-      screen.getByText(/future terminal commands in this run/i)
+      screen.getByText(/future terminal commands modify or delete files/i)
     ).toBeInTheDocument()
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Always allow Bash for this run',
+        name: 'Always allow Bash',
       })
     )
     expect(onAlwaysAllowBash).toHaveBeenCalledOnce()
@@ -253,7 +253,7 @@ describe('LiveApprovalComposer', () => {
     )
     expect(
       screen.queryByRole('button', {
-        name: 'Always allow Bash for this run',
+        name: 'Always allow Bash',
       })
     ).not.toBeInTheDocument()
   })
@@ -290,7 +290,7 @@ describe('LiveApprovalComposer', () => {
     expect(screen.getByRole('button', { name: 'Stop run' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Deny' })).toBeDisabled()
     expect(
-      screen.getByRole('button', { name: 'Always allow Bash for this run' })
+      screen.getByRole('button', { name: 'Always allow Bash' })
     ).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Approve & run' })).toBeDisabled()
   })

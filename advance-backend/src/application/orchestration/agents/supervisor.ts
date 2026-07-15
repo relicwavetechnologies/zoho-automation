@@ -69,10 +69,16 @@ import { buildToolFinishedPayload, isErrorOutput } from '../agent-runners/tool-t
 import { debugSupervisorEntry, debugGraphInvoke, debugGraphOutput } from '../../../shared/debug-run-log';
 import type { GroupContextContentPart } from '../../../domain/conversation/group-context';
 import { isInternalHistoryMarker } from '../../../domain/conversation/internal-history-marker';
+import type { SkillCatalogService, CatalogSkill } from '../../skills/skill-catalog.service';
+import type { SkillAccessEnforcementPort } from '../../skills/skill-access.port';
+import { buildBrainSystemPrompt } from '../brain-prompt';
+import { createGovernedDiscoverSkillTool } from '../tools/orchestration/discover-governed-skill';
+import { createCallToolTool } from '../tools/orchestration/call-tool';
+import type { AuditService } from '../../observability/audit.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MAX_SUPERVISOR_STEPS = 20;
+const MAX_SUPERVISOR_STEPS = 200;
 const DEFAULT_SUPERVISOR_TIMEOUT_MS = 300_000;
 
 // ─── Public I/O ───────────────────────────────────────────────────────────────
@@ -159,6 +165,11 @@ export interface SupervisorDeps {
   unifiedAgentMode?: boolean;
   skillRegistry?: import('../../skills/skill-registry').SkillRegistry;
   toolRegistry?: import('../tools/tool-registry').ToolRegistry;
+  /** DB-backed company skill catalogue used by governed server channels. */
+  skillCatalog?: SkillCatalogService;
+  /** Explicit company/user/department/role skill grant resolver. */
+  skillAccessEnforcement?: SkillAccessEnforcementPort;
+  auditService?: Pick<AuditService, 'record'>;
 }
 
 // ─── Supervisor ───────────────────────────────────────────────────────────────
@@ -177,6 +188,10 @@ export class SupervisorAgent {
     const { agentResolver, todoRepo, prisma, logger, clock } = this.deps;
     const model = input.model ?? this.deps.model;
     const resolveModel = input.resolveModel ?? this.deps.resolveModel;
+    const useGovernedLarkRuntime = channelType === 'lark'
+      && !!this.deps.skillCatalog
+      && !!this.deps.skillAccessEnforcement
+      && !!this.deps.toolRegistry;
 
     const log = logger.child({ service: 'supervisor', userId: runContext.userId });
 
@@ -192,7 +207,7 @@ export class SupervisorAgent {
       permittedToolCount: permittedTools.length,
     });
 
-    if (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) {
+    if (!useGovernedLarkRuntime && this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) {
       const graphResult = await this.runDynamicGraph({
         userMessage,
         history,
@@ -253,11 +268,66 @@ export class SupervisorAgent {
       log.warn('supervisor.agent_resolver.failed', { error: String(e) });
     }
 
-    const systemPrompt = buildSupervisorSystemPrompt(
-      agentDef?.systemPrompt,
-      perm.department?.systemPrompt,
-    );
+    let visibleSkills: CatalogSkill[] = [];
+    let grantedSkillIds: ReadonlySet<string> = new Set();
+    const governedPermittedTools = permittedTools.filter((tool) => String(tool.id) !== 'runCommand');
+    const governedPermittedToolIds = new Set(governedPermittedTools.map((tool) => String(tool.id)));
+    if (useGovernedLarkRuntime) {
+      try {
+        grantedSkillIds = await this.deps.skillAccessEnforcement!.listGrantedSkillIds(
+          String(runContext.companyId),
+          String(runContext.userId),
+        );
+        const grantedSkills = await this.deps.skillCatalog!.listVisible({
+          companyId: String(runContext.companyId),
+          ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
+          permission: perm,
+          grantedSkillIds,
+          limit: 100,
+        });
+        // A skill grant permits reading the recipe; PermissionService still
+        // governs execution. The server agent receives only skills that have
+        // at least one executable tool in this request.
+        visibleSkills = grantedSkills.filter((skill) =>
+          skill.toolIds.some((toolId) => governedPermittedToolIds.has(toolId)),
+        );
+      } catch (error) {
+        // Discovery is fail-closed. Tool execution remains protected by the
+        // independently resolved PermissionResult even when this lookup fails.
+        log.error('supervisor.governed_skill_discovery.failed', { error: String(error) });
+        grantedSkillIds = new Set();
+        visibleSkills = [];
+      }
+    }
+
+    const governedSkillCatalog = visibleSkills.length > 0
+      ? visibleSkills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n')
+      : '- No skills are currently approved for this member.';
+    const systemPrompt = useGovernedLarkRuntime
+      ? buildBrainSystemPrompt({
+        skillCatalog: governedSkillCatalog,
+        currentDateTime: new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Asia/Kolkata',
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        }).format(clock.now()),
+      })
+      : buildSupervisorSystemPrompt(
+        agentDef?.systemPrompt,
+        perm.department?.systemPrompt,
+      );
     let fullSystemPrompt = systemPrompt;
+    if (useGovernedLarkRuntime && (agentDef?.systemPrompt || perm.department?.systemPrompt)) {
+      fullSystemPrompt += [
+        agentDef?.systemPrompt ? `\n\nAGENT CONTEXT:\n${agentDef.systemPrompt}` : '',
+        perm.department?.systemPrompt ? `\n\nDEPARTMENT CONTEXT:\n${perm.department.systemPrompt}` : '',
+      ].join('');
+    }
     if (memoryContext) {
       fullSystemPrompt += `\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${memoryContext}`;
     }
@@ -309,7 +379,7 @@ export class SupervisorAgent {
       }),
 
       googleAgent: dynamicTool({
-        description: 'Execute Google Workspace operations: Gmail, Google Drive, Google Calendar.',
+        description: 'Execute governed Google Workspace operations across Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, and Apps Script.',
         inputSchema: taskSchema as never,
         execute: async (input: unknown): Promise<string> => {
           const { task } = input as { task: string };
@@ -348,6 +418,53 @@ export class SupervisorAgent {
       ...(this.deps.mem0 ? { rememberFact: createRememberFactTool(this.deps.mem0, runContext) } : {}),
     } as unknown as ToolSet;
 
+    const allowedToolIds = governedPermittedToolIds;
+    const governedSkillTools = useGovernedLarkRuntime
+      ? {
+        discover_skill: createGovernedDiscoverSkillTool({
+          skillCatalog: this.deps.skillCatalog!,
+          companyId: String(runContext.companyId),
+          ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
+          permission: perm,
+          grantedSkillIds,
+          visibleSkills,
+          permittedTools: governedPermittedTools,
+          ...(this.deps.auditService ? {
+            onDiscovery: (event) => this.deps.auditService!.record({
+              actorId: String(runContext.userId),
+              companyId: String(runContext.companyId),
+              action: 'lark.skill.discovery',
+              outcome: event.outcome,
+              metadata: {
+                query: event.query,
+                skillId: event.skillId ?? null,
+                departmentId: runContext.departmentId ? String(runContext.departmentId) : null,
+              },
+            }),
+          } : {}),
+        }),
+        call_tool: createCallToolTool(this.deps.toolRegistry!, {
+          runContext,
+          perm,
+          logger,
+          clock,
+          ...(approvalGate ? { approvalGate } : {}),
+          chatId: chatId ?? String(channelId),
+        }, allowedToolIds, this.deps.auditService ? (event) => this.deps.auditService!.record({
+          actorId: String(runContext.userId),
+          companyId: String(runContext.companyId),
+          action: 'lark.tool.execution',
+          outcome: event.outcome,
+          metadata: {
+            toolId: event.toolId,
+            actionGroup: event.action ?? null,
+            status: event.status,
+            departmentId: runContext.departmentId ? String(runContext.departmentId) : null,
+          },
+        }) : undefined),
+      } as unknown as ToolSet
+      : {} as ToolSet;
+
     let dynamicCapabilities = {} as ToolSet;
     if (agentDef && this.deps.agentCatalogCache) {
       const allAgents = await this.deps.agentCatalogCache.getForCompany(String(runContext.companyId));
@@ -359,13 +476,16 @@ export class SupervisorAgent {
 
     const hasDynamicCapabilities = Object.keys(dynamicCapabilities).length > 0;
     const supervisorTools = {
-      ...(hasDynamicCapabilities ? dynamicCapabilities : legacyAgentTools),
+      ...(useGovernedLarkRuntime
+        ? governedSkillTools
+        : hasDynamicCapabilities ? dynamicCapabilities : legacyAgentTools),
       ...orchestrationTools,
     } as unknown as ToolSet;
     log.info('supervisor.tools.resolved', {
-      mode: hasDynamicCapabilities ? 'dynamic' : 'legacy',
+      mode: useGovernedLarkRuntime ? 'governed_db_skills' : hasDynamicCapabilities ? 'dynamic' : 'legacy',
       toolNames: Object.keys(supervisorTools),
       totalTools: Object.keys(supervisorTools).length,
+      visibleSkillCount: useGovernedLarkRuntime ? visibleSkills.length : undefined,
     });
 
     // ── 5. Stream the supervisor LLM ──────────────────────────────────────────

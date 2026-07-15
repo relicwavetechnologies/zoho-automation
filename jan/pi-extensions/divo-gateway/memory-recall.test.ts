@@ -244,5 +244,10 @@ describe("memory recall extension", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /you must call divo_memory_recall/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /once per request unless a distinct recall need emerges/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /departmentPreferences ranking hints/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /LARK IS STRICTLY GATEWAY-ONLY/);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never use Bash, lark-cli, curl/);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /there is no local Lark fallback/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /OUTPUT LANGUAGE IS ENGLISH ONLY/);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Non-English source values are data/);
 	});
 });

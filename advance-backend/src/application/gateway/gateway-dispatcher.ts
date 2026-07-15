@@ -1,6 +1,7 @@
 import type { ToolRegistry } from '../orchestration/tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
 import type { SkillCatalogService } from '../skills/skill-catalog.service';
+import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
 import type { Logger } from '../../shared/logger';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
@@ -26,6 +27,7 @@ import {
   toolsInvokePayloadSchema,
   toolsCommitPayloadSchema,
 } from './gateway.types';
+import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
 
 /**
  * Per-skill RBAC. Skill discovery is deny-by-default: a member sees/uses only
@@ -34,10 +36,6 @@ import {
  * port is absent (some tests) the catalog falls back to tool-derived
  * visibility.
  */
-export interface SkillAccessEnforcementPort {
-  listGrantedSkillIds(companyId: string, userId: string): Promise<ReadonlySet<string>>;
-}
-
 export interface GatewayDispatcherDeps {
   readonly permissions: PermissionService;
   readonly toolRegistry: ToolRegistry;
@@ -467,13 +465,23 @@ export class GatewayDispatcher {
     }
 
     const provider = parsed.data.provider ?? 'google_workspace';
-    const canUseGoogle = ['googleGmail', 'googleDrive', 'googleCalendar'].some((toolId) =>
+    const canUseGoogle = GOOGLE_WORKSPACE_TOOL_IDS.some((toolId) =>
       perm.allowedToolIds.has(asToolId(toolId)),
     );
     const canUseZoho = ['zohoCrm', 'zohoBooks'].some((toolId) =>
       perm.allowedToolIds.has(asToolId(toolId)),
     );
     const canUseCanva = perm.allowedToolIds.has(asToolId('canvaDesign'));
+    const canUseLark = [
+      'larkTask',
+      'larkMessaging',
+      'larkContacts',
+      'larkCalendar',
+      'larkMeeting',
+      'larkDoc',
+      'larkBase',
+      'larkApproval',
+    ].some((toolId) => perm.allowedToolIds.has(asToolId(toolId)));
     if (provider === 'google_workspace' && !canUseGoogle) {
       return gatewaySuccess({ connections: [] });
     }
@@ -481,6 +489,9 @@ export class GatewayDispatcher {
       return gatewaySuccess({ connections: [] });
     }
     if (provider === 'canva' && !canUseCanva) {
+      return gatewaySuccess({ connections: [] });
+    }
+    if (provider === 'lark' && !canUseLark) {
       return gatewaySuccess({ connections: [] });
     }
 
@@ -494,6 +505,11 @@ export class GatewayDispatcher {
           companyId: member.companyId,
           userId:    member.userId,
         })
+        : provider === 'lark'
+          ? await this.deps.connectionRegistry.listAccessibleLarkConnections({
+            companyId: member.companyId,
+            userId:    member.userId,
+          })
       : await this.deps.connectionRegistry.listAccessibleGoogleConnections({
         companyId: member.companyId,
         userId:    member.userId,

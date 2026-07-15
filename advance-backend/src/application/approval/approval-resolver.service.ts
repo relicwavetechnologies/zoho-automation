@@ -5,7 +5,7 @@ import type { ResolvedManager } from './approval.types';
  * Resolves the approval manager for a given department.
  *
  * Priority:
- *   1. The user in the dept with role slug 'MANAGER', with a LarkUserAuthLink.
+ *   1. The user in the dept with role slug 'MANAGER', with a Divo Lark connection.
  *   2. A company-level admin (ChannelIdentity.aiRole contains 'ADMIN') with a larkOpenId.
  *   3. null → caller must fail-closed.
  */
@@ -31,18 +31,25 @@ export class ApprovalResolverService {
     });
 
     if (deptManager) {
-      const authLink = await this.prisma.larkUserAuthLink.findFirst({
-        where: { userId: deptManager.userId },
-        select: { larkOpenId: true },
+      const connection = await this.prisma.integrationConnection.findFirst({
+        where: {
+          companyId,
+          provider: 'lark',
+          ownerUserId: deptManager.userId,
+          status: 'connected',
+          revokedAt: null,
+        },
+        select: { externalAccountId: true },
+        orderBy: { updatedAt: 'desc' },
       });
-      if (authLink?.larkOpenId) {
+      if (connection?.externalAccountId) {
         const user = await this.prisma.user.findUnique({
           where:  { id: deptManager.userId },
           select: { name: true },
         });
         return {
           userId:      deptManager.userId,
-          larkOpenId:  authLink.larkOpenId,
+          larkOpenId:  connection.externalAccountId,
           displayName: user?.name ?? deptManager.userId,
         };
       }
@@ -61,15 +68,22 @@ export class ApprovalResolverService {
     });
 
     if (adminIdentity?.larkOpenId) {
-      const authLink = await this.prisma.larkUserAuthLink.findFirst({
-        where:  { larkOpenId: adminIdentity.larkOpenId },
-        select: { userId: true },
+      const connection = await this.prisma.integrationConnection.findFirst({
+        where: {
+          companyId,
+          provider: 'lark',
+          externalAccountId: adminIdentity.larkOpenId,
+          ownerUserId: { not: null },
+          status: 'connected',
+          revokedAt: null,
+        },
+        select: { ownerUserId: true },
       });
-      if (authLink) {
+      if (connection?.ownerUserId) {
         return {
-          userId:      authLink.userId,
+          userId:      connection.ownerUserId,
           larkOpenId:  adminIdentity.larkOpenId,
-          displayName: adminIdentity.displayName ?? authLink.userId,
+          displayName: adminIdentity.displayName ?? connection.ownerUserId,
         };
       }
     }

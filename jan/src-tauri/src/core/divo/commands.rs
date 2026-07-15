@@ -1119,6 +1119,120 @@ pub async fn divo_google_disconnect_connection<R: Runtime>(
     .await
 }
 
+/// Start OAuth for a company-managed Lark connection. Lark login used to be
+/// desktop-local only; this path keeps OAuth credentials in the Divo backend.
+#[tauri::command]
+pub async fn divo_lark_authorize_url<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    let parsed = divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/lark/connections/authorize-url",
+        None,
+        "Lark authorize URL",
+    )
+    .await?;
+    parsed
+        .get("data")
+        .and_then(|data| data.get("authorizeUrl"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("Lark authorize URL response missing data.authorizeUrl: {parsed}"))
+}
+
+#[tauri::command]
+pub async fn divo_lark_status<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/lark/status",
+        None,
+        "Lark status",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_lark_manage_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        &format!("/lark/connections/{connection_id}/manage"),
+        None,
+        "Lark manage access",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_lark_grant_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grantee_type: String,
+    grantee_id: String,
+    access: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        &format!("/lark/connections/{connection_id}/grants"),
+        Some(json!({ "granteeType": grantee_type, "granteeId": grantee_id, "access": access })),
+        "Lark grant access",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_lark_revoke_access<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    grant_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    let grant_id = grant_id.trim();
+    if connection_id.is_empty() || grant_id.is_empty() {
+        return Err("connectionId and grantId are required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/lark/connections/{connection_id}/grants/{grant_id}"),
+        None,
+        "Lark revoke access",
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn divo_lark_disconnect_connection<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/lark/connections/{connection_id}"),
+        None,
+        "Lark disconnect connection",
+    )
+    .await
+}
+
 /// Start Canva MCP OAuth for the stored Divo member session. The member token
 /// remains in Rust; the web layer receives only the public authorize URL.
 #[tauri::command]
@@ -1253,27 +1367,77 @@ pub async fn divo_canva_disconnect_connection<R: Runtime>(
 /// List company-owned Web Search (Serper) connections. API keys never leave the backend.
 #[tauri::command]
 pub async fn divo_serper_connections<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
-    divo_desktop_json_request(&app, reqwest::Method::GET, "/tools/webSearch/connections", None, "Web Search connections").await
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/tools/webSearch/connections",
+        None,
+        "Web Search connections",
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn divo_serper_test_connection<R: Runtime>(app: AppHandle<R>, api_key: String) -> Result<Value, String> {
-    divo_desktop_json_request(&app, reqwest::Method::POST, "/tools/webSearch/connections/test", Some(json!({ "apiKey": api_key })), "Web Search connection test").await
+pub async fn divo_serper_test_connection<R: Runtime>(
+    app: AppHandle<R>,
+    api_key: String,
+) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        "/tools/webSearch/connections/test",
+        Some(json!({ "apiKey": api_key })),
+        "Web Search connection test",
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn divo_serper_save_connection<R: Runtime>(app: AppHandle<R>, label: String, api_key: String, verification_token: String) -> Result<Value, String> {
-    divo_desktop_json_request(&app, reqwest::Method::POST, "/tools/webSearch/connections", Some(json!({ "label": label, "apiKey": api_key, "verificationToken": verification_token })), "Web Search connection save").await
+pub async fn divo_serper_save_connection<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    api_key: String,
+    verification_token: String,
+) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        "/tools/webSearch/connections",
+        Some(json!({ "label": label, "apiKey": api_key, "verificationToken": verification_token })),
+        "Web Search connection save",
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn divo_serper_set_connection_enabled<R: Runtime>(app: AppHandle<R>, connection_id: String, enabled: bool) -> Result<Value, String> {
-    divo_desktop_json_request(&app, reqwest::Method::PATCH, &format!("/tools/webSearch/connections/{connection_id}"), Some(json!({ "enabled": enabled })), "Web Search connection update").await
+pub async fn divo_serper_set_connection_enabled<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    enabled: bool,
+) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::PATCH,
+        &format!("/tools/webSearch/connections/{connection_id}"),
+        Some(json!({ "enabled": enabled })),
+        "Web Search connection update",
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn divo_serper_disconnect_connection<R: Runtime>(app: AppHandle<R>, connection_id: String) -> Result<Value, String> {
-    divo_desktop_json_request(&app, reqwest::Method::DELETE, &format!("/tools/webSearch/connections/{connection_id}"), None, "Web Search connection disconnect").await
+pub async fn divo_serper_disconnect_connection<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::DELETE,
+        &format!("/tools/webSearch/connections/{connection_id}"),
+        None,
+        "Web Search connection disconnect",
+    )
+    .await
 }
 
 /// Start Zoho OAuth for the stored Divo member session.

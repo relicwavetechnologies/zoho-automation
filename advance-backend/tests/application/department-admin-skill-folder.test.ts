@@ -94,10 +94,31 @@ describe('DepartmentAdminService.createSkill folder placement', () => {
     assert.equal(r.ok, false);
     assert.equal(r.ok ? '' : r.error.kind, 'not_found');
   });
+
+  it('rejects Chinese Lark skill content before writing', async () => {
+    let wrote = false;
+    const svc = makeService({ onWrite: () => { wrote = true; } });
+    const r = await svc.createSkill(DEPT.id, 'co-1', 'u-1', {
+      name: 'Lark 文档',
+      summary: '创建文档',
+      markdown: '# Lark 文档',
+      toolIds: ['larkDoc'],
+      tags: ['lark'],
+    });
+
+    assert.equal(r.ok, false);
+    assert.equal(r.ok ? '' : r.error.kind, 'validation');
+    assert.match(r.ok ? '' : r.error.message, /must be stored in English/);
+    assert.equal(wrote, false);
+  });
 });
 
 describe('DepartmentAdminService.updateSkill folder placement', () => {
-  const existing = { id: 'sk-1', departmentId: DEPT.id, revision: 1 };
+  const existing = {
+    id: 'sk-1', departmentId: DEPT.id, revision: 1,
+    slug: 'reconciliation', name: 'Reconciliation', summary: '',
+    markdown: '# Reconciliation', toolIds: [], tags: [],
+  };
 
   it('leaves folderId untouched when it is omitted (no folder lookup)', async () => {
     let written: Record<string, unknown> | null = null;
@@ -136,5 +157,26 @@ describe('DepartmentAdminService.updateSkill folder placement', () => {
     const r = await svc.updateSkill(DEPT.id, 'co-1', 'sk-1', 'u-1', { folderId: 'f-2' });
     assert.equal(r.ok, false);
     assert.equal(r.ok ? '' : r.error.kind, 'validation');
+  });
+
+  it('rejects an update that introduces Chinese into a Lark skill', async () => {
+    let wrote = false;
+    const svc = makeService({
+      existingSkill: {
+        ...existing,
+        slug: 'lark-documents',
+        name: 'Lark Documents',
+        toolIds: ['larkDoc'],
+        tags: ['lark'],
+      },
+      onWrite: () => { wrote = true; },
+    });
+    const r = await svc.updateSkill(DEPT.id, 'co-1', 'sk-1', 'u-1', {
+      markdown: '# Lark Documents\n\n创建文档。',
+    });
+
+    assert.equal(r.ok, false);
+    assert.equal(r.ok ? '' : r.error.kind, 'validation');
+    assert.equal(wrote, false);
   });
 });

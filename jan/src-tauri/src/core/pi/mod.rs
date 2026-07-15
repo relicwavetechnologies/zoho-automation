@@ -1,6 +1,7 @@
 mod browser;
 pub mod env;
 mod manager;
+mod permissions;
 mod run_context;
 mod runtime;
 pub mod session;
@@ -9,6 +10,7 @@ use crate::core::app::commands::get_jan_data_folder_path;
 use crate::core::divo::commands::divo_sync_pi_env;
 use crate::core::divo::workspace::resolve_workspace_dir_for_app;
 use manager::PiManager;
+use permissions::{load_persistent_bash_allow, save_persistent_bash_allow};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
@@ -29,6 +31,11 @@ pub async fn pi_start(
     thread_id: Option<String>,
 ) -> Result<(), String> {
     let _ = divo_sync_pi_env(app.clone()).await;
+    let persistent_bash_allow = load_persistent_bash_allow(&app)?;
+    state
+        .manager
+        .set_persistent_bash_approval(persistent_bash_allow)
+        .await;
     let data_folder = get_jan_data_folder_path(app.clone());
     let scratch_dir = data_folder.join(PI_SCRATCH_DIR);
     let workspace_dir = resolve_workspace_dir_for_app(&app, workspace_path)?;
@@ -147,21 +154,36 @@ pub async fn pi_revoke_bash_approval(
     Ok(())
 }
 
-/// Read the task-scoped local permission rules shown by the desktop composer.
+/// Read the persisted device-level permission rules shown by the desktop composer.
 #[tauri::command]
 pub async fn pi_get_permission_rules(
     state: State<'_, PiState>,
-    thread_id: String,
+    app: AppHandle,
 ) -> Result<serde_json::Value, String> {
-    if thread_id.trim().is_empty() {
-        return Err("A task id is required to read permission rules".into());
-    }
+    let bash_always_allow = load_persistent_bash_allow(&app)?;
+    state
+        .manager
+        .set_persistent_bash_approval(bash_always_allow)
+        .await;
     Ok(serde_json::json!({
-        "bashAlwaysAllow": state.manager.bash_approval_allowed(&thread_id).await
+        "bashAlwaysAllow": bash_always_allow,
+        "scope": "device"
     }))
 }
 
-/// Update the Bash rule directly from the explicit Permission Rules UI.
+/// Persist the Bash approval mode until the user explicitly changes it.
+#[tauri::command]
+pub async fn pi_set_persistent_bash_approval(
+    state: State<'_, PiState>,
+    app: AppHandle,
+    allowed: bool,
+) -> Result<(), String> {
+    save_persistent_bash_allow(&app, allowed)?;
+    state.manager.set_persistent_bash_approval(allowed).await;
+    Ok(())
+}
+
+/// Update only the temporary active-run Bash rule.
 #[tauri::command]
 pub async fn pi_set_bash_approval_rule(
     state: State<'_, PiState>,

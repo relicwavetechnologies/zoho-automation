@@ -8,6 +8,8 @@ import type { TypedEnv } from '../../config/env';
 import type { AuditService } from '../../application/observability/audit.service';
 import type { Logger } from '../../shared/logger';
 import { provisionShareMemorySystemSkill } from '../../application/skills/share-memory-system-skill';
+import { provisionLarkSystemSkills } from '../../application/skills/lark-system-skills';
+import { provisionGoogleWorkspaceSystemSkills } from '../../application/skills/google-workspace-system-skills';
 
 type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
@@ -395,6 +397,8 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
         });
 
         await provisionShareMemorySystemSkill(tx, company.id);
+        await provisionLarkSystemSkills(tx, company.id);
+        await provisionGoogleWorkspaceSystemSkills(tx, company.id);
 
         await tx.adminMembership.create({
           data: {

@@ -6,6 +6,12 @@ import { PermissionError, ToolError } from '../../../../shared/errors';
 import type { PermissionResult } from '../../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../../shared/ids';
+import {
+  larkConnectionSelectionData,
+  larkConnectionRequiredMessage,
+  resolveLarkUserClient,
+  type LarkUserTokenResolver,
+} from './lark-user-connection';
 
 // ─── People resolver port ─────────────────────────────────────────────────
 
@@ -50,6 +56,8 @@ const LarkTaskArgsSchema = z.object({
   tasklistId: z.string().optional(),
   // subtask ops
   parentTaskId: z.string().optional(),
+  /** Divo-managed Lark connection. Required when more than one is accessible. */
+  connectionId: z.string().uuid().optional(),
 });
 type LarkTaskArgs = z.infer<typeof LarkTaskArgsSchema>;
 
@@ -122,10 +130,6 @@ export interface LarkTaskClientPort {
 
 // ─── Factory ──────────────────────────────────────────────────────────────
 
-export interface LarkUserTokenResolver {
-  resolve(userId: string, companyId: string): Promise<string | null>;
-}
-
 export const createLarkTaskTool = (deps: {
   client:            LarkTaskClientPort;
   peopleResolver:    PeopleResolverPort;
@@ -167,20 +171,24 @@ export const createLarkTaskTool = (deps: {
   async execute(args: LarkTaskArgs, ctx: ToolExecutionContext): Promise<Result<LarkTaskResult, ToolError>> {
     const log = ctx.logger.child({ tool: 'larkTask', op: args.op, correlationId: ctx.correlationId });
 
-    // Prefer user token for personal task access; fall back to tenant (bot) token.
+    // Production composition always provides a user-client factory. Unit-level
+    // callers can omit it when exercising pure tool behavior with a fake client.
     let client = deps.client;
-    if (deps.userTokenResolver && deps.createUserClient) {
-      try {
-        const userToken = await deps.userTokenResolver.resolve(
-          String(ctx.runContext.userId), String(ctx.runContext.companyId),
-        );
-        if (userToken) {
-          client = deps.createUserClient(userToken);
-          log.info('larkTask.using_user_token');
-        }
-      } catch (e) {
-        log.warn('larkTask.user_token_resolve.failed', { error: String(e) });
+    try {
+      const userConnection = await resolveLarkUserClient(deps, ctx, {
+        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
+        minimumAccess: inferAction(args.op) === 'read' ? 'read_only' : 'read_write',
+      });
+      if (userConnection.status === 'choose_connection') {
+        return ok({ success: false, data: larkConnectionSelectionData(userConnection.connections), message: 'Choose a Lark connection before continuing.' });
       }
+      if (deps.userTokenResolver && userConnection.status === 'unavailable') {
+        return err(new ToolError({ toolId: 'larkTask', reason: 'unrecoverable', message: larkConnectionRequiredMessage }));
+      }
+      if (userConnection.status === 'resolved') client = userConnection.client;
+    } catch (e) {
+      log.warn('larkTask.user_connection_resolve.failed', { error: String(e) });
+      return err(new ToolError({ toolId: 'larkTask', reason: 'unrecoverable', cause: e, message: larkConnectionRequiredMessage }));
     }
 
     const resolveAssignees = async (): Promise<string[] | undefined> => {

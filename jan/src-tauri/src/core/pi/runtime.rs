@@ -7,7 +7,6 @@ use super::browser::{
     build_chrome_devtools_mcp_server, chrome_devtools_enabled, current_browser_cdp_fingerprint,
     mcp_config_needs_browser_upgrade, resolve_browser_user_data_dir,
 };
-use crate::core::divo::local_lark::ensure_lark_cli_wrapper;
 
 const PI_AGENT_DIR_NAME: &str = "pi-agent";
 const BUNDLED_CLI_REL: &str =
@@ -29,7 +28,6 @@ pub struct PiRuntimePaths {
     pub cli_js: PathBuf,
     pub agent_dir: PathBuf,
     pub trusted_skill_dirs: Vec<PathBuf>,
-    pub lark_cli_wrapper: Option<PathBuf>,
     /// CDP WebSocket fingerprint — changes when the browser restarts debugging.
     pub browser_cdp_fingerprint: Option<String>,
 }
@@ -59,14 +57,12 @@ impl PiRuntimePaths {
         let agent_dir = data_folder.join(PI_AGENT_DIR_NAME);
         bootstrap_agent_dir(&resource_dir, &agent_dir, &bun)?;
         let trusted_skill_dirs = resolve_trusted_skill_dirs(&resource_dir)?;
-        let lark_cli_wrapper = ensure_lark_cli_wrapper(&resource_dir, &agent_dir)?;
 
         Ok(PiRuntimePaths {
             bun,
             cli_js,
             agent_dir,
             trusted_skill_dirs,
-            lark_cli_wrapper,
             browser_cdp_fingerprint: current_browser_cdp_fingerprint(),
         })
     }
@@ -487,8 +483,12 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&gateway_dir).unwrap();
         fs::write(gateway_dir.join("SKILL.md"), b"gateway").unwrap();
-        fs::create_dir_all(skills_dir.join("local-lark")).unwrap();
-        fs::write(skills_dir.join("local-lark/SKILL.md"), b"local").unwrap();
+        fs::create_dir_all(skills_dir.join("untrusted-local-company-skill")).unwrap();
+        fs::write(
+            skills_dir.join("untrusted-local-company-skill/SKILL.md"),
+            b"local",
+        )
+        .unwrap();
 
         let trusted = resolve_trusted_skill_dirs(&tmp).unwrap();
         assert_eq!(trusted, vec![gateway_dir]);

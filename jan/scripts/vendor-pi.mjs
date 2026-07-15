@@ -3,9 +3,7 @@
  * Run via: yarn vendor:pi
  */
 import { execFileSync, execSync } from 'node:child_process'
-import crypto from 'node:crypto'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -20,7 +18,7 @@ const versions = JSON.parse(
 const resourcesPi = path.join(janRoot, 'src-tauri/resources/pi')
 const resourcesExtensions = path.join(janRoot, 'src-tauri/resources/pi-extensions')
 const resourcesSkills = path.join(janRoot, 'src-tauri/resources/pi-skills')
-const resourcesLarkCli = path.join(janRoot, 'src-tauri/resources/lark-cli')
+const retiredLarkCliResources = path.join(janRoot, 'src-tauri/resources/lark-cli')
 const sourceExtensions = path.join(janRoot, 'pi-extensions')
 const sourceSkills = path.join(janRoot, 'pi-skills')
 
@@ -96,75 +94,6 @@ function prepareMacNativePackages(resourcesPiDir) {
   }
 }
 
-function prepareMacLarkCli(resourcesLarkCliDir) {
-  const target = process.env.JAN_MACOS_TARGET
-  if (!['x86_64', 'aarch64', 'universal'].includes(target)) return
-
-  const packageDir = path.join(resourcesLarkCliDir, 'node_modules/@larksuite/cli')
-  const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'))
-  const checksums = fs.readFileSync(path.join(packageDir, 'checksums.txt'), 'utf8')
-  const architectures =
-    target === 'universal'
-      ? ['arm64', 'amd64']
-      : [target === 'x86_64' ? 'amd64' : 'arm64']
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jan-lark-cli-'))
-  const binaries = new Map()
-
-  try {
-    for (const architecture of architectures) {
-      const archiveName = `lark-cli-${packageJson.version}-darwin-${architecture}.tar.gz`
-      const expectedHash = checksums
-        .split('\n')
-        .find((line) => line.trim().endsWith(`  ${archiveName}`))
-        ?.trim()
-        .split(/\s+/)[0]
-      if (!expectedHash) throw new Error(`Missing checksum for ${archiveName}`)
-
-      const archivePath = path.join(tempDir, archiveName)
-      execFileSync(
-        'curl',
-        [
-          '--fail',
-          '--location',
-          '--silent',
-          '--show-error',
-          '--output',
-          archivePath,
-          `https://github.com/larksuite/cli/releases/download/v${packageJson.version}/${archiveName}`,
-        ],
-        { stdio: 'inherit' }
-      )
-      const actualHash = crypto
-        .createHash('sha256')
-        .update(fs.readFileSync(archivePath))
-        .digest('hex')
-      if (actualHash !== expectedHash) throw new Error(`Checksum mismatch for ${archiveName}`)
-
-      const extractDir = path.join(tempDir, architecture)
-      fs.mkdirSync(extractDir, { recursive: true })
-      execFileSync('tar', ['-xzf', archivePath, '-C', extractDir])
-      binaries.set(architecture, path.join(extractDir, 'lark-cli'))
-    }
-
-    const destination = path.join(packageDir, 'bin/lark-cli')
-    if (target === 'universal') {
-      execFileSync('lipo', [
-        '-create',
-        binaries.get('arm64'),
-        binaries.get('amd64'),
-        '-output',
-        destination,
-      ])
-    } else {
-      fs.copyFileSync(binaries.values().next().value, destination)
-    }
-    fs.chmodSync(destination, 0o755)
-    console.log(`Staged Lark CLI for ${target}`)
-  } finally {
-    rmrf(tempDir)
-  }
-}
-
 function patchBundledPiReadTool(resourcesPiDir) {
   const readToolPath = path.join(
     resourcesPiDir,
@@ -193,6 +122,9 @@ function patchBundledPiReadTool(resourcesPiDir) {
 
 console.log('Vendoring Pi into src-tauri/resources/pi ...')
 
+// Remove installations produced by desktop builds before Lark moved behind
+// the Divo gateway. This directory is never recreated or bundled.
+rmrf(retiredLarkCliResources)
 rmrf(resourcesPi)
 fs.mkdirSync(resourcesPi, { recursive: true })
 
@@ -294,38 +226,3 @@ fs.writeFileSync(path.join(resourcesSkills, '.gitkeep'), '')
 
 console.log('Pi vendored successfully.')
 console.log(`  CLI: ${cliJs}`)
-
-console.log('Vendoring Lark CLI into src-tauri/resources/lark-cli ...')
-
-rmrf(resourcesLarkCli)
-fs.mkdirSync(resourcesLarkCli, { recursive: true })
-
-const larkPkg = {
-  name: 'jan-bundled-lark-cli',
-  private: true,
-  dependencies: {
-    '@larksuite/cli': versions.larkCli,
-  },
-}
-fs.writeFileSync(
-  path.join(resourcesLarkCli, 'package.json'),
-  JSON.stringify(larkPkg, null, 2)
-)
-
-execSync('npm install --omit=dev --no-package-lock', {
-  cwd: resourcesLarkCli,
-  stdio: 'inherit',
-})
-prepareMacLarkCli(resourcesLarkCli)
-
-const larkCliBinaryName = process.platform === 'win32' ? 'lark-cli.exe' : 'lark-cli'
-const larkCli = path.join(
-  resourcesLarkCli,
-  `node_modules/@larksuite/cli/bin/${larkCliBinaryName}`
-)
-if (!fs.existsSync(larkCli)) {
-  throw new Error(`Lark CLI missing after install: ${larkCli}`)
-}
-
-console.log('Lark CLI vendored successfully.')
-console.log(`  CLI: ${larkCli}`)

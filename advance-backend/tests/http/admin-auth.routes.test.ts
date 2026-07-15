@@ -53,10 +53,24 @@ describe('admin auth company signup provisioning', () => {
       },
       skill: {
         findFirst: async () => null,
+        create: async ({ data }: any) => ({
+          ...data,
+          revision: data.revision ?? 1,
+          createdBy: data.createdBy ?? null,
+          updatedBy: data.updatedBy ?? null,
+        }),
+        update: async ({ data }: any) => ({ ...data }),
         upsert: async (args: any) => {
           capturedUpsert = args;
           return { ...args.create, revision: 1, createdBy: null, updatedBy: null };
         },
+      },
+      skillFolder: {
+        findFirst: async () => null,
+        upsert: async ({ create }: any) => ({ id: create.id }),
+      },
+      skillAccessGrant: {
+        upsert: async () => ({}),
       },
       skillVersion: {
         upsert: async () => ({}),

@@ -1,13 +1,12 @@
 import type { Skill } from './skill.types';
 
-const ZOHO_CONNECTION_METHOD = `ZOHO CONNECTION METHOD:
-- Always start by resolving available Zoho accounts. Call divo_gateway with op="connections.list" and payload={"provider":"zoho"} before Zoho CRM or Zoho Books.
-- If no connections are returned, tell the user to connect Zoho from the desktop Plugins page.
-- If exactly one connection is returned, use that connectionId.
-- If multiple connections are returned, choose by explicit user intent: account label/name, personal/shared ownership, access level, or business purpose.
-- If multiple connections are plausible and the user did not specify, ask one short account-choice question. Do not guess.
-- Never use a label, organization name, or guessed value as connectionId. Use only the backend connectionId from connections.list.
-- Invoke backend tools with divo_gateway op="tools.invoke" and payload={"toolId":"zohoBooks"|"zohoCrm"|"larkMessaging","args":{...,"connectionId":"selected id"}} as appropriate.`;
+const ZOHO_CONNECTION_METHOD = `DIVO-GOVERNED ZOHO CONNECTION:
+- Invoke Zoho only through the Divo tool surface available in the current runtime: server channels use call_tool; desktop uses divo_gateway. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
+- If the member already selected a connected or shared Zoho account, pass its backend connectionId with every Zoho action.
+- If no connectionId was selected, let Divo resolve access. It auto-selects only when exactly one accessible Zoho connection exists.
+- If Divo returns a structured connection choice, ask one short account-choice question using the returned labels. Do not guess.
+- If no connection is accessible, tell the member to connect or request access to Zoho.
+- Never use a label, organization name, or guessed value as connectionId. Use only a backend-provided connectionId.`;
 
 export const financeOpsCoreSkill: Skill = {
   id: 'finance-ops-core',

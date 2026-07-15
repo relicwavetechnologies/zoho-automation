@@ -7,6 +7,12 @@ import type { PermissionResult } from '../../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../../shared/ids';
 import type { PeopleResolverPort } from './lark-task.tool';
+import {
+  larkConnectionSelectionData,
+  larkConnectionRequiredMessage,
+  resolveLarkUserClient,
+  type LarkUserTokenResolver,
+} from './lark-user-connection';
 
 const RecurrenceSchema = z.object({
   frequency: z.enum(['daily', 'weekly', 'monthly', 'yearly']),
@@ -35,6 +41,8 @@ const Schema = z.object({
   removeNames: z.array(z.string()).optional(),
   // create_recurring
   recurrence: RecurrenceSchema.optional(),
+  /** Divo-managed Lark connection. Required when more than one is accessible. */
+  connectionId: z.string().uuid().optional(),
 });
 type Args = z.infer<typeof Schema>;
 
@@ -76,6 +84,8 @@ const toTimestamp = (iso: string) => ({ timestamp: String(Math.floor(new Date(is
 export const createLarkCalendarTool = (deps: {
   client: LarkCalendarClientPort;
   peopleResolver: PeopleResolverPort;
+  userTokenResolver?: LarkUserTokenResolver;
+  createUserClient?: (userToken: string) => LarkCalendarClientPort;
 }): Tool<Args, Res> => ({
   id: asToolId('larkCalendar'),
   family: 'lark',
@@ -97,6 +107,7 @@ export const createLarkCalendarTool = (deps: {
 - dateFrom, dateTo: ISO date range for free_busy
 - addNames, removeNames: Names to add/remove for update_attendees
 - recurrence: { frequency: daily|weekly|monthly|yearly, days?: MO|TU|WE|TH|FR|SA|SU[], until?: ISO date, count?: N }
+- connectionId: A connected or shared Lark account. Required when more than one is available.
   `.trim(),
 
   permissionCheck(args: Args, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -120,15 +131,26 @@ export const createLarkCalendarTool = (deps: {
     };
 
     try {
+      const userConnection = await resolveLarkUserClient(deps, ctx, {
+        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
+        minimumAccess: inferAction(args.op) === 'read' ? 'read_only' : 'read_write',
+      });
+      if (userConnection.status === 'choose_connection') {
+        return ok({ success: false, data: larkConnectionSelectionData(userConnection.connections), message: 'Choose a Lark connection before continuing.' });
+      }
+      if (deps.userTokenResolver && userConnection.status === 'unavailable') {
+        return err(new ToolError({ toolId: 'larkCalendar', reason: 'unrecoverable', message: larkConnectionRequiredMessage }));
+      }
+      const client = userConnection.status === 'resolved' ? userConnection.client : deps.client;
       switch (args.op) {
         case 'list':
           ctx.onProgress?.('Checking calendar…');
-          return ok({ success: true, data: await deps.client.listEvents(calId, args.limit) });
+          return ok({ success: true, data: await client.listEvents(calId, args.limit) });
 
         case 'get': {
           if (!args.eventId) return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: 'eventId required' }));
           ctx.onProgress?.('Fetching event…');
-          return ok({ success: true, data: await deps.client.getEvent(calId, args.eventId) });
+          return ok({ success: true, data: await client.getEvent(calId, args.eventId) });
         }
 
         case 'create': {
@@ -141,7 +163,7 @@ export const createLarkCalendarTool = (deps: {
             attendees.push(...r.resolved.map(p => p.openId));
           }
           if (requesterOpenId && !attendees.includes(requesterOpenId)) attendees.push(requesterOpenId);
-          const r = await deps.client.createEvent(calId, {
+          const r = await client.createEvent(calId, {
             title: args.title, startTime: args.startTime, endTime: args.endTime,
             ...(attendees.length ? { attendeeIds: attendees } : {}),
             ...(args.description ? { description: args.description } : {}),
@@ -159,7 +181,7 @@ export const createLarkCalendarTool = (deps: {
             attendees.push(...r.resolved.map(p => p.openId));
           }
           if (requesterOpenId && !attendees.includes(requesterOpenId)) attendees.push(requesterOpenId);
-          const r = await deps.client.createEvent(calId, {
+          const r = await client.createEvent(calId, {
             title: args.title, startTime: args.startTime, endTime: args.endTime,
             recurrence: args.recurrence,
             ...(attendees.length ? { attendeeIds: attendees } : {}),
@@ -170,7 +192,7 @@ export const createLarkCalendarTool = (deps: {
 
         case 'update': {
           if (!args.eventId) return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: 'eventId required' }));
-          await deps.client.updateEvent(calId, args.eventId, {
+          await client.updateEvent(calId, args.eventId, {
             ...(args.title ? { summary: args.title } : {}),
             ...(args.startTime ? { start_time: toTimestamp(args.startTime) } : {}),
             ...(args.endTime ? { end_time: toTimestamp(args.endTime) } : {}),
@@ -180,7 +202,7 @@ export const createLarkCalendarTool = (deps: {
 
         case 'delete': {
           if (!args.eventId) return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: 'eventId required' }));
-          await deps.client.deleteEvent(calId, args.eventId);
+          await client.deleteEvent(calId, args.eventId);
           return ok({ success: true, message: 'Event deleted' });
         }
 
@@ -192,7 +214,7 @@ export const createLarkCalendarTool = (deps: {
           if (r.notFound.length > 0)
             return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: `Users not found: ${r.notFound.join(', ')}` }));
           const openIdToName = new Map(r.resolved.map(p => [p.openId, p.displayName]));
-          const freebusy = await deps.client.queryFreeBusy({
+          const freebusy = await client.queryFreeBusy({
             userIds: r.resolved.map(p => p.openId),
             timeMin: args.dateFrom,
             timeMax: args.dateTo,
@@ -206,7 +228,7 @@ export const createLarkCalendarTool = (deps: {
 
         case 'list_attendees': {
           if (!args.eventId) return err(new ToolError({ toolId: 'larkCalendar', reason: 'bad_args', message: 'eventId required' }));
-          const attendees = await deps.client.listAttendees(calId, args.eventId);
+          const attendees = await client.listAttendees(calId, args.eventId);
           return ok({ success: true, data: attendees, message: `${attendees.length} attendee(s)` });
         }
 
@@ -222,7 +244,7 @@ export const createLarkCalendarTool = (deps: {
             const r = await resolveNames(args.removeNames);
             removeIds.push(...r.resolved.map(p => p.openId));
           }
-          await deps.client.updateAttendees(calId, args.eventId, {
+          await client.updateAttendees(calId, args.eventId, {
             ...(addIds.length ? { add: addIds } : {}),
             ...(removeIds.length ? { remove: removeIds } : {}),
           });

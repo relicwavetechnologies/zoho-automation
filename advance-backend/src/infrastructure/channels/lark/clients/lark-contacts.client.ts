@@ -21,6 +21,28 @@ export class LarkContactsClient implements LarkContactsClientPort {
     }));
   }
 
+  async getUser(openId: string): Promise<{ openId: string; displayName: string; email?: string } | null> {
+    type UserResponse = { user?: Record<string, unknown> };
+    const data = await this.http.request<UserResponse>(
+      'GET',
+      `/open-apis/contact/v3/users/${encodeURIComponent(openId)}`,
+      { query: { user_id_type: 'open_id' } },
+    );
+    const user = data.user;
+    if (!user) return null;
+    const resolvedOpenId = typeof user['open_id'] === 'string' ? user['open_id'] : openId;
+    const displayName = typeof user['name'] === 'string' && user['name'].trim()
+      ? user['name'].trim()
+      : resolvedOpenId;
+    const email = [user['enterprise_email'], user['email']]
+      .find((value) => typeof value === 'string' && value.trim()) as string | undefined;
+    return {
+      openId: resolvedOpenId,
+      displayName,
+      ...(email ? { email: email.trim().toLowerCase() } : {}),
+    };
+  }
+
   async listDepartmentMembers(
     departmentId: string,
     limit?: number,

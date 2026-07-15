@@ -9,6 +9,7 @@
  */
 import type { TypedEnv } from '../../../config/env';
 import type { Logger } from '../../../shared/logger';
+import { Client as LarkSdkClient, Domain, LoggerLevel } from '@larksuiteoapi/node-sdk';
 import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
 import type { IngestionQueue } from '../../../application/ingestion/ingestion.queue';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
@@ -35,13 +36,15 @@ export async function fetchParentMessage(input: {
   const log = logger.child({ component: 'parent-message', parentMessageId });
 
   try {
-    const token = await getTenantToken(env);
-    if (!token) {
-      log.warn('parent_message.token_failed');
-      return null;
-    }
+    const client = new LarkSdkClient({
+      appId: env.LARK_APP_ID,
+      appSecret: env.LARK_APP_SECRET,
+      domain: env.LARK_API_BASE_URL?.replace(/\/$/, '') || Domain.Lark,
+      loggerLevel: LoggerLevel.warn,
+      source: 'divo',
+    });
 
-    const msg = await fetchLarkMessage(parentMessageId, token, env.LARK_API_BASE_URL, log);
+    const msg = await fetchLarkMessage(parentMessageId, client, log);
     if (!msg) return null;
 
     const { msgType, content, senderOpenId } = msg;
@@ -54,8 +57,7 @@ export async function fetchParentMessage(input: {
       text = extractPostText(content);
       for (const key of extractPostImageKeys(content)) {
         const url = await downloadAndUploadParentImage({
-          messageId: parentMessageId, imageKey: key, token,
-          baseUrl: env.LARK_API_BASE_URL,
+          messageId: parentMessageId, imageKey: key, client,
           ...(input.cloudinaryAdapter ? { cloudinaryAdapter: input.cloudinaryAdapter } : {}),
           ...(input.ingestionQueue ? { ingestionQueue: input.ingestionQueue } : {}),
           companyId, userId: input.userId, chatId, log,
@@ -66,8 +68,7 @@ export async function fetchParentMessage(input: {
       const imageKey = content['image_key'] as string;
       if (imageKey) {
         const url = await downloadAndUploadParentImage({
-          messageId: parentMessageId, imageKey, token,
-          baseUrl: env.LARK_API_BASE_URL,
+          messageId: parentMessageId, imageKey, client,
           ...(input.cloudinaryAdapter ? { cloudinaryAdapter: input.cloudinaryAdapter } : {}),
           ...(input.ingestionQueue ? { ingestionQueue: input.ingestionQueue } : {}),
           companyId, userId: input.userId, chatId, log,
@@ -116,57 +117,23 @@ export function buildParentContextPrefix(ref: ParentMessageResult): string {
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
-async function getTenantToken(env: TypedEnv): Promise<string | null> {
-  try {
-    const res = await fetch(
-      `${env.LARK_API_BASE_URL}/open-apis/auth/v3/tenant_access_token/internal`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_id: env.LARK_APP_ID, app_secret: env.LARK_APP_SECRET }),
-        signal: AbortSignal.timeout(8_000),
-      },
-    );
-    const data = await res.json() as Record<string, unknown>;
-    return (data['tenant_access_token'] as string) || null;
-  } catch {
-    return null;
-  }
-}
-
 async function fetchLarkMessage(
   messageId: string,
-  token: string,
-  baseUrl: string,
+  client: LarkSdkClient,
   log: Logger,
 ): Promise<{ msgType: string; content: Record<string, unknown>; senderOpenId: string } | null> {
   try {
-    const res = await fetch(
-      `${baseUrl}/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-    if (!res.ok) {
-      log.warn('parent_message.fetch_failed', { status: res.status });
+    const response = await client.im.v1.message.get({ path: { message_id: messageId } });
+    if (response.code !== undefined && response.code !== 0) {
+      log.warn('parent_message.fetch_failed', { code: response.code, message: response.msg });
       return null;
     }
-
-    const body = await res.json() as Record<string, unknown>;
-    const data = body['data'] as Record<string, unknown> | undefined;
-    const items = data?.['items'] as Array<Record<string, unknown>> | undefined;
-    const msg = items?.[0];
+    const msg = response.data?.items?.[0];
     if (!msg) return null;
 
-    const msgType = (msg['msg_type'] as string) ?? 'text';
-    const senderObj = msg['sender'] as Record<string, unknown> | undefined;
-    const senderOpenId = (senderObj?.['id'] as string) ?? '';
-
-    const msgBody = msg['body'] as Record<string, unknown> | string | undefined;
-    const contentStr = typeof msgBody === 'string'
-      ? msgBody
-      : (msgBody?.['content'] as string) ?? '{}';
+    const msgType = msg.msg_type ?? 'text';
+    const senderOpenId = msg.sender?.id ?? '';
+    const contentStr = msg.body?.content ?? '{}';
 
     let content: Record<string, unknown> = {};
     try { content = JSON.parse(contentStr) as Record<string, unknown>; } catch { /* empty */ }
@@ -223,8 +190,7 @@ const MAX_PARENT_IMAGE_BUFFER = 1_024 * 1_024;
 async function downloadAndUploadParentImage(input: {
   messageId: string;
   imageKey: string;
-  token: string;
-  baseUrl: string;
+  client: LarkSdkClient;
   cloudinaryAdapter?: CloudinaryAdapter;
   ingestionQueue?: IngestionQueue;
   companyId: string;
@@ -232,21 +198,18 @@ async function downloadAndUploadParentImage(input: {
   chatId: string;
   log: Logger;
 }): Promise<string | null> {
-  const { messageId, imageKey, token, baseUrl, cloudinaryAdapter, companyId, chatId, log } = input;
+  const { messageId, imageKey, client, cloudinaryAdapter, companyId, chatId, log } = input;
 
   try {
-    const url = `${baseUrl}/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/resources/${encodeURIComponent(imageKey)}?type=image`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(15_000),
+    const resource = await client.im.v1.messageResource.get({
+      path: { message_id: messageId, file_key: imageKey },
+      params: { type: 'image' },
     });
-
-    if (!res.ok) {
-      log.warn('parent_message.image_download_failed', { imageKey, status: res.status });
-      return null;
+    const chunks: Buffer[] = [];
+    for await (const chunk of resource.getReadableStream()) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     }
-
-    const buffer = Buffer.from(await res.arrayBuffer());
+    const buffer = Buffer.concat(chunks);
     if (buffer.length === 0) return null;
 
     // Background: queue for OCR/indexing (fire-and-forget)

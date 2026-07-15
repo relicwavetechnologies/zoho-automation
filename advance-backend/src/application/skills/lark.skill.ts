@@ -3,12 +3,13 @@ import type { Skill } from './skill.types';
 export const larkSkill: Skill = {
   id: 'lark',
   name: 'Lark Operations',
-  description: 'Tasks, messaging, calendar, docs, contacts, approvals, Base tables',
-  toolIds: ['larkTask', 'larkMessaging', 'larkCalendar', 'larkDoc', 'larkBase', 'larkApproval'],
+  description: 'Tasks, messaging, calendar, video meetings, docs, contacts, approvals, Base tables',
+  toolIds: ['larkTask', 'larkMessaging', 'larkCalendar', 'larkMeeting', 'larkDoc', 'larkBase', 'larkApproval'],
   instructions: `ROUTING — pick the right tool:
 - "schedule / book / set up a meeting" → larkCalendar (NEVER larkTask)
 - "create task / todo / follow-up / reminder" → larkTask (NEVER larkCalendar)
 - "create doc / document / page / notes" → larkDoc (NEVER larkTask)
+- "find past meeting / meeting details / recording" → larkMeeting
 - "my open tasks / pending" → larkTask listOpenMine
 - "approvals waiting on me" → larkApproval
 
@@ -29,6 +30,11 @@ CALENDAR / MEETINGS:
 - Recurring: create_recurring with recurrence field. Never use plain create for repeating events.
 - Update attendees: update_attendees with addNames/removeNames.
 
+VIDEO MEETINGS:
+- Search historic meetings with larkMeeting search. Read a known meeting with get.
+- Retrieve a recording only with get_recording and a known meetingId; return the exact URL Lark returns.
+- larkMeeting is read-only. Do not claim it can join, end, invite, remove participants, or control a live meeting.
+
 MESSAGING:
 - Send only to explicitly named recipients or chats.
 - DM by name: send_dm with recipientName.
@@ -37,7 +43,8 @@ MESSAGING:
 - Bot not in group → tell user to add the bot first.
 
 DOCS:
-- Create only when asked. Return doc title and docToken.
+- Create only when asked. Return the doc title and the canonical URL returned by Lark.
+- Never construct a document URL from docToken. If create succeeds, preserve its url exactly.
 - Edit: list_blocks to get blockId, then update_block. Insert table: insert_table with rows + cols.
 
 HINGLISH: Mixed-language requests map to the same English action. Language never changes tool choice.

@@ -1,90 +1,57 @@
 import type { Skill } from './skill.types';
+import {
+  GOOGLE_WORKSPACE_MCP_SOURCE,
+  GOOGLE_WORKSPACE_PRODUCTS,
+  GOOGLE_WORKSPACE_TOOL_IDS,
+} from '../google/google-workspace-mcp-manifest';
+
+const operationIndex = GOOGLE_WORKSPACE_PRODUCTS
+  .map((product) => `- ${product.name} -> ${product.toolId}: ${product.tools.join(', ')}`)
+  .join('\n');
 
 export const googleSkill: Skill = {
   id: 'google',
   name: 'Google Workspace',
-  description: 'Use connected Google Workspace accounts for Gmail, Drive, and Calendar.',
-  toolIds: ['googleGmail', 'googleDrive', 'googleCalendar'],
+  description: 'Use governed Google Workspace connections for Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, and Apps Script.',
+  toolIds: [...GOOGLE_WORKSPACE_TOOL_IDS],
   instructions: `GOOGLE WORKSPACE EXECUTION METHOD:
-- Always start by resolving available Google accounts. Call divo_gateway with op="connections.list" and payload={"provider":"google_workspace"} before Gmail, Drive, or Calendar.
-- If no connections are returned, tell the user to connect Google Workspace from the desktop Plugins page.
-- If exactly one connection is returned, use that connectionId.
-- If multiple connections are returned, choose by explicit user intent: account email, label, personal/shared ownership, access level, or task purpose.
-- If multiple connections are plausible and the user did not specify, ask one short account-choice question. Do not guess.
-- Never use an email address, label, or guessed value as connectionId. Use only the backend connectionId from connections.list.
-- Invoke tools with divo_gateway op="tools.invoke" and payload={"toolId":"googleGmail"|"googleDrive"|"googleCalendar","args":{...,"connectionId":"selected id"}}.
-- For mixed requests, reuse the same selected connection unless the user clearly asks for a different Google account.
+- Google Workspace executes only through Divo gateway tools backed by the private server-side Workspace MCP. Never use a local Google CLI, direct Google API request, Bash, curl, browser automation, or local OAuth token.
+- Resolve accounts first with divo_gateway op="connections.list" and payload={"provider":"google_workspace"}.
+- If no connection is available, tell the member to connect Google Workspace. If exactly one is available, use it. If several are plausible, ask one short account-choice question.
+- Use only the returned backend connectionId. Never use an email address or label as connectionId.
+- Invoke the product tool with args={"connectionId":"...","op":"describe"|"call","nativeTool":"...","input":{...}}.
+- Divo injects user_google_email from the selected connection. Never place user_google_email in input.
+- Before an unfamiliar operation, call op="describe" for its nativeTool and follow the returned input schema exactly. Once the schema is known in the current run, call op="call" directly.
+- The gateway owns RBAC, approvals, sharing, token refresh, and audit. A pending or denied action is not completed.
 
-PRODUCT ROUTING:
-- Email, inbox, drafts, replies, forwarding, labels, archive/read/star/trash -> googleGmail.
-- Files, folders, documents, spreadsheets, slides, PDFs, Drive search, file summaries -> googleDrive.
-- Meetings, events, schedule, availability, calendar lookup, create/update/delete event -> googleCalendar.
-- If the user asks a broad Google question, route to the specific product needed by the task. Do not call all tools without reason.
+PINNED MCP CONTRACT:
+- Source: ${GOOGLE_WORKSPACE_MCP_SOURCE.repository}
+- Version: ${GOOGLE_WORKSPACE_MCP_SOURCE.version}
+- Divo exposes only the reviewed operations below. The MCP server's own OAuth tool is intentionally unavailable.
 
-GMAIL RECIPES:
-- Latest inbox / check mail: googleGmail op="list" with limit, no query unless user provided a filter.
-- Search mail: googleGmail op="search" with Gmail query string. Use from:, to:, subject:, newer_than:, older_than:, has:attachment when useful.
-- Read a specific email after list/search: googleGmail op="get" with messageId from the previous result.
-- Thread view: googleGmail op="thread_get" with threadId when conversation context matters.
-- Draft email: googleGmail op="draft_create".
-- Send email: googleGmail op="send" only when recipient and body are grounded; backend approval may be required.
-- Reply: googleGmail op="reply" with messageId. Reply all: op="reply_all". Forward: op="forward" with messageId and to.
-- Organize mailbox: archive, mark_read, mark_unread, star, unstar, trash, untrash, label_apply, label_remove. Never permanently delete.
+PRODUCT ROUTING AND APPROVED OPERATIONS:
+${operationIndex}
 
-EMAIL COMPOSITION:
-- Always provide a clear subject unless user explicitly says to leave it blank.
-- Only send to real email addresses provided by user or resolved by contact lookup. If only a name is given, stop and say the email must be resolved first.
-- NEVER invent email addresses from names. Never use placeholder domains (example.com, test.com).
-- Always use bodyText. Divo renders it with the T1 HTML email template (multipart plain + HTML). Do NOT use bodyHtml unless explicitly required.
-- Structure long research/report emails with ALL CAPS section headings (e.g. PRICING, ENGINE SPECS) and bullet lines (- item). Optional templateId: divo-finance-v1 for finance, divo-report-v1 for research summaries.
-- Write well-structured plain text: real paragraph breaks, not a wall of text.
-- Include all URLs on their own lines. Finance values must appear in bodyText, not just subject.
-- Greet by name when known. Sign off: "Best regards,\\n[Sender Name]" unless user specifies otherwise.
-- CC/BCC only when user explicitly provides them. Never mention BCC in confirmation text.
+COMMON WORKFLOWS:
+- Gmail: search_gmail_messages -> get_gmail_message_content -> send_gmail_message for a grounded reply. Use draft_gmail_message when review was requested.
+- Drive: search_drive_files or list_drive_items -> get_drive_file_content. Use get_drive_file_download_url only when an actual download is needed.
+- Calendar: get_events for schedules; manage_event for create/update/delete; query_freebusy before scheduling when availability matters.
+- Docs: create_doc -> modify_doc_text/insert_doc_elements -> get_doc_as_markdown to verify. Return the canonical document URL from tool output.
+- Sheets: get_spreadsheet_info -> read_sheet_values -> modify_sheet_values -> read_sheet_values to verify. Use create_spreadsheet for a new workbook.
+- Slides: create_presentation -> batch_update_presentation -> get_presentation/get_page to verify. Preserve the returned presentation ID and URL.
+- Forms: create_form -> batch_update_form -> get_form. Read responses only when requested and allowed.
+- Tasks and Contacts: list/search first when identity or target IDs are ambiguous, then use the relevant manage operation.
+- Chat: list_spaces before reading or sending when the destination is not already resolved.
+- Apps Script: inspect the project before updates. run_script_function is execution and may require approval.
 
-APPROVAL DISCIPLINE:
-- Never claim "Email sent" or "Draft created" without invoking the matching Gmail tool first.
-- If user gave a clear send instruction with resolved recipient and grounded body, just send (routes through approval). Don't ask for extra confirmation.
-- If user asks to review first, use draft_create instead.
+EMAIL SAFETY:
+- Never invent recipient addresses. Send only to real addresses given by the member or grounded by contact lookup.
+- Use a clear subject and structured body. Use base64 attachment content or HTTPS sources; sidecar-local paths and file:// URLs are forbidden.
+- Never claim sent/drafted until the tool succeeds. Preserve approval status exactly.
 
-DRIVE RECIPES:
-- Recent files: googleDrive op="list" with limit.
-- Find files: googleDrive op="search" with query and limit.
-- File metadata only: googleDrive op="get" with fileId.
-- File content / deep dive / summarize docs: first list/search, then googleDrive op="read" with fileId for each relevant file.
-- op="get" is metadata only and does not return content. Use op="read" for content.
-- For Google Docs/Sheets/Slides, op="read" exports before reading. Pass exportMimeType only when a custom format is needed.
-- Return grounded summaries with file name, link, last-modified date, and what was read. Do not pretend unread files were inspected.
-- If search returns too many plausible files, read the most relevant few first and state the basis for selection.
-
-CALENDAR RECIPES:
-- Upcoming schedule: googleCalendar op="list" with calendarId="primary" unless user names another calendar.
-- Date-window schedule: for "today", "tomorrow", "this week", "next 7 days", or similar, call googleCalendar op="list" with startTime and endTime as ISO 8601 bounds.
-- Use half-open local ranges for day windows: startTime is the local start of the first day; endTime is the local start after the last included day. For "next 7 days", include today plus the following 6 local days: start at today 00:00 local time and end at 00:00 local time 7 days later. Describe the displayed range as the included dates, not the exclusive end date.
-- Calendar args use key op, never action. Calendar startTime/endTime must include a timezone offset or Z; do not send timezone-less timestamps.
-- Keep the final answer's displayed date range consistent with the exact startTime/endTime window you passed.
-- Read event details: googleCalendar op="get" with eventId.
-- Create event: googleCalendar op="create" with title, startTime, endTime, optional description and attendeeEmails.
-- Update event: googleCalendar op="update" with eventId and changed fields only.
-- Delete/cancel event: googleCalendar op="delete" with eventId.
-- Use ISO 8601 times. For India/default user context, use IST (+05:30) when the user gives local times.
-- Default duration is 30 minutes if the user gives only a start time. Add attendees only when explicitly named or resolved to real emails.
-
-MULTI-STEP BEHAVIOR:
-- For "catch me up" style requests, use Gmail list/search plus Calendar list; include Drive only if files/docs are mentioned.
-- For "deep dive my Drive" requests, Drive search/list is not enough. Always follow with Drive read on selected files.
-- For "email a summary of Drive files", read Drive content first, then draft/send via Gmail using the same selected connection unless user says otherwise.
-- For "schedule from email", read the email first, extract grounded details, then create/update Calendar event.
-
-ERROR HANDLING:
-- Missing recipient -> "Cannot send: recipient email address not provided."
-- Google not connected -> tell user to connect Google Workspace from the desktop Plugins page.
-- Permission denied -> say the selected connection or role does not allow that action.
-- Tool fail -> retry once only if a better argument can be inferred, then return the exact reason.
-
-NEVER:
-- Never expose backend credentials or tokens.
-- Never guess connectionId, messageId, fileId, eventId, or recipient email.
-- Never claim email sent, draft created, file read, or event changed unless the tool succeeded.
-- Never use filler phrases or raw API dumps in the final answer.`,
+GENERAL SAFETY:
+- Never guess message IDs, file IDs, event IDs, spreadsheet IDs, presentation IDs, form IDs, task IDs, contact IDs, space IDs, or script IDs.
+- For mutation, use the smallest exact operation and verify important document/sheet/slide changes with a read.
+- Retry only once when the returned error identifies a correctable argument. Otherwise report the exact useful reason.
+- Never expose access tokens, refresh tokens, MCP endpoint details, or raw internal authorization data.`,
 };

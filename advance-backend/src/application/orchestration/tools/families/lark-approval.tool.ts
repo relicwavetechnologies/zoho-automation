@@ -19,6 +19,11 @@ const ResultSchema = z.object({ success: z.boolean(), data: z.unknown().optional
 type Res = z.infer<typeof ResultSchema>;
 
 export interface LarkApprovalClientPort {
+  /**
+   * The native approval-instance endpoints used here are tenant-token APIs.
+   * Divo uses the installed Lark app identity after backend RBAC/HITL checks;
+   * it must not pretend a user access token can authorize them.
+   */
   listInstances(approvalCode: string, limit?: number): Promise<unknown[]>;
   getInstance(approvalCode: string, instanceCode: string): Promise<unknown>;
   createInstance(approvalCode: string, formValues: Record<string, unknown>): Promise<{ instanceCode: string }>;
@@ -28,7 +33,7 @@ export const createLarkApprovalTool = (deps: { client: LarkApprovalClientPort })
   id: asToolId('larkApproval'), family: 'lark',
   actionGroups: new Set(['read', 'create']),
   argsSchema: Schema, resultSchema: ResultSchema,
-  description: 'List, get, or create Lark approval requests.',
+  description: 'List, get, or create native Lark approvals through the installed Lark app after Divo policy checks.',
   parameterDocs: 'op: list|get|create. approvalCode, instanceCode, formValues.',
   permissionCheck(args, perm) {
     const action: ToolActionGroup = args.op === 'create' ? 'create' : 'read';

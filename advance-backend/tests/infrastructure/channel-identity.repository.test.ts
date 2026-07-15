@@ -6,12 +6,13 @@ import { ok, err } from '../../src/shared/result.ts';
 import type { ResolvedUserIdentity } from '../../src/infrastructure/persistence/channel-identity.repository.ts';
 
 function makeDb(overrides: Record<string, unknown>) {
-  return {
+  const db: Record<string, any> = {
     channelIdentity: {
       findFirst: async () => null,
     },
-    larkUserAuthLink: {
+    integrationConnection: {
       findFirst: async () => null,
+      findMany: async () => [],
     },
     userDepartmentPreference: {
       findUnique: async () => null,
@@ -20,14 +21,20 @@ function makeDb(overrides: Record<string, unknown>) {
       findUnique: async () => null,
       create: async () => ({ id: 'created-user' }),
     },
+    adminMembership: {
+      findFirst: async () => ({ role: 'MEMBER' }),
+      create: async (input: any) => ({ role: input.data.role }),
+    },
     ...overrides,
   };
+  db['$transaction'] = async (fn: (tx: unknown) => Promise<unknown>) => fn(db);
+  return db;
 }
 
 // ── Cache helpers ──────────────────────────────────────────────────────────────
 
 const OPEN_ID = 'ou_cache_test';
-const CACHE_KEY = `lark:id:v1:${OPEN_ID}`;
+const CACHE_KEY = `lark:id:v2:${OPEN_ID}`;
 
 const resolvedIdentity: ResolvedUserIdentity = {
   userId: 'user-1',
@@ -47,8 +54,9 @@ function makeIdentityDb(overrides: Record<string, unknown> = {}) {
         companyId: 'company-1',
       }),
     },
-    larkUserAuthLink: {
-      findFirst: async () => ({ userId: 'user-1' }),
+    integrationConnection: {
+      findFirst: async () => ({ ownerUserId: 'user-1' }),
+      findMany: async () => [{ ownerUserId: 'user-1', ownerUser: { email: 'user@example.com' } }],
     },
     userDepartmentPreference: {
       findUnique: async () => null,
@@ -56,6 +64,10 @@ function makeIdentityDb(overrides: Record<string, unknown> = {}) {
     user: {
       findUnique: async () => null,
       create: async () => ({ id: 'created-user' }),
+    },
+    adminMembership: {
+      findFirst: async () => ({ role: 'MEMBER' }),
+      create: async (input: any) => ({ role: input.data.role }),
     },
     ...overrides,
   };
@@ -87,11 +99,11 @@ function makeFailingCache(): CachePort {
 // ── Cache tests for resolveByLarkOpenId ────────────────────────────────────────
 
 describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
-  it('cache miss: fires all 3 DB queries and populates cache', async () => {
-    let ciFindCalls = 0, authLinkCalls = 0, deptPrefCalls = 0;
+  it('cache miss: resolves the canonical Lark connection and populates cache', async () => {
+    let ciFindCalls = 0, connectionCalls = 0, deptPrefCalls = 0;
     const db = makeIdentityDb({
       channelIdentity: { findFirst: async () => { ciFindCalls++; return { id: 'ci-1', aiRole: 'MEMBER', channel: 'lark', companyId: 'company-1' }; } },
-      larkUserAuthLink: { findFirst: async () => { authLinkCalls++; return { userId: 'user-1' }; } },
+      integrationConnection: { findMany: async () => { connectionCalls++; return [{ ownerUserId: 'user-1', ownerUser: { email: 'user@example.com' } }]; } },
       userDepartmentPreference: { findUnique: async () => { deptPrefCalls++; return null; } },
     });
     const cache = makeCache();
@@ -103,17 +115,70 @@ describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
     assert.ok(result.ok);
     assert.ok(result.value !== null);
     assert.equal(ciFindCalls, 1, 'channelIdentity.findFirst must be called once');
-    assert.equal(authLinkCalls, 1, 'larkUserAuthLink.findFirst must be called once');
+    assert.equal(connectionCalls, 1, 'integrationConnection.findMany must be called once');
     assert.equal(deptPrefCalls, 1, 'userDepartmentPreference.findUnique must be called once');
     assert.ok(cache.store.has(CACHE_KEY), 'resolved identity should be cached');
   });
 
-  it('cache hit: returns cached result without querying DB', async () => {
+  it('prefers the connection owner whose Divo email matches the Lark identity', async () => {
+    let membershipUserId: string | undefined;
+    const db = makeIdentityDb({
+      channelIdentity: {
+        findFirst: async () => ({
+          id: 'ci-1',
+          aiRole: 'MEMBER',
+          channel: 'lark',
+          companyId: 'company-1',
+          email: 'admin@example.com',
+        }),
+      },
+      integrationConnection: {
+        findMany: async () => [
+          { ownerUserId: 'legacy-user', ownerUser: { email: 'lark-placeholder@identity.divo.invalid' } },
+          { ownerUserId: 'admin-user', ownerUser: { email: 'ADMIN@example.com' } },
+        ],
+      },
+      adminMembership: {
+        findFirst: async (input: any) => {
+          membershipUserId = input.where.userId;
+          return { role: 'COMPANY_ADMIN' };
+        },
+      },
+    });
+    const repo = new ChannelIdentityRepository(db as any);
+
+    const result = await repo.resolveByLarkOpenId(OPEN_ID);
+
+    assert.ok(result.ok);
+    assert.equal(result.value?.userId, 'admin-user');
+    assert.equal(result.value?.aiRole, 'COMPANY_ADMIN');
+    assert.equal(membershipUserId, 'admin-user');
+  });
+
+  it('fails closed when duplicate Lark owners are ambiguous and identity email is unavailable', async () => {
+    const db = makeIdentityDb({
+      integrationConnection: {
+        findMany: async () => [
+          { ownerUserId: 'user-1', ownerUser: { email: 'one@example.com' } },
+          { ownerUserId: 'user-2', ownerUser: { email: 'two@example.com' } },
+        ],
+      },
+    });
+    const repo = new ChannelIdentityRepository(db as any);
+
+    const result = await repo.resolveByLarkOpenId(OPEN_ID);
+
+    assert.ok(result.ok);
+    assert.equal(result.value, null);
+  });
+
+  it('cache hit: revalidates live company membership before returning the cached identity', async () => {
     let dbCalls = 0;
     const db = makeIdentityDb({
       channelIdentity: { findFirst: async () => { dbCalls++; return null; } },
-      larkUserAuthLink: { findFirst: async () => { dbCalls++; return null; } },
+      integrationConnection: { findMany: async () => { dbCalls++; return []; } },
       userDepartmentPreference: { findUnique: async () => { dbCalls++; return null; } },
+      adminMembership: { findFirst: async () => { dbCalls++; return { role: 'COMPANY_ADMIN' }; } },
     });
     const store = new Map<string, unknown>([[CACHE_KEY, resolvedIdentity]]);
     const cache = makeCache(store);
@@ -122,8 +187,8 @@ describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
     const result = await repo.resolveByLarkOpenId(OPEN_ID);
 
     assert.ok(result.ok);
-    assert.deepEqual(result.value, resolvedIdentity);
-    assert.equal(dbCalls, 0, 'no DB queries should fire on cache hit');
+    assert.deepEqual(result.value, { ...resolvedIdentity, aiRole: 'COMPANY_ADMIN' });
+    assert.equal(dbCalls, 1, 'cache hits must still revalidate the live membership role');
   });
 
   it('null result (identity not found) is NOT cached', async () => {
@@ -141,9 +206,9 @@ describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
     assert.ok(!cache.store.has(CACHE_KEY), 'null result must NOT be cached');
   });
 
-  it('null result when authLink missing is NOT cached', async () => {
+  it('null result when no active generic connection exists is NOT cached', async () => {
     const db = makeIdentityDb({
-      larkUserAuthLink: { findFirst: async () => null },
+      integrationConnection: { findMany: async () => [] },
     });
     const cache = makeCache();
     const repo = new ChannelIdentityRepository(db as any, cache);
@@ -153,14 +218,14 @@ describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
 
     assert.ok(result.ok);
     assert.equal(result.value, null);
-    assert.ok(!cache.store.has(CACHE_KEY), 'null result (missing auth link) must NOT be cached');
+    assert.ok(!cache.store.has(CACHE_KEY), 'null result (missing connection) must NOT be cached');
   });
 
   it('cache error falls through to DB queries', async () => {
     let dbCalls = 0;
     const db = makeIdentityDb({
       channelIdentity: { findFirst: async () => { dbCalls++; return { id: 'ci-1', aiRole: 'MEMBER', channel: 'lark', companyId: 'company-1' }; } },
-      larkUserAuthLink: { findFirst: async () => { dbCalls++; return { userId: 'user-1' }; } },
+      integrationConnection: { findMany: async () => { dbCalls++; return [{ ownerUserId: 'user-1', ownerUser: { email: 'user@example.com' } }]; } },
       userDepartmentPreference: { findUnique: async () => { dbCalls++; return null; } },
     });
     const repo = new ChannelIdentityRepository(db as any, makeFailingCache());
@@ -241,6 +306,10 @@ describe('ChannelIdentityRepository.prepareLarkLogin', () => {
         create: async () => {
           throw new Error('should not create user');
         },
+      },
+      adminMembership: {
+        findFirst: async () => ({ role: 'COMPANY_ADMIN' }),
+        create: async () => { throw new Error('should not create membership'); },
       },
     }) as any);
 

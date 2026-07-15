@@ -11,6 +11,7 @@ import {
 } from '../../domain/tools/tool-id';
 import { unknownSkillToolIds } from '../skills/skill-tool-validation';
 import { recordSkillRegistryMutation } from '../skills/skill-registry-versioning';
+import { larkSkillEnglishOnlyError } from '../skills/lark-skill-language-policy';
 import { isFixedToolPolicy } from '../../domain/tools/tool-policy';
 
 export interface DepartmentAdminServiceDeps {
@@ -922,6 +923,15 @@ export class DepartmentAdminService {
     if (unknownToolIds.length > 0) {
       return fail({ kind: 'validation', message: `Unknown skill toolIds: ${unknownToolIds.join(', ')}` });
     }
+    const languageError = larkSkillEnglishOnlyError({
+      slug,
+      name: input.name,
+      summary: input.summary ?? '',
+      markdown: input.markdown,
+      toolIds: input.toolIds ?? [],
+      tags: input.tags ?? [],
+    });
+    if (languageError) return fail({ kind: 'validation', message: languageError });
 
     const folderId = input.folderId ?? null;
     const placement = await this.assertSkillFolderPlacement(companyId, departmentId, folderId);
@@ -962,6 +972,15 @@ export class DepartmentAdminService {
     if (unknownToolIds.length > 0) {
       return fail({ kind: 'validation', message: `Unknown skill toolIds: ${unknownToolIds.join(', ')}` });
     }
+    const languageError = larkSkillEnglishOnlyError({
+      slug: existing.slug,
+      name: input.name ?? existing.name,
+      summary: input.summary ?? existing.summary,
+      markdown: input.markdown ?? existing.markdown,
+      toolIds: input.toolIds ?? existing.toolIds,
+      tags: input.tags ?? existing.tags,
+    });
+    if (languageError) return fail({ kind: 'validation', message: languageError });
 
     if (input.folderId !== undefined) {
       const placement = await this.assertSkillFolderPlacement(companyId, departmentId, input.folderId);

@@ -5,6 +5,7 @@ import { LARK_RUNNER_SYSTEM } from '../src/application/orchestration/agent-runne
 import { GOOGLE_RUNNER_SYSTEM } from '../src/application/orchestration/agent-runners/prompts/google.prompt';
 import { ZOHO_RUNNER_SYSTEM } from '../src/application/orchestration/agent-runners/prompts/zoho.prompt';
 import { CONTEXT_RUNNER_SYSTEM } from '../src/application/orchestration/agent-runners/prompts/context.prompt';
+import { GOOGLE_WORKSPACE_TOOL_IDS } from '../src/application/google/google-workspace-mcp-manifest';
 
 interface SeedAgent {
   readonly name: string;
@@ -43,9 +44,9 @@ const SEED_AGENTS: readonly SeedAgent[] = [
   {
     name: 'Google Workspace',
     slug: 'google-ops',
-    capabilityDescription: 'Handles Gmail (send, draft, search, inbox), Google Calendar (create, list, update events), and Google Drive (search, list, read files). Enforces email composition standards and approval discipline.',
+    capabilityDescription: 'Handles governed Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, and Apps Script operations through the backend Workspace MCP.',
     systemPrompt: GOOGLE_RUNNER_SYSTEM,
-    toolIds: ['googleGmail', 'googleCalendar', 'googleDrive'],
+    toolIds: [...GOOGLE_WORKSPACE_TOOL_IDS],
     hookId: null,
     maxSteps: 10,
     temperature: 0,
@@ -136,32 +137,35 @@ async function validateToolIds(toolIds: readonly string[]) {
 
 async function main() {
   const companyId = process.argv[2];
-  if (!companyId) {
-    console.error('Usage: pnpm seed:dynamic-agents <companyId>');
-    process.exit(1);
-  }
-
-  const company = await prisma.company.findUnique({ where: { id: companyId }, select: { id: true, name: true } });
-  if (!company) {
-    console.error(`Company not found: ${companyId}`);
-    process.exit(1);
-  }
-
-  console.log(`Seeding dynamic agents for ${company.name} (${company.id})`);
   await validateToolIds(SEED_AGENTS.flatMap(agent => agent.toolIds));
+
+  const companies = companyId
+    ? await prisma.company.findMany({ where: { id: companyId }, select: { id: true, name: true } })
+    : await prisma.company.findMany({ select: { id: true, name: true }, orderBy: { id: 'asc' } });
+  if (companies.length === 0) {
+    throw new Error(companyId ? `Company not found: ${companyId}` : 'No companies found');
+  }
+
+  for (const company of companies) {
+    await seedCompany(company);
+  }
+}
+
+async function seedCompany(company: { id: string; name: string }): Promise<void> {
+  console.log(`Seeding dynamic agents for ${company.name} (${company.id})`);
 
   const rootSeed = SEED_AGENTS[0];
   if (!rootSeed?.isRootAgent) {
     throw new Error('First seed agent must be the root supervisor');
   }
 
-  const root = await upsertAgent(companyId, rootSeed, null);
+  const root = await upsertAgent(company.id, rootSeed, null);
   for (const child of SEED_AGENTS.slice(1)) {
-    await upsertAgent(companyId, child, root.id);
+    await upsertAgent(company.id, child, root.id);
   }
 
-  const count = await prisma.agentDefinition.count({ where: { companyId } });
-  console.log(`done: ${count} total AgentDefinition rows for company ${companyId}`);
+  const count = await prisma.agentDefinition.count({ where: { companyId: company.id } });
+  console.log(`done: ${count} total AgentDefinition rows for company ${company.id}`);
 }
 
 main()

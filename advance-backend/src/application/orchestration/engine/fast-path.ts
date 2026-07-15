@@ -1,6 +1,7 @@
 import { generateText } from 'ai';
 import type { LanguageModel } from 'ai';
 import type { Logger } from '../../../shared/logger';
+import { LARK_ENGLISH_OUTPUT_POLICY } from '../lark-language-policy';
 
 // ─── Classification ────────────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ export function classifyMessage(text: string): MessageComplexity {
 // ─── Fast-path LLM call ────────────────────────────────────────────────────
 
 const FAST_PATH_SYSTEM = `You are Divo, a concise AI assistant embedded in Lark (a workplace chat app). \
+${LARK_ENGLISH_OUTPUT_POLICY} \
 Respond conversationally and briefly. \
 You have no tools in this mode — if the user asks you to perform an action, look up data, \
 create something, or access any external system, politely say you'll handle it shortly and \

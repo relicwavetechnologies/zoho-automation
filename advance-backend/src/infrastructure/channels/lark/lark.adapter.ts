@@ -29,6 +29,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
     this.messagingClient = new LarkMessagingClient({
       appId: deps.env.LARK_APP_ID,
       appSecret: deps.env.LARK_APP_SECRET,
+      apiBaseUrl: deps.env.LARK_API_BASE_URL,
       logger: this.logger,
     });
   }

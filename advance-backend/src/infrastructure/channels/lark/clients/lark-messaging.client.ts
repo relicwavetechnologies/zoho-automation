@@ -7,6 +7,7 @@ interface LarkMessagingClientDeps {
   appId: string;
   appSecret: string;
   logger: Logger;
+  apiBaseUrl?: string;
 }
 
 interface SendMessageResult {
@@ -14,20 +15,20 @@ interface SendMessageResult {
 }
 
 /**
- * Thin HTTP client for Lark messaging APIs.
+ * SDK-backed client for Lark bot messaging APIs.
  * All business logic lives in LarkChannelAdapter, not here.
  */
 export class LarkMessagingClient {
-  private readonly appId: string;
-  private readonly appSecret: string;
   private readonly logger: Logger;
-  private tenantToken?: string;
-  private tokenExpiresAt = 0;
+  private readonly sdk: LarkHttpClient;
 
   constructor(deps: LarkMessagingClientDeps) {
-    this.appId = deps.appId;
-    this.appSecret = deps.appSecret;
     this.logger = deps.logger.child({ larkClient: 'messaging' });
+    this.sdk = new LarkHttpClient({
+      appId: deps.appId,
+      appSecret: deps.appSecret,
+      ...(deps.apiBaseUrl ? { apiBaseUrl: deps.apiBaseUrl } : {}),
+    });
   }
 
   async sendMessage(
@@ -36,9 +37,6 @@ export class LarkMessagingClient {
     replyToMessageId?: string,
     replyInThread?: boolean,
   ): Promise<SendMessageResult> {
-    const token = await this.getToken();
-    const url = 'https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type=chat_id';
-
     // The adapter builders embed { msg_type, content|card } in the content string.
     // Parse it here so the Lark API gets the right msg_type and the correct inner content.
     let msgType = 'text';
@@ -71,28 +69,15 @@ export class LarkMessagingClient {
       body['quote_reply_msg_id'] = replyToMessageId;
     }
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    const data = await res.json() as Record<string, unknown>;
-    if (!res.ok) {
-      throw new Error(`Lark sendMessage failed: ${res.status} ${JSON.stringify(data)}`);
-    }
-
-    const msgData = data['data'] as Record<string, unknown>;
-    return { messageId: msgData['message_id'] as string };
+    const data = await this.sdk.request<{ message_id?: string }>(
+      'POST',
+      '/open-apis/im/v1/messages',
+      { query: { receive_id_type: 'chat_id' }, body },
+    );
+    return { messageId: data.message_id ?? '' };
   }
 
   async updateMessage(messageId: string, content: string): Promise<void> {
-    const token = await this.getToken();
-    const url = `https://open.larksuite.com/open-apis/im/v1/messages/${messageId}`;
-
     // Same wrapper extraction as sendMessage — builders embed {msg_type, card|content}.
     // Lark PATCH endpoint expects only the inner card/content JSON as the `content` field.
     let apiContent = content;
@@ -109,19 +94,11 @@ export class LarkMessagingClient {
       }
     } catch { /* not a wrapper — send as-is */ }
 
-    const res = await fetch(url, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ content: apiContent }),
-    });
-
-    if (!res.ok) {
-      const data = await res.json();
-      throw new Error(`Lark updateMessage failed: ${res.status} ${JSON.stringify(data)}`);
-    }
+    await this.sdk.request(
+      'PATCH',
+      `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
+      { body: { content: apiContent } },
+    );
   }
 
   /**
@@ -129,9 +106,6 @@ export class LarkMessagingClient {
    * Uses receive_id_type=open_id so we don't need a chat_id.
    */
   async sendCardToOpenId(openId: string, cardContent: string): Promise<{ messageId: string }> {
-    const token = await this.getToken();
-    const url = 'https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type=open_id';
-
     let msgType = 'interactive';
     let apiContent = cardContent;
     try {
@@ -146,46 +120,23 @@ export class LarkMessagingClient {
       }
     } catch { /* send as-is */ }
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ receive_id: openId, content: apiContent, msg_type: msgType }),
-    });
-
-    const data = await res.json() as Record<string, unknown>;
-    if (!res.ok) {
-      throw new Error(`Lark sendCardToOpenId failed: ${res.status} ${JSON.stringify(data)}`);
-    }
-    const msgData = data['data'] as Record<string, unknown>;
-    return { messageId: msgData['message_id'] as string };
+    const data = await this.sdk.request<{ message_id?: string }>(
+      'POST',
+      '/open-apis/im/v1/messages',
+      {
+        query: { receive_id_type: 'open_id' },
+        body: { receive_id: openId, content: apiContent, msg_type: msgType },
+      },
+    );
+    return { messageId: data.message_id ?? '' };
   }
 
   async addReaction(messageId: string, reactionType: string): Promise<void> {
-    const token = await this.getToken();
-    const url = `https://open.larksuite.com/open-apis/im/v1/messages/${messageId}/reactions`;
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reaction_type: { emoji_type: reactionType } }),
-    });
-  }
-
-  private async getToken(): Promise<string> {
-    if (this.tenantToken && Date.now() < this.tokenExpiresAt - 60_000) {
-      return this.tenantToken;
-    }
-    const res = await fetch('https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
-    });
-    const data = await res.json() as Record<string, unknown>;
-    if (!res.ok || data['code'] !== 0) {
-      throw new Error(`Failed to get Lark tenant token: ${JSON.stringify(data)}`);
-    }
-    this.tenantToken = data['tenant_access_token'] as string;
-    this.tokenExpiresAt = Date.now() + ((data['expire'] as number) * 1000);
-    return this.tenantToken;
+    await this.sdk.request(
+      'POST',
+      `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reactions`,
+      { body: { reaction_type: { emoji_type: reactionType } } },
+    );
   }
 }
 

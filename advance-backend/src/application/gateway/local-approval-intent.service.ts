@@ -6,6 +6,7 @@ import { computeArgsHash } from '../approval/approval-policy';
 import type { GatewayMemberContext, GatewayResponse } from './gateway.types';
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
 import type { ToolExecutor } from './tool-executor';
+import { googleWorkspaceProductByToolId } from '../google/google-workspace-mcp-manifest';
 
 const DEFAULT_INTENT_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_TOMBSTONE_TTL_MS = 10 * 60 * 1000;
@@ -302,25 +303,23 @@ function buildApprovalPresentation(
   action: ToolActionGroup,
   args: Record<string, unknown>,
 ): ApprovalPresentation {
-  const operation = typeof args['op'] === 'string'
+  const googleProduct = googleWorkspaceProductByToolId(toolId);
+  const operation = googleProduct && typeof args['nativeTool'] === 'string'
+    ? args['nativeTool']
+    : typeof args['op'] === 'string'
     ? args['op']
     : typeof args['operation'] === 'string'
       ? args['operation']
       : action;
 
-  if (toolId === 'googleGmail') {
+  if (googleProduct) {
     return {
-      kind: `gmail.${operation}`,
-      provider: 'gmail',
-      title: gmailTitle(operation),
+      kind: `google.${googleProduct.service}.${operation}`,
+      provider: 'google',
+      title: googleApprovalTitle(googleProduct.service, googleProduct.name, operation, action),
       action,
       operation,
-      details: pickDefined(args, [
-        'connectionId', 'messageId', 'messageIds', 'threadId', 'draftId',
-        'to', 'cc', 'bcc', 'subject', 'body', 'bodyText', 'bodyHtml',
-        'templateId', 'templateData', 'attachments', 'labelIds', 'labelNames',
-        'includeOriginal', 'inReplyTo', 'references',
-      ]),
+      details: pickDefined(args, ['connectionId', 'nativeTool', 'input']),
     };
   }
 
@@ -356,16 +355,18 @@ function buildApprovalPresentation(
   };
 }
 
-function gmailTitle(operation: string): string {
-  if (operation === 'send') return 'Review email before sending';
-  if (operation === 'reply' || operation === 'reply_all') return 'Review reply before sending';
-  if (operation === 'forward') return 'Review forwarded email';
-  if (operation.startsWith('draft_')) return `Review Gmail ${humanize(operation)}`;
-  return `Review Gmail ${humanize(operation)}`;
-}
-
 function humanize(value: string): string {
   return value.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[._-]+/g, ' ').toLowerCase();
+}
+
+function googleApprovalTitle(
+  service: string,
+  productName: string,
+  operation: string,
+  action: ToolActionGroup,
+): string {
+  if (service === 'gmail' && action === 'send') return 'Review email before sending';
+  return `Review ${productName} ${humanize(operation)}`;
 }
 
 function pickDefined(source: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {

@@ -1,6 +1,5 @@
 pub mod commands;
 pub mod home;
-pub mod local_lark;
 pub mod migration;
 pub mod runtime_context;
 pub mod session;

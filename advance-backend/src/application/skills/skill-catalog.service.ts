@@ -2,6 +2,7 @@ import type { SkillRepoPort, SkillRow } from '../../infrastructure/persistence/s
 import type { PermissionResult } from '../permissions/permission.types';
 import type { Logger } from '../../shared/logger';
 import { asToolId } from '../../shared/ids';
+import { larkSkillCjkFields } from './lark-skill-language-policy';
 
 export interface CatalogSkill {
   readonly id: string;
@@ -124,7 +125,8 @@ export class SkillCatalogService {
       });
       return null;
     }
-    return result.value ? toCatalogSkill(result.value) : null;
+    if (!result.value || !this.isLanguageSafe(result.value)) return null;
+    return toCatalogSkill(result.value);
   }
 
   async registryRevision(companyId: string): Promise<number> {
@@ -150,9 +152,21 @@ export class SkillCatalogService {
     permission: PermissionResult,
     grantedSkillIds?: ReadonlySet<string>,
   ): boolean {
+    if (!this.isLanguageSafe(row)) return false;
     if (grantedSkillIds) return grantedSkillIds.has(row.id);
     return row.toolIds.length > 0
       && row.toolIds.every((toolId) => permission.allowedToolIds.has(asToolId(toolId)));
+  }
+
+  private isLanguageSafe(row: SkillRow): boolean {
+    const fields = larkSkillCjkFields(row);
+    if (fields.length === 0) return true;
+    this.log.warn('skills.catalog.lark_non_english_blocked', {
+      companyId: row.companyId,
+      skillId: row.id,
+      fields: [...fields],
+    });
+    return false;
   }
 }
 

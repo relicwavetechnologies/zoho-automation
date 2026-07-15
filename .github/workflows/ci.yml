@@ -284,6 +284,18 @@ jobs:
              DIVO_DEV_ENV_FILE=.env.development.local \
              DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm tsx scripts/seed-registered-tools.ts && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm provision:google-workspace-skills && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm seed:dynamic-agents && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
              docker compose --env-file .env.development.local up -d --no-build --remove-orphans && \
              docker image prune -af --filter 'label=com.divo.environment=development'"
 
@@ -310,6 +322,6 @@ jobs:
 
           cd "${DEPLOY_DIR}"
           docker compose --env-file .env.development.local ps
-          docker compose --env-file .env.development.local logs --tail=160 divo-dev-backend divo-dev-admin
+          docker compose --env-file .env.development.local logs --tail=160 divo-dev-backend divo-dev-admin google-workspace-mcp
           exit 1
           REMOTE

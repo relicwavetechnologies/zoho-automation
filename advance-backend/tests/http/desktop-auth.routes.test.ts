@@ -45,7 +45,13 @@ async function callRoute(
   router: ReturnType<typeof createDesktopAuthRoutes>,
   method: 'GET' | 'POST' | 'DELETE',
   path: string,
-  opts: { query?: Record<string, string>; params?: Record<string, string>; locals?: Record<string, unknown> } = {},
+  opts: {
+    query?: Record<string, string>;
+    params?: Record<string, string>;
+    headers?: Record<string, string>;
+    body?: unknown;
+    locals?: Record<string, unknown>;
+  } = {},
 ): Promise<{ status: number; body: any }> {
   return new Promise((resolve) => {
     let status = 200;
@@ -56,8 +62,8 @@ async function callRoute(
       path,
       params: opts.params ?? {},
       query: opts.query ?? {},
-      body: {},
-      headers: {},
+      body: opts.body ?? {},
+      headers: opts.headers ?? {},
     } as unknown as Request;
 
     const res = {
@@ -258,9 +264,11 @@ describe('desktop auth routes', () => {
     assert.equal(revoked, false);
   });
 
-  it('builds Lark authorize URL with email/task/offline scopes and desktop callback URI', async () => {
+  it('builds Lark authorize URL using the Desktop-selected local backend callback URI', async () => {
     const router = createDesktopAuthRoutes(makeDeps());
-    const result = await callRoute(router, 'GET', '/lark/authorize-url');
+    const result = await callRoute(router, 'GET', '/lark/authorize-url', {
+      headers: { host: 'localhost:8000' },
+    });
 
     assert.equal(result.status, 200);
     assert.equal(result.body.success, true);
@@ -270,9 +278,143 @@ describe('desktop auth routes', () => {
     assert.equal(authorizeUrl.searchParams.get('client_id'), 'cli_test');
     assert.equal(
       authorizeUrl.searchParams.get('redirect_uri'),
-      'https://backend.example.com/api/desktop/auth/lark/callback',
+      'http://localhost:8000/api/desktop/auth/lark/callback',
     );
     assert.equal(authorizeUrl.searchParams.get('scope'), LARK_USER_OAUTH_SCOPES.join(' '));
+  });
+
+  it('builds the additional Lark-account callback from the Desktop-selected local backend', async () => {
+    const router = createDesktopAuthRoutes(makeDeps());
+    const result = await callRoute(router, 'GET', '/lark/connections/authorize-url', {
+      headers: { host: 'localhost:8000' },
+      locals: { userId: 'user-1', companyId: 'company-1' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.success, true);
+    const authorizeUrl = new URL(result.body.data.authorizeUrl);
+    assert.equal(
+      authorizeUrl.searchParams.get('redirect_uri'),
+      'http://localhost:8000/api/desktop/auth/lark/connections/callback',
+    );
+  });
+
+  it('does not create a separate Desktop user when Lark does not expose an email', async () => {
+    let exchangedRedirectUri: string | undefined;
+    let createdUser = false;
+    let storedConnection = false;
+    const router = createDesktopAuthRoutes(makeDeps({
+      larkOAuthService: {
+        isConfigured: () => true,
+        getAuthorizeUrl: (state: string, input: { redirectUri: string }) =>
+          `https://accounts.larksuite.com/authorize?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(input.redirectUri)}`,
+        exchangeCode: async (_code: string, redirectUri: string) => {
+          exchangedRedirectUri = redirectUri;
+          return {
+            accessToken: 'access-token', refreshToken: 'refresh-token', tokenType: 'Bearer',
+            expiresIn: 7200, refreshTokenExpiresIn: 2_592_000,
+            larkOpenId: 'ou_no_email', larkUserId: 'u_no_email', larkName: 'No Email User',
+            larkEmail: null, larkEnName: null, tenantKey: 'tenant-1', scope: 'auth:user.id:read', avatarUrl: null,
+          };
+        },
+      },
+      prisma: {
+        company: { findFirst: async () => ({ id: 'company-1' }) },
+        user: {
+          findFirst: async () => null,
+          findUnique: async () => null,
+          create: async () => { createdUser = true; return { id: 'user-1', email: 'unused@example.com', name: 'Unused' }; },
+        },
+        adminMembership: { findFirst: async () => null, create: async () => ({}) },
+        memberSession: { create: async () => ({}) },
+        department: { findMany: async () => [] },
+      },
+      connectionRepo: {
+        findLarkConnectionOwner: async () => ({ ok: true, value: null }),
+        upsertLarkConnection: async () => {
+          storedConnection = true;
+          return { ok: true, value: {} };
+        },
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', {
+      headers: { host: 'localhost:8000' },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state');
+    const result = await callRoute(router, 'POST', '/lark/exchange', {
+      body: { code: 'auth-code', state },
+    });
+
+    assert.equal(result.status, 400);
+    assert.equal(exchangedRedirectUri, 'http://localhost:8000/api/desktop/auth/lark/callback');
+    assert.match(result.body.message, /contact:user\.email:readonly/);
+    assert.equal(createdUser, false);
+    assert.equal(storedConnection, false);
+  });
+
+  it('rejects an existing synthetic Lark owner instead of signing it in as a Member', async () => {
+    let createdUser = false;
+    let createdMembership = false;
+    let createdSession = false;
+    let storedConnection = false;
+    const router = createDesktopAuthRoutes(makeDeps({
+      larkOAuthService: {
+        isConfigured: () => true,
+        getAuthorizeUrl: (state: string, input: { redirectUri: string }) =>
+          `https://accounts.larksuite.com/authorize?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(input.redirectUri)}`,
+        exchangeCode: async () => ({
+          accessToken: 'access-token', refreshToken: 'refresh-token', tokenType: 'Bearer',
+          expiresIn: 7200, refreshTokenExpiresIn: 2_592_000,
+          larkOpenId: 'ou_existing_placeholder', larkUserId: 'u_existing_placeholder',
+          larkName: 'Existing Placeholder', larkEmail: null, larkEnName: null,
+          tenantKey: 'tenant-1', scope: 'auth:user.id:read', avatarUrl: null,
+        }),
+      },
+      prisma: {
+        company: { findFirst: async () => ({ id: 'company-1' }) },
+        user: {
+          findFirst: async () => null,
+          findUnique: async () => ({
+            id: 'temporary-user',
+            email: 'lark-opaque@identity.divo.invalid',
+            name: 'Existing Placeholder',
+          }),
+          create: async () => {
+            createdUser = true;
+            return { id: 'unused-user', email: 'unused@example.com', name: 'Unused' };
+          },
+        },
+        adminMembership: {
+          findFirst: async () => null,
+          create: async () => { createdMembership = true; return {}; },
+        },
+        memberSession: { create: async () => { createdSession = true; return {}; } },
+        department: { findMany: async () => [] },
+      },
+      connectionRepo: {
+        findLarkConnectionOwner: async () => ({ ok: true, value: { userId: 'temporary-user' } }),
+        upsertLarkConnection: async () => {
+          storedConnection = true;
+          return { ok: true, value: {} };
+        },
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', {
+      headers: { host: 'localhost:8000' },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state');
+    const result = await callRoute(router, 'POST', '/lark/exchange', {
+      body: { code: 'auth-code', state },
+    });
+
+    assert.equal(result.status, 400);
+    assert.match(result.body.message, /contact:contact\.base:readonly/);
+    assert.equal(createdUser, false);
+    assert.equal(createdMembership, false);
+    assert.equal(createdSession, false);
+    assert.equal(storedConnection, false);
   });
 
   it('returns the active department persona for an authorized desktop member', async () => {

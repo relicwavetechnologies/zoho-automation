@@ -8,6 +8,7 @@ const packageJson = JSON.parse(
 const macosConfig = JSON.parse(
   readFileSync(new URL('../src-tauri/tauri.macos.conf.json', import.meta.url), 'utf8')
 )
+const vendorScript = readFileSync(new URL('./vendor-pi.mjs', import.meta.url), 'utf8')
 
 function mustVendorBeforeTauri(scriptName) {
   const script = packageJson.scripts[scriptName]
@@ -55,12 +56,17 @@ describe('desktop package scripts', () => {
     for (const requiredResource of [
       'resources/bin/sqlite-vec.dylib',
       'resources/pi/node_modules/**/*',
-      'resources/lark-cli/**/*',
     ]) {
       assert.ok(resources.includes(requiredResource), `${requiredResource} must be bundled`)
     }
+    assert.ok(!resources.some((resource) => resource.includes('lark-cli')))
     assert.ok(!resources.some((resource) => resource.includes('jan-cli')))
     assert.ok(!resources.some((resource) => resource.includes('mlx')))
+  })
+
+  it('does not install the retired local Lark CLI', () => {
+    assert.doesNotMatch(vendorScript, /@larksuite\/cli/)
+    assert.doesNotMatch(vendorScript, /Vendoring Lark CLI/)
   })
 
   it('vendors Pi before the desktop development runtime starts', () => {

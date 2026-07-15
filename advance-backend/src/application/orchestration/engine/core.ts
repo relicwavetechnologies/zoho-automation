@@ -27,6 +27,7 @@ import type { ConversationSummarizer } from './conversation-summarizer';
 import type { LanguageModel } from 'ai';
 import { classifyMessage, runFastPath } from './fast-path';
 import { buildExecutionSummary } from './execution-summary';
+import { LARK_ENGLISH_OUTPUT_POLICY } from '../lark-language-policy';
 import { assessReplyQuality, buildPresentationContext, cleanReplyText } from './reply-quality';
 import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
 import type { LarkInferenceService } from '../../proxy/lark-inference.service';
@@ -498,7 +499,8 @@ export class OrchestrationEngine {
 - Preserve important details: titles, counts, IDs, dates, amounts, links, errors, and partial failures.
 - Do not mention tool names or agent names. Mention the Divo checklist only when needed to correct a mistaken Lark-task claim.
 - Be direct — no filler phrases.
-- If no meaningful data was returned by tools, say so plainly.`,
+- If no meaningful data was returned by tools, say so plainly.
+${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
           messages: [
             { role: 'user' as const, content: incoming.text },
             { role: 'assistant' as const, content: `Actions completed. Results:\n\n${toolContext || '(no data returned)'}` },
@@ -571,7 +573,7 @@ export class OrchestrationEngine {
       try {
         const condensed = await generateText({
           model: this.deps.supervisor.getModel(),
-          system: 'You are reformatting a response that was too large to display. Condense it into clean markdown under 3000 characters. Keep key data, numbers, and structure. Use tables with max 10 rows. Do not mention truncation or condensation — write as if this is the original response.',
+          system: `You are reformatting a response that was too large to display. Condense it into clean markdown under 3000 characters. Keep key data, numbers, and structure. Use tables with max 10 rows. Do not mention truncation or condensation — write as if this is the original response.${incoming.channel === 'lark' ? ` ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
           messages: [
             { role: 'user' as const, content: incoming.text },
             { role: 'assistant' as const, content: finalReply.text },

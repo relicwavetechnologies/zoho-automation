@@ -2203,10 +2203,18 @@ const ChatInput = memo(function ChatInput({
             activeApproval.threadId,
             activeApproval.requestId,
             activeApproval.runId
-          ).then((allowed) => {
-            if (allowed) {
+          ).then(async (allowed) => {
+            if (!allowed) return
+            try {
+              await invoke('pi_set_persistent_bash_approval', { allowed: true })
               toast.success(
-                'Bash commands are allowed for this run and are revoked when it finishes.'
+                'Bash is always allowed on this device until you turn it off.'
+              )
+            } catch (error) {
+              toast.error(
+                error instanceof Error
+                  ? error.message
+                  : 'The persistent Bash permission could not be saved.'
               )
             }
           })
@@ -2670,7 +2678,7 @@ const ChatInput = memo(function ChatInput({
                     </DropdownMenuContent>
                   </DropdownMenu>
               </div>
-              <PermissionRulesPopover threadId={displayedThreadId} />
+              <PermissionRulesPopover />
               <div
                 className={cn(
                   'flex min-w-0 flex-1 items-center gap-1',

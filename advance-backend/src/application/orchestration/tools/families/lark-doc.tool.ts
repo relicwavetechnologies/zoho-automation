@@ -6,6 +6,12 @@ import { PermissionError, ToolError } from '../../../../shared/errors';
 import type { PermissionResult } from '../../../permissions/permission.types';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { asToolId } from '../../../../shared/ids';
+import {
+  larkConnectionSelectionData,
+  larkConnectionRequiredMessage,
+  resolveLarkUserClient,
+  type LarkUserTokenResolver,
+} from './lark-user-connection';
 
 const Schema = z.object({
   op: z.enum(['get', 'create', 'list_blocks', 'append_block', 'update_block', 'delete_block', 'insert_table', 'share']),
@@ -18,6 +24,8 @@ const Schema = z.object({
   cols: z.number().int().min(1).max(20).optional(),
   headers: z.array(z.string()).optional(),
   visibility: z.enum(['anyone', 'tenant', 'specified']).optional(),
+  /** Divo-managed Lark connection. Required when more than one is accessible. */
+  connectionId: z.string().uuid().optional(),
 });
 type Args = z.infer<typeof Schema>;
 
@@ -25,16 +33,17 @@ const ResultSchema = z.object({
   success: z.boolean(),
   data: z.unknown().optional(),
   docToken: z.string().optional(),
+  url: z.string().url().optional(),
   message: z.string().optional(),
 });
 type Res = z.infer<typeof ResultSchema>;
 
 export interface LarkDocClientPort {
   getDoc(docToken: string): Promise<unknown>;
-  createDoc(title: string): Promise<{ docToken: string }>;
+  createDoc(title: string): Promise<{ docToken: string; url?: string }>;
   appendBlock(docToken: string, content: string, blockType?: string): Promise<void>;
   listBlocks(docToken: string): Promise<unknown[]>;
-  updateBlock(docToken: string, blockId: string, content: string, blockType?: string): Promise<void>;
+  updateBlock(docToken: string, blockId: string, content: string): Promise<void>;
   deleteBlock(docToken: string, blockId: string): Promise<void>;
   insertTable(docToken: string, params: { afterBlockId?: string; rows: number; cols: number; headers?: string[] }): Promise<void>;
   shareDoc(docToken: string, visibility: string): Promise<{ shareUrl?: string }>;
@@ -46,7 +55,11 @@ const inferAction = (op: Args['op']): ToolActionGroup => {
   return 'update';
 };
 
-export const createLarkDocTool = (deps: { client: LarkDocClientPort }): Tool<Args, Res> => ({
+export const createLarkDocTool = (deps: {
+  client: LarkDocClientPort;
+  userTokenResolver?: LarkUserTokenResolver;
+  createUserClient?: (userToken: string) => LarkDocClientPort;
+}): Tool<Args, Res> => ({
   id: asToolId('larkDoc'),
   family: 'lark',
   actionGroups: new Set(['read', 'create', 'update']),
@@ -57,12 +70,14 @@ export const createLarkDocTool = (deps: { client: LarkDocClientPort }): Tool<Arg
 - op: get|create|list_blocks|append_block|update_block|delete_block|insert_table|share
 - docToken: Lark doc token (required for all except create)
 - title: Doc title (required for create)
+- create always returns docToken and resolves the canonical Lark document URL when Drive metadata provides it
 - content: Block text content (for append_block, update_block)
 - blockType: text|heading1|heading2|heading3|bullet|code (default: text)
 - blockId: Block ID (required for update_block, delete_block; optional afterBlockId for insert_table)
 - rows, cols: Table dimensions in cells (required for insert_table)
 - headers: Column header strings (optional, for insert_table)
 - visibility: anyone|tenant|specified (required for share)
+- connectionId: A connected or shared Lark account. Required when more than one is available.
   `.trim(),
 
   permissionCheck(args: Args, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -73,45 +88,68 @@ export const createLarkDocTool = (deps: { client: LarkDocClientPort }): Tool<Arg
 
   async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     try {
+      const userConnection = await resolveLarkUserClient(deps, ctx, {
+        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
+        minimumAccess: inferAction(args.op) === 'read' ? 'read_only' : 'read_write',
+      });
+      if (userConnection.status === 'choose_connection') {
+        return ok({ success: false, data: larkConnectionSelectionData(userConnection.connections), message: 'Choose a Lark connection before continuing.' });
+      }
+      if (deps.userTokenResolver && userConnection.status === 'unavailable') {
+        return err(new ToolError({ toolId: 'larkDoc', reason: 'unrecoverable', message: larkConnectionRequiredMessage }));
+      }
+      const client = userConnection.status === 'resolved' ? userConnection.client : deps.client;
       switch (args.op) {
         case 'get': {
           if (!args.docToken) return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken required' }));
           ctx.onProgress?.('Reading document…');
-          return ok({ success: true, data: await deps.client.getDoc(args.docToken) });
+          return ok({ success: true, data: await client.getDoc(args.docToken) });
         }
         case 'create': {
           if (!args.title) return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'title required' }));
           ctx.onProgress?.('Creating document…');
-          const r = await deps.client.createDoc(args.title);
-          return ok({ success: true, docToken: r.docToken, message: 'Doc created' });
+          const r = await client.createDoc(args.title);
+          return ok({
+            success: true,
+            docToken: r.docToken,
+            ...(r.url ? { url: r.url } : {}),
+            data: {
+              title: args.title,
+              docToken: r.docToken,
+              ...(r.url ? { url: r.url } : {}),
+            },
+            message: r.url
+              ? 'Doc created'
+              : 'Doc created, but Lark Drive metadata did not return a canonical URL',
+          });
         }
         case 'append_block': {
           if (!args.docToken || !args.content)
             return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken and content required' }));
           ctx.onProgress?.('Updating document…');
-          await deps.client.appendBlock(args.docToken, args.content, args.blockType);
+          await client.appendBlock(args.docToken, args.content, args.blockType);
           return ok({ success: true, message: 'Block appended' });
         }
         case 'list_blocks': {
           if (!args.docToken) return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken required' }));
-          return ok({ success: true, data: await deps.client.listBlocks(args.docToken) });
+          return ok({ success: true, data: await client.listBlocks(args.docToken) });
         }
         case 'update_block': {
           if (!args.docToken || !args.blockId || !args.content)
             return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken, blockId, and content required' }));
-          await deps.client.updateBlock(args.docToken, args.blockId, args.content, args.blockType);
+          await client.updateBlock(args.docToken, args.blockId, args.content);
           return ok({ success: true, message: 'Block updated' });
         }
         case 'delete_block': {
           if (!args.docToken || !args.blockId)
             return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken and blockId required' }));
-          await deps.client.deleteBlock(args.docToken, args.blockId);
+          await client.deleteBlock(args.docToken, args.blockId);
           return ok({ success: true, message: 'Block deleted' });
         }
         case 'insert_table': {
           if (!args.docToken || !args.rows || !args.cols)
             return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken, rows, and cols required' }));
-          await deps.client.insertTable(args.docToken, {
+          await client.insertTable(args.docToken, {
             rows: args.rows,
             cols: args.cols,
             ...(args.blockId ? { afterBlockId: args.blockId } : {}),
@@ -122,7 +160,7 @@ export const createLarkDocTool = (deps: { client: LarkDocClientPort }): Tool<Arg
         case 'share': {
           if (!args.docToken || !args.visibility)
             return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken and visibility required' }));
-          const r = await deps.client.shareDoc(args.docToken, args.visibility);
+          const r = await client.shareDoc(args.docToken, args.visibility);
           return ok({ success: true, docToken: args.docToken, data: r, message: 'Doc sharing updated' });
         }
       }

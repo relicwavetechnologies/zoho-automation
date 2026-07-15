@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { PrismaClient } from '../src/generated/prisma';
 import { MEMORY_PUBLISHING_REGISTERED_TOOL } from '../src/application/skills/share-memory-provisioning';
+import { GOOGLE_WORKSPACE_PRODUCTS } from '../src/application/google/google-workspace-mcp-manifest';
 
 /**
  * Seeds the RegisteredTool catalog (the table the admin panel lists tools from).
@@ -27,12 +28,23 @@ const TOOLS: ToolSeed[] = [
   { toolId: 'larkContacts', name: 'Lark Contacts', description: 'Resolve and search Lark employee contacts.', category: 'directory', domain: 'lark' },
   { toolId: 'larkTask', name: 'Lark Tasks', description: 'Create, read, update and complete Lark tasks and tasklists.', category: 'productivity', domain: 'lark' },
   { toolId: 'larkCalendar', name: 'Lark Calendar', description: 'List, create and update Lark calendar events.', category: 'calendar', domain: 'lark' },
+  { toolId: 'larkMeeting', name: 'Lark Meetings', description: 'Search Lark video meetings, view their details, and retrieve recording links.', category: 'meetings', domain: 'lark' },
   { toolId: 'larkDoc', name: 'Lark Docs', description: 'Read and write Lark documents.', category: 'documents', domain: 'lark' },
   { toolId: 'larkBase', name: 'Lark Base', description: 'Read and write Lark Base tables and records.', category: 'data', domain: 'lark' },
   { toolId: 'larkApproval', name: 'Lark Approval', description: 'Manage Lark approval workflows.', category: 'workflow', domain: 'lark', hitlRequired: true },
-  { toolId: 'googleGmail', name: 'Gmail', description: 'Send, reply, draft and search email with attachments.', category: 'communication', domain: 'google', hitlRequired: true },
-  { toolId: 'googleDrive', name: 'Google Drive', description: 'List, read and download Drive files.', category: 'documents', domain: 'google' },
-  { toolId: 'googleCalendar', name: 'Google Calendar', description: 'List, create and update Google Calendar events.', category: 'calendar', domain: 'google' },
+  ...GOOGLE_WORKSPACE_PRODUCTS.map((product): ToolSeed => ({
+    toolId: product.toolId,
+    name: product.name,
+    description: product.description,
+    category: product.category,
+    domain: 'google',
+    hitlRequired: product.toolId === 'googleGmail',
+    guardrails: [
+      'Uses a Divo OAuth connection selected by connection ID',
+      'Google credentials remain server-side',
+      'Every operation is authorized by Divo before the private Workspace MCP is called',
+    ],
+  })),
   {
     toolId: 'canvaDesign',
     name: 'Canva',

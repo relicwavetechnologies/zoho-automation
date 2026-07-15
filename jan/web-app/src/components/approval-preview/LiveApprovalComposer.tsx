@@ -229,10 +229,9 @@ export function LiveApprovalComposer({
           <div className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs leading-5 text-muted-foreground">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
             <span>
-              Always allowing Bash lets future terminal commands in this run
-              modify or delete files, access local data, and use the network
-              without another review. It is revoked when this run finishes or
-              you stop it.
+              Always allowing Bash lets future terminal commands modify or
+              delete files, access local data, and use the network without
+              another review. Turn it off later from Permission rules.
             </span>
           </div>
         ) : null}
@@ -243,7 +242,7 @@ export function LiveApprovalComposer({
       <CardFooter className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <LockKeyhole />
-          <span>Approval applies only to this exact action.</span>
+          <span>Approve &amp; run applies only to this exact action.</span>
         </div>
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <Button variant="ghost" onClick={onStop}>
@@ -264,7 +263,7 @@ export function LiveApprovalComposer({
               disabled={submitting || expired || deliveryFailed}
               onClick={onAlwaysAllowBash}
             >
-              Always allow Bash for this run
+              Always allow Bash
             </Button>
           ) : null}
           <Button

@@ -6,6 +6,7 @@ import type { ConversationSummary } from '../../../domain/conversation/conversat
 import { HISTORY_POLICY } from '../../../domain/conversation/history-policy';
 import type { ConversationScope } from '../../../domain/conversation/conversation-scope';
 import { conversationCacheKey } from '../../../domain/conversation/conversation-scope';
+import { LARK_ENGLISH_OUTPUT_POLICY } from '../lark-language-policy';
 
 const LOCK_TTL_SECONDS = 60;
 const lockKey = (chatId: string, scope?: ConversationScope) =>
@@ -100,7 +101,9 @@ export class ConversationSummarizer {
     try {
       const { text } = await generateText({
         model: this.deps.model,
-        system: SUMMARIZE_SYSTEM,
+        system: scope?.channel === 'lark'
+          ? `${SUMMARIZE_SYSTEM}\n\n${LARK_ENGLISH_OUTPUT_POLICY}`
+          : SUMMARIZE_SYSTEM,
         prompt: JSON.stringify({
           priorSummary: existingSummary,
           olderTurns: turnLines,

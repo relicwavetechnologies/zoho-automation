@@ -15,17 +15,11 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 
-type PermissionRulesPopoverProps = {
-  threadId: string | null | undefined
-}
-
 type PermissionRulesResponse = {
   bashAlwaysAllow?: boolean
 }
 
-export function PermissionRulesPopover({
-  threadId,
-}: PermissionRulesPopoverProps) {
+export function PermissionRulesPopover() {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -33,19 +27,10 @@ export function PermissionRulesPopover({
   const [error, setError] = useState<string | null>(null)
 
   const loadRules = useCallback(async () => {
-    if (!threadId) {
-      setBashAlwaysAllow(false)
-      setError(null)
-      return
-    }
-
     setLoading(true)
     setError(null)
     try {
-      const rules = await invoke<PermissionRulesResponse>(
-        'pi_get_permission_rules',
-        { threadId }
-      )
+      const rules = await invoke<PermissionRulesResponse>('pi_get_permission_rules')
       setBashAlwaysAllow(rules?.bashAlwaysAllow === true)
     } catch (loadError) {
       setError(
@@ -56,7 +41,7 @@ export function PermissionRulesPopover({
     } finally {
       setLoading(false)
     }
-  }, [threadId])
+  }, [])
 
   const handleOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen)
@@ -64,16 +49,16 @@ export function PermissionRulesPopover({
   }
 
   const updateBashRule = async (allowed: boolean) => {
-    if (!threadId || saving) return
+    if (saving) return
 
     setSaving(true)
     setError(null)
     try {
-      await invoke('pi_set_bash_approval_rule', { threadId, allowed })
+      await invoke('pi_set_persistent_bash_approval', { allowed })
       setBashAlwaysAllow(allowed)
       toast.success(
         allowed
-          ? 'Bash is allowed for the active run and is revoked when it finishes.'
+          ? 'Bash is always allowed on this device until you turn it off.'
           : 'Bash will ask for approval before each command.'
       )
     } catch (updateError) {
@@ -119,31 +104,25 @@ export function PermissionRulesPopover({
                 <p className="text-sm font-medium">Bash commands</p>
                 <p className="text-xs text-muted-foreground">
                   {bashAlwaysAllow
-                    ? 'Always allow for active run'
+                    ? 'Always allow on this device'
                     : 'Ask before every command'}
                 </p>
               </div>
               <Switch
                 checked={bashAlwaysAllow}
-                disabled={!threadId || loading || saving}
+                disabled={loading || saving}
                 loading={loading || saving}
-                aria-label="Always allow Bash for this run"
+                aria-label="Always allow Bash"
                 onCheckedChange={(checked) => void updateBashRule(checked)}
               />
             </div>
             <p className="mt-3 text-xs leading-5 text-muted-foreground">
               Bash can modify or delete files, access local data, and use the
-              network. This rule is held in memory and is cleared when the run
-              finishes or is stopped.
+              network. This setting survives tasks and app restarts until you
+              explicitly turn it off.
             </p>
           </div>
         </div>
-
-        {!threadId ? (
-          <p className="px-4 pb-4 text-xs text-muted-foreground">
-            Start or open a task to configure its rules.
-          </p>
-        ) : null}
         {error ? (
           <p className="px-4 pb-4 text-xs text-destructive" role="alert">
             {error}

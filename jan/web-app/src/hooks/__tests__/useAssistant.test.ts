@@ -158,10 +158,10 @@ describe('useAssistant', () => {
       'Before engaging any tools, articulate your complete thought process in natural language'
     )
     expect(result.current.currentAssistant.instructions).toContain(
-      'reply in natural Hinglish written only in the Roman/Latin alphabet'
+      'Respond in English only'
     )
     expect(result.current.currentAssistant.instructions).toContain(
-      'Do not use Devanagari script'
+      'silently rewrite any non-English generated prose into English'
     )
     expect(typeof result.current.currentAssistant.created_at).toBe('number')
     expect(typeof result.current.currentAssistant.parameters).toBe('object')

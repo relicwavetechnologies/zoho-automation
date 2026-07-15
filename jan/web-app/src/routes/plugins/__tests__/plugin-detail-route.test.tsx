@@ -45,7 +45,7 @@ vi.mock('@/lib/plugins', () => ({
     'google-workspace': { id, name: 'Google Workspace', description: 'Google tools', icon: () => <svg aria-label="Google provider logo" />, accentClassName: '', iconClassName: '' },
     canva: { id, name: 'Canva', description: 'Canva tools', icon: () => <svg aria-label="Canva provider logo" />, accentClassName: '', iconClassName: '' },
     zoho: { id, name: 'Zoho', description: 'Zoho tools', icon: () => <svg aria-label="Zoho provider logo" />, accentClassName: '', iconClassName: '' },
-    'lark-personal': { id, name: 'Lark Personal', description: 'Lark tools', icon: () => <svg aria-label="Lark provider logo" />, accentClassName: '', iconClassName: '' },
+    lark: { id, name: 'Lark', description: 'Lark tools', icon: () => <svg aria-label="Lark provider logo" />, accentClassName: '', iconClassName: '' },
   })[id] ?? null,
   googleWorkspaceServices: [],
 }))
@@ -89,7 +89,13 @@ const canvaStatus = {
   },
 }
 
-const connectedLarkStatus = { installed: true, configured: true, connected: true, accountLabel: 'Ada at Acme', statusText: 'Connected to Acme Lark.', cliPath: '/app/lark-cli', homePath: '/app/lark-home', usesConfiguredApp: true, version: '1.2.3' }
+const larkStatus = {
+  success: true,
+  data: {
+    connected: true,
+    connections: [{ connectionId: 'lark-1', label: 'Ada at Acme', accountEmail: 'ada@acme.test', accountName: 'Ada', ownerType: 'user', access: 'admin', scopes: ['calendar:calendar'], connectedAt: '2026-07-01T00:00:00.000Z', lastUsedAt: null }],
+  },
+}
 
 function commandCalls(command: string) {
   return h.invoke.mock.calls.filter(([calledCommand]) => calledCommand === command)
@@ -101,7 +107,6 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
     h.pluginId = 'google-workspace'
     h.invoke.mockImplementation((command: string) => {
       if (command === 'divo_get_session_status') return Promise.resolve({ configured: false })
-      if (command === 'divo_lark_local_status') return Promise.resolve({ bundled: false, configured: false, authenticated: false, accountLabel: null, cliVersion: null, binaryPath: null, homeDir: null, usesConfiguredApp: false })
       return Promise.resolve({ success: true })
     })
   })
@@ -310,49 +315,27 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
     })
   })
 
-  it('loads one connected Lark status and does not refetch after its state settles', async () => {
-    h.pluginId = 'lark-personal'
+  it('uses the governed Divo connection flow for Lark rather than a desktop-local CLI', async () => {
+    const openWindow = vi.spyOn(window, 'open').mockImplementation(() => null)
+    h.pluginId = 'lark'
     h.getInventory.mockResolvedValue({ tools: [{ ...baseTool, tool: { ...baseTool.tool, toolId: 'larkTask', name: 'Lark Tasks' } }] })
-    h.invoke.mockImplementation((command: string) => command === 'divo_lark_local_status' ? Promise.resolve(connectedLarkStatus) : Promise.resolve({ success: true }))
-    const view = render(<PluginDetailRoute />)
-
-    expect(await screen.findByText('Ada at Acme')).toBeInTheDocument()
-    expect(screen.getByText('Connected to Acme Lark.')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Tool access' })).toBeInTheDocument()
-    view.rerender(<PluginDetailRoute />)
-    await waitFor(() => expect(commandCalls('divo_lark_local_status')).toHaveLength(1))
-  })
-
-  it('shows Lark bundling remediation with one bounded status request', async () => {
-    h.pluginId = 'lark-personal'
-    h.getInventory.mockResolvedValue({ tools: [{ ...baseTool, tool: { ...baseTool.tool, toolId: 'larkTask', name: 'Lark Tasks' } }] })
-    h.invoke.mockImplementation((command: string) => command === 'divo_lark_local_status' ? Promise.resolve({ ...connectedLarkStatus, installed: false, configured: false, connected: false }) : Promise.resolve({ success: true }))
-    render(<PluginDetailRoute />)
-
-    expect(await screen.findByText('Lark CLI is not bundled yet')).toBeInTheDocument()
-    expect(commandCalls('divo_lark_local_status')).toHaveLength(1)
-  })
-
-  it('keeps a rejected Lark status distinct and only retries when requested', async () => {
-    h.pluginId = 'lark-personal'
-    h.getInventory.mockResolvedValue({ tools: [{ ...baseTool, tool: { ...baseTool.tool, toolId: 'larkTask', name: 'Lark Tasks' } }] })
-    let statusAttempt = 0
     h.invoke.mockImplementation((command: string) => {
-      if (command !== 'divo_lark_local_status') return Promise.resolve({ success: true })
-      statusAttempt++
-      return statusAttempt === 1 ? Promise.reject(new Error('Lark status unavailable')) : Promise.resolve(connectedLarkStatus)
+      if (command === 'divo_get_session_status') return Promise.resolve(connectedSession)
+      if (command === 'divo_lark_status') return Promise.resolve(larkStatus)
+      if (command === 'divo_lark_authorize_url') return Promise.resolve('https://accounts.larksuite.com/open-apis/authen/v1/authorize')
+      if (command === 'divo_lark_disconnect_connection') return Promise.resolve({ success: true })
+      return Promise.resolve({ success: true })
     })
     render(<PluginDetailRoute />)
 
-    expect(await screen.findByText('Could not read Lark status')).toBeInTheDocument()
-    expect(screen.getByText('Error: Lark status unavailable')).toBeInTheDocument()
-    expect(screen.queryByText('Lark CLI is not bundled yet')).not.toBeInTheDocument()
-    expect(screen.getAllByText('Unknown')).toHaveLength(3)
-    expect(commandCalls('divo_lark_local_status')).toHaveLength(1)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(await screen.findByText('Ada at Acme')).toBeInTheDocument()
-    expect(commandCalls('divo_lark_local_status')).toHaveLength(2)
+    expect((await screen.findAllByText('Ada at Acme')).length).toBeGreaterThan(0)
+    expect(screen.getByText('calendar:calendar')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect Ada at Acme' }))
+    await waitFor(() => expect(openWindow).toHaveBeenCalledWith(
+      'https://accounts.larksuite.com/open-apis/authen/v1/authorize',
+      '_blank',
+      'noopener,noreferrer',
+    ))
   })
 
   it('renders an authorised fallback tool as a standalone access page', async () => {

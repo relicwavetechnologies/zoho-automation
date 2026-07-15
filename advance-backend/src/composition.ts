@@ -27,11 +27,12 @@ import { LarkChatContextService } from './application/chat-context/lark-chat-con
 import { LarkChannelAdapter } from './infrastructure/channels/lark/lark.adapter';
 import { LarkPeopleResolver } from './infrastructure/channels/lark/lark-people.resolver';
 import { LarkTaskClient } from './infrastructure/channels/lark/clients/lark-task.client';
+import type { LarkUserTokenResolution } from './application/orchestration/tools/families/lark-user-connection';
 import { LarkToolMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
 import { LarkContactsClient } from './infrastructure/channels/lark/clients/lark-contacts.client';
 import { LarkCalendarClient } from './infrastructure/channels/lark/clients/lark-calendar.client';
+import { LarkMeetingClient } from './infrastructure/channels/lark/clients/lark-meeting.client';
 import { LarkDocClient } from './infrastructure/channels/lark/clients/lark-doc.client';
-import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { LarkBaseClient } from './infrastructure/channels/lark/clients/lark-base.client';
 import { LarkApprovalClient } from './infrastructure/channels/lark/clients/lark-approval.client';
 import { createEmbeddingService } from './infrastructure/ai/embedding/embedding.service';
@@ -40,17 +41,14 @@ import { SerperClient } from './infrastructure/ai/search/serper.client';
 import { WebSearchService } from './infrastructure/ai/search/web-search.service';
 import { ContextSearchBroker } from './application/context-search/context-search.broker';
 import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
-import { LarkUserAuthLinkRepository } from './infrastructure/persistence/lark-user-auth-link.repository';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
+import { GoogleWorkspaceMcpClient } from './infrastructure/google/google-workspace-mcp.client';
 import { CanvaMcpOAuthService } from './infrastructure/canva/canva-mcp-oauth.service';
 import { CanvaMcpClient } from './infrastructure/canva/canva-mcp.client';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
 import { CompanySerperConnectionRepository } from './infrastructure/persistence/company-serper-connection.repository';
 import { CompanySerperService } from './application/web-search/company-serper.service';
-import { GmailClient } from './infrastructure/google/google-gmail.client';
-import { GoogleDriveClient } from './infrastructure/google/google-drive.client';
-import { GoogleCalendarClient } from './infrastructure/google/google-calendar.client';
-import { hasAnyGoogleScope } from './application/google/google-scope-policy';
+import { hasGoogleScopeGroups } from './domain/google/google-workspace-scope';
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
 import { ZohoCrmClient } from './infrastructure/zoho/zoho-crm.client';
@@ -72,6 +70,7 @@ import { ProxyKeyStore } from './application/proxy/proxy-key.store';
 import { LlmProxyService } from './application/proxy/llm-proxy.service';
 import { LarkInferenceService } from './application/proxy/lark-inference.service';
 import { SkillRepository } from './infrastructure/persistence/skill.repository';
+import { SkillAccessRepository } from './infrastructure/persistence/skill-access.repository';
 import { SkillsService } from './application/context-search/skills.service';
 import { SkillCatalogService } from './application/skills/skill-catalog.service';
 import { SkillRegistryAdminService } from './application/skills/skill-registry-admin.service';
@@ -111,27 +110,17 @@ import { DocumentRagTool } from './application/orchestration/tools/families/docu
 import { KnowledgeShareService } from './application/knowledge-share/knowledge-share.service';
 import { ShareResolverService } from './application/knowledge-share/share-resolver.service';
 import { Mem0Service } from './application/memory/mem0.service';
-import { AttachmentResolverService } from './application/email/attachment-resolver.service';
-import type { AttachmentSource, AttachmentSourceAdapter } from './application/email/attachment.types';
-import {
-  FileAssetAttachmentAdapter,
-  GoogleDriveAttachmentAdapter,
-  LarkAttachmentAdapter,
-  OutboundArtifactAttachmentAdapter,
-  CloudinaryExportAttachmentAdapter,
-} from './application/email/adapters';
 
 // Tools
 import { createLarkTaskTool } from './application/orchestration/tools/families/lark-task.tool';
 import { createLarkMessagingTool } from './application/orchestration/tools/families/lark-messaging.tool';
 import { createLarkContactsTool } from './application/orchestration/tools/families/lark-contacts.tool';
 import { createLarkCalendarTool } from './application/orchestration/tools/families/lark-calendar.tool';
+import { createLarkMeetingTool } from './application/orchestration/tools/families/lark-meeting.tool';
 import { createLarkDocTool } from './application/orchestration/tools/families/lark-doc.tool';
 import { createLarkBaseTool } from './application/orchestration/tools/families/lark-base.tool';
 import { createLarkApprovalTool } from './application/orchestration/tools/families/lark-approval.tool';
-import { createGoogleGmailTool } from './application/orchestration/tools/families/google-gmail.tool';
-import { createGoogleDriveTool } from './application/orchestration/tools/families/google-drive.tool';
-import { createGoogleCalendarTool } from './application/orchestration/tools/families/google-calendar.tool';
+import { createGoogleWorkspaceMcpTools } from './application/orchestration/tools/families/google-workspace-mcp.tool';
 import { createCanvaDesignTool } from './application/orchestration/tools/families/canva-design.tool';
 import { createZohoCrmTool } from './application/orchestration/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/orchestration/tools/families/zoho-books.tool';
@@ -155,7 +144,6 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import type { LanguageModel } from 'ai';
-import type { OAuth2Client } from 'google-auth-library';
 import { withFallback } from './shared/model-fallback';
 import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
 import { decryptToken, TokenCryptoError } from './infrastructure/shared/token.crypto';
@@ -215,8 +203,7 @@ export interface Container {
   departmentAdminService: DepartmentAdminService;
   desktopDepartmentManagementService: DesktopDepartmentManagementService;
   // Lark user OAuth
-  larkOAuthService:     LarkOAuthService;
-  larkUserAuthLinkRepo: LarkUserAuthLinkRepository;
+  larkOAuthService: LarkOAuthService;
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
   canvaMcpOAuthService: CanvaMcpOAuthService;
@@ -493,14 +480,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   };
 
   // ── Lark tool clients ──────────────────────────────────────────────────
-  const larkClientDeps = { appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET };
+  const larkClientDeps = {
+    appId: env.LARK_APP_ID,
+    appSecret: env.LARK_APP_SECRET,
+    apiBaseUrl: env.LARK_API_BASE_URL,
+  };
   const larkPeopleResolver = new LarkPeopleResolver(prisma);
   const larkTaskClient     = new LarkTaskClient(larkClientDeps);
   const larkMsgToolClient  = new LarkToolMessagingClient(larkClientDeps);
   const larkContactsClient = new LarkContactsClient(larkClientDeps);
   const larkCalendarClient = new LarkCalendarClient(larkClientDeps);
+  const larkMeetingClient  = new LarkMeetingClient(larkClientDeps);
   const larkDocClient      = new LarkDocClient(larkClientDeps);
-  const larkFileClient     = new LarkFileClient(env, logger);
   const larkBaseClient     = new LarkBaseClient(larkClientDeps);
   const larkApprovalClient = new LarkApprovalClient(larkClientDeps);
 
@@ -536,33 +527,29 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     env.LARK_OAUTH_REDIRECT_URI ?? `${env.BACKEND_PUBLIC_URL}/api/lark/auth/callback`,
     env.LARK_API_BASE_URL,
   );
-  const larkUserAuthLinkRepo = new LarkUserAuthLinkRepository(
-    prisma,
-    env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '',
-  );
 
   // ── Google OAuth + connection registry ───────────────────────────────────
   const integrationConnectionRepo = new IntegrationConnectionRepository(prisma, env);
   const googleOAuthService        = new GoogleOAuthService({ env, cache, logger: logger.child({ service: 'google-oauth' }) });
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: memoryCache, logger });
 
-  async function resolveGoogleAuthClient(input: {
+  async function getGoogleWorkspaceMcpConnection(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly connectionId: string;
     readonly minimumAccess: 'read_only' | 'read_write';
-    readonly requiredScopes?: readonly string[];
-  }): Promise<OAuth2Client | null> {
+    readonly requiredScopeGroups: readonly (readonly string[])[];
+  }) {
     if (!googleOAuthService.isConfigured()) return null;
 
     const connection = await integrationConnectionRepo.findAccessibleGoogleConnection(input);
-    if (!connection.ok || !connection.value?.refreshToken) return null;
-    if (!hasAnyGoogleScope(connection.value.scopes, input.requiredScopes ?? [])) {
+    if (!connection.ok || !connection.value?.refreshToken || !connection.value.accountEmail) return null;
+    if (!hasGoogleScopeGroups(connection.value.scopes, input.requiredScopeGroups)) {
       logger.warn('google.connection.missing_required_scope', {
         companyId: input.companyId,
         userId: input.userId,
         connectionId: input.connectionId,
-        requiredScopes: input.requiredScopes ?? [],
+        requiredScopeGroups: input.requiredScopeGroups,
       });
       return null;
     }
@@ -574,26 +561,21 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         refreshToken: connection.value.refreshToken,
       });
       await integrationConnectionRepo.touchLastUsed(input.connectionId);
-      const auth = googleOAuthService.createOAuth2Client({
-        refreshToken: connection.value.refreshToken,
-        accessToken:  token,
+      return {
+        client: new GoogleWorkspaceMcpClient(
+          token,
+          connection.value.accountEmail,
+          env.GOOGLE_WORKSPACE_MCP_URL,
+        ),
+        accountEmail: connection.value.accountEmail,
+      };
+    } catch (error) {
+      logger.warn('google.connection.token_resolution_failed', {
+        companyId: input.companyId,
+        userId: input.userId,
+        connectionId: input.connectionId,
+        error: String(error),
       });
-      auth.on('tokens', (tokens) => {
-        const accessTokenExpiresAt = typeof tokens.expiry_date === 'number'
-          ? new Date(tokens.expiry_date)
-          : undefined;
-        void integrationConnectionRepo.updateGoogleTokens({
-          companyId:    input.companyId,
-          connectionId: input.connectionId,
-          ...(tokens.access_token ? { accessToken: tokens.access_token } : {}),
-          ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),
-          ...(tokens.token_type ? { tokenType: tokens.token_type } : {}),
-          ...(tokens.scope ? { scope: tokens.scope } : {}),
-          ...(accessTokenExpiresAt ? { accessTokenExpiresAt } : {}),
-        });
-      });
-      return auth;
-    } catch {
       return null;
     }
   }
@@ -649,39 +631,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     await integrationConnectionRepo.touchLastUsed(input.connectionId);
     return new CanvaMcpClient(accessToken, env.CANVA_MCP_URL);
   }
-
-  const getGmailClient = async (input: {
-    readonly companyId: string;
-    readonly userId: string;
-    readonly connectionId: string;
-    readonly minimumAccess: 'read_only' | 'read_write';
-    readonly requiredScopes: readonly string[];
-  }) => {
-    const auth = await resolveGoogleAuthClient(input);
-    return auth ? new GmailClient(auth) : null;
-  };
-
-  const getDriveClient = async (input: {
-    readonly companyId: string;
-    readonly userId: string;
-    readonly connectionId: string;
-    readonly minimumAccess: 'read_only' | 'read_write';
-    readonly requiredScopes: readonly string[];
-  }) => {
-    const auth = await resolveGoogleAuthClient(input);
-    return auth ? new GoogleDriveClient(auth) : null;
-  };
-
-  const getCalendarClient = async (input: {
-    readonly companyId: string;
-    readonly userId: string;
-    readonly connectionId: string;
-    readonly minimumAccess: 'read_only' | 'read_write';
-    readonly requiredScopes: readonly string[];
-  }) => {
-    const auth = await resolveGoogleAuthClient(input);
-    return auth ? new GoogleCalendarClient(auth) : null;
-  };
 
   // ── Zoho OAuth + connection ───────────────────────────────────────────────
   const zohoConnectionRepo = new ZohoConnectionRepository(prisma, env);
@@ -818,14 +767,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const fileAssetRepo       = new FileAssetRepository(prisma);
   const vectorDocRepo       = new VectorDocumentRepository(prisma);
   const fileAccessPolicyRepo = new FileAccessPolicyRepository(prisma);
-  const attachmentAdapters = new Map<AttachmentSource, AttachmentSourceAdapter>([
-    ['file_asset', new FileAssetAttachmentAdapter(fileAssetRepo, cloudinaryAdapter)],
-    ['outbound_artifact', new OutboundArtifactAttachmentAdapter(prisma)],
-    ['google_drive', new GoogleDriveAttachmentAdapter(getDriveClient)],
-    ['lark', new LarkAttachmentAdapter(larkFileClient)],
-    ['cloudinary', new CloudinaryExportAttachmentAdapter(cloudinaryAdapter)],
-  ]);
-  const attachmentResolver = new AttachmentResolverService(attachmentAdapters);
 
   const ingestionService = new IngestionService(
     env,
@@ -891,6 +832,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     repo: skillRepo,
     logger,
   });
+  const skillAccessEnforcement = new SkillAccessRepository(prisma);
   const skillRegistryAdminService = new SkillRegistryAdminService({
     prisma,
     logger: logger.child({ service: 'skill-registry-admin' }),
@@ -946,53 +888,122 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Tool registry ──────────────────────────────────────────────────────
   const toolRegistry = new ToolRegistry();
-  toolRegistry.register(createLarkTaskTool({
-    client: larkTaskClient,
-    peopleResolver: larkPeopleResolver,
-    userTokenResolver: {
-      async resolve(userId: string, companyId: string): Promise<string | null> {
-        const link = await larkUserAuthLinkRepo.findByUserId(userId, companyId);
-        if (!link.ok || !link.value) return null;
-        const { accessToken, refreshToken, accessTokenExpiresAt } = link.value;
-        const isExpired = accessTokenExpiresAt && new Date(accessTokenExpiresAt).getTime() < Date.now() + 60_000;
-        if (!isExpired && accessToken) return accessToken;
-        if (!refreshToken) return null;
+  const larkUserTokenResolver = {
+      async resolve(input: {
+        userId: string;
+        companyId: string;
+        connectionId?: string;
+        minimumAccess: 'read_only' | 'read_write';
+      }): Promise<LarkUserTokenResolution> {
+        const accessible = await integrationConnectionRepo.listAccessibleLarkConnections({
+          userId: input.userId,
+          companyId: input.companyId,
+        });
+        if (!accessible.ok) return { status: 'unavailable' as const };
+        const candidates = accessible.value.filter(connection =>
+          input.minimumAccess === 'read_only' || connection.access === 'read_write' || connection.access === 'admin',
+        );
+        const selected = input.connectionId
+          ? candidates.find(connection => connection.connectionId === input.connectionId)
+          : candidates.length === 1 ? candidates[0] : null;
+        if (!selected) {
+          if (!input.connectionId && candidates.length > 1) {
+            return {
+              status: 'choose_connection' as const,
+              connections: candidates.map(connection => ({
+                connectionId: connection.connectionId,
+                label: connection.label,
+                ...(connection.accountEmail ? { accountEmail: connection.accountEmail } : {}),
+                ...(connection.accountName ? { accountName: connection.accountName } : {}),
+                access: connection.access,
+              })),
+            };
+          }
+          return { status: 'unavailable' as const };
+        }
+        const connection = await integrationConnectionRepo.findAccessibleLarkConnection({
+          companyId: input.companyId,
+          userId: input.userId,
+          connectionId: selected.connectionId,
+          minimumAccess: input.minimumAccess,
+        });
+        if (!connection.ok || !connection.value?.accessToken) return { status: 'unavailable' as const };
+        const { accessToken, refreshToken, accessTokenExpiresAt } = connection.value;
+        const expiresSoon = accessTokenExpiresAt?.getTime() ?? 0;
+        if (expiresSoon > Date.now() + 60_000) {
+          await integrationConnectionRepo.touchLastUsed(connection.value.id);
+          return { status: 'resolved' as const, accessToken };
+        }
+        if (!refreshToken) return { status: 'unavailable' as const };
         try {
           const refreshed = await larkOAuthService.refreshUserToken(refreshToken);
-          await larkUserAuthLinkRepo.upsert({
-            userId, companyId,
-            larkOpenId:    link.value.larkOpenId ?? '',
-            larkTenantKey: link.value.larkTenantKey,
-            larkEmail:     link.value.larkEmail,
-            accessToken:   refreshed.accessToken,
-            refreshToken:  refreshed.refreshToken ?? refreshToken,
-            tokenType:     refreshed.tokenType,
-            accessTokenExpiresAt:  new Date(Date.now() + refreshed.expiresIn * 1000),
+          const persisted = await integrationConnectionRepo.updateLarkTokens({
+            connectionId: connection.value.id,
+            accessToken: refreshed.accessToken,
+            refreshToken: refreshed.refreshToken ?? refreshToken,
+            tokenType: refreshed.tokenType,
+            accessTokenExpiresAt: new Date(Date.now() + refreshed.expiresIn * 1000),
             refreshTokenExpiresAt: refreshed.refreshTokenExpiresIn
               ? new Date(Date.now() + refreshed.refreshTokenExpiresIn * 1000)
               : null,
           });
-          return refreshed.accessToken;
+          return persisted.ok
+            ? { status: 'resolved' as const, accessToken: refreshed.accessToken }
+            : { status: 'unavailable' as const };
         } catch {
-          return null;
+          return { status: 'unavailable' as const };
         }
       },
-    },
+  };
+  toolRegistry.register(createLarkTaskTool({
+    client: larkTaskClient,
+    peopleResolver: larkPeopleResolver,
+    userTokenResolver: larkUserTokenResolver,
     createUserClient: (userToken: string) =>
-      new LarkTaskClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, userToken }),
+      new LarkTaskClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, apiBaseUrl: env.LARK_API_BASE_URL, userToken }),
   }));
-  toolRegistry.register(createLarkMessagingTool({ client: larkMsgToolClient, peopleResolver: larkPeopleResolver }));
-  toolRegistry.register(createLarkContactsTool({ peopleResolver: larkPeopleResolver, contactsClient: larkContactsClient }));
-  toolRegistry.register(createLarkCalendarTool({ client: larkCalendarClient, peopleResolver: larkPeopleResolver }));
-  toolRegistry.register(createLarkDocTool({ client: larkDocClient }));
-  toolRegistry.register(createLarkBaseTool({ client: larkBaseClient }));
-  toolRegistry.register(createLarkApprovalTool({ client: larkApprovalClient }));
-  toolRegistry.register(createGoogleGmailTool({
-    getClient: getGmailClient,
-    resolveAttachments: (refs, ctx) => attachmentResolver.resolve(refs, ctx),
+  toolRegistry.register(createLarkMessagingTool({
+    client: larkMsgToolClient,
+    peopleResolver: larkPeopleResolver,
+    userTokenResolver: larkUserTokenResolver,
+    createUserClient: (userToken: string) =>
+      new LarkToolMessagingClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, apiBaseUrl: env.LARK_API_BASE_URL, userToken }),
   }));
-  toolRegistry.register(createGoogleDriveTool({ getClient: getDriveClient }));
-  toolRegistry.register(createGoogleCalendarTool({ getClient: getCalendarClient }));
+  toolRegistry.register(createLarkContactsTool({
+    peopleResolver: larkPeopleResolver,
+    contactsClient: larkContactsClient,
+  }));
+  toolRegistry.register(createLarkCalendarTool({
+    client: larkCalendarClient,
+    peopleResolver: larkPeopleResolver,
+    userTokenResolver: larkUserTokenResolver,
+    createUserClient: (userToken: string) =>
+      new LarkCalendarClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, apiBaseUrl: env.LARK_API_BASE_URL, userToken }),
+  }));
+  toolRegistry.register(createLarkMeetingTool({
+    client: larkMeetingClient,
+    userTokenResolver: larkUserTokenResolver,
+    createUserClient: (userToken: string) =>
+      new LarkMeetingClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, apiBaseUrl: env.LARK_API_BASE_URL, userToken }),
+  }));
+  toolRegistry.register(createLarkDocTool({
+    client: larkDocClient,
+    userTokenResolver: larkUserTokenResolver,
+    createUserClient: (userToken: string) =>
+      new LarkDocClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, apiBaseUrl: env.LARK_API_BASE_URL, userToken }),
+  }));
+  toolRegistry.register(createLarkBaseTool({
+    client: larkBaseClient,
+    userTokenResolver: larkUserTokenResolver,
+    createUserClient: (userToken: string) =>
+      new LarkBaseClient({ appId: env.LARK_APP_ID, appSecret: env.LARK_APP_SECRET, apiBaseUrl: env.LARK_API_BASE_URL, userToken }),
+  }));
+  toolRegistry.register(createLarkApprovalTool({
+    client: larkApprovalClient,
+  }));
+  for (const tool of createGoogleWorkspaceMcpTools({ getConnection: getGoogleWorkspaceMcpConnection })) {
+    toolRegistry.register(tool);
+  }
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   toolRegistry.register(createZohoCrmTool({
     getClient:   getZohoCrmClient,
@@ -1076,6 +1087,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     unifiedAgentMode: env.UNIFIED_AGENT_MODE,
     skillRegistry,
     toolRegistry,
+    skillCatalog,
+    skillAccessEnforcement,
+    auditService,
     ...(mem0Service ? { mem0: mem0Service } : {}),
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
   });
@@ -1164,35 +1178,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'gateway-local-approval' }),
   });
   const mediaOcr = new MediaOcrService(env, logger);
-  // Per-skill RBAC. Deny-by-default at the gateway: a member sees/uses only
-  // skills explicitly granted to them (directly, or via a department, role, or
-  // company grant). This is the live model — ungranted skills are not discoverable.
-  const skillAccessEnforcement = {
-    listGrantedSkillIds: async (companyId: string, userId: string): Promise<ReadonlySet<string>> => {
-      // A member's grants come from four axes: the whole company, any department
-      // they belong to, any department role they hold, or a direct user grant.
-      const memberships = await prisma.departmentMembership.findMany({
-        where: { userId, status: 'active', department: { companyId, status: 'active' } },
-        select: { departmentId: true, roleId: true },
-      });
-      const departmentIds = memberships.map((m) => m.departmentId);
-      const roleIds = memberships.map((m) => m.roleId);
-      const grants = await prisma.skillAccessGrant.findMany({
-        where: {
-          companyId,
-          OR: [
-            { granteeType: 'company', granteeId: companyId },
-            { granteeType: 'user', granteeId: userId },
-            ...(departmentIds.length ? [{ granteeType: 'department', granteeId: { in: departmentIds } }] : []),
-            ...(roleIds.length ? [{ granteeType: 'role', granteeId: { in: roleIds } }] : []),
-          ],
-        },
-        select: { skillId: true },
-      });
-      return new Set(grants.map((g) => g.skillId));
-    },
-  };
-
   const gatewayDispatcher = new GatewayDispatcher({
     permissions,
     toolRegistry,
@@ -1254,7 +1239,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     desktopDepartmentManagementService,
     // Lark user OAuth
     larkOAuthService,
-    larkUserAuthLinkRepo,
     // OAuth surfaces
     googleOAuthService,
     canvaMcpOAuthService,

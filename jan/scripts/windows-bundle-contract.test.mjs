@@ -20,10 +20,10 @@ test('Windows bundle contains the runtime that Divo starts locally', () => {
     'resources/pi-extensions/**/*',
     'resources/pi-skills/**/*',
     'resources/pi/node_modules/**/*',
-    'resources/lark-cli/**/*',
   ]) {
     assert.ok(resources.includes(required), `missing Windows runtime resource: ${required}`)
   }
 
+  assert.ok(!resources.some((resource) => resource.includes('lark-cli')))
   assert.deepEqual(config.bundle.externalBin, ['resources/bin/bun', 'resources/bin/uv'])
 })

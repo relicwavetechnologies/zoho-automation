@@ -18,43 +18,26 @@ describe('PermissionRulesPopover', () => {
     })
   })
 
-  it('loads and updates the real active-run Bash rule', async () => {
-    render(<PermissionRulesPopover threadId="thread-1" />)
+  it('loads and updates the persistent device-level Bash rule', async () => {
+    render(<PermissionRulesPopover />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Permission rules' }))
 
     expect(await screen.findByText('Bash commands')).toBeInTheDocument()
-    expect(mocks.invoke).toHaveBeenCalledWith('pi_get_permission_rules', {
-      threadId: 'thread-1',
-    })
+    expect(mocks.invoke).toHaveBeenCalledWith('pi_get_permission_rules')
 
     const rule = screen.getByRole('switch', {
-      name: 'Always allow Bash for this run',
+      name: 'Always allow Bash',
     })
     fireEvent.click(rule)
 
     await waitFor(() => {
       expect(mocks.invoke).toHaveBeenCalledWith(
-        'pi_set_bash_approval_rule',
-        { threadId: 'thread-1', allowed: true }
+        'pi_set_persistent_bash_approval',
+        { allowed: true }
       )
       expect(rule).toBeChecked()
     })
-    expect(screen.getByText('Always allow for active run')).toBeInTheDocument()
-  })
-
-  it('disables rule changes when there is no task', async () => {
-    render(<PermissionRulesPopover threadId={null} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Permission rules' }))
-
-    expect(
-      await screen.findByText('Start or open a task to configure its rules.')
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole('switch', {
-        name: 'Always allow Bash for this run',
-      })
-    ).toBeDisabled()
-    expect(mocks.invoke).not.toHaveBeenCalled()
+    expect(screen.getByText('Always allow on this device')).toBeInTheDocument()
   })
 })

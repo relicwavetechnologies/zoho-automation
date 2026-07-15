@@ -12,15 +12,16 @@
  * CSRF: random nonce stored in Redis (TTL 10 min) on /connect, validated + consumed on /callback.
  *
  * After successful connect the callback:
- *   - Stores encrypted tokens in LarkUserAuthLink
+ *   - Stores encrypted tokens in Divo's generic IntegrationConnection
  *   - Sends a Lark DM to the user confirming connection
  *   - Returns a simple HTML success page the user can close
  */
 
 import { Router, type Request, type Response } from 'express';
 import { randomBytes } from 'node:crypto';
+import { Client as LarkSdkClient, LoggerLevel } from '@larksuiteoapi/node-sdk';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
-import type { LarkUserAuthLinkRepository } from '../../infrastructure/persistence/lark-user-auth-link.repository';
+import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import type { CachePort } from '../../shared/cache';
 import type { Logger } from '../../shared/logger';
 import type { ChannelIdentityRepository } from '../../infrastructure/persistence/channel-identity.repository';
@@ -89,7 +90,7 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ─── Lark DM helper (tenant-token based) ──────────────────────────────────────
+// ─── Lark DM helper (SDK tenant-token based) ──────────────────────────────────
 
 async function sendLarkDm(
   appId:      string,
@@ -98,35 +99,27 @@ async function sendLarkDm(
   text:       string,
   apiBase:    string,
 ): Promise<void> {
-  // Get tenant token
-  const tokenRes = await fetch(`${apiBase}/open-apis/auth/v3/tenant_access_token/internal`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ app_id: appId, app_secret: appSecret }),
+  const client = new LarkSdkClient({
+    appId,
+    appSecret,
+    domain: apiBase.replace(/\/$/, ''),
+    loggerLevel: LoggerLevel.warn,
+    source: 'divo',
   });
-  const tokenData = await tokenRes.json() as Record<string, unknown>;
-  const tenantToken = tokenData['tenant_access_token'] as string | undefined;
-  if (!tenantToken) return;
-
-  await fetch(`${apiBase}/open-apis/im/v1/messages?receive_id_type=open_id`, {
-    method:  'POST',
-    headers: {
-      'Authorization': `Bearer ${tenantToken}`,
-      'Content-Type':  'application/json',
-    },
-    body: JSON.stringify({
-      receive_id: openId,
-      msg_type:   'text',
-      content:    JSON.stringify({ text }),
-    }),
+  const response = await client.im.v1.message.create({
+    params: { receive_id_type: 'open_id' },
+    data: { receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }) },
   });
+  if (response.code !== undefined && response.code !== 0) {
+    throw new Error(`Lark DM failed: ${response.msg ?? response.code}`);
+  }
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 export function createLarkAuthRoutes(deps: {
   larkOAuthService:      LarkOAuthService;
-  larkUserAuthLinkRepo:  LarkUserAuthLinkRepository;
+  connectionRepo:        IntegrationConnectionRepository;
   cache:                 CachePort;
   logger:                Logger;
   appId:                 string;
@@ -140,9 +133,9 @@ export function createLarkAuthRoutes(deps: {
 
   // ── 1. Generate authorize URL ──────────────────────────────────────────────
   //
-  // Called internally by the /login slash command handler.
-  // Requires: x-company-id, x-user-id, x-lark-open-id headers.
-  // Returns: { url } — the slash command handler sends this to the user.
+  // Legacy HTTP entry point. The webhook normally creates this URL internally.
+  // Header values are never trusted: they must match the server-side Lark
+  // identity mapping before an OAuth nonce is issued.
   //
   router.get('/connect', async (req: Request, res: Response) => {
     if (!deps.larkOAuthService.isConfigured()) {
@@ -156,6 +149,24 @@ export function createLarkAuthRoutes(deps: {
 
     if (!companyId || !userId || !larkOpenId) {
       res.status(400).json({ error: 'missing_required_headers' });
+      return;
+    }
+
+    if (!deps.channelIdentityRepo) {
+      res.status(503).json({ error: 'lark_identity_validation_unavailable' });
+      return;
+    }
+
+    const identity = await deps.channelIdentityRepo.prepareLarkLogin(larkOpenId);
+    if (
+      !identity.ok
+      || identity.value?.status !== 'ready'
+      || identity.value.companyId !== companyId
+      || identity.value.userId !== userId
+      || identity.value.larkOpenId !== larkOpenId
+    ) {
+      log.warn('lark.auth.connect.identity_mismatch', { companyId, userId, larkOpenId });
+      res.status(403).json({ error: 'lark_identity_mismatch' });
       return;
     }
 
@@ -202,7 +213,13 @@ export function createLarkAuthRoutes(deps: {
     const stored = await deps.cache.get<{ companyId: string; userId: string; larkOpenId: string }>(
       larkOAuthNonceKey(state.nonce),
     );
-    if (!stored.ok || !stored.value || stored.value.companyId !== state.companyId) {
+    if (
+      !stored.ok
+      || !stored.value
+      || stored.value.companyId !== state.companyId
+      || stored.value.userId !== state.userId
+      || stored.value.larkOpenId !== state.larkOpenId
+    ) {
       log.warn('lark.auth.callback.nonce_mismatch', { companyId: state.companyId });
       sendError('Session expired or invalid — please run /login again.');
       return;
@@ -216,24 +233,39 @@ export function createLarkAuthRoutes(deps: {
         throw new Error('No access token returned from Lark');
       }
 
+      if (!tokens.larkOpenId || tokens.larkOpenId !== state.larkOpenId) {
+        log.warn('lark.auth.callback.account_mismatch', {
+          expectedLarkOpenId: state.larkOpenId,
+          returnedLarkOpenId: tokens.larkOpenId || null,
+          companyId: state.companyId,
+          userId: state.userId,
+        });
+        throw new Error('The authorised Lark account does not match the account that started this connection');
+      }
+
       const accessExpiresAt  = new Date(Date.now() + tokens.expiresIn * 1000);
       const refreshExpiresAt = tokens.refreshTokenExpiresIn
         ? new Date(Date.now() + tokens.refreshTokenExpiresIn * 1000)
         : null;
 
-      const result = await deps.larkUserAuthLinkRepo.upsert({
-        userId:                state.userId,
-        companyId:             state.companyId,
-        larkTenantKey:         tokens.tenantKey ?? '',
-        larkEmail:             tokens.larkEmail ?? '',
-        accessToken:           tokens.accessToken,
-        refreshToken:          tokens.refreshToken,
-        tokenType:             tokens.tokenType,
-        larkOpenId:            tokens.larkOpenId || state.larkOpenId,
-        larkUserId:            tokens.larkUserId,
-        larkName:              tokens.larkName,
-        accessTokenExpiresAt:  accessExpiresAt,
+      const resolvedOpenId = tokens.larkOpenId;
+      const result = await deps.connectionRepo.upsertLarkConnection({
+        companyId: state.companyId,
+        ownerType: 'user',
+        ownerUserId: state.userId,
+        createdBy: state.userId,
+        larkOpenId: resolvedOpenId,
+        larkTenantKey: tokens.tenantKey,
+        larkEmail: tokens.larkEmail,
+        larkUserId: tokens.larkUserId,
+        larkName: tokens.larkName,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        tokenType: tokens.tokenType,
+        accessTokenExpiresAt: accessExpiresAt,
         refreshTokenExpiresAt: refreshExpiresAt,
+        scopes: tokens.scope?.split(/\s+/).filter(Boolean) ?? [],
+        initialAccess: 'admin',
       });
 
       if (!result.ok) {
@@ -244,18 +276,17 @@ export function createLarkAuthRoutes(deps: {
       log.info('lark.auth.user_link.saved', {
         companyId:  state.companyId,
         userId:     state.userId,
-        larkOpenId: tokens.larkOpenId || state.larkOpenId,
+        larkOpenId: resolvedOpenId,
         larkEmail:  tokens.larkEmail,
       });
 
       // Bust identity cache so next message resolves fresh DB state.
-      const resolvedOpenId = tokens.larkOpenId || state.larkOpenId;
       if (resolvedOpenId && deps.channelIdentityRepo) {
         void deps.channelIdentityRepo.invalidateIdentityCache(resolvedOpenId);
       }
 
       // Send DM confirmation (best-effort — don't fail the callback if this errors)
-      const openIdForDm = tokens.larkOpenId || state.larkOpenId;
+      const openIdForDm = resolvedOpenId;
       if (openIdForDm) {
         void sendLarkDm(
           deps.appId,

@@ -612,7 +612,7 @@ describe('ChatInput', () => {
     )
   })
 
-  it('can always allow Bash for the active run', async () => {
+  it('can always allow Bash persistently from the active approval', async () => {
     usePiApproval.getState().enqueue({
       requestId: 'approval-request-bash-always',
       threadId: 'thread-1',
@@ -634,7 +634,7 @@ describe('ChatInput', () => {
     renderInput()
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Always allow Bash for this run',
+        name: 'Always allow Bash',
       })
     )
 
@@ -648,6 +648,10 @@ describe('ChatInput', () => {
           confirmed: true,
           alwaysAllowBash: true,
         }
+      )
+      expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+        'pi_set_persistent_bash_approval',
+        { allowed: true }
       )
       expect(screen.getByTestId('chat-input')).toBeInTheDocument()
     })

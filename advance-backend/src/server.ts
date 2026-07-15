@@ -238,12 +238,13 @@ export const createServer = (c: Container) => {
       shareResolverService:  c.shareResolverService,
       ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
       larkOAuthService:      c.larkOAuthService,
-      larkUserAuthLinkRepo:  c.larkUserAuthLinkRepo,
+      connectionRepo:        c.integrationConnectionRepo,
       cache:                 c.memoryCache,
       serializer:            c.chatSerializer,
       chatContextService:    c.chatContextService,
       prisma:                c.prisma,
       cloudinaryAdapter:     c.cloudinaryAdapter,
+      larkContactsClient:    c.larkContactsClient,
     }),
   );
 
@@ -276,14 +277,14 @@ export const createServer = (c: Container) => {
   app.use(
     '/api/lark/auth',
     createLarkAuthRoutes({
-      larkOAuthService:     c.larkOAuthService,
-      larkUserAuthLinkRepo: c.larkUserAuthLinkRepo,
-      cache:                c.memoryCache,   // nonces → REDIS_MEMORY_URL
-      logger:               c.logger,
-      appId:                c.env.LARK_APP_ID,
-      appSecret:            c.env.LARK_APP_SECRET,
-      apiBase:              c.env.LARK_API_BASE_URL,
-      channelIdentityRepo:  c.channelIdentityRepo,
+      larkOAuthService:    c.larkOAuthService,
+      connectionRepo:      c.integrationConnectionRepo,
+      cache:               c.memoryCache,   // nonces → REDIS_MEMORY_URL
+      logger:              c.logger,
+      appId:               c.env.LARK_APP_ID,
+      appSecret:           c.env.LARK_APP_SECRET,
+      apiBase:             c.env.LARK_API_BASE_URL,
+      channelIdentityRepo: c.channelIdentityRepo,
     }),
   );
 
@@ -378,7 +379,6 @@ export const createServer = (c: Container) => {
       canvaMcpOAuthService:   c.canvaMcpOAuthService,
       zohoTokenService:       c.zohoTokenService,
       zohoConnectionRepo:     c.zohoConnectionRepo,
-      larkUserAuthLinkRepo:   c.larkUserAuthLinkRepo,
       connectionRepo:         c.integrationConnectionRepo,
       permissions:            c.permissions,
       skillCatalog:           c.skillCatalog,

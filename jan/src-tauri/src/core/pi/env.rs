@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::core::divo::local_lark::resolve_lark_cli_home;
 use crate::core::divo::runtime_context::DIVO_RUNTIME_CONTEXT_FILE;
 use crate::core::divo::workspace::DivoWorkspaceRunLayout;
 
@@ -105,28 +104,6 @@ pub fn apply_divo_workspace_env(
 pub fn apply_divo_skill_env(cmd: &mut Command, skill_dirs: &[PathBuf]) {
     if let Ok(joined) = std::env::join_paths(skill_dirs) {
         cmd.env("DIVO_SKILL_DIRS", joined);
-    }
-}
-
-pub fn apply_local_lark_env(cmd: &mut Command, wrapper_path: Option<&Path>) {
-    let Some(wrapper_path) = wrapper_path else {
-        return;
-    };
-    cmd.env("DIVO_LARK_CLI", wrapper_path);
-    if let Ok(home_path) = resolve_lark_cli_home() {
-        cmd.env("DIVO_LARK_CLI_HOME", home_path);
-    }
-    if let Some(bin_dir) = wrapper_path.parent() {
-        prepend_path(cmd, bin_dir);
-    }
-}
-
-fn prepend_path(cmd: &mut Command, bin_dir: &Path) {
-    let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths = vec![bin_dir.to_path_buf()];
-    paths.extend(std::env::split_paths(&current));
-    if let Ok(joined) = std::env::join_paths(paths) {
-        cmd.env("PATH", joined);
     }
 }
 

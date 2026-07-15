@@ -134,6 +134,8 @@ const EnvSchema = z.object({
   GOOGLE_OAUTH_CLIENT_ID:     z.string().optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
   GOOGLE_OAUTH_REDIRECT_URI:  z.string().optional(),
+  /** Private backend-side Workspace MCP endpoint; never expose it to desktop/Pi. */
+  GOOGLE_WORKSPACE_MCP_URL:   z.string().default('http://127.0.0.1:18000/mcp'),
 
   // ── Canva remote MCP OAuth ───────────────────────────────────────────────
   // Canva allows the redirect URI only after its MCP access review. The client

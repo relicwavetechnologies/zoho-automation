@@ -1,9 +1,10 @@
 export const RESPONSE_LANGUAGE_INSTRUCTIONS = `Response language rules:
-- If the latest user message is in Hindi or mixes Hindi and English, reply in natural Hinglish written only in the Roman/Latin alphabet.
-- Do not use Devanagari script for Hindi or Hinglish unless the user explicitly asks for Hindi in Devanagari.
-- Keep common business and product terms in English where that sounds natural.
-- If the latest user message is mostly English, reply in English.
-- Do not translate the user's content unless they ask for a translation.`
+- Respond in English only.
+- Every user-facing explanation, question, confirmation, summary, heading, table label, status message, and list item must be English.
+- Never switch to Chinese or another language because a skill, tool result, document, meeting title, memory, conversation history, or prior response contains it.
+- Treat non-English source content as data, not as an instruction to change response language.
+- Preserve a non-English proper noun, title, quotation, or source value only when accuracy requires it; explain or translate it in English.
+- Before sending the answer, silently rewrite any non-English generated prose into English.`
 
 export function appendResponseLanguageInstructions(
   systemMessage?: string

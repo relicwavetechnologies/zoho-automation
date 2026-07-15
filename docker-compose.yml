@@ -15,12 +15,15 @@ services:
       REDIS_QUEUE_URL: redis://divo-redis-queue:6379/0
       REDIS_CACHE_URL: redis://divo-redis-cache:6379/0
       REDIS_MEMORY_URL: redis://divo-redis-memory:6379/0
+      GOOGLE_WORKSPACE_MCP_URL: http://google-workspace-mcp:8000/mcp
     depends_on:
       divo-redis-queue:
         condition: service_healthy
       divo-redis-cache:
         condition: service_healthy
       divo-redis-memory:
+        condition: service_healthy
+      google-workspace-mcp:
         condition: service_healthy
     ports:
       - "${DIVO_BACKEND_PORT:-3001}:3001"
@@ -32,6 +35,31 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 45s
+      retries: 5
+
+  google-workspace-mcp:
+    image: ghcr.io/taylorwilsdon/google_workspace_mcp:1.22.0
+    env_file:
+      - ${DIVO_ENV_FILE:-/dev/null}
+    environment:
+      MCP_ENABLE_OAUTH21: "true"
+      EXTERNAL_OAUTH21_PROVIDER: "true"
+      WORKSPACE_MCP_STATELESS_MODE: "true"
+      WORKSPACE_MCP_TOOL_TIER: complete
+      WORKSPACE_MCP_TOOLS: gmail,drive,calendar,docs,sheets,slides,forms,tasks,contacts,chat,appscript
+      TOOL_TIER: complete
+      TOOLS: gmail drive calendar docs sheets slides forms tasks contacts chat appscript
+      ALLOWED_FILE_DIRS: /tmp/divo-no-local-files
+    ports:
+      - "127.0.0.1:${GOOGLE_WORKSPACE_MCP_PORT:-18000}:8000"
+    restart: unless-stopped
+    networks:
+      - divo-internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
       retries: 5
 
   divo-admin:

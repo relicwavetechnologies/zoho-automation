@@ -46,6 +46,7 @@ import type { RagCitation } from '@/components/Citations'
 import { useGroundingStore } from '@/stores/grounding-store'
 import { injectCitationMarkers } from '@/lib/grounding'
 import { isPiTraceMessage, splitPiMessageParts } from '@/lib/pi'
+import { resolveToolLabel } from '@/lib/pi/tool-label'
 import { PiTraceTimeline } from '@/components/pi/PiTraceTimeline'
 
 const CHAT_STATUS = {
@@ -432,7 +433,7 @@ export const MessageItem = memo(
         return null
       }
 
-      const toolName = part.type.split('-').slice(1).join('-')
+      const toolName = resolveToolLabel(part)
       return (
         <Tool
           key={`${message.id}-${partIndex}`}
@@ -443,7 +444,7 @@ export const MessageItem = memo(
         >
           <ToolHeader
             title={toolName}
-            type={`tool-${toolName}` as `tool-${string}`}
+            type={part.type as `tool-${string}`}
             state={part.state}
           />
           <ToolContent title={toolName}>
@@ -644,13 +645,11 @@ export const MessageItem = memo(
               messageId={message.id}
               steps={steps}
               isStreaming={isStreaming}
-              hasPendingToolCall={hasPendingToolCall}
               awaitingApproval={awaitingApproval}
               renderTool={renderToolInline}
-              reasoningContainerRef={reasoningContainerRef}
-              isReasoningAtBottom={isReasoningAtBottom}
-              onReasoningScroll={onReasoningScroll}
-              onReasoningScrollToBottom={onReasoningScrollToBottom}
+              renderNarration={(text, i) =>
+                renderTextPart({ type: 'text', text }, i)
+              }
             />
           )
         }

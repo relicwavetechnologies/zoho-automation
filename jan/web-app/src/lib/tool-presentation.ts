@@ -22,10 +22,20 @@ export type ToolPresentationGroup = {
 }
 
 const providers = [
-  { id: 'google-workspace', title: 'Google Workspace', description: 'Gmail, Drive, and Calendar tools.', Icon: GoogleIcon, toolIds: ['googleGmail', 'googleDrive', 'googleCalendar'] },
+  {
+    id: 'google-workspace',
+    title: 'Google Workspace',
+    description: 'Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, and Apps Script.',
+    Icon: GoogleIcon,
+    toolIds: [
+      'googleGmail', 'googleDrive', 'googleCalendar', 'googleDocs', 'googleSheets',
+      'googleSlides', 'googleForms', 'googleTasks', 'googleContacts', 'googleChat',
+      'googleAppsScript',
+    ],
+  },
   { id: 'canva', title: 'Canva', description: 'Design, asset, folder, and export tools.', Icon: CanvaIcon, toolIds: ['canvaDesign'] },
   { id: 'zoho', title: 'Zoho', description: 'CRM and Books tools.', Icon: ZohoIcon, iconClassName: 'h-5 w-7', toolIds: ['zohoCrm', 'zohoBooks'] },
-  { id: 'lark-personal', title: 'Lark', description: 'Company collaboration tools.', Icon: LarkIcon, toolIds: ['larkMessaging', 'larkContacts', 'larkTask', 'larkCalendar', 'larkDoc', 'larkBase', 'larkApproval'] },
+  { id: 'lark', title: 'Lark', description: 'Company-managed Lark connections and collaboration tools.', Icon: LarkIcon, toolIds: ['larkMessaging', 'larkContacts', 'larkTask', 'larkCalendar', 'larkDoc', 'larkBase', 'larkApproval'] },
   { id: 'tool-memory', title: 'Memory', description: 'Company memory and knowledge tools.', Icon: Brain, toolIds: ['memoryPublishing', 'memoryRecall'] },
 ] as const
 

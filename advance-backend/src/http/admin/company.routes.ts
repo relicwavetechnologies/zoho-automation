@@ -543,14 +543,21 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       throw routeError(503, 'Lark OAuth is not configured');
     }
 
-    const [user, existingLink, binding] = await Promise.all([
+    const [user, existingConnection, binding] = await Promise.all([
       prisma.user.findUnique({
         where:  { id: userId },
         select: { email: true },
       }),
-      prisma.larkUserAuthLink.findUnique({
-        where:  { userId_companyId: { userId, companyId } },
-        select: { larkOpenId: true },
+      prisma.integrationConnection.findFirst({
+        where: {
+          companyId,
+          provider: 'lark',
+          ownerUserId: userId,
+          status: 'connected',
+          revokedAt: null,
+        },
+        select: { externalAccountId: true },
+        orderBy: { updatedAt: 'desc' },
       }),
       prisma.larkTenantBinding.findFirst({
         where:  { companyId, isActive: true },
@@ -562,9 +569,9 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
 
     const identityFilters = [
       ...(user?.email ? [{ email: user.email }] : []),
-      ...(existingLink?.larkOpenId ? [
-        { larkOpenId: existingLink.larkOpenId },
-        { externalUserId: existingLink.larkOpenId },
+      ...(existingConnection?.externalAccountId ? [
+        { larkOpenId: existingConnection.externalAccountId },
+        { externalUserId: existingConnection.externalAccountId },
       ] : []),
     ];
 
@@ -584,7 +591,7 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       },
     });
 
-    const larkOpenId = identity?.larkOpenId ?? identity?.externalUserId ?? existingLink?.larkOpenId;
+    const larkOpenId = identity?.larkOpenId ?? identity?.externalUserId ?? existingConnection?.externalAccountId;
     if (!larkOpenId) {
       throw routeError(400, 'No Lark open_id is mapped for this admin user');
     }
@@ -698,9 +705,9 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         break;
       case 'lark':
         if (userId) {
-          await prisma.larkUserAuthLink.updateMany({
-            where: { userId, companyId },
-            data: { revokedAt: new Date() },
+          await prisma.integrationConnection.updateMany({
+            where: { companyId, provider: 'lark', ownerUserId: userId, revokedAt: null },
+            data: { revokedAt: new Date(), status: 'revoked' },
           });
         }
         break;
@@ -820,20 +827,26 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
           const email = user.email.trim().toLowerCase();
           let existingUser = await prisma.user.findUnique({ where: { email }, select: { id: true } });
 
-          // If no User with this email, check LarkUserAuthLink — the canonical
-          // openId→userId mapping. This catches email changes in Lark: the auth
-          // link still points to the original User even after their Lark email changed.
+          // If no User with this email, check the canonical Divo Lark connection.
+          // This catches email changes in Lark while preserving the Divo user.
           if (!existingUser) {
-            const authLink = await prisma.larkUserAuthLink.findFirst({
-              where: { larkOpenId: user.openId },
-              select: { userId: true },
+            const connection = await prisma.integrationConnection.findFirst({
+              where: {
+                companyId,
+                provider: 'lark',
+                externalAccountId: user.openId,
+                ownerUserId: { not: null },
+                status: 'connected',
+                revokedAt: null,
+              },
+              select: { ownerUserId: true },
             });
-            if (authLink) {
+            if (connection?.ownerUserId) {
               await prisma.user.update({
-                where: { id: authLink.userId },
+                where: { id: connection.ownerUserId },
                 data: { email, ...(user.displayName ? { name: user.displayName } : {}) },
               }).catch(() => {});
-              existingUser = { id: authLink.userId };
+              existingUser = { id: connection.ownerUserId };
             }
           }
 
@@ -854,6 +867,18 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
               where: { id: existingUser.id },
               data: { name: user.displayName },
             }).catch(() => {});
+          }
+
+          if (existingUser) {
+            const activeMembership = await prisma.adminMembership.findFirst({
+              where: { userId: existingUser.id, companyId, isActive: true },
+              select: { id: true },
+            });
+            if (!activeMembership) {
+              await prisma.adminMembership.create({
+                data: { userId: existingUser.id, companyId, role: 'MEMBER', isActive: true },
+              });
+            }
           }
         }
 

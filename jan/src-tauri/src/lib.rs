@@ -119,6 +119,7 @@ macro_rules! invoke_commands_with_extras {
         core::pi::pi_extension_ui_respond,
         core::pi::pi_revoke_bash_approval,
         core::pi::pi_get_permission_rules,
+        core::pi::pi_set_persistent_bash_approval,
         core::pi::pi_set_bash_approval_rule,
         // Divo backend session (gateway config for Pi)
         core::divo::commands::divo_set_session,
@@ -134,6 +135,12 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_google_grant_access,
         core::divo::commands::divo_google_revoke_access,
         core::divo::commands::divo_google_disconnect_connection,
+        core::divo::commands::divo_lark_authorize_url,
+        core::divo::commands::divo_lark_status,
+        core::divo::commands::divo_lark_manage_access,
+        core::divo::commands::divo_lark_grant_access,
+        core::divo::commands::divo_lark_revoke_access,
+        core::divo::commands::divo_lark_disconnect_connection,
         core::divo::commands::divo_canva_authorize_url,
         core::divo::commands::divo_canva_status,
         core::divo::commands::divo_canva_manage_access,
@@ -173,12 +180,6 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_set_workspace_path,
         core::divo::commands::divo_clear_workspace_path,
         core::divo::commands::divo_normalize_image_attachment,
-        core::divo::local_lark::divo_lark_local_status,
-        core::divo::local_lark::divo_lark_local_setup_start,
-        core::divo::local_lark::divo_lark_local_setup_status,
-        core::divo::local_lark::divo_lark_local_auth_start,
-        core::divo::local_lark::divo_lark_local_auth_complete,
-        core::divo::local_lark::divo_lark_local_disconnect,
         $(
             $extra,
         )*
