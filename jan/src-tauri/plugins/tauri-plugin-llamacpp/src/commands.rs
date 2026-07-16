@@ -28,7 +28,9 @@ async fn router_endpoint<R: Runtime>(
 ) -> Result<(u16, String, u32), String> {
     let state: State<Arc<LlamacppState>> = app_handle.state();
     let guard = state.router.lock().await;
-    let h = guard.as_ref().ok_or_else(|| "router not started".to_string())?;
+    let h = guard
+        .as_ref()
+        .ok_or_else(|| "router not started".to_string())?;
     Ok((h.port, h.api_key.clone(), h.pid))
 }
 
@@ -105,13 +107,10 @@ async fn wait_until_loaded(
             ))
         })?;
 
-        let entry = json
-            .get("data")
-            .and_then(|d| d.as_array())
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(model_id))
-            });
+        let entry = json.get("data").and_then(|d| d.as_array()).and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(model_id))
+        });
 
         if let Some(entry) = entry {
             let status = entry.get("status");
@@ -168,7 +167,10 @@ async fn post_unload(port: u16, api_key: &str, model_id: &str) -> Result<(), Str
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Router rejected unload (status {}): {}", status, body));
+        return Err(format!(
+            "Router rejected unload (status {}): {}",
+            status, body
+        ));
     }
 
     // /models/unload returns once shutdown is *initiated*; poll until the
@@ -211,13 +213,10 @@ async fn wait_until_unloaded(
             ))
         })?;
 
-        let entry = json
-            .get("data")
-            .and_then(|d| d.as_array())
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(model_id))
-            });
+        let entry = json.get("data").and_then(|d| d.as_array()).and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(model_id))
+        });
 
         // No entry at all → treat as unloaded.
         let still_loaded = entry
@@ -258,7 +257,9 @@ async fn unload_busy_router_models(port: u16, api_key: &str) -> Result<(), Strin
         .unwrap_or_default();
     let unload_url = format!("http://127.0.0.1:{}/models/unload", port);
     for m in &data {
-        let Some(id) = m.get("id").and_then(|v| v.as_str()) else { continue };
+        let Some(id) = m.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let status = m
             .get("status")
             .and_then(|s| s.get("value"))
@@ -355,8 +356,14 @@ pub async fn unload_llama_model<R: Runtime>(
         .await
         .map_err(ServerError::InvalidArgument)?;
     match post_unload(port, &api_key, &model_id).await {
-        Ok(()) => Ok(UnloadResult { success: true, error: None }),
-        Err(e) => Ok(UnloadResult { success: false, error: Some(e) }),
+        Ok(()) => Ok(UnloadResult {
+            success: true,
+            error: None,
+        }),
+        Err(e) => Ok(UnloadResult {
+            success: false,
+            error: Some(e),
+        }),
     }
 }
 
@@ -608,7 +615,8 @@ pub async fn try_graceful_stop_router<R: Runtime>(
     let Some(handle) = maybe_handle else {
         return Ok(None);
     };
-    match crate::router::try_graceful_stop_router(handle, Duration::from_secs(deadline_secs)).await {
+    match crate::router::try_graceful_stop_router(handle, Duration::from_secs(deadline_secs)).await
+    {
         Ok(()) => {
             state
                 .router_pid

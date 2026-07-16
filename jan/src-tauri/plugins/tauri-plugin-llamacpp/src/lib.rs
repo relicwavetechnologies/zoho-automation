@@ -7,8 +7,8 @@ use tauri::{
 
 mod backend;
 pub mod cleanup;
-pub mod deps_analyzer;
 mod commands;
+pub mod deps_analyzer;
 mod device;
 mod error;
 mod gguf;

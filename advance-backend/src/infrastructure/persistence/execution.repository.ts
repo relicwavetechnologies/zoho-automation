@@ -130,9 +130,12 @@ export class ExecutionRepository {
   async findOrCreateByRequestId(input: CreateRunInput & { requestId: string }): Promise<string> {
     const existing = await this.prisma.executionRun.findUnique({
       where:  { requestId: input.requestId },
-      select: { id: true },
+      select: { id: true, companyId: true, userId: true },
     });
-    if (existing) return existing.id;
+    if (existing) {
+      assertRunCorrelationOwner(existing, input);
+      return existing.id;
+    }
 
     try {
       const run = await this.prisma.executionRun.create({
@@ -156,9 +159,12 @@ export class ExecutionRepository {
       if ((e as { code?: string }).code === 'P2002') {
         const row = await this.prisma.executionRun.findUnique({
           where:  { requestId: input.requestId },
-          select: { id: true },
+          select: { id: true, companyId: true, userId: true },
         });
-        if (row) return row.id;
+        if (row) {
+          assertRunCorrelationOwner(row, input);
+          return row.id;
+        }
       }
       throw e;
     }
@@ -382,5 +388,14 @@ export class ExecutionRepository {
       orderBy: { sequence: 'asc' },
       take:    input.limit ?? 500,
     });
+  }
+}
+
+function assertRunCorrelationOwner(
+  row: { companyId: string; userId: string | null },
+  input: { companyId: string; userId?: string },
+): void {
+  if (row.companyId !== input.companyId || row.userId !== (input.userId ?? null)) {
+    throw new Error('Execution run correlation belongs to a different authenticated principal');
   }
 }

@@ -1,5 +1,6 @@
 import type { Skill } from './skill.types';
 import {
+  GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
   GOOGLE_WORKSPACE_MCP_SOURCE,
   GOOGLE_WORKSPACE_PRODUCTS,
   GOOGLE_WORKSPACE_TOOL_IDS,
@@ -16,11 +17,12 @@ export const googleSkill: Skill = {
   toolIds: [...GOOGLE_WORKSPACE_TOOL_IDS],
   instructions: `GOOGLE WORKSPACE EXECUTION METHOD:
 - Google Workspace executes only through Divo gateway tools backed by the private server-side Workspace MCP. Never use a local Google CLI, direct Google API request, Bash, curl, browser automation, or local OAuth token.
-- Resolve accounts first with divo_gateway op="connections.list" and payload={"provider":"google_workspace"}.
-- If no connection is available, tell the member to connect Google Workspace. If exactly one is available, use it. If several are plausible, ask one short account-choice question.
-- Use only the returned backend connectionId. Never use an email address or label as connectionId.
-- Invoke the product tool with args={"connectionId":"...","op":"describe"|"call","nativeTool":"...","input":{...}}.
-- Divo injects user_google_email from the selected connection. Never place user_google_email in input.
+- Invoke the selected product tool without connectionId unless the user already chose an exact account. The backend auto-selects only when exactly one eligible connected/shared account can perform the action.
+- If the tool returns google_workspace_connection_selection_required, ask one short account-choice question using only those returned options, then retry once with that exact connectionId. Never rotate through accounts after an error.
+- If no eligible connection is available, tell the member to connect or share a Google Workspace account with the required access/scopes.
+- Never use an email address or label as connectionId. Use connections.list only when the user explicitly asks to inspect/manage available accounts.
+- Invoke the product tool with args={"op":"describe"|"call","nativeTool":"...","input":{},"connectionId":"<only after explicit choice>"}.
+- ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}
 - Before an unfamiliar operation, call op="describe" for its nativeTool and follow the returned input schema exactly. Once the schema is known in the current run, call op="call" directly.
 - The gateway owns RBAC, approvals, sharing, token refresh, and audit. A pending or denied action is not completed.
 

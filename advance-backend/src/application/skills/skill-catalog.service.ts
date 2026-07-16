@@ -11,6 +11,8 @@ export interface CatalogSkill {
   readonly description: string;
   readonly instructions: string;
   readonly toolIds: readonly string[];
+  readonly aliases: readonly string[];
+  readonly tags: readonly string[];
   readonly revision: number;
 }
 
@@ -64,7 +66,9 @@ export class SkillCatalogService {
       companyId: input.companyId,
       ...(input.departmentId ? { departmentId: input.departmentId } : {}),
       query: input.query,
-      limit: Math.max(input.limit * 3, input.limit),
+      // Fetch a bounded candidate window before application-layer ranking so
+      // generic terms cannot hide a stronger match that sorts later in a folder.
+      limit: Math.max(input.limit * 20, 100),
     });
     if (!result.ok) {
       this.log.warn('skills.catalog.search.failed', { companyId: input.companyId, error: result.error.message });
@@ -142,10 +146,11 @@ export class SkillCatalogService {
   }
 
   /**
-   * Skill visibility gate. When `grantedSkillIds` is provided (skill-RBAC
-   * enforcement is on), visibility is deny-by-default: the skill must be
-   * explicitly granted to the member. Otherwise the legacy rule applies —
-   * visible iff the member can use every required tool.
+   * Agent-facing discovery has two independent gates: the skill must be
+   * granted and all required tools must be executable in the current policy
+   * context. Grants remain independently manageable in the admin registry,
+   * but a non-executable recipe must never be presented to the runtime as a
+   * usable skill.
    */
   private isVisible(
     row: SkillRow,
@@ -153,9 +158,10 @@ export class SkillCatalogService {
     grantedSkillIds?: ReadonlySet<string>,
   ): boolean {
     if (!this.isLanguageSafe(row)) return false;
-    if (grantedSkillIds) return grantedSkillIds.has(row.id);
-    return row.toolIds.length > 0
+    const granted = grantedSkillIds ? grantedSkillIds.has(row.id) : true;
+    const executable = row.toolIds.length > 0
       && row.toolIds.every((toolId) => permission.allowedToolIds.has(asToolId(toolId)));
+    return granted && executable;
   }
 
   private isLanguageSafe(row: SkillRow): boolean {
@@ -178,6 +184,8 @@ function toCatalogSkill(row: SkillRow): CatalogSkill {
     description: row.summary,
     instructions: row.markdown,
     toolIds: [...row.toolIds],
+    aliases: [...(row.aliases ?? [])],
+    tags: [...row.tags],
     revision: row.revision,
   };
 }
@@ -197,6 +205,8 @@ function scoreSkill(skill: CatalogSkill, words: readonly string[]): number {
     skill.name,
     skill.description,
     ...skill.toolIds,
+    ...skill.aliases,
+    ...skill.tags,
   ].join(' ').toLowerCase();
   const full = `${strong} ${skill.instructions}`.toLowerCase();
 

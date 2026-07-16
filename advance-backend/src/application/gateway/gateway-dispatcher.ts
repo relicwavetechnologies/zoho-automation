@@ -12,6 +12,7 @@ import type { LocalApprovalIntentService } from './local-approval-intent.service
 import { mediaImageOcrPayloadSchema, type MediaOcrService } from './media-ocr.service';
 import type { ConnectionRegistryPort } from '../connections/connection-registry.port';
 import type { AuditService } from '../observability/audit.service';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import type {
   GatewayMemberContext,
   GatewayRequest,
@@ -19,6 +20,7 @@ import type {
 } from './gateway.types';
 import {
   gatewayFailure,
+  gatewayLocalApprovalRequired,
   gatewaySuccess,
   connectionsListPayloadSchema,
   isGatewayOp,
@@ -26,8 +28,18 @@ import {
   skillsSearchPayloadSchema,
   toolsInvokePayloadSchema,
   toolsCommitPayloadSchema,
+  toolsListPayloadSchema,
 } from './gateway.types';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
+import { TOOL_PERMISSION_POLICY_REVISION } from '../../domain/tools/tool-id';
+
+// zod-to-json-schema's recursive generic overflows when the registry erases a
+// concrete tool to Tool<unknown, unknown>. Keep that type mismatch at this
+// serialization boundary; the original Zod schema remains the validator.
+const serializeToolArgsSchema = zodToJsonSchema as unknown as (
+  schema: unknown,
+  options: { $refStrategy: 'none' },
+) => unknown;
 
 /**
  * Per-skill RBAC. Skill discovery is deny-by-default: a member sees/uses only
@@ -63,7 +75,7 @@ export class GatewayDispatcher {
       case 'capabilities.get':
         return this.handleCapabilitiesGet(member, departmentId);
       case 'tools.list':
-        return this.handleToolsList(member, departmentId);
+        return this.handleToolsList(member, departmentId, request.payload);
       case 'skills.list':
         return this.handleSkillsList(member, departmentId);
       case 'skills.search':
@@ -140,6 +152,7 @@ export class GatewayDispatcher {
     });
 
     return gatewaySuccess({
+      permissionPolicyRevision: TOOL_PERMISSION_POLICY_REVISION,
       user: {
         userId: member.userId,
         email: member.email,
@@ -164,22 +177,41 @@ export class GatewayDispatcher {
   private async handleToolsList(
     member: GatewayMemberContext,
     departmentId?: string,
+    payload?: Record<string, unknown>,
   ): Promise<GatewayResponse> {
+    const parsed = toolsListPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid tools.list payload — ${issues}`);
+    }
     const perm = await this.resolvePerm(member, departmentId);
     if (!perm) {
       return this.permissionDenied('Permission resolution failed');
     }
 
     const discoveryPerm = withGatewayDiscoveryPermissions(perm);
-    const tools = this.deps.toolRegistry
+    const requestedToolId = parsed.data.toolId;
+    const permittedTools = this.deps.toolRegistry
       .forRuntime(discoveryPerm)
-      .filter((tool) => tool.id !== 'runCommand')
+      .filter((tool) => tool.id !== 'runCommand');
+    const selectedTools = requestedToolId
+      ? permittedTools.filter((tool) => tool.id === requestedToolId)
+      : permittedTools;
+    if (requestedToolId && selectedTools.length === 0) {
+      return gatewayFailure('unknown_tool', `Tool is unavailable or not permitted: ${requestedToolId}`);
+    }
+    const tools = selectedTools
       .map((tool) => ({
         id: tool.id,
         family: tool.family,
         description: tool.description,
-        parameterDocs: tool.parameterDocs,
         allowedActions: [...(discoveryPerm.allowedActionsByTool.get(asToolId(tool.id)) ?? [])],
+        ...(requestedToolId ? {
+          parameterDocs: tool.parameterDocs,
+          argsSchema: serializeToolArgsSchema(tool.argsSchema, { $refStrategy: 'none' }),
+        } : {}),
       }));
 
     return gatewaySuccess({ tools });
@@ -310,13 +342,14 @@ export class GatewayDispatcher {
       return gatewayFailure('bad_request', `Unknown skillId "${parsed.data.skillId}"`);
     }
 
-    // Enforced: deny-by-default by explicit grant. Legacy: usable iff the member
-    // can use every required tool.
-    const allowed = grantedSkillIds
-      ? grantedSkillIds.has(skill.id)
-      : skill.toolIds.length > 0 && skill.toolIds.every((toolId) =>
-          discoveryPerm.allowedToolIds.has(asToolId(toolId)),
-        );
+    // Runtime skill use requires both the registry grant and executable tools.
+    // The admin registry may manage these independently, but the agent must not
+    // receive instructions for a capability it cannot invoke.
+    const granted = grantedSkillIds ? grantedSkillIds.has(skill.id) : true;
+    const executable = skill.toolIds.length > 0 && skill.toolIds.every((toolId) =>
+      discoveryPerm.allowedToolIds.has(asToolId(toolId)),
+    );
+    const allowed = granted && executable;
     if (!allowed) {
       this.recordSkillAudit(member, 'gateway.skill.get', 'failure', {
         departmentId: departmentId ?? null,
@@ -382,10 +415,20 @@ export class GatewayDispatcher {
       return prepared;
     }
     if (prepared.data.action !== 'read') {
-      const response = gatewayFailure(
-        'local_approval_required',
-        'Write actions must be prepared with tools.prepare and executed with tools.commit after local approval.',
+      if (!this.deps.localApprovalIntents) {
+        const response = gatewayFailure('tool_error', 'Local approval intents are not configured');
+        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response);
+        return response;
+      }
+      const intent = await this.deps.localApprovalIntents.createIntentForPreparedInvocation(
+        input,
+        prepared.data,
       );
+      if (!intent.ok || !intent.data) {
+        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, intent);
+        return intent;
+      }
+      const response = gatewayLocalApprovalRequired(intent.data);
       this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response);
       return response;
     }

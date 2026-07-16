@@ -17,6 +17,10 @@ export default function divoLlmExtension(pi: ExtensionAPI) {
 	const backendUrl = process.env.DIVO_BACKEND_URL;
 	const memberToken = process.env.DIVO_MEMBER_TOKEN;
 	if (!backendUrl || !memberToken) return; // unconfigured → fall back to direct DeepSeek
+	// The trace extension uses this process-local marker to add Divo correlation
+	// fields only when DeepSeek is actually repointed to our proxy. It prevents
+	// proxy-only fields from leaking into direct provider requests.
+	process.env.DIVO_LLM_PROXY_ACTIVE = "1";
 
 	pi.registerProvider("deepseek", {
 		// Our OpenAI-compatible proxy. The SDK appends /chat/completions.

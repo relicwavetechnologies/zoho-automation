@@ -14,7 +14,22 @@ describe("resolveDivoSkills", () => {
 		const operations: string[] = [];
 		const fetchImpl = async (_url: string, init?: RequestInit) => {
 			calls += 1;
-			operations.push(JSON.parse(String(init?.body)).op);
+			const operation = JSON.parse(String(init?.body)).op as string;
+			operations.push(operation);
+			if (operation === "skills.get") {
+				return new Response(JSON.stringify({
+					ok: true,
+					status: "success",
+					data: { skill: {
+						id: "google-workspace",
+						name: "Google Workspace",
+						description: "Use connected Google Workspace Gmail Drive Calendar accounts.",
+						instructions: "Use the governed Google tool and preserve account selection.",
+						toolIds: ["googleGmail", "googleDrive", "googleCalendar"],
+						revision: 4,
+					} },
+				}), { status: 200, headers: { "Content-Type": "application/json" } });
+			}
 			return new Response(JSON.stringify({
 				ok: true,
 				status: "success",
@@ -36,13 +51,16 @@ describe("resolveDivoSkills", () => {
 		const second = await resolveDivoSkills({ query: "calendar", env, fetchImpl: fetchImpl as typeof fetch });
 		const cached = await resolveDivoSkills({ query: "gmail", env, fetchImpl: fetchImpl as typeof fetch });
 
-		assert.equal(calls, 2);
-		assert.deepEqual(operations, ["skills.search", "skills.search"]);
+		assert.equal(calls, 3);
+		assert.deepEqual(operations, ["skills.search", "skills.get", "skills.search"]);
 		assert.equal(first.policy, DIVO_SKILL_POLICY);
 		assert.equal(first.selected?.id, "google-workspace");
 		assert.equal(second.selected?.id, "google-workspace");
 		assert.equal(cached.selected?.id, "google-workspace");
-		assert.doesNotMatch(formatSkillResolveResult(first), /local skill|read .*skill\.md/i);
+		assert.equal(first.selected?.instructions, "Use the governed Google tool and preserve account selection.");
+		assert.equal(first.selected?.revision, 4);
+		assert.match(formatSkillResolveResult(first), /Loaded approved recipe \(revision 4\)/);
+		assert.doesNotMatch(formatSkillResolveResult(first), /local skill|read .*skill\.md|call .*skills\.get/i);
 	});
 
 	it("fails closed when the backend registry is unavailable even when local paths exist", async () => {

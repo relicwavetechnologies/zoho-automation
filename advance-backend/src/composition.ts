@@ -43,9 +43,15 @@ import { ContextSearchBroker } from './application/context-search/context-search
 import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
 import { GoogleWorkspaceMcpClient } from './infrastructure/google/google-workspace-mcp.client';
+import { GoogleWorkspaceMcpSchemaCatalog } from './infrastructure/google/google-workspace-mcp-schema.catalog';
+import { GoogleWorkspaceGatewayClient } from './infrastructure/google/google-workspace-gateway.client';
 import { CanvaMcpOAuthService } from './infrastructure/canva/canva-mcp-oauth.service';
 import { CanvaMcpClient } from './infrastructure/canva/canva-mcp.client';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
+import {
+  publicConnectionChoices,
+  selectAccessibleConnection,
+} from './application/connections/accessible-connection-selection';
 import { CompanySerperConnectionRepository } from './infrastructure/persistence/company-serper-connection.repository';
 import { CompanySerperService } from './application/web-search/company-serper.service';
 import { hasGoogleScopeGroups } from './domain/google/google-workspace-scope';
@@ -531,52 +537,100 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // ── Google OAuth + connection registry ───────────────────────────────────
   const integrationConnectionRepo = new IntegrationConnectionRepository(prisma, env);
   const googleOAuthService        = new GoogleOAuthService({ env, cache, logger: logger.child({ service: 'google-oauth' }) });
+  const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog();
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: memoryCache, logger });
 
   async function getGoogleWorkspaceMcpConnection(input: {
     readonly companyId: string;
     readonly userId: string;
-    readonly connectionId: string;
+    readonly connectionId?: string;
     readonly minimumAccess: 'read_only' | 'read_write';
     readonly requiredScopeGroups: readonly (readonly string[])[];
   }) {
-    if (!googleOAuthService.isConfigured()) return null;
+    if (!googleOAuthService.isConfigured()) return { status: 'unavailable' as const };
 
-    const connection = await integrationConnectionRepo.findAccessibleGoogleConnection(input);
-    if (!connection.ok || !connection.value?.refreshToken || !connection.value.accountEmail) return null;
+    const accessible = await integrationConnectionRepo.listAccessibleGoogleConnections({
+      companyId: input.companyId,
+      userId: input.userId,
+    });
+    if (!accessible.ok) return { status: 'unavailable' as const };
+    const scopeEligible = accessible.value.filter((connection) =>
+      hasGoogleScopeGroups(connection.scopes, input.requiredScopeGroups),
+    );
+    const selection = selectAccessibleConnection({
+      connections: scopeEligible,
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+      minimumAccess: input.minimumAccess,
+    });
+    if (selection.status === 'choose_connection') {
+      return {
+        status: 'choose_connection' as const,
+        connections: publicConnectionChoices(selection.connections),
+      };
+    }
+    if (selection.status === 'unavailable') {
+      const requested = input.connectionId
+        ? accessible.value.find((connection) => connection.connectionId === input.connectionId)
+        : undefined;
+      if (requested && !hasGoogleScopeGroups(requested.scopes, input.requiredScopeGroups)) {
+        logger.warn('google.connection.missing_required_scope', {
+          companyId: input.companyId,
+          userId: input.userId,
+          connectionId: input.connectionId,
+          requiredScopeGroups: input.requiredScopeGroups,
+        });
+      }
+      return { status: 'unavailable' as const };
+    }
+
+    const selectedConnectionId = selection.connection.connectionId;
+    const connection = await integrationConnectionRepo.findAccessibleGoogleConnection({
+      companyId: input.companyId,
+      userId: input.userId,
+      connectionId: selectedConnectionId,
+      minimumAccess: input.minimumAccess,
+    });
+    if (!connection.ok || !connection.value?.refreshToken) {
+      return { status: 'unavailable' as const };
+    }
     if (!hasGoogleScopeGroups(connection.value.scopes, input.requiredScopeGroups)) {
       logger.warn('google.connection.missing_required_scope', {
         companyId: input.companyId,
         userId: input.userId,
-        connectionId: input.connectionId,
+        connectionId: selectedConnectionId,
         requiredScopeGroups: input.requiredScopeGroups,
       });
-      return null;
+      return { status: 'unavailable' as const };
     }
 
     try {
       const token = await googleOAuthService.getValidAccessToken({
         companyId:    input.companyId,
-        userId:       `connection:${input.connectionId}`,
+        userId:       `connection:${selectedConnectionId}`,
         refreshToken: connection.value.refreshToken,
       });
-      await integrationConnectionRepo.touchLastUsed(input.connectionId);
+      await integrationConnectionRepo.touchLastUsed(selectedConnectionId);
       return {
-        client: new GoogleWorkspaceMcpClient(
-          token,
-          connection.value.accountEmail,
-          env.GOOGLE_WORKSPACE_MCP_URL,
-        ),
-        accountEmail: connection.value.accountEmail,
+        status: 'resolved' as const,
+        connection: {
+          client: new GoogleWorkspaceGatewayClient(
+            token,
+            new GoogleWorkspaceMcpClient(
+              token,
+              env.GOOGLE_WORKSPACE_MCP_URL,
+              googleWorkspaceMcpSchemas,
+            ),
+          ),
+        },
       };
     } catch (error) {
       logger.warn('google.connection.token_resolution_failed', {
         companyId: input.companyId,
         userId: input.userId,
-        connectionId: input.connectionId,
+        connectionId: selectedConnectionId,
         error: String(error),
       });
-      return null;
+      return { status: 'unavailable' as const };
     }
   }
 
@@ -900,31 +954,22 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
           companyId: input.companyId,
         });
         if (!accessible.ok) return { status: 'unavailable' as const };
-        const candidates = accessible.value.filter(connection =>
-          input.minimumAccess === 'read_only' || connection.access === 'read_write' || connection.access === 'admin',
-        );
-        const selected = input.connectionId
-          ? candidates.find(connection => connection.connectionId === input.connectionId)
-          : candidates.length === 1 ? candidates[0] : null;
-        if (!selected) {
-          if (!input.connectionId && candidates.length > 1) {
-            return {
-              status: 'choose_connection' as const,
-              connections: candidates.map(connection => ({
-                connectionId: connection.connectionId,
-                label: connection.label,
-                ...(connection.accountEmail ? { accountEmail: connection.accountEmail } : {}),
-                ...(connection.accountName ? { accountName: connection.accountName } : {}),
-                access: connection.access,
-              })),
-            };
-          }
-          return { status: 'unavailable' as const };
+        const selection = selectAccessibleConnection({
+          connections: accessible.value,
+          ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+          minimumAccess: input.minimumAccess,
+        });
+        if (selection.status === 'choose_connection') {
+          return {
+            status: 'choose_connection' as const,
+            connections: publicConnectionChoices(selection.connections),
+          };
         }
+        if (selection.status === 'unavailable') return { status: 'unavailable' as const };
         const connection = await integrationConnectionRepo.findAccessibleLarkConnection({
           companyId: input.companyId,
           userId: input.userId,
-          connectionId: selected.connectionId,
+          connectionId: selection.connection.connectionId,
           minimumAccess: input.minimumAccess,
         });
         if (!connection.ok || !connection.value?.accessToken) return { status: 'unavailable' as const };

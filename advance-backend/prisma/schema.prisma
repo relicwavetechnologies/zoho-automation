@@ -960,13 +960,15 @@ model SkillRegistryRevision {
   updatedAt DateTime @updatedAt
 }
 
-// Per-skill RBAC. A skill is usable ONLY by grantees with an explicit grant
+// Per-skill RBAC. A skill is discoverable by the agent ONLY when the grantee
+// has both an explicit grant and permission for every required tool
 // here — deny-by-default. Grantees are polymorphic (mirrors
 // IntegrationConnectionGrant): a whole company, a department, a department
 // role, or an individual user. granteeId is a bare id (no FK) so a single row
 // shape covers every axis. Company admins manage grants from the Skills Lab;
-// this is independent of tool-level permissions (which still gate individual
-// tool invocations at execution time).
+// Grant administration remains independent from tool-level policy so admins
+// can prepare access before enabling a tool, but runtime discovery intersects
+// both policies and individual invocations enforce tool actions again.
 model SkillAccessGrant {
   id          String   @id @default(uuid())
   companyId   String

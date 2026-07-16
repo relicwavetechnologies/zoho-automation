@@ -4,15 +4,11 @@ import type {
 	ToolCallEvent,
 	ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import {
-	callDivoGateway,
-	resolveDivoGatewayConfig,
-	type DivoGatewayConfig,
-	type GatewayResponseBody,
-} from "./gateway-client.ts";
 import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correlation.ts";
 
 export const DIVO_APPROVAL_PROTOCOL_TITLE = "divo_approval_v1";
+export const DIVO_TOOLS_INVOKE_ENVELOPE =
+	'{ "op": "tools.invoke", "payload": { "toolId": "<approved tool ID>", "args": { ...tool arguments } } }';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -29,25 +25,8 @@ export interface ApprovalPresentationV1 {
 	expiresAt?: string;
 }
 
-type ApprovalContext = Pick<ExtensionContext, "cwd" | "signal"> & {
+export type ApprovalContext = Pick<ExtensionContext, "cwd" | "signal"> & {
 	ui: Pick<ExtensionContext["ui"], "confirm">;
-};
-
-export interface ApprovalGateDependencies {
-	resolveConfig: () => DivoGatewayConfig | { error: string };
-	callGateway: (
-		config: DivoGatewayConfig,
-		request: {
-			op: string;
-			departmentId?: string;
-			payload?: unknown;
-		},
-	) => Promise<{ body: GatewayResponseBody; httpStatus: number }>;
-}
-
-const DEFAULT_DEPENDENCIES: ApprovalGateDependencies = {
-	resolveConfig: resolveDivoGatewayConfig,
-	callGateway: callDivoGateway,
 };
 
 function asRecord(value: unknown): JsonRecord | undefined {
@@ -145,11 +124,7 @@ function localApprovalRequest(
 	return undefined;
 }
 
-async function gateDivoInvocation(
-	event: ToolCallEvent,
-	ctx: ApprovalContext,
-	dependencies: ApprovalGateDependencies,
-): Promise<ToolCallEventResult | undefined> {
+function gateDivoInvocation(event: ToolCallEvent): ToolCallEventResult | undefined {
 	const input = event.input as JsonRecord;
 	const op = nonEmptyString(input.op);
 	if (op === "tools.commit") {
@@ -160,13 +135,28 @@ async function gateDivoInvocation(
 	if (op !== "tools.invoke") return undefined;
 
 	const payload = asRecord(input.payload);
-	const toolId = nonEmptyString(payload?.toolId);
-	if (!payload || !toolId || !("args" in payload)) {
+	if (!payload) {
 		return approvalBlock(
-			"The Divo tool request was malformed and could not be safely prepared.",
+			`payload must be an object. Expected ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
+		);
+	}
+	const toolId = nonEmptyString(payload?.toolId);
+	if (!toolId) {
+		return approvalBlock(
+			`payload.toolId must be a non-empty approved backend tool ID. Expected ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
+		);
+	}
+	if (!("args" in payload)) {
+		return approvalBlock(
+			`payload.args is required. Expected ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
 		);
 	}
 	const args = asRecord(payload.args);
+	if (!args) {
+		return approvalBlock(
+			`payload.args must be an object. Expected ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
+		);
+	}
 	if (toolId === "memoryRecall") {
 		return approvalBlock(
 			"Memory recall must use divo_memory_recall with a query and optional exact department-name ranking preferences. The backend derives and searches all active memberships; names do not select or grant scope.",
@@ -181,53 +171,31 @@ async function gateDivoInvocation(
 		);
 	}
 
-	const resolved = dependencies.resolveConfig();
-	if ("error" in resolved) {
-		return approvalBlock(resolved.error);
-	}
+	return undefined;
+}
 
-	let body: GatewayResponseBody;
-	try {
-		({ body } = await dependencies.callGateway(resolved, {
-			op: "tools.prepare",
-			...(nonEmptyString(input.departmentId)
-				? { departmentId: nonEmptyString(input.departmentId) }
-				: {}),
-			payload: { toolId, args: payload.args },
-		}));
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return approvalBlock(
-			`The action could not be prepared safely: ${message}`,
-		);
-	}
-
-	if (!body.ok || body.status !== "success") {
-		return approvalBlock(
-			body.error?.message ??
-				`The action could not be prepared safely (${body.status}).`,
-		);
-	}
-
-	const data = asRecord(body.data);
-	if (!data || typeof data.requiresApproval !== "boolean") {
-		return approvalBlock(
-			"The backend returned an invalid approval classification; the action was not executed.",
-		);
-	}
-	if (!data.requiresApproval) return undefined;
-
-	const intentId = nonEmptyString(data.intentId);
-	if (!intentId || !("presentation" in data)) {
-		return approvalBlock(
+/**
+ * Present a server-created write intent and return its ID only after the user
+ * approves it. The backend owns classification and binds the intent to the
+ * validated identity, department, tool, action, and args.
+ */
+export async function approvePreparedDivoIntent(
+	toolCallId: string,
+	value: unknown,
+	ctx: ApprovalContext,
+): Promise<string> {
+	const data = asRecord(value);
+	const intentId = nonEmptyString(data?.intentId);
+	if (!data || !intentId || !("presentation" in data)) {
+		throw new Error(
 			"The backend did not return a complete approval intent; the action was not executed.",
 		);
 	}
 
 	const presentationRecord = asRecord(data.presentation);
-	const request: Omit<ApprovalPresentationV1, "runCorrelation"> = {
+	const blocked = await askForApproval(ctx, {
 		version: 1,
-		toolCallId: event.toolCallId,
+		toolCallId,
 		source: "divo",
 		kind:
 			nonEmptyString(data.kind) ??
@@ -246,31 +214,20 @@ async function gateDivoInvocation(
 		...(nonEmptyString(data.expiresAt)
 			? { expiresAt: nonEmptyString(data.expiresAt) }
 			: {}),
-	};
-
-	const blocked = await askForApproval(ctx, request);
-	if (blocked) return blocked;
-
-	// Mutating the intercepted call is supported by Pi's tool_call contract. The
-	// backend binds intentId to the already validated args, user, and department.
-	const departmentId = nonEmptyString(input.departmentId);
-	for (const key of Object.keys(input)) delete input[key];
-	input.op = "tools.commit";
-	if (departmentId) input.departmentId = departmentId;
-	input.payload = { intentId };
-	return undefined;
+	});
+	if (blocked) throw new Error(blocked.reason);
+	return intentId;
 }
 
 export async function handleApprovalToolCall(
 	event: ToolCallEvent,
 	ctx: ApprovalContext,
-	dependencies: ApprovalGateDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<ToolCallEventResult | undefined> {
 	const local = localApprovalRequest(event, ctx);
 	if (local) return askForApproval(ctx, local);
 
 	if (event.toolName === "divo_gateway") {
-		return gateDivoInvocation(event, ctx, dependencies);
+		return gateDivoInvocation(event);
 	}
 	return undefined;
 }

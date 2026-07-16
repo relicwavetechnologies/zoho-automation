@@ -20,8 +20,7 @@ use tokio::time::Instant;
 pub type ErrorCallback = Arc<dyn Fn(&'static str, String) + Send + Sync + 'static>;
 
 fn is_oom_line(line_lower: &str) -> bool {
-    if line_lower.contains("erroroutofdevicememory")
-        || line_lower.contains("erroroutofhostmemory")
+    if line_lower.contains("erroroutofdevicememory") || line_lower.contains("erroroutofhostmemory")
     {
         return true;
     }
@@ -154,9 +153,7 @@ pub async fn start_router(
     setup_windows_process_flags(&mut command);
 
     let cuda = find_cuda_paths();
-    if cuda.lib_paths.is_empty()
-        && cuda.bin_paths.is_empty()
-        && binary_requires_cuda(&backend_exe)
+    if cuda.lib_paths.is_empty() && cuda.bin_paths.is_empty() && binary_requires_cuda(&backend_exe)
     {
         log::warn!(
             "llama.cpp router backend appears to require CUDA, but CUDA not found. \
@@ -164,9 +161,7 @@ pub async fn start_router(
         );
     }
     let rocm = find_rocm_paths();
-    if rocm.lib_paths.is_empty()
-        && rocm.bin_paths.is_empty()
-        && binary_requires_rocm(&backend_exe)
+    if rocm.lib_paths.is_empty() && rocm.bin_paths.is_empty() && binary_requires_rocm(&backend_exe)
     {
         log::warn!(
             "llama.cpp router backend appears to require ROCm/HIP, but ROCm not found. \
@@ -292,16 +287,19 @@ pub async fn start_router(
     // Early-exit check.
     if let Some(status) = child.try_wait()? {
         let stderr_output = stderr_task.await.unwrap_or_else(|e| {
-                        log::warn!("Router stderr task join failed: {e}");
-                        String::new()
-                    });
+            log::warn!("Router stderr task join failed: {e}");
+            String::new()
+        });
         log::error!("llama-server router exited early with status {:?}", status);
         return Err(LlamacppError::from_stderr(&stderr_output).into());
     }
 
     let timeout_duration = Duration::from_secs(timeout_secs);
     let start_time = Instant::now();
-    log::info!("Waiting for router to be ready (timeout={}s)...", timeout_secs);
+    log::info!(
+        "Waiting for router to be ready (timeout={}s)...",
+        timeout_secs
+    );
 
     loop {
         tokio::select! {
@@ -376,7 +374,10 @@ pub async fn try_graceful_stop_router(
     let client = match reqwest::Client::builder().build() {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("try_graceful_stop_router: failed to build http client: {}; terminating directly", e);
+            log::warn!(
+                "try_graceful_stop_router: failed to build http client: {}; terminating directly",
+                e
+            );
             terminate_router_process(&mut handle.child).await;
             return Ok(());
         }
@@ -394,10 +395,11 @@ pub async fn try_graceful_stop_router(
         }
     };
 
-    let loaded_only: Vec<String> = match list_models_filtered(&client, handle.port, &handle.api_key, &["loaded"]).await {
-        Ok(v) => v,
-        Err(_) => initial.clone(),
-    };
+    let loaded_only: Vec<String> =
+        match list_models_filtered(&client, handle.port, &handle.api_key, &["loaded"]).await {
+            Ok(v) => v,
+            Err(_) => initial.clone(),
+        };
     let processing =
         list_processing_models(&client, handle.port, &handle.api_key, &loaded_only).await;
     if !processing.is_empty() {
@@ -425,7 +427,11 @@ pub async fn try_graceful_stop_router(
                 .await
             {
                 Ok(r) if r.status().is_success() => {}
-                Ok(r) => log::warn!("try_graceful_stop_router: unload {} returned {}", id, r.status()),
+                Ok(r) => log::warn!(
+                    "try_graceful_stop_router: unload {} returned {}",
+                    id,
+                    r.status()
+                ),
                 Err(e) => log::warn!("try_graceful_stop_router: unload {} failed: {}", id, e),
             }
         }
@@ -513,7 +519,11 @@ async fn list_processing_models(
         {
             Ok(r) => r,
             Err(e) => {
-                log::warn!("list_processing_models: GET /slots?model={} failed: {}", id, e);
+                log::warn!(
+                    "list_processing_models: GET /slots?model={} failed: {}",
+                    id,
+                    e
+                );
                 continue;
             }
         };
@@ -606,7 +616,10 @@ pub async fn force_kill_router_tree(mut handle: RouterHandle) {
 
     if let Some(p) = sys.process(rpid) {
         if !p.kill() {
-            log::debug!("force_kill_router_tree: router pid {} kill() false (likely already dying)", router_pid);
+            log::debug!(
+                "force_kill_router_tree: router pid {} kill() false (likely already dying)",
+                router_pid
+            );
         }
     }
     // Failures are expected: router's own exit handler reaps these in parallel.
@@ -647,11 +660,22 @@ mod tests {
     #[test]
     fn router_args_appends_default_args_in_order() {
         let preset = PathBuf::from("/tmp/p.ini");
-        let extras = vec!["--threads".to_string(), "8".to_string(), "--metrics".to_string()];
+        let extras = vec![
+            "--threads".to_string(),
+            "8".to_string(),
+            "--metrics".to_string(),
+        ];
         let args = router_args(&preset, 8080, "k", 2, &extras);
 
         // The defaults must appear after our base flags, preserving order.
-        let last_three: Vec<&String> = args.iter().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
+        let last_three: Vec<&String> = args
+            .iter()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         assert_eq!(last_three, vec![&extras[0], &extras[1], &extras[2]]);
     }
 
@@ -677,9 +701,7 @@ mod tests {
         assert!(is_backend_error_line("ggml_assert(cond) failed"));
         // glibc heap-corruption aborts (e.g. mtmd video decode crash).
         assert!(is_backend_error_line("corrupted size vs. prev_size"));
-        assert!(is_backend_error_line(
-            "malloc(): corrupted top size"
-        ));
+        assert!(is_backend_error_line("malloc(): corrupted top size"));
         assert!(is_backend_error_line("stack smashing detected"));
         assert!(!is_backend_error_line(
             "srv log_server_r: request: post /v1/chat/completions"

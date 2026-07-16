@@ -26,7 +26,7 @@ import { TokenUsageService } from '../../application/observability/token-usage.s
 export interface TraceIngestRoutesDeps {
   prisma: PrismaClient;
   logger: Logger;
-  /** When the LLM proxy owns the trace + usage, ingest stands down (no double-writes). */
+  /** Legacy kill switch for clients that do not declare per-batch usage ownership. */
   proxyOwnsTrace?: boolean;
 }
 
@@ -79,6 +79,7 @@ const batchSchema = z.object({
   sessionId:   z.string().max(200).optional(),
   threadId:    z.string().max(200).optional(),
   agentTarget: z.string().max(200).optional(),
+  usageAuthority: z.enum(['desktop', 'proxy']).default('desktop'),
   events:      z.array(eventSchema).min(1).max(500),
 });
 
@@ -144,7 +145,13 @@ export async function ingestTraceBatch(
   };
 
   const results = await Promise.allSettled(
-    batch.events.map((ev) => persistEvent(runs, tokens, ev, ctx)),
+    batch.events.map((ev) => persistEvent(
+      runs,
+      tokens,
+      ev,
+      ctx,
+      batch.usageAuthority,
+    )),
   );
   const failed = results.filter((r) => r.status === 'rejected').length;
   if (failed > 0) {
@@ -158,6 +165,7 @@ async function persistEvent(
   tokens: TokenUsageService,
   ev: TraceEvent,
   ctx: { executionId: string; companyId: string; userId: string; agentTarget?: string; threadId?: string },
+  usageAuthority: 'desktop' | 'proxy',
 ): Promise<void> {
   if (ev.kind === 'tool') {
       const success = ev.isError !== true;
@@ -213,7 +221,7 @@ async function persistEvent(
       });
       // Token attribution → AiTokenUsage (Track B foundation).
       const u = ev.usage;
-      if (u) {
+      if (u && usageAuthority === 'desktop') {
         await tokens.recordForRun({
           executionRunId: ctx.executionId,
           companyId:      ctx.companyId,
@@ -264,12 +272,6 @@ export function createTraceIngestRoutes(deps: TraceIngestRoutesDeps): Router {
   const tokens = new TokenUsageService(deps.prisma, deps.logger);
 
   router.post('/', async (req: Request, res: Response): Promise<void> => {
-    // Proxy owns the trace + authoritative usage — accept & drop PI's self-report.
-    if (deps.proxyOwnsTrace) {
-      res.status(202).json({ success: true, data: { skipped: true } });
-      return;
-    }
-
     const companyId = res.locals['companyId'] as string | undefined;
     const userId    = res.locals['userId'] as string | undefined;
     if (!companyId || !userId) {
@@ -280,6 +282,14 @@ export function createTraceIngestRoutes(deps: TraceIngestRoutesDeps): Router {
     const parsed = batchSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? 'Invalid batch' });
+      return;
+    }
+
+    // Legacy clients do not declare ownership. Preserve the old deployment
+    // switch for them, while new clients merge their detailed timeline into the
+    // proxy-correlated run and explicitly defer only token usage to the proxy.
+    if (deps.proxyOwnsTrace && parsed.data.usageAuthority === 'desktop') {
+      res.status(202).json({ success: true, data: { skipped: true } });
       return;
     }
 

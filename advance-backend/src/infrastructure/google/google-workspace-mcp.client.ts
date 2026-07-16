@@ -4,41 +4,37 @@ import type {
   GoogleWorkspaceMcpPort,
   GoogleWorkspaceMcpToolDescription,
 } from '../../application/orchestration/tools/families/google-workspace-mcp.tool';
+import { GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT } from '../../application/google/google-workspace-mcp-manifest';
+import { GoogleWorkspaceMcpSchemaCatalog } from './google-workspace-mcp-schema.catalog';
 
 export const GOOGLE_WORKSPACE_MCP_DEFAULT_URL = 'http://127.0.0.1:18000/mcp';
 
-/**
- * Authenticated transport to the private Workspace MCP sidecar. The selected
- * Google identity is injected here and cannot be overridden by the caller.
- */
+/** Authenticated transport to the private Workspace MCP sidecar. */
 export class GoogleWorkspaceMcpClient implements GoogleWorkspaceMcpPort {
   constructor(
     private readonly accessToken: string,
-    private readonly accountEmail: string,
     private readonly mcpUrl = GOOGLE_WORKSPACE_MCP_DEFAULT_URL,
+    private readonly schemaCatalog = new GoogleWorkspaceMcpSchemaCatalog(),
   ) {}
 
   async describeTool(name: string): Promise<GoogleWorkspaceMcpToolDescription | null> {
-    return this.withClient(async (client) => {
+    return this.schemaCatalog.describe(name, () => this.withClient(async (client) => {
       const result = await client.listTools();
-      const tool = result.tools.find((candidate) => candidate.name === name);
-      if (!tool) return null;
-      return {
+      return result.tools.map((tool) => ({
         name: tool.name,
         ...(tool.description ? { description: tool.description } : {}),
         inputSchema: tool.inputSchema,
-      };
-    });
+      }));
+    }));
   }
 
   async callTool(name: string, input: Readonly<Record<string, unknown>>): Promise<unknown> {
     assertSafeGoogleWorkspaceMcpInput(input);
-    const args = {
-      ...input,
-      user_google_email: this.accountEmail,
-    };
     return this.withClient(async (client) => {
-      const result = await client.callTool({ name, arguments: args });
+      // The bearer token is the complete identity boundary. Forward the
+      // validated native input unchanged so stored account metadata can never
+      // override the authenticated principal.
+      const result = await client.callTool({ name, arguments: { ...input } });
       const toolResult = result as unknown as {
         readonly isError?: boolean;
         readonly structuredContent?: unknown;
@@ -105,7 +101,12 @@ export function assertSafeGoogleWorkspaceMcpInput(value: unknown, path = 'input'
 
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     const childPath = `${path}.${key}`;
-    if ((key === 'path' || key === 'file_path') && typeof child === 'string') {
+    if ((GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.forbiddenToolArguments as readonly string[]).includes(key)) {
+      throw new Error(
+        `${childPath} is not allowed; Google identity is derived from the selected connection's OAuth bearer token`,
+      );
+    }
+    if ((GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.forbiddenLocalFileArguments as readonly string[]).includes(key)) {
       throw new Error(`${childPath} is not allowed; provide base64 content or an HTTPS URL`);
     }
     if ((key === 'fileUrl' || key === 'url') && typeof child === 'string' && child.trim().toLowerCase().startsWith('file:')) {

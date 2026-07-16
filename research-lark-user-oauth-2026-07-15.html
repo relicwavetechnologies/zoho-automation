@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Divo research: reusable Lark user-auth API integrations and the recommended implementation boundary." />
+  <title>Lark user-auth integration research — Divo</title>
+  <style>
+    :root { --bg:#0b0d12; --panel:#121722; --panel-2:#171d29; --line:#293245; --text:#f4f7fb; --muted:#a5b0c1; --cyan:#5bd4ff; --violet:#a78bfa; --green:#51d39a; --amber:#f4bb56; --red:#fb7185; --max:1180px; }
+    * { box-sizing:border-box; } html { scroll-behavior:smooth; } body { margin:0; background:radial-gradient(900px 450px at 80% -5%,#18334a 0%,transparent 65%),var(--bg); color:var(--text); font:16px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    a { color:var(--cyan); text-underline-offset:3px; } a:hover { color:#b9efff; } .wrap { width:min(calc(100% - 40px),var(--max)); margin:auto; } header { padding:80px 0 42px; border-bottom:1px solid var(--line); }
+    .eyebrow { display:inline-flex; gap:8px; align-items:center; color:var(--cyan); font-size:12px; text-transform:uppercase; letter-spacing:.13em; font-weight:750; } .dot { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 0 4px #51d39a22; }
+    h1 { max-width:850px; margin:16px 0 14px; font-size:clamp(38px,6vw,70px); line-height:1.03; letter-spacing:-.055em; } h2 { font-size:26px; letter-spacing:-.025em; margin:0 0 12px; } h3 { font-size:18px; margin:0 0 8px; } p { color:var(--muted); margin:0 0 16px; } .lead { max-width:780px; font-size:20px; line-height:1.55; color:#c8d3e2; } .meta { display:flex; gap:14px; flex-wrap:wrap; color:var(--muted); font-size:13px; }
+    main { padding:36px 0 76px; } section { margin:56px 0; } .section-kicker { color:var(--violet); text-transform:uppercase; font-size:12px; letter-spacing:.12em; font-weight:800; margin-bottom:8px; }
+    .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:16px; } .card { grid-column:span 4; background:linear-gradient(145deg,var(--panel-2),var(--panel)); border:1px solid var(--line); border-radius:16px; padding:22px; box-shadow:0 14px 35px #00000020; } .card.wide { grid-column:span 6; } .card.full { grid-column:span 12; } .card p:last-child { margin-bottom:0; }
+    .metric { color:var(--text); font-weight:780; font-size:34px; line-height:1; letter-spacing:-.045em; margin-bottom:9px; } .label { color:var(--muted); font-size:13px; }
+    .verdict { border-left:4px solid var(--cyan); padding:20px 22px; background:#10202a; border-radius:0 14px 14px 0; color:#dcecf4; } .verdict strong { color:white; }
+    .pill { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--line); color:#d6deea; border-radius:999px; padding:5px 10px; font-size:12px; font-weight:700; margin:3px 4px 3px 0; } .pill .confidence { width:7px; height:7px; border-radius:50%; background:var(--green); } .pill.medium .confidence { background:var(--amber); } .pill.low .confidence { background:var(--red); }
+    .flow { overflow:auto; background:#090c12; border:1px solid var(--line); border-radius:16px; padding:25px; } .flow-row { display:flex; align-items:stretch; min-width:850px; gap:8px; } .node { flex:1; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; } .node b { display:block; font-size:14px; } .node span { color:var(--muted); font-size:12px; line-height:1.35; display:block; margin-top:4px; } .arrow { align-self:center; color:var(--cyan); font-size:22px; }
+    .list { padding:0; margin:14px 0 0; list-style:none; } .list li { color:var(--muted); padding:10px 0 10px 24px; position:relative; border-top:1px solid #253043; } .list li:before { content:"✓"; position:absolute; left:0; color:var(--green); font-weight:800; } .list li:first-child { border-top:0; }
+    .ops { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; } .op { font:12px ui-monospace,SFMono-Regular,Menlo,monospace; color:#bcd4e8; background:#0c111b; border:1px solid #2a3548; padding:5px 8px; border-radius:7px; }
+    .lane { position:relative; padding-left:28px; } .lane:before { content:""; position:absolute; left:5px; top:8px; bottom:8px; width:2px; background:linear-gradient(var(--cyan),var(--violet),var(--green)); } .step { position:relative; padding:0 0 26px; } .step:before { content:""; position:absolute; left:-27px; top:6px; width:10px; height:10px; background:var(--bg); border:3px solid var(--cyan); border-radius:50%; } .step:last-child { padding-bottom:0; } .step p { margin-bottom:0; }
+    .warn { background:#2b2111; border:1px solid #6b4d17; border-radius:14px; padding:18px 20px; } .warn strong { color:#ffdc9a; } .source-footer { margin-top:52px; border-top:1px solid var(--line); padding:26px 0 10px; } .sources { columns:2; column-gap:36px; padding-left:18px; color:var(--muted); font-size:13px; } .sources li { break-inside:avoid; margin-bottom:9px; }
+    .top { position:fixed; right:22px; bottom:20px; width:42px; height:42px; border:1px solid var(--line); border-radius:50%; display:grid; place-items:center; background:#121722e8; color:white; text-decoration:none; }
+    @media(max-width:760px) { header{padding-top:52px}.wrap{width:min(calc(100% - 28px),var(--max))}.card,.card.wide{grid-column:span 12}.sources{columns:1}.flow{padding:14px} }
+    @media print { body{background:white;color:#111}.card,.flow{box-shadow:none;background:#fff;border-color:#bbb}.lead,p,.label,.list li,.node span,.sources{color:#444}.top{display:none}a{color:#075985} }
+  </style>
+</head>
+<body>
+  <header id="top"><div class="wrap">
+    <div class="eyebrow"><span class="dot"></span> Divo technical research · 15 July 2026</div>
+    <h1>Reuse Lark’s API stack.<br>Keep identity and control in Divo.</h1>
+    <p class="lead">You do not need to rebuild Lark API calls from scratch. The official Node SDK is the production-grade transport. Your missing work is a consistent <em>connection + token + RBAC routing layer</em> around the Lark tools that already exist in Divo.</p>
+    <div class="meta"><span>Scope: user OAuth, open source implementations, current Divo coverage</span><span>•</span><span>Confidence: high</span></div>
+  </div></header>
+  <main class="wrap">
+    <section aria-labelledby="answer"><div class="section-kicker">Decision</div><h2 id="answer">The direct answer</h2>
+      <div class="verdict"><strong>Adopt <code>@larksuiteoapi/node-sdk</code> inside the backend and make every Lark action resolve a Divo-owned, encrypted user connection.</strong> Do not deploy Lark’s official MCP as your shared production gateway: its own documentation says streamable OAuth currently supports localhost only. Keep the current Divo gateway as the sole policy, audit, approval, and connection authority.</div>
+    </section>
+
+    <section><div class="grid">
+      <div class="card"><div class="metric">7</div><div class="label">Lark tool families already registered in Divo</div></div>
+      <div class="card"><div class="metric">51</div><div class="label">Current operations exposed across those families</div></div>
+      <div class="card"><div class="metric">1 / 7</div><div class="label">Families currently wired to resolve a user OAuth token: Tasks only</div></div>
+    </section>
+
+    <section><div class="section-kicker">What Divo already has</div><h2>There is a good base; the user-identity path is uneven.</h2>
+      <p>Local inspection found encrypted Lark user-auth links, refresh handling, and a per-user token resolver. Today that resolver is passed only to <code>larkTask</code>. Messaging, contacts, calendar, docs, Base, and approvals are registered with the base Lark clients instead.</p>
+      <div class="grid">
+        <article class="card wide"><h3>Already user-aware</h3><span class="pill"><span class="confidence"></span>High confidence</span><p><b>Lark Tasks</b> locates the user link, refreshes an expiring token, persists the rotated values, then makes the request with a user-token client.</p><div class="ops"><span class="op">listMine</span><span class="op">create</span><span class="op">update</span><span class="op">complete</span><span class="op">tasklists</span><span class="op">subtasks</span></div></article>
+        <article class="card wide"><h3>Registered but needs the same resolver</h3><span class="pill medium"><span class="confidence"></span>High confidence, implementation gap</span><p><b>Messaging, Contacts, Calendar, Docs, Base, Approvals</b> have established tool clients and contracts, but are not consistently constructed from the authenticated user’s connection.</p><div class="ops"><span class="op">send_dm</span><span class="op">free_busy</span><span class="op">create_doc</span><span class="op">records</span><span class="op">approval.create</span></div></article>
+      </div>
+    </section>
+
+    <section><div class="section-kicker">Official OAuth model</div><h2>Use the user’s Lark identity for user-owned data.</h2>
+      <div class="flow" role="img" aria-label="Divo Lark OAuth and execution flow"><div class="flow-row">
+        <div class="node"><b>Desktop</b><span>User selects a Lark connection and grants consent.</span></div><div class="arrow">→</div>
+        <div class="node"><b>Divo backend callback</b><span>Verifies state and exchanges the single-use authorization code.</span></div><div class="arrow">→</div>
+        <div class="node"><b>Encrypted connection vault</b><span>Stores user token, rotated refresh token, expiry, Lark open ID, and grant metadata.</span></div><div class="arrow">→</div>
+        <div class="node"><b>Divo gateway</b><span>Checks RBAC, connection share grant, and HITL before execution.</span></div><div class="arrow">→</div>
+        <div class="node"><b>Lark Node SDK</b><span>Calls the selected OpenAPI with <code>withUserAccessToken</code>.</span></div>
+      </div></div>
+      <div class="grid" style="margin-top:16px"><div class="card full"><h3>Required behavior</h3><ul class="list"><li>Request only the needed scopes plus <code>offline_access</code> when Divo must refresh in the background.</li><li>Use an exact allow-listed callback URI; Lark’s authorization code is short-lived and single-use.</li><li>Persist the new refresh token atomically on every refresh: Lark refresh tokens rotate and cannot be treated as reusable static credentials.</li><li>Use <code>user_access_token</code> for private/user-owned resources; tenant tokens are an app/tenant identity, not a replacement for personal consent.</li></ul></div></div>
+    </section>
+
+    <section><div class="section-kicker">Open source assessment</div><h2>What to reuse — and where it belongs.</h2>
+      <div class="grid">
+        <article class="card"><h3>Official Node SDK</h3><span class="pill"><span class="confidence"></span>Adopt</span><p>Typed, semantic Node client with a first-class <code>withUserAccessToken</code> request option and Lark international domain support.</p><p><b>Fit:</b> production transport in Divo’s infrastructure adapters. It removes HTTP boilerplate; it does not replace your policy layer.</p></article>
+        <article class="card"><h3>Official Lark OpenAPI MCP</h3><span class="pill medium"><span class="confidence"></span>Reference / prototype only</span><p>Useful for checking API/tool coverage and validating operations during development. It demonstrates user-token mode clearly.</p><p><b>Not the runtime:</b> its published streamable OAuth limitation is localhost-only, which rules out Divo’s shared cloud connection model.</p></article>
+        <article class="card"><h3>Official Lark CLI</h3><span class="pill medium"><span class="confidence"></span>Reference / test harness</span><p>Broad, actively maintained command surface across messaging, docs, Base, sheets, calendar, mail, tasks, meetings, and more.</p><p><b>Not the runtime:</b> it manages local token/config state; Divo requires server-side encrypted per-connection records and company grants.</p></article>
+        <article class="card wide"><h3>Legacy Node SDK</h3><span class="pill low"><span class="confidence"></span>Avoid</span><p><code>larksuite/oapi-sdk-nodejs</code> is the older package. The official organization directs users to the current <code>node-sdk</code>. Do not start new work on it.</p></article>
+        <article class="card wide"><h3>Community signal worth designing for</h3><span class="pill medium"><span class="confidence"></span>Confirmed concern</span><p>The official CLI has a public multi-account/profile discussion. That is the exact problem Divo must solve at the product layer: a member may hold several Lark connections, and a company may grant colleagues access to a selected connection without ever sharing token material.</p></article>
+      </div>
+    </section>
+
+    <section><div class="section-kicker">Recommended Divo build</div><h2>Build the small layer that open source cannot own for you.</h2>
+      <div class="grid"><div class="card full"><div class="lane">
+        <div class="step"><h3>Phase 1 — normalize user-token execution</h3><p>Extract the existing Tasks token resolver into one Lark connection-token service. Pass it into each existing Lark tool client factory. This is the smallest change that makes requests act as the connected user consistently.</p></div>
+        <div class="step"><h3>Phase 2 — move Lark into the generic connection registry</h3><p>Add provider <code>lark</code> alongside Google/Zoho/Canva. One connection record per OAuth authorization, labelled by the member, tenant, and Lark identity. Migrate or bridge the current Lark auth-link repository; do not create a second competing token store.</p></div>
+        <div class="step"><h3>Phase 3 — grants and selection</h3><p>At gateway invocation, resolve <code>connectionId</code> → owner/share grant → Lark token. Enforce department role, scope-to-operation mapping, approval policy, and audit record before the SDK call. A share gives permission to use, never permission to view/export the token.</p></div>
+        <div class="step"><h3>Phase 4 — expand safely</h3><p>Use the official MCP and CLI as capability inventories/tests, then add high-value Lark surfaces behind stable Divo tool contracts. Avoid exposing a raw “call any Lark API” tool to the agent.</p></div>
+      </div></div></div></div>
+    </section>
+
+    <section><div class="section-kicker">Guardrails</div><h2>What must not change.</h2><div class="grid"><div class="card wide"><h3>Divo stays the authority</h3><ul class="list"><li>Pi/Desktop never receives Lark app secrets, access tokens, or refresh tokens.</li><li>The Lark SDK is an infrastructure dependency, not an alternate policy system.</li><li>One constrained Divo gateway remains the agent-facing surface.</li><li>Connection sharing is an explicit DB grant, independently auditable and revocable.</li></ul></div><div class="card wide"><h3>Prevent the likely failures</h3><ul class="list"><li>Do not fall back from user token to tenant token silently for private data.</li><li>Never put a refresh token in desktop config, logs, tool arguments, or MCP environment variables.</li><li>Fail closed when a user token has expired and refresh cannot be persisted.</li><li>Validate Lark scope, Divo RBAC, connection sharing, and action approval as separate checks.</li></ul></div></div></section>
+
+    <section><div class="warn"><strong>Bottom line:</strong> Yes, reuse exists in detail. Use Lark’s official Node SDK for every actual OpenAPI request and use its MCP/CLI repositories as live reference implementations. But do not outsource your connection management to their MCP: Divo’s security model requires your backend to retain per-user encrypted OAuth records, multi-account selection, sharing grants, RBAC, HITL, and auditing.</div></section>
+
+    <footer class="source-footer"><div class="section-kicker">Sources & confidence</div><p>Primary sources were preferred. “High” indicates official documentation/repository or direct local-code inspection; “medium” denotes a product inference built from those sources.</p><ol class="sources">
+      <li><a href="https://open.larksuite.com/document/common-capabilities/sso/web-application-end-user-consent/guide">Lark OAuth: web application end-user consent guide</a> — authorization and callback flow.</li>
+      <li><a href="https://open.larksuite.com/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/get-user-access-token">Lark user access-token guide</a> — user identity, single-use code, token response.</li>
+      <li><a href="https://open.larksuite.com/document/uAjLw4CM/ukTMukTMukTM/authentication-management/access-token/refresh-user-access-token">Lark refresh user access-token guide</a> — refresh and rotation behavior.</li>
+      <li><a href="https://open.larksuite.com/document/home/introduction-to-scope-and-authorization/overview">Lark scopes and authorization overview</a> — scopes and app availability.</li>
+      <li><a href="https://github.com/larksuite/node-sdk">Official Lark Node SDK</a> — Node package and user access-token support.</li>
+      <li><a href="https://github.com/larksuite/lark-openapi-mcp">Official Lark OpenAPI MCP</a> — user-token MCP reference implementation.</li>
+      <li><a href="https://github.com/larksuite/lark-openapi-mcp/blob/main/docs/usage/configuration/configuration.md">Lark MCP deployment configuration</a> — documented localhost-only OAuth limitation for streamable service.</li>
+      <li><a href="https://github.com/larksuite/cli">Official Lark CLI</a> — broad OpenAPI capability inventory and agent-focused reference.</li>
+      <li><a href="https://github.com/larksuite/cli/issues/29">Official Lark CLI multi-account discussion</a> — product signal for connection profiles.</li>
+    </ol></footer>
+  </main>
+  <a class="top" href="#top" aria-label="Back to top">↑</a>
+</body>
+</html>

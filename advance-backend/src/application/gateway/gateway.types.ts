@@ -40,36 +40,40 @@ export const gatewayRequestSchema = z.object({
   op: z.string().min(1),
   departmentId: z.string().optional(),
   payload: z.record(z.unknown()).optional(),
-});
+}).strict();
 
 export type GatewayRequest = z.infer<typeof gatewayRequestSchema>;
 
 export const toolsInvokePayloadSchema = z.object({
   toolId: z.string().min(1),
   args: z.record(z.unknown()).default({}),
-});
+}).strict();
 
 export type ToolsInvokePayload = z.infer<typeof toolsInvokePayloadSchema>;
 
 export const toolsCommitPayloadSchema = z.object({
   intentId: z.string().uuid(),
-});
+}).strict();
 
 export type ToolsCommitPayload = z.infer<typeof toolsCommitPayloadSchema>;
 
 export const skillsGetPayloadSchema = z.object({
   skillId: z.string().min(1),
-});
+}).strict();
 
 export const skillsSearchPayloadSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().min(1).max(5).optional(),
   context: z.record(z.unknown()).optional(),
-});
+}).strict();
 
 export const connectionsListPayloadSchema = z.object({
   provider: z.enum(['google_workspace', 'zoho', 'canva', 'lark']).optional(),
-});
+}).strict();
+
+export const toolsListPayloadSchema = z.object({
+  toolId: z.string().min(1).optional(),
+}).strict();
 
 export interface GatewayErrorBody {
   readonly code: GatewayStatus;
@@ -116,5 +120,22 @@ export function gatewayFailure(
     status,
     error: { code: status, message },
     ...(extra?.approval ? { approval: extra.approval } : {}),
+  };
+}
+
+/**
+ * A write invocation was valid and authorized, but execution is intentionally
+ * paused at the desktop approval boundary. The data contains the server-bound
+ * intent and its safe presentation; it is not a successful tool execution.
+ */
+export function gatewayLocalApprovalRequired<T>(data: T): GatewayResponse<T> {
+  return {
+    ok: false,
+    status: 'local_approval_required',
+    data,
+    error: {
+      code: 'local_approval_required',
+      message: 'This exact action requires local approval before execution.',
+    },
   };
 }

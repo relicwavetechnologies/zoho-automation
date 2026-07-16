@@ -8,6 +8,26 @@ export const GOOGLE_WORKSPACE_MCP_SOURCE = Object.freeze({
   commit: '6e1d1457746777f8512f52d40fb195b2a40bad36',
 });
 
+/**
+ * Authentication is resolved before a native MCP tool is called. The private
+ * sidecar validates the selected connection's OAuth bearer token and derives
+ * the Google principal from that token; identity is never a model argument.
+ *
+ * Keep this contract as the single source for runtime input validation and
+ * generated skill guidance so transport behavior and agent instructions
+ * cannot drift independently.
+ */
+export const GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT = Object.freeze({
+  mode: 'external_oauth_bearer' as const,
+  identitySource: 'access_token' as const,
+  forbiddenToolArguments: ['user_google_email'] as const,
+  forbiddenLocalFileArguments: ['path', 'file_path'] as const,
+  agentGuidance:
+    'The selected Divo connection authenticates the MCP request with its OAuth bearer token. ' +
+    'The MCP server derives the Google identity from that token; never send identity fields such as user_google_email in native tool input. ' +
+    'Native input must not contain sidecar-local path or file_path fields; provide inline/base64 content or an HTTPS URL.',
+});
+
 export type GoogleWorkspaceService =
   | 'gmail'
   | 'drive'
@@ -20,6 +40,11 @@ export type GoogleWorkspaceService =
   | 'contacts'
   | 'chat'
   | 'appscript';
+
+export const GOOGLE_SHEETS_DATA_VALIDATION_OPERATION = 'manage_sheet_data_validation' as const;
+export const GOOGLE_WORKSPACE_DIVO_OPERATIONS = Object.freeze([
+  GOOGLE_SHEETS_DATA_VALIDATION_OPERATION,
+] as const);
 
 export interface GoogleWorkspaceProductDefinition {
   readonly service: GoogleWorkspaceService;
@@ -172,7 +197,7 @@ export const GOOGLE_WORKSPACE_PRODUCTS: readonly GoogleWorkspaceProductDefinitio
       'create_spreadsheet', 'read_sheet_values', 'modify_sheet_values', 'list_spreadsheets',
       'get_spreadsheet_info', 'format_sheet_range', 'list_sheet_tables', 'create_sheet',
       'append_table_rows', 'resize_sheet_dimensions', 'move_sheet_rows', 'list_spreadsheet_comments',
-      'manage_spreadsheet_comment', 'manage_conditional_formatting',
+      'manage_spreadsheet_comment', 'manage_conditional_formatting', GOOGLE_SHEETS_DATA_VALIDATION_OPERATION,
     ],
     readScopeGroups: READ_WRITE.sheets.read,
     writeScopeGroups: READ_WRITE.sheets.write,
@@ -255,7 +280,9 @@ export const GOOGLE_WORKSPACE_TOOL_IDS = Object.freeze(
 );
 
 export const GOOGLE_WORKSPACE_NATIVE_TOOLS = Object.freeze(
-  GOOGLE_WORKSPACE_PRODUCTS.flatMap((product) => product.tools),
+  GOOGLE_WORKSPACE_PRODUCTS
+    .flatMap((product) => product.tools)
+    .filter((tool) => !(GOOGLE_WORKSPACE_DIVO_OPERATIONS as readonly string[]).includes(tool)),
 );
 
 const STATIC_ACTIONS: Readonly<Record<string, ToolActionGroup>> = {
@@ -291,6 +318,7 @@ const STATIC_ACTIONS: Readonly<Record<string, ToolActionGroup>> = {
   resize_sheet_dimensions: 'update',
   move_sheet_rows: 'update',
   manage_conditional_formatting: 'update',
+  [GOOGLE_SHEETS_DATA_VALIDATION_OPERATION]: 'update',
   create_presentation: 'create',
   batch_update_presentation: 'update',
   create_form: 'create',
@@ -347,6 +375,9 @@ export function googleWorkspaceScopeGroupsFor(
   nativeTool: string,
   action: ToolActionGroup,
 ): readonly (readonly string[])[] {
+  if (nativeTool === GOOGLE_SHEETS_DATA_VALIDATION_OPERATION) {
+    return [[GOOGLE_SCOPE.sheetsFull]];
+  }
   if (nativeTool === 'send_gmail_message') {
     return [[GOOGLE_SCOPE.gmailSend, GOOGLE_SCOPE.gmailModify]];
   }

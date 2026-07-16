@@ -27,11 +27,25 @@ describe('GoogleWorkspaceMcpClient boundary', () => {
       () => assertSafeGoogleWorkspaceMcpInput({ image: { url: 'file:///etc/passwd' } }),
       /must not use a file:\/\/ URL/,
     );
+    assert.throws(
+      () => assertSafeGoogleWorkspaceMcpInput({ path: null }),
+      /input\.path is not allowed/,
+    );
   });
 
   it('allows base64 content and HTTPS sources', () => {
     assert.doesNotThrow(() => assertSafeGoogleWorkspaceMcpInput({
       attachments: [{ content: 'SGVsbG8=', url: 'https://files.example.com/report.pdf' }],
     }));
+  });
+
+  it('rejects caller-supplied identity fields at the Divo boundary', () => {
+    assert.throws(
+      () => assertSafeGoogleWorkspaceMcpInput({
+        query: 'is:unread newer_than:14d',
+        user_google_email: 'another-account@example.com',
+      }),
+      /identity is derived from the selected connection's OAuth bearer token/,
+    );
   });
 });

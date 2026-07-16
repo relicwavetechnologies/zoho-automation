@@ -19,6 +19,8 @@ export interface ResolvedSkill {
 	nextAction: string;
 	reason: string;
 	toolIds?: string[];
+	instructions?: string;
+	revision?: number;
 }
 
 export interface SkillResolveResult {
@@ -48,11 +50,22 @@ export async function resolveDivoSkills(options: {
 	const limit = clampLimit(options.limit);
 	const env = options.env ?? process.env;
 	const notes: string[] = [];
+	const config = resolveDivoGatewayConfig(env);
+	if ("error" in config) {
+		notes.push("Company skill registry is unavailable because the Divo gateway is not configured.");
+		return {
+			policy: DIVO_SKILL_POLICY,
+			query,
+			selected: null,
+			results: [],
+			notes,
+		};
+	}
 	const results = await searchBackendSkills({
 		query,
 		limit,
 		departmentId: options.departmentId,
-		env,
+		config,
 		fetchImpl: options.fetchImpl,
 		notes,
 	});
@@ -62,11 +75,20 @@ export async function resolveDivoSkills(options: {
 	const ranked = results
 		.slice(0, limit)
 		.map((skill) => ({ ...skill, confidence: confidenceForScore(skill.score) }));
+	const selected = ranked[0]
+		? await loadSelectedSkill({
+			candidate: ranked[0],
+			departmentId: options.departmentId,
+			config,
+			fetchImpl: options.fetchImpl,
+			notes,
+		})
+		: null;
 
 	return {
 		policy: DIVO_SKILL_POLICY,
 		query,
-		selected: ranked[0] ?? null,
+		selected,
 		results: ranked,
 		notes,
 	};
@@ -95,6 +117,13 @@ export function formatSkillResolveResult(result: SkillResolveResult): string {
 		lines.push(`  next: ${skill.nextAction}`);
 		if (skill.toolIds?.length) lines.push(`  tools: ${skill.toolIds.join(", ")}`);
 	}
+	if (selected?.instructions) {
+		lines.push(
+			"",
+			`Loaded approved recipe${selected.revision ? ` (revision ${selected.revision})` : ""}:`,
+			selected.instructions,
+		);
+	}
 
 	if (result.notes.length) {
 		lines.push("", "Notes:");
@@ -114,19 +143,13 @@ async function searchBackendSkills(options: {
 	query: string;
 	limit: number;
 	departmentId?: string;
-	env: NodeJS.ProcessEnv;
+	config: DivoGatewayConfig;
 	fetchImpl?: typeof fetch;
 	notes: string[];
 }): Promise<ResolvedSkill[]> {
-	const config = resolveDivoGatewayConfig(options.env);
-	if ("error" in config) {
-		options.notes.push("Company skill registry is unavailable because the Divo gateway is not configured.");
-		return [];
-	}
-
 	try {
 		const searchResponse = await callDivoGateway(
-			config as DivoGatewayConfig,
+			options.config,
 			{
 				op: "skills.search",
 				departmentId: options.departmentId,
@@ -148,6 +171,75 @@ async function searchBackendSkills(options: {
 	}
 }
 
+async function loadSelectedSkill(options: {
+	candidate: ResolvedSkill;
+	departmentId?: string;
+	config: DivoGatewayConfig;
+	fetchImpl?: typeof fetch;
+	notes: string[];
+}): Promise<ResolvedSkill> {
+	try {
+		const response = await callDivoGateway(
+			options.config,
+			{
+				op: "skills.get",
+				departmentId: options.departmentId,
+				payload: { skillId: options.candidate.id },
+			},
+			options.fetchImpl ?? fetch,
+		);
+		if (!response.body.ok || response.body.status !== "success") {
+			options.notes.push(`Backend skills.get returned ${response.body.status} for the selected skill.`);
+			return options.candidate;
+		}
+		const skill = readLoadedSkill(response.body.data);
+		if (!skill || skill.id !== options.candidate.id) {
+			options.notes.push("Backend skills.get returned an invalid selected-skill contract.");
+			return options.candidate;
+		}
+		return {
+			...options.candidate,
+			name: skill.name,
+			description: skill.description,
+			toolIds: skill.toolIds,
+			instructions: skill.instructions,
+			revision: skill.revision,
+			nextAction: "Follow the loaded approved recipe directly; do not repeat skill or catalogue discovery.",
+		};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		options.notes.push(`Selected company skill could not be loaded: ${message}`);
+		return options.candidate;
+	}
+}
+
+function readLoadedSkill(data: unknown): {
+	id: string;
+	name: string;
+	description: string;
+	instructions: string;
+	toolIds: string[];
+	revision?: number;
+} | null {
+	if (!data || typeof data !== "object") return null;
+	const skill = (data as { skill?: unknown }).skill;
+	if (!skill || typeof skill !== "object") return null;
+	const raw = skill as Record<string, unknown>;
+	const id = readString(raw.id);
+	const name = readString(raw.name);
+	const description = readString(raw.description);
+	const instructions = readString(raw.instructions);
+	if (!id || !name || !description || !instructions || !Array.isArray(raw.toolIds)) return null;
+	return {
+		id,
+		name,
+		description,
+		instructions,
+		toolIds: raw.toolIds.filter((value): value is string => typeof value === "string"),
+		revision: typeof raw.revision === "number" ? raw.revision : undefined,
+	};
+}
+
 function toResolvedBackendSkill(skill: BackendSkillCandidate): ResolvedSkill {
 	return {
 		id: skill.id,
@@ -157,7 +249,7 @@ function toResolvedBackendSkill(skill: BackendSkillCandidate): ResolvedSkill {
 		confidence: "low",
 		toolIds: skill.toolIds,
 		reason: "Matched the RBAC-filtered company skill registry.",
-		nextAction: `Call divo_gateway with op "skills.get" and payload { "skillId": "${skill.id}" }, then follow that skill recipe.`,
+		nextAction: "The resolver will load this recipe automatically if selected.",
 	};
 }
 

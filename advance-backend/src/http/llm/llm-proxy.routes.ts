@@ -31,6 +31,7 @@ interface ChatBody {
   stream?: boolean;
   stream_options?: { include_usage?: boolean };
   divo_run_id?: string;
+  divo_trace_mode?: 'desktop';
   [k: string]: unknown;
 }
 
@@ -88,13 +89,18 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     }
 
     // ── Correlate to a run ────────────────────────────────────────────────────
+    const desktopOwnsTimeline = body.divo_trace_mode === 'desktop'
+      && typeof body.divo_run_id === 'string'
+      && body.divo_run_id.length > 0;
     const runId =
       (req.header('x-divo-run') || (typeof body.divo_run_id === 'string' ? body.divo_run_id : '') ||
         req.header('session_id') || (res.locals['sessionId'] as string | undefined) || randomUUID());
     let executionId: string | null = null;
     try {
       executionId = await svc.ensureRun({ runId, companyId, userId });
-      await svc.recordToolResults(executionId, messages as never[]);
+      if (!desktopOwnsTimeline) {
+        await svc.recordToolResults(executionId, messages as never[]);
+      }
     } catch (e) {
       log.warn('proxy.trace.pre_failed', { error: String(e) }); // never block the call on trace failure
     }
@@ -102,6 +108,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     // ── Forward to DeepSeek ───────────────────────────────────────────────────
     const forwardBody: ChatBody = { ...body };
     delete forwardBody.divo_run_id;
+    delete forwardBody.divo_trace_mode;
     const wantsStream = forwardBody.stream !== false;
     if (wantsStream && !forwardBody.stream_options?.include_usage) {
       forwardBody.stream_options = { ...(forwardBody.stream_options ?? {}), include_usage: true };
@@ -143,7 +150,15 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       // Prefer the model DeepSeek actually served (aliases resolved), else the request's.
       const served = canonicalModel(responseModel ?? model);
       try {
-        await svc.recordModelCall({ executionId, companyId, userId, model: served, provider: 'deepseek', usage });
+        await svc.recordModelCall({
+          executionId,
+          companyId,
+          userId,
+          model: served,
+          provider: 'deepseek',
+          usage,
+          recordEvent: !desktopOwnsTimeline,
+        });
       } catch (e) {
         log.warn('proxy.usage.record_failed', { error: String(e) });
       }

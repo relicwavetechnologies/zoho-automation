@@ -12,8 +12,9 @@ allowlist and scope matrix live in
 - The desktop and Pi receive no Google credential and no MCP URL.
 - Divo resolves `connectionId`, sharing grants, RBAC action, approval policy,
   and audit before constructing the sidecar request.
-- The adapter injects `user_google_email` from the resolved connection after
-  the model-provided input, so it cannot be overridden.
+- The adapter authenticates with the resolved connection's OAuth bearer token.
+  The sidecar derives the Google identity from that token; native tool input
+  never carries `user_google_email` or another caller-selected identity field.
 - The upstream `start_google_auth` tool is not in Divo's reviewed manifest.
 - Local paths and `file://` inputs are blocked. Use base64 or HTTPS inputs.
 

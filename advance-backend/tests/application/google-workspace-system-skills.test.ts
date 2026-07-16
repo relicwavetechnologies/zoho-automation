@@ -16,12 +16,91 @@ describe('Google Workspace system skills', () => {
     for (const skill of GOOGLE_WORKSPACE_SYSTEM_SKILLS) {
       assert.match(skill.markdown, /Never use a local Google CLI/);
       assert.doesNotMatch(skill.markdown, /start_google_auth/);
+      assert.match(skill.markdown, /OAuth bearer token/);
+      assert.doesNotMatch(skill.markdown, /Divo (injects|derives) user_google_email/);
+    }
+    const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;
+    assert.match(sheets.markdown, /manage_sheet_data_validation/);
+    assert.match(sheets.markdown, /frozen_row_count/);
+    assert.match(sheets.markdown, /connectionId.*inside the Google tool's `args`/s);
+    assert(sheets.aliases.includes('dropdown'));
+  });
+
+  it('gives the six upgraded products complete Divo-native workflows', () => {
+    const expectedWorkflows = {
+      'google-gmail': [
+        'search_gmail_messages',
+        'get_gmail_thread_content',
+        'draft_gmail_message',
+        'After an ambiguous mutation failure',
+      ],
+      'google-drive': [
+        'search_drive_files',
+        'get_drive_file_content',
+        'check_drive_file_public_access',
+        'do not blindly create a second copy',
+      ],
+      'google-calendar': [
+        'query_freebusy',
+        'manage_event',
+        'resolved date and timezone',
+        'avoid duplicate meetings',
+      ],
+      'google-docs': [
+        'create_doc',
+        'batch_update_doc',
+        'get_doc_as_markdown',
+        'do not create another document blindly',
+      ],
+      'google-sheets': [
+        'create_spreadsheet',
+        'modify_sheet_values',
+        'manage_sheet_data_validation',
+        'task is partial',
+      ],
+      'google-contacts': [
+        'search_contacts',
+        'manage_contacts_batch',
+        'Never invent an email address',
+        'Do not retry an ambiguous create',
+      ],
+    } as const;
+
+    for (const [slug, expectedText] of Object.entries(expectedWorkflows)) {
+      const skill = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((candidate) => candidate.slug === slug);
+      assert(skill, `missing ${slug}`);
+      assert.match(skill.markdown, /### Completion contract/);
+      for (const text of expectedText) {
+        assert(skill.markdown.includes(text), `${slug} is missing workflow guidance: ${text}`);
+      }
+    }
+
+    const unchangedProductSlugs = [
+      'google-slides',
+      'google-forms',
+      'google-tasks',
+      'google-chat',
+      'google-appscript',
+    ];
+    for (const slug of unchangedProductSlugs) {
+      const skill = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((candidate) => candidate.slug === slug);
+      assert(skill, `missing ${slug}`);
+      assert.doesNotMatch(skill.markdown, /### Completion contract/);
+    }
+  });
+
+  it('contains no Hermes-local auth, CLI, or filesystem instructions', () => {
+    for (const skill of GOOGLE_WORKSPACE_SYSTEM_SKILLS) {
+      assert.doesNotMatch(skill.markdown, /gws_bridge|google_api\.py|start_google_auth|GOOGLE_TOKEN|file:\/\/|\/Users\//i);
+      assert.match(skill.markdown, /Use only `google[A-Z][A-Za-z]+`/);
+      assert.match(skill.markdown, /Divo RBAC, sharing, approval, and audit/);
     }
   });
 
   it('creates and company-grants every focused skill idempotently', async () => {
     const created: Record<string, unknown>[] = [];
     const grants: Record<string, unknown>[] = [];
+    const aliases: Record<string, unknown>[] = [];
     const db = {
       skillFolder: { findFirst: async () => null, upsert: async () => ({ id: 'google-folder' }) },
       skill: {
@@ -34,6 +113,13 @@ describe('Google Workspace system skills', () => {
         update: async () => { throw new Error('unexpected update'); },
       },
       skillVersion: { upsert: async () => ({}) },
+      skillAlias: {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async ({ data }: { data: Record<string, unknown>[] }) => {
+          aliases.push(...data);
+          return { count: data.length };
+        },
+      },
       skillRegistryRevision: { upsert: async () => ({}) },
       skillAccessGrant: {
         upsert: async ({ create }: { create: Record<string, unknown> }) => {
@@ -49,5 +135,7 @@ describe('Google Workspace system skills', () => {
     assert.deepEqual(created.map((skill) => skill.folderId), Array(11).fill('google-folder'));
     assert.deepEqual(grants.map((grant) => grant.granteeType), Array(11).fill('company'));
     assert.deepEqual(grants.map((grant) => grant.granteeId), Array(11).fill('company-1'));
+    assert(aliases.some((alias) => alias.alias === 'spreadsheet'));
+    assert(aliases.some((alias) => alias.alias === 'dropdown'));
   });
 });

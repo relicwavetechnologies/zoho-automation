@@ -2,9 +2,7 @@
  * Skill-catalog visibility under per-skill RBAC enforcement.
  *
  * The gateway always supplies `grantedSkillIds`, so visibility is deny-by-default
- * and driven purely by explicit grants — independent of the member's tool
- * permissions. The fallback (grantedSkillIds omitted → legacy tool-derived
- * visibility) applies only when no enforcement port is wired.
+ * and requires both an explicit grant and executable required tools.
  */
 
 import { describe, it } from 'node:test';
@@ -61,12 +59,10 @@ describe('SkillCatalogService — tool-derived fallback (no grants supplied)', (
 });
 
 describe('SkillCatalogService — grant-based visibility (the live model)', () => {
-  it('shows only granted skills, ignoring tool permissions', async () => {
-    // Grant the CRM skill the member could NOT otherwise see; withhold the
-    // books skill the member's tools would otherwise allow.
-    const grantedSkillIds = new Set(['sk-crm']);
+  it('requires both a grant and permission for every required tool', async () => {
+    const grantedSkillIds = new Set(['sk-books', 'sk-crm']);
     const visible = await catalog().listVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds });
-    assert.deepEqual(visible.map((s) => s.id), ['sk-crm']);
+    assert.deepEqual(visible.map((s) => s.id), ['sk-books']);
   });
 
   it('hides everything when nothing is granted (deny-by-default)', async () => {
@@ -75,11 +71,11 @@ describe('SkillCatalogService — grant-based visibility (the live model)', () =
   });
 
   it('applies the same gate to getVisible', async () => {
-    const grantedSkillIds = new Set(['sk-crm']);
+    const grantedSkillIds = new Set(['sk-books', 'sk-crm']);
     const crm = await catalog().getVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds, skillId: 'sk-crm' });
     const books = await catalog().getVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds, skillId: 'sk-books' });
-    assert.equal(crm?.id, 'sk-crm');
-    assert.equal(books, null); // tool-usable but not granted → hidden
+    assert.equal(crm, null);
+    assert.equal(books?.id, 'sk-books');
   });
 });
 
@@ -103,5 +99,22 @@ describe('SkillCatalogService — Lark language safety', () => {
     assert.deepEqual(listed, []);
     assert.equal(fetched, null);
     assert.equal(inScope, null);
+  });
+});
+
+describe('SkillCatalogService — alias ranking', () => {
+  it('keeps an alias-only match instead of discarding the repository candidate', async () => {
+    const sheets = {
+      ...row('sk-sheets', ['zohoBooks']),
+      name: 'Tabular workspace',
+      aliases: ['spreadsheet', 'dropdown'],
+    };
+    const service = new SkillCatalogService({ repo: makeRepo([sheets]), logger: noopLogger });
+    const matches = await service.searchVisible({
+      companyId: 'co', departmentId: 'dep', permission,
+      grantedSkillIds: new Set([sheets.id]), query: 'spreadsheet dropdown', limit: 3,
+    });
+    assert.equal(matches[0]?.skill.id, sheets.id);
+    assert(matches[0]!.score > 0);
   });
 });

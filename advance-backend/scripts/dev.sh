@@ -9,7 +9,7 @@
 # this script, so a tunnel failure aborts the command before infra reports ready.
 #
 # Infra keeps running until you explicitly kill it with stop.sh.
-# Restart the backend independently with: pnpm dev  (or scripts/server.sh)
+# Restart the backend and Google Workspace MCP sidecar with: pnpm dev
 #
 # Ctrl+C exits this script but does NOT kill Redis/tunnel.
 
@@ -79,6 +79,7 @@ echo ""
 echo -e "  ${GREEN}Postgres${NC}     localhost:15432  (SSH tunnel to VM, daemonised)"
 echo -e "  ${GREEN}Redis queue${NC}  localhost:$REDIS_QUEUE_PORT  (no limit, daemonised)"
 echo -e "  ${GREEN}Redis cache${NC}  localhost:$REDIS_CACHE_PORT  (50 MB max, LRU, daemonised)"
+echo -e "  ${GREEN}Google MCP${NC}   starts automatically with pnpm dev"
 echo ""
 echo -e "  Start the backend:  ${CYAN}pnpm dev${NC}  (or  ${CYAN}scripts/server.sh${NC})"
 echo -e "  Stop everything:    ${CYAN}pnpm stop${NC}"

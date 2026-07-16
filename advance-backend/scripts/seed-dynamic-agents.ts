@@ -136,8 +136,14 @@ async function validateToolIds(toolIds: readonly string[]) {
 }
 
 async function main() {
-  const companyId = process.argv[2];
-  await validateToolIds(SEED_AGENTS.flatMap(agent => agent.toolIds));
+  const { companyId, agentSlug } = parseArguments(process.argv.slice(2));
+  const selectedSeeds = agentSlug
+    ? SEED_AGENTS.filter(agent => agent.slug === agentSlug)
+    : SEED_AGENTS;
+  if (selectedSeeds.length === 0) {
+    throw new Error(`Unknown seeded agent slug: ${agentSlug}`);
+  }
+  await validateToolIds(selectedSeeds.flatMap(agent => agent.toolIds));
 
   const companies = companyId
     ? await prisma.company.findMany({ where: { id: companyId }, select: { id: true, name: true } })
@@ -147,20 +153,54 @@ async function main() {
   }
 
   for (const company of companies) {
-    await seedCompany(company);
+    await seedCompany(company, selectedSeeds);
   }
 }
 
-async function seedCompany(company: { id: string; name: string }): Promise<void> {
-  console.log(`Seeding dynamic agents for ${company.name} (${company.id})`);
+function parseArguments(args: readonly string[]): { companyId?: string; agentSlug?: string } {
+  let companyId: string | undefined;
+  let agentSlug: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const value = args[index];
+    if (value === '--') continue;
+    if (value === '--agent') {
+      agentSlug = args[++index];
+      if (!agentSlug) throw new Error('--agent requires a seeded agent slug');
+      continue;
+    }
+    if (value?.startsWith('--')) throw new Error(`Unknown option: ${value}`);
+    if (companyId) throw new Error(`Unexpected positional argument: ${value}`);
+    companyId = value;
+  }
+  return {
+    ...(companyId ? { companyId } : {}),
+    ...(agentSlug ? { agentSlug } : {}),
+  };
+}
+
+async function seedCompany(
+  company: { id: string; name: string },
+  selectedSeeds: readonly SeedAgent[],
+): Promise<void> {
+  console.log(`Seeding ${selectedSeeds.map(seed => seed.slug).join(', ')} for ${company.name} (${company.id})`);
 
   const rootSeed = SEED_AGENTS[0];
   if (!rootSeed?.isRootAgent) {
     throw new Error('First seed agent must be the root supervisor');
   }
 
-  const root = await upsertAgent(company.id, rootSeed, null);
-  for (const child of SEED_AGENTS.slice(1)) {
+  const selectedRoot = selectedSeeds.find(seed => seed.isRootAgent);
+  const root = selectedRoot
+    ? await upsertAgent(company.id, selectedRoot, null)
+    : await prisma.agentDefinition.findUnique({
+      where: { companyId_slug: { companyId: company.id, slug: rootSeed.slug } },
+      select: { id: true },
+    });
+  if (!root) {
+    throw new Error(`Cannot seed child agents for ${company.id}: root agent ${rootSeed.slug} does not exist`);
+  }
+
+  for (const child of selectedSeeds.filter(seed => !seed.isRootAgent)) {
     await upsertAgent(company.id, child, root.id);
   }
 

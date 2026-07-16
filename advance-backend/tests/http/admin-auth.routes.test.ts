@@ -75,6 +75,10 @@ describe('admin auth company signup provisioning', () => {
       skillVersion: {
         upsert: async () => ({}),
       },
+      skillAlias: {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async ({ data }: any) => ({ count: data.length }),
+      },
       skillRegistryRevision: {
         upsert: async () => ({}),
       },

@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import {
+	approvePreparedDivoIntent,
 	DIVO_APPROVAL_PROTOCOL_TITLE,
 	handleApprovalToolCall,
-	type ApprovalGateDependencies,
 } from "./approval-gate.ts";
 
 const runContextPath = join(mkdtempSync(join(tmpdir(), "divo-approval-run-")), "context.json");
@@ -19,25 +19,6 @@ function context(confirm: (title: string, message: string) => Promise<boolean>) 
 		cwd: "/workspace",
 		signal: undefined,
 		ui: { confirm },
-	};
-}
-
-function dependencies(
-	data: unknown,
-	onRequest?: (request: unknown) => void,
-): ApprovalGateDependencies {
-	return {
-		resolveConfig: () => ({
-			backendUrl: "http://localhost:4000",
-			memberToken: "member-token",
-		}),
-		callGateway: async (_config, request) => {
-			onRequest?.(request);
-			return {
-				httpStatus: 200,
-				body: { ok: true, status: "success", data },
-			};
-		},
 	};
 }
 
@@ -58,9 +39,8 @@ function divoEvent(): ToolCallEvent {
 }
 
 describe("Divo approval gate", () => {
-	it("allows a backend-classified read without showing approval", async () => {
+	it("allows a valid tools.invoke to reach the single-call execution path", async () => {
 		let confirmations = 0;
-		let prepared: unknown;
 		const event = divoEvent();
 		const result = await handleApprovalToolCall(
 			event,
@@ -68,47 +48,34 @@ describe("Divo approval gate", () => {
 				confirmations += 1;
 				return true;
 			}),
-			dependencies({ requiresApproval: false }, (request) => {
-				prepared = request;
-			}),
 		);
 
 		assert.equal(result, undefined);
 		assert.equal(confirmations, 0);
-		assert.deepEqual(prepared, {
-			op: "tools.prepare",
-			departmentId: "dept-1",
-			payload: {
-				toolId: "googleGmail",
-				args: { op: "send", to: ["maya@example.com"] },
-			},
-		});
 		assert.equal((event.input as Record<string, unknown>).op, "tools.invoke");
 	});
 
-	it("emits the versioned presentation and commits only the approved intent", async () => {
+	it("emits the versioned presentation and returns only the approved intent", async () => {
 		let title = "";
 		let message = "";
-		const event = divoEvent();
-		const result = await handleApprovalToolCall(
-			event,
-			context(async (nextTitle, nextMessage) => {
-				title = nextTitle;
-				message = nextMessage;
-				return true;
-			}),
-			dependencies({
-				requiresApproval: true,
+		const intentId = await approvePreparedDivoIntent(
+			"call-1",
+			{
 				intentId: "intent-1",
 				kind: "gmail.send",
 				action: "send",
 				title: "Send email",
 				expiresAt: "2026-07-10T12:00:00Z",
 				presentation: { to: ["maya@example.com"], subject: "Hello" },
+			},
+			context(async (nextTitle, nextMessage) => {
+				title = nextTitle;
+				message = nextMessage;
+				return true;
 			}),
 		);
 
-		assert.equal(result, undefined);
+		assert.equal(intentId, "intent-1");
 		assert.equal(title, DIVO_APPROVAL_PROTOCOL_TITLE);
 		assert.deepEqual(JSON.parse(message), {
 			version: 1,
@@ -122,41 +89,21 @@ describe("Divo approval gate", () => {
 			runCorrelation: { version: 1, threadId: "thread-1", runId: "run-1" },
 			expiresAt: "2026-07-10T12:00:00Z",
 		});
-		assert.deepEqual(event.input, {
-			op: "tools.commit",
-			departmentId: "dept-1",
-			payload: { intentId: "intent-1" },
-		});
 	});
 
-	it("blocks denial, malformed prepare responses, and direct commit calls", async () => {
-		const denied = divoEvent();
-		assert.deepEqual(
-			await handleApprovalToolCall(
-				denied,
+	it("rejects denied or malformed prepared intents and blocks direct commits", async () => {
+		await assert.rejects(
+			approvePreparedDivoIntent(
+				"call-1",
+				{ intentId: "intent-1", presentation: {} },
 				context(async () => false),
-				dependencies({
-					requiresApproval: true,
-					intentId: "intent-1",
-					presentation: {},
-				}),
 			),
-			{ block: true, reason: "The user did not approve this action." },
+			/The user did not approve/,
 		);
-		assert.equal((denied.input as Record<string, unknown>).op, "tools.invoke");
-
-		const malformed = divoEvent();
-		assert.equal(
-			(
-				await handleApprovalToolCall(
-					malformed,
-					context(async () => true),
-					dependencies({}),
-				)
-			)?.block,
-			true,
+		await assert.rejects(
+			approvePreparedDivoIntent("call-1", {}, context(async () => true)),
+			/complete approval intent/,
 		);
-
 		const directCommit = divoEvent();
 		(directCommit.input as Record<string, unknown>).op = "tools.commit";
 		assert.match(
@@ -164,11 +111,24 @@ describe("Divo approval gate", () => {
 				await handleApprovalToolCall(
 					directCommit,
 					context(async () => true),
-					dependencies({}),
 				)
 			)?.reason ?? "",
 			/direct tools\.commit/i,
 		);
+	});
+
+	it("returns the exact missing tools.invoke path before calling the backend", async () => {
+		const event = divoEvent();
+		(event.input as Record<string, unknown>).payload = { toolId: "googleGmail" };
+
+		const result = await handleApprovalToolCall(
+			event,
+			context(async () => true),
+		);
+
+		assert.equal(result?.block, true);
+		assert.match(result?.reason ?? "", /payload\.args is required/);
+		assert.match(result?.reason ?? "", /"op": "tools\.invoke"/);
 	});
 
 	it("blocks direct memory publishing so the custom review is the only path", async () => {
@@ -181,18 +141,13 @@ describe("Divo approval gate", () => {
 				facts: ["A fact"],
 			},
 		};
-		let backendCalls = 0;
 		const result = await handleApprovalToolCall(
 			event,
 			context(async () => true),
-			dependencies({}, () => {
-				backendCalls += 1;
-			}),
 		);
 
 		assert.equal(result?.block, true);
 		assert.match(result?.reason ?? "", /divo_memory_review/);
-		assert.equal(backendCalls, 0);
 	});
 
 	it("blocks generic memory recall before an alternate department can reach the gateway", async () => {
@@ -202,13 +157,9 @@ describe("Divo approval gate", () => {
 			toolId: "memoryRecall",
 			args: { query: "quarterly planning conventions" },
 		};
-		let backendCalls = 0;
 		const result = await handleApprovalToolCall(
 			event,
 			context(async () => true),
-			dependencies({}, () => {
-				backendCalls += 1;
-			}),
 		);
 
 		assert.equal(result?.block, true);
@@ -216,7 +167,6 @@ describe("Divo approval gate", () => {
 		assert.match(result?.reason ?? "", /optional exact department-name ranking preferences/);
 		assert.match(result?.reason ?? "", /all active memberships/);
 		assert.match(result?.reason ?? "", /do not select or grant scope/);
-		assert.equal(backendCalls, 0);
 	});
 });
 

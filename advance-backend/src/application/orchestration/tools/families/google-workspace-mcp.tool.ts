@@ -7,6 +7,7 @@ import type { ToolActionGroup } from '../../../../domain/permissions/tool-action
 import { TOOL_SUPPORTED_ACTIONS } from '../../../../domain/tools/tool-id';
 import { asToolId } from '../../../../shared/ids';
 import {
+  GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
   GOOGLE_WORKSPACE_PRODUCTS,
   googleWorkspaceActionFor,
   googleWorkspaceScopeGroupsFor,
@@ -14,10 +15,10 @@ import {
 } from '../../../google/google-workspace-mcp-manifest';
 
 const ArgsSchema = z.object({
-  connectionId: z.string().min(1),
+  connectionId: z.string().uuid().optional(),
   op: z.enum(['describe', 'call']),
   nativeTool: z.string().min(1),
-  input: z.record(z.unknown()),
+  input: z.record(z.unknown()).optional(),
 });
 type Args = z.infer<typeof ArgsSchema>;
 
@@ -42,16 +43,28 @@ export interface GoogleWorkspaceMcpPort {
 
 export interface GoogleWorkspaceMcpConnection {
   readonly client: GoogleWorkspaceMcpPort;
-  readonly accountEmail: string;
 }
+
+export interface GoogleWorkspaceMcpConnectionChoice {
+  readonly connectionId: string;
+  readonly label: string;
+  readonly accountEmail?: string;
+  readonly accountName?: string;
+  readonly access: 'read_only' | 'read_write' | 'admin';
+}
+
+export type GoogleWorkspaceMcpConnectionResolution =
+  | { readonly status: 'resolved'; readonly connection: GoogleWorkspaceMcpConnection }
+  | { readonly status: 'unavailable' }
+  | { readonly status: 'choose_connection'; readonly connections: readonly GoogleWorkspaceMcpConnectionChoice[] };
 
 export type ResolveGoogleWorkspaceMcpConnection = (input: {
   readonly companyId: string;
   readonly userId: string;
-  readonly connectionId: string;
+  readonly connectionId?: string;
   readonly minimumAccess: 'read_only' | 'read_write';
   readonly requiredScopeGroups: readonly (readonly string[])[];
-}) => Promise<GoogleWorkspaceMcpConnection | null>;
+}) => Promise<GoogleWorkspaceMcpConnectionResolution>;
 
 export function createGoogleWorkspaceMcpTools(deps: {
   readonly getConnection: ResolveGoogleWorkspaceMcpConnection;
@@ -75,10 +88,10 @@ function createProductTool(
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [
-      'connectionId: required backend connection ID from connections.list(provider="google_workspace").',
-      'op: describe|call. Use describe to fetch the pinned MCP input schema before an unfamiliar call.',
+      'connectionId: optional connected/shared account ID. Omit initially; Divo auto-selects only one eligible account and returns choose_connection when several are available.',
+      'op: describe|call. Use describe to fetch the pinned MCP input schema before an unfamiliar call; input may be omitted for describe.',
       `nativeTool: one of ${product.tools.join('|')}.`,
-      'input: exact object accepted by the described MCP tool. Never provide user_google_email; Divo injects the selected connection identity.',
+      `input: exact object accepted by the described MCP tool. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}`,
     ].join(' '),
     permissionCheck(args, permission) {
       if (!product.tools.includes(args.nativeTool)) {
@@ -91,7 +104,7 @@ function createProductTool(
       }
       const action = args.op === 'describe'
         ? 'read'
-        : googleWorkspaceActionFor(args.nativeTool, args.input);
+        : googleWorkspaceActionFor(args.nativeTool, args.input ?? {});
       const allowed = permission.allowedActionsByTool.get(asToolId(product.toolId))?.has(action) ?? false;
       return allowed
         ? ok(action)
@@ -104,23 +117,35 @@ function createProductTool(
 
       const action = args.op === 'describe'
         ? 'read'
-        : googleWorkspaceActionFor(args.nativeTool, args.input);
-      const connection = await deps.getConnection({
+        : googleWorkspaceActionFor(args.nativeTool, args.input ?? {});
+      const connectionResolution = await deps.getConnection({
         companyId: ctx.runContext.companyId,
         userId: ctx.runContext.userId,
-        connectionId: args.connectionId,
+        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
         minimumAccess: action === 'read' ? 'read_only' : 'read_write',
         requiredScopeGroups: args.op === 'describe'
           ? []
           : googleWorkspaceScopeGroupsFor(product, args.nativeTool, action),
       });
-      if (!connection) {
+      if (connectionResolution.status === 'choose_connection') {
+        return ok({
+          success: false,
+          nativeTool: args.nativeTool,
+          data: {
+            code: 'google_workspace_connection_selection_required',
+            connections: connectionResolution.connections,
+          },
+          message: 'Choose a Google Workspace connection before continuing.',
+        });
+      }
+      if (connectionResolution.status === 'unavailable') {
         return err(new ToolError({
           toolId: product.toolId,
           reason: 'unrecoverable',
           message: `${product.name} connection is unavailable, not shared for this action, or missing required scopes. Reconnect Google Workspace to grant the complete Workspace scopes.`,
         }));
       }
+      const connection = connectionResolution.connection;
 
       try {
         if (args.op === 'describe') {
@@ -137,7 +162,7 @@ function createProductTool(
         }
 
         ctx.onProgress?.(`${progressVerb(action)} ${product.name}…`);
-        const data = await connection.client.callTool(args.nativeTool, args.input);
+        const data = await connection.client.callTool(args.nativeTool, args.input ?? {});
         return ok({
           success: true,
           nativeTool: args.nativeTool,

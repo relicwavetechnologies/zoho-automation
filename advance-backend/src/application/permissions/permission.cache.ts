@@ -10,16 +10,17 @@ import type { ToolActionGroup } from '../../domain/permissions/tool-action-group
 import type { PermissionResult, DepartmentMeta } from './permission.types';
 import { asDepartmentId } from '../../shared/ids';
 import { asDepartmentRoleSlug } from '../../domain/permissions/department-role';
+import { TOOL_PERMISSION_POLICY_REVISION } from '../../domain/tools/tool-id';
 
 const COMPANY_TTL    = 900;   // 15 min — admin routes invalidate proactively on changes
 const DEPT_TTL       = 900;   // 15 min
 const MEMBERSHIP_TTL = 900;   // 15 min
 
 const companyKey = (companyId: string, roleSlug: string) =>
-  `perm:co:${companyId}:role:${roleSlug}`;
+  `perm:co:${companyId}:policy:${TOOL_PERMISSION_POLICY_REVISION}:role:${roleSlug}`;
 
 const deptKey = (companyId: string, deptId: string, userId: string, companyRoleSlug: string) =>
-  `perm:dep:${companyId}:${deptId}:${userId}:${companyRoleSlug}`;
+  `perm:dep:${companyId}:${deptId}:${userId}:${companyRoleSlug}:policy:${TOOL_PERMISSION_POLICY_REVISION}`;
 
 const membershipKey = (companyId: string, deptId: string, userId: string) =>
   `dept:member:v1:${companyId}:${deptId}:${userId}`;

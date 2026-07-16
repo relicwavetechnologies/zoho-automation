@@ -400,8 +400,8 @@ export const createServer = (c: Container) => {
     }),
   );
 
-  // Desktop/PI run-trace ingest (Track A — member auth).
-  // When the LLM proxy owns the trace, this stands down (no double-writes).
+  // Desktop/PI run-trace ingest (Track A — member auth). Current clients share
+  // a run ID with the proxy and declare which source owns token accounting.
   app.use(
     '/api/desktop/trace',
     memberAuth,

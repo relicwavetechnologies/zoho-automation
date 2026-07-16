@@ -5,7 +5,7 @@ import type { Logger } from '../../shared/logger';
 import { computeArgsHash } from '../approval/approval-policy';
 import type { GatewayMemberContext, GatewayResponse } from './gateway.types';
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
-import type { ToolExecutor } from './tool-executor';
+import type { PreparedToolInvocation, ToolExecutor } from './tool-executor';
 import { googleWorkspaceProductByToolId } from '../google/google-workspace-mcp-manifest';
 
 const DEFAULT_INTENT_TTL_MS = 5 * 60 * 1000;
@@ -174,7 +174,29 @@ export class LocalApprovalIntentService {
     const prepared = await this.deps.toolExecutor.prepare(input);
     if (!prepared.ok || !prepared.data) return prepared;
 
-    const { action, args, toolId } = prepared.data;
+    return this.createIntentForPreparedInvocation(input, prepared.data);
+  }
+
+  /**
+   * Create a locally approvable intent from an invocation the gateway has just
+   * validated and authorized. This avoids performing the same classification a
+   * second time in one request. Commit still revalidates RBAC, args, and action
+   * immediately before execution.
+   */
+  async createIntentForPreparedInvocation(
+    input: {
+      readonly member: GatewayMemberContext;
+      readonly departmentId?: string;
+      readonly toolId: string;
+      readonly args: Record<string, unknown>;
+    },
+    prepared: PreparedToolInvocation,
+  ): Promise<GatewayResponse> {
+    if (prepared.toolId !== input.toolId) {
+      return gatewayFailure('invalid_args', 'Prepared tool identity does not match the requested tool.');
+    }
+
+    const { action, args, toolId } = prepared;
     const argsHash = computeArgsHash(args);
     const presentation = buildApprovalPresentation(toolId, action, args);
 

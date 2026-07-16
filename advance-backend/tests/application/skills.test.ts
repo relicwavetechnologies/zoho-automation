@@ -14,7 +14,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { SkillRepository } from '../../src/infrastructure/persistence/skill.repository.ts';
+import { SkillRepository, searchTerms } from '../../src/infrastructure/persistence/skill.repository.ts';
 import { SkillsService }   from '../../src/application/context-search/skills.service.ts';
 import type { SkillRepoPort, SkillRow } from '../../src/infrastructure/persistence/skill.repository.ts';
 import { ok, err } from '../../src/shared/result.ts';
@@ -144,6 +144,13 @@ describe('SkillRepository', () => {
   });
 
   describe('search()', () => {
+    it('tokenizes a natural-language task instead of requiring the full sentence as one substring', () => {
+      assert.deepEqual(
+        searchTerms('Create a Google Sheet with columns, freeze the header, and return the URL'),
+        ['create', 'google', 'sheet', 'columns', 'freeze', 'header', 'url'],
+      );
+    });
+
     it('returns ok with rows from Prisma', async () => {
       const prisma = {
         skill: { findMany: async () => [fakeRow()] },
@@ -196,6 +203,8 @@ describe('SkillRepository', () => {
         OR: [{ scope: { in: ['company', 'global'] }, departmentId: null }, { scope: 'department', departmentId: 'dept-1' }],
       });
       assert.ok(Array.isArray(captured.where.AND[1].OR));
+      assert(captured.where.AND[1].OR.some((entry: any) => entry.aliases?.some));
+      assert(captured.where.AND[1].OR.some((entry: any) => entry.tags?.has === 'foo'));
     });
 
     it('scopes to company skills only when no departmentId provided', async () => {

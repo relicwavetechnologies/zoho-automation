@@ -13,6 +13,7 @@ export interface SkillRow {
   readonly scope: string;
   readonly status: string;
   readonly tags: string[];
+  readonly aliases?: string[];
   readonly companyId: string;
   readonly departmentId: string | null;
   readonly revision: number;
@@ -54,6 +55,7 @@ const SELECT = {
   companyId:    true,
   departmentId: true,
   revision:     true,
+  aliases:      { select: { alias: true } },
 } as const;
 
 function visibilityWhere(departmentId?: string) {
@@ -84,7 +86,7 @@ export class SkillRepository implements SkillRepoPort {
         take:    limit,
       });
 
-      return ok(rows);
+      return ok(rows.map(toSkillRow));
     } catch (e) {
       return err(wrapInfra('prisma', 'skill.list', e));
     }
@@ -98,6 +100,9 @@ export class SkillRepository implements SkillRepoPort {
   }): Promise<Result<SkillRow[], InfraError>> {
     try {
       const { companyId, departmentId, query, limit } = input;
+      const terms = searchTerms(query);
+
+      if (terms.length === 0) return ok([]);
 
       const rows = await this.db.skill.findMany({
         where: {
@@ -105,14 +110,7 @@ export class SkillRepository implements SkillRepoPort {
           status: 'active',
           AND: [
             visibilityWhere(departmentId),
-            {
-              OR: [
-                { name:     { contains: query, mode: 'insensitive' } },
-                { slug:     { contains: query, mode: 'insensitive' } },
-                { summary:  { contains: query, mode: 'insensitive' } },
-                { markdown: { contains: query, mode: 'insensitive' } },
-              ],
-            },
+            { OR: terms.flatMap((term) => searchableFieldsFor(term)) },
           ],
         },
         select:  SELECT,
@@ -120,7 +118,7 @@ export class SkillRepository implements SkillRepoPort {
         take:    limit,
       });
 
-      return ok(rows);
+      return ok(rows.map(toSkillRow));
     } catch (e) {
       return err(wrapInfra('prisma', 'skill.search', e));
     }
@@ -146,7 +144,7 @@ export class SkillRepository implements SkillRepoPort {
         select: SELECT,
       });
 
-      return ok(row ?? null);
+      return ok(row ? toSkillRow(row) : null);
     } catch (e) {
       return err(wrapInfra('prisma', 'skill.findById', e));
     }
@@ -163,4 +161,51 @@ export class SkillRepository implements SkillRepoPort {
       return err(wrapInfra('prisma', 'skill.registry_revision', e));
     }
   }
+}
+
+function toSkillRow(row: Record<string, any>): SkillRow {
+  return {
+    ...row,
+    aliases: Array.isArray(row.aliases)
+      ? row.aliases.flatMap((item: unknown) => {
+          if (typeof item === 'string') return [item];
+          if (item && typeof item === 'object' && typeof (item as { alias?: unknown }).alias === 'string') {
+            return [(item as { alias: string }).alias];
+          }
+          return [];
+        })
+      : [],
+  } as SkillRow;
+}
+
+const SEARCH_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'for', 'from', 'in', 'into', 'my', 'of', 'on', 'please',
+  'return', 'the', 'then', 'to', 'using', 'with',
+]);
+
+/**
+ * Convert a natural-language task into reusable catalogue terms. Repository
+ * filtering is deliberately broad (any meaningful term); application-layer
+ * scoring remains the single ranking authority.
+ */
+export function searchTerms(query: string): string[] {
+  return [...new Set(
+    query
+      .toLowerCase()
+      .split(/[^a-z0-9._-]+/)
+      .map((term) => term.trim())
+      .filter((term) => term.length > 1 && !SEARCH_STOP_WORDS.has(term)),
+  )].slice(0, 20);
+}
+
+function searchableFieldsFor(term: string) {
+  return [
+    { name:     { contains: term, mode: 'insensitive' as const } },
+    { slug:     { contains: term, mode: 'insensitive' as const } },
+    { summary:  { contains: term, mode: 'insensitive' as const } },
+    { markdown: { contains: term, mode: 'insensitive' as const } },
+    { tags:     { has: term } },
+    { toolIds:  { has: term } },
+    { aliases:  { some: { alias: { contains: term, mode: 'insensitive' as const } } } },
+  ];
 }

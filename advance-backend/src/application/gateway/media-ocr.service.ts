@@ -12,7 +12,7 @@ export const mediaImageOcrPayloadSchema = z.object({
   imageBase64: z.string().min(1),
   mimeType: z.string().regex(/^image\/(png|jpe?g|webp|gif)$/i),
   fileName: z.string().trim().min(1).max(255).optional(),
-});
+}).strict();
 
 export type MediaImageOcrPayload = z.infer<typeof mediaImageOcrPayloadSchema>;
 

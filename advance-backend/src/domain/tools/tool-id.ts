@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { ToolId } from '../../shared/ids';
 
 /** All canonical tool IDs in the system. Add new tools here. */
@@ -138,5 +139,19 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   documentRag:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   dataProcessor:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
 };
+
+/**
+ * Content-addressed revision for every permission snapshot derived from the
+ * canonical tool policy. Changing a tool ID, supported action, or role default
+ * automatically moves readers to a fresh cache namespace after deployment.
+ */
+export const TOOL_PERMISSION_POLICY_REVISION = createHash('sha256')
+  .update(JSON.stringify({
+    toolIds: CANONICAL_TOOL_IDS,
+    supportedActions: TOOL_SUPPORTED_ACTIONS,
+    defaults: TOOL_DEFAULT_PERMISSIONS,
+  }))
+  .digest('hex')
+  .slice(0, 16);
 
 export const asToolId = (s: CanonicalToolId): ToolId => s as unknown as ToolId;

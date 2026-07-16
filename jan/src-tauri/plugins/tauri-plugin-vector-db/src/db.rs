@@ -1,5 +1,5 @@
-use crate::VectorDBError;
 use crate::utils::{cosine_similarity, from_le_bytes_vec, to_le_bytes_vec};
+use crate::VectorDBError;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -15,7 +15,6 @@ pub struct FileMetadata {
     pub file_type: Option<String>,
     pub size: Option<i64>,
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -70,7 +69,13 @@ pub fn open_or_init_conn(path: &PathBuf) -> Result<Connection, VectorDBError> {
 
 pub fn try_load_sqlite_vec(conn: &Connection) -> bool {
     // Check if vec0 module is already available
-    if conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp.temp_vec USING vec0(embedding float[1])", []).is_ok() {
+    if conn
+        .execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.temp_vec USING vec0(embedding float[1])",
+            [],
+        )
+        .is_ok()
+    {
         let _ = conn.execute("DROP TABLE IF EXISTS temp.temp_vec", []);
         return true;
     }
@@ -173,8 +178,14 @@ pub fn create_schema(conn: &Connection, dimension: usize) -> Result<bool, Vector
     )?;
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_id ON chunks(id)", [])?;
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_file_id ON chunks(file_id)", [])?;
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_file_order ON chunks(file_id, chunk_file_order)", [])?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chunks_file_id ON chunks(file_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chunks_file_order ON chunks(file_id, chunk_file_order)",
+        [],
+    )?;
 
     // Try to create vec virtual table
     let has_ann = ensure_vec_table(conn, dimension);
@@ -197,7 +208,10 @@ pub fn create_file(
     // Try get existing by path
     if let Ok(Some(id)) = tx
         .prepare("SELECT id FROM files WHERE path = ?1")
-        .and_then(|mut s| s.query_row(params![path], |r| r.get::<_, String>(0)).optional())
+        .and_then(|mut s| {
+            s.query_row(params![path], |r| r.get::<_, String>(0))
+                .optional()
+        })
     {
         let row: AttachmentFileInfo = {
             let mut stmt = tx.prepare(
@@ -222,12 +236,10 @@ pub fn create_file(
     // Determine file size if not provided
     let computed_size: Option<i64> = match size {
         Some(s) if s > 0 => Some(s),
-        _ => {
-            match std::fs::metadata(path) {
-                Ok(meta) => Some(meta.len() as i64),
-                Err(_) => None,
-            }
-        }
+        _ => match std::fs::metadata(path) {
+            Ok(meta) => Some(meta.len() as i64),
+            Err(_) => None,
+        },
     };
     tx.execute(
         "INSERT INTO files (id, path, name, type, size, chunk_count) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
@@ -235,9 +247,8 @@ pub fn create_file(
     )?;
 
     let row: AttachmentFileInfo = {
-        let mut stmt = tx.prepare(
-            "SELECT id, path, name, type, size, chunk_count FROM files WHERE path = ?1",
-        )?;
+        let mut stmt = tx
+            .prepare("SELECT id, path, name, type, size, chunk_count FROM files WHERE path = ?1")?;
         stmt.query_row(params![path], |r| {
             Ok(AttachmentFileInfo {
                 id: r.get(0)?,
@@ -264,8 +275,7 @@ pub fn insert_chunks(
 
     // Check if vec table exists
     let has_vec = if vec_loaded {
-        conn
-            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chunks_vec'")
+        conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chunks_vec'")
             .and_then(|mut s| s.query_row([], |r| r.get::<_, String>(0)).optional())
             .ok()
             .flatten()
@@ -341,8 +351,7 @@ pub fn search_collection(
     file_ids: Option<Vec<String>>,
 ) -> Result<Vec<SearchResult>, VectorDBError> {
     let has_vec = if vec_loaded {
-        conn
-            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chunks_vec'")
+        conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chunks_vec'")
             .and_then(|mut s| s.query_row([], |r| r.get::<_, String>(0)).optional())
             .ok()
             .flatten()
@@ -388,7 +397,8 @@ fn search_ann(
          FROM chunks_vec v
          JOIN chunks c ON c.rowid = v.rowid
          WHERE v.embedding MATCH ?1 AND k = ?2
-         ORDER BY v.distance".to_string()
+         ORDER BY v.distance"
+            .to_string()
     };
 
     let mut stmt = match conn.prepare(&query) {
@@ -400,10 +410,8 @@ fn search_ann(
     };
 
     let mut rows = if let Some(ids) = file_ids {
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-            Box::new(json_vec),
-            Box::new(limit as i64),
-        ];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(json_vec), Box::new(limit as i64)];
         for id in ids {
             params.push(Box::new(id));
         }
@@ -469,8 +477,9 @@ fn search_linear(
     } else {
         (
             "SELECT c.id, c.text, c.embedding, c.file_id, c.chunk_file_order
-             FROM chunks c".to_string(),
-            Vec::new()
+             FROM chunks c"
+                .to_string(),
+            Vec::new(),
         )
     };
 
@@ -504,13 +513,13 @@ fn search_linear(
         }
     }
 
-    results.sort_by(|a, b| {
-        match (b.score, a.score) {
-            (Some(b_score), Some(a_score)) => b_score.partial_cmp(&a_score).unwrap_or(std::cmp::Ordering::Equal),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
+    results.sort_by(|a, b| match (b.score, a.score) {
+        (Some(b_score), Some(a_score)) => b_score
+            .partial_cmp(&a_score)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
     });
     let take: Vec<SearchResult> = results.into_iter().take(limit).collect();
     println!("[VectorDB] Linear search returned {} results", take.len());
@@ -526,7 +535,10 @@ pub fn list_attachments(
     limit: Option<usize>,
 ) -> Result<Vec<AttachmentFileInfo>, VectorDBError> {
     let query = if let Some(lim) = limit {
-        format!("SELECT id, path, name, type, size, chunk_count FROM files LIMIT {}", lim)
+        format!(
+            "SELECT id, path, name, type, size, chunk_count FROM files LIMIT {}",
+            lim
+        )
     } else {
         "SELECT id, path, name, type, size, chunk_count FROM files".to_string()
     };
@@ -581,7 +593,7 @@ pub fn get_chunks(
     let mut stmt = conn.prepare(
         "SELECT id, text, chunk_file_order FROM chunks
          WHERE file_id = ?1 AND chunk_file_order >= ?2 AND chunk_file_order <= ?3
-         ORDER BY chunk_file_order"
+         ORDER BY chunk_file_order",
     )?;
     let mut rows = stmt.query(params![&file_id, start_order, end_order])?;
 
