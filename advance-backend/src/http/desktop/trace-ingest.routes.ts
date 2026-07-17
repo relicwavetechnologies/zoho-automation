@@ -22,12 +22,16 @@ import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { ExecutionRepository } from '../../infrastructure/persistence/execution.repository';
 import { TokenUsageService } from '../../application/observability/token-usage.service';
+import { PersonaLearningService } from '../../application/persona-learning/persona-learning.service';
+import type { PersonaLearningToolSummary } from '../../application/persona-learning/persona-learning.types';
 
 export interface TraceIngestRoutesDeps {
   prisma: PrismaClient;
   logger: Logger;
   /** Legacy kill switch for clients that do not declare per-batch usage ownership. */
   proxyOwnsTrace?: boolean;
+  /** Optional until P1–P3 is deployed with the persona-learning worker. */
+  personaLearning?: PersonaLearningService;
 }
 
 // ─── Contract (shared shape PI emits) ───────────────────────────────────────
@@ -71,6 +75,18 @@ const eventSchema = z.discriminatedUnion('kind', [
     title:   z.string().max(300).optional(),
     summary: z.string().max(2000).optional(),
     status:  z.enum(['ok', 'error']).optional(),
+  }),
+  z.object({
+    kind: z.literal('learning_context'),
+    seq: z.number().int().nonnegative(),
+    ts: z.number().optional(),
+    userMessages: z.array(z.string().max(4_000)).max(3),
+    assistantResponse: z.string().max(6_000).optional(),
+    toolSummary: z.array(z.object({
+      toolName: z.string().min(1).max(200),
+      isError: z.boolean(),
+      summary: z.string().max(500).optional(),
+    }).strict()).max(20),
   }),
 ]);
 
@@ -124,6 +140,7 @@ export async function ingestTraceBatch(
   log: Logger,
   identity: TraceIdentity,
   batch: TraceBatch,
+  personaLearning?: PersonaLearningService,
 ): Promise<IngestResult> {
   const executionId = await runs.findOrCreateByRequestId({
     requestId:  batch.runId,
@@ -157,6 +174,13 @@ export async function ingestTraceBatch(
   if (failed > 0) {
     log.warn('trace-ingest.partial', { runId: batch.runId, failed, total: batch.events.length });
   }
+  await capturePersonaLearningEvidence(personaLearning, log, {
+    executionId,
+    companyId: identity.companyId,
+    userId: identity.userId,
+    ...(batch.threadId ? { threadId: batch.threadId } : {}),
+    events: batch.events,
+  });
   return { executionId, accepted: batch.events.length - failed, failed };
 }
 
@@ -242,6 +266,26 @@ async function persistEvent(
       return;
     }
 
+    if (ev.kind === 'learning_context') {
+      // Evidence itself is stored in the isolated long-lived persona-learning
+      // table. The trace timeline records only compact metadata, not excerpts.
+      await runs.appendEvent({
+        executionId: ctx.executionId,
+        sequence: ev.seq,
+        phase: 'learning',
+        eventType: 'learning_context',
+        actorType: 'engine',
+        title: 'Manager learning context captured',
+        status: 'ok',
+        payload: {
+          userMessageCount: ev.userMessages.length,
+          hasAssistantResponse: Boolean(ev.assistantResponse),
+          toolCount: ev.toolSummary.length,
+        },
+      });
+      return;
+    }
+
     // Boundary events (run/turn start/end).
     await runs.appendEvent({
       executionId: ctx.executionId,
@@ -261,6 +305,61 @@ async function persistEvent(
         await runs.complete(ctx.executionId, ev.summary);
       }
     }
+}
+
+async function capturePersonaLearningEvidence(
+  personaLearning: PersonaLearningService | undefined,
+  log: Logger,
+  input: {
+    executionId: string;
+    companyId: string;
+    userId: string;
+    threadId?: string;
+    events: readonly TraceEvent[];
+  },
+): Promise<void> {
+  if (!personaLearning) return;
+  const terminalEvent = findLast(input.events, event => event.kind === 'run_end');
+  const contextEvent = findLast(input.events, event => event.kind === 'learning_context');
+  if (terminalEvent?.kind !== 'run_end' || contextEvent?.kind !== 'learning_context') return;
+  const terminal = terminalEvent as { kind: 'run_end'; status?: 'ok' | 'error'; summary?: string };
+  const context = contextEvent as {
+    kind: 'learning_context';
+    userMessages: string[];
+    assistantResponse?: string;
+    toolSummary: PersonaLearningToolSummary[];
+  };
+  if (terminal.status === 'error') return;
+
+  try {
+    await personaLearning.captureCompletedManagerRun({
+      executionRunId: input.executionId,
+      companyId: input.companyId,
+      managerId: input.userId,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      ...(terminal.summary ? { runSummary: terminal.summary } : {}),
+      context: {
+        userMessages: context.userMessages,
+        ...(context.assistantResponse ? { assistantResponse: context.assistantResponse } : {}),
+      },
+      tools: context.toolSummary,
+    });
+  } catch (error) {
+    // Learning must never make desktop trace persistence fail. The trace still
+    // provides enough observability to diagnose a capture failure.
+    log.warn('trace-ingest.persona-learning.capture_failed', {
+      executionId: input.executionId,
+      error: String(error),
+    });
+  }
+}
+
+function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | undefined {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]!;
+    if (predicate(item)) return item;
+  }
+  return undefined;
 }
 
 // ─── Router ─────────────────────────────────────────────────────────────────
@@ -294,7 +393,7 @@ export function createTraceIngestRoutes(deps: TraceIngestRoutesDeps): Router {
     }
 
     try {
-      const result = await ingestTraceBatch(runs, tokens, log, { companyId, userId }, parsed.data);
+      const result = await ingestTraceBatch(runs, tokens, log, { companyId, userId }, parsed.data, deps.personaLearning);
       res.status(202).json({ success: true, data: result });
     } catch (e) {
       log.error('trace-ingest.failed', { runId: parsed.data.runId, error: String(e) });

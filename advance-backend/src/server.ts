@@ -41,6 +41,7 @@ import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
+import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
 
 export const createServer = (c: Container) => {
   const app = express();
@@ -72,6 +73,17 @@ export const createServer = (c: Container) => {
     summaryModel:     c.model,
   });
   ingestionWorker.start();
+
+  // Manager persona learning is intentionally independent from ingestion and
+  // has no path to runtime prompts until its separate promotion phase exists.
+  const personaLearningWorker = new PersonaLearningWorker({
+    redisUrl: c.queueRedisUrl,
+    queueName: c.env.REDIS_PERSONA_LEARNING_QUEUE_NAME,
+    service: c.personaLearningService,
+    logger: c.logger,
+    concurrency: c.env.PERSONA_LEARNING_WORKER_CONCURRENCY,
+  });
+  personaLearningWorker.start();
 
   c.scheduledWorkflowService.start();
 
@@ -409,6 +421,7 @@ export const createServer = (c: Container) => {
       prisma:         c.prisma,
       logger:         c.logger,
       proxyOwnsTrace: c.env.PROXY_OWNS_TRACE,
+      personaLearning: c.personaLearningService,
     }),
   );
 

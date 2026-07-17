@@ -184,6 +184,11 @@ const EnvSchema = z.object({
   INGESTION_WORKER_CONCURRENCY: positiveInt(2),
   INGESTION_JOB_RETRIES:      positiveInt(3),
 
+  // ── Manager persona learning (P1–P3: evidence → queued shadow extraction) ─
+  REDIS_PERSONA_LEARNING_QUEUE_NAME: z.string().default('persona-learning'),
+  PERSONA_LEARNING_WORKER_CONCURRENCY: positiveInt(1),
+  PERSONA_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
+
   // ── RAG retrieval tuning ──────────────────────────────────────────────────
   RAG_GRADE_THRESHOLD:   positiveNum(3),
   RAG_MAX_REWRITES:      positiveInt(1),

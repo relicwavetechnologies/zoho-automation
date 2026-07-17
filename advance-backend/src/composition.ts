@@ -108,6 +108,9 @@ import { VectorDocumentRepository } from './infrastructure/persistence/vector-do
 import { FileAccessPolicyRepository } from './infrastructure/persistence/file-access-policy.repository';
 import { IngestionService } from './application/ingestion/ingestion.service';
 import { IngestionQueue } from './application/ingestion/ingestion.queue';
+import { PersonaLearningQueue } from './application/persona-learning/persona-learning.queue';
+import { DeepSeekPersonaLearningExtractor } from './application/persona-learning/persona-learning.extractor';
+import { PersonaLearningService } from './application/persona-learning/persona-learning.service';
 import { LlmRerankerService } from './application/retrieval/llm-reranker.service';
 import { DocumentRagBroker } from './application/retrieval/document-rag.broker';
 import { DocumentRagTool } from './application/orchestration/tools/families/document-rag.tool';
@@ -232,6 +235,9 @@ export interface Container {
   // Document RAG
   ingestionService: IngestionService;
   ingestionQueue: IngestionQueue;
+  // Manager learning P1–P3. Evidence/candidates are isolated from active prompts.
+  personaLearningQueue: PersonaLearningQueue;
+  personaLearningService: PersonaLearningService;
   cloudinaryAdapter: CloudinaryAdapter;
   fileAssetRepo: FileAssetRepository;
   fileAccessPolicyRepo: FileAccessPolicyRepository;
@@ -834,6 +840,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   const ingestionQueue = new IngestionQueue(queueRedisUrl, env.REDIS_INGESTION_QUEUE_NAME);
+  const personaLearningQueue = new PersonaLearningQueue(
+    queueRedisUrl,
+    env.REDIS_PERSONA_LEARNING_QUEUE_NAME,
+  );
+  const personaLearningService = new PersonaLearningService({
+    prisma,
+    queue: personaLearningQueue,
+    extractor: new DeepSeekPersonaLearningExtractor(
+      createConfiguredModel('deepseek', env.PERSONA_LEARNING_MODEL_ID),
+      env.PERSONA_LEARNING_MODEL_ID,
+    ),
+    logger,
+  });
 
   const llmReranker = new LlmRerankerService(
     env.GROQ_API_KEY,
@@ -1306,6 +1325,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Document RAG
     ingestionService,
     ingestionQueue,
+    personaLearningQueue,
+    personaLearningService,
     cloudinaryAdapter,
     fileAssetRepo,
     fileAccessPolicyRepo,

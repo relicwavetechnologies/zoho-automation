@@ -108,6 +108,40 @@ enum UserMemoryFormatting {
   bullets
 }
 
+// Manager-persona learning is deliberately isolated from personal memory.
+// These rows are evidence/candidates only in P1–P3; no active department
+// persona is written by this pipeline until the promotion phase exists.
+enum PersonaLearningEvidenceStatus {
+  eligible
+  skipped
+}
+
+enum PersonaLearningJobStatus {
+  queued
+  processing
+  shadow_complete
+  no_learning
+  failed
+}
+
+enum PersonaLearningCandidateKind {
+  preference
+  correction
+  workflow
+  skill
+  contradiction
+}
+
+enum PersonaLearningEvidenceStrength {
+  explicit
+  confirmed
+  inferred
+}
+
+enum PersonaLearningCandidateStatus {
+  shadow
+}
+
 model User {
   id                                 String                       @id @default(uuid())
   email                              String                       @unique
@@ -141,6 +175,8 @@ model User {
   memoryItems                        UserMemoryItem[]
   memoryProfiles                     UserMemoryProfile[]
   departmentPreference               UserDepartmentPreference?
+  personaLearningEvidenceAsManager   PersonaLearningEvidence[]  @relation("PersonaLearningEvidenceManager")
+  personaLearningCandidatesAsManager PersonaLearningCandidate[] @relation("PersonaLearningCandidateManager")
 }
 
 model Company {
@@ -198,6 +234,8 @@ model Company {
   userDepartmentPreferences   UserDepartmentPreference[]
   agentDefinitions            AgentDefinition[]
   channelAgentMappings        ChannelAgentMapping[]
+  personaLearningEvidences    PersonaLearningEvidence[]
+  personaLearningCandidates   PersonaLearningCandidate[]
 }
 
 model RegisteredTool {
@@ -836,6 +874,8 @@ model Department {
   userToolOverrides  DepartmentUserToolOverride[]
   desktopThreads     DesktopThread[]
   scheduledWorkflows ScheduledWorkflow[]
+  personaLearningEvidences PersonaLearningEvidence[]
+  personaLearningCandidates PersonaLearningCandidate[]
 
   @@unique([companyId, slug])
   @@index([companyId, status, updatedAt])
@@ -1533,6 +1573,7 @@ model ExecutionRun {
   updatedAt     DateTime         @updatedAt
   events        ExecutionEvent[]
   stepResults   StepResult[]
+  personaLearningEvidence PersonaLearningEvidence?
 
   @@index([companyId, startedAt])
   @@index([userId, startedAt])
@@ -1541,6 +1582,88 @@ model ExecutionRun {
   @@index([status, startedAt])
   @@index([taskId])
   @@index([threadId])
+}
+
+// Immutable, bounded evidence captured from a completed manager desktop run.
+// `contextJson` contains redacted user/assistant excerpts only; raw tool I/O
+// remains in the short-retention trace store and is never copied here.
+model PersonaLearningEvidence {
+  id                String                       @id @default(uuid())
+  companyId         String
+  company           Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId         String
+  manager           User                         @relation("PersonaLearningEvidenceManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId      String
+  department        Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  executionRunId    String                       @unique
+  executionRun      ExecutionRun                 @relation(fields: [executionRunId], references: [id], onDelete: Cascade)
+  threadId          String
+  sourceVersion     Int                          @default(1)
+  status            PersonaLearningEvidenceStatus
+  eligibilityReason String?
+  contextJson       Json
+  toolSummaryJson   Json
+  runSummary        String?
+  capturedAt        DateTime                     @default(now())
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
+  jobs              PersonaLearningJob[]
+  candidates        PersonaLearningCandidate[]
+
+  @@index([companyId, departmentId, managerId, capturedAt])
+  @@index([status, capturedAt])
+}
+
+// Database-backed queue state. BullMQ is the executor, while this row is the
+// durable/idempotent source of truth and supports reconciliation after outages.
+model PersonaLearningJob {
+  id              String                  @id @default(uuid())
+  evidenceId      String
+  evidence        PersonaLearningEvidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  pipelineVersion Int                     @default(1)
+  idempotencyKey  String                  @unique
+  status          PersonaLearningJobStatus @default(queued)
+  attempts        Int                     @default(0)
+  queueJobId      String?
+  modelProvider   String?
+  modelId         String?
+  lastError       String?
+  processedAt     DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  candidates      PersonaLearningCandidate[]
+
+  @@unique([evidenceId, pipelineVersion])
+  @@index([status, createdAt])
+}
+
+// Shadow-only output from the extraction model. P4 will introduce promotion,
+// supersession, and generated persona views; these candidates are never used
+// by runtime prompts in this migration.
+model PersonaLearningCandidate {
+  id               String                          @id @default(uuid())
+  companyId        String
+  company          Company                         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId        String
+  manager          User                            @relation("PersonaLearningCandidateManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId     String
+  department       Department                      @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  evidenceId       String
+  evidence         PersonaLearningEvidence         @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  jobId            String
+  job              PersonaLearningJob              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  ordinal          Int
+  kind             PersonaLearningCandidateKind
+  scopeKey         String
+  claim            String
+  rationale        String
+  evidenceStrength PersonaLearningEvidenceStrength
+  status           PersonaLearningCandidateStatus  @default(shadow)
+  createdAt        DateTime                        @default(now())
+
+  @@unique([jobId, ordinal])
+  @@index([companyId, departmentId, managerId, status, createdAt])
+  @@index([evidenceId])
 }
 
 model ExecutionEvent {
