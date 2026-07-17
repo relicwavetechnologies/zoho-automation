@@ -11,6 +11,7 @@ use crate::core::divo::commands::divo_sync_pi_env;
 use crate::core::divo::workspace::resolve_workspace_dir_for_app;
 use manager::PiManager;
 use permissions::{load_persistent_bash_allow, save_persistent_bash_allow};
+use runtime::PiRuntimeMode;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
@@ -29,8 +30,12 @@ pub async fn pi_start(
     app: AppHandle,
     workspace_path: Option<String>,
     thread_id: Option<String>,
+    runtime_mode: Option<String>,
 ) -> Result<(), String> {
-    let _ = divo_sync_pi_env(app.clone()).await;
+    let runtime_mode = PiRuntimeMode::parse(runtime_mode.as_deref())?;
+    if runtime_mode == PiRuntimeMode::Company {
+        divo_sync_pi_env(app.clone()).await?;
+    }
     let persistent_bash_allow = load_persistent_bash_allow(&app)?;
     state
         .manager
@@ -41,7 +46,14 @@ pub async fn pi_start(
     let workspace_dir = resolve_workspace_dir_for_app(&app, workspace_path)?;
     state
         .manager
-        .start(app, data_folder, scratch_dir, workspace_dir, thread_id)
+        .start(
+            app,
+            data_folder,
+            scratch_dir,
+            workspace_dir,
+            runtime_mode,
+            thread_id,
+        )
         .await
 }
 

@@ -3,20 +3,38 @@ import {
   GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
   GOOGLE_WORKSPACE_MCP_SOURCE,
   GOOGLE_WORKSPACE_PRODUCTS,
-  GOOGLE_WORKSPACE_TOOL_IDS,
 } from '../google/google-workspace-mcp-manifest';
 
 const operationIndex = GOOGLE_WORKSPACE_PRODUCTS
   .map((product) => `- ${product.name} -> ${product.toolId}: ${product.tools.join(', ')}`)
   .join('\n');
-
 export const googleSkill: Skill = {
   id: 'google',
   name: 'Google Workspace',
-  description: 'Use governed Google Workspace connections for Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, and Apps Script.',
-  toolIds: [...GOOGLE_WORKSPACE_TOOL_IDS],
+  description: 'Compact virtual parent for governed Google Workspace specialist workflows.',
+  // This source-controlled parent is intentionally not a database skill and
+  // does not require every Google product. Planning selects only executable,
+  // RBAC-granted specialist recipes.
+  toolIds: [],
   instructions: `GOOGLE WORKSPACE EXECUTION METHOD:
 - Google Workspace executes only through Divo gateway tools backed by the private server-side Workspace MCP. Never use a local Google CLI, direct Google API request, Bash, curl, browser automation, or local OAuth token.
+- For a multi-product vendor workflow, call google.plan with only the ordered phaseIds required by the user's request: gmail_source, google_contact, calendar_availability, google_doc, google_sheet, and/or calendar_event. It returns allowed specialist phases in order, only the first full recipe inline, and exact later skill IDs to load just before their phase. Never call google.plan for a Gmail-only request and never add an unrelated product.
+- Invoke the selected product tool without connectionId unless the user already chose an exact account. The backend auto-selects only when exactly one eligible connected/shared account can perform the action; never pick a model default.
+- If the tool returns google_workspace_connection_selection_required, ask one short account-choice question using only those returned options, then retry once with that exact connectionId. Never rotate through accounts after an error.
+- A text reply is an exact choice only when it uniquely identifies one returned option by number or account email. If names or labels still match multiple options, ask again; never infer work versus personal.
+- If no eligible connection is available, tell the member to connect or share a Google Workspace account with the required access/scopes.
+- Never use an email address or label as connectionId. Use connections.list only when the user explicitly asks to inspect/manage available accounts.
+- Before an unfamiliar native operation, call op="describe" and follow the returned schema exactly. The gateway owns RBAC, approvals, sharing, token refresh, and audit.
+- Never invent recipients or resource IDs, never claim an action completed before a successful result, and never expose tokens or MCP endpoint details.`,
+};
+
+/**
+ * Server-runner guidance is intentionally separate from the compact staged
+ * parent above. The server Google runner has direct product tools, not the
+ * desktop/Pi `google.plan` gateway operation.
+ */
+export const googleRunnerInstructions = `GOOGLE WORKSPACE EXECUTION METHOD:
+- Google Workspace executes only through Divo's governed product tools backed by the private server-side Workspace MCP. Never use a local Google CLI, direct Google API request, Bash, curl, browser automation, or local OAuth token.
 - Invoke the selected product tool without connectionId unless the user already chose an exact account. The backend auto-selects only when exactly one eligible connected/shared account can perform the action.
 - If the tool returns google_workspace_connection_selection_required, ask one short account-choice question using only those returned options, then retry once with that exact connectionId. Never rotate through accounts after an error.
 - If no eligible connection is available, tell the member to connect or share a Google Workspace account with the required access/scopes.
@@ -55,5 +73,4 @@ GENERAL SAFETY:
 - Never guess message IDs, file IDs, event IDs, spreadsheet IDs, presentation IDs, form IDs, task IDs, contact IDs, space IDs, or script IDs.
 - For mutation, use the smallest exact operation and verify important document/sheet/slide changes with a read.
 - Retry only once when the returned error identifies a correctable argument. Otherwise report the exact useful reason.
-- Never expose access tokens, refresh tokens, MCP endpoint details, or raw internal authorization data.`,
-};
+- Never expose access tokens, refresh tokens, MCP endpoint details, or raw internal authorization data.`;

@@ -10,6 +10,15 @@ import type { PeopleResolverPort } from './lark-task.tool';
 
 // ─── Client port ──────────────────────────────────────────────────────────────
 
+export interface LarkDirectoryPerson {
+  openId: string;
+  displayName: string;
+  email?: string;
+  jobTitle?: string;
+  departmentNames?: string[];
+  organization?: string;
+}
+
 export interface LarkContactsClientPort {
   /**
    * Lark's organisation-directory endpoints require the installed app's
@@ -17,7 +26,8 @@ export interface LarkContactsClientPort {
    * token. Divo still applies its own RBAC before this client is called.
    */
   searchDepartments(query: string): Promise<Array<{ departmentId: string; name: string }>>;
-  listDepartmentMembers(departmentId: string, limit?: number): Promise<Array<{ openId: string; displayName: string; email?: string }>>;
+  getUsers(openIds: string[]): Promise<LarkDirectoryPerson[]>;
+  listDepartmentMembers(departmentId: string, limit?: number): Promise<LarkDirectoryPerson[]>;
 }
 
 // ─── Arg schema ───────────────────────────────────────────────────────────────
@@ -56,6 +66,7 @@ export const createLarkContactsTool = (deps: {
 - queries: Array of names to resolve in one call, e.g. ["Rahul", "Bhojraj", "Archit"] (preferred for multiple people)
 - department: Department name (required for list_department)
 - limit: Max members for list_department (default 50, max 100)
+- Results expose names and governed directory fields for presentation. Lark IDs appear only under internalRouting for downstream tool calls; never show internalRouting to the user.
   `.trim(),
 
   permissionCheck(args: LarkContactsArgs, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -84,19 +95,42 @@ export const createLarkContactsTool = (deps: {
           const requesterOpenId = ctx.runContext.userExternalId ?? '';
           const resolved = await deps.peopleResolver.resolve(companyId, nameList, requesterOpenId);
 
+          const uniqueOpenIds = uniqueStrings([
+            ...resolved.resolved.map(person => person.openId),
+            ...resolved.ambiguous.flatMap(candidate => candidate.matches.map(person => person.openId)),
+          ]);
+          let enrichedByOpenId = new Map<string, LarkDirectoryPerson>();
+          let directoryEnrichment: 'complete' | 'partial' | 'unavailable' = 'complete';
+          if (uniqueOpenIds.length > 0) {
+            try {
+              const enriched = await deps.contactsClient.getUsers(uniqueOpenIds);
+              enrichedByOpenId = new Map(enriched.map(person => [person.openId, person]));
+              directoryEnrichment = enrichedByOpenId.size === uniqueOpenIds.length ? 'complete' : 'partial';
+            } catch {
+              directoryEnrichment = 'unavailable';
+            }
+          }
+
           const data = {
-            found:     resolved.resolved.map(m => ({ openId: m.openId, displayName: m.displayName, ...(m.email ? { email: m.email } : {}) })),
+            found:     dedupePeople(resolved.resolved).map(person =>
+              toPresentedPerson(mergePerson(person, enrichedByOpenId.get(person.openId)))),
             ambiguous: resolved.ambiguous.map(a => ({
               query:   a.query,
-              matches: a.matches.map(m => ({ openId: m.openId, displayName: m.displayName, ...(m.email ? { email: m.email } : {}) })),
+              matches: dedupePeople(a.matches).map(person =>
+                toPresentedPerson(mergePerson(person, enrichedByOpenId.get(person.openId)))),
             })),
             notFound:  resolved.notFound,
+            directoryEnrichment,
           };
           const total   = data.found.length;
+          const ambiguous = data.ambiguous.length;
           const missing = data.notFound.length;
-          const message = missing > 0
-            ? `Found ${total}/${nameList.length}. Not found: ${data.notFound.join(', ')}`
-            : `Found all ${total} contact(s)`;
+          const message = [
+            `Returned ${total} resolved contact(s)`,
+            `${ambiguous} ambiguous quer${ambiguous === 1 ? 'y' : 'ies'}`,
+            `${missing} not found`,
+            ...(missing > 0 ? [`Not found: ${data.notFound.join(', ')}`] : []),
+          ].join('. ');
           return ok({ success: true, data, message });
         }
 
@@ -113,7 +147,11 @@ export const createLarkContactsTool = (deps: {
           const members = await deps.contactsClient.listDepartmentMembers(dept.departmentId, args.limit ?? 50);
           return ok({
             success: true,
-            data: { department: dept.name, memberCount: members.length, members },
+            data: {
+              department: dept.name,
+              memberCount: members.length,
+              members: dedupePeople(members).map(toPresentedPerson),
+            },
           });
         }
       }
@@ -122,3 +160,46 @@ export const createLarkContactsTool = (deps: {
     }
   },
 });
+
+type BaseResolvedPerson = Awaited<ReturnType<PeopleResolverPort['resolve']>>['resolved'][number];
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.map(value => value.trim()).filter(Boolean))];
+}
+
+function dedupePeople<T extends { openId: string }>(people: readonly T[]): T[] {
+  const seen = new Set<string>();
+  return people.filter(person => {
+    if (!person.openId || seen.has(person.openId)) return false;
+    seen.add(person.openId);
+    return true;
+  });
+}
+
+function mergePerson(
+  base: BaseResolvedPerson,
+  enriched?: LarkDirectoryPerson,
+): LarkDirectoryPerson {
+  return {
+    openId: base.openId,
+    displayName: enriched?.displayName || base.displayName,
+    ...(enriched?.email || base.email ? { email: enriched?.email ?? base.email } : {}),
+    ...(enriched?.jobTitle ? { jobTitle: enriched.jobTitle } : {}),
+    ...(enriched?.departmentNames?.length ? { departmentNames: [...enriched.departmentNames] } : {}),
+    ...(enriched?.organization ? { organization: enriched.organization } : {}),
+  };
+}
+
+function toPresentedPerson(person: LarkDirectoryPerson) {
+  return {
+    displayName: person.displayName,
+    ...(person.email ? { email: person.email } : {}),
+    ...(person.jobTitle ? { jobTitle: person.jobTitle } : {}),
+    ...(person.departmentNames?.length ? { departmentNames: [...person.departmentNames] } : {}),
+    ...(person.organization ? { organization: person.organization } : {}),
+    internalRouting: {
+      provider: 'lark' as const,
+      openId: person.openId,
+    },
+  };
+}

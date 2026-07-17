@@ -11,6 +11,7 @@ export interface LarkSystemSkillDefinition {
   readonly markdown: string;
   readonly toolIds: readonly string[];
   readonly tags: readonly string[];
+  readonly aliases?: readonly string[];
   readonly sortOrder: number;
 }
 
@@ -160,6 +161,13 @@ Confirm the destination and a short description of what was sent without exposin
     summary: 'Resolve Lark people by name or email and retrieve governed directory details for downstream actions.',
     toolIds: ['larkContacts'],
     tags: ['lark', 'contacts', 'directory', 'people', 'identity'],
+    aliases: [
+      'employee lookup',
+      'company directory',
+      'colleague search',
+      'staff contact',
+      'resolve person',
+    ],
     sortOrder: 50,
     markdown: `# Lark Contacts
 
@@ -170,9 +178,10 @@ Use this skill to resolve people before messaging, assigning tasks, or inviting 
 - Treat open IDs and user IDs as internal routing values, not user-facing identity.
 - Request only the directory detail needed for the member's task.
 - Contacts may be an installed-company capability; Divo still enforces company policy and audit.
+- Use internalRouting only to pass a resolved person into another Lark action. Never include that block or any Lark ID in user-facing output.
 - Never use lark-cli, local credentials, or direct Lark API requests.
 
-In user-facing output, prefer the person's name, email, title, and department when available.`,
+In user-facing output, prefer the person's name, email, job title, department names, and organization when available. Omit fields the governed directory did not return.`,
   },
   {
     slug: 'lark-base',
@@ -226,7 +235,7 @@ const LARK_FOLDER = {
 
 type LarkSkillStore = Pick<
   Prisma.TransactionClient,
-  'skillFolder' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant'
+  'skillFolder' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'
 >;
 
 type ExistingSkill = {
@@ -247,6 +256,7 @@ type ExistingSkill = {
   revision: number;
   createdBy: string | null;
   updatedBy: string | null;
+  aliases?: { alias: string }[];
 };
 
 const EXISTING_SKILL_SELECT = {
@@ -267,6 +277,7 @@ const EXISTING_SKILL_SELECT = {
   revision: true,
   createdBy: true,
   updatedBy: true,
+  aliases: { select: { alias: true }, orderBy: { alias: 'asc' as const } },
 } as const;
 
 export async function provisionLarkSystemSkills(
@@ -353,6 +364,9 @@ export async function provisionLarkSystemSkills(
       },
       update: {},
     });
+    if (definition.aliases) {
+      await syncAliases(db, skill.id, definition.aliases);
+    }
   }
 
   return { folderId, created, updated, existing, skipped };
@@ -413,6 +427,21 @@ function definitionFields(folderId: string, definition: LarkSystemSkillDefinitio
   } as const;
 }
 
+async function syncAliases(
+  db: LarkSkillStore,
+  skillId: string,
+  aliases: readonly string[],
+): Promise<void> {
+  await db.skillAlias.deleteMany({
+    where: { skillId, alias: { notIn: [...aliases] } },
+  });
+  if (aliases.length === 0) return;
+  await db.skillAlias.createMany({
+    data: aliases.map((alias) => ({ skillId, alias })),
+    skipDuplicates: true,
+  });
+}
+
 function matchesDefinition(
   current: ExistingSkill,
   folderId: string,
@@ -429,7 +458,9 @@ function matchesDefinition(
     && current.isSystem
     && current.sortOrder === definition.sortOrder
     && arraysEqual(current.toolIds, definition.toolIds)
-    && arraysEqual(current.tags, definition.tags);
+    && arraysEqual(current.tags, definition.tags)
+    && (definition.aliases === undefined
+      || arraysEqual((current.aliases ?? []).map((item) => item.alias), [...definition.aliases].sort()));
 }
 
 function arraysEqual(left: readonly string[], right: readonly string[]): boolean {

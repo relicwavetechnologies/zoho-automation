@@ -41,6 +41,8 @@ async function ensurePiStarted(threadId: string): Promise<void> {
     workspace_path: null,
     threadId,
     thread_id: threadId,
+    runtimeMode: 'company',
+    runtime_mode: 'company',
   })
 }
 

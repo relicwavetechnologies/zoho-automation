@@ -51,6 +51,26 @@ describe('LarkHttpClient SDK boundary', () => {
     assert.notEqual(options, undefined);
   });
 
+  it('serializes array query params in the repeated-key format required by Lark batch APIs', async () => {
+    let request: any;
+    const sdkClient = {
+      request: async (input: unknown) => {
+        request = input;
+        return { code: 0, data: {} };
+      },
+    } as unknown as Pick<Client, 'request'>;
+    const client = new LarkHttpClient({ appId: 'app', appSecret: 'secret', sdkClient });
+
+    await client.request('GET', '/open-apis/contact/v3/users/batch', {
+      query: { user_ids: ['ou_1', 'ou_2'], user_id_type: 'open_id' },
+    });
+
+    assert.equal(
+      request.paramsSerializer(request.params),
+      'user_ids=ou_1&user_ids=ou_2&user_id_type=open_id',
+    );
+  });
+
   it('maps Lark API envelopes into a structured error', async () => {
     const sdkClient = {
       request: async () => ({ code: 99991663, msg: 'insufficient permissions' }),

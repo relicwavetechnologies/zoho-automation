@@ -49,6 +49,16 @@ export interface Tool<TArgs, TOut> {
   ): Result<ToolActionGroup, PermissionError>;
 
   /**
+   * Optional side-effect-free readiness check. Implementations may validate an
+   * upstream/native schema and connection eligibility, but must never execute
+   * the requested mutation or create an approval intent.
+   */
+  preflight?(
+    args: TArgs,
+    ctx: ToolExecutionContext,
+  ): Promise<Result<Record<string, unknown>, ToolError>>;
+
+  /**
    * Execute the tool.
    * Must NEVER throw — always return Result<TOut, ToolError>.
    */

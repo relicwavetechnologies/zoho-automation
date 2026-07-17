@@ -94,6 +94,17 @@ describe('createPiMessageStream run ownership', () => {
 
     await vi.waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_start',
+        expect.objectContaining({
+          threadId: 'thread-1',
+          runtimeMode: 'company',
+          runtime_mode: 'company',
+        })
+      )
+    )
+
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
         'pi_prompt',
         expect.objectContaining({
           threadId: 'thread-1',

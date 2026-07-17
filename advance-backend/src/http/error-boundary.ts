@@ -4,6 +4,17 @@ import type { AppError } from '../shared/errors';
 
 export const createErrorBoundary = (logger: Logger) =>
   (error: unknown, _req: Request, res: Response, _next: NextFunction): void => {
+    if (isPayloadTooLargeError(error)) {
+      res.status(413).json({
+        error: {
+          message: 'Request body is too large. Retry with narrower, paginated, or truncated tool results.',
+          type: 'request_too_large',
+          code: 'payload_too_large',
+        },
+      });
+      return;
+    }
+
     if (error instanceof Error && 'kind' in error) {
       const appErr = error as AppError;
       switch (appErr.kind) {
@@ -29,3 +40,15 @@ export const createErrorBoundary = (logger: Logger) =>
     logger.error('unhandled.error', { error: String(error) });
     res.status(500).json({ error: 'internal_error', message: 'An unexpected error occurred' });
   };
+
+function isPayloadTooLargeError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const candidate = error as Error & {
+    type?: unknown;
+    status?: unknown;
+    statusCode?: unknown;
+  };
+  return candidate.type === 'entity.too.large'
+    || candidate.status === 413
+    || candidate.statusCode === 413;
+}

@@ -42,8 +42,10 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		"skills.list",
 		"skills.search",
 		"skills.get",
+		"google.plan",
 		"connections.list",
 		"media.image_ocr",
+		"tools.preflight",
 		"tools.invoke",
 	] as const, { description: "Exact backend gateway operation." }),
 	departmentId: Type.Optional(Type.String({
@@ -54,6 +56,24 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		limit: Type.Optional(Type.Number({ minimum: 1, maximum: 5 })),
 		context: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 		skillId: Type.Optional(Type.String({ description: "skills.get skill ID." })),
+		workflow: Type.Optional(StringEnum(["vendor_onboarding"] as const, {
+			description: "google.plan workflow identifier.",
+		})),
+		phaseIds: Type.Optional(Type.Array(StringEnum([
+			"gmail_source",
+			"google_contact",
+			"calendar_availability",
+			"google_doc",
+			"google_sheet",
+			"calendar_event",
+		] as const), {
+			minItems: 1,
+			maxItems: 8,
+			description: "google.plan ordered phases derived from the user's requested Google products. Include no unrelated product.",
+		})),
+		connectionId: Type.Optional(Type.String({
+			description: "Explicit user-selected Google connection UUID, propagated across a planned workflow. Never invent one.",
+		})),
 		provider: Type.Optional(StringEnum([
 			"google_workspace",
 			"zoho",
@@ -70,6 +90,14 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		})),
 		args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), {
 			description: "tools.invoke arguments matching the selected backend tool contract.",
+		})),
+		invocations: Type.Optional(Type.Array(Type.Object({
+			toolId: Type.String(),
+			args: Type.Record(Type.String(), Type.Unknown()),
+		}), {
+			minItems: 1,
+			maxItems: 20,
+			description: "tools.preflight complete proposed invocations. Google calls validate RBAC/action, exact native schema, selected connection eligibility, and required scopes; no execution or approval intent. Never send placeholders or empty mutation input.",
 		})),
 	}, {
 		description:
@@ -171,7 +199,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Always use divo_gateway for company integrations. Never invent CRM, Books, or mail results.",
 			"Lark is strictly gateway-only: use connections.list provider lark and tools.invoke. Never use Bash, lark-cli, curl, direct Lark OpenAPI, a local Lark MCP server, or install a local Lark package. If Divo is unavailable, report it; there is no local fallback.",
 			"For attached local image OCR or screenshot understanding, call divo_gateway directly with op \"media.image_ocr\" and payload { filePath, mimeType?, fileName? }. Do not convert or compress it yourself first; desktop normalizes unsupported formats and compresses oversized images before sending attachment metadata to Pi. Do not use Read for image contents first.",
-			"For Divo/company/plugin/SaaS/account requests, use an exact matching <divo_capability_bootstrap> fast route when present; otherwise call divo_skill_resolve with the user's original request before choosing tools.",
+			"For Divo/company/plugin/SaaS/account requests, use an exact matching <divo_capability_bootstrap> fast route when present; otherwise call divo_skill_resolve with the user's original request before choosing tools. A multi-product vendor-onboarding request returns only its requested Google phases: follow their order, use the first inline recipe without another skills.get, then load later exact skill IDs only before their phase. Gmail-only requests must use the Gmail specialist, not google.plan.",
 			"After divo_skill_resolve selects a backend skill, follow its inline approved recipe without another skills.get or catalogue call.",
 			"If divo_skill_resolve is inconclusive, silently use divo_gateway discovery calls. Do not expose resolver failure, routing, gateway, enum names, backend, or request plumbing in the user-facing answer.",
 			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",

@@ -87,6 +87,25 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 	isError: boolean;
 } {
 	if (body.ok && body.status === "success") {
+		const plan = readGooglePlan(body.data);
+		if (plan) {
+			const first = plan.phases[0];
+			return {
+				text: [
+					"Google workflow plan succeeded.",
+					"",
+					"Parent execution guidance:",
+					plan.parentInstructions,
+					"",
+					...plan.phases.map((phase, index) => `${index + 1}. ${phase.name} — skillId ${phase.skillId}`),
+					"",
+					plan.connectionMessage,
+					"The first phase recipe is already loaded below. Do not call skills.get for it. Load each later exact skillId immediately before its phase.",
+					...(first?.instructions ? ["", `First specialist recipe (${first.name}):`, first.instructions] : []),
+				].join("\n"),
+				isError: false,
+			};
+		}
 		const dataText =
 			body.data === undefined
 				? "(no data)"
@@ -313,6 +332,19 @@ function skillCacheKey(
 		].join("|");
 	}
 
+	if (request.op === "google.plan") {
+		const payload = asRecord(request.payload);
+		if (payload?.workflow !== "vendor_onboarding") return null;
+		return [
+			"google.plan",
+			config.backendUrl,
+			tokenCacheKey(config.memberToken),
+			departmentId ?? "",
+			String(payload.connectionId ?? ""),
+			Array.isArray(payload.phaseIds) ? payload.phaseIds.join(",") : "",
+		].join("|");
+	}
+
 	return null;
 }
 
@@ -388,4 +420,31 @@ function assertSupportedImageOcrMimeType(mimeType: string): void {
 	throw new Error(
 		`media.image_ocr supports PNG, JPEG, WebP, or GIF only. Convert this image to PNG first, then call media.image_ocr with mimeType image/png. Received ${mimeType}.`,
 	);
+}
+
+function readGooglePlan(data: unknown): {
+	parentInstructions: string;
+	connectionMessage: string;
+	phases: Array<{ name: string; skillId: string; instructions?: string }>;
+} | null {
+	const plan = asRecord(data);
+	if (plan?.workflow !== "vendor_onboarding" || !Array.isArray(plan.phases)) return null;
+	const parent = asRecord(plan.parent);
+	const parentInstructions = getString(parent?.instructions);
+	if (!parentInstructions) return null;
+	const phases = plan.phases.flatMap((phase) => {
+		const record = asRecord(phase);
+		const name = getString(record?.name);
+		const skillId = getString(record?.skillId);
+		const skill = asRecord(record?.skill);
+		const instructions = getString(skill?.instructions);
+		return name && skillId ? [{ name, skillId, ...(instructions ? { instructions } : {}) }] : [];
+	});
+	if (!phases.length) return null;
+	const connection = asRecord(plan.connection);
+	return {
+		parentInstructions,
+		phases,
+		connectionMessage: getString(connection?.message) ?? "Connection selection will be handled by the backend at execution time.",
+	};
 }

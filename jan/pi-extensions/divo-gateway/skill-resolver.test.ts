@@ -75,4 +75,86 @@ describe("resolveDivoSkills", () => {
 		assert.ok(result.notes.some((note) => /registry is unavailable/i.test(note)));
 		assert.match(formatSkillResolveResult(result), /No matching company skills found/i);
 	});
+
+	it("uses the backend Google plan for vendor onboarding and keeps later recipes lazy", async () => {
+		clearDivoGatewaySkillCache();
+		const requests: Array<{ op: string; payload?: Record<string, unknown> }> = [];
+		const result = await resolveDivoSkills({
+			query: "Find the vendor onboarding Gmail thread, resolve through Google Contacts, create a Google Doc and Google Sheet tracker",
+			env: { DIVO_BACKEND_URL: "http://localhost:8000", DIVO_MEMBER_TOKEN: "token-plan" },
+			fetchImpl: (async (_url: string, init?: RequestInit) => {
+				requests.push(JSON.parse(String(init?.body)));
+				return new Response(JSON.stringify({
+					ok: true, status: "success", data: {
+						workflow: "vendor_onboarding",
+						parent: { id: "google", name: "Google Workspace", description: "parent", instructions: "Compact parent guidance" },
+						connection: { message: "Selection is execution-time." },
+						phases: [
+							{ id: "source", name: "Gmail source", skillId: "gmail-id", toolId: "googleGmail", skill: { id: "gmail-id", name: "Gmail", description: "mail", instructions: "Gmail recipe", toolIds: ["googleGmail"], revision: 1 } },
+							{ id: "contact", name: "Google Contacts", skillId: "contacts-id", toolId: "googleContacts" },
+							{ id: "brief", name: "Google Docs", skillId: "docs-id", toolId: "googleDocs" },
+							{ id: "tracker", name: "Google Sheets", skillId: "sheets-id", toolId: "googleSheets" },
+						],
+					},
+				}), { status: 200 });
+			}) as typeof fetch,
+		});
+		assert.deepEqual(requests.map((request) => request.op), ["google.plan"]);
+		assert.deepEqual(requests[0]?.payload?.phaseIds, ["gmail_source", "google_contact", "google_doc", "google_sheet"]);
+		assert.match(result.selected?.instructions ?? "", /Compact parent guidance/);
+		assert.match(result.selected?.instructions ?? "", /Gmail recipe/);
+		assert.match(formatSkillResolveResult(result), /Google Contacts — contacts-id/);
+		assert.match(formatSkillResolveResult(result), /later exact skill ID/i);
+		assert.match(formatSkillResolveResult(result), /Compact parent guidance/);
+		assert.doesNotMatch(formatSkillResolveResult(result), /Google Contacts recipe/);
+	});
+
+	it("routes a Gmail-only vendor thread request to the Gmail specialist instead of the multi-product plan", async () => {
+		clearDivoGatewaySkillCache();
+		const operations: string[] = [];
+		const result = await resolveDivoSkills({
+			query: "Find the single latest Gmail thread related to vendor onboarding; this is read-only",
+			env: { DIVO_BACKEND_URL: "http://localhost:8000", DIVO_MEMBER_TOKEN: "token-gmail-only" },
+			fetchImpl: (async (_url: string, init?: RequestInit) => {
+				const operation = JSON.parse(String(init?.body)).op as string;
+				operations.push(operation);
+				if (operation === "skills.get") {
+					return new Response(JSON.stringify({
+						ok: true, status: "success", data: { skill: {
+							id: "gmail-id", name: "Gmail", description: "mail", instructions: "Bounded Gmail recipe",
+							toolIds: ["googleGmail"], revision: 5,
+						} },
+					}), { status: 200 });
+				}
+				return new Response(JSON.stringify({
+					ok: true, status: "success", data: { skills: [{
+						id: "gmail-id", name: "Gmail", description: "mail", toolIds: ["googleGmail"], score: 12,
+					}] },
+				}), { status: 200 });
+			}) as typeof fetch,
+		});
+
+		assert.deepEqual(operations, ["skills.search", "skills.get"]);
+		assert.equal(result.selected?.id, "gmail-id");
+		assert.match(result.selected?.instructions ?? "", /Bounded Gmail recipe/);
+	});
+
+	it("does not fall back to a partial generic skill when the required Google plan is denied", async () => {
+		clearDivoGatewaySkillCache();
+		const operations: string[] = [];
+		const result = await resolveDivoSkills({
+			query: "vendor onboarding from Gmail into Google Contacts, Google Docs, and Google Sheets",
+			env: { DIVO_BACKEND_URL: "http://localhost:8000", DIVO_MEMBER_TOKEN: "token-denied-plan" },
+			fetchImpl: (async (_url: string, init?: RequestInit) => {
+				operations.push(JSON.parse(String(init?.body)).op);
+				return new Response(JSON.stringify({
+					ok: false, status: "permission_denied", error: { message: "Google Docs update is not granted" },
+				}), { status: 200 });
+			}) as typeof fetch,
+		});
+		assert.deepEqual(operations, ["google.plan"]);
+		assert.equal(result.selected, null);
+		assert.deepEqual(result.results, []);
+		assert.ok(result.notes.some((note) => /google\.plan returned permission_denied/i.test(note)));
+	});
 });

@@ -3,7 +3,7 @@ import { provisionLarkSystemSkills } from './lark-system-skills';
 
 type ProvisioningDatabase = Pick<
   PrismaClient,
-  'company' | 'skillFolder' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant'
+  'company' | 'skillFolder' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'
 >;
 
 export async function provisionLarkSkillsForExistingCompanies(

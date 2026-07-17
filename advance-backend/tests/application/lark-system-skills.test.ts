@@ -29,10 +29,26 @@ describe('Lark system skill provisioning', () => {
     }
   });
 
+  it('defines durable company-person aliases for Lark Contacts', () => {
+    const contacts = LARK_SYSTEM_SKILLS.find((skill) => skill.slug === 'lark-contacts');
+    assert(contacts);
+    assert.deepEqual(contacts.aliases, [
+      'employee lookup',
+      'company directory',
+      'colleague search',
+      'staff contact',
+      'resolve person',
+    ]);
+    assert.match(contacts.markdown, /job title, department names, and organization when available/);
+    assert.match(contacts.markdown, /Never include that block or any Lark ID in user-facing output/);
+    assert.match(contacts.markdown, /Omit fields the governed directory did not return/);
+  });
+
   it('creates an organized company-wide Lark skill set and grants it to the whole company', async () => {
     const createdSkills: Record<string, unknown>[] = [];
     const grants: Record<string, unknown>[] = [];
     const versions: Record<string, unknown>[] = [];
+    const aliases: Record<string, unknown>[] = [];
     const db = {
       skillFolder: {
         findFirst: async () => null,
@@ -58,6 +74,13 @@ describe('Lark system skill provisioning', () => {
         upsert: async ({ create }: { create: Record<string, unknown> }) => {
           versions.push(create);
           return create;
+        },
+      },
+      skillAlias: {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async ({ data }: { data: Record<string, unknown>[] }) => {
+          aliases.push(...data);
+          return { count: data.length };
         },
       },
       skillRegistryRevision: { upsert: async () => ({}) },
@@ -93,6 +116,8 @@ describe('Lark system skill provisioning', () => {
       })),
     );
     assert.equal(versions.length, LARK_SYSTEM_SKILLS.length);
+    const contacts = createdSkills.find((skill) => skill.slug === 'lark-contacts');
+    assert(aliases.some((alias) => alias.skillId === contacts?.id && alias.alias === 'company directory'));
     assert.deepEqual(
       grants.map((grant) => ({
         companyId: grant.companyId,
@@ -113,6 +138,10 @@ describe('Lark system skill provisioning', () => {
       skillFolder: { findFirst: async () => ({ id: 'lark-folder' }) },
       skill: {
         findFirst: async () => ({ id: 'custom', isSystem: false }),
+      },
+      skillAlias: {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async () => ({ count: 0 }),
       },
       skillAccessGrant: { upsert: async () => { grants += 1; } },
     } as any;

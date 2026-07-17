@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use tauri::{AppHandle, Manager};
 
@@ -8,7 +9,8 @@ use super::browser::{
     mcp_config_needs_browser_upgrade, resolve_browser_user_data_dir,
 };
 
-const PI_AGENT_DIR_NAME: &str = "pi-agent";
+pub(super) const PI_AGENT_DIR_NAME: &str = "pi-agent";
+const PI_CODING_AGENT_DIR_NAME: &str = "pi-agent-coding";
 const BUNDLED_CLI_REL: &str =
     "resources/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
 const AGENT_TEMPLATE_REL: &str = "resources/pi/agent-template";
@@ -22,18 +24,51 @@ const CHROME_DEVTOOLS_MCP_REL: &str =
 const DEFAULT_PI_PROVIDER: &str = "deepseek";
 const DEFAULT_PI_MODEL: &str = "deepseek-v4-flash";
 const LEGACY_DEFAULT_PI_MODEL: &str = "deepseek-v4-pro";
+const COMPANY_EXTENSION_NAMES: [&str; 3] = ["divo-llm", "divo-gateway", "divo-memory"];
+const COMPANY_TOOL_ALLOWLIST: &str =
+    "divo_gateway,divo_skill_resolve,divo_memory_recall,divo_memory_review,memory";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PiRuntimeMode {
+    Company,
+    Coding,
+}
+
+impl PiRuntimeMode {
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            Some("company") => Ok(Self::Company),
+            Some("coding") | None => Ok(Self::Coding),
+            Some(other) => Err(format!(
+                "Unknown Pi runtime mode \"{other}\". Expected company or coding."
+            )),
+        }
+    }
+
+    fn agent_dir_name(self) -> &'static str {
+        match self {
+            Self::Company => PI_AGENT_DIR_NAME,
+            Self::Coding => PI_CODING_AGENT_DIR_NAME,
+        }
+    }
+}
 
 pub struct PiRuntimePaths {
     pub bun: PathBuf,
     pub cli_js: PathBuf,
     pub agent_dir: PathBuf,
     pub trusted_skill_dirs: Vec<PathBuf>,
+    pub trusted_extension_paths: Vec<PathBuf>,
     /// CDP WebSocket fingerprint — changes when the browser restarts debugging.
     pub browser_cdp_fingerprint: Option<String>,
 }
 
 impl PiRuntimePaths {
-    pub fn resolve(app: &AppHandle, data_folder: &Path) -> Result<Self, String> {
+    pub fn resolve(
+        app: &AppHandle,
+        data_folder: &Path,
+        mode: PiRuntimeMode,
+    ) -> Result<Self, String> {
         let resource_dir = app
             .path()
             .resource_dir()
@@ -54,17 +89,49 @@ impl PiRuntimePaths {
             ));
         }
 
-        let agent_dir = data_folder.join(PI_AGENT_DIR_NAME);
-        bootstrap_agent_dir(&resource_dir, &agent_dir, &bun)?;
-        let trusted_skill_dirs = resolve_trusted_skill_dirs(&resource_dir)?;
+        let agent_dir = data_folder.join(mode.agent_dir_name());
+        bootstrap_agent_dir(
+            &resource_dir,
+            &agent_dir,
+            &bun,
+            mode == PiRuntimeMode::Company,
+        )?;
+        let (trusted_skill_dirs, trusted_extension_paths) = match mode {
+            PiRuntimeMode::Company => (
+                resolve_trusted_skill_dirs(&resource_dir)?,
+                resolve_trusted_extension_paths(&resource_dir)?,
+            ),
+            PiRuntimeMode::Coding => (Vec::new(), Vec::new()),
+        };
 
         Ok(PiRuntimePaths {
             bun,
             cli_js,
             agent_dir,
             trusted_skill_dirs,
-            browser_cdp_fingerprint: current_browser_cdp_fingerprint(),
+            trusted_extension_paths,
+            browser_cdp_fingerprint: (mode == PiRuntimeMode::Coding)
+                .then(current_browser_cdp_fingerprint)
+                .flatten(),
         })
+    }
+}
+
+/// Apply Pi's immutable company-mode resource and tool boundary. Explicit CLI
+/// resources remain enabled even when automatic discovery is disabled.
+pub fn apply_company_cli_boundary(command: &mut Command, runtime: &PiRuntimePaths) {
+    command
+        .arg("--no-skills")
+        .arg("--no-extensions")
+        .arg("--no-prompt-templates")
+        .arg("--no-context-files")
+        .arg("--tools")
+        .arg(COMPANY_TOOL_ALLOWLIST);
+    for extension_path in &runtime.trusted_extension_paths {
+        command.arg("--extension").arg(extension_path);
+    }
+    for skill_dir in &runtime.trusted_skill_dirs {
+        command.arg("--skill").arg(skill_dir);
     }
 }
 
@@ -176,7 +243,12 @@ fn ensure_pi_settings(settings_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn bootstrap_agent_dir(resource_dir: &Path, agent_dir: &Path, bun: &Path) -> Result<(), String> {
+fn bootstrap_agent_dir(
+    resource_dir: &Path,
+    agent_dir: &Path,
+    bun: &Path,
+    sync_divo_extensions: bool,
+) -> Result<(), String> {
     fs::create_dir_all(agent_dir).map_err(|e| e.to_string())?;
 
     let template_dir = resource_dir.join(AGENT_TEMPLATE_REL);
@@ -198,7 +270,7 @@ fn bootstrap_agent_dir(resource_dir: &Path, agent_dir: &Path, bun: &Path) -> Res
     ensure_mcp_json(&mcp_path, bun, resource_dir)?;
 
     let extensions_dest = agent_dir.join("extensions");
-    if extensions_src.exists() {
+    if sync_divo_extensions && extensions_src.exists() {
         sync_bundled_extensions(&extensions_src, &extensions_dest)?;
     }
 
@@ -216,6 +288,22 @@ fn bootstrap_agent_dir(resource_dir: &Path, agent_dir: &Path, bun: &Path) -> Res
     }
 
     Ok(())
+}
+
+fn resolve_trusted_extension_paths(resource_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let extensions_root = resource_dir.join(BUNDLED_EXTENSIONS_REL);
+    let mut paths = Vec::with_capacity(COMPANY_EXTENSION_NAMES.len());
+    for name in COMPANY_EXTENSION_NAMES {
+        let path = extensions_root.join(name).join("index.ts");
+        if !path.is_file() {
+            return Err(format!(
+                "Bundled Divo extension is missing at {}",
+                path.display()
+            ));
+        }
+        paths.push(path);
+    }
+    Ok(paths)
 }
 
 /// Only the read-only bundled router skill is loaded into Pi. Company skills
@@ -434,6 +522,60 @@ mod tests {
     #[test]
     fn bundled_paths_use_expected_suffixes() {
         assert!(BUNDLED_CLI_REL.contains("pi-coding-agent"));
+    }
+
+    #[test]
+    fn runtime_mode_defaults_to_token_free_coding_and_rejects_unknown_values() {
+        assert_eq!(PiRuntimeMode::parse(None).unwrap(), PiRuntimeMode::Coding);
+        assert_eq!(
+            PiRuntimeMode::parse(Some("company")).unwrap(),
+            PiRuntimeMode::Company
+        );
+        assert!(PiRuntimeMode::parse(Some("hybrid")).is_err());
+        assert_eq!(PiRuntimeMode::Company.agent_dir_name(), "pi-agent");
+        assert_eq!(PiRuntimeMode::Coding.agent_dir_name(), "pi-agent-coding");
+    }
+
+    #[test]
+    fn company_cli_boundary_is_an_exact_immutable_allowlist() {
+        let runtime = PiRuntimePaths {
+            bun: PathBuf::from("/bundle/bun"),
+            cli_js: PathBuf::from("/bundle/pi/cli.js"),
+            agent_dir: PathBuf::from("/data/pi-agent"),
+            trusted_skill_dirs: vec![PathBuf::from("/bundle/pi-skills/divo-gateway")],
+            trusted_extension_paths: vec![
+                PathBuf::from("/bundle/pi-extensions/divo-llm/index.ts"),
+                PathBuf::from("/bundle/pi-extensions/divo-gateway/index.ts"),
+                PathBuf::from("/bundle/pi-extensions/divo-memory/index.ts"),
+            ],
+            browser_cdp_fingerprint: None,
+        };
+        let mut command = Command::new("bun");
+
+        apply_company_cli_boundary(&mut command, &runtime);
+
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.contains(&"--no-skills".to_string()));
+        assert!(args.contains(&"--no-extensions".to_string()));
+        assert!(args.contains(&"--no-prompt-templates".to_string()));
+        assert!(args.contains(&"--no-context-files".to_string()));
+        assert!(args.windows(2).any(|pair| {
+            pair == [
+                "--tools",
+                "divo_gateway,divo_skill_resolve,divo_memory_recall,divo_memory_review,memory",
+            ]
+        }));
+        assert!(!args.iter().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "bash" | "read" | "write" | "edit" | "grep" | "find" | "ls"
+            )
+        }));
+        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 3);
+        assert_eq!(args.iter().filter(|arg| *arg == "--skill").count(), 1);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import Ajv from 'ajv';
 import type { Tool } from '../tool.contract';
 import type { Result } from '../../../../shared/result';
 import { err, ok } from '../../../../shared/result';
@@ -29,6 +30,8 @@ const ResultSchema = z.object({
   message: z.string().optional(),
 });
 type ToolResult = z.infer<typeof ResultSchema>;
+
+const nativeSchemaValidator = new Ajv({ strict: false, allErrors: true });
 
 export interface GoogleWorkspaceMcpToolDescription {
   readonly name: string;
@@ -109,6 +112,72 @@ function createProductTool(
       return allowed
         ? ok(action)
         : err(new PermissionError({ toolId: product.toolId, action, reason: 'not_allowed' }));
+    },
+    async preflight(args, ctx) {
+      if (!product.tools.includes(args.nativeTool)) {
+        return badArgs(product.toolId, `${args.nativeTool} is not an approved ${product.name} operation`);
+      }
+
+      const action = args.op === 'describe'
+        ? 'read'
+        : googleWorkspaceActionFor(args.nativeTool, args.input ?? {});
+      const connectionResolution = await deps.getConnection({
+        companyId: ctx.runContext.companyId,
+        userId: ctx.runContext.userId,
+        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
+        minimumAccess: action === 'read' ? 'read_only' : 'read_write',
+        requiredScopeGroups: args.op === 'describe'
+          ? []
+          : googleWorkspaceScopeGroupsFor(product, args.nativeTool, action),
+      });
+      if (connectionResolution.status === 'choose_connection') {
+        return badArgs(
+          product.toolId,
+          `${product.name} preflight requires one exact user-selected connectionId; multiple eligible accounts are available`,
+        );
+      }
+      if (connectionResolution.status === 'unavailable') {
+        return err(new ToolError({
+          toolId: product.toolId,
+          reason: 'unrecoverable',
+          message: `${product.name} preflight failed because the selected connection is unavailable, not shared for this action, or missing required scopes.`,
+        }));
+      }
+
+      try {
+        const description = await connectionResolution.connection.client.describeTool(args.nativeTool);
+        if (!description) {
+          return err(new ToolError({
+            toolId: product.toolId,
+            reason: 'upstream_failure',
+            message: `${args.nativeTool} is missing from the pinned Google Workspace MCP server`,
+          }));
+        }
+        if (args.op === 'call') {
+          const validate = nativeSchemaValidator.compile(description.inputSchema as object);
+          const valid = validate(args.input ?? {});
+          if (!valid) {
+            return badArgs(
+              product.toolId,
+              `Invalid native input for ${args.nativeTool} — ${nativeSchemaValidator.errorsText(validate.errors)}`,
+            );
+          }
+        }
+        return ok({
+          level: 'native_schema_and_connection',
+          connectionEligible: true,
+          nativeSchemaValidated: true,
+          nativeTool: args.nativeTool,
+          action,
+        });
+      } catch (cause) {
+        return err(new ToolError({
+          toolId: product.toolId,
+          reason: 'upstream_failure',
+          cause,
+          message: cause instanceof Error ? cause.message : String(cause),
+        }));
+      }
     },
     async execute(args, ctx): Promise<Result<ToolResult, ToolError>> {
       if (!product.tools.includes(args.nativeTool)) {

@@ -6,8 +6,10 @@ export const GATEWAY_OPS = [
   'skills.list',
   'skills.search',
   'skills.get',
+  'google.plan',
   'connections.list',
   'media.image_ocr',
+  'tools.preflight',
   'tools.prepare',
   'tools.commit',
   'tools.invoke',
@@ -50,6 +52,38 @@ export const toolsInvokePayloadSchema = z.object({
 }).strict();
 
 export type ToolsInvokePayload = z.infer<typeof toolsInvokePayloadSchema>;
+
+/**
+ * Validates a set of proposed calls without executing tool code, creating an
+ * approval intent, or querying connection eligibility. Each invocation is
+ * checked independently so the agent can repair only the rejected entries.
+ */
+export const toolsPreflightPayloadSchema = z.object({
+  invocations: z.array(toolsInvokePayloadSchema).min(1).max(20),
+}).strict();
+
+export type ToolsPreflightPayload = z.infer<typeof toolsPreflightPayloadSchema>;
+
+export const GOOGLE_VENDOR_ONBOARDING_PHASE_IDS = [
+  'gmail_source',
+  'google_contact',
+  'calendar_availability',
+  'google_doc',
+  'google_sheet',
+  'calendar_event',
+] as const;
+export type GoogleVendorOnboardingPhaseId = (typeof GOOGLE_VENDOR_ONBOARDING_PHASE_IDS)[number];
+
+export const googlePlanPayloadSchema = z.object({
+  workflow: z.literal('vendor_onboarding'),
+  phaseIds: z.array(z.enum(GOOGLE_VENDOR_ONBOARDING_PHASE_IDS)).min(1).max(8).optional(),
+  // A connection ID is propagated as an explicit user/desktop choice only.
+  // Its scopes and eligibility are deliberately resolved when each native
+  // operation executes, not during planning.
+  connectionId: z.string().uuid().optional(),
+}).strict();
+
+export type GooglePlanPayload = z.infer<typeof googlePlanPayloadSchema>;
 
 export const toolsCommitPayloadSchema = z.object({
   intentId: z.string().uuid(),

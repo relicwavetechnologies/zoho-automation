@@ -23,6 +23,9 @@ import {
   FinanceQuickStarts,
   type FinanceQuickStartRequest,
 } from '@/components/finance-quick-starts/FinanceQuickStarts'
+import { AutomateMode } from '@/components/automate/AutomateMode'
+import { Button } from '@/components/ui/button'
+import { MessageCircle, Workflow } from 'lucide-react'
 
 export const Route = createFileRoute(route.home as any)({
   component: Index,
@@ -42,6 +45,7 @@ function Index() {
   const { setCurrentThreadId } = useThreads()
   const [quickStartRequest, setQuickStartRequest] =
     useState<FinanceQuickStartRequest | null>(null)
+  const [mode, setMode] = useState<'ask' | 'automate'>('ask')
   useTools()
 
   useEffect(() => {
@@ -49,42 +53,71 @@ function Index() {
   }, [setCurrentThreadId])
 
   return (
-    <div className="flex h-full flex-col justify-center">
+    <div className="flex h-full flex-col">
       <HeaderPage>
-        <div className="flex items-center gap-2 w-full">
+        <div className="flex w-full items-center justify-between gap-3 pr-4">
           <DivoWorkspaceSelector />
+          <div className="relative z-30 flex items-center rounded-full border bg-muted/50 p-0.5" aria-label="Workspace mode">
+            <Button
+              type="button"
+              size="sm"
+              variant={mode === 'ask' ? 'secondary' : 'ghost'}
+              className={cn('h-7 px-3 shadow-none', mode === 'ask' && 'bg-background shadow-xs')}
+              onClick={() => setMode('ask')}
+              aria-pressed={mode === 'ask'}
+            >
+              <MessageCircle /> Ask
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={mode === 'automate' ? 'secondary' : 'ghost'}
+              className={cn('h-7 px-3 shadow-none', mode === 'automate' && 'bg-background shadow-xs text-primary')}
+              onClick={() => setMode('automate')}
+              aria-pressed={mode === 'automate'}
+              data-testid="automate-mode-toggle"
+            >
+              <Workflow /> Automate
+            </Button>
+          </div>
         </div>
       </HeaderPage>
-      <div
-        className={cn(
-          'h-full overflow-y-auto inline-flex flex-col gap-2 justify-center px-3 py-8'
-        )}
-      >
+      {mode === 'automate' ? (
+        <div className="min-h-0 flex-1 border-t" data-testid="automate-mode">
+          <AutomateMode />
+        </div>
+      ) : (
         <div
           className={cn(
-            'mx-auto w-full md:w-4/5 xl:w-4/6 -mt-10',
+            'h-full overflow-y-auto inline-flex flex-col gap-2 justify-center px-3 py-8'
           )}
         >
-          <div className={cn('text-center mb-4')}>
-            <h1
-              className={cn(
-                'text-2xl mt-2 font-studio font-medium',
-              )}
-            >
-              {t('chat:description')}
-            </h1>
+          <div
+            className={cn(
+              'mx-auto w-full md:w-4/5 xl:w-4/6 -mt-10',
+            )}
+          >
+            <div className={cn('text-center mb-4')}>
+              <h1
+                className={cn(
+                  'text-2xl mt-2 font-studio font-medium',
+                )}
+              >
+                {t('chat:description')}
+              </h1>
+            </div>
+            <div className="flex-1 shrink-0">
+              <ChatInput
+                showSpeedToken={false}
+                model={threadModel}
+                initialMessage={true}
+                quickStartRequest={quickStartRequest}
+              />
+            </div>
+            <FinanceQuickStarts onSubmit={setQuickStartRequest} />
           </div>
-          <div className="flex-1 shrink-0">
-            <ChatInput
-              showSpeedToken={false}
-              model={threadModel}
-              initialMessage={true}
-              quickStartRequest={quickStartRequest}
-            />
-          </div>
-          <FinanceQuickStarts onSubmit={setQuickStartRequest} />
         </div>
-      </div>
+      )}
     </div>
   )
 }

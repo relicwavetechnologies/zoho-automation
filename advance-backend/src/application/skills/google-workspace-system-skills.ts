@@ -241,9 +241,20 @@ function buildProductWorkflow(service: GoogleWorkspaceProductDefinition['service
 
 ### Find and understand mail
 
-1. Use \`search_gmail_messages\` to find candidates. Put Gmail search syntax in the schema's query field; useful patterns include \`is:unread\`, \`from:person@example.com\`, \`to:person@example.com\`, \`subject:(quarterly report)\`, \`has:attachment\`, \`filename:pdf\`, \`newer_than:7d\`, \`-label:spam\`, and \`{from:a@example.com from:b@example.com}\`.
-2. Use \`get_gmail_messages_content_batch\` for several independent messages, \`get_gmail_message_content\` for one message, or \`get_gmail_thread_content\` when reply history matters. Search snippets are not enough for summarizing, extracting commitments, or composing a grounded reply.
+1. Start with the narrowest \`search_gmail_messages\` query that identifies the sender, subject, and time window. Deduplicate candidates, select the single newest matching message/thread, then fetch only that bounded target. Widen the search only when the narrow query returns no candidates. Put Gmail search syntax in the schema's query field; useful patterns include \`is:unread\`, \`from:person@example.com\`, \`to:person@example.com\`, \`subject:(quarterly report)\`, \`has:attachment\`, \`filename:pdf\`, \`newer_than:7d\`, \`-label:spam\`, and \`{from:a@example.com from:b@example.com}\`.
+2. Use \`get_gmail_messages_content_batch\` only for several independently selected messages, \`get_gmail_message_content\` for the selected newest message, or \`get_gmail_thread_content\` when that selected message needs reply history. Search snippets are not enough for summarizing, extracting commitments, or composing a grounded reply.
 3. Fetch attachment content only when the task requires the attachment itself. Do not infer attachment contents from its filename.
+
+### Hard bounded latest-thread contract
+
+When the user asks for the single latest or one deduplicated thread, this contract is mandatory:
+
+1. Call \`describe\` before the first search unless its current schema was returned in this request. The native field is \`page_size\`, never \`maxResults\`.
+2. Make at most three metadata/search calls total. Use \`get_gmail_messages_content_batch\` with \`format: "metadata"\` when metadata beyond search results is required.
+3. Deduplicate by thread ID and select exactly one candidate. After selecting it, do not widen the query and do not inspect competing full threads.
+4. Make at most one full-content call, using \`get_gmail_thread_content\` for the selected thread. Never call a thread-content batch operation for this task.
+5. If no candidate meets the stated criteria, return a truthful no-match result from the bounded metadata evidence. Do not keep searching merely to produce an answer.
+6. Report \`_divoResult\` truncation and continuation fields exactly. Never turn desktop trace-preview truncation into Gmail content truncation and never invent a continuation handle.
 
 ### Draft, send, and organize
 
@@ -252,6 +263,13 @@ function buildProductWorkflow(service: GoogleWorkspaceProductDefinition['service
 - Preserve threading identifiers when replying. Do not turn a requested reply into an unrelated new conversation.
 - Use \`modify_gmail_message_labels\` for one message and \`batch_modify_gmail_message_labels\` for an established set. Resolve label names with \`list_gmail_labels\`; use \`manage_gmail_label\` only to create, update, or delete labels.
 - Use filter operations only when the user explicitly asks for an ongoing Gmail rule. A one-time cleanup is a label operation, not a filter.
+
+### Newsletter cleanup
+
+1. Before scanning a large candidate set, decide every intended mutation and call \`tools.preflight\` once with one complete proposed \`googleGmail\` invocation per mutation. For Google calls, preflight validates RBAC/action, the exact pinned native schema, selected connection eligibility, and required OAuth scopes. It does not execute the mutation or create an approval intent. Never preflight placeholder or empty native input.
+2. Map actions exactly: \`manage_gmail_label\` with a create action requires \`googleGmail:create\`; \`modify_gmail_message_labels\` and \`batch_modify_gmail_message_labels\` (apply or remove labels) require \`googleGmail:update\`; \`manage_gmail_label\` with a delete action requires \`googleGmail:delete\`.
+3. If required preflight entries are denied, say so before scanning the candidate set and offer only a read-only report when useful. Do not scan/classify a large batch in preparation for a mutation that cannot run.
+4. Keep counts distinct: report the number of search candidates separately from the number classified as newsletters. Do not describe every candidate as a newsletter.
 
 ### Completion contract
 
@@ -281,7 +299,7 @@ Creation, import, copy, or sharing is complete only when the successful response
 1. Resolve relative dates against the current date and the user's timezone. Keep start/end times, all-day intent, recurrence, attendees, and timezone explicit; never silently assume a timezone for a cross-region meeting.
 2. Use \`list_calendars\` when the target calendar is unknown. Use \`get_events\` for a bounded time window and identify the exact event before update or deletion.
 3. Use \`query_freebusy\` before scheduling when attendee availability matters. Free/busy data shows availability, not permission to expose private event details.
-4. Use \`manage_event\` for event create, update, or delete exactly as its described action schema requires. Use \`manage_out_of_office\` and \`manage_focus_time\` only for those specialized event types.
+4. Use \`manage_event\` for event create, update, or delete exactly as its described action schema requires. Before claiming an event is ready to create, call \`describe\`, construct the complete proposed event including action, calendar, times, timezone and grounded attendees, and pass that exact invocation to \`tools.preflight\`. Empty or placeholder event input is not a preflight. Use \`manage_out_of_office\` and \`manage_focus_time\` only for those specialized event types.
 5. Use \`create_calendar\` only when the user asks for a separate calendar, not for an ordinary event.
 
 ### Completion contract
@@ -294,7 +312,7 @@ After a calendar mutation, return the event/calendar name, resolved date and tim
 ## Google Docs workflow
 
 1. For an existing document, use \`search_docs\` or \`list_docs_in_folder\` to resolve it, then \`get_doc_content\` or \`get_doc_as_markdown\` to understand its current content. Never guess a document ID.
-2. For a new document, call \`create_doc\` once and immediately retain the returned document ID and canonical URL. Do not start follow-up edits until the created resource is identifiable.
+2. For a new document, call \`create_doc\` once and immediately retain the returned document ID and canonical URL. When the workflow requires preflight, validate the exact title and complete initial content first; never preflight placeholder content. Do not start follow-up edits until the created resource is identifiable.
 3. Choose the smallest semantic edit: \`modify_doc_text\` for text changes, \`find_and_replace_doc\` for grounded replacements, \`insert_doc_elements\` for structural elements, \`create_table_with_data\` for tables, and \`insert_doc_image\` for images. Use \`batch_update_doc\` for a cohesive multi-edit request rather than many avoidable one-block calls.
 4. Inspect structure with \`inspect_doc_structure\` before index-sensitive edits. Use \`update_paragraph_style\`, \`update_doc_headers_footers\`, or \`manage_doc_tab\` only after describing and following their exact schemas.
 5. Verify the final document with \`get_doc_as_markdown\` or \`get_doc_content\`. Use comment operations for review discussion, not as a substitute for requested document edits.

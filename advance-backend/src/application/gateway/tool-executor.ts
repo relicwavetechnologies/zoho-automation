@@ -16,6 +16,7 @@ import type {
   GatewayResponse,
 } from './gateway.types';
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
+import { limitModelFacingResult } from './model-facing-result-limit';
 
 export interface ToolExecutorInput {
   readonly member: GatewayMemberContext;
@@ -39,6 +40,10 @@ export interface PreparedToolInvocation {
   readonly toolId: string;
   readonly action: ToolActionGroup;
   readonly args: Record<string, unknown>;
+}
+
+export interface PreflightedToolInvocation extends PreparedToolInvocation {
+  readonly validation: Record<string, unknown>;
 }
 
 interface ResolvedToolInvocation extends PreparedToolInvocation {
@@ -65,6 +70,31 @@ export class ToolExecutor {
       action: resolved.value.action,
       args: resolved.value.args,
     });
+  }
+
+  /** Validate permission plus any tool-owned, side-effect-free readiness contract. */
+  async preflight(input: ToolExecutorInput): Promise<GatewayResponse<PreflightedToolInvocation>> {
+    const resolved = await this.resolve(input);
+    if (!resolved.ok) return resolved.response as GatewayResponse<PreflightedToolInvocation>;
+
+    const { tool, args, perm, runContext, action, toolId } = resolved.value;
+    let validation: Record<string, unknown> = { level: 'permission_only' };
+    if (tool.preflight) {
+      const checked = await tool.preflight(args, {
+        runContext,
+        perm,
+        correlationId: tool.id,
+        logger: this.deps.logger.child({ toolId: tool.id, operation: 'preflight' }),
+        clock: this.deps.clock,
+      });
+      if (!checked.ok) {
+        const status = checked.error.payload.reason === 'bad_args' ? 'invalid_args' : 'tool_error';
+        return gatewayFailure(status, checked.error.message) as GatewayResponse<PreflightedToolInvocation>;
+      }
+      validation = checked.value;
+    }
+
+    return gatewaySuccess({ toolId, action, args, validation });
   }
 
   async invoke(input: ToolExecutorInput): Promise<GatewayResponse> {
@@ -146,7 +176,11 @@ export class ToolExecutor {
       });
     }
 
-    return gatewaySuccess({ toolId: tool.id, action, result: result.value });
+    return gatewaySuccess({
+      toolId: tool.id,
+      action,
+      result: limitModelFacingResult(result.value),
+    });
   }
 
   private async resolve(input: ToolExecutorInput): Promise<ResolveToolInvocationResult> {

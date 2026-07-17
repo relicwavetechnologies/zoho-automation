@@ -42,6 +42,28 @@ describe("formatGatewayResponse", () => {
 		assert.match(result.text, /zohoCrm/);
 	});
 
+	it("renders the first Google recipe inline without expanding later recipes", () => {
+		const result = formatGatewayResponse({
+			ok: true,
+			status: "success",
+			data: {
+				workflow: "vendor_onboarding",
+				parent: { instructions: "Compact parent guidance" },
+				connection: { message: "Choose a connection when the backend asks." },
+				phases: [
+					{ name: "Gmail source", skillId: "gmail-id", skill: { instructions: "inline only" } },
+					{ name: "Google Contacts", skillId: "contacts-id" },
+				],
+			},
+		});
+		assert.equal(result.isError, false);
+		assert.match(result.text, /Gmail source/);
+		assert.match(result.text, /contacts-id/);
+		assert.match(result.text, /Compact parent guidance/);
+		assert.match(result.text, /inline only/);
+		assert.match(result.text, /already loaded/i);
+	});
+
 	it("renders permission_denied", () => {
 		const result = formatGatewayResponse({
 			ok: false,
@@ -176,6 +198,20 @@ describe("callDivoGateway", () => {
 		await callDivoGateway(config, request, fetchImpl as typeof fetch);
 		await callDivoGateway(config, request, fetchImpl as typeof fetch);
 
+		assert.equal(calls, 2);
+	});
+
+	it("caches a Google plan by user-selected connection without caching preflight", async () => {
+		clearDivoGatewaySkillCache();
+		let calls = 0;
+		const fetchImpl = async () => {
+			calls += 1;
+			return new Response(JSON.stringify({ ok: true, status: "success", data: { n: calls } }), { status: 200 });
+		};
+		const config = { backendUrl: "http://localhost:4000", memberToken: "member-jwt" };
+		await callDivoGateway(config, { op: "google.plan", payload: { workflow: "vendor_onboarding" } }, fetchImpl as typeof fetch);
+		await callDivoGateway(config, { op: "google.plan", payload: { workflow: "vendor_onboarding" } }, fetchImpl as typeof fetch);
+		await callDivoGateway(config, { op: "tools.preflight", payload: { invocations: [] } }, fetchImpl as typeof fetch);
 		assert.equal(calls, 2);
 	});
 

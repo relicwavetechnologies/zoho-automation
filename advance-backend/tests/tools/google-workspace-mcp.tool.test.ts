@@ -95,6 +95,53 @@ describe('Google Workspace MCP product tools', () => {
     assert.deepEqual(calls, [{ name: 'create_spreadsheet', input: { title: 'Quarterly plan' } }]);
   });
 
+  it('preflights the selected connection and native schema without executing the operation', async () => {
+    const requests: any[] = [];
+    let executions = 0;
+    const client: GoogleWorkspaceMcpPort = {
+      describeTool: async (name) => ({
+        name,
+        inputSchema: {
+          type: 'object',
+          properties: { action: { const: 'create' }, summary: { type: 'string', minLength: 1 } },
+          required: ['action', 'summary'],
+          additionalProperties: false,
+        },
+      }),
+      callTool: async () => { executions += 1; return {}; },
+    };
+    const calendar = createGoogleWorkspaceMcpTools({
+      getConnection: async (request) => {
+        requests.push(request);
+        return { status: 'resolved', connection: { client } };
+      },
+    }).find((tool) => tool.id === 'googleCalendar')!;
+    const ctx = makeCtx('googleCalendar', ['create']);
+
+    const invalid = await calendar.preflight!({
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      op: 'call', nativeTool: 'manage_event', input: {},
+    }, ctx);
+    const valid = await calendar.preflight!({
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      op: 'call', nativeTool: 'manage_event', input: { action: 'create', summary: 'Vendor follow-up' },
+    }, ctx);
+
+    assert.equal(invalid.ok, false);
+    assert.match(invalid.ok ? '' : invalid.error.message, /must have required property/i);
+    assert.equal(valid.ok, true);
+    assert.equal(executions, 0);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].minimumAccess, 'read_write');
+    assert.deepEqual(valid.ok && valid.value, {
+      level: 'native_schema_and_connection',
+      connectionEligible: true,
+      nativeSchemaValidated: true,
+      nativeTool: 'manage_event',
+      action: 'create',
+    });
+  });
+
   it('does not execute when the Divo action is denied', () => {
     const tasks = createGoogleWorkspaceMcpTools({ getConnection: async () => null })
       .find((tool) => tool.id === 'googleTasks')!;

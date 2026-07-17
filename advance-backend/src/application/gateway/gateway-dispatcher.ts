@@ -23,13 +23,16 @@ import {
   gatewayLocalApprovalRequired,
   gatewaySuccess,
   connectionsListPayloadSchema,
+  googlePlanPayloadSchema,
   isGatewayOp,
   skillsGetPayloadSchema,
   skillsSearchPayloadSchema,
   toolsInvokePayloadSchema,
+  toolsPreflightPayloadSchema,
   toolsCommitPayloadSchema,
   toolsListPayloadSchema,
 } from './gateway.types';
+import { buildGoogleVendorOnboardingPlan } from './google-orchestration.service';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
 import { TOOL_PERMISSION_POLICY_REVISION } from '../../domain/tools/tool-id';
 
@@ -82,6 +85,8 @@ export class GatewayDispatcher {
         return this.handleSkillsSearch(member, departmentId, request.payload);
       case 'skills.get':
         return this.handleSkillsGet(member, departmentId, request.payload);
+      case 'google.plan':
+        return this.handleGooglePlan(member, departmentId, request.payload);
       case 'connections.list':
         return this.handleConnectionsList(member, departmentId, request.payload);
       case 'media.image_ocr':
@@ -90,6 +95,8 @@ export class GatewayDispatcher {
         return this.handleToolsInvoke(member, departmentId, request.payload);
       case 'tools.prepare':
         return this.handleToolsPrepare(member, departmentId, request.payload);
+      case 'tools.preflight':
+        return this.handleToolsPreflight(member, departmentId, request.payload);
       case 'tools.commit':
         return this.handleToolsCommit(member, departmentId, request.payload);
       default:
@@ -436,6 +443,66 @@ export class GatewayDispatcher {
     const response = await this.deps.toolExecutor.invoke({ ...input, expectedAction: 'read' });
     this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response);
     return response;
+  }
+
+  private async handleGooglePlan(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload: Record<string, unknown> | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = googlePlanPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors.map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`).join('; ');
+      return gatewayFailure('bad_request', `Invalid google.plan payload — ${issues}`);
+    }
+    const perm = await this.resolvePerm(member, departmentId);
+    if (!perm) return this.permissionDenied('Permission resolution failed');
+
+    const grantedSkillIds = await this.grantedSkillIds(member);
+    const planned = await buildGoogleVendorOnboardingPlan({
+      catalog: this.deps.skillCatalog,
+      companyId: member.companyId,
+      ...(departmentId ? { departmentId } : {}),
+      permission: withGatewayDiscoveryPermissions(perm),
+      ...(grantedSkillIds ? { grantedSkillIds } : {}),
+      ...(parsed.data.connectionId ? { connectionId: parsed.data.connectionId } : {}),
+      ...(parsed.data.phaseIds ? { phaseIds: parsed.data.phaseIds } : {}),
+    });
+    if (!planned.ok) {
+      return this.permissionDenied(`Vendor onboarding requires executable Google specialist skills for: ${planned.missing.join(', ')}`);
+    }
+    return gatewaySuccess(planned.value);
+  }
+
+  private async handleToolsPreflight(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload: Record<string, unknown> | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = toolsPreflightPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors.map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`).join('; ');
+      return gatewayFailure('bad_request', `Invalid tools.preflight payload — ${issues}`);
+    }
+    const invocations = await Promise.all(parsed.data.invocations.map(async (invocation) => {
+      const response = await this.deps.toolExecutor.preflight({
+        member,
+        ...(departmentId ? { departmentId } : {}),
+        toolId: invocation.toolId,
+        args: invocation.args,
+      });
+      return {
+        toolId: invocation.toolId,
+        ok: response.ok,
+        status: response.status,
+        ...(response.data ? { prepared: response.data } : {}),
+        ...(response.error ? { error: response.error } : {}),
+      };
+    }));
+    return gatewaySuccess({
+      invocations,
+      note: 'Preflight never executes tools or creates approval intents. Google call preflight also validates the selected connection, required OAuth scopes, and the pinned native input schema.',
+    });
   }
 
   private async handleToolsPrepare(

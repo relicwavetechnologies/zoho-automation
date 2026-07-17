@@ -3,6 +3,7 @@ import type {
   GoogleWorkspaceMcpToolDescription,
 } from '../../application/orchestration/tools/families/google-workspace-mcp.tool';
 import { GoogleSheetsDataValidationClient } from './google-sheets-data-validation.client';
+import { compactGmailMcpResult } from './gmail-result-compactor';
 import { GoogleWorkspaceMcpClient } from './google-workspace-mcp.client';
 
 /** Composite governed client: pinned MCP operations plus narrow Divo adapters. */
@@ -25,6 +26,7 @@ export class GoogleWorkspaceGatewayClient implements GoogleWorkspaceMcpPort {
     if (this.sheetsDataValidation.describeTool(name)) {
       return this.sheetsDataValidation.callTool(name, input);
     }
-    return this.mcp.callTool(name, input);
+    const result = await this.mcp.callTool(name, input);
+    return compactGmailMcpResult(name, input, result);
   }
 }

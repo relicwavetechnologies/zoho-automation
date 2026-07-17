@@ -204,3 +204,109 @@ describe("local mutation approval gate", () => {
 		});
 	}
 });
+
+describe("obvious local Lark fallback tripwire", () => {
+	it("blocks lark-cli before Bash approval or execution", async () => {
+		for (const command of [
+			"lark-cli contact +search --name Anish",
+			"/usr/local/bin/lark-cli contact +search --name Anish",
+		]) {
+			let confirmations = 0;
+			const result = await handleApprovalToolCall(
+				{
+					type: "tool_call",
+					toolName: "bash",
+					toolCallId: "call-lark-cli",
+					input: { command },
+				} as ToolCallEvent,
+				context(async () => {
+					confirmations += 1;
+					return true;
+				}),
+			);
+
+			assert.equal(result?.block, true, command);
+			assert.match(result?.reason ?? "", /lark-cli is disabled/i);
+			assert.equal(confirmations, 0);
+		}
+	});
+
+	it("blocks explicit local lark-* skill paths across file tools and Bash", async () => {
+		const attempts = [
+			{ toolName: "read", input: { path: "/Users/me/.agents/skills/lark-contact/SKILL.md" } },
+			{ toolName: "grep", input: { path: "~/.codex/skills/lark-doc", pattern: "OpenAPI" } },
+			{ toolName: "bash", input: { command: "cat ~/.agents/skills/lark-contact/SKILL.md" } },
+			{ toolName: "read", input: { path: "C:\\Users\\me\\.agents\\skills\\lark-contact\\SKILL.md" } },
+		] as const;
+
+		for (const attempt of attempts) {
+			let confirmations = 0;
+			const result = await handleApprovalToolCall(
+				{
+					type: "tool_call",
+					toolName: attempt.toolName,
+					toolCallId: "call-local-lark-skill",
+					input: attempt.input,
+				} as ToolCallEvent,
+				context(async () => {
+					confirmations += 1;
+					return true;
+				}),
+			);
+
+			assert.equal(result?.block, true, JSON.stringify(attempt));
+			assert.match(result?.reason ?? "", /Local lark-\* skill paths are disabled/);
+			assert.equal(confirmations, 0);
+		}
+	});
+
+	it("does not block similarly named non-executable text or unrelated paths", async () => {
+		let confirmations = 0;
+		const result = await handleApprovalToolCall(
+			{
+				type: "tool_call",
+				toolName: "bash",
+				toolCallId: "call-unrelated",
+				input: { command: "echo lark-cli-notes && cat ./skills/larkish/README.md" },
+			} as ToolCallEvent,
+			context(async () => {
+				confirmations += 1;
+				return false;
+			}),
+		);
+
+		assert.equal(result?.block, true);
+		assert.match(result?.reason ?? "", /did not approve/);
+		assert.equal(confirmations, 1);
+	});
+
+	it("documents that shell and interpreter indirection bypass text matching and still require normal Bash approval", async () => {
+		const indirectCommands = [
+			'bin=lark; "${bin}-cli" contact +search --name Anish',
+			"`printf 'lark%s' '-cli'` contact +search --name Anish",
+			"python -c \"import os; os.execvp(''.join(['lark','-cli']), [])\"",
+			'base="$HOME/.agents"; leaf="lark-contact"; cat "$base/skills/$leaf/SKILL.md"',
+		];
+
+		for (const command of indirectCommands) {
+			let confirmations = 0;
+			const result = await handleApprovalToolCall(
+				{
+					type: "tool_call",
+					toolName: "bash",
+					toolCallId: "call-indirect-lark",
+					input: { command },
+				} as ToolCallEvent,
+				context(async () => {
+					confirmations += 1;
+					return false;
+				}),
+			);
+
+			assert.equal(confirmations, 1, command);
+			assert.equal(result?.block, true);
+			assert.match(result?.reason ?? "", /did not approve/);
+			assert.doesNotMatch(result?.reason ?? "", /lark-cli is disabled|lark-\* skill paths are disabled/i);
+		}
+	});
+});

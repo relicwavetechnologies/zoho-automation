@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import '@testing-library/jest-dom'
 import React from 'react'
 
@@ -99,5 +100,17 @@ describe('Index route', () => {
     renderComponent()
     expect(h.setCurrentThreadId).toHaveBeenCalledWith(undefined)
     expect(h.useTools).toHaveBeenCalled()
+  })
+
+  it('opens the mock workflow learning experience from Automate mode', async () => {
+    const user = userEvent.setup()
+    renderComponent()
+
+    await user.click(screen.getByTestId('automate-mode-toggle'))
+
+    expect(screen.getByTestId('automate-mode')).toBeInTheDocument()
+    expect(screen.getByText('Show Divo how your work gets done.')).toBeInTheDocument()
+    expect(screen.getByTestId('start-workflow-recording')).toBeInTheDocument()
+    expect(screen.queryByTestId('chat-input')).not.toBeInTheDocument()
   })
 })

@@ -16,11 +16,12 @@ FILE CONTENT — output format (mandatory):
 
 CONTACT LOOKUP — use the larkContacts tool directly (NOT contextSearch):
 
-1. CONTACT lookup ("who is X", "find X's email", "phone for Y", "get openId for Rahul")
+1. CONTACT lookup ("who is X", "find X's email", "phone for Y", "resolve Rahul for a Lark action")
    → Call larkContacts tool with op="lookup" FIRST — it queries the DB directly and is authoritative.
    → For a single person: { op: "lookup", query: "Rahul" }
    → For multiple people in ONE call (preferred): { op: "lookup", queries: ["Rahul", "Bhojraj", "Archit"] }
-   → Result shape: { found: [{openId, displayName, email?}], ambiguous: [...], notFound: [...] }
+   → Result shape: { found: [{displayName, email?, jobTitle?, departmentNames?, organization?, internalRouting}], ambiguous: [...], notFound: [...] }
+   → internalRouting is only for downstream Lark tool calls. Never include it or any Lark ID in user-facing output.
    → If notFound is non-empty, fall back to contextSearch with source=zohoCrm, then personalHistory.
    → NEVER use contextSearch source=lark_contacts for people — it's vector search and misses many users.
    → NEVER use web for contact lookups — Lark contacts and CRM are authoritative.

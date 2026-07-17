@@ -13,13 +13,16 @@ use uuid::Uuid;
 
 use super::browser::current_browser_cdp_fingerprint;
 use super::env::{
-    apply_divo_gateway_env, apply_divo_skill_env, apply_divo_workspace_env, apply_provider_env,
+    apply_coding_provider_env, apply_divo_gateway_env, apply_divo_skill_env,
+    apply_divo_workspace_env, remove_divo_process_env, remove_provider_env,
 };
 use super::run_context::{
     clear_run_context, slot_run_context_path, write_run_context, DivoRunContext,
     DIVO_RUN_CONTEXT_PATH_ENV,
 };
-use super::runtime::PiRuntimePaths;
+use super::runtime::{
+    apply_company_cli_boundary, PiRuntimeMode, PiRuntimePaths, PI_AGENT_DIR_NAME,
+};
 use super::session::{ensure_session_workspace_cwd, resolve_session_path};
 use crate::core::divo::workspace::{prepare_workspace_run_layout, DivoWorkspaceRunLayout};
 use crate::core::threads::utils::ensure_thread_dir_exists;
@@ -27,8 +30,21 @@ use crate::core::threads::utils::ensure_thread_dir_exists;
 const DIVO_APPROVAL_PROTOCOL_TITLE: &str = "divo_approval_v1";
 const DIVO_MEMORY_REVIEW_PROTOCOL_TITLE: &str = "divo_memory_review_v1";
 const MAX_MEMORY_REVIEW_MESSAGE_BYTES: usize = 16_000;
+const CODING_SESSION_FILE: &str = "pi-coding-session.jsonl";
 /// Pi is intentionally bounded because every runtime is a complete Bun process.
 const RUNTIME_POOL_CAPACITY: usize = 2;
+
+fn runtime_session_path(
+    data_folder: &std::path::Path,
+    thread_id: &str,
+    mode: PiRuntimeMode,
+) -> PathBuf {
+    let company_path = resolve_session_path(data_folder, thread_id);
+    match mode {
+        PiRuntimeMode::Company => company_path,
+        PiRuntimeMode::Coding => company_path.with_file_name(CODING_SESSION_FILE),
+    }
+}
 
 struct PiProcess {
     child: Child,
@@ -629,6 +645,7 @@ struct RuntimeConfig {
     data_folder: PathBuf,
     scratch_dir: PathBuf,
     workspace_dir: PathBuf,
+    mode: PiRuntimeMode,
 }
 
 struct QueuedAdmission {
@@ -1114,11 +1131,11 @@ impl PiManager {
         capacity_changed: Arc<Notify>,
         pool: Arc<Mutex<PoolState>>,
     ) -> Result<(), String> {
-        let runtime = PiRuntimePaths::resolve(&config.app, &config.data_folder)?;
+        let runtime = PiRuntimePaths::resolve(&config.app, &config.data_folder, config.mode)?;
         std::fs::create_dir_all(&config.scratch_dir)
             .map_err(|error| format!("Failed to create Pi scratch dir: {error}"))?;
         ensure_thread_dir_exists(&config.data_folder, &slot.thread_id)?;
-        let session_path = resolve_session_path(&config.data_folder, &slot.thread_id);
+        let session_path = runtime_session_path(&config.data_folder, &slot.thread_id, config.mode);
         ensure_session_workspace_cwd(&session_path, &config.workspace_dir)?;
         let layout = prepare_workspace_run_layout(&config.workspace_dir, &slot.thread_id)?;
         let run_context_path = slot_run_context_path(&config.scratch_dir, &slot.context_slot_id);
@@ -1132,27 +1149,35 @@ impl PiManager {
             .arg("rpc")
             .arg("--session-dir")
             .arg(config.scratch_dir.to_string_lossy().to_string())
-            .arg("--append-system-prompt")
-            .arg(Self::divo_workspace_system_prompt(
-                &config.workspace_dir,
-                &layout,
-            ))
             .env(
                 "PI_CODING_AGENT_DIR",
                 runtime.agent_dir.to_string_lossy().to_string(),
             )
-            .env(DIVO_RUN_CONTEXT_PATH_ENV, &run_context_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(&config.workspace_dir);
-        for skill_dir in &runtime.trusted_skill_dirs {
-            command.arg("--skill").arg(skill_dir);
+        match config.mode {
+            PiRuntimeMode::Company => {
+                command
+                    .arg("--append-system-prompt")
+                    .arg(Self::divo_workspace_system_prompt(
+                        &config.workspace_dir,
+                        &layout,
+                    ))
+                    .env(DIVO_RUN_CONTEXT_PATH_ENV, &run_context_path);
+                apply_company_cli_boundary(&mut command, &runtime);
+                remove_provider_env(&mut command);
+                apply_divo_gateway_env(&mut command, &runtime.agent_dir);
+                apply_divo_skill_env(&mut command, &runtime.trusted_skill_dirs);
+                apply_divo_workspace_env(&mut command, &config.workspace_dir, &layout);
+            }
+            PiRuntimeMode::Coding => {
+                remove_divo_process_env(&mut command);
+                let legacy_agent_dir = config.data_folder.join(PI_AGENT_DIR_NAME);
+                apply_coding_provider_env(&mut command, &runtime.agent_dir, &legacy_agent_dir);
+            }
         }
-        apply_provider_env(&mut command, &runtime.agent_dir);
-        apply_divo_gateway_env(&mut command, &runtime.agent_dir);
-        apply_divo_skill_env(&mut command, &runtime.trusted_skill_dirs);
-        apply_divo_workspace_env(&mut command, &config.workspace_dir, &layout);
         let mut child = command.spawn().map_err(|error| {
             format!(
                 "Failed to spawn bundled Pi (bun={} cli={}): {error}",
@@ -1596,6 +1621,7 @@ impl PiManager {
         data_folder: PathBuf,
         scratch_dir: PathBuf,
         workspace_dir: PathBuf,
+        mode: PiRuntimeMode,
         _initial_thread_id: Option<String>,
     ) -> Result<(), String> {
         let config = RuntimeConfig {
@@ -1603,12 +1629,14 @@ impl PiManager {
             data_folder,
             scratch_dir,
             workspace_dir,
+            mode,
         };
         let stale = {
             let mut pool = self.pool.lock().await;
             let changed = pool.config.as_ref().is_some_and(|current| {
                 current.workspace_dir != config.workspace_dir
                     || current.data_folder != config.data_folder
+                    || current.mode != config.mode
             });
             pool.config = Some(config);
             if changed {
@@ -2135,10 +2163,10 @@ mod tests {
         drain_pending_extension_ui, event_owner_payload, fail_pending_rpc, idle_runtime_thread,
         is_divo_approval_request, is_divo_memory_review_request, reconcile_lifecycle_event,
         require_active_run, response_clears_active_run, revoke_slot_bash_rule,
-        should_auto_allow_bash, take_pending_confirm, take_pending_memory_review,
-        valid_memory_review_response, ApprovalSource, ExtensionUiProtocol,
-        PendingExtensionUiRequest, PendingRpc, PiManager, RunOwner, RuntimeSlot,
-        DIVO_APPROVAL_PROTOCOL_TITLE, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
+        runtime_session_path, should_auto_allow_bash, take_pending_confirm,
+        take_pending_memory_review, valid_memory_review_response, ApprovalSource,
+        ExtensionUiProtocol, PendingExtensionUiRequest, PendingRpc, PiManager, PiRuntimeMode,
+        RunOwner, RuntimeSlot, DIVO_APPROVAL_PROTOCOL_TITLE, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
     };
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
@@ -2147,6 +2175,19 @@ mod tests {
 
     fn owner(thread_id: &str, run_id: &str) -> RunOwner {
         RunOwner::new(thread_id.to_string(), run_id.to_string()).unwrap()
+    }
+
+    #[test]
+    fn company_and_coding_modes_use_separate_pi_session_files() {
+        let data = Path::new("/data");
+        let company = runtime_session_path(data, "thread-1", PiRuntimeMode::Company);
+        let coding = runtime_session_path(data, "thread-1", PiRuntimeMode::Coding);
+
+        assert_ne!(company, coding);
+        assert_eq!(
+            coding.file_name().and_then(|name| name.to_str()),
+            Some("pi-coding-session.jsonl")
+        );
     }
 
     fn pending(method: &str, thread_id: &str, run_id: &str) -> PendingExtensionUiRequest {

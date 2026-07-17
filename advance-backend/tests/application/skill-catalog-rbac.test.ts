@@ -117,4 +117,82 @@ describe('SkillCatalogService — alias ranking', () => {
     assert.equal(matches[0]?.skill.id, sheets.id);
     assert(matches[0]!.score > 0);
   });
+
+  it('uses exact tokens instead of matching short query text inside unrelated words', async () => {
+    const exact = {
+      ...row('sk-mail', ['zohoBooks']),
+      name: 'Mail helper',
+      tags: ['mail'],
+    };
+    const substringOnly = {
+      ...row('sk-email', ['zohoBooks']),
+      name: 'Email helper',
+      tags: ['email'],
+    };
+    const service = new SkillCatalogService({ repo: makeRepo([substringOnly, exact]), logger: noopLogger });
+    const matches = await service.searchVisible({
+      companyId: 'co', departmentId: 'dep', permission,
+      grantedSkillIds: new Set([exact.id, substringOnly.id]), query: 'mail', limit: 3,
+    });
+    assert.deepEqual(matches.map((match) => match.skill.id), [exact.id]);
+  });
+});
+
+describe('SkillCatalogService — governed contact routing', () => {
+  const larkContacts = {
+    ...row('lark-contacts', ['larkContacts']),
+    name: 'Lark Contacts',
+    summary: 'Governed company people directory',
+    tags: ['lark', 'contacts', 'directory', 'people'],
+    aliases: ['employee lookup', 'company directory', 'colleague search', 'staff contact', 'resolve person'],
+  };
+  const googleContacts = {
+    ...row('google-contacts', ['googleContacts']),
+    name: 'Google Contacts',
+    summary: 'Google personal address book',
+    tags: ['google', 'workspace', 'contacts'],
+    aliases: ['google people', 'address book'],
+  };
+  const gmail = {
+    ...row('google-gmail', ['googleGmail']),
+    name: 'Gmail',
+    summary: 'Search email by sender name',
+    markdown: 'Search messages and resolve recipient contact names and email addresses.',
+    tags: ['google', 'gmail', 'email'],
+  };
+  const contactPermission = {
+    allowedToolIds: new Set([asToolId('larkContacts'), asToolId('googleContacts'), asToolId('googleGmail')]),
+    allowedActionsByTool: new Map(),
+    decisions: [],
+  } as unknown as PermissionResult;
+  const contactRows = [gmail, googleContacts, larkContacts];
+
+  async function search(query: string) {
+    const service = new SkillCatalogService({ repo: makeRepo(contactRows), logger: noopLogger });
+    return service.searchVisible({
+      companyId: 'co', departmentId: 'dep', permission: contactPermission,
+      grantedSkillIds: new Set(contactRows.map((candidate) => candidate.id)), query, limit: 3,
+    });
+  }
+
+  it('prefers Lark Contacts for generic and company-directory people lookup', async () => {
+    for (const query of [
+      'Search Contacts for Anish, Shivam, Vijay, Dushayant, Divya and Vibhore',
+      'find an employee in the company directory',
+      'look up my colleague email',
+    ]) {
+      assert.equal((await search(query))[0]?.skill.id, 'lark-contacts', query);
+    }
+  });
+
+  it('honors explicit provider and personal/external address-book intent', async () => {
+    for (const query of [
+      'search Google Contacts for Anish',
+      'look up a personal contact in my address book',
+      'find an external contact',
+    ]) {
+      assert.equal((await search(query))[0]?.skill.id, 'google-contacts', query);
+    }
+    assert.equal((await search('search Lark Contacts for Anish'))[0]?.skill.id, 'lark-contacts');
+  });
 });

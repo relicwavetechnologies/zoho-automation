@@ -27,6 +27,7 @@ import type { PermissionQuery, PermissionResult } from '../../src/application/pe
 import type { GatewayMemberContext } from '../../src/application/gateway/gateway.types.ts';
 import type { MediaOcrService } from '../../src/application/gateway/media-ocr.service.ts';
 import type { Clock } from '../../src/shared/clock.ts';
+import { MODEL_FACING_RESULT_MAX_BYTES } from '../../src/application/gateway/model-facing-result-limit.ts';
 
 const member: GatewayMemberContext = {
   companyId: 'co-test',
@@ -178,6 +179,34 @@ function makeMemoryRecallTool(
 }
 
 describe('ToolExecutor', () => {
+  it('applies the universal result ceiling before returning a governed tool result', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      execute: async () => ok({ result: 'x'.repeat(MODEL_FACING_RESULT_MAX_BYTES * 3) }),
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const response = await executor.invoke({
+      member,
+      toolId: 'fakeTool',
+      args: { query: 'large result' },
+    });
+    const result = (response.data as { result: unknown }).result as {
+      preview: string;
+      truncation: { truncated: boolean; returnedBytes: number };
+    };
+
+    assert.equal(response.ok, true);
+    assert.equal(result.truncation.truncated, true);
+    assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') <= MODEL_FACING_RESULT_MAX_BYTES);
+    assert.equal(result.truncation.returnedBytes, Buffer.byteLength(JSON.stringify(result), 'utf8'));
+  });
+
   it('ignores generic department context and recalls across server-derived active memberships without RBAC or HITL', async () => {
     const recalls: unknown[] = [];
     let approvalChecks = 0;
@@ -1690,5 +1719,163 @@ describe('GatewayDispatcher', () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.status, 'bad_request');
+  });
+
+  it('plans vendor onboarding from only granted executable Google specialists and loads just Gmail inline', async () => {
+    const googlePermission = {
+      allowedToolIds: new Set([
+        asToolId('googleGmail'), asToolId('googleContacts'), asToolId('googleDocs'), asToolId('googleSheets'),
+      ]),
+      allowedActionsByTool: new Map([
+        [asToolId('googleGmail'), new Set(['read'] as const)],
+        [asToolId('googleContacts'), new Set(['read'] as const)],
+        [asToolId('googleDocs'), new Set(['create', 'update'] as const)],
+        [asToolId('googleSheets'), new Set(['create', 'update'] as const)],
+      ]),
+      decisions: [],
+    } as unknown as PermissionResult;
+    const specialists: CatalogSkill[] = [
+      ['gmail-id', 'google-gmail', 'Gmail', 'googleGmail'],
+      ['contacts-id', 'google-contacts', 'Google Contacts', 'googleContacts'],
+      ['docs-id', 'google-docs', 'Google Docs', 'googleDocs'],
+      ['sheets-id', 'google-sheets', 'Google Sheets', 'googleSheets'],
+    ].map(([id, slug, name, toolId]) => ({
+      id, slug, name, description: `${name} specialist`, instructions: `${name} recipe`, toolIds: [toolId], revision: 3,
+    }));
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(googlePermission),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog(specialists),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry, permissions: makePermissionService(googlePermission), logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      skillAccessEnforcement: { listGrantedSkillIds: async () => new Set(specialists.map((skill) => skill.id)) },
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'google.plan',
+      payload: { workflow: 'vendor_onboarding', connectionId: '00000000-0000-4000-8000-000000000001' },
+    }, member);
+
+    assert.equal(result.ok, true);
+    const plan = result.data as { connection: { status: string; connectionId: string }; phases: Array<{ skillId: string; requiredActions: string[]; skill?: { instructions: string } }> };
+    assert.deepEqual(plan.phases.map((phase) => phase.skillId), ['gmail-id', 'contacts-id', 'docs-id', 'sheets-id']);
+    assert.deepEqual(plan.phases.map((phase) => phase.requiredActions), [['read'], ['read'], ['create'], ['create', 'update']]);
+    assert.equal(plan.phases[0]?.skill?.instructions, 'Gmail recipe');
+    assert.equal(plan.phases.slice(1).every((phase) => phase.skill === undefined), true);
+    assert.deepEqual(plan.connection, {
+      status: 'requested',
+      connectionId: '00000000-0000-4000-8000-000000000001',
+      message: 'Use this explicitly selected Google Workspace connection for every phase. Eligibility and scopes are checked at execution time.',
+    });
+  });
+
+  it('rejects a vendor plan before execution when a required Docs action is not granted', async () => {
+    const insufficient = {
+      allowedToolIds: new Set([
+        asToolId('googleGmail'), asToolId('googleContacts'), asToolId('googleDocs'), asToolId('googleSheets'),
+      ]),
+      allowedActionsByTool: new Map([
+        [asToolId('googleGmail'), new Set(['read'] as const)],
+        [asToolId('googleContacts'), new Set(['read'] as const)],
+        [asToolId('googleDocs'), new Set(['update'] as const)],
+        [asToolId('googleSheets'), new Set(['create', 'update'] as const)],
+      ]),
+      decisions: [],
+    } as unknown as PermissionResult;
+    const specialists = ['gmail', 'contacts', 'docs', 'sheets'].map((service) => ({
+      id: `${service}-id`, slug: `google-${service}`, name: service, description: service,
+      instructions: service, toolIds: [`google${service === 'gmail' ? 'Gmail' : service[0]!.toUpperCase() + service.slice(1)}`], revision: 1,
+    })) as CatalogSkill[];
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(insufficient), toolRegistry: new ToolRegistry(), skillCatalog: makeSkillCatalog(specialists),
+      toolExecutor: new ToolExecutor({ toolRegistry: new ToolRegistry(), permissions: makePermissionService(insufficient), logger: noopLogger, clock: { now: () => new Date(), nowMs: () => Date.now() } }),
+      logger: noopLogger,
+    });
+    const result = await dispatcher.dispatch({ op: 'google.plan', payload: { workflow: 'vendor_onboarding' } }, member);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'permission_denied');
+    assert.match(result.error?.message ?? '', /Google Doc brief/);
+  });
+
+  it('plans only requested vendor phases in their requested order', async () => {
+    const googlePermission = {
+      allowedToolIds: new Set([asToolId('googleGmail'), asToolId('googleCalendar'), asToolId('googleDocs')]),
+      allowedActionsByTool: new Map([
+        [asToolId('googleGmail'), new Set(['read'] as const)],
+        [asToolId('googleCalendar'), new Set(['read', 'create'] as const)],
+        [asToolId('googleDocs'), new Set(['create'] as const)],
+      ]),
+      decisions: [],
+    } as unknown as PermissionResult;
+    const specialists: CatalogSkill[] = [
+      ['gmail-id', 'google-gmail', 'Gmail', 'googleGmail'],
+      ['calendar-id', 'google-calendar', 'Google Calendar', 'googleCalendar'],
+      ['docs-id', 'google-docs', 'Google Docs', 'googleDocs'],
+    ].map(([id, slug, name, toolId]) => ({
+      id, slug, name, description: `${name} specialist`, instructions: `${name} recipe`, toolIds: [toolId], revision: 3,
+    }));
+    const registry = new ToolRegistry();
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(googlePermission),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog(specialists),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry, permissions: makePermissionService(googlePermission), logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      skillAccessEnforcement: { listGrantedSkillIds: async () => new Set(specialists.map((skill) => skill.id)) },
+      logger: noopLogger,
+    });
+
+    const result = await dispatcher.dispatch({
+      op: 'google.plan',
+      payload: {
+        workflow: 'vendor_onboarding',
+        phaseIds: ['gmail_source', 'calendar_availability', 'google_doc', 'calendar_event'],
+      },
+    }, member);
+
+    assert.equal(result.ok, true);
+    const plan = result.data as { phases: Array<{ id: string; skillId: string; requiredActions: string[]; skill?: unknown }> };
+    assert.deepEqual(plan.phases.map((phase) => phase.id), [
+      'gmail_source', 'calendar_availability', 'google_doc', 'calendar_event',
+    ]);
+    assert.deepEqual(plan.phases.map((phase) => phase.skillId), [
+      'gmail-id', 'calendar-id', 'docs-id', 'calendar-id',
+    ]);
+    assert.deepEqual(plan.phases.map((phase) => phase.requiredActions), [
+      ['read'], ['read'], ['create'], ['create'],
+    ]);
+    assert.equal(plan.phases[0]?.skill !== undefined, true);
+    assert.equal(plan.phases.slice(1).every((phase) => phase.skill === undefined), true);
+  });
+
+  it('batch-preflights invocation args and permissions without execution or local approval intents', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({ execute: async () => { executions += 1; return ok({ result: 'should not run' }); } }));
+    const toolExecutor = new ToolExecutor({
+      toolRegistry: registry, permissions: makePermissionService(), logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(), toolRegistry: registry, skillCatalog: makeSkillCatalog([allowedSkill]), toolExecutor,
+      localApprovalIntents: makeLocalApprovals(toolExecutor), logger: noopLogger,
+    });
+    const result = await dispatcher.dispatch({
+      op: 'tools.preflight',
+      payload: { invocations: [{ toolId: 'fakeTool', args: { query: 'valid' } }, { toolId: 'fakeTool', args: {} }] },
+    }, member);
+
+    assert.equal(result.ok, true);
+    assert.equal(executions, 0);
+    const invocations = (result.data as { invocations: Array<{ ok: boolean; status: string; prepared?: { action: string } }> }).invocations;
+    assert.deepEqual(invocations.map((invocation) => [invocation.ok, invocation.status]), [[true, 'success'], [false, 'invalid_args']]);
+    assert.equal(invocations[0]?.prepared?.action, 'read');
+    assert.deepEqual((invocations[0]?.prepared as { validation?: unknown }).validation, { level: 'permission_only' });
   });
 });

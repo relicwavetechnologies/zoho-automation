@@ -33,14 +33,25 @@ interface WireUsage {
 type TraceEvent =
 	| { kind: "tool"; seq: number; ts: number; toolName: string; input?: unknown; output?: unknown; isError?: boolean }
 	| { kind: "model"; seq: number; ts: number; provider: string; model: string; responseId?: string; mode?: string; usage?: WireUsage }
-	| { kind: "run_start" | "run_end" | "turn_start" | "turn_end"; seq: number; ts: number; title?: string; status?: "ok" | "error" };
+	| { kind: "run_start" | "run_end" | "turn_start" | "turn_end"; seq: number; ts: number; title?: string; summary?: string; status?: "ok" | "error" }
+	| {
+		kind: "learning_context";
+		seq: number;
+		ts: number;
+		userMessages: string[];
+		assistantResponse?: string;
+		toolSummary: Array<{ toolName: string; isError: boolean }>;
+	};
 
 interface RunState {
 	runId: string;
 	threadId?: string;
 	proxyOwnsUsage: boolean;
+	recoveryAttempted: boolean;
+	pendingRecoveryFailure?: DivoRunTerminal;
 	seq: number;
 	buffer: TraceEvent[];
+	learningTools: Array<{ toolName: string; isError: boolean }>;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -76,6 +87,65 @@ function safeStringify(value: unknown): string {
 	}
 }
 
+export interface DivoRunTerminal {
+	status: "ok" | "error";
+	summary?: string;
+}
+
+/**
+ * Pi emits agent_end for both successful and failed loops. A run is complete
+ * only when its final generated message is a real assistant completion with a
+ * successful stop reason and any explicitly reported usage is non-zero.
+ */
+export function classifyDivoRunTerminal(messages: readonly unknown[]): DivoRunTerminal {
+	const last = asRecord(messages.at(-1));
+	if (!last || last.role !== "assistant") {
+		const role = typeof last?.role === "string" ? last.role : "no message";
+		return {
+			status: "error",
+			summary: `Run ended before the assistant continuation completed (terminal ${role}).`,
+		};
+	}
+
+	const stopReason = typeof last.stopReason === "string" ? last.stopReason : undefined;
+	if (stopReason !== "stop") {
+		const errorMessage = typeof last.errorMessage === "string"
+			? last.errorMessage.trim().slice(0, 1_500)
+			: "";
+		return {
+			status: "error",
+			summary: errorMessage
+				? `Assistant ${stopReason ?? "unknown"}: ${errorMessage}`
+				: `Assistant ended with non-success stop reason ${stopReason ?? "unknown"}.`,
+		};
+	}
+
+	const usage = asRecord(last.usage);
+	const input = usage?.input;
+	const output = usage?.output;
+	if (typeof input === "number" && typeof output === "number") {
+		const cacheRead = typeof usage?.cacheRead === "number" ? usage.cacheRead : 0;
+		const cacheWrite = typeof usage?.cacheWrite === "number" ? usage.cacheWrite : 0;
+		if (input + output + cacheRead + cacheWrite === 0) {
+			return {
+				status: "error",
+				summary: "Assistant model call completed with zero tokens; no model continuation was produced.",
+			};
+		}
+	}
+
+	return { status: "ok" };
+}
+
+/** Pi recognizes this normalized Divo 413 as context overflow and retries it after compaction. */
+export function isRecoverableDivoRequestTooLarge(messages: readonly unknown[]): boolean {
+	const last = asRecord(messages.at(-1));
+	if (!last || last.role !== "assistant" || last.stopReason !== "error") return false;
+	if (last.provider !== "deepseek") return false;
+	const errorMessage = typeof last.errorMessage === "string" ? last.errorMessage : "";
+	return /request[_ ]too[_ ]large|payload[_ ]too[_ ]large|entity\.too\.large|PayloadTooLargeError|\b413\b/i.test(errorMessage);
+}
+
 export function registerTraceCapture(pi: ExtensionAPI): void {
 	let run: RunState | null = null;
 	const pendingArgs = new Map<string, unknown>();
@@ -85,8 +155,10 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			runId: correlation.runId,
 			threadId: correlation.threadId,
 			proxyOwnsUsage: false,
+			recoveryAttempted: false,
 			seq: 0,
 			buffer: [],
+			learningTools: [],
 		};
 		pendingArgs.clear();
 		return run;
@@ -138,6 +210,21 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			});
 	};
 
+	const finishRun = (terminal: DivoRunTerminal): void => {
+		push({ kind: "run_end", ...terminal });
+		flush();
+		run = null;
+		pendingArgs.clear();
+	};
+
+	const failPendingRecovery = (summary?: string): void => {
+		if (!run?.pendingRecoveryFailure) return;
+		finishRun({
+			...run.pendingRecoveryFailure,
+			...(summary ? { summary } : {}),
+		});
+	};
+
 	// A trace bug must never break the agent loop — every handler is guarded.
 	const guard = (fn: () => void): void => {
 		try {
@@ -149,8 +236,24 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", async () => {
 		const correlation = await tryReadRunCorrelation();
-		if (!correlation) return;
 		guard(() => {
+			if (
+				run?.pendingRecoveryFailure
+				&& (!correlation || run.runId === correlation.runId)
+			) {
+				// Pi's compact-and-retry path starts a second low-level agent loop.
+				// Keep the same trace/run sequence and suppress a duplicate run_start.
+				run.pendingRecoveryFailure = undefined;
+				run.recoveryAttempted = true;
+				pendingArgs.clear();
+				return;
+			}
+			if (!correlation) return;
+			if (run?.pendingRecoveryFailure) {
+				failPendingRecovery(
+					"Oversized-request recovery ended before a same-run assistant continuation started.",
+				);
+			}
 			startRun(correlation);
 			push({ kind: "run_start", title: "Run started" });
 		});
@@ -165,11 +268,16 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 		if ("error" in resolveDivoGatewayConfig()) return undefined;
 		const correlation = await tryReadRunCorrelation();
 		const payload = asRecord(event.payload);
-		if (!correlation || !payload) return undefined;
-		if (run?.runId === correlation.runId) run.proxyOwnsUsage = true;
+		const activeRecoveryRunId = run
+			&& (run.pendingRecoveryFailure || run.recoveryAttempted)
+			? run.runId
+			: undefined;
+		const runId = correlation?.runId ?? activeRecoveryRunId;
+		if (!runId || !payload) return undefined;
+		if (run?.runId === runId) run.proxyOwnsUsage = true;
 		return {
 			...payload,
-			divo_run_id: correlation.runId,
+			divo_run_id: runId,
 			divo_trace_mode: "desktop",
 		};
 	});
@@ -193,6 +301,9 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 				output: cap(event.result),
 				isError: event.isError,
 			});
+			const r = ensureRun();
+			r.learningTools.push({ toolName: event.toolName, isError: event.isError === true });
+			if (r.learningTools.length > 20) r.learningTools.splice(0, r.learningTools.length - 20);
 		});
 	});
 
@@ -228,12 +339,77 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 		});
 	});
 
-	pi.on("agent_end", () => {
+	pi.on("agent_end", (event) => {
 		guard(() => {
-			push({ kind: "run_end", status: "ok" });
-			flush();
-			run = null;
-			pendingArgs.clear();
+			const terminal = classifyDivoRunTerminal(event.messages);
+			if (
+				terminal.status === "error"
+				&& isRecoverableDivoRequestTooLarge(event.messages)
+				&& !ensureRun().recoveryAttempted
+			) {
+				// Pi decides whether to compact and retry only after this extension
+				// event returns. Defer the terminal event until the retry succeeds,
+				// exhausts recovery, or another lifecycle boundary proves no retry ran.
+				ensureRun().pendingRecoveryFailure = terminal;
+				pendingArgs.clear();
+				flush();
+				return;
+			}
+			if (terminal.status === "ok") {
+				const context = buildLearningContext(event.messages, ensureRun().learningTools);
+				push({ kind: "learning_context", ...context });
+			}
+			finishRun(terminal);
 		});
 	});
+
+	pi.on("session_shutdown", () => {
+		guard(() => {
+			failPendingRecovery(
+				"Oversized-request recovery ended without an assistant continuation before the session closed.",
+			);
+		});
+	});
+}
+
+/** Extract only bounded text needed for the backend's manager-learning pass. */
+function buildLearningContext(
+	messages: readonly unknown[],
+	toolSummary: readonly { toolName: string; isError: boolean }[],
+): Omit<Extract<TraceEvent, { kind: "learning_context" }>, "seq" | "ts" | "kind"> {
+	const userMessages = messages
+		.flatMap(message => {
+			const record = asRecord(message);
+			return record?.role === "user" ? [messageContentText(record)] : [];
+		})
+		.filter(Boolean)
+		.slice(-3)
+		.map(text => text.slice(0, 2_000));
+	const assistant = [...messages]
+		.reverse()
+		.map(asRecord)
+		.find(message => message?.role === "assistant" && message.stopReason === "stop");
+	const assistantResponse = assistant ? messageContentText(assistant).slice(0, 4_000) : undefined;
+	return {
+		userMessages,
+		...(assistantResponse ? { assistantResponse } : {}),
+		toolSummary: toolSummary.slice(-20),
+	};
+}
+
+function messageContentText(message: JsonRecord): string {
+	const content = message.content;
+	if (typeof content === "string") return content.trim();
+	if (Array.isArray(content)) {
+		return content
+			.map(part => {
+				if (typeof part === "string") return part;
+				const record = asRecord(part);
+				return typeof record?.text === "string" ? record.text : "";
+			})
+			.filter(Boolean)
+			.join("\n")
+			.trim();
+	}
+	return typeof message.text === "string" ? message.text.trim() : "";
 }

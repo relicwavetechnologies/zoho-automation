@@ -85,6 +85,9 @@ export class LarkHttpClient {
         method,
         url: path,
         ...(opts?.query ? { params: opts.query } : {}),
+        ...(opts?.query && Object.values(opts.query).some(Array.isArray)
+          ? { paramsSerializer: serializeRepeatedQuery }
+          : {}),
         ...(opts?.body !== undefined ? { data: opts.body } : {}),
       }, this.userToken ? withUserAccessToken(this.userToken) : undefined);
 
@@ -100,6 +103,17 @@ export class LarkHttpClient {
       throw toLarkApiError(error);
     }
   }
+}
+
+function serializeRepeatedQuery(params: Record<string, unknown>): string {
+  const query = new URLSearchParams();
+  for (const [key, rawValue] of Object.entries(params)) {
+    const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+    for (const value of values) {
+      if (value !== undefined) query.append(key, String(value));
+    }
+  }
+  return query.toString();
 }
 
 function toLarkApiError(error: unknown): LarkApiError {

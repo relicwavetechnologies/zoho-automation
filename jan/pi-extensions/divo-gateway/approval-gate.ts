@@ -43,6 +43,42 @@ function approvalBlock(reason: string): ToolCallEventResult {
 	return { block: true, reason };
 }
 
+const LOCAL_LARK_SKILL_PATH = /(?:^|[\\/])skills[\\/]lark-[^\\/\s"']+(?:[\\/]|$)/i;
+const LARK_CLI_COMMAND = /(?:^|[\\/\s"';&|()])lark-cli(?=$|[\s"';&|()])/i;
+
+/**
+ * Best-effort policy tripwire for obvious model mistakes. This is not a shell
+ * security boundary: Bash and general-purpose interpreters can construct both
+ * executable names and paths after this pre-execution text inspection. A hard
+ * boundary requires removing those tools from Pi's allowlist or an OS sandbox.
+ */
+function gateObviousLocalLarkFallback(event: ToolCallEvent): ToolCallEventResult | undefined {
+	const input = asRecord(event.input);
+	if (!input) return undefined;
+
+	if (event.toolName === "bash") {
+		const command = nonEmptyString(input.command);
+		if (command && LARK_CLI_COMMAND.test(command)) {
+			return approvalBlock(
+				"lark-cli is disabled in Divo. Use the governed Lark capability through divo_gateway; there is no local fallback.",
+			);
+		}
+		if (command && LOCAL_LARK_SKILL_PATH.test(command)) {
+			return approvalBlock(
+				"Local lark-* skill paths are disabled in Divo. Resolve the governed backend skill instead.",
+			);
+		}
+	}
+
+	const path = nonEmptyString(input.path);
+	if (path && LOCAL_LARK_SKILL_PATH.test(path)) {
+		return approvalBlock(
+			"Local lark-* skill paths are disabled in Divo. Resolve the governed backend skill instead.",
+		);
+	}
+	return undefined;
+}
+
 async function askForApproval(
 	ctx: ApprovalContext,
 	request: Omit<ApprovalPresentationV1, "runCorrelation">,
@@ -223,6 +259,9 @@ export async function handleApprovalToolCall(
 	event: ToolCallEvent,
 	ctx: ApprovalContext,
 ): Promise<ToolCallEventResult | undefined> {
+	const blockedLarkFallback = gateObviousLocalLarkFallback(event);
+	if (blockedLarkFallback) return blockedLarkFallback;
+
 	const local = localApprovalRequest(event, ctx);
 	if (local) return askForApproval(ctx, local);
 

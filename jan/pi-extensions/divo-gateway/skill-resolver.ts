@@ -21,6 +21,7 @@ export interface ResolvedSkill {
 	toolIds?: string[];
 	instructions?: string;
 	revision?: number;
+	orchestrationPlan?: GoogleVendorOnboardingPlan;
 }
 
 export interface SkillResolveResult {
@@ -38,6 +39,39 @@ interface BackendSkillCandidate {
 	score?: number;
 	toolIds?: string[];
 }
+
+interface GoogleVendorOnboardingPlan {
+	workflow: "vendor_onboarding";
+	parent: {
+		id: string;
+		name: string;
+		description: string;
+		instructions: string;
+	};
+	connection: { message: string };
+	phases: Array<{
+		id: string;
+		name: string;
+		skillId: string;
+		toolId: string;
+		skill?: {
+			id: string;
+			name: string;
+			description: string;
+			instructions: string;
+			toolIds: string[];
+			revision?: number;
+		};
+	}>;
+}
+
+type GoogleVendorOnboardingPhaseId =
+	| "gmail_source"
+	| "google_contact"
+	| "calendar_availability"
+	| "google_doc"
+	| "google_sheet"
+	| "calendar_event";
 
 export async function resolveDivoSkills(options: {
 	query: string;
@@ -60,6 +94,48 @@ export async function resolveDivoSkills(options: {
 			results: [],
 			notes,
 		};
+	}
+	const requestedGooglePhases = deriveVendorOnboardingGooglePhases(query);
+	const vendorOnboarding = isVendorOnboardingRequest(query) && requestedGooglePhases.length > 1;
+	const googlePlan = vendorOnboarding
+		? await planVendorOnboarding({
+			phaseIds: requestedGooglePhases,
+			departmentId: options.departmentId,
+			config,
+			fetchImpl: options.fetchImpl,
+			notes,
+		})
+		: null;
+	if (googlePlan) {
+		const first = googlePlan.phases[0]?.skill;
+		const selected: ResolvedSkill = {
+			id: "google",
+			name: "Google Workspace vendor onboarding",
+			description: `Backend-planned ${googlePlan.phases.map((phase) => phase.name).join(" → ")} workflow.`,
+			score: 10,
+			confidence: "high",
+			reason: "Matched the governed Google vendor-onboarding workflow.",
+			nextAction: "Follow the phase order. Use the first inline recipe, then load later exact skill IDs immediately before their phase.",
+			toolIds: googlePlan.phases.map((phase) => phase.toolId),
+			...(first ? {
+				instructions: [
+					`Google parent guidance (${googlePlan.parent.name}):`,
+					googlePlan.parent.instructions,
+					"",
+					`First specialist recipe (${first.name}):`,
+					first.instructions,
+				].join("\n"),
+				revision: first.revision,
+			} : {}),
+			orchestrationPlan: googlePlan,
+		};
+		return { policy: DIVO_SKILL_POLICY, query, selected, results: [selected], notes };
+	}
+	if (vendorOnboarding) {
+		// A partial specialist match is not a usable substitute for the requested
+		// multi-phase workflow. The plan endpoint already recorded the precise
+		// RBAC or contract reason in notes, so fail closed instead of reranking.
+		return { policy: DIVO_SKILL_POLICY, query, selected: null, results: [], notes };
 	}
 	const results = await searchBackendSkills({
 		query,
@@ -124,6 +200,14 @@ export function formatSkillResolveResult(result: SkillResolveResult): string {
 			selected.instructions,
 		);
 	}
+	if (selected?.orchestrationPlan) {
+		lines.push("", "Google workflow phases:");
+		for (const [index, phase] of selected.orchestrationPlan.phases.entries()) {
+			lines.push(`${index + 1}. ${phase.name} — ${phase.skillId}`);
+		}
+		lines.push(selected.orchestrationPlan.connection.message);
+		lines.push("The first phase recipe is loaded above; load each later exact skill ID immediately before its phase.");
+	}
 
 	if (result.notes.length) {
 		lines.push("", "Notes:");
@@ -131,6 +215,114 @@ export function formatSkillResolveResult(result: SkillResolveResult): string {
 	}
 
 	return lines.join("\n");
+}
+
+function isVendorOnboardingRequest(query: string): boolean {
+	return /\bvendor\b/i.test(query) && /\bonboard(?:ing)?\b/i.test(query);
+}
+
+async function planVendorOnboarding(options: {
+	phaseIds: GoogleVendorOnboardingPhaseId[];
+	departmentId?: string;
+	config: DivoGatewayConfig;
+	fetchImpl?: typeof fetch;
+	notes: string[];
+}): Promise<GoogleVendorOnboardingPlan | null> {
+	try {
+		const response = await callDivoGateway(options.config, {
+			op: "google.plan",
+			departmentId: options.departmentId,
+			payload: { workflow: "vendor_onboarding", phaseIds: options.phaseIds },
+		}, options.fetchImpl ?? fetch);
+		if (!response.body.ok || response.body.status !== "success") {
+			options.notes.push(`Backend google.plan returned ${response.body.status}.`);
+			return null;
+		}
+		const plan = readGoogleVendorOnboardingPlan(response.body.data);
+		if (!plan) options.notes.push("Backend google.plan returned an invalid workflow contract.");
+		return plan;
+	} catch (error) {
+		options.notes.push(`Google workflow planning failed: ${error instanceof Error ? error.message : String(error)}`);
+		return null;
+	}
+}
+
+function readGoogleVendorOnboardingPlan(data: unknown): GoogleVendorOnboardingPlan | null {
+	if (!data || typeof data !== "object") return null;
+	const raw = data as Record<string, unknown>;
+	if (raw.workflow !== "vendor_onboarding" || !Array.isArray(raw.phases)) return null;
+	const rawParent = raw.parent;
+	if (!rawParent || typeof rawParent !== "object") return null;
+	const parentRecord = rawParent as Record<string, unknown>;
+	const parentId = readString(parentRecord.id);
+	const parentName = readString(parentRecord.name);
+	const parentDescription = readString(parentRecord.description);
+	const parentInstructions = readString(parentRecord.instructions);
+	if (!parentId || !parentName || !parentDescription || !parentInstructions) return null;
+	const connection = raw.connection;
+	if (!connection || typeof connection !== "object" || !readString((connection as Record<string, unknown>).message)) return null;
+	const phases = raw.phases.flatMap((value): GoogleVendorOnboardingPlan["phases"] => {
+		if (!value || typeof value !== "object") return [];
+		const phase = value as Record<string, unknown>;
+		const id = readString(phase.id);
+		const name = readString(phase.name);
+		const skillId = readString(phase.skillId);
+		const toolId = readString(phase.toolId);
+		if (!id || !name || !skillId || !toolId) return [];
+		const rawSkill = phase.skill;
+		let skill: GoogleVendorOnboardingPlan["phases"][number]["skill"];
+		if (rawSkill && typeof rawSkill === "object") {
+			const candidate = rawSkill as Record<string, unknown>;
+			const skillId = readString(candidate.id);
+			const skillName = readString(candidate.name);
+			const description = readString(candidate.description);
+			const instructions = readString(candidate.instructions);
+			if (!skillId || !skillName || !description || !instructions || !Array.isArray(candidate.toolIds)) return [];
+			skill = {
+				id: skillId, name: skillName, description, instructions,
+				toolIds: candidate.toolIds.filter((item): item is string => typeof item === "string"),
+				revision: typeof candidate.revision === "number" ? candidate.revision : undefined,
+			};
+		}
+		return [{ id, name, skillId, toolId, ...(skill ? { skill } : {}) }];
+	});
+	if (!phases.length || !phases[0]?.skill) return null;
+	return {
+		workflow: "vendor_onboarding",
+		parent: {
+			id: parentId,
+			name: parentName,
+			description: parentDescription,
+			instructions: parentInstructions,
+		},
+		connection: { message: readString((connection as Record<string, unknown>).message)! },
+		phases,
+	};
+}
+
+/**
+ * Select only Google phases explicitly required by the request. Lark remains
+ * a separate governed provider phase and is intentionally not smuggled into
+ * the Google plan.
+ */
+function deriveVendorOnboardingGooglePhases(query: string): GoogleVendorOnboardingPhaseId[] {
+	const phases: GoogleVendorOnboardingPhaseId[] = [];
+	const add = (phase: GoogleVendorOnboardingPhaseId) => {
+		if (!phases.includes(phase)) phases.push(phase);
+	};
+
+	if (/\b(?:gmail|email|mail|thread|message)\b/i.test(query)) add("gmail_source");
+	if (/\bgoogle\s+contacts?\b|\bgoogle\s+address\s*book\b/i.test(query)) add("google_contact");
+	if (/\b(?:availability|free[ -]?busy|time\s+slots?)\b|\bcheck\b[^.\n]{0,60}\bcalendar\b/i.test(query)) {
+		add("calendar_availability");
+	}
+	if (/\bgoogle\s+docs?\b|\bdoc(?:ument)?\s+(?:agenda|brief|summary)\b/i.test(query)) add("google_doc");
+	if (/\bgoogle\s+sheets?\b|\bspreadsheet\b|\bsheet\s+tracker\b/i.test(query)) add("google_sheet");
+	if (/\b(?:create|schedule|approve)\b[^.\n]{0,80}\bcalendar\s+event\b|\bcalendar\s+event\b/i.test(query)) {
+		add("calendar_event");
+	}
+
+	return phases;
 }
 
 function confidenceForScore(score: number): "high" | "medium" | "low" {
