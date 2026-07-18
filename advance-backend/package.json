@@ -17,6 +17,7 @@
     "provision:zoho-finance-skills": "tsx scripts/provision-zoho-finance-skills.ts",
     "backfill:dept-permissions": "tsx scripts/backfill-dept-permissions.ts",
     "migrate:lark-connections": "tsx scripts/migrate-lark-user-auth-links.ts",
+    "eval:manager-teach": "tsx scripts/evaluate-manager-teach-persona.ts",
     "test": "node --import tsx --test 'tests/**/*.test.ts'",
     "test:unit": "node --import tsx --test 'tests/tools/**/*.test.ts'",
     "test:integration": "node --import tsx --test 'tests/integration/**/*.test.ts'",

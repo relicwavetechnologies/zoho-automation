@@ -104,12 +104,14 @@ Evidence rules:
 - Every proposed change must cite exact supplied evidence refs. Use transcript refs whenever a narrated instruction supports the rule.
 - Transcript chunks and frames are not guaranteed to be precisely time-aligned.
 - Do not generalize a task-specific choice into a broad rule. Use the narrowest reusable scope.
+- "Do not learn this", "this is situational", "one-off", and equivalent statements are strong negative evidence. Do not turn the described behavior into a rule.
+- Propose a change only when the manager positively teaches durable guidance; showing or discussing a behavior is not enough.
 - Use an empty changes array when the teaching is ambiguous or contains no durable instruction.
 
 Persona rules:
 - preference: a durable format, style or decision preference.
 - correction: a reusable correction to future work.
-- workflow: an ordered working pattern.
+- workflow: an ordered working pattern. Classify required section or step ordering for recurring work as workflow, even when the manager phrases it as a preference.
 - skill: a persona procedure for a class of work; it is not code and grants no tool access.
 - add creates a new exact rule; replace changes the instruction of an existing exact rule while preserving its stable key; retire disables an obsolete exact rule.
 - Existing targets are addressed only by kind + scopeKey + ruleKey. Never invent database or tenant IDs.
