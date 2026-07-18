@@ -100,6 +100,9 @@ export const pickTeachRecording = () =>
 export const listLocalTeachRecordings = () =>
   invoke<TeachLocalRecording[]>('divo_teach_list_local_recordings')
 
+export const deleteLocalTeachRecording = (path: string) =>
+  invoke<void>('divo_teach_delete_local_recording', { path })
+
 export const createTeachSession = (
   departmentId: string,
   source: 'recording' | 'upload',

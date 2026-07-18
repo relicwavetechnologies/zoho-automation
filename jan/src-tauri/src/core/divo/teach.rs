@@ -121,6 +121,20 @@ fn checked_local_recording_path<R: Runtime>(
     Ok(path)
 }
 
+fn remove_local_recording_files(path: &Path) -> Result<(), String> {
+    fs::remove_file(path)
+        .map_err(|error| format!("Could not delete local Teach recording: {error}"))?;
+    let metadata_path = recording_metadata_path(path);
+    if let Err(error) = fs::remove_file(metadata_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!(
+                "Recording was deleted, but its metadata could not be removed: {error}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn recording_mime(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "mp4" => Some("video/mp4"),
@@ -305,6 +319,15 @@ pub async fn divo_teach_list_local_recordings<R: Runtime>(
     Ok(recordings)
 }
 
+#[tauri::command]
+pub async fn divo_teach_delete_local_recording<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+) -> Result<(), String> {
+    let path = checked_local_recording_path(&app, &path)?;
+    remove_local_recording_files(&path)
+}
+
 async fn teach_json_request<R: Runtime>(
     app: &AppHandle<R>,
     method: reqwest::Method,
@@ -475,13 +498,14 @@ pub async fn divo_teach_finalize_local_recording<R: Runtime>(
     )
     .await?;
     let data = response_data(response, "Teach local recording finalize")?;
-    let status = data.get("status").and_then(Value::as_str).unwrap_or_default();
+    let status = data
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if !matches!(status, "persona_updated" | "no_learning") {
         return Err("Local Teach recording is retained until processing succeeds".to_string());
     }
-    fs::remove_file(&path)
-        .map_err(|error| format!("Could not remove processed Teach recording: {error}"))?;
-    let _ = fs::remove_file(recording_metadata_path(&path));
+    remove_local_recording_files(&path)?;
     if let Err(error) = refresh_runtime_context(&app).await {
         log::warn!("divo.teach.runtime_context_refresh_failed error={error}");
     }
@@ -585,8 +609,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::MACOS_TEACH_RECORDING_ARGS;
     use super::{
-        read_recording_metadata, recording_metadata_path, recording_mime, validate_identifier,
-        write_recording_metadata,
+        read_recording_metadata, recording_metadata_path, recording_mime,
+        remove_local_recording_files, validate_identifier, write_recording_metadata,
     };
     use std::path::Path;
     use tempfile::tempdir;
@@ -637,7 +661,23 @@ mod tests {
         let metadata = read_recording_metadata(&path).expect("metadata read");
         assert_eq!(metadata.session_id.as_deref(), Some("teach-session-1"));
         assert_eq!(metadata.state, "retryable");
-        assert!(path.exists(), "retry metadata must never delete the recording");
+        assert!(
+            path.exists(),
+            "retry metadata must never delete the recording"
+        );
         assert!(recording_metadata_path(&path).exists());
+    }
+
+    #[test]
+    fn explicit_local_delete_removes_video_and_sidecar() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("teach.mov");
+        std::fs::write(&path, b"video").expect("video fixture");
+        write_recording_metadata(&path, None, "ready", None).expect("metadata write");
+
+        remove_local_recording_files(&path).expect("local delete");
+
+        assert!(!path.exists());
+        assert!(!recording_metadata_path(&path).exists());
     }
 }

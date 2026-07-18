@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Sparkles,
   RotateCcw,
+  Trash2,
   Upload,
   Video,
   type LucideIcon,
@@ -18,12 +19,21 @@ import {
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
 import { TeachProcessingExperience, TeachResultExperience } from './TeachExperience'
 import {
   cancelTeachRecording,
   cancelTeachSession,
   createTeachSession,
+  deleteLocalTeachRecording,
   finalizeLocalTeachRecording,
   getDivoSessionStatus,
   getTeachSession,
@@ -87,6 +97,8 @@ export function TeachMode() {
   const [recentLearnings, setRecentLearnings] = useState<TeachSession[]>([])
   const [loadingOverview, setLoadingOverview] = useState(false)
   const [overviewWarning, setOverviewWarning] = useState<string>()
+  const [recordingToDelete, setRecordingToDelete] = useState<TeachLocalRecording>()
+  const [deletingRecording, setDeletingRecording] = useState(false)
   const sessionId = session?.id
   const sessionStatus = session?.status
 
@@ -259,6 +271,21 @@ export function TeachMode() {
     await ingest(recording, 'recording')
   }, [ingest])
 
+  const deleteLocalRecording = useCallback(async () => {
+    if (!recordingToDelete) return
+    try {
+      setDeletingRecording(true)
+      await deleteLocalTeachRecording(recordingToDelete.path)
+      setLocalRecordings(recordings => recordings.filter(recording => recording.path !== recordingToDelete.path))
+      setRecordingToDelete(undefined)
+    } catch (error) {
+      console.warn('Teach local recording delete failed', error)
+      setOverviewWarning('The local recording could not be deleted.')
+    } finally {
+      setDeletingRecording(false)
+    }
+  }, [recordingToDelete])
+
   const startRecording = useCallback(async () => {
     try {
       setStage('recording')
@@ -408,14 +435,25 @@ export function TeachMode() {
                         <p className="truncate text-sm font-medium">{recording.fileName}</p>
                         <p className="mt-0.5 text-xs text-muted-foreground">{formatBytes(recording.size)} · {recording.state.replaceAll('_', ' ')}</p>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={!canRetry}
-                        onClick={() => void retryLocalRecording(recording)}
-                      >
-                        <RotateCcw /> {canRetry ? 'Retry' : 'Processing'}
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={!canRetry}
+                          onClick={() => void retryLocalRecording(recording)}
+                        >
+                          <RotateCcw /> {canRetry ? 'Retry' : 'Processing'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          aria-label={`Delete ${recording.fileName}`}
+                          onClick={() => setRecordingToDelete(recording)}
+                        >
+                          <Trash2 /> Delete
+                        </Button>
+                      </div>
                     </div>
                   )
                 })}
@@ -457,6 +495,23 @@ export function TeachMode() {
           </div>
           {overviewWarning && <p className="mt-3 text-xs text-amber-600" role="status">{overviewWarning}</p>}
         </div>
+
+        <Dialog open={Boolean(recordingToDelete)} onOpenChange={open => !open && !deletingRecording && setRecordingToDelete(undefined)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete local recording?</DialogTitle>
+              <DialogDescription>
+                {recordingToDelete?.fileName} will be permanently removed from this Mac. This cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" disabled={deletingRecording} onClick={() => setRecordingToDelete(undefined)}>Cancel</Button>
+              <Button variant="destructive" disabled={deletingRecording} onClick={() => void deleteLocalRecording()}>
+                <Trash2 /> {deletingRecording ? 'Deleting…' : 'Delete recording'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     )
   }

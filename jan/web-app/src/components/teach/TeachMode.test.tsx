@@ -9,6 +9,7 @@ const h = vi.hoisted(() => ({
   cancelRecording: vi.fn(),
   cancelSession: vi.fn(),
   createSession: vi.fn(),
+  deleteLocal: vi.fn(),
   getSession: vi.fn(),
   getStatus: vi.fn(),
   finalizeLocal: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock('@/lib/divo-teach', () => ({
   cancelTeachRecording: h.cancelRecording,
   cancelTeachSession: h.cancelSession,
   createTeachSession: h.createSession,
+  deleteLocalTeachRecording: h.deleteLocal,
   getDivoSessionStatus: h.getStatus,
   getTeachSession: h.getSession,
   finalizeLocalTeachRecording: h.finalizeLocal,
@@ -114,6 +116,7 @@ describe('TeachMode', () => {
     h.listen.mockResolvedValue(vi.fn())
     h.cancelRecording.mockResolvedValue(undefined)
     h.cancelSession.mockResolvedValue(teachSession('queued'))
+    h.deleteLocal.mockResolvedValue(undefined)
     h.getStatus.mockResolvedValue({ configured: true, departmentId: 'department-1' })
     h.finalizeLocal.mockResolvedValue(undefined)
     h.listLocal.mockResolvedValue([])
@@ -164,6 +167,30 @@ describe('TeachMode', () => {
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(h.createSession).toHaveBeenCalledWith('department-1', 'recording', localRecording)
     expect(h.uploadRecording).toHaveBeenCalledWith('teach-session-1', localRecording)
+  })
+
+  it('confirms before permanently deleting a local recording', async () => {
+    h.listLocal.mockResolvedValue([{
+      ...recording,
+      path: '/tmp/delete-me.mov',
+      fileName: 'delete-me.mov',
+      localOwned: true,
+      sessionId: null,
+      state: 'ready',
+      lastError: null,
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    }])
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    await user.click(await screen.findByRole('button', { name: 'Delete delete-me.mov' }))
+    expect(screen.getByText('Delete local recording?')).toBeInTheDocument()
+    expect(h.deleteLocal).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Delete recording' }))
+    expect(h.deleteLocal).toHaveBeenCalledWith('/tmp/delete-me.mov')
+    await waitFor(() => expect(screen.queryByText('delete-me.mov')).not.toBeInTheDocument())
   })
 
   it('starts the native recorder and gives actionable permission guidance on failure', async () => {
