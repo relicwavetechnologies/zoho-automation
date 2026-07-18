@@ -335,12 +335,15 @@ export class ManagerTeachService {
     }
   }
 
-  async processPersonaSynthesis(sessionId: string): Promise<void> {
+  async processPersonaSynthesis(
+    sessionId: string,
+  ): Promise<'persona_updated' | 'no_learning' | 'ignored'> {
     const result = await this.deps.personaProcessor.process(sessionId);
-    if (!result) return;
+    if (!result) return 'ignored';
     await this.cleanupSessionArtifacts(sessionId).catch(error => {
       this.log.warn('manager-teach.cleanup_after_persona_failed', { sessionId, error: String(error) });
     });
+    return result.status;
   }
 
   async markFailed(sessionId: string, stage: ManagerTeachQueueStage, error: unknown): Promise<void> {

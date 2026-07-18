@@ -25,10 +25,10 @@ export class ManagerTeachWorker {
       this.deps.queueName ?? MANAGER_TEACH_QUEUE_NAME,
       async (job: Job<ManagerTeachQueuePayload>) => {
         if (job.data.stage === 'synthesize') {
-          await this.deps.service.processPersonaSynthesis(job.data.teachSessionId);
-        } else {
-          await this.deps.service.processIngestion(job.data.teachSessionId);
+          return this.deps.service.processPersonaSynthesis(job.data.teachSessionId);
         }
+        await this.deps.service.processIngestion(job.data.teachSessionId);
+        return 'ingestion_finished';
       },
       {
         connection: { url: this.deps.redisUrl, maxRetriesPerRequest: null },
@@ -36,7 +36,11 @@ export class ManagerTeachWorker {
       },
     );
     this.worker.on('completed', job => {
-      this.log.info('manager-teach.worker.completed', { jobId: job.id });
+      this.log.info('manager-teach.worker.finished', {
+        jobId: job.id,
+        stage: job.data.stage,
+        outcome: job.returnvalue,
+      });
     });
     this.worker.on('failed', (job, error) => {
       this.log.warn('manager-teach.worker.failed', { jobId: job?.id, error: String(error) });

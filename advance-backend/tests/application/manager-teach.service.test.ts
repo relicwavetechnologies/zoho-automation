@@ -14,6 +14,31 @@ const noopLogger: Logger = {
 };
 
 describe('ManagerTeachService', () => {
+  it('distinguishes an applied persona result from an ignored terminal job', async () => {
+    let result: any = null;
+    const service = new ManagerTeachService({
+      prisma: {
+        managerTeachArtifact: { findMany: async () => [] },
+      } as never,
+      queue: {} as never,
+      logger: noopLogger,
+      mediaProcessor: {} as never,
+      personaProcessor: { process: async () => result } as never,
+      maxVideoBytes: 100,
+      rawRetentionHours: 24,
+    });
+
+    assert.equal(await service.processPersonaSynthesis('teach-1'), 'ignored');
+    result = {
+      status: 'persona_updated',
+      understanding: 'Learned a durable review workflow.',
+      appliedChangeCount: 1,
+      personaRevision: 1,
+      remainingUndos: 1,
+    };
+    assert.equal(await service.processPersonaSynthesis('teach-1'), 'persona_updated');
+  });
+
   it('allows only an active manager of the selected department to create a session', async () => {
     const prisma = {
       departmentMembership: { findFirst: async () => null },

@@ -42,23 +42,23 @@ const recording = {
   localOwned: false,
 }
 
-const teachSession = (status: 'awaiting_upload' | 'queued' | 'persona_updated' | 'no_learning') => ({
+const teachSession = (status: 'awaiting_upload' | 'queued' | 'persona_processing' | 'persona_updated' | 'no_learning' | 'failed') => ({
   id: 'teach-session-1',
   departmentId: 'department-1',
   source: 'upload' as const,
   status,
-  progress: ['persona_updated', 'no_learning'].includes(status) ? 100 : 25,
+  progress: ['persona_updated', 'no_learning'].includes(status) ? 100 : status === 'persona_processing' ? 80 : status === 'failed' ? 75 : 25,
   originalFileName: recording.fileName,
   mimeType: recording.mimeType,
   fileSize: recording.size,
-  lastError: null,
+  lastError: status === 'failed' ? 'Failed to process successful response' : null,
   understanding: status === 'persona_updated'
     ? 'Divo learned how the manager reviews weekly reports.'
     : status === 'no_learning' ? 'No durable rule was clear enough to save.' : null,
   appliedChangeCount: status === 'persona_updated' ? 2 : 0,
   personaRevision: status === 'persona_updated' ? 3 : null,
   remainingUndos: status === 'persona_updated' ? 2 : 0,
-  canCancel: !['persona_updated', 'no_learning'].includes(status),
+  canCancel: !['persona_updated', 'no_learning', 'failed'].includes(status),
   createdAt: '2026-07-18T00:00:00.000Z',
   updatedAt: '2026-07-18T00:00:00.000Z',
 })
@@ -98,6 +98,47 @@ describe('TeachMode', () => {
     expect(h.recordScreen).toHaveBeenCalledOnce()
     expect(await screen.findByText('Screen recorder could not start')).toBeInTheDocument()
     expect(screen.getByText(/Screen & System Audio Recording and Microphone access/)).toBeInTheDocument()
+  })
+
+  it('states that upload failed without blaming the completed recording', async () => {
+    h.createSession.mockRejectedValue('Teach service unavailable')
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    const uploadButton = await screen.findByRole('button', { name: 'Upload recording' })
+    await waitFor(() => expect(uploadButton).toBeEnabled())
+    await user.click(uploadButton)
+
+    expect(await screen.findByText('Upload failed')).toBeInTheDocument()
+    expect(screen.getByText(/recording was completed and saved locally/i)).toBeInTheDocument()
+    expect(screen.queryByText('Recording not prepared')).not.toBeInTheDocument()
+  })
+
+  it('states that persona processing failed after a successful recording upload', async () => {
+    h.getSession.mockResolvedValue(teachSession('failed'))
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    const uploadButton = await screen.findByRole('button', { name: 'Upload recording' })
+    await waitFor(() => expect(uploadButton).toBeEnabled())
+    await user.click(uploadButton)
+
+    expect(await screen.findByText('Persona update failed')).toBeInTheDocument()
+    expect(screen.getByText(/recording was processed.*could not validate/i)).toBeInTheDocument()
+    expect(screen.queryByText('Recording not prepared')).not.toBeInTheDocument()
+  })
+
+  it('shows that processing status is unknown when polling loses connection', async () => {
+    h.getSession.mockRejectedValue('database unavailable')
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    const uploadButton = await screen.findByRole('button', { name: 'Upload recording' })
+    await waitFor(() => expect(uploadButton).toBeEnabled())
+    await user.click(uploadButton)
+
+    expect(await screen.findByText(/Status temporarily unavailable/)).toBeInTheDocument()
+    expect(screen.getByText(/has not reported success or failure yet/)).toBeInTheDocument()
   })
 
   it('uploads a selected recording, learns persona rules and supports Undo', async () => {

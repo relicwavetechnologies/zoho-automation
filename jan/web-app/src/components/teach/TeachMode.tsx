@@ -34,6 +34,7 @@ import {
 } from '@/lib/divo-teach'
 
 type TeachStage = 'intro' | 'recording' | 'uploading' | 'processing' | 'ready' | 'error'
+type TeachErrorKind = 'manager' | 'recorder' | 'upload' | 'processing' | 'generic'
 
 type UploadProgress = {
   sessionId: string
@@ -48,13 +49,24 @@ const formatBytes = (bytes: number | null) => {
   return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`
 }
 
+const describeProcessingFailure = (lastError: string | null | undefined) => {
+  if (lastError?.includes('Failed to process successful response')) {
+    return "The recording was processed, but Divo could not validate the persona model's response. No persona changes were saved."
+  }
+  if (lastError?.includes('Transaction not found') || lastError?.includes("Can't reach database server")) {
+    return 'The recording was processed, but Divo lost its database connection while saving the persona. No persona changes were saved.'
+  }
+  return 'The recording was processed, but Divo could not update your persona. No persona changes were saved.'
+}
+
 export function TeachMode() {
   const [stage, setStage] = useState<TeachStage>('intro')
   const [departmentId, setDepartmentId] = useState<string>()
   const [checkingAccess, setCheckingAccess] = useState(true)
   const [session, setSession] = useState<TeachSession>()
   const [uploadProgress, setUploadProgress] = useState(0)
-  const [errorKind, setErrorKind] = useState<'manager' | 'recorder' | 'generic'>('generic')
+  const [errorKind, setErrorKind] = useState<TeachErrorKind>('generic')
+  const [statusWarning, setStatusWarning] = useState<string>()
   const [undoing, setUndoing] = useState(false)
   const [undoMessage, setUndoMessage] = useState<string>()
   const sessionId = session?.id
@@ -100,22 +112,34 @@ export function TeachMode() {
       'persona_processing',
     ].includes(sessionStatus)) return
     let active = true
+    let timer: number | undefined
     const refresh = async () => {
       try {
         const current = await getTeachSession(sessionId)
         if (!active) return
+        setStatusWarning(undefined)
         setSession(current)
         if (current.status === 'persona_updated' || current.status === 'no_learning') setStage('ready')
-        if (current.status === 'failed' || current.status === 'cancelled') setStage('error')
+        if (current.status === 'failed') {
+          setErrorKind('processing')
+          setStage('error')
+        }
+        if (current.status === 'cancelled') setStage('error')
       } catch (error) {
         console.warn('Teach processing status unavailable', error)
+        if (active) {
+          setStatusWarning('Status temporarily unavailable. Divo has not reported success or failure yet.')
+        }
+      } finally {
+        // Schedule only after the current request settles. A setInterval here
+        // creates overlapping requests when the database is slow or offline.
+        if (active) timer = window.setTimeout(() => void refresh(), 1_000)
       }
     }
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 1_000)
     return () => {
       active = false
-      window.clearInterval(timer)
+      if (timer !== undefined) window.clearTimeout(timer)
     }
   }, [sessionId, sessionStatus])
 
@@ -124,6 +148,7 @@ export function TeachMode() {
     setSession(undefined)
     setUploadProgress(0)
     setErrorKind('generic')
+    setStatusWarning(undefined)
     setUndoing(false)
     setUndoMessage(undefined)
   }, [])
@@ -151,7 +176,7 @@ export function TeachMode() {
     } catch (error) {
       console.warn('Teach recording ingestion failed', error)
       if (created) void cancelTeachSession(created.id).catch(() => undefined)
-      setErrorKind(String(error).includes('active department manager') ? 'manager' : 'generic')
+      setErrorKind(String(error).includes('active department manager') ? 'manager' : 'upload')
       setStage('error')
     }
   }, [departmentId])
@@ -178,6 +203,7 @@ export function TeachMode() {
       if (recording) await ingest(recording, 'upload')
     } catch (error) {
       console.warn('Teach recording selection failed', error)
+      setErrorKind('upload')
       setStage('error')
     }
   }, [ingest])
@@ -314,6 +340,11 @@ export function TeachMode() {
             <span>{progress}%</span>
           </div>
         </div>
+        {statusWarning && (
+          <p className="mt-4 max-w-md text-center text-sm leading-6 text-amber-600" role="status">
+            {statusWarning}
+          </p>
+        )}
         {session?.canCancel && (
           <Button variant="ghost" className="mt-5" onClick={() => void cancel()}>Cancel</Button>
         )}
@@ -364,24 +395,35 @@ export function TeachMode() {
     )
   }
 
+  const errorTitle = errorKind === 'manager'
+    ? 'Manager access required'
+    : errorKind === 'recorder'
+      ? 'Screen recorder could not start'
+      : errorKind === 'upload'
+        ? 'Upload failed'
+        : errorKind === 'processing'
+          ? 'Persona update failed'
+          : 'Teaching did not complete'
+  const errorDescription = errorKind === 'manager'
+    ? 'Teach currently learns only from the manager of the selected department.'
+    : errorKind === 'recorder'
+      ? 'Allow Screen & System Audio Recording and Microphone access for Divo in Mac System Settings, then try again.'
+      : errorKind === 'upload'
+        ? 'Your recording was completed and saved locally, but Divo could not upload it. Your persona was not changed.'
+        : errorKind === 'processing'
+          ? describeProcessingFailure(session?.lastError)
+          : 'Divo could not complete this teaching workflow. Your persona was not changed.'
+
   return (
     <CenteredCard>
       <div className="grid size-12 place-items-center rounded-xl bg-amber-500/10 text-amber-600">
         <FileVideo2 className="size-5" />
       </div>
       <h1 className="mt-5 font-studio text-2xl font-medium">
-        {errorKind === 'manager'
-          ? 'Manager access required'
-          : errorKind === 'recorder'
-            ? 'Screen recorder could not start'
-            : 'Recording not prepared'}
+        {errorTitle}
       </h1>
       <p className="mt-2 max-w-md text-center leading-6 text-muted-foreground">
-        {errorKind === 'manager'
-          ? 'Teach currently learns only from the manager of the selected department.'
-          : errorKind === 'recorder'
-            ? 'Allow Screen & System Audio Recording and Microphone access for Divo in Mac System Settings, then try again.'
-            : 'Divo could not prepare this recording. Your persona was not changed.'}
+        {errorDescription}
       </p>
       <Button className="mt-6" onClick={reset}>
         <ArrowLeft /> Try again
