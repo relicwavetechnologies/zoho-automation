@@ -18,7 +18,6 @@ const h = vi.hoisted(() => ({
   listen: vi.fn(),
   pickRecording: vi.fn(),
   recordScreen: vi.fn(),
-  refineSession: vi.fn(),
   uploadRecording: vi.fn(),
   undoPersona: vi.fn(),
 }))
@@ -39,9 +38,22 @@ vi.mock('@/lib/divo-teach', () => ({
   listRecentTeachLearnings: h.listRecent,
   pickTeachRecording: h.pickRecording,
   recordTeachScreen: h.recordScreen,
-  refineTeachSession: h.refineSession,
   uploadTeachRecording: h.uploadRecording,
   undoManagerPersona: h.undoPersona,
+}))
+
+vi.mock('./TeachAgentChat', () => ({
+  TeachAgentChat: ({ session, onUndo, undoMessage }: any) => (
+    <div data-testid="teach-agent-chat">
+      <p>Interactive Teach</p>
+      <p>{session.appliedChangeCount} persona rules written</p>
+      <p>{session.understanding}</p>
+      {session.appliedChanges.map((change: any) => <p key={change.ruleKey}>{change.instruction}</p>)}
+      <p>DeepSeek Pro · Max thinking</p>
+      {session.remainingUndos > 0 && <button onClick={onUndo}>Undo ({session.remainingUndos} left)</button>}
+      {undoMessage && <p>{undoMessage}</p>}
+    </div>
+  ),
 }))
 
 const recording = {
@@ -52,24 +64,25 @@ const recording = {
   localOwned: false,
 }
 
-const teachSession = (status: 'awaiting_upload' | 'queued' | 'persona_processing' | 'persona_updated' | 'no_learning' | 'failed') => ({
+const teachSession = (status: 'awaiting_upload' | 'queued' | 'evidence_ready' | 'agent_processing' | 'completed' | 'persona_processing' | 'persona_updated' | 'no_learning' | 'failed') => ({
   id: 'teach-session-1',
   departmentId: 'department-1',
   source: 'upload' as const,
   status,
-  progress: ['persona_updated', 'no_learning'].includes(status) ? 100 : status === 'persona_processing' ? 80 : status === 'failed' ? 75 : 25,
-  processingStep: ['persona_updated', 'no_learning'].includes(status)
+  progress: ['completed', 'persona_updated', 'no_learning'].includes(status) ? 100 : ['agent_processing', 'persona_processing'].includes(status) ? 80 : status === 'failed' ? 75 : 25,
+  processingStep: ['completed', 'persona_updated', 'no_learning'].includes(status)
     ? 'complete' as const
-    : status === 'persona_processing' ? 'deepseek_reviewing' as const
+    : ['agent_processing', 'persona_processing'].includes(status) ? 'agent_reasoning' as const
+      : status === 'evidence_ready' ? 'evidence_ready' as const
       : status === 'failed' ? 'failed' as const : status === 'awaiting_upload' ? 'awaiting_upload' as const : 'recording_received' as const,
   originalFileName: recording.fileName,
   mimeType: recording.mimeType,
   fileSize: recording.size,
   lastError: status === 'failed' ? 'Failed to process successful response' : null,
-  understanding: status === 'persona_updated'
+  understanding: ['completed', 'persona_updated'].includes(status)
     ? 'Divo learned how the manager reviews weekly reports.'
     : status === 'no_learning' ? 'No durable rule was clear enough to save.' : null,
-  appliedChanges: status === 'persona_updated' ? [
+  appliedChanges: ['completed', 'persona_updated'].includes(status) ? [
     {
       operation: 'add' as const,
       kind: 'workflow',
@@ -98,14 +111,14 @@ const teachSession = (status: 'awaiting_upload' | 'queued' | 'persona_processing
     transcriptionModel: 'gpt-4o-mini-transcribe',
     ocrModels: ['qwen/qwen2.5-vl-32b-instruct'],
   },
-  modelProvider: status === 'persona_updated' ? 'deepseek' : null,
-  modelId: status === 'persona_updated' ? 'deepseek-v4-pro' : null,
+  modelProvider: ['completed', 'persona_updated'].includes(status) ? 'deepseek' : null,
+  modelId: ['completed', 'persona_updated'].includes(status) ? 'deepseek-v4-pro' : null,
   parentSessionId: null,
   managerCorrection: null,
-  appliedChangeCount: status === 'persona_updated' ? 2 : 0,
-  personaRevision: status === 'persona_updated' ? 3 : null,
-  remainingUndos: status === 'persona_updated' ? 2 : 0,
-  canCancel: !['persona_updated', 'no_learning', 'failed'].includes(status),
+  appliedChangeCount: ['completed', 'persona_updated'].includes(status) ? 2 : 0,
+  personaRevision: ['completed', 'persona_updated'].includes(status) ? 3 : null,
+  remainingUndos: ['completed', 'persona_updated'].includes(status) ? 2 : 0,
+  canCancel: !['completed', 'persona_updated', 'no_learning', 'failed'].includes(status),
   createdAt: '2026-07-18T00:00:00.000Z',
   updatedAt: '2026-07-18T00:00:00.000Z',
 })
@@ -124,13 +137,7 @@ describe('TeachMode', () => {
     h.pickRecording.mockResolvedValue(recording)
     h.createSession.mockResolvedValue(teachSession('awaiting_upload'))
     h.uploadRecording.mockResolvedValue(teachSession('queued'))
-    h.getSession.mockResolvedValue(teachSession('persona_updated'))
-    h.refineSession.mockResolvedValue({
-      ...teachSession('persona_processing'),
-      id: 'teach-session-2',
-      parentSessionId: 'teach-session-1',
-      managerCorrection: 'Put risks first only for executive reports.',
-    })
+    h.getSession.mockResolvedValue(teachSession('completed'))
     h.undoPersona.mockResolvedValue({ revision: 4, remainingUndos: 1 })
   })
 
@@ -261,10 +268,10 @@ describe('TeachMode', () => {
     await act(async () => {
       await vi.waitFor(() => expect(h.getSession).toHaveBeenCalledWith('teach-session-1'))
     })
-    expect(await screen.findByText('2 persona rules updated')).toBeInTheDocument()
+    expect(await screen.findByText('2 persona rules written')).toBeInTheDocument()
     expect(screen.getByText(/reviews weekly reports/i)).toBeInTheDocument()
     expect(screen.getByText('Review weekly reports with risks first.')).toBeInTheDocument()
-    expect(screen.getByText('deepseek-v4-pro')).toBeInTheDocument()
+    expect(screen.getByText('DeepSeek Pro · Max thinking')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Undo (2 left)' }))
     expect(h.undoPersona).toHaveBeenCalledWith('department-1')
@@ -285,33 +292,20 @@ describe('TeachMode', () => {
     await waitFor(() => expect(h.finalizeLocal).toHaveBeenCalledWith(ownedRecording.path, 'teach-session-1'))
   })
 
-  it('creates a linked real refinement from the result correction bar', async () => {
-    h.getSession.mockImplementation(async (sessionId: string) => sessionId === 'teach-session-2'
-      ? {
-          ...teachSession('persona_processing'),
-          id: 'teach-session-2',
-          parentSessionId: 'teach-session-1',
-          managerCorrection: 'Put risks first only for executive reports.',
-        }
-      : teachSession('persona_updated'))
+  it('moves into one interactive Teach conversation after evidence is ready', async () => {
+    h.getSession.mockResolvedValue(teachSession('evidence_ready'))
     const user = userEvent.setup()
     render(<TeachMode />)
 
     const uploadButton = await screen.findByRole('button', { name: 'Upload recording' })
     await waitFor(() => expect(uploadButton).toBeEnabled())
     await user.click(uploadButton)
-    expect(await screen.findByText('2 persona rules updated')).toBeInTheDocument()
-
-    await user.type(screen.getByRole('textbox', { name: 'Refine what Divo learned' }), 'Put risks first only for executive reports.')
-    await user.click(screen.getByRole('button', { name: 'Send correction' }))
-
-    expect(h.refineSession).toHaveBeenCalledWith('teach-session-1', 'Put risks first only for executive reports.')
-    expect(await screen.findByText('Learning from your demonstration')).toBeInTheDocument()
-    expect(screen.getByText(/Refining the prior result/)).toBeInTheDocument()
+    expect(await screen.findByText('Interactive Teach')).toBeInTheDocument()
+    expect(screen.getByTestId('teach-agent-chat')).toBeInTheDocument()
   })
 
   it('shows a clean no-learning result without an Undo action', async () => {
-    h.getSession.mockResolvedValue(teachSession('no_learning'))
+    h.getSession.mockResolvedValue({ ...teachSession('completed'), appliedChangeCount: 0, appliedChanges: [], understanding: 'No durable rule was clear enough to save.', remainingUndos: 0 })
     const user = userEvent.setup()
     render(<TeachMode />)
 
@@ -319,7 +313,7 @@ describe('TeachMode', () => {
     await waitFor(() => expect(uploadButton).toBeEnabled())
     await user.click(uploadButton)
 
-    expect(await screen.findByText('Teaching reviewed')).toBeInTheDocument()
+    expect(await screen.findByText('0 persona rules written')).toBeInTheDocument()
     expect(screen.getByText(/no durable rule was clear enough/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Undo/ })).not.toBeInTheDocument()
   })

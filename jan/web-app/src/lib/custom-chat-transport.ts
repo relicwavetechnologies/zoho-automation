@@ -38,7 +38,7 @@ import { encodeAudioSentinel, parseAudioDataUrl } from '@/lib/audio-sentinel'
 import { encodeVideoSentinel, parseVideoDataUrl } from '@/lib/video-sentinel'
 import { extractFilesFromPrompt, type FileMetadata } from '@/lib/fileMetadata'
 import { isPredefinedRemoteProvider, getProviderApiType } from '@/lib/providerCaps'
-import { createPiMessageStream } from './pi-stream'
+import { createPiMessageStream, type PiTeachProfile } from './pi-stream'
 import { PI_MODEL_ID, PI_PROVIDER_ID } from './pi/constants'
 import { paramsSettings } from '@/lib/predefinedParams'
 import {
@@ -625,6 +625,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
   private systemMessage?: string
   private serviceHub: ServiceHub | null
   private threadId?: string
+  private piProfile?: PiTeachProfile
   private continueFromContent: string | null = null
   /** Latest user message text — used by the MCP orchestrator for tool routing. */
   private lastUserMessage = ''
@@ -635,9 +636,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
    */
   private streamGeneration = 0
 
-  constructor(systemMessage?: string, threadId?: string) {
+  constructor(systemMessage?: string, threadId?: string, piProfile?: PiTeachProfile) {
     this.systemMessage = systemMessage
     this.threadId = threadId
+    this.piProfile = piProfile
     this.serviceHub = useServiceStore.getState().serviceHub
     // Tools will be loaded when updateRagToolsAvailability is called with model capabilities
   }
@@ -648,6 +650,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
 
   updateSystemMessage(systemMessage: string | undefined) {
     this.systemMessage = systemMessage
+  }
+
+  updatePiProfile(profile: PiTeachProfile | undefined) {
+    this.piProfile = profile
   }
 
   // Inference params follow the thread's assigned assistant so in-chat agent
@@ -974,6 +980,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         threadId,
         message: userMessage,
         abortSignal: options.abortSignal,
+        profile: this.piProfile,
         isStale: () => this.streamGeneration !== myGeneration,
         onRunStateChange: (runId, state) => {
           if (this.streamGeneration !== myGeneration) return

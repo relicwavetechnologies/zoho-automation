@@ -116,6 +116,34 @@ describe('createPiMessageStream run ownership', () => {
     )
   })
 
+  it('pins Teach prompts to Pro, max thinking, and trusted session metadata', async () => {
+    const stream = createPiMessageStream({
+      threadId: 'teach-session-thread',
+      message: 'begin teaching',
+      abortSignal: undefined,
+      isStale: () => false,
+      profile: {
+        kind: 'teach',
+        teachSessionId: '29a63a44-c348-4414-b5eb-25246d7eb13d',
+        departmentId: 'department-1',
+      },
+    })
+    const reader = stream.getReader()
+    await reader.read()
+
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith(
+      'pi_prompt',
+      expect.objectContaining({
+        modelId: 'deepseek-v4-pro',
+        thinkingLevel: 'xhigh',
+        profile: 'teach',
+        teachSessionId: '29a63a44-c348-4414-b5eb-25246d7eb13d',
+        departmentId: 'department-1',
+      })
+    ))
+    await reader.cancel()
+  })
+
   it('does not prompt after stop while Pi startup is deferred', async () => {
     const abortController = new AbortController()
     let resolvePiStart: (() => void) | undefined

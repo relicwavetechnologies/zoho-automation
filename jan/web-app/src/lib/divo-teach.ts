@@ -10,7 +10,7 @@ export type TeachRecordingFile = {
 
 export type TeachLocalRecording = TeachRecordingFile & {
   sessionId: string | null
-  state: 'ready' | 'uploading' | 'processing' | 'retryable'
+  state: 'ready' | 'uploading' | 'processing' | 'agent_ready' | 'retryable'
   lastError: string | null
   createdAt: string
   updatedAt: string
@@ -24,6 +24,9 @@ export type TeachSession = {
     | 'awaiting_upload'
     | 'queued'
     | 'ingesting'
+    | 'evidence_ready'
+    | 'agent_processing'
+    | 'completed'
     | 'ready_for_processing'
     | 'persona_processing'
     | 'persona_updated'
@@ -38,10 +41,8 @@ export type TeachSession = {
     | 'transcribing'
     | 'reading_screens'
     | 'reconstructing_workflow'
-    | 'loading_persona'
-    | 'deepseek_reviewing'
-    | 'validating_change'
-    | 'writing_persona'
+    | 'evidence_ready'
+    | 'agent_reasoning'
     | 'complete'
     | 'failed'
     | 'cancelled'
@@ -131,9 +132,6 @@ export const listRecentTeachLearnings = (departmentId: string, limit = 10) =>
 
 export const finalizeLocalTeachRecording = (path: string, sessionId: string) =>
   invoke<void>('divo_teach_finalize_local_recording', { path, sessionId })
-
-export const refineTeachSession = (sessionId: string, correction: string) =>
-  invoke<TeachSession>('divo_teach_refine_session', { sessionId, correction })
 
 export const cancelTeachSession = (sessionId: string) =>
   invoke<TeachSession>('divo_teach_cancel_session', { sessionId })

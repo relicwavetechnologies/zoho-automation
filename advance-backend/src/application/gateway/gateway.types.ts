@@ -7,6 +7,8 @@ export const GATEWAY_OPS = [
   'skills.search',
   'skills.get',
   'persona.resolve',
+  'teach.context.get',
+  'teach.persona.apply',
   'google.plan',
   'connections.list',
   'media.image_ocr',
@@ -106,6 +108,10 @@ export const skillsSearchPayloadSchema = z.object({
 export const personaResolvePayloadSchema = z.object({
   query: z.string().trim().min(3).max(2_000),
   limit: z.number().int().min(1).max(5).optional(),
+}).strict();
+
+export const teachContextGetPayloadSchema = z.object({
+  teachSessionId: z.string().uuid(),
 }).strict();
 
 export const connectionsListPayloadSchema = z.object({

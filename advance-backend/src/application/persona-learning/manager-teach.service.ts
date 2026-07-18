@@ -1,11 +1,12 @@
-import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { readFile, rm, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { ManagerTeachMediaProcessor } from './manager-teach-media.processor';
 import { ManagerTeachPersonaProcessor } from './manager-teach-persona.processor';
-import { ManagerTeachQueue, type ManagerTeachQueueStage } from './manager-teach.queue';
+import type { ManagerTeachPersonaPatch } from './manager-teach-persona.types';
+import { ManagerTeachQueue } from './manager-teach.queue';
 
 export type ManagerTeachSourceInput = 'recording' | 'upload';
 
@@ -16,10 +17,8 @@ export type ManagerTeachProcessingStep =
   | 'transcribing'
   | 'reading_screens'
   | 'reconstructing_workflow'
-  | 'loading_persona'
-  | 'deepseek_reviewing'
-  | 'validating_change'
-  | 'writing_persona'
+  | 'evidence_ready'
+  | 'agent_reasoning'
   | 'complete'
   | 'failed'
   | 'cancelled';
@@ -52,6 +51,10 @@ export interface ManagerTeachSessionView {
     | 'awaiting_upload'
     | 'queued'
     | 'ingesting'
+    | 'evidence_ready'
+    | 'agent_processing'
+    | 'completed'
+    // Historical rows created by the retired server-side synthesis flow.
     | 'ready_for_processing'
     | 'persona_processing'
     | 'persona_updated'
@@ -105,7 +108,7 @@ export interface ManagerTeachServiceDeps {
   readonly uploadDir: string;
 }
 
-const refinementManifestSchema = z.object({
+const evidenceReceiptSchema = z.object({
   schemaVersion: z.literal(1),
   createdAt: z.string().optional(),
   source: z.object({
@@ -134,8 +137,8 @@ const refinementManifestSchema = z.object({
 }).passthrough();
 
 /**
- * Authoritative explicit-Teach job service. Media ingestion and persona
- * synthesis are separate durable stages; only the synthesis processor writes.
+ * Authoritative explicit-Teach service. Media ingestion stops at durable
+ * evidence; an authenticated Pi Teach session requests governed persona writes.
  */
 export class ManagerTeachService {
   private readonly log: Logger;
@@ -203,7 +206,7 @@ export class ManagerTeachService {
         companyId: input.companyId,
         managerId: input.managerId,
         departmentId: input.departmentId,
-        status: { in: ['persona_updated', 'no_learning'] },
+        status: { in: ['completed', 'persona_updated', 'no_learning'] },
       },
       include: {
         personaMutation: true,
@@ -220,105 +223,31 @@ export class ManagerTeachService {
     )));
   }
 
-  async createRefinement(input: {
+  async getAgentContext(input: {
     companyId: string;
     managerId: string;
+    departmentId: string;
     sessionId: string;
-    correction: string;
-  }): Promise<ManagerTeachSessionView> {
-    const correction = input.correction.trim();
-    if (!correction || correction.length > 2_000) {
-      throw new ManagerTeachError('invalid_state', 'Teach correction must contain 1 to 2,000 characters');
-    }
-    const parent = await this.deps.prisma.managerTeachSession.findFirst({
-      where: { id: input.sessionId, companyId: input.companyId, managerId: input.managerId },
-      include: {
-        artifacts: { where: { kind: 'evidence_manifest', status: 'available' }, take: 1 },
-      },
-    });
-    if (!parent) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
-    if (!['persona_updated', 'no_learning'].includes(parent.status)) {
-      throw new ManagerTeachError('invalid_state', 'Teach can refine only a completed teaching result');
-    }
-    await this.assertManager(parent);
-    const artifact = parent.artifacts[0];
-    if (!artifact || (artifact.expiresAt && artifact.expiresAt <= new Date())) {
-      throw new ManagerTeachError('invalid_state', 'The Teach evidence for this result is no longer available');
-    }
+  }) {
+    return this.deps.personaProcessor.getContext(input);
+  }
 
-    const rawManifest = await readFile(artifact.storageKey, 'utf8');
-    const manifest = refinementManifestSchema.parse(JSON.parse(rawManifest) as unknown);
-    if (
-      manifest.source.companyId !== parent.companyId
-      || manifest.source.departmentId !== parent.departmentId
-      || manifest.source.managerId !== parent.managerId
-    ) {
-      throw new ManagerTeachError('invalid_state', 'The Teach evidence does not belong to this manager persona');
-    }
-
-    const child = await this.deps.prisma.managerTeachSession.create({
-      data: {
-        companyId: parent.companyId,
-        managerId: parent.managerId,
-        departmentId: parent.departmentId,
-        source: parent.source,
-        status: 'awaiting_upload',
-        progress: 0,
-        originalFileName: parent.originalFileName,
-        mimeType: parent.mimeType,
-        fileSize: parent.fileSize,
-        parentSessionId: parent.id,
-        managerCorrection: correction,
-      },
-    });
-    const evidenceDir = join(this.deps.uploadDir, parent.companyId, child.id, 'evidence');
-    const manifestPath = join(evidenceDir, 'evidence-manifest.json');
-    const temporaryPath = `${manifestPath}.tmp`;
-
-    try {
-      const lastEnd = manifest.transcript.segments.at(-1)?.end ?? 0;
-      const correctionSegment = {
-        start: lastEnd,
-        end: lastEnd + 0.001,
-        text: `Manager correction to the previous Teach result: ${correction}`,
-      };
-      const nextManifest = {
-        ...manifest,
-        createdAt: new Date().toISOString(),
-        source: { ...manifest.source, teachSessionId: child.id },
-        transcript: {
-          ...manifest.transcript,
-          segments: [...manifest.transcript.segments, correctionSegment],
-          text: [manifest.transcript.text ?? '', correctionSegment.text].filter(Boolean).join('\n'),
-        },
-      };
-      await mkdir(evidenceDir, { recursive: true });
-      await writeFile(temporaryPath, JSON.stringify(nextManifest, null, 2), { encoding: 'utf8', mode: 0o600 });
-      await rename(temporaryPath, manifestPath);
-      const metadata = await stat(manifestPath);
-      const ready = await this.deps.prisma.$transaction(async tx => {
-        await tx.managerTeachArtifact.create({
-          data: {
-            sessionId: child.id,
-            kind: 'evidence_manifest',
-            storageKey: manifestPath,
-            mimeType: 'application/json',
-            sizeBytes: metadata.size,
-            expiresAt: artifact.expiresAt,
-          },
-        });
-        return tx.managerTeachSession.update({
-          where: { id: child.id },
-          data: { status: 'ready_for_processing', progress: 75, lastError: null },
-        });
+  async applyAgentPersona(input: {
+    companyId: string;
+    managerId: string;
+    departmentId: string;
+    sessionId: string;
+    mutationKey: string;
+    patch: ManagerTeachPersonaPatch;
+  }) {
+    const result = await this.deps.personaProcessor.apply(input);
+    await this.cleanupSessionRawVideo(input.sessionId).catch(error => {
+      this.log.warn('manager-teach.cleanup_after_agent_failed', {
+        sessionId: input.sessionId,
+        error: String(error),
       });
-      await this.enqueueDurableSession(child.id, 'synthesize');
-      return toSessionView(ready);
-    } catch (error) {
-      await rm(join(this.deps.uploadDir, parent.companyId, child.id), { recursive: true, force: true });
-      await this.deps.prisma.managerTeachSession.delete({ where: { id: child.id } }).catch(() => undefined);
-      throw error;
-    }
+    });
+    return result;
   }
 
   async prepareUpload(input: { companyId: string; managerId: string; sessionId: string }) {
@@ -386,7 +315,7 @@ export class ManagerTeachService {
       });
     });
 
-    await this.enqueueDurableSession(session.id, 'ingest');
+    await this.enqueueDurableSession(session.id);
     return toSessionView(session);
   }
 
@@ -396,14 +325,14 @@ export class ManagerTeachService {
     });
     if (!session) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
     if (session.status === 'cancelled') return toSessionView(session);
-    if (['persona_processing', 'persona_updated', 'no_learning', 'failed'].includes(session.status)) {
+    if (['agent_processing', 'completed', 'persona_processing', 'persona_updated', 'no_learning', 'failed'].includes(session.status)) {
       throw new ManagerTeachError('invalid_state', 'This Teach session can no longer be cancelled');
     }
 
     const cancelled = await this.deps.prisma.managerTeachSession.updateMany({
       where: {
         id: session.id,
-        status: { in: ['awaiting_upload', 'queued', 'ingesting', 'ready_for_processing'] },
+        status: { in: ['awaiting_upload', 'queued', 'ingesting', 'evidence_ready', 'ready_for_processing'] },
         cancelRequestedAt: null,
       },
       data: {
@@ -431,15 +360,12 @@ export class ManagerTeachService {
 
   async reconcileQueuedSessions(limit = 100): Promise<void> {
     const sessions = await this.deps.prisma.managerTeachSession.findMany({
-      where: { status: { in: ['queued', 'ready_for_processing'] }, cancelRequestedAt: null },
-      select: { id: true, status: true },
+      where: { status: 'queued', cancelRequestedAt: null },
+      select: { id: true },
       orderBy: { createdAt: 'asc' },
       take: limit,
     });
-    await Promise.all(sessions.map(session => this.enqueueDurableSession(
-      session.id,
-      session.status === 'queued' ? 'ingest' : 'synthesize',
-    )));
+    await Promise.all(sessions.map(session => this.enqueueDurableSession(session.id)));
   }
 
   async processIngestion(sessionId: string): Promise<void> {
@@ -492,7 +418,7 @@ export class ManagerTeachService {
         const completed = await tx.managerTeachSession.updateMany({
           where: { id: sessionId, status: 'ingesting', cancelRequestedAt: null },
           data: {
-            status: 'ready_for_processing',
+            status: 'evidence_ready',
             progress: 75,
             completedAt: null,
             lastError: null,
@@ -530,7 +456,6 @@ export class ManagerTeachService {
         frames: result.frameCount,
         warnings: result.warningCount,
       });
-      await this.enqueueDurableSession(sessionId, 'synthesize');
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
       await this.deps.prisma.managerTeachSession.updateMany({
@@ -541,27 +466,12 @@ export class ManagerTeachService {
     }
   }
 
-  async processPersonaSynthesis(
-    sessionId: string,
-  ): Promise<'persona_updated' | 'no_learning' | 'ignored'> {
-    const result = await this.deps.personaProcessor.process(sessionId);
-    if (!result) return 'ignored';
-    await this.cleanupSessionRawVideo(sessionId).catch(error => {
-      this.log.warn('manager-teach.cleanup_after_persona_failed', { sessionId, error: String(error) });
-    });
-    return result.status;
-  }
-
-  async markFailed(sessionId: string, stage: ManagerTeachQueueStage, error: unknown): Promise<void> {
+  async markFailed(sessionId: string, error: unknown): Promise<void> {
     const message = error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
     await this.deps.prisma.managerTeachSession.updateMany({
       where: {
         id: sessionId,
-        status: {
-          in: stage === 'ingest'
-            ? ['queued', 'ingesting']
-            : ['ready_for_processing', 'persona_processing'],
-        },
+        status: { in: ['queued', 'ingesting'] },
       },
       data: { status: 'failed', failedAt: new Date(), lastError: message },
     });
@@ -582,18 +492,18 @@ export class ManagerTeachService {
     return artifacts.length;
   }
 
-  private async enqueueDurableSession(teachSessionId: string, stage: ManagerTeachQueueStage): Promise<void> {
+  private async enqueueDurableSession(teachSessionId: string): Promise<void> {
     try {
-      const queueJobId = await this.deps.queue.enqueue({ teachSessionId, stage });
+      const queueJobId = await this.deps.queue.enqueue({ teachSessionId });
       await this.deps.prisma.managerTeachSession.updateMany({
         where: {
           id: teachSessionId,
-          status: stage === 'ingest' ? 'queued' : 'ready_for_processing',
+          status: 'queued',
         },
         data: { queueJobId },
       });
     } catch (error) {
-      this.log.warn('manager-teach.queue.enqueue_failed', { teachSessionId, stage, error: String(error) });
+      this.log.warn('manager-teach.queue.enqueue_failed', { teachSessionId, error: String(error) });
     }
   }
 
@@ -711,7 +621,7 @@ function toSessionView(session: {
     appliedChangeCount: mutation?.appliedChangeCount ?? 0,
     personaRevision: mutation?.appliedRevision ?? mutation?.baseRevision ?? null,
     remainingUndos,
-    canCancel: ['awaiting_upload', 'queued', 'ingesting', 'ready_for_processing'].includes(session.status),
+    canCancel: ['awaiting_upload', 'queued', 'ingesting', 'evidence_ready', 'ready_for_processing'].includes(session.status),
     createdAt: session.createdAt.toISOString(),
     updatedAt: session.updatedAt.toISOString(),
   };
@@ -725,17 +635,16 @@ function processingStepFor(
   if (status === 'queued') return 'recording_received';
   if (status === 'failed') return 'failed';
   if (status === 'cancelled') return 'cancelled';
-  if (status === 'persona_updated' || status === 'no_learning') return 'complete';
+  if (status === 'completed' || status === 'persona_updated' || status === 'no_learning') return 'complete';
+  if (status === 'evidence_ready') return 'evidence_ready';
+  if (status === 'agent_processing') return 'agent_reasoning';
   if (status === 'ready_for_processing') return 'reconstructing_workflow';
   if (status === 'ingesting') {
     if (progress < 45) return 'selecting_evidence';
     if (progress < 55) return 'transcribing';
     return 'reading_screens';
   }
-  if (progress < 84) return 'loading_persona';
-  if (progress < 90) return 'deepseek_reviewing';
-  if (progress < 96) return 'validating_change';
-  return 'writing_persona';
+  return 'agent_reasoning';
 }
 
 function appliedChangesFromPatch(value: unknown): ManagerTeachAppliedChangeView[] {
@@ -767,7 +676,7 @@ function appliedChangesFromPatch(value: unknown): ManagerTeachAppliedChangeView[
 async function readEvidenceReceipt(storageKey?: string): Promise<ManagerTeachEvidenceReceipt | null> {
   if (!storageKey) return null;
   try {
-    const parsed = refinementManifestSchema.parse(JSON.parse(await readFile(storageKey, 'utf8')) as unknown);
+    const parsed = evidenceReceiptSchema.parse(JSON.parse(await readFile(storageKey, 'utf8')) as unknown);
     const ocrModels = [...new Set(parsed.frames.map(frame => frame.ocr.model).filter((model): model is string => Boolean(model)))];
     return {
       durationSeconds: parsed.video.durationSeconds ?? null,

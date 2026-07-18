@@ -215,7 +215,13 @@ fn clear_run_context_path(path: Option<PathBuf>) {
     }
 }
 
-fn publish_run_context(slot: &RuntimeSlot, owner: &RunOwner) -> Result<(), String> {
+fn publish_run_context(
+    slot: &RuntimeSlot,
+    owner: &RunOwner,
+    profile: Option<String>,
+    teach_session_id: Option<String>,
+    department_id: Option<String>,
+) -> Result<(), String> {
     let path = {
         let state = slot.state.lock().unwrap();
         if state.active_run.as_ref() != Some(owner) {
@@ -236,6 +242,9 @@ fn publish_run_context(slot: &RuntimeSlot, owner: &RunOwner) -> Result<(), Strin
             version: 1,
             thread_id: owner.thread_id.clone(),
             run_id: owner.run_id.clone(),
+            profile,
+            teach_session_id,
+            department_id,
         },
     )?;
     let mut state = slot.state.lock().unwrap();
@@ -1668,7 +1677,7 @@ impl PiManager {
         run_id: String,
         message: String,
     ) -> Result<(), String> {
-        self.prompt_with_model(thread_id, run_id, message, None, None)
+        self.prompt_with_model(thread_id, run_id, message, None, None, None, None, None, None)
             .await
     }
 
@@ -1683,6 +1692,10 @@ impl PiManager {
         message: String,
         provider: Option<String>,
         model_id: Option<String>,
+        thinking_level: Option<String>,
+        profile: Option<String>,
+        teach_session_id: Option<String>,
+        department_id: Option<String>,
     ) -> Result<(), String> {
         let owner = RunOwner::new(thread_id, run_id)?;
         log::info!(
@@ -1767,6 +1780,21 @@ impl PiManager {
             (None, None) => {}
             _ => return Err("Pi model provider and model id must be supplied together".into()),
         }
+        if let Some(level) = thinking_level.as_deref() {
+            if !matches!(level, "off" | "minimal" | "low" | "medium" | "high" | "xhigh") {
+                return Err("Unsupported Pi thinking level".into());
+            }
+            Self::send_rpc(
+                &slot,
+                serde_json::json!({
+                    "type": "set_thinking_level",
+                    "level": level,
+                }),
+                None,
+                &self.capacity_changed,
+            )
+            .await?;
+        }
         {
             let mut state = slot.state.lock().unwrap();
             if let Some(active) = state.active_run.as_ref() {
@@ -1778,7 +1806,13 @@ impl PiManager {
             }
             state.active_run = Some(owner.clone());
         }
-        if let Err(error) = publish_run_context(&slot, &owner) {
+        if let Err(error) = publish_run_context(
+            &slot,
+            &owner,
+            profile,
+            teach_session_id,
+            department_id,
+        ) {
             clear_active_run_if_matches(&mut slot.state.lock().unwrap().active_run, &owner);
             self.wake_capacity();
             return Err(error);

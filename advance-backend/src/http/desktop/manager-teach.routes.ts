@@ -20,10 +20,6 @@ const createSessionSchema = z.object({
   fileSize: z.number().int().positive().max(2_147_483_647).optional(),
 }).strict();
 
-const refineSessionSchema = z.object({
-  correction: z.string().trim().min(1).max(2_000),
-}).strict();
-
 const listSessionsSchema = z.object({
   departmentId: z.string().trim().min(1),
   limit: z.coerce.number().int().min(1).max(50).default(10),
@@ -97,25 +93,6 @@ export function createManagerTeachRoutes(deps: {
         sessionId: req.params.sessionId!,
       });
       res.json({ data: session });
-    } catch (error) {
-      respondError(res, error);
-    }
-  });
-
-  router.post('/sessions/:sessionId/refinements', async (req, res) => {
-    const parsed = refineSessionSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
-      return;
-    }
-    try {
-      const session = await deps.service.createRefinement({
-        companyId: res.locals.companyId as string,
-        managerId: res.locals.userId as string,
-        sessionId: req.params.sessionId!,
-        correction: parsed.data.correction,
-      });
-      res.status(202).json({ data: session });
     } catch (error) {
       respondError(res, error);
     }

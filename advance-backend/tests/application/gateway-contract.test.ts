@@ -5,10 +5,12 @@ import {
   googlePlanPayloadSchema,
   gatewayRequestSchema,
   skillsSearchPayloadSchema,
+  teachContextGetPayloadSchema,
   toolsListPayloadSchema,
   toolsInvokePayloadSchema,
   toolsPreflightPayloadSchema,
 } from '../../src/application/gateway/gateway.types';
+import { managerTeachPersonaApplySchema } from '../../src/application/persona-learning/manager-teach-persona.types';
 import { mediaImageOcrPayloadSchema } from '../../src/application/gateway/media-ocr.service';
 
 describe('public gateway request contract', () => {
@@ -82,5 +84,21 @@ describe('public gateway request contract', () => {
       filePath: '/tmp/screen.png',
       mimeType: 'image/png',
     }).success, false);
+  });
+
+  it('keeps Teach context and persona writes narrow and evidence-revisioned', () => {
+    const sessionId = '29a63a44-c348-4414-b5eb-25246d7eb13d';
+    assert.equal(teachContextGetPayloadSchema.safeParse({ teachSessionId: sessionId }).success, true);
+    assert.equal(teachContextGetPayloadSchema.safeParse({ teachSessionId: sessionId, correction: 'hidden' }).success, false);
+    assert.equal(managerTeachPersonaApplySchema.safeParse({
+      teachSessionId: sessionId,
+      mutationKey: 'teach-initial-write-001',
+      patch: {
+        schemaVersion: 1,
+        baseRevision: 3,
+        understanding: 'The manager wants risks first.',
+        changes: [],
+      },
+    }).success, true);
   });
 });

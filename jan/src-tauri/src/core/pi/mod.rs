@@ -75,10 +75,24 @@ pub async fn pi_prompt(
     message: String,
     provider: Option<String>,
     model_id: Option<String>,
+    thinking_level: Option<String>,
+    profile: Option<String>,
+    teach_session_id: Option<String>,
+    department_id: Option<String>,
 ) -> Result<(), String> {
     state
         .manager
-        .prompt_with_model(thread_id, run_id, message, provider, model_id)
+        .prompt_with_model(
+            thread_id,
+            run_id,
+            message,
+            provider,
+            model_id,
+            thinking_level,
+            profile,
+            teach_session_id,
+            department_id,
+        )
         .await
 }
 

@@ -13,6 +13,12 @@ import {
 
 export type { PiRawEvent } from './pi'
 
+export interface PiTeachProfile {
+  kind: 'teach'
+  teachSessionId: string
+  departmentId: string
+}
+
 // Approval dialogs must outlive the stream that happened to create them. A
 // tool can wait on an editor after the stream is replaced or otherwise marked
 // stale; tying this listener to that stream leaves Pi blocked without a card.
@@ -59,6 +65,7 @@ export function createPiMessageStream(options: {
   ) => void
   /** Called for every raw pi-event (including those without UI mapping). */
   onPiEvent?: (event: PiRawEvent) => void
+  profile?: PiTeachProfile
 }): ReadableStream<UIMessageChunk> {
   const {
     threadId,
@@ -68,6 +75,7 @@ export function createPiMessageStream(options: {
     onTerminal,
     onRunStateChange,
     onPiEvent,
+    profile,
   } = options
   const messageId = crypto.randomUUID()
   // Rust treats this caller-generated id as part of the active-run owner.
@@ -203,6 +211,9 @@ export function createPiMessageStream(options: {
         // arrive while any of the startup boundaries above are pending.
         if (startupWasCancelledOrStale()) return
         const { selectedModel } = useDivoModel.getState()
+        const promptModel = profile?.kind === 'teach'
+          ? 'deepseek-v4-pro'
+          : selectedModel
         await invoke('pi_prompt', {
           threadId,
           thread_id: threadId,
@@ -214,8 +225,17 @@ export function createPiMessageStream(options: {
           // spawned runtime before the first request, rather than broadcasting
           // to an empty runtime pool during pi_start.
           provider: DIVO_MODEL_PROVIDER,
-          modelId: selectedModel,
-          model_id: selectedModel,
+          modelId: promptModel,
+          model_id: promptModel,
+          ...(profile?.kind === 'teach' ? {
+            thinkingLevel: 'xhigh',
+            thinking_level: 'xhigh',
+            profile: 'teach',
+            teachSessionId: profile.teachSessionId,
+            teach_session_id: profile.teachSessionId,
+            departmentId: profile.departmentId,
+            department_id: profile.departmentId,
+          } : {}),
         })
       } catch (error) {
         if (!startupWasCancelledOrStale()) {

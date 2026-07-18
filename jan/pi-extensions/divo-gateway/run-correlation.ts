@@ -6,6 +6,9 @@ export interface DivoRunCorrelationV1 {
 	version: 1;
 	threadId: string;
 	runId: string;
+	profile?: "teach";
+	teachSessionId?: string;
+	departmentId?: string;
 }
 
 const MAX_IDENTIFIER_LENGTH = 200;
@@ -44,5 +47,12 @@ export async function readDivoRunCorrelation(
 		version: 1,
 		threadId: identifier(record.threadId, "threadId"),
 		runId: identifier(record.runId, "runId"),
+		...(record.profile === "teach" ? { profile: "teach" as const } : {}),
+		...(typeof record.teachSessionId === "string"
+			? { teachSessionId: identifier(record.teachSessionId, "teachSessionId") }
+			: {}),
+		...(typeof record.departmentId === "string"
+			? { departmentId: identifier(record.departmentId, "departmentId") }
+			: {}),
 	};
 }

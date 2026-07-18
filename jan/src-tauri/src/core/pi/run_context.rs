@@ -16,6 +16,12 @@ pub struct DivoRunContext {
     pub version: u8,
     pub thread_id: String,
     pub run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teach_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department_id: Option<String>,
 }
 
 pub fn slot_run_context_path(scratch_dir: &Path, slot_id: &str) -> PathBuf {
@@ -62,16 +68,25 @@ mod tests {
             version: 1,
             thread_id: "thread-a".into(),
             run_id: "run-a1".into(),
+            profile: None,
+            teach_session_id: None,
+            department_id: None,
         };
         let run_a2 = DivoRunContext {
             version: 1,
             thread_id: "thread-a".into(),
             run_id: "run-a2".into(),
+            profile: None,
+            teach_session_id: None,
+            department_id: None,
         };
         let run_b = DivoRunContext {
             version: 1,
             thread_id: "thread-b".into(),
             run_id: "run-b".into(),
+            profile: None,
+            teach_session_id: None,
+            department_id: None,
         };
 
         write_run_context(&first, &run_a1).unwrap();

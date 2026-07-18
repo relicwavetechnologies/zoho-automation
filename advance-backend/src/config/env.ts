@@ -205,7 +205,6 @@ const EnvSchema = z.object({
   MANAGER_TEACH_TRANSCRIPTION_MODEL: z.string().default('gpt-4o-mini-transcribe'),
   MANAGER_TEACH_TRANSCRIPTION_CHUNK_SECONDS: positiveInt(300),
   MANAGER_TEACH_PERSONA_MODEL: z.string().default('deepseek-v4-pro'),
-  MANAGER_TEACH_PERSONA_TIMEOUT_SECONDS: positiveInt(300),
   MANAGER_TEACH_PERSONA_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),
   MANAGER_TEACH_EVIDENCE_MAX_MB: positiveInt(5),
   MANAGER_TEACH_PERSONA_MAX_INPUT_CHARS: z.coerce.number().int().min(20_000).default(800_000),

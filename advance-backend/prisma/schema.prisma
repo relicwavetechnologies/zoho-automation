@@ -152,8 +152,9 @@ enum ManagerPersonaNodeStatus {
   quarantined
 }
 
-// Explicit manager teaching is separate from passive after-run learning and
-// may update only the manager persona after evidence validation.
+// Explicit manager teaching is separate from passive after-run learning.
+// Media compilation is durable on the backend; an interactive desktop Pi
+// session interprets that evidence and submits governed persona/skill writes.
 enum ManagerTeachSource {
   recording
   upload
@@ -163,6 +164,10 @@ enum ManagerTeachSessionStatus {
   awaiting_upload
   queued
   ingesting
+  evidence_ready
+  agent_processing
+  completed
+  // Legacy server-synthesis states are retained for historical rows only.
   ready_for_processing
   persona_processing
   persona_updated
@@ -1816,6 +1821,7 @@ model ManagerTeachSession {
   parentSession     ManagerTeachSession?            @relation("ManagerTeachRefinements", fields: [parentSessionId], references: [id], onDelete: SetNull)
   refinements       ManagerTeachSession[]            @relation("ManagerTeachRefinements")
   managerCorrection String?
+  agentMutationKey  String?                       @unique
   createdAt         DateTime                     @default(now())
   updatedAt         DateTime                     @updatedAt
   artifacts         ManagerTeachArtifact[]

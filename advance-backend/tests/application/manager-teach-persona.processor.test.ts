@@ -10,7 +10,7 @@ import {
 import {
   managerTeachPersonaPatchSchema,
   type ManagerTeachPersonaEvidenceInput,
-} from '../../src/application/persona-learning/manager-teach-persona.extractor';
+} from '../../src/application/persona-learning/manager-teach-persona.types';
 import type { Logger } from '../../src/shared/logger';
 
 const noopLogger: Logger = {
@@ -56,7 +56,7 @@ describe('ManagerTeachPersonaProcessor', () => {
     assert.equal(accepted[0]?.ruleKey, 'weekly-report.risks-first');
   });
 
-  it('applies one idempotent Teach mutation and creates an Undo snapshot', async () => {
+  it('loads evidence for Pi, then applies one idempotent governed mutation', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'divo-teach-persona-'));
     const manifestPath = join(dir, 'evidence-manifest.json');
     const manifest = {
@@ -72,26 +72,23 @@ describe('ManagerTeachPersonaProcessor', () => {
     const rawManifest = JSON.stringify(manifest);
     await writeFile(manifestPath, rawManifest);
 
+    const artifact = { storageKey: manifestPath, sizeBytes: Buffer.byteLength(rawManifest) };
     const session: any = {
       id: 'teach-1', companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1',
-      source: 'upload', status: 'ready_for_processing', progress: 75, cancelRequestedAt: null,
+      source: 'upload', status: 'evidence_ready', progress: 75, cancelRequestedAt: null,
+      originalFileName: 'workflow.mov', personaMutation: null, artifacts: [artifact], agentMutationKey: null,
     };
     let tree: any = null;
     let mutation: any = null;
     const nodes: any[] = [];
     const revisions: any[] = [];
-
     const updateSession = (data: any) => {
       if (data.attempts?.increment) session.attempts = (session.attempts ?? 0) + data.attempts.increment;
-      for (const [key, value] of Object.entries(data)) {
-        if (key !== 'attempts') session[key] = value;
-      }
+      Object.assign(session, Object.fromEntries(Object.entries(data).filter(([key]) => key !== 'attempts')));
     };
+
     const managerPersonaTree = {
-      findUnique: async ({ where }: any) => {
-        if (!tree) return null;
-        return where.id ? { ...tree, nodes: [...nodes] } : { ...tree, nodes: [...nodes] };
-      },
+      findUnique: async () => tree ? { ...tree, nodes: [...nodes] } : null,
       create: async () => {
         tree = { id: 'tree-1', revision: 1 };
         return { ...tree };
@@ -99,9 +96,7 @@ describe('ManagerTeachPersonaProcessor', () => {
       updateMany: async () => ({ count: 0 }),
     };
     const managerPersonaRevision = {
-      upsert: async ({ create }: any) => {
-        revisions.push({ id: `revision-${revisions.length + 1}`, createdAt: new Date(), ...create });
-      },
+      upsert: async ({ create }: any) => { revisions.push({ id: `revision-${revisions.length + 1}`, ...create }); },
       findMany: async ({ skip }: any) => revisions.slice(skip).map(row => ({ id: row.id })),
       deleteMany: async () => ({ count: 0 }),
       count: async () => revisions.length,
@@ -111,6 +106,7 @@ describe('ManagerTeachPersonaProcessor', () => {
         findUnique: async () => mutation,
         create: async ({ data }: any) => {
           mutation = { id: 'mutation-1', ...data };
+          session.personaMutation = mutation;
           return mutation;
         },
       },
@@ -132,63 +128,70 @@ describe('ManagerTeachPersonaProcessor', () => {
       personaLearningCandidate: {},
     };
     const prisma: any = {
-      managerTeachPersonaMutation: { findUnique: async () => mutation },
       managerTeachSession: {
+        findFirst: async () => ({ ...session, artifacts: [artifact] }),
+        findUnique: async ({ where }: any) => {
+          if (where.agentMutationKey) {
+            return session.agentMutationKey === where.agentMutationKey
+              ? { ...session, personaMutation: mutation }
+              : null;
+          }
+          return { ...session };
+        },
         updateMany: async ({ where, data }: any) => {
-          const statusMatches = typeof where.status === 'string'
-            ? session.status === where.status
-            : where.status.in.includes(session.status);
-          if (!statusMatches || session.cancelRequestedAt !== null) return { count: 0 };
+          if (where.status && session.status !== where.status) return { count: 0 };
           updateSession(data);
           return { count: 1 };
         },
-        findUnique: async () => ({
-          ...session,
-          artifacts: [{
-            storageKey: manifestPath, sizeBytes: Buffer.byteLength(rawManifest),
-            kind: 'evidence_manifest', status: 'available',
-          }],
-        }),
+        create: async () => { throw new Error('not used'); },
       },
-      managerPersonaTree: { findUnique: async () => tree ? { ...tree, nodes: [...nodes] } : null },
-      managerPersonaRevision: { count: async () => revisions.length },
+      departmentMembership: { findFirst: async () => ({ id: 'membership-1' }) },
+      managerPersonaTree: { findUnique: managerPersonaTree.findUnique },
+      managerPersonaRevision: { count: managerPersonaRevision.count },
       $transaction: async (fn: any) => fn(tx),
-    };
-    const extractor = {
-      provider: 'deepseek',
-      modelId: 'deepseek-v4-pro',
-      extract: async (input: ManagerTeachPersonaEvidenceInput) => managerTeachPersonaPatchSchema.parse({
-        schemaVersion: 1,
-        baseRevision: input.baseRevision,
-        understanding: 'The manager wants risks first in weekly reports.',
-        changes: [{
-          operation: 'add', kind: 'workflow', scopeKey: 'reporting.weekly', ruleKey: 'weekly-report.risks-first',
-          instruction: 'Lead weekly reports with current risks.', confidence: 0.98,
-          rationale: 'The manager explicitly narrated this order.', evidenceRefs: ['transcript:1', 'frame:1'],
-        }],
-      }),
     };
     const processor = new ManagerTeachPersonaProcessor({
       prisma,
-      extractor,
       logger: noopLogger,
       minConfidence: 0.9,
       maxEvidenceBytes: 1_000_000,
       maxInputChars: 100_000,
+      modelProvider: 'deepseek',
+      modelId: 'deepseek-v4-pro',
     });
 
-    const first = await processor.process('teach-1');
-    assert.equal(first?.status, 'persona_updated');
-    assert.equal(first?.appliedChangeCount, 1);
-    assert.equal(first?.remainingUndos, 1);
-    assert.equal(session.status, 'persona_updated');
-    assert.equal(nodes.length, 1);
-    assert.equal(revisions.length, 1);
+    const context = await processor.getContext({
+      companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', sessionId: 'teach-1',
+    });
+    assert.equal(context.evidence.baseRevision, 0);
+    assert.equal(session.status, 'agent_processing');
 
-    const second = await processor.process('teach-1');
-    assert.deepEqual(second, first, 'the unique session mutation makes retries idempotent');
+    const patch = managerTeachPersonaPatchSchema.parse({
+      schemaVersion: 1,
+      baseRevision: 0,
+      understanding: 'The manager wants risks first in weekly reports.',
+      changes: [{
+        operation: 'add', kind: 'workflow', scopeKey: 'reporting.weekly', ruleKey: 'weekly-report.risks-first',
+        instruction: 'Lead weekly reports with current risks.', confidence: 0.98,
+        rationale: 'The manager explicitly narrated this order.', evidenceRefs: ['transcript:1', 'frame:1'],
+      }],
+    });
+    const first = await processor.apply({
+      companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', sessionId: 'teach-1',
+      mutationKey: 'teach-1-initial-write', patch,
+    });
+    assert.equal(first.status, 'completed');
+    assert.equal(first.appliedChangeCount, 1);
+    assert.equal(first.remainingUndos, 1);
+    assert.equal(session.status, 'completed');
     assert.equal(nodes.length, 1);
-    assert.equal(revisions.length, 1);
+
+    const second = await processor.apply({
+      companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', sessionId: 'teach-1',
+      mutationKey: 'teach-1-initial-write', patch,
+    });
+    assert.deepEqual(second, first);
+    assert.equal(nodes.length, 1);
     await rm(dir, { recursive: true, force: true });
   });
 });

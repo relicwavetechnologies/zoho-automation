@@ -28,7 +28,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
-import { TeachProcessingExperience, TeachResultExperience } from './TeachExperience'
+import { TeachProcessingExperience } from './TeachExperience'
+import { TeachAgentChat } from './TeachAgentChat'
 import {
   cancelTeachRecording,
   cancelTeachSession,
@@ -41,7 +42,6 @@ import {
   listRecentTeachLearnings,
   pickTeachRecording,
   recordTeachScreen,
-  refineTeachSession,
   uploadTeachRecording,
   undoManagerPersona,
   type TeachRecordingFile,
@@ -49,7 +49,7 @@ import {
   type TeachSession,
 } from '@/lib/divo-teach'
 
-type TeachStage = 'intro' | 'recording' | 'uploading' | 'processing' | 'ready' | 'error'
+type TeachStage = 'intro' | 'recording' | 'uploading' | 'processing' | 'agent' | 'error'
 type TeachErrorKind = 'manager' | 'recorder' | 'upload' | 'processing' | 'generic'
 
 type UploadProgress = {
@@ -129,9 +129,12 @@ export function TeachMode() {
         }
         try {
           const current = await getTeachSession(recording.sessionId)
-          if (current.status === 'persona_updated' || current.status === 'no_learning') {
+          if (current.status === 'completed' || current.status === 'persona_updated' || current.status === 'no_learning') {
             await finalizeLocalTeachRecording(recording.path, recording.sessionId)
             return null
+          }
+          if (current.status === 'evidence_ready' || current.status === 'agent_processing') {
+            return { ...recording, state: 'agent_ready' as const }
           }
           if (current.status === 'failed' || current.status === 'cancelled') {
             return { ...recording, state: 'retryable' as const, lastError: current.lastError }
@@ -182,6 +185,8 @@ export function TeachMode() {
     if (!sessionId || !sessionStatus || ![
       'queued',
       'ingesting',
+      'evidence_ready',
+      'agent_processing',
       'ready_for_processing',
       'persona_processing',
     ].includes(sessionStatus)) return
@@ -193,8 +198,11 @@ export function TeachMode() {
         if (!active) return
         setStatusWarning(undefined)
         setSession(current)
-        if (current.status === 'persona_updated' || current.status === 'no_learning') {
-          setStage('ready')
+        if (current.status === 'evidence_ready' || current.status === 'agent_processing') {
+          setStage('agent')
+        }
+        if (current.status === 'completed' || current.status === 'persona_updated' || current.status === 'no_learning') {
+          setStage('agent')
           if (activeRecording?.localOwned) {
             void finalizeLocalTeachRecording(activeRecording.path, current.id)
               .then(() => {
@@ -271,6 +279,14 @@ export function TeachMode() {
     await ingest(recording, 'recording')
   }, [ingest])
 
+  const resumeLocalTeaching = useCallback(async (recording: TeachLocalRecording) => {
+    if (!recording.sessionId) return
+    const current = await getTeachSession(recording.sessionId)
+    setActiveRecording(recording)
+    setSession(current)
+    setStage('agent')
+  }, [])
+
   const deleteLocalRecording = useCallback(async () => {
     if (!recordingToDelete) return
     try {
@@ -333,15 +349,6 @@ export function TeachMode() {
       setUndoing(false)
     }
   }, [departmentId, session])
-
-  const refine = useCallback(async (correction: string) => {
-    if (!session) throw new Error('Teach result is unavailable')
-    const refinement = await refineTeachSession(session.id, correction)
-    setSession(refinement)
-    setStatusWarning(undefined)
-    setUndoMessage(undefined)
-    setStage('processing')
-  }, [session])
 
   if (stage === 'intro') {
     return (
@@ -425,6 +432,7 @@ export function TeachMode() {
                     {loadingOverview ? 'Checking local recordings…' : 'No recordings are waiting for processing.'}
                   </p>
                 ) : localRecordings.slice(0, 4).map(recording => {
+                  const canResume = recording.state === 'agent_ready'
                   const canRetry = recording.state === 'ready' || recording.state === 'retryable'
                   return (
                     <div key={recording.path} className="flex items-center gap-3 px-5 py-4">
@@ -439,10 +447,10 @@ export function TeachMode() {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={!canRetry}
-                          onClick={() => void retryLocalRecording(recording)}
+                          disabled={!canRetry && !canResume}
+                          onClick={() => void (canResume ? resumeLocalTeaching(recording) : retryLocalRecording(recording))}
                         >
-                          <RotateCcw /> {canRetry ? 'Retry' : 'Processing'}
+                          <RotateCcw /> {canResume ? 'Resume Teach' : canRetry ? 'Retry' : 'Processing'}
                         </Button>
                         <Button
                           variant="ghost"
@@ -564,14 +572,13 @@ export function TeachMode() {
     )
   }
 
-  if (stage === 'ready' && session) {
+  if (stage === 'agent' && session) {
     return (
-      <TeachResultExperience
+      <TeachAgentChat
         session={session}
         undoing={undoing}
         undoMessage={undoMessage}
         onUndo={() => void undo()}
-        onRefine={refine}
         onFinish={reset}
       />
     )

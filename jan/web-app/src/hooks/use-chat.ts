@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useCallback } from 'react'
 import { useChatSessions } from '@/stores/chat-session-store'
 import { useAppState } from '@/hooks/useAppState'
+import type { PiTeachProfile } from '@/lib/pi-stream'
 
 type CustomChatOptions = Omit<ChatInit<UIMessage>, 'transport'> &
   Pick<UseChatOptions<UIMessage>, 'experimental_throttle' | 'resume'> & {
@@ -21,6 +22,7 @@ type CustomChatOptions = Omit<ChatInit<UIMessage>, 'transport'> &
     sessionTitle?: string
     systemMessage?: string
     onTokenUsage?: (usage: LanguageModelUsage, messageId: string) => void;
+    piProfile?: PiTeachProfile
   }
 
 // This is a wrapper around the AI SDK's useChat hook
@@ -34,6 +36,7 @@ export function useChat(
     sessionTitle,
     systemMessage,
     onTokenUsage,
+    piProfile,
     ...chatInitOptions
   } = options ?? {}
   const ensureSession = useChatSessions((state) => state.ensureSession)
@@ -56,7 +59,7 @@ export function useChat(
       : undefined
     return (
       existingSessionTransport ??
-      new CustomChatTransport(systemMessage, sessionId)
+      new CustomChatTransport(systemMessage, sessionId, piProfile)
     )
     // systemMessage is updated below without recreating a live transport.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -65,6 +68,10 @@ export function useChat(
   useEffect(() => {
     transport.updateSystemMessage(systemMessage)
   }, [systemMessage, transport])
+
+  useEffect(() => {
+    transport.updatePiProfile(piProfile)
+  }, [piProfile, transport])
 
   // Update the token usage callback when it changes
   useEffect(() => {

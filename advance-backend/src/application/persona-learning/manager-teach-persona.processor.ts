@@ -8,9 +8,9 @@ import { ManagerPersonaRevisionService } from './manager-persona-revision.servic
 import type {
   ManagerTeachPersonaChange,
   ManagerTeachPersonaEvidenceInput,
-  ManagerTeachPersonaExtractor,
+  ManagerTeachPersonaPatch,
   ManagerTeachPersonaTarget,
-} from './manager-teach-persona.extractor';
+} from './manager-teach-persona.types';
 
 const manifestSchema = z.object({
   schemaVersion: z.literal(1),
@@ -43,11 +43,20 @@ const unsafeAuthorityPattern = /\b(?:bypass|disable|ignore|skip|override|weaken)
 const promptInjectionPattern = /\b(?:ignore|disregard|forget)\b.{0,60}\b(?:previous|prior|system|developer|instruction|prompt)\b/i;
 
 export interface ManagerTeachPersonaProcessResult {
-  readonly status: 'persona_updated' | 'no_learning';
+  readonly sessionId: string;
+  readonly status: 'completed';
   readonly understanding: string;
   readonly appliedChangeCount: number;
   readonly personaRevision: number | null;
   readonly remainingUndos: number;
+}
+
+export interface ManagerTeachAgentContext {
+  readonly teachSessionId: string;
+  readonly departmentId: string;
+  readonly source: 'recording' | 'upload';
+  readonly originalFileName: string | null;
+  readonly evidence: ManagerTeachPersonaEvidenceInput;
 }
 
 export class ManagerTeachPersonaProcessor {
@@ -56,104 +65,129 @@ export class ManagerTeachPersonaProcessor {
 
   constructor(private readonly deps: {
     prisma: PrismaClient;
-    extractor: ManagerTeachPersonaExtractor;
     logger: Logger;
     minConfidence: number;
     maxEvidenceBytes: number;
     maxInputChars: number;
+    modelProvider: string;
+    modelId: string;
   }) {
     this.log = deps.logger.child({ service: 'manager-teach-persona' });
     this.revisions = new ManagerPersonaRevisionService(deps);
   }
 
-  async process(sessionId: string): Promise<ManagerTeachPersonaProcessResult | null> {
-    const existing = await this.deps.prisma.managerTeachPersonaMutation.findUnique({
-      where: { sessionId },
-    });
-    if (existing) return this.toResult(existing);
-
-    const claimed = await this.deps.prisma.managerTeachSession.updateMany({
-      // A stalled BullMQ retry may find the session left in this state after a
-      // process crash. The mutation uniqueness gate keeps the restart safe.
+  async getContext(input: {
+    companyId: string;
+    managerId: string;
+    departmentId: string;
+    sessionId: string;
+  }): Promise<ManagerTeachAgentContext> {
+    const session = await this.deps.prisma.managerTeachSession.findFirst({
       where: {
-        id: sessionId,
-        status: { in: ['ready_for_processing', 'persona_processing'] },
-        cancelRequestedAt: null,
+        id: input.sessionId,
+        companyId: input.companyId,
+        managerId: input.managerId,
+        departmentId: input.departmentId,
       },
-      data: {
-        status: 'persona_processing',
-        progress: 80,
-        attempts: { increment: 1 },
-        lastError: null,
+      include: {
+        artifacts: { where: { kind: 'evidence_manifest', status: 'available' }, take: 1 },
       },
     });
-    if (claimed.count === 0) return null;
+    if (!session) throw new Error('Teach session was not found');
+    if (!['evidence_ready', 'agent_processing', 'completed'].includes(session.status)) {
+      throw new Error('Teach evidence is not ready for the interactive agent');
+    }
+    await this.assertManager(session.companyId, session.managerId, session.departmentId);
+    const loaded = await this.loadEvidence(session);
+    await this.deps.prisma.managerTeachSession.updateMany({
+      where: { id: session.id, status: 'evidence_ready', cancelRequestedAt: null },
+      data: { status: 'agent_processing', progress: 80, attempts: { increment: 1 }, lastError: null },
+    });
+    return {
+      teachSessionId: session.id,
+      departmentId: session.departmentId,
+      source: session.source,
+      originalFileName: session.originalFileName,
+      evidence: loaded.evidence,
+    };
+  }
 
-    try {
-      const session = await this.deps.prisma.managerTeachSession.findUnique({
-        where: { id: sessionId },
-        include: {
-          artifacts: { where: { kind: 'evidence_manifest', status: 'available' }, take: 1 },
-        },
-      });
-      const artifact = session?.artifacts[0];
-      if (!session || !artifact) throw new Error('Teach evidence manifest is missing');
-      if (artifact.sizeBytes > this.deps.maxEvidenceBytes) {
-        throw new Error('Teach evidence manifest exceeds the configured processing limit');
-      }
-
-      const bytes = await readFile(artifact.storageKey);
-      if (bytes.byteLength !== artifact.sizeBytes || bytes.byteLength > this.deps.maxEvidenceBytes) {
-        throw new Error('Teach evidence manifest failed integrity validation');
-      }
-      const manifest = manifestSchema.parse(JSON.parse(bytes.toString('utf8')) as unknown);
+  async apply(input: {
+    companyId: string;
+    managerId: string;
+    departmentId: string;
+    sessionId: string;
+    mutationKey: string;
+    patch: ManagerTeachPersonaPatch;
+  }): Promise<ManagerTeachPersonaProcessResult> {
+    const priorByKey = await this.deps.prisma.managerTeachSession.findUnique({
+      where: { agentMutationKey: input.mutationKey },
+      include: { personaMutation: true },
+    });
+    if (priorByKey) {
       if (
-        manifest.source.teachSessionId !== session.id
-        || manifest.source.companyId !== session.companyId
-        || manifest.source.departmentId !== session.departmentId
-        || manifest.source.managerId !== session.managerId
-        || manifest.source.kind !== session.source
+        priorByKey.companyId !== input.companyId
+        || priorByKey.managerId !== input.managerId
+        || priorByKey.departmentId !== input.departmentId
       ) {
-        throw new Error('Teach evidence manifest does not belong to this session');
+        throw new Error('Teach mutation key belongs to another manager');
       }
-      await this.updateProgress(sessionId, 82);
+      if (priorByKey.personaMutation) return this.toResult(priorByKey.personaMutation);
+    }
 
-      const evidenceHash = createHash('sha256').update(bytes).digest('hex');
-      const tree = await this.deps.prisma.managerPersonaTree.findUnique({
-        where: {
-          companyId_managerId_departmentId: {
-            companyId: session.companyId,
-            managerId: session.managerId,
-            departmentId: session.departmentId,
-          },
+    const rootSession = await this.deps.prisma.managerTeachSession.findFirst({
+      where: {
+        id: input.sessionId,
+        companyId: input.companyId,
+        managerId: input.managerId,
+        departmentId: input.departmentId,
+      },
+      include: {
+        personaMutation: true,
+        artifacts: { where: { kind: 'evidence_manifest', status: 'available' }, take: 1 },
+      },
+    });
+    if (!rootSession) throw new Error('Teach session was not found');
+    if (!['evidence_ready', 'agent_processing', 'completed'].includes(rootSession.status)) {
+      throw new Error('Teach session is not eligible for an interactive update');
+    }
+    await this.assertManager(rootSession.companyId, rootSession.managerId, rootSession.departmentId);
+    const loaded = await this.loadEvidence(rootSession);
+    if (input.patch.baseRevision !== loaded.evidence.baseRevision) {
+      throw new Error('Manager persona changed; reload Teach context before writing');
+    }
+    const accepted = validateTeachPersonaChanges(
+      input.patch.changes,
+      loaded.evidence,
+      loaded.nodes,
+      this.deps.minConfidence,
+    );
+    const understanding = safeUnderstanding(input.patch.understanding, accepted.length > 0);
+
+    let targetSessionId = priorByKey?.id ?? rootSession.id;
+    if (!priorByKey && rootSession.personaMutation) {
+      const child = await this.deps.prisma.managerTeachSession.create({
+        data: {
+          companyId: rootSession.companyId,
+          managerId: rootSession.managerId,
+          departmentId: rootSession.departmentId,
+          source: rootSession.source,
+          status: 'agent_processing',
+          progress: 90,
+          originalFileName: rootSession.originalFileName,
+          mimeType: rootSession.mimeType,
+          fileSize: rootSession.fileSize,
+          parentSessionId: rootSession.id,
+          managerCorrection: understanding,
+          agentMutationKey: input.mutationKey,
+          startedAt: new Date(),
         },
-        include: { nodes: { orderBy: { createdAt: 'asc' } } },
       });
-      const evidence = buildBoundedTeachPersonaEvidence(
-        manifest,
-        tree?.revision ?? 0,
-        tree?.nodes ?? [],
-        this.deps.maxInputChars,
-      );
-      await this.updateProgress(sessionId, 84);
-      const patch = await this.deps.extractor.extract(evidence);
-      await this.updateProgress(sessionId, 90);
-      if (patch.baseRevision !== evidence.baseRevision) {
-        throw new Error('Teach persona editor returned a stale base revision');
-      }
+      targetSessionId = child.id;
+    }
 
-      const accepted = validateTeachPersonaChanges(
-        patch.changes,
-        evidence,
-        tree?.nodes ?? [],
-        this.deps.minConfidence,
-      );
-      const understanding = safeUnderstanding(patch.understanding, accepted.length > 0);
-      await this.updateProgress(sessionId, 94);
-
-      await this.updateProgress(sessionId, 96);
-      const result = await this.deps.prisma.$transaction(async tx => {
-        const prior = await tx.managerTeachPersonaMutation.findUnique({ where: { sessionId } });
+    const result = await this.deps.prisma.$transaction(async tx => {
+        const prior = await tx.managerTeachPersonaMutation.findUnique({ where: { sessionId: targetSessionId } });
         if (prior) {
           const priorUndos = prior.treeId
             ? await tx.managerPersonaRevision.count({ where: { treeId: prior.treeId } })
@@ -162,7 +196,7 @@ export class ManagerTeachPersonaProcessor {
         }
 
         const currentSession = await tx.managerTeachSession.findUnique({
-          where: { id: sessionId },
+          where: { id: targetSessionId },
           select: {
             id: true,
             companyId: true,
@@ -172,8 +206,8 @@ export class ManagerTeachPersonaProcessor {
             cancelRequestedAt: true,
           },
         });
-        if (!currentSession || currentSession.status !== 'persona_processing' || currentSession.cancelRequestedAt) {
-          throw new Error('Teach session is no longer eligible for persona processing');
+        if (!currentSession || !['evidence_ready', 'agent_processing'].includes(currentSession.status) || currentSession.cancelRequestedAt) {
+          throw new Error('Teach session is no longer eligible for an agent update');
         }
         const membership = await tx.departmentMembership.findFirst({
           where: {
@@ -198,20 +232,20 @@ export class ManagerTeachPersonaProcessor {
           include: { nodes: true },
         });
         const currentRevision = currentTree?.revision ?? 0;
-        if (currentRevision !== patch.baseRevision) {
+        if (currentRevision !== input.patch.baseRevision) {
           throw new Error('Manager persona changed while Teach was being processed');
         }
 
         if (accepted.length === 0) {
           const mutation = await tx.managerTeachPersonaMutation.create({
             data: {
-              sessionId,
+              sessionId: targetSessionId,
               treeId: currentTree?.id ?? null,
               baseRevision: currentRevision,
               appliedRevision: currentRevision || null,
-              evidenceHash,
-              modelProvider: this.deps.extractor.provider,
-              modelId: this.deps.extractor.modelId,
+              evidenceHash: loaded.evidenceHash,
+              modelProvider: this.deps.modelProvider,
+              modelId: this.deps.modelId,
               status: 'no_learning',
               understanding,
               patchJson: toJson({ schemaVersion: 1, changes: [] }),
@@ -219,8 +253,11 @@ export class ManagerTeachPersonaProcessor {
             },
           });
           await tx.managerTeachSession.update({
-            where: { id: sessionId },
-            data: { status: 'no_learning', progress: 100, completedAt: new Date(), lastError: null },
+            where: { id: targetSessionId },
+            data: {
+              status: 'completed', progress: 100, completedAt: new Date(), lastError: null,
+              agentMutationKey: input.mutationKey,
+            },
           });
           const remainingUndos = currentTree
             ? await tx.managerPersonaRevision.count({ where: { treeId: currentTree.id } })
@@ -308,13 +345,13 @@ export class ManagerTeachPersonaProcessor {
 
         const mutation = await tx.managerTeachPersonaMutation.create({
           data: {
-            sessionId,
+            sessionId: targetSessionId,
             treeId: liveTree.id,
             baseRevision: currentRevision,
             appliedRevision: liveTree.revision,
-            evidenceHash,
-            modelProvider: this.deps.extractor.provider,
-            modelId: this.deps.extractor.modelId,
+            evidenceHash: loaded.evidenceHash,
+            modelProvider: this.deps.modelProvider,
+            modelId: this.deps.modelId,
             status: 'applied',
             understanding,
             patchJson: toJson({ schemaVersion: 1, changes: accepted }),
@@ -322,39 +359,101 @@ export class ManagerTeachPersonaProcessor {
           },
         });
         await tx.managerTeachSession.update({
-          where: { id: sessionId },
-          data: { status: 'persona_updated', progress: 100, completedAt: mutationTime, lastError: null },
+          where: { id: targetSessionId },
+          data: {
+            status: 'completed', progress: 100, completedAt: mutationTime, lastError: null,
+            agentMutationKey: input.mutationKey,
+          },
         });
         const remainingUndos = await tx.managerPersonaRevision.count({ where: { treeId: liveTree.id } });
         return this.toResult(mutation, remainingUndos);
       });
 
-      this.log.info('manager-teach.persona.complete', {
-        sessionId,
-        status: result.status,
-        appliedChangeCount: result.appliedChangeCount,
-        personaRevision: result.personaRevision,
-      });
-      return result;
-    } catch (error) {
-      const message = safeErrorMessage(error);
-      await this.deps.prisma.managerTeachSession.updateMany({
-        where: { id: sessionId, status: 'persona_processing', cancelRequestedAt: null },
-        data: { status: 'ready_for_processing', progress: 75, lastError: message },
-      });
-      throw error;
-    }
+    this.log.info('manager-teach.agent.persona_applied', {
+      sessionId: targetSessionId,
+      rootSessionId: rootSession.id,
+      appliedChangeCount: result.appliedChangeCount,
+      personaRevision: result.personaRevision,
+    });
+    return result;
   }
 
-  private async updateProgress(sessionId: string, progress: number): Promise<void> {
-    await this.deps.prisma.managerTeachSession.updateMany({
-      where: { id: sessionId, status: 'persona_processing', cancelRequestedAt: null },
-      data: { progress },
+  private async loadEvidence(session: {
+    id: string;
+    companyId: string;
+    managerId: string;
+    departmentId: string;
+    source: 'recording' | 'upload';
+    artifacts: readonly { storageKey: string; sizeBytes: number }[];
+  }): Promise<{
+    evidenceHash: string;
+    evidence: ManagerTeachPersonaEvidenceInput;
+    nodes: readonly {
+      kind: 'preference' | 'correction' | 'workflow' | 'skill' | 'contradiction';
+      scopeKey: string;
+      ruleKey: string;
+      instruction: string;
+      status: 'active' | 'superseded' | 'quarantined';
+    }[];
+  }> {
+    const artifact = session.artifacts[0];
+    if (!artifact) throw new Error('Teach evidence manifest is missing');
+    if (artifact.sizeBytes > this.deps.maxEvidenceBytes) {
+      throw new Error('Teach evidence manifest exceeds the configured processing limit');
+    }
+    const bytes = await readFile(artifact.storageKey);
+    if (bytes.byteLength !== artifact.sizeBytes || bytes.byteLength > this.deps.maxEvidenceBytes) {
+      throw new Error('Teach evidence manifest failed integrity validation');
+    }
+    const manifest = manifestSchema.parse(JSON.parse(bytes.toString('utf8')) as unknown);
+    if (
+      manifest.source.teachSessionId !== session.id
+      || manifest.source.companyId !== session.companyId
+      || manifest.source.departmentId !== session.departmentId
+      || manifest.source.managerId !== session.managerId
+      || manifest.source.kind !== session.source
+    ) {
+      throw new Error('Teach evidence manifest does not belong to this session');
+    }
+    const tree = await this.deps.prisma.managerPersonaTree.findUnique({
+      where: {
+        companyId_managerId_departmentId: {
+          companyId: session.companyId,
+          managerId: session.managerId,
+          departmentId: session.departmentId,
+        },
+      },
+      include: { nodes: { orderBy: { createdAt: 'asc' } } },
     });
+    return {
+      evidenceHash: createHash('sha256').update(bytes).digest('hex'),
+      evidence: buildBoundedTeachPersonaEvidence(
+        manifest,
+        tree?.revision ?? 0,
+        tree?.nodes ?? [],
+        this.deps.maxInputChars,
+      ),
+      nodes: tree?.nodes ?? [],
+    };
+  }
+
+  private async assertManager(companyId: string, managerId: string, departmentId: string): Promise<void> {
+    const membership = await this.deps.prisma.departmentMembership.findFirst({
+      where: {
+        departmentId,
+        userId: managerId,
+        status: 'active',
+        role: { slug: 'MANAGER' },
+        department: { companyId, status: 'active' },
+      },
+      select: { id: true },
+    });
+    if (!membership) throw new Error('Only an active department manager can use Teach');
   }
 
   private async toResult(
     mutation: {
+      sessionId: string;
       treeId: string | null;
       status: 'applied' | 'no_learning';
       understanding: string;
@@ -368,7 +467,8 @@ export class ManagerTeachPersonaProcessor {
       ? await this.deps.prisma.managerPersonaRevision.count({ where: { treeId: mutation.treeId } })
       : 0);
     return {
-      status: mutation.status === 'applied' ? 'persona_updated' : 'no_learning',
+      sessionId: mutation.sessionId,
+      status: 'completed',
       understanding: mutation.understanding,
       appliedChangeCount: mutation.appliedChangeCount,
       personaRevision: mutation.appliedRevision ?? mutation.baseRevision,
@@ -503,8 +603,4 @@ function targetKey(target: ManagerTeachPersonaTarget | { kind: string; scopeKey:
 
 function toJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
-}
-
-function safeErrorMessage(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 2_000);
 }
