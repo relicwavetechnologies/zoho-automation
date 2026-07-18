@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { ManagerTeachMediaProcessor } from './manager-teach-media.processor';
-import { ManagerTeachQueue } from './manager-teach.queue';
+import { ManagerTeachPersonaProcessor } from './manager-teach-persona.processor';
+import { ManagerTeachQueue, type ManagerTeachQueueStage } from './manager-teach.queue';
 
 export type ManagerTeachSourceInput = 'recording' | 'upload';
 
@@ -11,12 +12,25 @@ export interface ManagerTeachSessionView {
   readonly id: string;
   readonly departmentId: string;
   readonly source: ManagerTeachSourceInput;
-  readonly status: 'awaiting_upload' | 'queued' | 'ingesting' | 'ready_for_processing' | 'failed' | 'cancelled';
+  readonly status:
+    | 'awaiting_upload'
+    | 'queued'
+    | 'ingesting'
+    | 'ready_for_processing'
+    | 'persona_processing'
+    | 'persona_updated'
+    | 'no_learning'
+    | 'failed'
+    | 'cancelled';
   readonly progress: number;
   readonly originalFileName: string | null;
   readonly mimeType: string | null;
   readonly fileSize: number | null;
   readonly lastError: string | null;
+  readonly understanding: string | null;
+  readonly appliedChangeCount: number;
+  readonly personaRevision: number | null;
+  readonly remainingUndos: number;
   readonly canCancel: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -42,13 +56,14 @@ export interface ManagerTeachServiceDeps {
   readonly queue: ManagerTeachQueue;
   readonly logger: Logger;
   readonly mediaProcessor: ManagerTeachMediaProcessor;
+  readonly personaProcessor: ManagerTeachPersonaProcessor;
   readonly maxVideoBytes: number;
   readonly rawRetentionHours: number;
 }
 
 /**
- * Authoritative explicit-Teach job service. P3 turns the recording into a
- * structured evidence artifact; persona mutation remains isolated in P4.
+ * Authoritative explicit-Teach job service. Media ingestion and persona
+ * synthesis are separate durable stages; only the synthesis processor writes.
  */
 export class ManagerTeachService {
   private readonly log: Logger;
@@ -91,9 +106,13 @@ export class ManagerTeachService {
   async getSession(input: { companyId: string; managerId: string; sessionId: string }): Promise<ManagerTeachSessionView> {
     const session = await this.deps.prisma.managerTeachSession.findFirst({
       where: { id: input.sessionId, companyId: input.companyId, managerId: input.managerId },
+      include: { personaMutation: true },
     });
     if (!session) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
-    return toSessionView(session);
+    const remainingUndos = session.personaMutation?.treeId
+      ? await this.deps.prisma.managerPersonaRevision.count({ where: { treeId: session.personaMutation.treeId } })
+      : 0;
+    return toSessionView(session, session.personaMutation, remainingUndos);
   }
 
   async prepareUpload(input: { companyId: string; managerId: string; sessionId: string }) {
@@ -161,7 +180,7 @@ export class ManagerTeachService {
       });
     });
 
-    await this.enqueueDurableSession(session.id);
+    await this.enqueueDurableSession(session.id, 'ingest');
     return toSessionView(session);
   }
 
@@ -171,15 +190,25 @@ export class ManagerTeachService {
     });
     if (!session) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
     if (session.status === 'cancelled') return toSessionView(session);
+    if (['persona_processing', 'persona_updated', 'no_learning', 'failed'].includes(session.status)) {
+      throw new ManagerTeachError('invalid_state', 'This Teach session can no longer be cancelled');
+    }
 
-    const cancelled = await this.deps.prisma.managerTeachSession.update({
-      where: { id: session.id },
+    const cancelled = await this.deps.prisma.managerTeachSession.updateMany({
+      where: {
+        id: session.id,
+        status: { in: ['awaiting_upload', 'queued', 'ingesting', 'ready_for_processing'] },
+        cancelRequestedAt: null,
+      },
       data: {
         status: 'cancelled',
         cancelRequestedAt: new Date(),
         lastError: null,
       },
     });
+    if (cancelled.count === 0) {
+      throw new ManagerTeachError('invalid_state', 'This Teach session changed while cancellation was running');
+    }
     const artifacts = await this.deps.prisma.managerTeachArtifact.findMany({
       where: { sessionId: session.id, status: 'available' },
       select: { id: true, storageKey: true, kind: true },
@@ -189,22 +218,29 @@ export class ManagerTeachService {
       artifact.storageKey,
       artifact.kind,
     )));
-    return toSessionView(cancelled);
+    const current = await this.deps.prisma.managerTeachSession.findUnique({ where: { id: session.id } });
+    if (!current) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
+    return toSessionView(current);
   }
 
   async reconcileQueuedSessions(limit = 100): Promise<void> {
     const sessions = await this.deps.prisma.managerTeachSession.findMany({
-      where: { status: 'queued' },
-      select: { id: true },
+      where: { status: { in: ['queued', 'ready_for_processing'] }, cancelRequestedAt: null },
+      select: { id: true, status: true },
       orderBy: { createdAt: 'asc' },
       take: limit,
     });
-    await Promise.all(sessions.map(session => this.enqueueDurableSession(session.id)));
+    await Promise.all(sessions.map(session => this.enqueueDurableSession(
+      session.id,
+      session.status === 'queued' ? 'ingest' : 'synthesize',
+    )));
   }
 
   async processIngestion(sessionId: string): Promise<void> {
     const claimed = await this.deps.prisma.managerTeachSession.updateMany({
-      where: { id: sessionId, status: 'queued', cancelRequestedAt: null },
+      // BullMQ retries a stalled job after a worker crash. Re-claiming the
+      // durable in-progress state lets that retry restart safely.
+      where: { id: sessionId, status: { in: ['queued', 'ingesting'] }, cancelRequestedAt: null },
       data: {
         status: 'ingesting',
         progress: 30,
@@ -251,8 +287,8 @@ export class ManagerTeachService {
           where: { id: sessionId, status: 'ingesting', cancelRequestedAt: null },
           data: {
             status: 'ready_for_processing',
-            progress: 100,
-            completedAt: new Date(),
+            progress: 75,
+            completedAt: null,
             lastError: null,
           },
         });
@@ -288,6 +324,7 @@ export class ManagerTeachService {
         frames: result.frameCount,
         warnings: result.warningCount,
       });
+      await this.enqueueDurableSession(sessionId, 'synthesize');
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
       await this.deps.prisma.managerTeachSession.updateMany({
@@ -298,10 +335,25 @@ export class ManagerTeachService {
     }
   }
 
-  async markFailed(sessionId: string, error: unknown): Promise<void> {
+  async processPersonaSynthesis(sessionId: string): Promise<void> {
+    const result = await this.deps.personaProcessor.process(sessionId);
+    if (!result) return;
+    await this.cleanupSessionArtifacts(sessionId).catch(error => {
+      this.log.warn('manager-teach.cleanup_after_persona_failed', { sessionId, error: String(error) });
+    });
+  }
+
+  async markFailed(sessionId: string, stage: ManagerTeachQueueStage, error: unknown): Promise<void> {
     const message = error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
     await this.deps.prisma.managerTeachSession.updateMany({
-      where: { id: sessionId, status: { in: ['queued', 'ingesting'] } },
+      where: {
+        id: sessionId,
+        status: {
+          in: stage === 'ingest'
+            ? ['queued', 'ingesting']
+            : ['ready_for_processing', 'persona_processing'],
+        },
+      },
       data: { status: 'failed', failedAt: new Date(), lastError: message },
     });
   }
@@ -321,22 +373,26 @@ export class ManagerTeachService {
     return artifacts.length;
   }
 
-  private async enqueueDurableSession(teachSessionId: string): Promise<void> {
+  private async enqueueDurableSession(teachSessionId: string, stage: ManagerTeachQueueStage): Promise<void> {
     try {
-      const queueJobId = await this.deps.queue.enqueue({ teachSessionId });
+      const queueJobId = await this.deps.queue.enqueue({ teachSessionId, stage });
       await this.deps.prisma.managerTeachSession.updateMany({
-        where: { id: teachSessionId, status: 'queued' },
+        where: {
+          id: teachSessionId,
+          status: stage === 'ingest' ? 'queued' : 'ready_for_processing',
+        },
         data: { queueJobId },
       });
     } catch (error) {
-      this.log.warn('manager-teach.queue.enqueue_failed', { teachSessionId, error: String(error) });
+      this.log.warn('manager-teach.queue.enqueue_failed', { teachSessionId, stage, error: String(error) });
     }
   }
 
   private async updateIngestionProgress(sessionId: string, progress: number): Promise<void> {
+    const mappedProgress = 30 + Math.round(((Math.max(30, Math.min(95, progress)) - 30) / 65) * 40);
     await this.deps.prisma.managerTeachSession.updateMany({
       where: { id: sessionId, status: 'ingesting', cancelRequestedAt: null },
-      data: { progress: Math.max(30, Math.min(95, progress)) },
+      data: { progress: mappedProgress },
     });
   }
 
@@ -346,6 +402,16 @@ export class ManagerTeachService {
       select: { id: true },
     });
     if (!active) throw new Error('Teach ingestion is no longer active');
+  }
+
+  private async cleanupSessionArtifacts(sessionId: string): Promise<void> {
+    const artifacts = await this.deps.prisma.managerTeachArtifact.findMany({
+      where: { sessionId, status: 'available' },
+      select: { id: true, storageKey: true, kind: true },
+    });
+    for (const artifact of artifacts) {
+      await this.deleteArtifact(artifact.id, artifact.storageKey, artifact.kind);
+    }
   }
 
   private async deleteArtifact(
@@ -404,7 +470,12 @@ function toSessionView(session: {
   lastError: string | null;
   createdAt: Date;
   updatedAt: Date;
-}): ManagerTeachSessionView {
+}, mutation?: {
+  understanding: string;
+  appliedChangeCount: number;
+  appliedRevision: number | null;
+  baseRevision: number | null;
+} | null, remainingUndos = 0): ManagerTeachSessionView {
   return {
     id: session.id,
     departmentId: session.departmentId,
@@ -415,7 +486,11 @@ function toSessionView(session: {
     mimeType: session.mimeType,
     fileSize: session.fileSize,
     lastError: session.lastError,
-    canCancel: !['failed', 'cancelled'].includes(session.status),
+    understanding: mutation?.understanding ?? null,
+    appliedChangeCount: mutation?.appliedChangeCount ?? 0,
+    personaRevision: mutation?.appliedRevision ?? mutation?.baseRevision ?? null,
+    remainingUndos,
+    canCancel: ['awaiting_upload', 'queued', 'ingesting', 'ready_for_processing'].includes(session.status),
     createdAt: session.createdAt.toISOString(),
     updatedAt: session.updatedAt.toISOString(),
   };

@@ -55,7 +55,11 @@ describe('ManagerPersonaRevisionService', () => {
     const tx: any = {
       managerPersonaTree: {
         findUnique: async () => ({ id: 'tree-1', revision: treeRevision }),
-        update: async () => ({ revision: ++treeRevision }),
+        updateMany: async ({ where }: any) => {
+          if (where.revision !== treeRevision) return { count: 0 };
+          treeRevision += 1;
+          return { count: 1 };
+        },
       },
       managerPersonaRevision: {
         findFirst: async () => [...revisions].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null,
@@ -64,7 +68,11 @@ describe('ManagerPersonaRevisionService', () => {
         },
         count: async () => revisions.length,
       },
-      managerPersonaNode: { deleteMany: async () => ({ count: 0 }), create: async () => ({ id: 'unused' }) },
+      managerPersonaNode: {
+        findMany: async () => [],
+        deleteMany: async () => ({ count: 0 }),
+        create: async () => ({ id: 'unused' }),
+      },
       personaLearningCandidate: { updateMany: async () => ({ count: 0 }) },
     };
     const prisma = {

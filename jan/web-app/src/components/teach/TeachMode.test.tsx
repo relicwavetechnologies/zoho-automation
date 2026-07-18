@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   pickRecording: vi.fn(),
   recordScreen: vi.fn(),
   uploadRecording: vi.fn(),
+  undoPersona: vi.fn(),
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -30,6 +31,7 @@ vi.mock('@/lib/divo-teach', () => ({
   pickTeachRecording: h.pickRecording,
   recordTeachScreen: h.recordScreen,
   uploadTeachRecording: h.uploadRecording,
+  undoManagerPersona: h.undoPersona,
 }))
 
 const recording = {
@@ -40,17 +42,23 @@ const recording = {
   localOwned: false,
 }
 
-const teachSession = (status: 'awaiting_upload' | 'queued' | 'ready_for_processing') => ({
+const teachSession = (status: 'awaiting_upload' | 'queued' | 'persona_updated' | 'no_learning') => ({
   id: 'teach-session-1',
   departmentId: 'department-1',
   source: 'upload' as const,
   status,
-  progress: status === 'ready_for_processing' ? 100 : 25,
+  progress: ['persona_updated', 'no_learning'].includes(status) ? 100 : 25,
   originalFileName: recording.fileName,
   mimeType: recording.mimeType,
   fileSize: recording.size,
   lastError: null,
-  canCancel: status !== 'ready_for_processing',
+  understanding: status === 'persona_updated'
+    ? 'Divo learned how the manager reviews weekly reports.'
+    : status === 'no_learning' ? 'No durable rule was clear enough to save.' : null,
+  appliedChangeCount: status === 'persona_updated' ? 2 : 0,
+  personaRevision: status === 'persona_updated' ? 3 : null,
+  remainingUndos: status === 'persona_updated' ? 2 : 0,
+  canCancel: !['persona_updated', 'no_learning'].includes(status),
   createdAt: '2026-07-18T00:00:00.000Z',
   updatedAt: '2026-07-18T00:00:00.000Z',
 })
@@ -65,7 +73,8 @@ describe('TeachMode', () => {
     h.pickRecording.mockResolvedValue(recording)
     h.createSession.mockResolvedValue(teachSession('awaiting_upload'))
     h.uploadRecording.mockResolvedValue(teachSession('queued'))
-    h.getSession.mockResolvedValue(teachSession('ready_for_processing'))
+    h.getSession.mockResolvedValue(teachSession('persona_updated'))
+    h.undoPersona.mockResolvedValue({ revision: 4, remainingUndos: 1 })
   })
 
   it('requires a selected managed department before teaching', async () => {
@@ -77,7 +86,7 @@ describe('TeachMode', () => {
     expect(screen.getByRole('button', { name: 'Upload recording' })).toBeDisabled()
   })
 
-  it('uploads a selected recording and reaches the processing-ready state', async () => {
+  it('uploads a selected recording, learns persona rules and supports Undo', async () => {
     const user = userEvent.setup()
     render(<TeachMode />)
 
@@ -90,8 +99,28 @@ describe('TeachMode', () => {
     await act(async () => {
       await vi.waitFor(() => expect(h.getSession).toHaveBeenCalledWith('teach-session-1'))
     })
-    expect(await screen.findByText('Teaching captured')).toBeInTheDocument()
-    expect(screen.getByText(/prepared the screens, interface text and explanation/i)).toBeInTheDocument()
+    expect(await screen.findByText('Divo learned your workflow')).toBeInTheDocument()
+    expect(screen.getByText(/reviews weekly reports/i)).toBeInTheDocument()
+    expect(screen.getByText('2 persona rules updated')).toBeInTheDocument()
     expect(screen.getByText('manager-demo.mov')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Undo (2 left)' }))
+    expect(h.undoPersona).toHaveBeenCalledWith('department-1')
+    expect(await screen.findByText('Persona change undone.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Undo (1 left)' })).toBeInTheDocument()
+  })
+
+  it('shows a clean no-learning result without an Undo action', async () => {
+    h.getSession.mockResolvedValue(teachSession('no_learning'))
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    const uploadButton = await screen.findByRole('button', { name: 'Upload recording' })
+    await waitFor(() => expect(uploadButton).toBeEnabled())
+    await user.click(uploadButton)
+
+    expect(await screen.findByText('Teaching reviewed')).toBeInTheDocument()
+    expect(screen.getByText(/no durable rule was clear enough/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Undo/ })).not.toBeInTheDocument()
   })
 })

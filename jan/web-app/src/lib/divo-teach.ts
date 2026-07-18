@@ -17,6 +17,9 @@ export type TeachSession = {
     | 'queued'
     | 'ingesting'
     | 'ready_for_processing'
+    | 'persona_processing'
+    | 'persona_updated'
+    | 'no_learning'
     | 'failed'
     | 'cancelled'
   progress: number
@@ -24,6 +27,10 @@ export type TeachSession = {
   mimeType: string | null
   fileSize: number | null
   lastError: string | null
+  understanding: string | null
+  appliedChangeCount: number
+  personaRevision: number | null
+  remainingUndos: number
   canCancel: boolean
   createdAt: string
   updatedAt: string

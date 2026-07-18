@@ -2,8 +2,11 @@ import { Queue } from 'bullmq';
 
 export const MANAGER_TEACH_QUEUE_NAME = 'manager-teach';
 
+export type ManagerTeachQueueStage = 'ingest' | 'synthesize';
+
 export interface ManagerTeachQueuePayload {
   readonly teachSessionId: string;
+  readonly stage: ManagerTeachQueueStage;
 }
 
 export class ManagerTeachQueue {
@@ -25,9 +28,13 @@ export class ManagerTeachQueue {
   }
 
   async enqueue(payload: ManagerTeachQueuePayload): Promise<string> {
-    const job = await this.queue.add('ingest-recording', payload, {
-      jobId: `manager_teach_${payload.teachSessionId}`,
-    });
+    const job = await this.queue.add(
+      payload.stage === 'ingest' ? 'ingest-recording' : 'synthesize-persona',
+      payload,
+      {
+        jobId: `manager_teach_${payload.stage}_${payload.teachSessionId}`,
+      },
+    );
     return String(job.id);
   }
 

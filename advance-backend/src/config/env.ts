@@ -184,7 +184,7 @@ const EnvSchema = z.object({
   INGESTION_WORKER_CONCURRENCY: positiveInt(2),
   INGESTION_JOB_RETRIES:      positiveInt(3),
 
-  // ── Manager persona learning (P1–P3: evidence → queued shadow extraction) ─
+  // ── Manager persona learning ─────────────────────────────────────────────
   REDIS_PERSONA_LEARNING_QUEUE_NAME: z.string().default('persona-learning'),
   PERSONA_LEARNING_WORKER_CONCURRENCY: positiveInt(1),
   PERSONA_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
@@ -204,6 +204,11 @@ const EnvSchema = z.object({
   MANAGER_TEACH_OCR_MODEL: z.string().default('qwen/qwen2.5-vl-32b-instruct'),
   MANAGER_TEACH_TRANSCRIPTION_MODEL: z.string().default('gpt-4o-mini-transcribe'),
   MANAGER_TEACH_TRANSCRIPTION_CHUNK_SECONDS: positiveInt(300),
+  MANAGER_TEACH_PERSONA_MODEL: z.string().default('deepseek-v4-pro'),
+  MANAGER_TEACH_PERSONA_TIMEOUT_SECONDS: positiveInt(300),
+  MANAGER_TEACH_PERSONA_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),
+  MANAGER_TEACH_EVIDENCE_MAX_MB: positiveInt(5),
+  MANAGER_TEACH_PERSONA_MAX_INPUT_CHARS: z.coerce.number().int().min(20_000).default(800_000),
 
   // ── RAG retrieval tuning ──────────────────────────────────────────────────
   RAG_GRADE_THRESHOLD:   positiveNum(3),

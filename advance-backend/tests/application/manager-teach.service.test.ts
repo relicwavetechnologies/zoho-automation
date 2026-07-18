@@ -23,6 +23,7 @@ describe('ManagerTeachService', () => {
       queue: {} as never,
       logger: noopLogger,
       mediaProcessor: {} as never,
+      personaProcessor: {} as never,
       maxVideoBytes: 100,
       rawRetentionHours: 24,
     });
@@ -122,6 +123,7 @@ describe('ManagerTeachService', () => {
           return { manifestPath, sizeBytes: 2, frameCount: 3, warningCount: 0 };
         },
       } as never,
+      personaProcessor: {} as never,
       maxVideoBytes: 100,
       rawRetentionHours: 24,
     });
@@ -131,12 +133,16 @@ describe('ManagerTeachService', () => {
       storageKey: videoPath, mimeType: 'video/quicktime', sizeBytes: 11,
     });
     assert.equal(queued.status, 'queued');
-    assert.deepEqual(enqueued, [{ teachSessionId: 'teach-1' }]);
+    assert.deepEqual(enqueued, [{ teachSessionId: 'teach-1', stage: 'ingest' }]);
 
     await service.processIngestion('teach-1');
     assert.equal(session.status, 'ready_for_processing');
-    assert.equal(session.progress, 100);
+    assert.equal(session.progress, 75);
     assert.equal(artifacts.some(item => item.kind === 'evidence_manifest'), true);
+    assert.deepEqual(enqueued, [
+      { teachSessionId: 'teach-1', stage: 'ingest' },
+      { teachSessionId: 'teach-1', stage: 'synthesize' },
+    ]);
 
     await service.processIngestion('teach-1');
     assert.equal(session.attempts, 1, 'terminal ingestion must be idempotent');
@@ -145,7 +151,7 @@ describe('ManagerTeachService', () => {
     await rm(videoPath, { force: true });
     await assert.rejects(service.processIngestion('teach-1'));
     assert.equal(session.status, 'queued', 'a retryable worker failure must remain durable');
-    await service.markFailed('teach-1', new Error('retry budget exhausted'));
+    await service.markFailed('teach-1', 'ingest', new Error('retry budget exhausted'));
     assert.equal(session.status, 'failed');
     await rm(dir, { recursive: true, force: true });
   });

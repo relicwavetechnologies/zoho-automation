@@ -24,7 +24,11 @@ export class ManagerTeachWorker {
     this.worker = new Worker<ManagerTeachQueuePayload>(
       this.deps.queueName ?? MANAGER_TEACH_QUEUE_NAME,
       async (job: Job<ManagerTeachQueuePayload>) => {
-        await this.deps.service.processIngestion(job.data.teachSessionId);
+        if (job.data.stage === 'synthesize') {
+          await this.deps.service.processPersonaSynthesis(job.data.teachSessionId);
+        } else {
+          await this.deps.service.processIngestion(job.data.teachSessionId);
+        }
       },
       {
         connection: { url: this.deps.redisUrl, maxRetriesPerRequest: null },
@@ -37,7 +41,7 @@ export class ManagerTeachWorker {
     this.worker.on('failed', (job, error) => {
       this.log.warn('manager-teach.worker.failed', { jobId: job?.id, error: String(error) });
       if (job && job.attemptsMade + 1 >= (job.opts.attempts ?? 1)) {
-        void this.deps.service.markFailed(job.data.teachSessionId, error);
+        void this.deps.service.markFailed(job.data.teachSessionId, job.data.stage, error);
       }
     });
 

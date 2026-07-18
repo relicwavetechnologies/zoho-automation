@@ -141,6 +141,7 @@ enum PersonaLearningEvidenceStrength {
 enum PersonaLearningCandidateStatus {
   shadow
   active
+  reverted
 }
 
 // Active manager persona is its own bounded, department-scoped tree. It is
@@ -151,8 +152,8 @@ enum ManagerPersonaNodeStatus {
   quarantined
 }
 
-// Explicit manager teaching is a separate ingestion path from passive
-// after-run learning. It produces persona-only evidence in later phases.
+// Explicit manager teaching is separate from passive after-run learning and
+// may update only the manager persona after evidence validation.
 enum ManagerTeachSource {
   recording
   upload
@@ -163,8 +164,16 @@ enum ManagerTeachSessionStatus {
   queued
   ingesting
   ready_for_processing
+  persona_processing
+  persona_updated
+  no_learning
   failed
   cancelled
+}
+
+enum ManagerTeachPersonaMutationStatus {
+  applied
+  no_learning
 }
 
 enum ManagerTeachArtifactKind {
@@ -1718,18 +1727,19 @@ model PersonaLearningCandidate {
 // One manager-owned tree per department. Its revision is the freshness token
 // consumed by the desktop runtime context in P5; it grants no authority.
 model ManagerPersonaTree {
-  id           String                   @id @default(uuid())
-  companyId    String
-  company      Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  managerId    String
-  manager      User                     @relation("ManagerPersonaTreeManager", fields: [managerId], references: [id], onDelete: Cascade)
-  departmentId String
-  department   Department               @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  revision     Int                      @default(1)
-  createdAt    DateTime                 @default(now())
-  updatedAt    DateTime                 @updatedAt
-  nodes        ManagerPersonaNode[]
-  revisions    ManagerPersonaRevision[]
+  id             String                        @id @default(uuid())
+  companyId      String
+  company        Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId      String
+  manager        User                          @relation("ManagerPersonaTreeManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId   String
+  department     Department                    @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  revision       Int                           @default(1)
+  createdAt      DateTime                      @default(now())
+  updatedAt      DateTime                      @updatedAt
+  nodes          ManagerPersonaNode[]
+  revisions      ManagerPersonaRevision[]
+  teachMutations ManagerTeachPersonaMutation[]
 
   @@unique([companyId, managerId, departmentId])
   @@index([companyId, departmentId, updatedAt])
@@ -1750,8 +1760,8 @@ model ManagerPersonaRevision {
   @@index([treeId, createdAt])
 }
 
-// An active node is promoted only by the deterministic P4 evidence gate.
-// It is instruction context, not an executable company skill or permission.
+// An active node is promoted by the passive evidence gate or written from an
+// explicit Teach session. It is persona context, never executable authority.
 model ManagerPersonaNode {
   id              String                       @id @default(uuid())
   treeId          String
@@ -1782,31 +1792,57 @@ model ManagerPersonaNode {
 // Durable job state for an explicit Teach recording. BullMQ executes the job,
 // while this row is authoritative for progress, retries and cancellation.
 model ManagerTeachSession {
-  id                String                    @id @default(uuid())
+  id                String                       @id @default(uuid())
   companyId         String
-  company           Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company           Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
   managerId         String
-  manager           User                      @relation("ManagerTeachSessionManager", fields: [managerId], references: [id], onDelete: Cascade)
+  manager           User                         @relation("ManagerTeachSessionManager", fields: [managerId], references: [id], onDelete: Cascade)
   departmentId      String
-  department        Department                @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  department        Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   source            ManagerTeachSource
-  status            ManagerTeachSessionStatus @default(awaiting_upload)
-  progress          Int                       @default(0)
+  status            ManagerTeachSessionStatus    @default(awaiting_upload)
+  progress          Int                          @default(0)
   originalFileName  String?
   mimeType          String?
   fileSize          Int?
   queueJobId        String?
-  attempts          Int                       @default(0)
+  attempts          Int                          @default(0)
   cancelRequestedAt DateTime?
   startedAt         DateTime?
   completedAt       DateTime?
   failedAt          DateTime?
   lastError         String?
-  createdAt         DateTime                  @default(now())
-  updatedAt         DateTime                  @updatedAt
+  createdAt         DateTime                     @default(now())
+  updatedAt         DateTime                     @updatedAt
   artifacts         ManagerTeachArtifact[]
+  personaMutation   ManagerTeachPersonaMutation?
 
   @@index([companyId, departmentId, managerId, createdAt])
+  @@index([status, createdAt])
+}
+
+// One compact, idempotent mutation record per Teach session. Raw model output
+// and media evidence are not retained here; patchJson contains only the
+// validated changes that were safe to apply (or the no-learning decision).
+model ManagerTeachPersonaMutation {
+  id                 String                            @id @default(uuid())
+  sessionId          String                            @unique
+  session            ManagerTeachSession               @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  treeId             String?
+  tree               ManagerPersonaTree?               @relation(fields: [treeId], references: [id], onDelete: SetNull)
+  baseRevision       Int?
+  appliedRevision    Int?
+  evidenceHash       String
+  modelProvider      String
+  modelId            String
+  status             ManagerTeachPersonaMutationStatus
+  understanding      String
+  patchJson          Json
+  appliedChangeCount Int                               @default(0)
+  createdAt          DateTime                          @default(now())
+  updatedAt          DateTime                          @updatedAt
+
+  @@index([treeId, createdAt])
   @@index([status, createdAt])
 }
 

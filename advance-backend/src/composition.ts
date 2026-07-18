@@ -118,6 +118,8 @@ import { ManagerPersonaRevisionService } from './application/persona-learning/ma
 import { ManagerTeachQueue } from './application/persona-learning/manager-teach.queue';
 import { ManagerTeachService } from './application/persona-learning/manager-teach.service';
 import { ManagerTeachMediaProcessor } from './application/persona-learning/manager-teach-media.processor';
+import { DeepSeekManagerTeachPersonaExtractor } from './application/persona-learning/manager-teach-persona.extractor';
+import { ManagerTeachPersonaProcessor } from './application/persona-learning/manager-teach-persona.processor';
 import { PeepshowManagerTeachExtractor } from './infrastructure/media/peepshow-manager-teach.extractor';
 import { OpenRouterManagerTeachFrameOcr } from './infrastructure/ai/ocr/openrouter-manager-teach.ocr';
 import { OpenAiManagerTeachTranscriber } from './infrastructure/ai/transcription/openai-manager-teach.transcriber';
@@ -894,11 +896,29 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     ocrConcurrency: env.MANAGER_TEACH_OCR_CONCURRENCY,
     transcriptionModel: env.MANAGER_TEACH_TRANSCRIPTION_MODEL,
   });
+  const managerTeachDeepSeek = createDeepSeek({
+    ...(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_API_KEY } : {}),
+    baseURL: env.DEEPSEEK_BASE_URL,
+  });
+  const managerTeachPersonaExtractor = new DeepSeekManagerTeachPersonaExtractor(
+    managerTeachDeepSeek(env.MANAGER_TEACH_PERSONA_MODEL),
+    env.MANAGER_TEACH_PERSONA_MODEL,
+    env.MANAGER_TEACH_PERSONA_TIMEOUT_SECONDS * 1_000,
+  );
+  const managerTeachPersonaProcessor = new ManagerTeachPersonaProcessor({
+    prisma,
+    extractor: managerTeachPersonaExtractor,
+    logger,
+    minConfidence: env.MANAGER_TEACH_PERSONA_MIN_CONFIDENCE,
+    maxEvidenceBytes: env.MANAGER_TEACH_EVIDENCE_MAX_MB * 1_024 * 1_024,
+    maxInputChars: env.MANAGER_TEACH_PERSONA_MAX_INPUT_CHARS,
+  });
   const managerTeachService = new ManagerTeachService({
     prisma,
     queue: managerTeachQueue,
     logger,
     mediaProcessor: managerTeachMediaProcessor,
+    personaProcessor: managerTeachPersonaProcessor,
     maxVideoBytes: env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
     rawRetentionHours: env.MANAGER_TEACH_RAW_RETENTION_HOURS,
   });

@@ -6,6 +6,8 @@ import { ManagerPersonaRevisionService } from './manager-persona-revision.servic
 const MIN_NARROW_RULE_SUPPORT = 2;
 const MIN_BROAD_OR_PROCEDURAL_RULE_SUPPORT = 3;
 
+class PersonaPromotionRaceError extends Error {}
+
 export interface PersonaPromotionCandidate {
   readonly id: string;
   readonly companyId: string;
@@ -69,69 +71,75 @@ export class PersonaLearningPromotionService {
       if (!canonical || decision.confidence === undefined) continue;
       const confidence = decision.confidence;
 
-      const changed = await this.deps.prisma.$transaction(async tx => {
-        const tree = await tx.managerPersonaTree.upsert({
-          where: {
-            companyId_managerId_departmentId: {
+      let changed = false;
+      try {
+        changed = await this.deps.prisma.$transaction(async tx => {
+          const tree = await tx.managerPersonaTree.upsert({
+            where: {
+              companyId_managerId_departmentId: {
+                companyId: canonical.companyId,
+                managerId: canonical.managerId,
+                departmentId: canonical.departmentId,
+              },
+            },
+            create: {
               companyId: canonical.companyId,
               managerId: canonical.managerId,
               departmentId: canonical.departmentId,
             },
-          },
-          create: {
-            companyId: canonical.companyId,
-            managerId: canonical.managerId,
-            departmentId: canonical.departmentId,
-          },
-          update: {},
-        });
-        const existing = await tx.managerPersonaNode.findUnique({
-          where: {
-            treeId_kind_scopeKey_ruleKey: {
+            update: {},
+          });
+          const existing = await tx.managerPersonaNode.findUnique({
+            where: {
+              treeId_kind_scopeKey_ruleKey: {
+                treeId: tree.id,
+                kind: canonical.kind,
+                scopeKey: canonical.scopeKey,
+                ruleKey: canonical.ruleKey,
+              },
+            },
+            select: { id: true, status: true },
+          });
+
+          // A later phase handles contradiction/supersession. P4 never revives
+          // or overwrites a node that has been deliberately quarantined.
+          if (existing?.status === 'quarantined' || existing?.status === 'superseded') return false;
+          if (!existing) {
+            const claimedTree = await tx.managerPersonaTree.updateMany({
+              where: { id: tree.id, revision: tree.revision },
+              data: { revision: { increment: 1 } },
+            });
+            if (claimedTree.count === 0) return false;
+            await this.revisions.captureBeforeMutation(tx, tree.id, 'passive_learning', tree.revision);
+          }
+          const node = existing ?? await tx.managerPersonaNode.create({
+            data: {
               treeId: tree.id,
+              companyId: canonical.companyId,
+              managerId: canonical.managerId,
+              departmentId: canonical.departmentId,
               kind: canonical.kind,
               scopeKey: canonical.scopeKey,
               ruleKey: canonical.ruleKey,
+              instruction: canonical.claim,
+              confidence,
+              evidenceCount: decision.supportCount,
+              firstEvidenceAt: candidates[0]!.evidence.capturedAt,
+              lastEvidenceAt: candidates.at(-1)!.evidence.capturedAt,
+              status: 'active',
             },
-          },
-          select: { id: true, status: true },
-        });
-
-        // A later phase handles contradiction/supersession. P4 never revives
-        // or overwrites a node that has been deliberately quarantined.
-        if (existing?.status === 'quarantined' || existing?.status === 'superseded') return false;
-        if (!existing) {
-          await this.revisions.captureBeforeMutation(tx, tree.id, 'passive_learning');
-        }
-        const node = existing ?? await tx.managerPersonaNode.create({
-          data: {
-            treeId: tree.id,
-            companyId: canonical.companyId,
-            managerId: canonical.managerId,
-            departmentId: canonical.departmentId,
-            kind: canonical.kind,
-            scopeKey: canonical.scopeKey,
-            ruleKey: canonical.ruleKey,
-            instruction: canonical.claim,
-            confidence,
-            evidenceCount: decision.supportCount,
-            firstEvidenceAt: candidates[0]!.evidence.capturedAt,
-            lastEvidenceAt: candidates.at(-1)!.evidence.capturedAt,
-            status: 'active',
-          },
-        });
-        const linked = await tx.personaLearningCandidate.updateMany({
-          where: { id: { in: candidates.map(candidate => candidate.id) }, status: 'shadow' },
-          data: { status: 'active', promotedNodeId: node.id, promotedAt: new Date() },
-        });
-        if (!existing && linked.count > 0) {
-          await tx.managerPersonaTree.update({
-            where: { id: tree.id },
-            data: { revision: { increment: 1 } },
           });
-        }
-        return linked.count > 0;
-      });
+          const linked = await tx.personaLearningCandidate.updateMany({
+            where: { id: { in: candidates.map(candidate => candidate.id) }, status: 'shadow' },
+            data: { status: 'active', promotedNodeId: node.id, promotedAt: new Date() },
+          });
+          if (!existing && linked.count === 0) throw new PersonaPromotionRaceError();
+          return linked.count > 0;
+        });
+      } catch (error) {
+        if (error instanceof PersonaPromotionRaceError) continue;
+        throw error;
+      }
       if (changed) promoted += 1;
     }
 

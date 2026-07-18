@@ -28,7 +28,7 @@ type RevisionTx = Pick<
 
 export class ManagerPersonaRevisionError extends Error {
   constructor(
-    readonly code: 'not_manager' | 'persona_not_found' | 'no_undo_available',
+    readonly code: 'not_manager' | 'persona_not_found' | 'no_undo_available' | 'persona_changed',
     message: string,
   ) {
     super(message);
@@ -51,6 +51,7 @@ export class ManagerPersonaRevisionService {
     tx: RevisionTx,
     treeId: string,
     source: 'passive_learning' | 'teach',
+    snapshotRevision?: number,
   ): Promise<void> {
     const tree = await tx.managerPersonaTree.findUnique({
       where: { id: treeId },
@@ -79,10 +80,10 @@ export class ManagerPersonaRevisionService {
     } satisfies z.infer<typeof personaSnapshotSchema>;
 
     await tx.managerPersonaRevision.upsert({
-      where: { treeId_revision: { treeId, revision: tree.revision } },
+      where: { treeId_revision: { treeId, revision: snapshotRevision ?? tree.revision } },
       create: {
         treeId,
-        revision: tree.revision,
+        revision: snapshotRevision ?? tree.revision,
         snapshotJson: snapshot,
         source,
       },
@@ -125,6 +126,34 @@ export class ManagerPersonaRevisionService {
       }
 
       const snapshot = personaSnapshotSchema.parse(previous.snapshotJson);
+      const claimed = await tx.managerPersonaTree.updateMany({
+        where: { id: tree.id, revision: tree.revision },
+        data: { revision: { increment: 1 } },
+      });
+      if (claimed.count === 0) {
+        throw new ManagerPersonaRevisionError(
+          'persona_changed',
+          'The manager persona changed while Undo was running; please try again',
+        );
+      }
+
+      const currentNodes = await tx.managerPersonaNode.findMany({
+        where: { treeId: tree.id },
+        select: { id: true },
+      });
+      if (currentNodes.length > 0) {
+        await tx.personaLearningCandidate.updateMany({
+          where: {
+            promotedNodeId: { in: currentNodes.map(node => node.id) },
+            status: 'active',
+          },
+          data: {
+            status: 'reverted',
+            promotedNodeId: null,
+            promotedAt: null,
+          },
+        });
+      }
       await tx.managerPersonaNode.deleteMany({ where: { treeId: tree.id } });
 
       for (const node of snapshot.nodes) {
@@ -165,16 +194,11 @@ export class ManagerPersonaRevisionService {
       }
 
       await tx.managerPersonaRevision.delete({ where: { id: previous.id } });
-      const updatedTree = await tx.managerPersonaTree.update({
-        where: { id: tree.id },
-        data: { revision: { increment: 1 } },
-        select: { revision: true },
-      });
       const remainingUndos = await tx.managerPersonaRevision.count({ where: { treeId: tree.id } });
 
       return {
         treeId: tree.id,
-        revision: updatedTree.revision,
+        revision: tree.revision + 1,
         restoredFromRevision: previous.revision,
         remainingUndos,
       };

@@ -10,6 +10,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Sparkles,
+  Undo2,
   Upload,
   Video,
   type LucideIcon,
@@ -27,6 +28,7 @@ import {
   pickTeachRecording,
   recordTeachScreen,
   uploadTeachRecording,
+  undoManagerPersona,
   type TeachRecordingFile,
   type TeachSession,
 } from '@/lib/divo-teach'
@@ -53,6 +55,8 @@ export function TeachMode() {
   const [session, setSession] = useState<TeachSession>()
   const [uploadProgress, setUploadProgress] = useState(0)
   const [errorKind, setErrorKind] = useState<'manager' | 'generic'>('generic')
+  const [undoing, setUndoing] = useState(false)
+  const [undoMessage, setUndoMessage] = useState<string>()
   const sessionId = session?.id
   const sessionStatus = session?.status
 
@@ -89,14 +93,19 @@ export function TeachMode() {
   }, [sessionId])
 
   useEffect(() => {
-    if (!sessionId || !sessionStatus || !['queued', 'ingesting'].includes(sessionStatus)) return
+    if (!sessionId || !sessionStatus || ![
+      'queued',
+      'ingesting',
+      'ready_for_processing',
+      'persona_processing',
+    ].includes(sessionStatus)) return
     let active = true
     const refresh = async () => {
       try {
         const current = await getTeachSession(sessionId)
         if (!active) return
         setSession(current)
-        if (current.status === 'ready_for_processing') setStage('ready')
+        if (current.status === 'persona_updated' || current.status === 'no_learning') setStage('ready')
         if (current.status === 'failed' || current.status === 'cancelled') setStage('error')
       } catch (error) {
         console.warn('Teach processing status unavailable', error)
@@ -115,6 +124,8 @@ export function TeachMode() {
     setSession(undefined)
     setUploadProgress(0)
     setErrorKind('generic')
+    setUndoing(false)
+    setUndoMessage(undefined)
   }, [])
 
   const ingest = useCallback(async (
@@ -175,6 +186,21 @@ export function TeachMode() {
     if (session?.canCancel) await cancelTeachSession(session.id).catch(() => undefined)
     reset()
   }, [reset, session, stage])
+
+  const undo = useCallback(async () => {
+    if (!departmentId || !session || session.remainingUndos < 1) return
+    try {
+      setUndoing(true)
+      const result = await undoManagerPersona(departmentId)
+      setSession(current => current ? { ...current, remainingUndos: result.remainingUndos } : current)
+      setUndoMessage('Persona change undone.')
+    } catch (error) {
+      console.warn('Teach persona Undo failed', error)
+      setUndoMessage('Undo could not be completed. Please try again.')
+    } finally {
+      setUndoing(false)
+    }
+  }, [departmentId, session])
 
   if (stage === 'intro') {
     return (
@@ -262,16 +288,23 @@ export function TeachMode() {
 
   if (stage === 'uploading' || stage === 'processing') {
     const progress = stage === 'uploading' ? uploadProgress : Math.max(25, session?.progress ?? 25)
+    const applyingPersona = session?.status === 'persona_processing'
     return (
       <CenteredCard>
         <PulsingIcon icon={stage === 'uploading' ? Upload : RefreshCw} />
         <h1 className="mt-5 font-studio text-2xl font-medium">
-          {stage === 'uploading' ? 'Uploading your teaching' : 'Understanding your workflow'}
+          {stage === 'uploading'
+            ? 'Uploading your teaching'
+            : applyingPersona
+              ? 'Growing your persona'
+              : 'Understanding your workflow'}
         </h1>
         <p className="mt-2 max-w-md text-center text-sm leading-6 text-muted-foreground">
           {stage === 'uploading'
             ? 'The recording is streamed securely without loading the whole video into memory.'
-            : 'Divo is selecting useful screens, reading the interface and transcribing your explanation.'}
+            : applyingPersona
+              ? 'Divo is checking the evidence and applying only high-confidence working rules.'
+              : 'Divo is selecting useful screens, reading the interface and transcribing your explanation.'}
         </p>
         <div className="mt-6 w-full max-w-md">
           <Progress value={progress} />
@@ -280,21 +313,33 @@ export function TeachMode() {
             <span>{progress}%</span>
           </div>
         </div>
-        <Button variant="ghost" className="mt-5" onClick={() => void cancel()}>Cancel</Button>
+        {session?.canCancel && (
+          <Button variant="ghost" className="mt-5" onClick={() => void cancel()}>Cancel</Button>
+        )}
       </CenteredCard>
     )
   }
 
   if (stage === 'ready') {
+    const learned = session?.status === 'persona_updated'
     return (
       <CenteredCard>
         <div className="grid size-14 place-items-center rounded-2xl bg-emerald-500/10 text-emerald-600">
           <CheckCircle2 className="size-7" />
         </div>
-        <h1 className="mt-5 font-studio text-2xl font-medium">Teaching captured</h1>
+        <h1 className="mt-5 font-studio text-2xl font-medium">
+          {learned ? 'Divo learned your workflow' : 'Teaching reviewed'}
+        </h1>
         <p className="mt-2 max-w-md text-center leading-6 text-muted-foreground">
-          Divo prepared the screens, interface text and explanation needed to understand this workflow.
+          {session?.understanding ?? (learned
+            ? 'Your department persona now includes this working pattern.'
+            : 'Divo found no safe, high-confidence persona change in this recording.')}
         </p>
+        {learned && session.appliedChangeCount > 0 && (
+          <Badge variant="secondary" className="mt-4">
+            {session.appliedChangeCount} persona {session.appliedChangeCount === 1 ? 'rule' : 'rules'} updated
+          </Badge>
+        )}
         {session && (
           <div className="mt-5 flex items-center gap-2 text-xs text-muted-foreground">
             <FileVideo2 className="size-3.5" />
@@ -303,7 +348,17 @@ export function TeachMode() {
             <span>{formatBytes(session.fileSize)}</span>
           </div>
         )}
-        <Button className="mt-7" onClick={reset}>Teach another workflow</Button>
+        {undoMessage && (
+          <p className="mt-4 text-sm text-muted-foreground" role="status">{undoMessage}</p>
+        )}
+        <div className="mt-7 flex flex-wrap justify-center gap-3">
+          {learned && session.remainingUndos > 0 && (
+            <Button variant="outline" onClick={() => void undo()} disabled={undoing}>
+              <Undo2 /> {undoing ? 'Undoing…' : `Undo (${session.remainingUndos} left)`}
+            </Button>
+          )}
+          <Button onClick={reset}>Teach another workflow</Button>
+        </div>
       </CenteredCard>
     )
   }
