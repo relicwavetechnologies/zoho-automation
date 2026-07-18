@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   CircleStop,
   FileVideo2,
+  Eye,
   Mic,
   MonitorUp,
   RefreshCw,
@@ -19,6 +20,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
+import { TeachExperiencePreview } from './TeachExperiencePreview'
 import {
   cancelTeachRecording,
   cancelTeachSession,
@@ -69,6 +71,7 @@ export function TeachMode() {
   const [statusWarning, setStatusWarning] = useState<string>()
   const [undoing, setUndoing] = useState(false)
   const [undoMessage, setUndoMessage] = useState<string>()
+  const [showExperiencePreview, setShowExperiencePreview] = useState(false)
   const sessionId = session?.id
   const sessionStatus = session?.status
 
@@ -229,6 +232,10 @@ export function TeachMode() {
     }
   }, [departmentId, session])
 
+  if (showExperiencePreview) {
+    return <TeachExperiencePreview onExit={() => setShowExperiencePreview(false)} />
+  }
+
   if (stage === 'intro') {
     return (
       <div className="h-full overflow-y-auto px-5 py-8 sm:px-8" data-testid="teach-mode">
@@ -262,6 +269,15 @@ export function TeachMode() {
                   data-testid="upload-teach-recording"
                 >
                   <Upload /> Upload recording
+                </Button>
+                <Button
+                  size="lg"
+                  variant="ghost"
+                  onClick={() => setShowExperiencePreview(true)}
+                  data-testid="preview-teach-experience"
+                >
+                  <Eye /> Preview new UX
+                  <Badge variant="secondary" className="ml-1">Mock</Badge>
                 </Button>
               </div>
               {!checkingAccess && !departmentId && (

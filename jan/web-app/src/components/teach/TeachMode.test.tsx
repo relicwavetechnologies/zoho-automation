@@ -86,6 +86,18 @@ describe('TeachMode', () => {
     expect(screen.getByRole('button', { name: 'Upload recording' })).toBeDisabled()
   })
 
+  it('opens the isolated mock UX preview without recording or uploading', async () => {
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    await user.click(await screen.findByRole('button', { name: /Preview new UX/i }))
+
+    expect(screen.getByText('Learning from your demonstration')).toBeInTheDocument()
+    expect(screen.getByText(/UI preview · no model calls/i)).toBeInTheDocument()
+    expect(h.recordScreen).not.toHaveBeenCalled()
+    expect(h.uploadRecording).not.toHaveBeenCalled()
+  })
+
   it('starts the native recorder and gives actionable permission guidance on failure', async () => {
     h.recordScreen.mockRejectedValue('macOS screen recorder failed')
     const user = userEvent.setup()
