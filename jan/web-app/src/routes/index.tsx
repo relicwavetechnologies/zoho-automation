@@ -24,8 +24,9 @@ import {
   type FinanceQuickStartRequest,
 } from '@/components/finance-quick-starts/FinanceQuickStarts'
 import { AutomateMode } from '@/components/automate/AutomateMode'
+import { TeachMode } from '@/components/teach/TeachMode'
 import { Button } from '@/components/ui/button'
-import { MessageCircle, Workflow } from 'lucide-react'
+import { GraduationCap, MessageCircle, Workflow } from 'lucide-react'
 
 export const Route = createFileRoute(route.home as any)({
   component: Index,
@@ -45,7 +46,7 @@ function Index() {
   const { setCurrentThreadId } = useThreads()
   const [quickStartRequest, setQuickStartRequest] =
     useState<FinanceQuickStartRequest | null>(null)
-  const [mode, setMode] = useState<'ask' | 'automate'>('ask')
+  const [mode, setMode] = useState<'ask' | 'automate' | 'teach'>('ask')
   useTools()
 
   useEffect(() => {
@@ -79,12 +80,27 @@ function Index() {
             >
               <Workflow /> Automate
             </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={mode === 'teach' ? 'secondary' : 'ghost'}
+              className={cn('h-7 px-3 shadow-none', mode === 'teach' && 'bg-background shadow-xs text-violet-500')}
+              onClick={() => setMode('teach')}
+              aria-pressed={mode === 'teach'}
+              data-testid="teach-mode-toggle"
+            >
+              <GraduationCap /> Teach
+            </Button>
           </div>
         </div>
       </HeaderPage>
       {mode === 'automate' ? (
         <div className="min-h-0 flex-1 border-t" data-testid="automate-mode">
           <AutomateMode />
+        </div>
+      ) : mode === 'teach' ? (
+        <div className="min-h-0 flex-1 border-t">
+          <TeachMode />
         </div>
       ) : (
         <div

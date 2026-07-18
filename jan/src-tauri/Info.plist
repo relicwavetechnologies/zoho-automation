@@ -15,5 +15,7 @@
       </array>
     </dict>
   </array>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Divo records your explanation while you teach it how work should be done.</string>
 </dict>
 </plist>

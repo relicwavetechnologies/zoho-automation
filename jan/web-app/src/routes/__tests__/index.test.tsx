@@ -48,6 +48,10 @@ vi.mock('@/components/finance-quick-starts/FinanceQuickStarts', () => ({
   FinanceQuickStarts: () => <div data-testid="finance-quick-starts" />,
 }))
 
+vi.mock('@/components/teach/TeachMode', () => ({
+  TeachMode: () => <div data-testid="teach-mode">Teach Divo how you work.</div>,
+}))
+
 vi.mock('@/lib/utils', () => ({
   cn: (...c: any[]) => c.filter(Boolean).join(' '),
 }))
@@ -111,6 +115,16 @@ describe('Index route', () => {
     expect(screen.getByTestId('automate-mode')).toBeInTheDocument()
     expect(screen.getByText('Show Divo how your work gets done.')).toBeInTheDocument()
     expect(screen.getByTestId('start-workflow-recording')).toBeInTheDocument()
+    expect(screen.queryByTestId('chat-input')).not.toBeInTheDocument()
+  })
+
+  it('opens the manager teaching experience from Teach mode', async () => {
+    const user = userEvent.setup()
+    renderComponent()
+
+    await user.click(screen.getByTestId('teach-mode-toggle'))
+
+    expect(screen.getByTestId('teach-mode')).toHaveTextContent('Teach Divo how you work.')
     expect(screen.queryByTestId('chat-input')).not.toBeInTheDocument()
   })
 })

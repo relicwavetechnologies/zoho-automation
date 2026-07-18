@@ -180,6 +180,14 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_set_workspace_path,
         core::divo::commands::divo_clear_workspace_path,
         core::divo::commands::divo_normalize_image_attachment,
+        core::divo::teach::divo_teach_record_screen,
+        core::divo::teach::divo_teach_cancel_recording,
+        core::divo::teach::divo_teach_pick_recording,
+        core::divo::teach::divo_teach_create_session,
+        core::divo::teach::divo_teach_upload_recording,
+        core::divo::teach::divo_teach_get_session,
+        core::divo::teach::divo_teach_cancel_session,
+        core::divo::teach::divo_teach_undo_persona,
         $(
             $extra,
         )*

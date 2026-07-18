@@ -420,7 +420,7 @@ async fn best_effort_backend_logout<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-async fn divo_member_json_request<R: Runtime>(
+pub(super) async fn divo_member_json_request<R: Runtime>(
     app: &AppHandle<R>,
     api_base_path: &str,
     method: reqwest::Method,
