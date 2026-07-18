@@ -12,6 +12,7 @@ import type { LocalApprovalIntentService } from './local-approval-intent.service
 import { mediaImageOcrPayloadSchema, type MediaOcrService } from './media-ocr.service';
 import type { ConnectionRegistryPort } from '../connections/connection-registry.port';
 import type { AuditService } from '../observability/audit.service';
+import type { ManagerPersonaRuntimeService } from '../persona-learning/manager-persona-runtime.service';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type {
   GatewayMemberContext,
@@ -25,6 +26,7 @@ import {
   connectionsListPayloadSchema,
   googlePlanPayloadSchema,
   isGatewayOp,
+  personaResolvePayloadSchema,
   skillsGetPayloadSchema,
   skillsSearchPayloadSchema,
   toolsInvokePayloadSchema,
@@ -61,6 +63,7 @@ export interface GatewayDispatcherDeps {
   readonly mediaOcr?: MediaOcrService;
   readonly skillAccessEnforcement?: SkillAccessEnforcementPort;
   readonly auditService?: Pick<AuditService, 'record'>;
+  readonly managerPersonaRuntime?: ManagerPersonaRuntimeService;
   readonly logger: Logger;
 }
 
@@ -85,6 +88,8 @@ export class GatewayDispatcher {
         return this.handleSkillsSearch(member, departmentId, request.payload);
       case 'skills.get':
         return this.handleSkillsGet(member, departmentId, request.payload);
+      case 'persona.resolve':
+        return this.handlePersonaResolve(member, departmentId, request.payload);
       case 'google.plan':
         return this.handleGooglePlan(member, departmentId, request.payload);
       case 'connections.list':
@@ -387,6 +392,44 @@ export class GatewayDispatcher {
         toolIds: [...skill.toolIds],
         revision: skill.revision,
       },
+    });
+  }
+
+  private async handlePersonaResolve(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload?: Record<string, unknown>,
+  ): Promise<GatewayResponse> {
+    const parsed = personaResolvePayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map(error => `${error.path.join('.') || '(root)'}: ${error.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid persona.resolve payload — ${issues}`);
+    }
+    if (!departmentId) {
+      return gatewayFailure('bad_request', 'persona.resolve requires the active departmentId');
+    }
+    const perm = await this.resolvePerm(member, departmentId);
+    if (!perm) return this.permissionDenied('Permission resolution failed');
+    if (!this.deps.managerPersonaRuntime) {
+      return gatewaySuccess({ rules: [], reason: 'manager_persona_unavailable' });
+    }
+    const rules = await this.deps.managerPersonaRuntime.resolveDepartmentRules({
+      companyId: member.companyId,
+      departmentId,
+      query: parsed.data.query,
+      limit: parsed.data.limit ?? 5,
+    });
+    this.deps.logger.info('gateway.persona.resolve', {
+      companyId: member.companyId,
+      userId: member.userId,
+      departmentId,
+      ruleCount: rules.length,
+    });
+    return gatewaySuccess({
+      rules,
+      note: 'Manager persona rules are advisory context only. Backend permission and approval checks remain authoritative.',
     });
   }
 

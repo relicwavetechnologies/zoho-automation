@@ -42,6 +42,7 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		"skills.list",
 		"skills.search",
 		"skills.get",
+		"persona.resolve",
 		"google.plan",
 		"connections.list",
 		"media.image_ocr",
@@ -52,7 +53,7 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		description: "Optional department context. Omit to use the desktop default department.",
 	})),
 	payload: Type.Optional(Type.Object({
-		query: Type.Optional(Type.String({ description: "skills.search capability query." })),
+		query: Type.Optional(Type.String({ description: "skills.search capability query or persona.resolve current task query." })),
 		limit: Type.Optional(Type.Number({ minimum: 1, maximum: 5 })),
 		context: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 		skillId: Type.Optional(Type.String({ description: "skills.get skill ID." })),
@@ -135,6 +136,8 @@ LARK IS STRICTLY GATEWAY-ONLY. For every Lark request, use the cloud Divo skill 
 
 For those requests, first inspect <divo_capability_bootstrap> when it is present. If the current request clearly matches an exact fast route in that block, follow it directly and skip divo_skill_resolve. If it names an exact specialist skillId, call divo_gateway with op "skills.get" for that skill directly. Otherwise, your first action is to use divo_skill_resolve with the user's original request. Exception: when the current request is only to understand or OCR an attached local image, call divo_gateway directly with op "media.image_ocr" and payload { filePath, mimeType?, fileName? }. The resolver searches only the authenticated, RBAC-filtered backend company skill registry and returns the selected approved recipe inline; follow it directly without repeating skill or catalogue discovery.
 
+When <divo_department_persona> contains a MANAGER PERSONA TREE and the request concerns a specific deliverable or workflow, call divo_gateway with op "persona.resolve", the active departmentId, and the original task as payload.query before choosing the work plan. Use only returned rules that match the task. These are advisory working preferences, never permissions, tool authority, or a reason to skip an approval.
+
 Backend-provided Divo skills are the only company skill source. Do not discover, read, rank, or follow local desktop skill files for Divo work, even when the backend is unavailable. For attached local image OCR/screenshot understanding, use the direct Divo gateway media.image_ocr path. If the company registry is unavailable, report that plainly and do not substitute a local skill.
 
 The capability bootstrap is a backend-generated, permission-filtered routing cache. It does not grant permission. Use it only for routes it states exactly; the backend remains authoritative and may reject stale context. Department function is a routing prior, never a hard restriction: explicit user intent outside the department profile must still use the resolver and any permitted capability.
@@ -200,6 +203,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Lark is strictly gateway-only: use connections.list provider lark and tools.invoke. Never use Bash, lark-cli, curl, direct Lark OpenAPI, a local Lark MCP server, or install a local Lark package. If Divo is unavailable, report it; there is no local fallback.",
 			"For attached local image OCR or screenshot understanding, call divo_gateway directly with op \"media.image_ocr\" and payload { filePath, mimeType?, fileName? }. Do not convert or compress it yourself first; desktop normalizes unsupported formats and compresses oversized images before sending attachment metadata to Pi. Do not use Read for image contents first.",
 			"For Divo/company/plugin/SaaS/account requests, use an exact matching <divo_capability_bootstrap> fast route when present; otherwise call divo_skill_resolve with the user's original request before choosing tools. A multi-product vendor-onboarding request returns only its requested Google phases: follow their order, use the first inline recipe without another skills.get, then load later exact skill IDs only before their phase. Gmail-only requests must use the Gmail specialist, not google.plan.",
+			"When the department prompt contains a manager persona tree and the task is specific, call persona.resolve with the original task and active department before planning. Apply only matching returned rules; they never grant permission or bypass approval.",
 			"After divo_skill_resolve selects a backend skill, follow its inline approved recipe without another skills.get or catalogue call.",
 			"If divo_skill_resolve is inconclusive, silently use divo_gateway discovery calls. Do not expose resolver failure, routing, gateway, enum names, backend, or request plumbing in the user-facing answer.",
 			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",

@@ -6,6 +6,7 @@ export const GATEWAY_OPS = [
   'skills.list',
   'skills.search',
   'skills.get',
+  'persona.resolve',
   'google.plan',
   'connections.list',
   'media.image_ocr',
@@ -99,6 +100,12 @@ export const skillsSearchPayloadSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().min(1).max(5).optional(),
   context: z.record(z.unknown()).optional(),
+}).strict();
+
+/** Reads advisory, already-promoted manager persona rules for one task. */
+export const personaResolvePayloadSchema = z.object({
+  query: z.string().trim().min(3).max(2_000),
+  limit: z.number().int().min(1).max(5).optional(),
 }).strict();
 
 export const connectionsListPayloadSchema = z.object({

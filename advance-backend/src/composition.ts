@@ -1256,6 +1256,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     localApprovalIntents,
     connectionRegistry: integrationConnectionRepo,
     mediaOcr,
+    managerPersonaRuntime: managerPersonaRuntimeService,
     skillAccessEnforcement,
     auditService,
     logger: logger.child({ service: 'gateway-dispatcher' }),
