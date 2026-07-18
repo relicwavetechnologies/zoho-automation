@@ -74,12 +74,13 @@ export const createServer = (c: Container) => {
   });
   ingestionWorker.start();
 
-  // Manager persona learning is intentionally independent from ingestion and
-  // has no path to runtime prompts until its separate promotion phase exists.
+  // Manager persona promotion remains independent from memory, skills, RBAC,
+  // and runtime prompt delivery. P5 adds a separate read-only delivery path.
   const personaLearningWorker = new PersonaLearningWorker({
     redisUrl: c.queueRedisUrl,
     queueName: c.env.REDIS_PERSONA_LEARNING_QUEUE_NAME,
     service: c.personaLearningService,
+    promotionService: c.personaLearningPromotionService,
     logger: c.logger,
     concurrency: c.env.PERSONA_LEARNING_WORKER_CONCURRENCY,
   });

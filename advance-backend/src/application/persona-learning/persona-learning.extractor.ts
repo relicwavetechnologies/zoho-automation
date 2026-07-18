@@ -5,6 +5,7 @@ import type { PersonaLearningToolSummary, PersonaLearningTraceContext } from './
 const observationSchema = z.object({
   kind: z.enum(['preference', 'correction', 'workflow', 'skill', 'contradiction']),
   scopeKey: z.string().trim().min(1).max(120),
+  ruleKey: z.string().trim().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/).max(120),
   claim: z.string().trim().min(1).max(500),
   rationale: z.string().trim().min(1).max(1_000),
   evidenceStrength: z.enum(['explicit', 'confirmed', 'inferred']),
@@ -52,8 +53,10 @@ Use one of:
 
 scopeKey must be a short, stable task scope such as "reporting.weekly", "email.client", or "general". A preference for one scope must not be generalized to all work.
 
+ruleKey must be a stable lower-case identifier for the exact reusable rule, such as "weekly-report.bullets" or "client-email.direct-subject". Reuse exactly the same ruleKey when later evidence supports the same rule. Never use a manager name, a date, an arbitrary task ID, or a generated UUID.
+
 Return exactly:
-{"schemaVersion":1,"observations":[{"kind":"preference","scopeKey":"reporting.weekly","claim":"...","rationale":"...","evidenceStrength":"explicit"}]}
+{"schemaVersion":1,"observations":[{"kind":"preference","scopeKey":"reporting.weekly","ruleKey":"weekly-report.bullets","claim":"...","rationale":"...","evidenceStrength":"explicit"}]}
 
 Use an empty observations array when nothing durable was learned.`;
 

@@ -16,6 +16,7 @@ const extractor: PersonaLearningExtractor = {
     observations: [{
       kind: 'preference',
       scopeKey: 'reporting.weekly',
+      ruleKey: 'weekly-report.bullets',
       claim: 'Use bullet summaries.',
       rationale: 'Manager explicitly requested bullets.',
       evidenceStrength: 'explicit',

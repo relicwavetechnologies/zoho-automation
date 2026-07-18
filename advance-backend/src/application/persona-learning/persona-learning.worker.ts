@@ -2,11 +2,13 @@ import { Worker, type Job } from 'bullmq';
 import type { Logger } from '../../shared/logger';
 import { PERSONA_LEARNING_QUEUE_NAME, type PersonaLearningQueuePayload } from './persona-learning.queue';
 import { PersonaLearningService } from './persona-learning.service';
+import { PersonaLearningPromotionService } from './persona-learning-promotion.service';
 
 export interface PersonaLearningWorkerDeps {
   readonly redisUrl: string;
   readonly queueName?: string;
   readonly service: PersonaLearningService;
+  readonly promotionService?: PersonaLearningPromotionService;
   readonly logger: Logger;
   readonly concurrency?: number;
   readonly reconcileIntervalMs?: number;
@@ -26,6 +28,7 @@ export class PersonaLearningWorker {
       this.deps.queueName ?? PERSONA_LEARNING_QUEUE_NAME,
       async (job: Job<PersonaLearningQueuePayload>) => {
         await this.deps.service.processShadowExtraction(job.data.personaLearningJobId);
+        await this.promoteSafely();
       },
       { connection: { url: this.deps.redisUrl }, concurrency: this.deps.concurrency ?? 1 },
     );
@@ -40,7 +43,7 @@ export class PersonaLearningWorker {
     });
 
     const reconcile = () => {
-      void this.deps.service.reconcileQueuedJobs().catch(error => {
+      void this.reconcile().catch(error => {
         this.log.warn('persona-learning.worker.reconcile_failed', { error: String(error) });
       });
     };
@@ -53,5 +56,21 @@ export class PersonaLearningWorker {
   async stop(): Promise<void> {
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     await this.worker?.close();
+  }
+
+  private async reconcile(): Promise<void> {
+    await this.deps.service.reconcileQueuedJobs();
+    await this.promoteSafely();
+  }
+
+  private async promoteSafely(): Promise<void> {
+    if (!this.deps.promotionService) return;
+    try {
+      await this.deps.promotionService.promoteEligibleCandidates();
+    } catch (error) {
+      // Extraction is already durable and complete. A promotion outage must
+      // not re-run the model; periodic reconciliation will retry the gate.
+      this.log.warn('persona-learning.worker.promotion_failed', { error: String(error) });
+    }
   }
 }

@@ -11,6 +11,7 @@ describe('DeepSeekPersonaLearningExtractor', () => {
         {
           kind: 'preference',
           scopeKey: 'reporting.weekly',
+          ruleKey: 'weekly-report.bullets',
           claim: 'Use bullet-point summaries.',
           rationale: 'The manager explicitly asked for bullets.',
           evidenceStrength: 'explicit',
@@ -18,6 +19,7 @@ describe('DeepSeekPersonaLearningExtractor', () => {
         {
           kind: 'preference',
           scopeKey: 'reporting.weekly',
+          ruleKey: 'weekly-report.bullets',
           claim: 'Use   bullet-point summaries.',
           rationale: 'Duplicate statement.',
           evidenceStrength: 'explicit',

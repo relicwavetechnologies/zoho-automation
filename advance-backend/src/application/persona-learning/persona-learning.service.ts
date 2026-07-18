@@ -283,6 +283,7 @@ function candidateCreateData(
     ordinal,
     kind: observation.kind,
     scopeKey: observation.scopeKey,
+    ruleKey: observation.ruleKey,
     claim: observation.claim,
     rationale: observation.rationale,
     evidenceStrength: observation.evidenceStrength,
@@ -294,6 +295,7 @@ function candidateUpdateData(observation: PersonaLearningObservation) {
   return {
     kind: observation.kind,
     scopeKey: observation.scopeKey,
+    ruleKey: observation.ruleKey,
     claim: observation.claim,
     rationale: observation.rationale,
     evidenceStrength: observation.evidenceStrength,

@@ -140,6 +140,15 @@ enum PersonaLearningEvidenceStrength {
 
 enum PersonaLearningCandidateStatus {
   shadow
+  active
+}
+
+// Active manager persona is its own bounded, department-scoped tree. It is
+// deliberately neither user memory nor a Skill/SkillVersion substitute.
+enum ManagerPersonaNodeStatus {
+  active
+  superseded
+  quarantined
 }
 
 model User {
@@ -177,6 +186,8 @@ model User {
   departmentPreference               UserDepartmentPreference?
   personaLearningEvidenceAsManager   PersonaLearningEvidence[]  @relation("PersonaLearningEvidenceManager")
   personaLearningCandidatesAsManager PersonaLearningCandidate[] @relation("PersonaLearningCandidateManager")
+  managerPersonaTrees                ManagerPersonaTree[]      @relation("ManagerPersonaTreeManager")
+  managerPersonaNodes                ManagerPersonaNode[]      @relation("ManagerPersonaNodeManager")
 }
 
 model Company {
@@ -236,6 +247,8 @@ model Company {
   channelAgentMappings        ChannelAgentMapping[]
   personaLearningEvidences    PersonaLearningEvidence[]
   personaLearningCandidates   PersonaLearningCandidate[]
+  managerPersonaTrees         ManagerPersonaTree[]
+  managerPersonaNodes         ManagerPersonaNode[]
 }
 
 model RegisteredTool {
@@ -876,6 +889,8 @@ model Department {
   scheduledWorkflows ScheduledWorkflow[]
   personaLearningEvidences PersonaLearningEvidence[]
   personaLearningCandidates PersonaLearningCandidate[]
+  managerPersonaTrees       ManagerPersonaTree[]
+  managerPersonaNodes       ManagerPersonaNode[]
 
   @@unique([companyId, slug])
   @@index([companyId, status, updatedAt])
@@ -1655,15 +1670,68 @@ model PersonaLearningCandidate {
   ordinal          Int
   kind             PersonaLearningCandidateKind
   scopeKey         String
+  ruleKey          String
   claim            String
   rationale        String
   evidenceStrength PersonaLearningEvidenceStrength
   status           PersonaLearningCandidateStatus  @default(shadow)
+  promotedNodeId   String?
+  promotedNode     ManagerPersonaNode?             @relation("ManagerPersonaNodeCandidates", fields: [promotedNodeId], references: [id], onDelete: SetNull)
+  promotedAt       DateTime?
   createdAt        DateTime                        @default(now())
 
   @@unique([jobId, ordinal])
   @@index([companyId, departmentId, managerId, status, createdAt])
   @@index([evidenceId])
+  @@index([status, ruleKey, createdAt])
+}
+
+// One manager-owned tree per department. Its revision is the freshness token
+// consumed by the desktop runtime context in P5; it grants no authority.
+model ManagerPersonaTree {
+  id           String             @id @default(uuid())
+  companyId    String
+  company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId    String
+  manager      User               @relation("ManagerPersonaTreeManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId String
+  department   Department         @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  revision     Int                @default(1)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  nodes        ManagerPersonaNode[]
+
+  @@unique([companyId, managerId, departmentId])
+  @@index([companyId, departmentId, updatedAt])
+}
+
+// An active node is promoted only by the deterministic P4 evidence gate.
+// It is instruction context, not an executable company skill or permission.
+model ManagerPersonaNode {
+  id              String                  @id @default(uuid())
+  treeId          String
+  tree            ManagerPersonaTree      @relation(fields: [treeId], references: [id], onDelete: Cascade)
+  companyId       String
+  company         Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId       String
+  manager         User                    @relation("ManagerPersonaNodeManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId    String
+  department      Department              @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  kind            PersonaLearningCandidateKind
+  scopeKey        String
+  ruleKey         String
+  instruction     String
+  confidence      Float
+  evidenceCount   Int
+  firstEvidenceAt DateTime
+  lastEvidenceAt  DateTime
+  status          ManagerPersonaNodeStatus @default(active)
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  candidates      PersonaLearningCandidate[] @relation("ManagerPersonaNodeCandidates")
+
+  @@unique([treeId, kind, scopeKey, ruleKey])
+  @@index([companyId, departmentId, managerId, status, scopeKey])
 }
 
 model ExecutionEvent {

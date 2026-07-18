@@ -111,6 +111,7 @@ import { IngestionQueue } from './application/ingestion/ingestion.queue';
 import { PersonaLearningQueue } from './application/persona-learning/persona-learning.queue';
 import { DeepSeekPersonaLearningExtractor } from './application/persona-learning/persona-learning.extractor';
 import { PersonaLearningService } from './application/persona-learning/persona-learning.service';
+import { PersonaLearningPromotionService } from './application/persona-learning/persona-learning-promotion.service';
 import { LlmRerankerService } from './application/retrieval/llm-reranker.service';
 import { DocumentRagBroker } from './application/retrieval/document-rag.broker';
 import { DocumentRagTool } from './application/orchestration/tools/families/document-rag.tool';
@@ -235,9 +236,10 @@ export interface Container {
   // Document RAG
   ingestionService: IngestionService;
   ingestionQueue: IngestionQueue;
-  // Manager learning P1–P3. Evidence/candidates are isolated from active prompts.
+  // Manager learning P1–P4. Promotion remains isolated from memory, skills, and RBAC.
   personaLearningQueue: PersonaLearningQueue;
   personaLearningService: PersonaLearningService;
+  personaLearningPromotionService: PersonaLearningPromotionService;
   cloudinaryAdapter: CloudinaryAdapter;
   fileAssetRepo: FileAssetRepository;
   fileAccessPolicyRepo: FileAccessPolicyRepository;
@@ -853,6 +855,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     ),
     logger,
   });
+  const personaLearningPromotionService = new PersonaLearningPromotionService({ prisma, logger });
 
   const llmReranker = new LlmRerankerService(
     env.GROQ_API_KEY,
@@ -1327,6 +1330,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     ingestionQueue,
     personaLearningQueue,
     personaLearningService,
+    personaLearningPromotionService,
     cloudinaryAdapter,
     fileAssetRepo,
     fileAccessPolicyRepo,
