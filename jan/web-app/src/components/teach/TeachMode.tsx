@@ -54,7 +54,7 @@ export function TeachMode() {
   const [checkingAccess, setCheckingAccess] = useState(true)
   const [session, setSession] = useState<TeachSession>()
   const [uploadProgress, setUploadProgress] = useState(0)
-  const [errorKind, setErrorKind] = useState<'manager' | 'generic'>('generic')
+  const [errorKind, setErrorKind] = useState<'manager' | 'recorder' | 'generic'>('generic')
   const [undoing, setUndoing] = useState(false)
   const [undoMessage, setUndoMessage] = useState<string>()
   const sessionId = session?.id
@@ -167,6 +167,7 @@ export function TeachMode() {
         return
       }
       console.warn('Teach screen recording failed', error)
+      setErrorKind('recorder')
       setStage('error')
     }
   }, [ingest, reset])
@@ -369,12 +370,18 @@ export function TeachMode() {
         <FileVideo2 className="size-5" />
       </div>
       <h1 className="mt-5 font-studio text-2xl font-medium">
-        {errorKind === 'manager' ? 'Manager access required' : 'Recording not prepared'}
+        {errorKind === 'manager'
+          ? 'Manager access required'
+          : errorKind === 'recorder'
+            ? 'Screen recorder could not start'
+            : 'Recording not prepared'}
       </h1>
       <p className="mt-2 max-w-md text-center leading-6 text-muted-foreground">
         {errorKind === 'manager'
           ? 'Teach currently learns only from the manager of the selected department.'
-          : 'Divo could not prepare this recording. Your persona was not changed.'}
+          : errorKind === 'recorder'
+            ? 'Allow Screen & System Audio Recording and Microphone access for Divo in Mac System Settings, then try again.'
+            : 'Divo could not prepare this recording. Your persona was not changed.'}
       </p>
       <Button className="mt-6" onClick={reset}>
         <ArrowLeft /> Try again

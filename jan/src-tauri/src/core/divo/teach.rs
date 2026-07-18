@@ -21,6 +21,9 @@ const TEACH_RECORDING_DIR: &str = "divo/teach-recordings";
 const TEACH_UPLOAD_PROGRESS_EVENT: &str = "divo-teach-upload-progress";
 static ACTIVE_TEACH_RECORDING_PID: Mutex<Option<u32>> = Mutex::new(None);
 
+#[cfg(target_os = "macos")]
+const MACOS_TEACH_RECORDING_ARGS: &[&str] = &["-i", "-Jvideo", "-g", "-k", "-x"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeachRecordingFile {
@@ -106,11 +109,10 @@ pub async fn divo_teach_record_screen<R: Runtime>(
         .map_err(|error| format!("Could not create recording folder: {error}"))?;
     let output_path = dir.join(format!("teach-{}.mov", Uuid::new_v4().simple()));
 
-    // Use the standard macOS screen recorder: the manager chooses one screen,
-    // microphone permission is requested by macOS, and the system stop control
-    // ends the recording. Divo does not implement multi-screen composition.
+    // `-Jvideo` opens macOS' interactive video selector. Do not combine `-i`
+    // with `-v`: screencapture rejects that pair instead of opening the UI.
     let mut child = Command::new("/usr/sbin/screencapture")
-        .args(["-i", "-v", "-g", "-J", "video", "-k", "-x"])
+        .args(MACOS_TEACH_RECORDING_ARGS)
         .arg(&output_path)
         .kill_on_drop(true)
         .spawn()
@@ -355,8 +357,18 @@ pub async fn divo_teach_undo_persona<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::MACOS_TEACH_RECORDING_ARGS;
     use super::{recording_mime, validate_identifier};
     use std::path::Path;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_recording_uses_interactive_video_mode_without_conflicting_flag() {
+        assert!(MACOS_TEACH_RECORDING_ARGS.contains(&"-i"));
+        assert!(MACOS_TEACH_RECORDING_ARGS.contains(&"-Jvideo"));
+        assert!(!MACOS_TEACH_RECORDING_ARGS.contains(&"-v"));
+    }
 
     #[test]
     fn accepts_supported_recording_extensions() {

@@ -86,6 +86,20 @@ describe('TeachMode', () => {
     expect(screen.getByRole('button', { name: 'Upload recording' })).toBeDisabled()
   })
 
+  it('starts the native recorder and gives actionable permission guidance on failure', async () => {
+    h.recordScreen.mockRejectedValue('macOS screen recorder failed')
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    const recordButton = await screen.findByRole('button', { name: 'Record teaching' })
+    await waitFor(() => expect(recordButton).toBeEnabled())
+    await user.click(recordButton)
+
+    expect(h.recordScreen).toHaveBeenCalledOnce()
+    expect(await screen.findByText('Screen recorder could not start')).toBeInTheDocument()
+    expect(screen.getByText(/Screen & System Audio Recording and Microphone access/)).toBeInTheDocument()
+  })
+
   it('uploads a selected recording, learns persona rules and supports Undo', async () => {
     const user = userEvent.setup()
     render(<TeachMode />)
