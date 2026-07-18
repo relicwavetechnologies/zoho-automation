@@ -216,7 +216,7 @@ export function TeachMode() {
                 Teach Divo how you want work done.
               </h1>
               <p className="mt-4 max-w-xl text-base leading-7 text-muted-foreground">
-                Record one screen while you work and explain your decisions. Divo will use the demonstration to grow your department persona.
+                Record your main screen while you work and explain your decisions. Divo will use the demonstration to grow your department persona.
               </p>
 
               <div className="mt-7 flex flex-wrap gap-3">
@@ -245,7 +245,7 @@ export function TeachMode() {
               )}
 
               <div className="mt-8 grid max-w-xl gap-3 sm:grid-cols-3">
-                <Signal icon={MonitorUp} label="One selected screen" />
+                <Signal icon={MonitorUp} label="Your main display" />
                 <Signal icon={Mic} label="Your explanation" />
                 <Signal icon={ShieldCheck} label="Two Undos saved" />
               </div>
@@ -257,7 +257,7 @@ export function TeachMode() {
               </div>
               <h2 className="mt-5 font-studio text-xl font-medium">A normal Mac recording</h2>
               <div className="mt-5 space-y-4">
-                <Step number="1" text="macOS asks which screen to share." />
+                <Step number="1" text="Your main display starts recording." />
                 <Step number="2" text="Work normally and explain what matters." />
                 <Step number="3" text="Stop from the Mac menu bar when finished." />
               </div>
@@ -275,10 +275,10 @@ export function TeachMode() {
     return (
       <CenteredCard>
         <PulsingIcon icon={Video} />
-        <Badge variant="secondary" className="mt-5">macOS recorder open</Badge>
+        <Badge variant="secondary" className="mt-5">Recording in progress</Badge>
         <h1 className="mt-4 font-studio text-2xl font-medium">Show Divo how you work</h1>
         <p className="mt-2 max-w-md text-center leading-6 text-muted-foreground">
-          Choose one screen, work normally and explain your decisions. Stop the recording from the Mac menu bar.
+          Your main display is recording. Work normally and explain your decisions, then stop from the Mac menu bar.
         </p>
         <Button variant="outline" className="mt-6" onClick={() => void cancel()}>
           <CircleStop /> Cancel recording

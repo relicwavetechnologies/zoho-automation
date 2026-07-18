@@ -22,7 +22,7 @@ const TEACH_UPLOAD_PROGRESS_EVENT: &str = "divo-teach-upload-progress";
 static ACTIVE_TEACH_RECORDING_PID: Mutex<Option<u32>> = Mutex::new(None);
 
 #[cfg(target_os = "macos")]
-const MACOS_TEACH_RECORDING_ARGS: &[&str] = &["-i", "-Jvideo", "-g", "-k", "-x"];
+const MACOS_TEACH_RECORDING_ARGS: &[&str] = &["-v", "-D1", "-g", "-k", "-x"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,8 +109,8 @@ pub async fn divo_teach_record_screen<R: Runtime>(
         .map_err(|error| format!("Could not create recording folder: {error}"))?;
     let output_path = dir.join(format!("teach-{}.mov", Uuid::new_v4().simple()));
 
-    // `-Jvideo` opens macOS' interactive video selector. Do not combine `-i`
-    // with `-v`: screencapture rejects that pair instead of opening the UI.
+    // Record the main display directly. macOS rejects both `-v -i` and the
+    // seemingly documented `-i -Jvideo` combination on current releases.
     let mut child = Command::new("/usr/sbin/screencapture")
         .args(MACOS_TEACH_RECORDING_ARGS)
         .arg(&output_path)
@@ -364,10 +364,13 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_recording_uses_interactive_video_mode_without_conflicting_flag() {
-        assert!(MACOS_TEACH_RECORDING_ARGS.contains(&"-i"));
-        assert!(MACOS_TEACH_RECORDING_ARGS.contains(&"-Jvideo"));
-        assert!(!MACOS_TEACH_RECORDING_ARGS.contains(&"-v"));
+    fn macos_recording_uses_main_display_video_mode_without_interactive_flags() {
+        assert!(MACOS_TEACH_RECORDING_ARGS.contains(&"-v"));
+        assert!(MACOS_TEACH_RECORDING_ARGS.contains(&"-D1"));
+        assert!(!MACOS_TEACH_RECORDING_ARGS.contains(&"-i"));
+        assert!(!MACOS_TEACH_RECORDING_ARGS
+            .iter()
+            .any(|argument| argument.starts_with("-J")));
     }
 
     #[test]
