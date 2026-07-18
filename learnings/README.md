@@ -8,11 +8,12 @@ This directory records evidence and decisions for Divo's manager-learning system
 - [`hermes-memory-persona-architecture.md`](hermes-memory-persona-architecture.md) — code-level review of the local Hermes repository.
 - [`divo-persona-research-decisions.md`](divo-persona-research-decisions.md) — provisional conclusions for Divo, clearly separated into decisions, recommendations, and unresolved questions.
 - [`open-source-landscape-research-audit.md`](open-source-landscape-research-audit.md) — audit of the browser-agent landscape report, including accepted conclusions, unsupported claims, and missing reference implementations.
+- [`manager-teach-implementation-validation.md`](manager-teach-implementation-validation.md) — implemented explicit-Teach pipeline, live evaluation evidence, end-to-end smoke result, and remaining deployment issue.
 
 ## Evidence status
 
 - Local Hermes review: complete for the memory/profile/skill lifecycle at commit `8fa8aabbbbb1f5f65ad44d747527dfcd9b7a4866` (2026-07-15).
-- Local Divo fit check: complete at the architecture level; no implementation has been changed.
+- Explicit manager Teach: implemented and live-validated through media ingestion, persona synthesis, bounded Undo, and a repeatable isolated smoke harness.
 - External repository comparison: first report received and audited; a targeted follow-up is still required for the omitted Codex, Gemini CLI, Memobase, and trust/candidate implementations.
 - Final persona representation and promotion thresholds: deliberately not frozen until external research is compared with the local findings.
 

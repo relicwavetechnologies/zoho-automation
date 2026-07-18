@@ -201,7 +201,7 @@ const EnvSchema = z.object({
   MANAGER_TEACH_SCENE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.12),
   MANAGER_TEACH_MEDIA_TIMEOUT_SECONDS: positiveInt(1_800),
   MANAGER_TEACH_OCR_CONCURRENCY: positiveInt(2),
-  MANAGER_TEACH_OCR_MODEL: z.string().default('qwen/qwen2.5-vl-32b-instruct'),
+  MANAGER_TEACH_OCR_MODEL: z.string().default('qwen/qwen3-vl-32b-instruct'),
   MANAGER_TEACH_TRANSCRIPTION_MODEL: z.string().default('gpt-4o-mini-transcribe'),
   MANAGER_TEACH_TRANSCRIPTION_CHUNK_SECONDS: positiveInt(300),
   MANAGER_TEACH_PERSONA_MODEL: z.string().default('deepseek-v4-pro'),

@@ -65,7 +65,7 @@ describe('ManagerTeachMediaProcessor', () => {
           if (ocrCall === 2) throw new Error('temporary provider error');
           return {
             ocrText: 'Owner', caption: 'Google Sheets', uiElements: ['Owner'], confidence: 0.9,
-            warnings: [], provider: 'openrouter' as const, model: 'qwen/qwen2.5-vl-32b-instruct',
+            warnings: [], provider: 'openrouter' as const, model: 'qwen/qwen3-vl-32b-instruct',
           };
         },
       },
