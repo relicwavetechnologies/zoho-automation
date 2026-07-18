@@ -117,6 +117,10 @@ import { ManagerPersonaRuntimeService } from './application/persona-learning/man
 import { ManagerPersonaRevisionService } from './application/persona-learning/manager-persona-revision.service';
 import { ManagerTeachQueue } from './application/persona-learning/manager-teach.queue';
 import { ManagerTeachService } from './application/persona-learning/manager-teach.service';
+import { ManagerTeachMediaProcessor } from './application/persona-learning/manager-teach-media.processor';
+import { PeepshowManagerTeachExtractor } from './infrastructure/media/peepshow-manager-teach.extractor';
+import { OpenRouterManagerTeachFrameOcr } from './infrastructure/ai/ocr/openrouter-manager-teach.ocr';
+import { OpenAiManagerTeachTranscriber } from './infrastructure/ai/transcription/openai-manager-teach.transcriber';
 import { LlmRerankerService } from './application/retrieval/llm-reranker.service';
 import { DocumentRagBroker } from './application/retrieval/document-rag.broker';
 import { DocumentRagTool } from './application/orchestration/tools/families/document-rag.tool';
@@ -870,10 +874,31 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const managerPersonaRevisionService = new ManagerPersonaRevisionService({ prisma, logger });
   const managerTeachQueue = new ManagerTeachQueue(queueRedisUrl, env.REDIS_MANAGER_TEACH_QUEUE_NAME);
   const managerTeachUploadDir = resolve(env.MANAGER_TEACH_UPLOAD_DIR);
+  const managerTeachMediaProcessor = new ManagerTeachMediaProcessor({
+    extractor: new PeepshowManagerTeachExtractor({
+      maxFrames: env.MANAGER_TEACH_MAX_FRAMES,
+      width: env.MANAGER_TEACH_FRAME_WIDTH,
+      sceneThreshold: env.MANAGER_TEACH_SCENE_THRESHOLD,
+      timeoutMs: env.MANAGER_TEACH_MEDIA_TIMEOUT_SECONDS * 1_000,
+    }),
+    ocr: new OpenRouterManagerTeachFrameOcr({
+      apiKey: env.OPENROUTER_API_KEY ?? '',
+      model: env.MANAGER_TEACH_OCR_MODEL,
+    }),
+    transcriber: new OpenAiManagerTeachTranscriber({
+      apiKey: env.OPENAI_API_KEY,
+      model: env.MANAGER_TEACH_TRANSCRIPTION_MODEL,
+      chunkSeconds: env.MANAGER_TEACH_TRANSCRIPTION_CHUNK_SECONDS,
+    }),
+    logger,
+    ocrConcurrency: env.MANAGER_TEACH_OCR_CONCURRENCY,
+    transcriptionModel: env.MANAGER_TEACH_TRANSCRIPTION_MODEL,
+  });
   const managerTeachService = new ManagerTeachService({
     prisma,
     queue: managerTeachQueue,
     logger,
+    mediaProcessor: managerTeachMediaProcessor,
     maxVideoBytes: env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
     rawRetentionHours: env.MANAGER_TEACH_RAW_RETENTION_HOURS,
   });

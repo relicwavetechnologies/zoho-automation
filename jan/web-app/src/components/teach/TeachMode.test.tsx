@@ -91,6 +91,7 @@ describe('TeachMode', () => {
       await vi.waitFor(() => expect(h.getSession).toHaveBeenCalledWith('teach-session-1'))
     })
     expect(await screen.findByText('Teaching captured')).toBeInTheDocument()
+    expect(screen.getByText(/prepared the screens, interface text and explanation/i)).toBeInTheDocument()
     expect(screen.getByText('manager-demo.mov')).toBeInTheDocument()
   })
 })

@@ -1,6 +1,8 @@
-import { stat, unlink } from 'node:fs/promises';
+import { rm, stat, unlink } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
+import { ManagerTeachMediaProcessor } from './manager-teach-media.processor';
 import { ManagerTeachQueue } from './manager-teach.queue';
 
 export type ManagerTeachSourceInput = 'recording' | 'upload';
@@ -39,13 +41,14 @@ export interface ManagerTeachServiceDeps {
   readonly prisma: PrismaClient;
   readonly queue: ManagerTeachQueue;
   readonly logger: Logger;
+  readonly mediaProcessor: ManagerTeachMediaProcessor;
   readonly maxVideoBytes: number;
   readonly rawRetentionHours: number;
 }
 
 /**
- * Authoritative explicit-Teach job service. It intentionally stops at a
- * validated, queued recording in P2; OCR/STT/persona mutation begin in P3/P4.
+ * Authoritative explicit-Teach job service. P3 turns the recording into a
+ * structured evidence artifact; persona mutation remains isolated in P4.
  */
 export class ManagerTeachService {
   private readonly log: Logger;
@@ -165,7 +168,6 @@ export class ManagerTeachService {
   async cancelSession(input: { companyId: string; managerId: string; sessionId: string }): Promise<ManagerTeachSessionView> {
     const session = await this.deps.prisma.managerTeachSession.findFirst({
       where: { id: input.sessionId, companyId: input.companyId, managerId: input.managerId },
-      include: { artifacts: { where: { kind: 'raw_video', status: 'available' } } },
     });
     if (!session) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
     if (session.status === 'cancelled') return toSessionView(session);
@@ -178,7 +180,15 @@ export class ManagerTeachService {
         lastError: null,
       },
     });
-    await Promise.all(session.artifacts.map(artifact => this.deleteArtifact(artifact.id, artifact.storageKey)));
+    const artifacts = await this.deps.prisma.managerTeachArtifact.findMany({
+      where: { sessionId: session.id, status: 'available' },
+      select: { id: true, storageKey: true, kind: true },
+    });
+    await Promise.all(artifacts.map(artifact => this.deleteArtifact(
+      artifact.id,
+      artifact.storageKey,
+      artifact.kind,
+    )));
     return toSessionView(cancelled);
   }
 
@@ -197,7 +207,7 @@ export class ManagerTeachService {
       where: { id: sessionId, status: 'queued', cancelRequestedAt: null },
       data: {
         status: 'ingesting',
-        progress: 60,
+        progress: 30,
         attempts: { increment: 1 },
         startedAt: new Date(),
         lastError: null,
@@ -217,16 +227,67 @@ export class ManagerTeachService {
         throw new Error('Teach recording artifact failed integrity validation');
       }
 
-      await this.deps.prisma.managerTeachSession.updateMany({
-        where: { id: sessionId, status: 'ingesting', cancelRequestedAt: null },
-        data: {
-          status: 'ready_for_processing',
-          progress: 100,
-          completedAt: new Date(),
-          lastError: null,
+      let lastProgress = 30;
+      const result = await this.deps.mediaProcessor.process({
+        teachSessionId: session.id,
+        companyId: session.companyId,
+        departmentId: session.departmentId,
+        managerId: session.managerId,
+        source: session.source,
+        originalFileName: session.originalFileName,
+        videoPath: artifact.storageKey,
+        evidenceDir: join(dirname(artifact.storageKey), 'evidence'),
+        assertActive: () => this.assertIngestionActive(sessionId),
+        onProgress: async progress => {
+          if (progress < 95 && progress - lastProgress < 3) return;
+          lastProgress = progress;
+          await this.updateIngestionProgress(sessionId, progress);
         },
       });
-      this.log.info('manager-teach.ingestion.ready', { sessionId, sizeBytes: artifact.sizeBytes });
+
+      const expiresAt = new Date(Date.now() + this.deps.rawRetentionHours * 3_600_000);
+      const persisted = await this.deps.prisma.$transaction(async tx => {
+        const completed = await tx.managerTeachSession.updateMany({
+          where: { id: sessionId, status: 'ingesting', cancelRequestedAt: null },
+          data: {
+            status: 'ready_for_processing',
+            progress: 100,
+            completedAt: new Date(),
+            lastError: null,
+          },
+        });
+        if (completed.count === 0) return false;
+        await tx.managerTeachArtifact.upsert({
+          where: { sessionId_kind: { sessionId, kind: 'evidence_manifest' } },
+          create: {
+            sessionId,
+            kind: 'evidence_manifest',
+            storageKey: result.manifestPath,
+            mimeType: 'application/json',
+            sizeBytes: result.sizeBytes,
+            expiresAt,
+          },
+          update: {
+            status: 'available',
+            storageKey: result.manifestPath,
+            mimeType: 'application/json',
+            sizeBytes: result.sizeBytes,
+            expiresAt,
+            deletedAt: null,
+          },
+        });
+        return true;
+      });
+      if (!persisted) {
+        await rm(dirname(result.manifestPath), { recursive: true, force: true });
+        return;
+      }
+      this.log.info('manager-teach.ingestion.ready', {
+        sessionId,
+        sizeBytes: artifact.sizeBytes,
+        frames: result.frameCount,
+        warnings: result.warningCount,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
       await this.deps.prisma.managerTeachSession.updateMany({
@@ -248,11 +309,15 @@ export class ManagerTeachService {
   async cleanupExpiredArtifacts(limit = 100): Promise<number> {
     const artifacts = await this.deps.prisma.managerTeachArtifact.findMany({
       where: { status: 'available', expiresAt: { lte: new Date() } },
-      select: { id: true, storageKey: true },
+      select: { id: true, storageKey: true, kind: true },
       orderBy: { expiresAt: 'asc' },
       take: limit,
     });
-    await Promise.all(artifacts.map(artifact => this.deleteArtifact(artifact.id, artifact.storageKey)));
+    await Promise.all(artifacts.map(artifact => this.deleteArtifact(
+      artifact.id,
+      artifact.storageKey,
+      artifact.kind,
+    )));
     return artifacts.length;
   }
 
@@ -268,10 +333,33 @@ export class ManagerTeachService {
     }
   }
 
-  private async deleteArtifact(id: string, storageKey: string): Promise<void> {
-    await unlink(storageKey).catch(error => {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  private async updateIngestionProgress(sessionId: string, progress: number): Promise<void> {
+    await this.deps.prisma.managerTeachSession.updateMany({
+      where: { id: sessionId, status: 'ingesting', cancelRequestedAt: null },
+      data: { progress: Math.max(30, Math.min(95, progress)) },
     });
+  }
+
+  private async assertIngestionActive(sessionId: string): Promise<void> {
+    const active = await this.deps.prisma.managerTeachSession.findFirst({
+      where: { id: sessionId, status: 'ingesting', cancelRequestedAt: null },
+      select: { id: true },
+    });
+    if (!active) throw new Error('Teach ingestion is no longer active');
+  }
+
+  private async deleteArtifact(
+    id: string,
+    storageKey: string,
+    kind: 'raw_video' | 'evidence_manifest',
+  ): Promise<void> {
+    if (kind === 'evidence_manifest') {
+      await rm(dirname(storageKey), { recursive: true, force: true });
+    } else {
+      await unlink(storageKey).catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+    }
     await this.deps.prisma.managerTeachArtifact.updateMany({
       where: { id, status: 'available' },
       data: { status: 'deleted', deletedAt: new Date() },

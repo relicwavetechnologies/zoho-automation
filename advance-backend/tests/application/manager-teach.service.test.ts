@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -22,6 +22,7 @@ describe('ManagerTeachService', () => {
       prisma: prisma as never,
       queue: {} as never,
       logger: noopLogger,
+      mediaProcessor: {} as never,
       maxVideoBytes: 100,
       rawRetentionHours: 24,
     });
@@ -47,7 +48,7 @@ describe('ManagerTeachService', () => {
       cancelRequestedAt: null, startedAt: null, completedAt: null, failedAt: null, lastError: null,
       createdAt: new Date('2026-07-18T00:00:00.000Z'), updatedAt: new Date('2026-07-18T00:00:00.000Z'),
     };
-    let artifact: any = null;
+    const artifacts: any[] = [];
     const updateSession = (data: any) => {
       if (data.attempts?.increment) session.attempts += data.attempts.increment;
       Object.assign(session, Object.fromEntries(Object.entries(data).filter(([, value]) => typeof value !== 'object' || value instanceof Date || value === null)));
@@ -58,9 +59,28 @@ describe('ManagerTeachService', () => {
       managerTeachSession: {
         findFirst: async () => ({ ...session }),
         update: async ({ data }: any) => updateSession(data),
+        updateMany: async ({ where, data }: any) => {
+          if (session.status !== where.status || session.cancelRequestedAt !== null) return { count: 0 };
+          updateSession(data);
+          return { count: 1 };
+        },
       },
       managerTeachArtifact: {
-        create: async ({ data }: any) => { artifact = { id: 'artifact-1', status: 'available', ...data }; return artifact; },
+        create: async ({ data }: any) => {
+          const artifact = { id: `artifact-${artifacts.length + 1}`, status: 'available', ...data };
+          artifacts.push(artifact);
+          return artifact;
+        },
+        upsert: async ({ create, update }: any) => {
+          const existing = artifacts.find(item => item.kind === 'evidence_manifest');
+          if (existing) {
+            Object.assign(existing, update);
+            return existing;
+          }
+          const artifact = { id: `artifact-${artifacts.length + 1}`, status: 'available', ...create };
+          artifacts.push(artifact);
+          return artifact;
+        },
       },
     };
     const prisma = {
@@ -75,7 +95,15 @@ describe('ManagerTeachService', () => {
           updateSession(data);
           return { count: 1 };
         },
-        findUnique: async () => ({ ...session, artifacts: artifact ? [artifact] : [] }),
+        findUnique: async () => ({
+          ...session,
+          artifacts: artifacts.filter(item => item.kind === 'raw_video' && item.status === 'available'),
+        }),
+        findFirst: async ({ where }: any) => (
+          session.id === where.id && session.status === where.status && session.cancelRequestedAt === null
+            ? { id: session.id }
+            : null
+        ),
       },
       managerTeachArtifact: { updateMany: async () => ({ count: 1 }) },
       $transaction: async (fn: any) => fn(tx),
@@ -84,6 +112,16 @@ describe('ManagerTeachService', () => {
       prisma: prisma as never,
       queue: { enqueue: async (payload: unknown) => { enqueued.push(payload); return 'queue-1'; } } as never,
       logger: noopLogger,
+      mediaProcessor: {
+        process: async (input: any) => {
+          await input.onProgress(55);
+          await input.assertActive();
+          await mkdir(input.evidenceDir, { recursive: true });
+          const manifestPath = join(input.evidenceDir, 'evidence-manifest.json');
+          await writeFile(manifestPath, '{}');
+          return { manifestPath, sizeBytes: 2, frameCount: 3, warningCount: 0 };
+        },
+      } as never,
       maxVideoBytes: 100,
       rawRetentionHours: 24,
     });
@@ -98,6 +136,7 @@ describe('ManagerTeachService', () => {
     await service.processIngestion('teach-1');
     assert.equal(session.status, 'ready_for_processing');
     assert.equal(session.progress, 100);
+    assert.equal(artifacts.some(item => item.kind === 'evidence_manifest'), true);
 
     await service.processIngestion('teach-1');
     assert.equal(session.attempts, 1, 'terminal ingestion must be idempotent');

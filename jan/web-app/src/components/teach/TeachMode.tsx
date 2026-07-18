@@ -266,12 +266,12 @@ export function TeachMode() {
       <CenteredCard>
         <PulsingIcon icon={stage === 'uploading' ? Upload : RefreshCw} />
         <h1 className="mt-5 font-studio text-2xl font-medium">
-          {stage === 'uploading' ? 'Uploading your teaching' : 'Preparing the recording'}
+          {stage === 'uploading' ? 'Uploading your teaching' : 'Understanding your workflow'}
         </h1>
         <p className="mt-2 max-w-md text-center text-sm leading-6 text-muted-foreground">
           {stage === 'uploading'
             ? 'The recording is streamed securely without loading the whole video into memory.'
-            : 'Divo is validating the video and placing it in the processing queue.'}
+            : 'Divo is selecting useful screens, reading the interface and transcribing your explanation.'}
         </p>
         <div className="mt-6 w-full max-w-md">
           <Progress value={progress} />
@@ -293,7 +293,7 @@ export function TeachMode() {
         </div>
         <h1 className="mt-5 font-studio text-2xl font-medium">Teaching captured</h1>
         <p className="mt-2 max-w-md text-center leading-6 text-muted-foreground">
-          The recording is safely queued and ready for Divo&apos;s understanding pipeline.
+          Divo prepared the screens, interface text and explanation needed to understand this workflow.
         </p>
         {session && (
           <div className="mt-5 flex items-center gap-2 text-xs text-muted-foreground">
