@@ -116,6 +116,7 @@ export class ManagerTeachPersonaProcessor {
       ) {
         throw new Error('Teach evidence manifest does not belong to this session');
       }
+      await this.updateProgress(sessionId, 82);
 
       const evidenceHash = createHash('sha256').update(bytes).digest('hex');
       const tree = await this.deps.prisma.managerPersonaTree.findUnique({
@@ -134,7 +135,9 @@ export class ManagerTeachPersonaProcessor {
         tree?.nodes ?? [],
         this.deps.maxInputChars,
       );
+      await this.updateProgress(sessionId, 84);
       const patch = await this.deps.extractor.extract(evidence);
+      await this.updateProgress(sessionId, 90);
       if (patch.baseRevision !== evidence.baseRevision) {
         throw new Error('Teach persona editor returned a stale base revision');
       }
@@ -146,7 +149,9 @@ export class ManagerTeachPersonaProcessor {
         this.deps.minConfidence,
       );
       const understanding = safeUnderstanding(patch.understanding, accepted.length > 0);
+      await this.updateProgress(sessionId, 94);
 
+      await this.updateProgress(sessionId, 96);
       const result = await this.deps.prisma.$transaction(async tx => {
         const prior = await tx.managerTeachPersonaMutation.findUnique({ where: { sessionId } });
         if (prior) {
@@ -339,6 +344,13 @@ export class ManagerTeachPersonaProcessor {
       });
       throw error;
     }
+  }
+
+  private async updateProgress(sessionId: string, progress: number): Promise<void> {
+    await this.deps.prisma.managerTeachSession.updateMany({
+      where: { id: sessionId, status: 'persona_processing', cancelRequestedAt: null },
+      data: { progress },
+    });
   }
 
   private async toResult(

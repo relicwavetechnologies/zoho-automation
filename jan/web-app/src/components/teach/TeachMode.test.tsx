@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   listen: vi.fn(),
   pickRecording: vi.fn(),
   recordScreen: vi.fn(),
+  refineSession: vi.fn(),
   uploadRecording: vi.fn(),
   undoPersona: vi.fn(),
 }))
@@ -30,6 +31,7 @@ vi.mock('@/lib/divo-teach', () => ({
   getTeachSession: h.getSession,
   pickTeachRecording: h.pickRecording,
   recordTeachScreen: h.recordScreen,
+  refineTeachSession: h.refineSession,
   uploadTeachRecording: h.uploadRecording,
   undoManagerPersona: h.undoPersona,
 }))
@@ -48,6 +50,10 @@ const teachSession = (status: 'awaiting_upload' | 'queued' | 'persona_processing
   source: 'upload' as const,
   status,
   progress: ['persona_updated', 'no_learning'].includes(status) ? 100 : status === 'persona_processing' ? 80 : status === 'failed' ? 75 : 25,
+  processingStep: ['persona_updated', 'no_learning'].includes(status)
+    ? 'complete' as const
+    : status === 'persona_processing' ? 'deepseek_reviewing' as const
+      : status === 'failed' ? 'failed' as const : status === 'awaiting_upload' ? 'awaiting_upload' as const : 'recording_received' as const,
   originalFileName: recording.fileName,
   mimeType: recording.mimeType,
   fileSize: recording.size,
@@ -55,6 +61,39 @@ const teachSession = (status: 'awaiting_upload' | 'queued' | 'persona_processing
   understanding: status === 'persona_updated'
     ? 'Divo learned how the manager reviews weekly reports.'
     : status === 'no_learning' ? 'No durable rule was clear enough to save.' : null,
+  appliedChanges: status === 'persona_updated' ? [
+    {
+      operation: 'add' as const,
+      kind: 'workflow',
+      scopeKey: 'reporting.weekly',
+      ruleKey: 'weekly-report.review',
+      instruction: 'Review weekly reports with risks first.',
+      confidence: 0.97,
+      evidenceRefs: ['transcript:1', 'frame:2'],
+    },
+    {
+      operation: 'add' as const,
+      kind: 'preference',
+      scopeKey: 'reporting.weekly',
+      ruleKey: 'weekly-report.concise',
+      instruction: 'Keep the review concise.',
+      confidence: 0.94,
+      evidenceRefs: ['transcript:1'],
+    },
+  ] : [],
+  evidence: {
+    durationSeconds: 74,
+    frameCount: 8,
+    transcriptSegmentCount: 2,
+    warningCount: 0,
+    transcriptionProvider: 'openai',
+    transcriptionModel: 'gpt-4o-mini-transcribe',
+    ocrModels: ['qwen/qwen2.5-vl-32b-instruct'],
+  },
+  modelProvider: status === 'persona_updated' ? 'deepseek' : null,
+  modelId: status === 'persona_updated' ? 'deepseek-v4-pro' : null,
+  parentSessionId: null,
+  managerCorrection: null,
   appliedChangeCount: status === 'persona_updated' ? 2 : 0,
   personaRevision: status === 'persona_updated' ? 3 : null,
   remainingUndos: status === 'persona_updated' ? 2 : 0,
@@ -74,6 +113,12 @@ describe('TeachMode', () => {
     h.createSession.mockResolvedValue(teachSession('awaiting_upload'))
     h.uploadRecording.mockResolvedValue(teachSession('queued'))
     h.getSession.mockResolvedValue(teachSession('persona_updated'))
+    h.refineSession.mockResolvedValue({
+      ...teachSession('persona_processing'),
+      id: 'teach-session-2',
+      parentSessionId: 'teach-session-1',
+      managerCorrection: 'Put risks first only for executive reports.',
+    })
     h.undoPersona.mockResolvedValue({ revision: 4, remainingUndos: 1 })
   })
 
@@ -84,18 +129,6 @@ describe('TeachMode', () => {
     expect(await screen.findByText('Select a department you manage before starting Teach.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Record teaching' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Upload recording' })).toBeDisabled()
-  })
-
-  it('opens the isolated mock UX preview without recording or uploading', async () => {
-    const user = userEvent.setup()
-    render(<TeachMode />)
-
-    await user.click(await screen.findByRole('button', { name: /Preview new UX/i }))
-
-    expect(screen.getByText('Learning from your demonstration')).toBeInTheDocument()
-    expect(screen.getByText(/UI preview · no model calls/i)).toBeInTheDocument()
-    expect(h.recordScreen).not.toHaveBeenCalled()
-    expect(h.uploadRecording).not.toHaveBeenCalled()
   })
 
   it('starts the native recorder and gives actionable permission guidance on failure', async () => {
@@ -166,15 +199,40 @@ describe('TeachMode', () => {
     await act(async () => {
       await vi.waitFor(() => expect(h.getSession).toHaveBeenCalledWith('teach-session-1'))
     })
-    expect(await screen.findByText('Divo learned your workflow')).toBeInTheDocument()
+    expect(await screen.findByText('2 persona rules updated')).toBeInTheDocument()
     expect(screen.getByText(/reviews weekly reports/i)).toBeInTheDocument()
-    expect(screen.getByText('2 persona rules updated')).toBeInTheDocument()
-    expect(screen.getByText('manager-demo.mov')).toBeInTheDocument()
+    expect(screen.getByText('Review weekly reports with risks first.')).toBeInTheDocument()
+    expect(screen.getByText('deepseek-v4-pro')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Undo (2 left)' }))
     expect(h.undoPersona).toHaveBeenCalledWith('department-1')
     expect(await screen.findByText('Persona change undone.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Undo (1 left)' })).toBeInTheDocument()
+  })
+
+  it('creates a linked real refinement from the result correction bar', async () => {
+    h.getSession.mockImplementation(async (sessionId: string) => sessionId === 'teach-session-2'
+      ? {
+          ...teachSession('persona_processing'),
+          id: 'teach-session-2',
+          parentSessionId: 'teach-session-1',
+          managerCorrection: 'Put risks first only for executive reports.',
+        }
+      : teachSession('persona_updated'))
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    const uploadButton = await screen.findByRole('button', { name: 'Upload recording' })
+    await waitFor(() => expect(uploadButton).toBeEnabled())
+    await user.click(uploadButton)
+    expect(await screen.findByText('2 persona rules updated')).toBeInTheDocument()
+
+    await user.type(screen.getByRole('textbox', { name: 'Refine what Divo learned' }), 'Put risks first only for executive reports.')
+    await user.click(screen.getByRole('button', { name: 'Send correction' }))
+
+    expect(h.refineSession).toHaveBeenCalledWith('teach-session-1', 'Put risks first only for executive reports.')
+    expect(await screen.findByText('Learning from your demonstration')).toBeInTheDocument()
+    expect(screen.getByText(/Refining the prior result/)).toBeInTheDocument()
   })
 
   it('shows a clean no-learning result without an Undo action', async () => {

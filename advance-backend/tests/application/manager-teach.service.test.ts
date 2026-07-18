@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -26,6 +26,7 @@ describe('ManagerTeachService', () => {
       personaProcessor: { process: async () => result } as never,
       maxVideoBytes: 100,
       rawRetentionHours: 24,
+      uploadDir: '/tmp/divo-teach-test',
     });
 
     assert.equal(await service.processPersonaSynthesis('teach-1'), 'ignored');
@@ -51,6 +52,7 @@ describe('ManagerTeachService', () => {
       personaProcessor: {} as never,
       maxVideoBytes: 100,
       rawRetentionHours: 24,
+      uploadDir: '/tmp/divo-teach-test',
     });
 
     await assert.rejects(
@@ -151,6 +153,7 @@ describe('ManagerTeachService', () => {
       personaProcessor: {} as never,
       maxVideoBytes: 100,
       rawRetentionHours: 24,
+      uploadDir: dir,
     });
 
     const queued = await service.completeUpload({
@@ -179,5 +182,85 @@ describe('ManagerTeachService', () => {
     await service.markFailed('teach-1', 'ingest', new Error('retry budget exhausted'));
     assert.equal(session.status, 'failed');
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it('creates a linked refinement from retained evidence and queues persona synthesis', async () => {
+    const uploadDir = await mkdtemp(join(tmpdir(), 'divo-teach-refinement-'));
+    const parentDir = join(uploadDir, 'company-1', 'teach-parent', 'evidence');
+    const parentManifestPath = join(parentDir, 'evidence-manifest.json');
+    await mkdir(parentDir, { recursive: true });
+    const manifest = {
+      schemaVersion: 1,
+      createdAt: '2026-07-18T00:00:00.000Z',
+      source: {
+        teachSessionId: 'teach-parent', companyId: 'company-1', departmentId: 'department-1',
+        managerId: 'manager-1', kind: 'upload', originalFileName: 'workflow.mov',
+      },
+      video: { durationSeconds: 42 },
+      extraction: {},
+      frames: [{ ocr: { provider: 'openrouter', model: 'qwen-vl' } }],
+      transcript: {
+        provider: 'openai', model: 'gpt-4o-mini-transcribe',
+        segments: [{ start: 0, end: 4, text: 'Put risks first.' }], text: 'Put risks first.',
+      },
+      warnings: [],
+    };
+    await writeFile(parentManifestPath, JSON.stringify(manifest));
+    const expiresAt = new Date(Date.now() + 60_000);
+    const queued: unknown[] = [];
+    const parent = {
+      id: 'teach-parent', companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1',
+      source: 'upload', status: 'persona_updated', progress: 100, originalFileName: 'workflow.mov',
+      mimeType: 'video/quicktime', fileSize: 1_024, parentSessionId: null, managerCorrection: null,
+      lastError: null, createdAt: new Date(), updatedAt: new Date(),
+      artifacts: [{ storageKey: parentManifestPath, expiresAt }],
+    };
+    const child = {
+      ...parent,
+      id: 'teach-child', status: 'awaiting_upload', progress: 0,
+      parentSessionId: parent.id, managerCorrection: 'Apply this only to executive reports.', artifacts: [],
+    };
+    const prisma: any = {
+      departmentMembership: { findFirst: async () => ({ id: 'membership-1' }) },
+      managerTeachSession: {
+        findFirst: async () => parent,
+        create: async () => child,
+        updateMany: async () => ({ count: 1 }),
+        delete: async () => child,
+      },
+      $transaction: async (fn: any) => fn({
+        managerTeachArtifact: { create: async ({ data }: any) => data },
+        managerTeachSession: {
+          update: async ({ data }: any) => Object.assign(child, data),
+        },
+      }),
+    };
+    const service = new ManagerTeachService({
+      prisma,
+      queue: { enqueue: async (payload: unknown) => { queued.push(payload); return 'refine-job'; } } as never,
+      logger: noopLogger,
+      mediaProcessor: {} as never,
+      personaProcessor: {} as never,
+      maxVideoBytes: 10_000,
+      rawRetentionHours: 24,
+      uploadDir,
+    });
+
+    const result = await service.createRefinement({
+      companyId: 'company-1', managerId: 'manager-1', sessionId: parent.id,
+      correction: 'Apply this only to executive reports.',
+    });
+
+    assert.equal(result.id, 'teach-child');
+    assert.equal(result.parentSessionId, 'teach-parent');
+    assert.equal(result.processingStep, 'reconstructing_workflow');
+    assert.deepEqual(queued, [{ teachSessionId: 'teach-child', stage: 'synthesize' }]);
+    const childManifest = JSON.parse(await readFile(
+      join(uploadDir, 'company-1', 'teach-child', 'evidence', 'evidence-manifest.json'),
+      'utf8',
+    ));
+    assert.equal(childManifest.source.teachSessionId, 'teach-child');
+    assert.match(childManifest.transcript.segments.at(-1).text, /executive reports/);
+    await rm(uploadDir, { recursive: true, force: true });
   });
 });

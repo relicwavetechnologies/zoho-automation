@@ -186,6 +186,7 @@ macro_rules! invoke_commands_with_extras {
         core::divo::teach::divo_teach_create_session,
         core::divo::teach::divo_teach_upload_recording,
         core::divo::teach::divo_teach_get_session,
+        core::divo::teach::divo_teach_refine_session,
         core::divo::teach::divo_teach_cancel_session,
         core::divo::teach::divo_teach_undo_persona,
         $(

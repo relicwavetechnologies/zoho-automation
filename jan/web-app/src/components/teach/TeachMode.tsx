@@ -2,16 +2,12 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   ArrowLeft,
-  CheckCircle2,
   CircleStop,
   FileVideo2,
-  Eye,
   Mic,
   MonitorUp,
-  RefreshCw,
   ShieldCheck,
   Sparkles,
-  Undo2,
   Upload,
   Video,
   type LucideIcon,
@@ -20,7 +16,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
-import { TeachExperiencePreview } from './TeachExperiencePreview'
+import { TeachProcessingExperience, TeachResultExperience } from './TeachExperience'
 import {
   cancelTeachRecording,
   cancelTeachSession,
@@ -29,6 +25,7 @@ import {
   getTeachSession,
   pickTeachRecording,
   recordTeachScreen,
+  refineTeachSession,
   uploadTeachRecording,
   undoManagerPersona,
   type TeachRecordingFile,
@@ -43,12 +40,6 @@ type UploadProgress = {
   uploadedBytes: number
   totalBytes: number
   percent: number
-}
-
-const formatBytes = (bytes: number | null) => {
-  if (!bytes) return ''
-  const mb = bytes / (1024 * 1024)
-  return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`
 }
 
 const describeProcessingFailure = (lastError: string | null | undefined) => {
@@ -71,7 +62,6 @@ export function TeachMode() {
   const [statusWarning, setStatusWarning] = useState<string>()
   const [undoing, setUndoing] = useState(false)
   const [undoMessage, setUndoMessage] = useState<string>()
-  const [showExperiencePreview, setShowExperiencePreview] = useState(false)
   const sessionId = session?.id
   const sessionStatus = session?.status
 
@@ -232,9 +222,14 @@ export function TeachMode() {
     }
   }, [departmentId, session])
 
-  if (showExperiencePreview) {
-    return <TeachExperiencePreview onExit={() => setShowExperiencePreview(false)} />
-  }
+  const refine = useCallback(async (correction: string) => {
+    if (!session) throw new Error('Teach result is unavailable')
+    const refinement = await refineTeachSession(session.id, correction)
+    setSession(refinement)
+    setStatusWarning(undefined)
+    setUndoMessage(undefined)
+    setStage('processing')
+  }, [session])
 
   if (stage === 'intro') {
     return (
@@ -269,15 +264,6 @@ export function TeachMode() {
                   data-testid="upload-teach-recording"
                 >
                   <Upload /> Upload recording
-                </Button>
-                <Button
-                  size="lg"
-                  variant="ghost"
-                  onClick={() => setShowExperiencePreview(true)}
-                  data-testid="preview-teach-experience"
-                >
-                  <Eye /> Preview new UX
-                  <Badge variant="secondary" className="ml-1">Mock</Badge>
                 </Button>
               </div>
               {!checkingAccess && !departmentId && (
@@ -329,38 +315,21 @@ export function TeachMode() {
     )
   }
 
-  if (stage === 'uploading' || stage === 'processing') {
-    const progress = stage === 'uploading' ? uploadProgress : Math.max(25, session?.progress ?? 25)
-    const applyingPersona = session?.status === 'persona_processing'
+  if (stage === 'uploading') {
     return (
       <CenteredCard>
-        <PulsingIcon icon={stage === 'uploading' ? Upload : RefreshCw} />
-        <h1 className="mt-5 font-studio text-2xl font-medium">
-          {stage === 'uploading'
-            ? 'Uploading your teaching'
-            : applyingPersona
-              ? 'Growing your persona'
-              : 'Understanding your workflow'}
-        </h1>
+        <PulsingIcon icon={Upload} />
+        <h1 className="mt-5 font-studio text-2xl font-medium">Uploading your teaching</h1>
         <p className="mt-2 max-w-md text-center text-sm leading-6 text-muted-foreground">
-          {stage === 'uploading'
-            ? 'The recording is streamed securely without loading the whole video into memory.'
-            : applyingPersona
-              ? 'Divo is checking the evidence and applying only high-confidence working rules.'
-              : 'Divo is selecting useful screens, reading the interface and transcribing your explanation.'}
+          The recording is streamed securely without loading the whole video into memory.
         </p>
         <div className="mt-6 w-full max-w-md">
-          <Progress value={progress} />
+          <Progress value={uploadProgress} />
           <div className="mt-2 flex justify-between text-xs text-muted-foreground">
-            <span>{stage === 'uploading' ? 'Uploading' : session?.status.replaceAll('_', ' ')}</span>
-            <span>{progress}%</span>
+            <span>Uploading</span>
+            <span>{uploadProgress}%</span>
           </div>
         </div>
-        {statusWarning && (
-          <p className="mt-4 max-w-md text-center text-sm leading-6 text-amber-600" role="status">
-            {statusWarning}
-          </p>
-        )}
         {session?.canCancel && (
           <Button variant="ghost" className="mt-5" onClick={() => void cancel()}>Cancel</Button>
         )}
@@ -368,46 +337,26 @@ export function TeachMode() {
     )
   }
 
-  if (stage === 'ready') {
-    const learned = session?.status === 'persona_updated'
+  if (stage === 'processing' && session) {
     return (
-      <CenteredCard>
-        <div className="grid size-14 place-items-center rounded-2xl bg-emerald-500/10 text-emerald-600">
-          <CheckCircle2 className="size-7" />
-        </div>
-        <h1 className="mt-5 font-studio text-2xl font-medium">
-          {learned ? 'Divo learned your workflow' : 'Teaching reviewed'}
-        </h1>
-        <p className="mt-2 max-w-md text-center leading-6 text-muted-foreground">
-          {session?.understanding ?? (learned
-            ? 'Your department persona now includes this working pattern.'
-            : 'Divo found no safe, high-confidence persona change in this recording.')}
-        </p>
-        {learned && session.appliedChangeCount > 0 && (
-          <Badge variant="secondary" className="mt-4">
-            {session.appliedChangeCount} persona {session.appliedChangeCount === 1 ? 'rule' : 'rules'} updated
-          </Badge>
-        )}
-        {session && (
-          <div className="mt-5 flex items-center gap-2 text-xs text-muted-foreground">
-            <FileVideo2 className="size-3.5" />
-            <span>{session.originalFileName}</span>
-            <span>·</span>
-            <span>{formatBytes(session.fileSize)}</span>
-          </div>
-        )}
-        {undoMessage && (
-          <p className="mt-4 text-sm text-muted-foreground" role="status">{undoMessage}</p>
-        )}
-        <div className="mt-7 flex flex-wrap justify-center gap-3">
-          {learned && session.remainingUndos > 0 && (
-            <Button variant="outline" onClick={() => void undo()} disabled={undoing}>
-              <Undo2 /> {undoing ? 'Undoing…' : `Undo (${session.remainingUndos} left)`}
-            </Button>
-          )}
-          <Button onClick={reset}>Teach another workflow</Button>
-        </div>
-      </CenteredCard>
+      <TeachProcessingExperience
+        session={session}
+        statusWarning={statusWarning}
+        onCancel={session.canCancel ? () => void cancel() : undefined}
+      />
+    )
+  }
+
+  if (stage === 'ready' && session) {
+    return (
+      <TeachResultExperience
+        session={session}
+        undoing={undoing}
+        undoMessage={undoMessage}
+        onUndo={() => void undo()}
+        onRefine={refine}
+        onFinish={reset}
+      />
     )
   }
 

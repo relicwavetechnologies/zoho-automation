@@ -921,6 +921,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     personaProcessor: managerTeachPersonaProcessor,
     maxVideoBytes: env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
     rawRetentionHours: env.MANAGER_TEACH_RAW_RETENTION_HOURS,
+    uploadDir: managerTeachUploadDir,
   });
 
   const llmReranker = new LlmRerankerService(

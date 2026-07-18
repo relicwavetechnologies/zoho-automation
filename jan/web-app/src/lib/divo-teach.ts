@@ -23,11 +23,47 @@ export type TeachSession = {
     | 'failed'
     | 'cancelled'
   progress: number
+  processingStep:
+    | 'awaiting_upload'
+    | 'recording_received'
+    | 'selecting_evidence'
+    | 'transcribing'
+    | 'reading_screens'
+    | 'reconstructing_workflow'
+    | 'loading_persona'
+    | 'deepseek_reviewing'
+    | 'validating_change'
+    | 'writing_persona'
+    | 'complete'
+    | 'failed'
+    | 'cancelled'
   originalFileName: string | null
   mimeType: string | null
   fileSize: number | null
   lastError: string | null
   understanding: string | null
+  appliedChanges: Array<{
+    operation: 'add' | 'replace' | 'retire'
+    kind: string
+    scopeKey: string
+    ruleKey: string
+    instruction: string | null
+    confidence: number
+    evidenceRefs: string[]
+  }>
+  evidence: {
+    durationSeconds: number | null
+    frameCount: number
+    transcriptSegmentCount: number
+    warningCount: number
+    transcriptionProvider: string | null
+    transcriptionModel: string | null
+    ocrModels: string[]
+  } | null
+  modelProvider: string | null
+  modelId: string | null
+  parentSessionId: string | null
+  managerCorrection: string | null
   appliedChangeCount: number
   personaRevision: number | null
   remainingUndos: number
@@ -75,6 +111,9 @@ export const uploadTeachRecording = (
 
 export const getTeachSession = (sessionId: string) =>
   invoke<TeachSession>('divo_teach_get_session', { sessionId })
+
+export const refineTeachSession = (sessionId: string, correction: string) =>
+  invoke<TeachSession>('divo_teach_refine_session', { sessionId, correction })
 
 export const cancelTeachSession = (sessionId: string) =>
   invoke<TeachSession>('divo_teach_cancel_session', { sessionId })

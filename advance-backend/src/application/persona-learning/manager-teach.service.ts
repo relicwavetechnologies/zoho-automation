@@ -1,5 +1,6 @@
-import { rm, stat, unlink } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { ManagerTeachMediaProcessor } from './manager-teach-media.processor';
@@ -7,6 +8,41 @@ import { ManagerTeachPersonaProcessor } from './manager-teach-persona.processor'
 import { ManagerTeachQueue, type ManagerTeachQueueStage } from './manager-teach.queue';
 
 export type ManagerTeachSourceInput = 'recording' | 'upload';
+
+export type ManagerTeachProcessingStep =
+  | 'awaiting_upload'
+  | 'recording_received'
+  | 'selecting_evidence'
+  | 'transcribing'
+  | 'reading_screens'
+  | 'reconstructing_workflow'
+  | 'loading_persona'
+  | 'deepseek_reviewing'
+  | 'validating_change'
+  | 'writing_persona'
+  | 'complete'
+  | 'failed'
+  | 'cancelled';
+
+export interface ManagerTeachEvidenceReceipt {
+  readonly durationSeconds: number | null;
+  readonly frameCount: number;
+  readonly transcriptSegmentCount: number;
+  readonly warningCount: number;
+  readonly transcriptionProvider: string | null;
+  readonly transcriptionModel: string | null;
+  readonly ocrModels: readonly string[];
+}
+
+export interface ManagerTeachAppliedChangeView {
+  readonly operation: 'add' | 'replace' | 'retire';
+  readonly kind: string;
+  readonly scopeKey: string;
+  readonly ruleKey: string;
+  readonly instruction: string | null;
+  readonly confidence: number;
+  readonly evidenceRefs: readonly string[];
+}
 
 export interface ManagerTeachSessionView {
   readonly id: string;
@@ -23,11 +59,18 @@ export interface ManagerTeachSessionView {
     | 'failed'
     | 'cancelled';
   readonly progress: number;
+  readonly processingStep: ManagerTeachProcessingStep;
   readonly originalFileName: string | null;
   readonly mimeType: string | null;
   readonly fileSize: number | null;
   readonly lastError: string | null;
   readonly understanding: string | null;
+  readonly appliedChanges: readonly ManagerTeachAppliedChangeView[];
+  readonly evidence: ManagerTeachEvidenceReceipt | null;
+  readonly modelProvider: string | null;
+  readonly modelId: string | null;
+  readonly parentSessionId: string | null;
+  readonly managerCorrection: string | null;
   readonly appliedChangeCount: number;
   readonly personaRevision: number | null;
   readonly remainingUndos: number;
@@ -59,7 +102,36 @@ export interface ManagerTeachServiceDeps {
   readonly personaProcessor: ManagerTeachPersonaProcessor;
   readonly maxVideoBytes: number;
   readonly rawRetentionHours: number;
+  readonly uploadDir: string;
 }
+
+const refinementManifestSchema = z.object({
+  schemaVersion: z.literal(1),
+  createdAt: z.string().optional(),
+  source: z.object({
+    teachSessionId: z.string(),
+    companyId: z.string(),
+    departmentId: z.string(),
+    managerId: z.string(),
+    kind: z.enum(['recording', 'upload']),
+    originalFileName: z.string().nullable().optional(),
+  }).passthrough(),
+  video: z.object({ durationSeconds: z.number().nonnegative().optional() }).passthrough(),
+  frames: z.array(z.object({
+    ocr: z.object({ provider: z.string().optional(), model: z.string().optional() }).passthrough(),
+  }).passthrough()),
+  transcript: z.object({
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    segments: z.array(z.object({
+      start: z.number().nonnegative(),
+      end: z.number().nonnegative(),
+      text: z.string(),
+    }).passthrough()),
+    text: z.string().optional(),
+  }).passthrough(),
+  warnings: z.array(z.string()),
+}).passthrough();
 
 /**
  * Authoritative explicit-Teach job service. Media ingestion and persona
@@ -106,13 +178,118 @@ export class ManagerTeachService {
   async getSession(input: { companyId: string; managerId: string; sessionId: string }): Promise<ManagerTeachSessionView> {
     const session = await this.deps.prisma.managerTeachSession.findFirst({
       where: { id: input.sessionId, companyId: input.companyId, managerId: input.managerId },
-      include: { personaMutation: true },
+      include: {
+        personaMutation: true,
+        artifacts: { where: { kind: 'evidence_manifest', status: 'available' }, take: 1 },
+      },
     });
     if (!session) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
     const remainingUndos = session.personaMutation?.treeId
       ? await this.deps.prisma.managerPersonaRevision.count({ where: { treeId: session.personaMutation.treeId } })
       : 0;
-    return toSessionView(session, session.personaMutation, remainingUndos);
+    const evidence = await readEvidenceReceipt(session.artifacts[0]?.storageKey);
+    return toSessionView(session, session.personaMutation, remainingUndos, evidence);
+  }
+
+  async createRefinement(input: {
+    companyId: string;
+    managerId: string;
+    sessionId: string;
+    correction: string;
+  }): Promise<ManagerTeachSessionView> {
+    const correction = input.correction.trim();
+    if (!correction || correction.length > 2_000) {
+      throw new ManagerTeachError('invalid_state', 'Teach correction must contain 1 to 2,000 characters');
+    }
+    const parent = await this.deps.prisma.managerTeachSession.findFirst({
+      where: { id: input.sessionId, companyId: input.companyId, managerId: input.managerId },
+      include: {
+        artifacts: { where: { kind: 'evidence_manifest', status: 'available' }, take: 1 },
+      },
+    });
+    if (!parent) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
+    if (!['persona_updated', 'no_learning'].includes(parent.status)) {
+      throw new ManagerTeachError('invalid_state', 'Teach can refine only a completed teaching result');
+    }
+    await this.assertManager(parent);
+    const artifact = parent.artifacts[0];
+    if (!artifact || (artifact.expiresAt && artifact.expiresAt <= new Date())) {
+      throw new ManagerTeachError('invalid_state', 'The Teach evidence for this result is no longer available');
+    }
+
+    const rawManifest = await readFile(artifact.storageKey, 'utf8');
+    const manifest = refinementManifestSchema.parse(JSON.parse(rawManifest) as unknown);
+    if (
+      manifest.source.companyId !== parent.companyId
+      || manifest.source.departmentId !== parent.departmentId
+      || manifest.source.managerId !== parent.managerId
+    ) {
+      throw new ManagerTeachError('invalid_state', 'The Teach evidence does not belong to this manager persona');
+    }
+
+    const child = await this.deps.prisma.managerTeachSession.create({
+      data: {
+        companyId: parent.companyId,
+        managerId: parent.managerId,
+        departmentId: parent.departmentId,
+        source: parent.source,
+        status: 'awaiting_upload',
+        progress: 0,
+        originalFileName: parent.originalFileName,
+        mimeType: parent.mimeType,
+        fileSize: parent.fileSize,
+        parentSessionId: parent.id,
+        managerCorrection: correction,
+      },
+    });
+    const evidenceDir = join(this.deps.uploadDir, parent.companyId, child.id, 'evidence');
+    const manifestPath = join(evidenceDir, 'evidence-manifest.json');
+    const temporaryPath = `${manifestPath}.tmp`;
+
+    try {
+      const lastEnd = manifest.transcript.segments.at(-1)?.end ?? 0;
+      const correctionSegment = {
+        start: lastEnd,
+        end: lastEnd + 0.001,
+        text: `Manager correction to the previous Teach result: ${correction}`,
+      };
+      const nextManifest = {
+        ...manifest,
+        createdAt: new Date().toISOString(),
+        source: { ...manifest.source, teachSessionId: child.id },
+        transcript: {
+          ...manifest.transcript,
+          segments: [...manifest.transcript.segments, correctionSegment],
+          text: [manifest.transcript.text ?? '', correctionSegment.text].filter(Boolean).join('\n'),
+        },
+      };
+      await mkdir(evidenceDir, { recursive: true });
+      await writeFile(temporaryPath, JSON.stringify(nextManifest, null, 2), { encoding: 'utf8', mode: 0o600 });
+      await rename(temporaryPath, manifestPath);
+      const metadata = await stat(manifestPath);
+      const ready = await this.deps.prisma.$transaction(async tx => {
+        await tx.managerTeachArtifact.create({
+          data: {
+            sessionId: child.id,
+            kind: 'evidence_manifest',
+            storageKey: manifestPath,
+            mimeType: 'application/json',
+            sizeBytes: metadata.size,
+            expiresAt: artifact.expiresAt,
+          },
+        });
+        return tx.managerTeachSession.update({
+          where: { id: child.id },
+          data: { status: 'ready_for_processing', progress: 75, lastError: null },
+        });
+      });
+      await this.enqueueDurableSession(child.id, 'synthesize');
+      return toSessionView(ready);
+    } catch (error) {
+      await rm(join(this.deps.uploadDir, parent.companyId, child.id), { recursive: true, force: true });
+      await this.deps.prisma.managerTeachSession.delete({ where: { id: child.id } }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async prepareUpload(input: { companyId: string; managerId: string; sessionId: string }) {
@@ -340,7 +517,7 @@ export class ManagerTeachService {
   ): Promise<'persona_updated' | 'no_learning' | 'ignored'> {
     const result = await this.deps.personaProcessor.process(sessionId);
     if (!result) return 'ignored';
-    await this.cleanupSessionArtifacts(sessionId).catch(error => {
+    await this.cleanupSessionRawVideo(sessionId).catch(error => {
       this.log.warn('manager-teach.cleanup_after_persona_failed', { sessionId, error: String(error) });
     });
     return result.status;
@@ -407,9 +584,9 @@ export class ManagerTeachService {
     if (!active) throw new Error('Teach ingestion is no longer active');
   }
 
-  private async cleanupSessionArtifacts(sessionId: string): Promise<void> {
+  private async cleanupSessionRawVideo(sessionId: string): Promise<void> {
     const artifacts = await this.deps.prisma.managerTeachArtifact.findMany({
-      where: { sessionId, status: 'available' },
+      where: { sessionId, status: 'available', kind: 'raw_video' },
       select: { id: true, storageKey: true, kind: true },
     });
     for (const artifact of artifacts) {
@@ -471,6 +648,8 @@ function toSessionView(session: {
   mimeType: string | null;
   fileSize: number | null;
   lastError: string | null;
+  parentSessionId?: string | null;
+  managerCorrection?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }, mutation?: {
@@ -478,18 +657,28 @@ function toSessionView(session: {
   appliedChangeCount: number;
   appliedRevision: number | null;
   baseRevision: number | null;
-} | null, remainingUndos = 0): ManagerTeachSessionView {
+  patchJson?: unknown;
+  modelProvider?: string;
+  modelId?: string;
+} | null, remainingUndos = 0, evidence: ManagerTeachEvidenceReceipt | null = null): ManagerTeachSessionView {
   return {
     id: session.id,
     departmentId: session.departmentId,
     source: session.source,
     status: session.status,
     progress: Math.max(0, Math.min(100, session.progress)),
+    processingStep: processingStepFor(session.status, session.progress),
     originalFileName: session.originalFileName,
     mimeType: session.mimeType,
     fileSize: session.fileSize,
     lastError: session.lastError,
     understanding: mutation?.understanding ?? null,
+    appliedChanges: mutation ? appliedChangesFromPatch(mutation.patchJson) : [],
+    evidence,
+    modelProvider: mutation?.modelProvider ?? null,
+    modelId: mutation?.modelId ?? null,
+    parentSessionId: session.parentSessionId ?? null,
+    managerCorrection: session.managerCorrection ?? null,
     appliedChangeCount: mutation?.appliedChangeCount ?? 0,
     personaRevision: mutation?.appliedRevision ?? mutation?.baseRevision ?? null,
     remainingUndos,
@@ -497,4 +686,70 @@ function toSessionView(session: {
     createdAt: session.createdAt.toISOString(),
     updatedAt: session.updatedAt.toISOString(),
   };
+}
+
+function processingStepFor(
+  status: ManagerTeachSessionView['status'],
+  progress: number,
+): ManagerTeachProcessingStep {
+  if (status === 'awaiting_upload') return 'awaiting_upload';
+  if (status === 'queued') return 'recording_received';
+  if (status === 'failed') return 'failed';
+  if (status === 'cancelled') return 'cancelled';
+  if (status === 'persona_updated' || status === 'no_learning') return 'complete';
+  if (status === 'ready_for_processing') return 'reconstructing_workflow';
+  if (status === 'ingesting') {
+    if (progress < 45) return 'selecting_evidence';
+    if (progress < 55) return 'transcribing';
+    return 'reading_screens';
+  }
+  if (progress < 84) return 'loading_persona';
+  if (progress < 90) return 'deepseek_reviewing';
+  if (progress < 96) return 'validating_change';
+  return 'writing_persona';
+}
+
+function appliedChangesFromPatch(value: unknown): ManagerTeachAppliedChangeView[] {
+  if (!value || typeof value !== 'object') return [];
+  const changes = (value as { changes?: unknown }).changes;
+  if (!Array.isArray(changes)) return [];
+  return changes.flatMap(change => {
+    if (!change || typeof change !== 'object') return [];
+    const item = change as Record<string, unknown>;
+    const operation = item.operation;
+    const target = operation === 'add' ? item : item.target;
+    if (!['add', 'replace', 'retire'].includes(String(operation)) || !target || typeof target !== 'object') return [];
+    const typedTarget = target as Record<string, unknown>;
+    if (![typedTarget.kind, typedTarget.scopeKey, typedTarget.ruleKey].every(value => typeof value === 'string')) return [];
+    return [{
+      operation: operation as ManagerTeachAppliedChangeView['operation'],
+      kind: typedTarget.kind as string,
+      scopeKey: typedTarget.scopeKey as string,
+      ruleKey: typedTarget.ruleKey as string,
+      instruction: typeof item.instruction === 'string' ? item.instruction : null,
+      confidence: typeof item.confidence === 'number' ? item.confidence : 0,
+      evidenceRefs: Array.isArray(item.evidenceRefs)
+        ? item.evidenceRefs.filter((ref): ref is string => typeof ref === 'string')
+        : [],
+    }];
+  });
+}
+
+async function readEvidenceReceipt(storageKey?: string): Promise<ManagerTeachEvidenceReceipt | null> {
+  if (!storageKey) return null;
+  try {
+    const parsed = refinementManifestSchema.parse(JSON.parse(await readFile(storageKey, 'utf8')) as unknown);
+    const ocrModels = [...new Set(parsed.frames.map(frame => frame.ocr.model).filter((model): model is string => Boolean(model)))];
+    return {
+      durationSeconds: parsed.video.durationSeconds ?? null,
+      frameCount: parsed.frames.length,
+      transcriptSegmentCount: parsed.transcript.segments.length,
+      warningCount: parsed.warnings.length,
+      transcriptionProvider: parsed.transcript.provider ?? null,
+      transcriptionModel: parsed.transcript.model ?? null,
+      ocrModels,
+    };
+  } catch {
+    return null;
+  }
 }

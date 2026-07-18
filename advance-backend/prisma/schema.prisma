@@ -1812,12 +1812,17 @@ model ManagerTeachSession {
   completedAt       DateTime?
   failedAt          DateTime?
   lastError         String?
+  parentSessionId   String?
+  parentSession     ManagerTeachSession?            @relation("ManagerTeachRefinements", fields: [parentSessionId], references: [id], onDelete: SetNull)
+  refinements       ManagerTeachSession[]            @relation("ManagerTeachRefinements")
+  managerCorrection String?
   createdAt         DateTime                     @default(now())
   updatedAt         DateTime                     @updatedAt
   artifacts         ManagerTeachArtifact[]
   personaMutation   ManagerTeachPersonaMutation?
 
   @@index([companyId, departmentId, managerId, createdAt])
+  @@index([parentSessionId, createdAt])
   @@index([status, createdAt])
 }
 

@@ -322,6 +322,28 @@ pub async fn divo_teach_get_session<R: Runtime>(
 }
 
 #[tauri::command]
+pub async fn divo_teach_refine_session<R: Runtime>(
+    app: AppHandle<R>,
+    session_id: String,
+    correction: String,
+) -> Result<Value, String> {
+    let session_id = validate_identifier(&session_id, "sessionId")?;
+    let correction = correction.trim();
+    if correction.is_empty() || correction.chars().count() > 2_000 {
+        return Err("Teach correction must contain 1 to 2,000 characters".to_string());
+    }
+    let response = teach_json_request(
+        &app,
+        reqwest::Method::POST,
+        &format!("/sessions/{session_id}/refinements"),
+        Some(json!({ "correction": correction })),
+        "Teach result refinement",
+    )
+    .await?;
+    response_data(response, "Teach result refinement")
+}
+
+#[tauri::command]
 pub async fn divo_teach_cancel_session<R: Runtime>(
     app: AppHandle<R>,
     session_id: String,
