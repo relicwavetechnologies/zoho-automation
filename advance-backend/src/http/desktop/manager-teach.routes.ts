@@ -24,6 +24,11 @@ const refineSessionSchema = z.object({
   correction: z.string().trim().min(1).max(2_000),
 }).strict();
 
+const listSessionsSchema = z.object({
+  departmentId: z.string().trim().min(1),
+  limit: z.coerce.number().int().min(1).max(50).default(10),
+}).strict();
+
 export function createManagerTeachRoutes(deps: {
   prisma: PrismaClient;
   memberJwtSecret: string;
@@ -57,6 +62,28 @@ export function createManagerTeachRoutes(deps: {
         ...(parsed.data.fileSize !== undefined ? { fileSize: parsed.data.fileSize } : {}),
       });
       res.status(201).json({ data: session });
+    } catch (error) {
+      respondError(res, error);
+    }
+  });
+
+  router.get('/sessions', async (req, res) => {
+    const parsed = listSessionsSchema.safeParse({
+      departmentId: req.query.departmentId,
+      limit: req.query.limit ?? 10,
+    });
+    if (!parsed.success) {
+      res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
+      return;
+    }
+    try {
+      const sessions = await deps.service.listRecentLearnings({
+        companyId: res.locals.companyId as string,
+        managerId: res.locals.userId as string,
+        departmentId: parsed.data.departmentId,
+        limit: parsed.data.limit,
+      });
+      res.json({ data: sessions });
     } catch (error) {
       respondError(res, error);
     }

@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use chrono::Utc;
 use futures_util::TryStreamExt;
 use rfd::AsyncFileDialog;
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use uuid::Uuid;
 
 use crate::core::app::commands::get_jan_data_folder_path;
 
-use super::commands::divo_member_json_request;
+use super::commands::{divo_member_json_request, refresh_runtime_context};
 use super::session::load_divo_session;
 
 const TEACH_RECORDING_DIR: &str = "divo/teach-recordings";
@@ -34,6 +35,31 @@ pub struct TeachRecordingFile {
     local_owned: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeachLocalRecording {
+    path: String,
+    file_name: String,
+    mime_type: String,
+    size: u64,
+    local_owned: bool,
+    session_id: Option<String>,
+    state: String,
+    last_error: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TeachLocalRecordingMetadata {
+    session_id: Option<String>,
+    state: String,
+    last_error: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TeachUploadProgress {
@@ -45,6 +71,54 @@ struct TeachUploadProgress {
 
 fn recording_dir<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
     get_jan_data_folder_path(app.clone()).join(TEACH_RECORDING_DIR)
+}
+
+fn recording_metadata_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.teach.json", path.to_string_lossy()))
+}
+
+fn read_recording_metadata(path: &Path) -> Option<TeachLocalRecordingMetadata> {
+    serde_json::from_slice(&fs::read(recording_metadata_path(path)).ok()?).ok()
+}
+
+fn write_recording_metadata(
+    path: &Path,
+    session_id: Option<String>,
+    state: &str,
+    last_error: Option<String>,
+) -> Result<(), String> {
+    let now = Utc::now().to_rfc3339();
+    let existing = read_recording_metadata(path);
+    let metadata = TeachLocalRecordingMetadata {
+        session_id,
+        state: state.to_string(),
+        last_error,
+        created_at: existing
+            .as_ref()
+            .map(|value| value.created_at.clone())
+            .unwrap_or_else(|| now.clone()),
+        updated_at: now,
+    };
+    let bytes = serde_json::to_vec_pretty(&metadata)
+        .map_err(|error| format!("Could not encode Teach recording metadata: {error}"))?;
+    fs::write(recording_metadata_path(path), bytes)
+        .map_err(|error| format!("Could not save Teach recording metadata: {error}"))
+}
+
+fn checked_local_recording_path<R: Runtime>(
+    app: &AppHandle<R>,
+    value: &str,
+) -> Result<PathBuf, String> {
+    let directory = recording_dir(app)
+        .canonicalize()
+        .map_err(|error| format!("Could not open Teach recording folder: {error}"))?;
+    let path = PathBuf::from(value)
+        .canonicalize()
+        .map_err(|error| format!("Could not open local Teach recording: {error}"))?;
+    if !path.starts_with(&directory) || recording_mime(&path).is_none() {
+        return Err("Teach recording path is outside Divo's local recording folder".to_string());
+    }
+    Ok(path)
 }
 
 fn recording_mime(path: &Path) -> Option<&'static str> {
@@ -142,7 +216,9 @@ pub async fn divo_teach_record_screen<R: Runtime>(
         let _ = fs::remove_file(&output_path);
         return Err("Screen recording was cancelled".to_string());
     }
-    recording_file(&output_path, true)
+    let recording = recording_file(&output_path, true)?;
+    write_recording_metadata(&output_path, None, "ready", None)?;
+    Ok(recording)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -182,6 +258,51 @@ pub async fn divo_teach_pick_recording() -> Result<Option<TeachRecordingFile>, S
     selected
         .map(|file| recording_file(file.path(), false))
         .transpose()
+}
+
+#[tauri::command]
+pub async fn divo_teach_list_local_recordings<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Vec<TeachLocalRecording>, String> {
+    let directory = recording_dir(&app);
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create recording folder: {error}"))?;
+    let mut recordings = Vec::new();
+    let entries = fs::read_dir(&directory)
+        .map_err(|error| format!("Could not list local Teach recordings: {error}"))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if recording_mime(&path).is_none() {
+            continue;
+        }
+        let Ok(recording) = recording_file(&path, true) else {
+            continue;
+        };
+        let metadata = read_recording_metadata(&path).unwrap_or_else(|| {
+            let now = Utc::now().to_rfc3339();
+            TeachLocalRecordingMetadata {
+                session_id: None,
+                state: "ready".to_string(),
+                last_error: None,
+                created_at: now.clone(),
+                updated_at: now,
+            }
+        });
+        recordings.push(TeachLocalRecording {
+            path: recording.path,
+            file_name: recording.file_name,
+            mime_type: recording.mime_type,
+            size: recording.size,
+            local_owned: true,
+            session_id: metadata.session_id,
+            state: metadata.state,
+            last_error: metadata.last_error,
+            created_at: metadata.created_at,
+            updated_at: metadata.updated_at,
+        });
+    }
+    recordings.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    Ok(recordings)
 }
 
 async fn teach_json_request<R: Runtime>(
@@ -228,7 +349,18 @@ pub async fn divo_teach_create_session<R: Runtime>(
         "Teach session create",
     )
     .await?;
-    response_data(response, "Teach session create")
+    let data = response_data(response, "Teach session create")?;
+    if recording.local_owned {
+        if let Some(session_id) = data.get("id").and_then(Value::as_str) {
+            write_recording_metadata(
+                Path::new(&recording.path),
+                Some(session_id.to_string()),
+                "uploading",
+                None,
+            )?;
+        }
+    }
+    Ok(data)
 }
 
 #[tauri::command]
@@ -284,7 +416,18 @@ pub async fn divo_teach_upload_recording<R: Runtime>(
         .body(reqwest::Body::wrap_stream(stream))
         .send()
         .await
-        .map_err(|error| format!("Teach recording upload failed: {error}"))?;
+        .map_err(|error| {
+            let message = format!("Teach recording upload failed: {error}");
+            if checked.local_owned {
+                let _ = write_recording_metadata(
+                    &source_path,
+                    Some(session_id.clone()),
+                    "retryable",
+                    Some(message.clone()),
+                );
+            }
+            message
+        })?;
     let status = response.status();
     let text = response
         .text()
@@ -293,15 +436,56 @@ pub async fn divo_teach_upload_recording<R: Runtime>(
     let parsed: Value = serde_json::from_str(&text)
         .map_err(|error| format!("Teach upload returned non-JSON (HTTP {status}): {error}"))?;
     if !status.is_success() {
+        if checked.local_owned {
+            let _ = write_recording_metadata(
+                &source_path,
+                Some(session_id.clone()),
+                "retryable",
+                Some(format!("Teach upload returned HTTP {status}")),
+            );
+        }
         return Err(format!("Teach upload returned HTTP {status}: {parsed}"));
     }
 
     if checked.local_owned {
-        if let Err(error) = fs::remove_file(&source_path) {
-            log::warn!("divo.teach.local_cleanup_failed error={error}");
-        }
+        write_recording_metadata(&source_path, Some(session_id), "processing", None)?;
     }
     response_data(parsed, "Teach upload")
+}
+
+#[tauri::command]
+pub async fn divo_teach_finalize_local_recording<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    session_id: String,
+) -> Result<(), String> {
+    let session_id = validate_identifier(&session_id, "sessionId")?;
+    let path = checked_local_recording_path(&app, &path)?;
+    let metadata = read_recording_metadata(&path)
+        .ok_or_else(|| "Local Teach recording metadata is missing".to_string())?;
+    if metadata.session_id.as_deref() != Some(session_id.as_str()) {
+        return Err("Local Teach recording does not belong to this session".to_string());
+    }
+    let response = teach_json_request(
+        &app,
+        reqwest::Method::GET,
+        &format!("/sessions/{session_id}"),
+        None,
+        "Teach local recording finalize",
+    )
+    .await?;
+    let data = response_data(response, "Teach local recording finalize")?;
+    let status = data.get("status").and_then(Value::as_str).unwrap_or_default();
+    if !matches!(status, "persona_updated" | "no_learning") {
+        return Err("Local Teach recording is retained until processing succeeds".to_string());
+    }
+    fs::remove_file(&path)
+        .map_err(|error| format!("Could not remove processed Teach recording: {error}"))?;
+    let _ = fs::remove_file(recording_metadata_path(&path));
+    if let Err(error) = refresh_runtime_context(&app).await {
+        log::warn!("divo.teach.runtime_context_refresh_failed error={error}");
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -319,6 +503,25 @@ pub async fn divo_teach_get_session<R: Runtime>(
     )
     .await?;
     response_data(response, "Teach session status")
+}
+
+#[tauri::command]
+pub async fn divo_teach_list_recent_learnings<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+    limit: Option<u8>,
+) -> Result<Value, String> {
+    let department_id = validate_identifier(&department_id, "departmentId")?;
+    let limit = limit.unwrap_or(10).clamp(1, 50);
+    let response = teach_json_request(
+        &app,
+        reqwest::Method::GET,
+        &format!("/sessions?departmentId={department_id}&limit={limit}"),
+        None,
+        "Teach recent learnings",
+    )
+    .await?;
+    response_data(response, "Teach recent learnings")
 }
 
 #[tauri::command]
@@ -381,8 +584,12 @@ pub async fn divo_teach_undo_persona<R: Runtime>(
 mod tests {
     #[cfg(target_os = "macos")]
     use super::MACOS_TEACH_RECORDING_ARGS;
-    use super::{recording_mime, validate_identifier};
+    use super::{
+        read_recording_metadata, recording_metadata_path, recording_mime, validate_identifier,
+        write_recording_metadata,
+    };
     use std::path::Path;
+    use tempfile::tempdir;
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -411,5 +618,26 @@ mod tests {
         assert!(validate_identifier("safe-id-123", "id").is_ok());
         assert!(validate_identifier("../unsafe", "id").is_err());
         assert!(validate_identifier("id?x=1", "id").is_err());
+    }
+
+    #[test]
+    fn local_recording_metadata_tracks_retry_state_without_touching_video() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("teach.mov");
+        std::fs::write(&path, b"video").expect("video fixture");
+
+        write_recording_metadata(
+            &path,
+            Some("teach-session-1".to_string()),
+            "retryable",
+            Some("network unavailable".to_string()),
+        )
+        .expect("metadata write");
+
+        let metadata = read_recording_metadata(&path).expect("metadata read");
+        assert_eq!(metadata.session_id.as_deref(), Some("teach-session-1"));
+        assert_eq!(metadata.state, "retryable");
+        assert!(path.exists(), "retry metadata must never delete the recording");
+        assert!(recording_metadata_path(&path).exists());
     }
 }

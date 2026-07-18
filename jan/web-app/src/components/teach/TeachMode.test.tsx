@@ -11,6 +11,9 @@ const h = vi.hoisted(() => ({
   createSession: vi.fn(),
   getSession: vi.fn(),
   getStatus: vi.fn(),
+  finalizeLocal: vi.fn(),
+  listLocal: vi.fn(),
+  listRecent: vi.fn(),
   listen: vi.fn(),
   pickRecording: vi.fn(),
   recordScreen: vi.fn(),
@@ -29,6 +32,9 @@ vi.mock('@/lib/divo-teach', () => ({
   createTeachSession: h.createSession,
   getDivoSessionStatus: h.getStatus,
   getTeachSession: h.getSession,
+  finalizeLocalTeachRecording: h.finalizeLocal,
+  listLocalTeachRecordings: h.listLocal,
+  listRecentTeachLearnings: h.listRecent,
   pickTeachRecording: h.pickRecording,
   recordTeachScreen: h.recordScreen,
   refineTeachSession: h.refineSession,
@@ -109,6 +115,9 @@ describe('TeachMode', () => {
     h.cancelRecording.mockResolvedValue(undefined)
     h.cancelSession.mockResolvedValue(teachSession('queued'))
     h.getStatus.mockResolvedValue({ configured: true, departmentId: 'department-1' })
+    h.finalizeLocal.mockResolvedValue(undefined)
+    h.listLocal.mockResolvedValue([])
+    h.listRecent.mockResolvedValue([])
     h.pickRecording.mockResolvedValue(recording)
     h.createSession.mockResolvedValue(teachSession('awaiting_upload'))
     h.uploadRecording.mockResolvedValue(teachSession('queued'))
@@ -129,6 +138,32 @@ describe('TeachMode', () => {
     expect(await screen.findByText('Select a department you manage before starting Teach.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Record teaching' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Upload recording' })).toBeDisabled()
+  })
+
+  it('shows retryable local recordings and recent database learnings', async () => {
+    const localRecording = {
+      ...recording,
+      path: '/tmp/local-teach.mov',
+      fileName: 'local-teach.mov',
+      localOwned: true,
+      sessionId: null,
+      state: 'ready' as const,
+      lastError: null,
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z',
+    }
+    h.listLocal.mockResolvedValue([localRecording])
+    h.listRecent.mockResolvedValue([teachSession('persona_updated')])
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    expect(await screen.findByText('local-teach.mov')).toBeInTheDocument()
+    expect(screen.getByText('Recent persona learnings')).toBeInTheDocument()
+    expect(screen.getByText('Review weekly reports with risks first.')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(h.createSession).toHaveBeenCalledWith('department-1', 'recording', localRecording)
+    expect(h.uploadRecording).toHaveBeenCalledWith('teach-session-1', localRecording)
   })
 
   it('starts the native recorder and gives actionable permission guidance on failure', async () => {
@@ -208,6 +243,19 @@ describe('TeachMode', () => {
     expect(h.undoPersona).toHaveBeenCalledWith('department-1')
     expect(await screen.findByText('Persona change undone.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Undo (1 left)' })).toBeInTheDocument()
+  })
+
+  it('removes a Divo-owned recording only after persona processing succeeds', async () => {
+    const ownedRecording = { ...recording, localOwned: true }
+    h.recordScreen.mockResolvedValue(ownedRecording)
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    const recordButton = await screen.findByRole('button', { name: 'Record teaching' })
+    await waitFor(() => expect(recordButton).toBeEnabled())
+    await user.click(recordButton)
+
+    await waitFor(() => expect(h.finalizeLocal).toHaveBeenCalledWith(ownedRecording.path, 'teach-session-1'))
   })
 
   it('creates a linked real refinement from the result correction bar', async () => {

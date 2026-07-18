@@ -3,11 +3,14 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   ArrowLeft,
   CircleStop,
+  Database,
   FileVideo2,
+  HardDrive,
   Mic,
   MonitorUp,
   ShieldCheck,
   Sparkles,
+  RotateCcw,
   Upload,
   Video,
   type LucideIcon,
@@ -21,14 +24,18 @@ import {
   cancelTeachRecording,
   cancelTeachSession,
   createTeachSession,
+  finalizeLocalTeachRecording,
   getDivoSessionStatus,
   getTeachSession,
+  listLocalTeachRecordings,
+  listRecentTeachLearnings,
   pickTeachRecording,
   recordTeachScreen,
   refineTeachSession,
   uploadTeachRecording,
   undoManagerPersona,
   type TeachRecordingFile,
+  type TeachLocalRecording,
   type TeachSession,
 } from '@/lib/divo-teach'
 
@@ -52,6 +59,19 @@ const describeProcessingFailure = (lastError: string | null | undefined) => {
   return 'The recording was processed, but Divo could not update your persona. No persona changes were saved.'
 }
 
+const formatBytes = (bytes: number | null) => {
+  if (!bytes) return 'Unknown size'
+  const mb = bytes / (1024 * 1024)
+  return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`
+}
+
+const formatLearningDate = (value: string) => new Intl.DateTimeFormat(undefined, {
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+}).format(new Date(value))
+
 export function TeachMode() {
   const [stage, setStage] = useState<TeachStage>('intro')
   const [departmentId, setDepartmentId] = useState<string>()
@@ -62,6 +82,11 @@ export function TeachMode() {
   const [statusWarning, setStatusWarning] = useState<string>()
   const [undoing, setUndoing] = useState(false)
   const [undoMessage, setUndoMessage] = useState<string>()
+  const [activeRecording, setActiveRecording] = useState<TeachRecordingFile>()
+  const [localRecordings, setLocalRecordings] = useState<TeachLocalRecording[]>([])
+  const [recentLearnings, setRecentLearnings] = useState<TeachSession[]>([])
+  const [loadingOverview, setLoadingOverview] = useState(false)
+  const [overviewWarning, setOverviewWarning] = useState<string>()
   const sessionId = session?.id
   const sessionStatus = session?.status
 
@@ -79,6 +104,50 @@ export function TeachMode() {
       active = false
     }
   }, [])
+
+  const refreshOverview = useCallback(async () => {
+    if (!departmentId) return
+    setLoadingOverview(true)
+    setOverviewWarning(undefined)
+    try {
+      const local = await listLocalTeachRecordings()
+      const reconciled = await Promise.all(local.map(async recording => {
+        if (!recording.sessionId || recording.state === 'ready' || recording.state === 'retryable') {
+          return recording
+        }
+        try {
+          const current = await getTeachSession(recording.sessionId)
+          if (current.status === 'persona_updated' || current.status === 'no_learning') {
+            await finalizeLocalTeachRecording(recording.path, recording.sessionId)
+            return null
+          }
+          if (current.status === 'failed' || current.status === 'cancelled') {
+            return { ...recording, state: 'retryable' as const, lastError: current.lastError }
+          }
+          return { ...recording, state: 'processing' as const }
+        } catch {
+          // Do not offer a duplicate retry while the server outcome is unknown.
+          return recording
+        }
+      }))
+      setLocalRecordings(reconciled.filter((recording): recording is TeachLocalRecording => recording !== null))
+    } catch (error) {
+      console.warn('Teach local recording inventory unavailable', error)
+      setOverviewWarning('Local recording history could not be loaded.')
+    }
+    try {
+      setRecentLearnings(await listRecentTeachLearnings(departmentId, 6))
+    } catch (error) {
+      console.warn('Teach recent learnings unavailable', error)
+      setOverviewWarning(current => current ?? 'Recent database learnings could not be loaded.')
+    } finally {
+      setLoadingOverview(false)
+    }
+  }, [departmentId])
+
+  useEffect(() => {
+    if (stage === 'intro' && departmentId) void refreshOverview()
+  }, [departmentId, refreshOverview, stage])
 
   useEffect(() => () => {
     // Leaving Teach must never leave the macOS recorder running invisibly.
@@ -112,7 +181,17 @@ export function TeachMode() {
         if (!active) return
         setStatusWarning(undefined)
         setSession(current)
-        if (current.status === 'persona_updated' || current.status === 'no_learning') setStage('ready')
+        if (current.status === 'persona_updated' || current.status === 'no_learning') {
+          setStage('ready')
+          if (activeRecording?.localOwned) {
+            void finalizeLocalTeachRecording(activeRecording.path, current.id)
+              .then(() => {
+                setActiveRecording(undefined)
+                setLocalRecordings(recordings => recordings.filter(recording => recording.path !== activeRecording.path))
+              })
+              .catch(error => console.warn('Processed Teach recording local cleanup failed', error))
+          }
+        }
         if (current.status === 'failed') {
           setErrorKind('processing')
           setStage('error')
@@ -134,7 +213,7 @@ export function TeachMode() {
       active = false
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [sessionId, sessionStatus])
+  }, [activeRecording, sessionId, sessionStatus])
 
   const reset = useCallback(() => {
     setStage('intro')
@@ -144,6 +223,7 @@ export function TeachMode() {
     setStatusWarning(undefined)
     setUndoing(false)
     setUndoMessage(undefined)
+    setActiveRecording(undefined)
   }, [])
 
   const ingest = useCallback(async (
@@ -158,6 +238,7 @@ export function TeachMode() {
 
     let created: TeachSession | undefined
     try {
+      setActiveRecording(recording)
       setUploadProgress(0)
       setStage('uploading')
       created = await createTeachSession(departmentId, source, recording)
@@ -173,6 +254,10 @@ export function TeachMode() {
       setStage('error')
     }
   }, [departmentId])
+
+  const retryLocalRecording = useCallback(async (recording: TeachLocalRecording) => {
+    await ingest(recording, 'recording')
+  }, [ingest])
 
   const startRecording = useCallback(async () => {
     try {
@@ -234,7 +319,7 @@ export function TeachMode() {
   if (stage === 'intro') {
     return (
       <div className="h-full overflow-y-auto px-5 py-8 sm:px-8" data-testid="teach-mode">
-        <div className="mx-auto flex min-h-full max-w-5xl flex-col justify-center py-6">
+        <div className="mx-auto flex min-h-full max-w-5xl flex-col py-6">
           <div className="grid items-center gap-10 lg:grid-cols-[1fr_0.85fr]">
             <div>
               <Badge variant="outline" className="mb-5 border-violet-500/25 bg-violet-500/5 text-violet-500">
@@ -294,6 +379,83 @@ export function TeachMode() {
               </p>
             </div>
           </div>
+
+          <div className="mt-10 grid gap-5 border-t pt-8 lg:grid-cols-2">
+            <section className="rounded-xl border bg-card">
+              <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
+                <div className="flex items-center gap-2">
+                  <HardDrive className="size-4 text-muted-foreground" />
+                  <div>
+                    <h2 className="text-sm font-medium">Local recording retry inbox</h2>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Kept on this Mac until processing succeeds</p>
+                  </div>
+                </div>
+                <Badge variant="outline">{localRecordings.length}</Badge>
+              </div>
+              <div className="divide-y">
+                {localRecordings.length === 0 ? (
+                  <p className="px-5 py-6 text-sm text-muted-foreground">
+                    {loadingOverview ? 'Checking local recordings…' : 'No recordings are waiting for processing.'}
+                  </p>
+                ) : localRecordings.slice(0, 4).map(recording => {
+                  const canRetry = recording.state === 'ready' || recording.state === 'retryable'
+                  return (
+                    <div key={recording.path} className="flex items-center gap-3 px-5 py-4">
+                      <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+                        <FileVideo2 className="size-4" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{recording.fileName}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">{formatBytes(recording.size)} · {recording.state.replaceAll('_', ' ')}</p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!canRetry}
+                        onClick={() => void retryLocalRecording(recording)}
+                      >
+                        <RotateCcw /> {canRetry ? 'Retry' : 'Processing'}
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+
+            <section className="rounded-xl border bg-card">
+              <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
+                <div className="flex items-center gap-2">
+                  <Database className="size-4 text-muted-foreground" />
+                  <div>
+                    <h2 className="text-sm font-medium">Recent persona learnings</h2>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Read directly from the Teach database</p>
+                  </div>
+                </div>
+                <Badge variant="outline">From DB</Badge>
+              </div>
+              <div className="divide-y">
+                {recentLearnings.length === 0 ? (
+                  <p className="px-5 py-6 text-sm text-muted-foreground">
+                    {loadingOverview ? 'Loading recent learnings…' : 'No completed persona learnings yet.'}
+                  </p>
+                ) : recentLearnings.slice(0, 4).map(learning => (
+                  <div key={learning.id} className="px-5 py-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <Badge variant="secondary">{learning.appliedChangeCount} {learning.appliedChangeCount === 1 ? 'rule' : 'rules'}</Badge>
+                      <span className="font-mono text-[10px] text-muted-foreground">{formatLearningDate(learning.updatedAt)}</span>
+                    </div>
+                    <p className="mt-2 line-clamp-2 text-sm leading-5">{learning.understanding}</p>
+                    {learning.appliedChanges[0]?.instruction && (
+                      <p className="mt-2 line-clamp-2 border-l-2 border-emerald-500/30 pl-3 text-xs leading-5 text-muted-foreground">
+                        {learning.appliedChanges[0].instruction}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+          {overviewWarning && <p className="mt-3 text-xs text-amber-600" role="status">{overviewWarning}</p>}
         </div>
       </div>
     )

@@ -63,6 +63,45 @@ describe('ManagerTeachService', () => {
     );
   });
 
+  it('lists only the manager recent completed persona learnings', async () => {
+    const completed = {
+      id: 'teach-1', companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1',
+      source: 'recording', status: 'persona_updated', progress: 100, originalFileName: 'teach.mov',
+      mimeType: 'video/quicktime', fileSize: 1_024, lastError: null, parentSessionId: null,
+      managerCorrection: null, createdAt: new Date('2026-07-18T00:00:00.000Z'),
+      updatedAt: new Date('2026-07-18T00:01:00.000Z'), artifacts: [],
+      personaMutation: {
+        understanding: 'The manager wants risks first.', appliedChangeCount: 1,
+        appliedRevision: 2, baseRevision: 1, modelProvider: 'deepseek', modelId: 'deepseek-v4-pro',
+        patchJson: { changes: [{
+          operation: 'add', kind: 'workflow', scopeKey: 'reporting', ruleKey: 'risks-first',
+          instruction: 'Put risks first.', confidence: 0.98, evidenceRefs: ['transcript:1'],
+        }] },
+      },
+    };
+    const prisma = {
+      departmentMembership: { findFirst: async () => ({ id: 'membership-1' }) },
+      managerTeachSession: { findMany: async () => [completed] },
+    };
+    const service = new ManagerTeachService({
+      prisma: prisma as never,
+      queue: {} as never,
+      logger: noopLogger,
+      mediaProcessor: {} as never,
+      personaProcessor: {} as never,
+      maxVideoBytes: 100,
+      rawRetentionHours: 24,
+      uploadDir: '/tmp/divo-teach-test',
+    });
+
+    const recent = await service.listRecentLearnings({
+      companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', limit: 10,
+    });
+    assert.equal(recent.length, 1);
+    assert.equal(recent[0]?.understanding, 'The manager wants risks first.');
+    assert.equal(recent[0]?.appliedChanges[0]?.instruction, 'Put risks first.');
+  });
+
   it('moves a streamed artifact through queued ingestion exactly once', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'divo-teach-test-'));
     const videoPath = join(dir, 'raw.mov');

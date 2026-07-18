@@ -98,7 +98,7 @@ fn member_departments_runtime_context(session: &DivoSession) -> DivoRuntimeConte
     }
 }
 
-async fn refresh_runtime_context<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+pub(crate) async fn refresh_runtime_context<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let data_folder = get_jan_data_folder_path(app.clone());
     let context_path = runtime_context_path(&pi_agent_dir(&data_folder));
 

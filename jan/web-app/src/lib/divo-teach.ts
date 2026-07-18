@@ -8,6 +8,14 @@ export type TeachRecordingFile = {
   localOwned: boolean
 }
 
+export type TeachLocalRecording = TeachRecordingFile & {
+  sessionId: string | null
+  state: 'ready' | 'uploading' | 'processing' | 'retryable'
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export type TeachSession = {
   id: string
   departmentId: string
@@ -89,6 +97,9 @@ export const cancelTeachRecording = () =>
 export const pickTeachRecording = () =>
   invoke<TeachRecordingFile | null>('divo_teach_pick_recording')
 
+export const listLocalTeachRecordings = () =>
+  invoke<TeachLocalRecording[]>('divo_teach_list_local_recordings')
+
 export const createTeachSession = (
   departmentId: string,
   source: 'recording' | 'upload',
@@ -111,6 +122,12 @@ export const uploadTeachRecording = (
 
 export const getTeachSession = (sessionId: string) =>
   invoke<TeachSession>('divo_teach_get_session', { sessionId })
+
+export const listRecentTeachLearnings = (departmentId: string, limit = 10) =>
+  invoke<TeachSession[]>('divo_teach_list_recent_learnings', { departmentId, limit })
+
+export const finalizeLocalTeachRecording = (path: string, sessionId: string) =>
+  invoke<void>('divo_teach_finalize_local_recording', { path, sessionId })
 
 export const refineTeachSession = (sessionId: string, correction: string) =>
   invoke<TeachSession>('divo_teach_refine_session', { sessionId, correction })

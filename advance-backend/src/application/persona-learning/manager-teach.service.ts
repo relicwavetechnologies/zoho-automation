@@ -191,6 +191,35 @@ export class ManagerTeachService {
     return toSessionView(session, session.personaMutation, remainingUndos, evidence);
   }
 
+  async listRecentLearnings(input: {
+    companyId: string;
+    managerId: string;
+    departmentId: string;
+    limit: number;
+  }): Promise<ManagerTeachSessionView[]> {
+    await this.assertManager(input);
+    const sessions = await this.deps.prisma.managerTeachSession.findMany({
+      where: {
+        companyId: input.companyId,
+        managerId: input.managerId,
+        departmentId: input.departmentId,
+        status: { in: ['persona_updated', 'no_learning'] },
+      },
+      include: {
+        personaMutation: true,
+        artifacts: { where: { kind: 'evidence_manifest', status: 'available' }, take: 1 },
+      },
+      orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
+      take: Math.max(1, Math.min(50, input.limit)),
+    });
+    return Promise.all(sessions.map(async session => toSessionView(
+      session,
+      session.personaMutation,
+      0,
+      await readEvidenceReceipt(session.artifacts[0]?.storageKey),
+    )));
+  }
+
   async createRefinement(input: {
     companyId: string;
     managerId: string;
