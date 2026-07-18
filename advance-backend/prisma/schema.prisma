@@ -151,6 +151,32 @@ enum ManagerPersonaNodeStatus {
   quarantined
 }
 
+// Explicit manager teaching is a separate ingestion path from passive
+// after-run learning. It produces persona-only evidence in later phases.
+enum ManagerTeachSource {
+  recording
+  upload
+}
+
+enum ManagerTeachSessionStatus {
+  awaiting_upload
+  queued
+  ingesting
+  ready_for_processing
+  failed
+  cancelled
+}
+
+enum ManagerTeachArtifactKind {
+  raw_video
+  evidence_manifest
+}
+
+enum ManagerTeachArtifactStatus {
+  available
+  deleted
+}
+
 model User {
   id                                 String                       @id @default(uuid())
   email                              String                       @unique
@@ -179,15 +205,16 @@ model User {
   larkAuthLinks                      LarkUserAuthLink[]
   ownedIntegrationConnections        IntegrationConnection[]      @relation("IntegrationConnectionOwner")
   createdIntegrationConnections      IntegrationConnection[]      @relation("IntegrationConnectionCreatedBy")
-  createdSerperConnections           CompanySerperConnection[]   @relation("CompanySerperConnectionCreatedBy")
+  createdSerperConnections           CompanySerperConnection[]    @relation("CompanySerperConnectionCreatedBy")
   grantedIntegrationConnectionGrants IntegrationConnectionGrant[] @relation("IntegrationConnectionGrantGrantedBy")
   memoryItems                        UserMemoryItem[]
   memoryProfiles                     UserMemoryProfile[]
   departmentPreference               UserDepartmentPreference?
-  personaLearningEvidenceAsManager   PersonaLearningEvidence[]  @relation("PersonaLearningEvidenceManager")
-  personaLearningCandidatesAsManager PersonaLearningCandidate[] @relation("PersonaLearningCandidateManager")
-  managerPersonaTrees                ManagerPersonaTree[]      @relation("ManagerPersonaTreeManager")
-  managerPersonaNodes                ManagerPersonaNode[]      @relation("ManagerPersonaNodeManager")
+  personaLearningEvidenceAsManager   PersonaLearningEvidence[]    @relation("PersonaLearningEvidenceManager")
+  personaLearningCandidatesAsManager PersonaLearningCandidate[]   @relation("PersonaLearningCandidateManager")
+  managerPersonaTrees                ManagerPersonaTree[]         @relation("ManagerPersonaTreeManager")
+  managerPersonaNodes                ManagerPersonaNode[]         @relation("ManagerPersonaNodeManager")
+  managerTeachSessions               ManagerTeachSession[]        @relation("ManagerTeachSessionManager")
 }
 
 model Company {
@@ -249,6 +276,7 @@ model Company {
   personaLearningCandidates   PersonaLearningCandidate[]
   managerPersonaTrees         ManagerPersonaTree[]
   managerPersonaNodes         ManagerPersonaNode[]
+  managerTeachSessions        ManagerTeachSession[]
 }
 
 model RegisteredTool {
@@ -869,56 +897,57 @@ model CompanyInvite {
 }
 
 model Department {
-  id                 String                       @id @default(uuid())
-  companyId          String
-  company            Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  name               String
-  slug               String
-  description        String?
-  status             String                       @default("active")
-  createdAt          DateTime                     @default(now())
-  updatedAt          DateTime                     @updatedAt
-  agentConfig        DepartmentAgentConfig?
-  skills             Skill[]
-  skillFolders       SkillFolder[]
-  roles              DepartmentRole[]
-  memberships        DepartmentMembership[]
-  toolPermissions    DepartmentToolPermission[]
-  userToolOverrides  DepartmentUserToolOverride[]
-  desktopThreads     DesktopThread[]
-  scheduledWorkflows ScheduledWorkflow[]
-  personaLearningEvidences PersonaLearningEvidence[]
+  id                        String                       @id @default(uuid())
+  companyId                 String
+  company                   Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name                      String
+  slug                      String
+  description               String?
+  status                    String                       @default("active")
+  createdAt                 DateTime                     @default(now())
+  updatedAt                 DateTime                     @updatedAt
+  agentConfig               DepartmentAgentConfig?
+  skills                    Skill[]
+  skillFolders              SkillFolder[]
+  roles                     DepartmentRole[]
+  memberships               DepartmentMembership[]
+  toolPermissions           DepartmentToolPermission[]
+  userToolOverrides         DepartmentUserToolOverride[]
+  desktopThreads            DesktopThread[]
+  scheduledWorkflows        ScheduledWorkflow[]
+  personaLearningEvidences  PersonaLearningEvidence[]
   personaLearningCandidates PersonaLearningCandidate[]
   managerPersonaTrees       ManagerPersonaTree[]
   managerPersonaNodes       ManagerPersonaNode[]
+  managerTeachSessions      ManagerTeachSession[]
 
   @@unique([companyId, slug])
   @@index([companyId, status, updatedAt])
 }
 
 model Skill {
-  id           String      @id @default(uuid())
+  id           String             @id @default(uuid())
   companyId    String
-  company      Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
   departmentId String?
-  department   Department? @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  department   Department?        @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   folderId     String?
-  folder       SkillFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  folder       SkillFolder?       @relation(fields: [folderId], references: [id], onDelete: SetNull)
   scope        String
   name         String
   slug         String
   summary      String
   markdown     String
-  toolIds      String[]    @default([])
-  tags         String[]    @default([])
-  status       String      @default("active")
-  isSystem     Boolean     @default(false)
-  sortOrder    Int         @default(0)
-  revision     Int         @default(1)
+  toolIds      String[]           @default([])
+  tags         String[]           @default([])
+  status       String             @default("active")
+  isSystem     Boolean            @default(false)
+  sortOrder    Int                @default(0)
+  revision     Int                @default(1)
   createdBy    String?
   updatedBy    String?
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
   versions     SkillVersion[]
   aliases      SkillAlias[]
   capabilities SkillCapability[]
@@ -933,22 +962,22 @@ model Skill {
 // Folder rows are the source of truth for the admin tree. Skills remain
 // addressable by stable IDs and slugs even when moved between folders.
 model SkillFolder {
-  id           String       @id @default(uuid())
+  id           String        @id @default(uuid())
   companyId    String
-  company      Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   departmentId String?
-  department   Department?  @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  department   Department?   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   parentId     String?
-  parent       SkillFolder? @relation("SkillFolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  parent       SkillFolder?  @relation("SkillFolderTree", fields: [parentId], references: [id], onDelete: Cascade)
   children     SkillFolder[] @relation("SkillFolderTree")
   name         String
   slug         String
-  status       String       @default("active")
-  sortOrder    Int          @default(0)
+  status       String        @default("active")
+  sortOrder    Int           @default(0)
   createdBy    String?
   updatedBy    String?
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
   skills       Skill[]
 
   @@index([companyId, departmentId, parentId, status, sortOrder])
@@ -1030,7 +1059,7 @@ model SkillAccessGrant {
   company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   skillId     String
   skill       Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
-  granteeType String   // 'user' | 'department' | 'role' | 'company'
+  granteeType String // 'user' | 'department' | 'role' | 'company'
   granteeId   String
   grantedBy   String?
   createdAt   DateTime @default(now())
@@ -1040,19 +1069,19 @@ model SkillAccessGrant {
 }
 
 model DepartmentAgentConfig {
-  id                  String     @id @default(uuid())
-  departmentId        String     @unique
-  department          Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  systemPrompt        String
-  desktopPersonaPrompt String    @default("")
-  managerApprovalJson Json?
-  isActive            Boolean    @default(true)
-  createdBy           String
-  createdByUser       User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
-  updatedBy           String
-  updatedByUser       User       @relation("DepartmentAgentConfigUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
-  createdAt           DateTime   @default(now())
-  updatedAt           DateTime   @updatedAt
+  id                   String     @id @default(uuid())
+  departmentId         String     @unique
+  department           Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  systemPrompt         String
+  desktopPersonaPrompt String     @default("")
+  managerApprovalJson  Json?
+  isActive             Boolean    @default(true)
+  createdBy            String
+  createdByUser        User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  updatedBy            String
+  updatedByUser        User       @relation("DepartmentAgentConfigUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
 
   @@index([departmentId, isActive])
 }
@@ -1311,23 +1340,23 @@ model IntegrationConnection {
 /// Company-owned Serper credentials. The raw key is AES-GCM encrypted and never
 /// returned through the desktop API; the fingerprint only supports safe dedupe.
 model CompanySerperConnection {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   companyId       String
-  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company         Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   label           String
   apiKeyEncrypted String
   keyFingerprint  String
-  status          String   @default("connected")
-  priority        Int      @default(0)
+  status          String    @default("connected")
+  priority        Int       @default(0)
   lastTestedAt    DateTime?
   lastSucceededAt DateTime?
   lastFailureAt   DateTime?
   lastFailureCode String?
   lastUsedAt      DateTime?
   createdBy       String?
-  createdByUser   User?    @relation("CompanySerperConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdByUser   User?     @relation("CompanySerperConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
   revokedAt       DateTime?
 
   @@unique([companyId, keyFingerprint])
@@ -1563,31 +1592,31 @@ model AiTokenUsage {
 }
 
 model ExecutionRun {
-  id            String           @id @default(uuid())
-  companyId     String
-  company       Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId        String?
-  user          User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
-  channel       String
-  entrypoint    String
-  requestId     String?          @unique
-  taskId        String?
-  threadId      String?
-  chatId        String?
-  messageId     String?
-  mode          String?
-  agentTarget   String?
-  status        String           @default("running")
-  latestSummary String?
-  errorCode     String?
-  errorMessage  String?
-  lastSequence  Int              @default(0)
-  startedAt     DateTime         @default(now())
-  finishedAt    DateTime?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  events        ExecutionEvent[]
-  stepResults   StepResult[]
+  id                      String                   @id @default(uuid())
+  companyId               String
+  company                 Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId                  String?
+  user                    User?                    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  channel                 String
+  entrypoint              String
+  requestId               String?                  @unique
+  taskId                  String?
+  threadId                String?
+  chatId                  String?
+  messageId               String?
+  mode                    String?
+  agentTarget             String?
+  status                  String                   @default("running")
+  latestSummary           String?
+  errorCode               String?
+  errorMessage            String?
+  lastSequence            Int                      @default(0)
+  startedAt               DateTime                 @default(now())
+  finishedAt              DateTime?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  events                  ExecutionEvent[]
+  stepResults             StepResult[]
   personaLearningEvidence PersonaLearningEvidence?
 
   @@index([companyId, startedAt])
@@ -1603,25 +1632,25 @@ model ExecutionRun {
 // `contextJson` contains redacted user/assistant excerpts only; raw tool I/O
 // remains in the short-retention trace store and is never copied here.
 model PersonaLearningEvidence {
-  id                String                       @id @default(uuid())
+  id                String                        @id @default(uuid())
   companyId         String
-  company           Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company           Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   managerId         String
-  manager           User                         @relation("PersonaLearningEvidenceManager", fields: [managerId], references: [id], onDelete: Cascade)
+  manager           User                          @relation("PersonaLearningEvidenceManager", fields: [managerId], references: [id], onDelete: Cascade)
   departmentId      String
-  department        Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  executionRunId    String                       @unique
-  executionRun      ExecutionRun                 @relation(fields: [executionRunId], references: [id], onDelete: Cascade)
+  department        Department                    @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  executionRunId    String                        @unique
+  executionRun      ExecutionRun                  @relation(fields: [executionRunId], references: [id], onDelete: Cascade)
   threadId          String
-  sourceVersion     Int                          @default(1)
+  sourceVersion     Int                           @default(1)
   status            PersonaLearningEvidenceStatus
   eligibilityReason String?
   contextJson       Json
   toolSummaryJson   Json
   runSummary        String?
-  capturedAt        DateTime                     @default(now())
-  createdAt         DateTime                     @default(now())
-  updatedAt         DateTime                     @updatedAt
+  capturedAt        DateTime                      @default(now())
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @updatedAt
   jobs              PersonaLearningJob[]
   candidates        PersonaLearningCandidate[]
 
@@ -1632,20 +1661,20 @@ model PersonaLearningEvidence {
 // Database-backed queue state. BullMQ is the executor, while this row is the
 // durable/idempotent source of truth and supports reconciliation after outages.
 model PersonaLearningJob {
-  id              String                  @id @default(uuid())
+  id              String                     @id @default(uuid())
   evidenceId      String
-  evidence        PersonaLearningEvidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
-  pipelineVersion Int                     @default(1)
-  idempotencyKey  String                  @unique
-  status          PersonaLearningJobStatus @default(queued)
-  attempts        Int                     @default(0)
+  evidence        PersonaLearningEvidence    @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  pipelineVersion Int                        @default(1)
+  idempotencyKey  String                     @unique
+  status          PersonaLearningJobStatus   @default(queued)
+  attempts        Int                        @default(0)
   queueJobId      String?
   modelProvider   String?
   modelId         String?
   lastError       String?
   processedAt     DateTime?
-  createdAt       DateTime                @default(now())
-  updatedAt       DateTime                @updatedAt
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
   candidates      PersonaLearningCandidate[]
 
   @@unique([evidenceId, pipelineVersion])
@@ -1689,34 +1718,50 @@ model PersonaLearningCandidate {
 // One manager-owned tree per department. Its revision is the freshness token
 // consumed by the desktop runtime context in P5; it grants no authority.
 model ManagerPersonaTree {
-  id           String             @id @default(uuid())
+  id           String                   @id @default(uuid())
   companyId    String
-  company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   managerId    String
-  manager      User               @relation("ManagerPersonaTreeManager", fields: [managerId], references: [id], onDelete: Cascade)
+  manager      User                     @relation("ManagerPersonaTreeManager", fields: [managerId], references: [id], onDelete: Cascade)
   departmentId String
-  department   Department         @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  revision     Int                @default(1)
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  department   Department               @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  revision     Int                      @default(1)
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
   nodes        ManagerPersonaNode[]
+  revisions    ManagerPersonaRevision[]
 
   @@unique([companyId, managerId, departmentId])
   @@index([companyId, departmentId, updatedAt])
 }
 
+// Bounded snapshots used only for Undo. The current tree remains live in
+// ManagerPersonaNode; at most the two immediately previous snapshots remain.
+model ManagerPersonaRevision {
+  id           String             @id @default(uuid())
+  treeId       String
+  tree         ManagerPersonaTree @relation(fields: [treeId], references: [id], onDelete: Cascade)
+  revision     Int
+  snapshotJson Json
+  source       String
+  createdAt    DateTime           @default(now())
+
+  @@unique([treeId, revision])
+  @@index([treeId, createdAt])
+}
+
 // An active node is promoted only by the deterministic P4 evidence gate.
 // It is instruction context, not an executable company skill or permission.
 model ManagerPersonaNode {
-  id              String                  @id @default(uuid())
+  id              String                       @id @default(uuid())
   treeId          String
-  tree            ManagerPersonaTree      @relation(fields: [treeId], references: [id], onDelete: Cascade)
+  tree            ManagerPersonaTree           @relation(fields: [treeId], references: [id], onDelete: Cascade)
   companyId       String
-  company         Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company         Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
   managerId       String
-  manager         User                    @relation("ManagerPersonaNodeManager", fields: [managerId], references: [id], onDelete: Cascade)
+  manager         User                         @relation("ManagerPersonaNodeManager", fields: [managerId], references: [id], onDelete: Cascade)
   departmentId    String
-  department      Department              @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  department      Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   kind            PersonaLearningCandidateKind
   scopeKey        String
   ruleKey         String
@@ -1725,13 +1770,62 @@ model ManagerPersonaNode {
   evidenceCount   Int
   firstEvidenceAt DateTime
   lastEvidenceAt  DateTime
-  status          ManagerPersonaNodeStatus @default(active)
-  createdAt       DateTime                @default(now())
-  updatedAt       DateTime                @updatedAt
-  candidates      PersonaLearningCandidate[] @relation("ManagerPersonaNodeCandidates")
+  status          ManagerPersonaNodeStatus     @default(active)
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+  candidates      PersonaLearningCandidate[]   @relation("ManagerPersonaNodeCandidates")
 
   @@unique([treeId, kind, scopeKey, ruleKey])
   @@index([companyId, departmentId, managerId, status, scopeKey])
+}
+
+// Durable job state for an explicit Teach recording. BullMQ executes the job,
+// while this row is authoritative for progress, retries and cancellation.
+model ManagerTeachSession {
+  id                String                    @id @default(uuid())
+  companyId         String
+  company           Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId         String
+  manager           User                      @relation("ManagerTeachSessionManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId      String
+  department        Department                @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  source            ManagerTeachSource
+  status            ManagerTeachSessionStatus @default(awaiting_upload)
+  progress          Int                       @default(0)
+  originalFileName  String?
+  mimeType          String?
+  fileSize          Int?
+  queueJobId        String?
+  attempts          Int                       @default(0)
+  cancelRequestedAt DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  failedAt          DateTime?
+  lastError         String?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  artifacts         ManagerTeachArtifact[]
+
+  @@index([companyId, departmentId, managerId, createdAt])
+  @@index([status, createdAt])
+}
+
+model ManagerTeachArtifact {
+  id         String                     @id @default(uuid())
+  sessionId  String
+  session    ManagerTeachSession        @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  kind       ManagerTeachArtifactKind
+  status     ManagerTeachArtifactStatus @default(available)
+  storageKey String
+  mimeType   String
+  sizeBytes  Int
+  expiresAt  DateTime?
+  deletedAt  DateTime?
+  createdAt  DateTime                   @default(now())
+  updatedAt  DateTime                   @updatedAt
+
+  @@unique([sessionId, kind])
+  @@index([status, expiresAt])
 }
 
 model ExecutionEvent {
@@ -1945,15 +2039,15 @@ model MemberTokenPolicy {
 
 /// Guardrails policy for the LLM proxy: per-member block / budget / rate / model allow-list.
 model MemberProxyPolicy {
-  id              String   @id @default(uuid())
-  userId          String   @unique
-  companyId       String
-  blocked         Boolean  @default(false)
-  monthlyBudgetUsd Float?  // null = no cap
-  rateLimitRpm    Int?     // null = no per-minute cap
-  allowedModels   String[] @default([]) // empty = all models allowed
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  companyId        String
+  blocked          Boolean  @default(false)
+  monthlyBudgetUsd Float? // null = no cap
+  rateLimitRpm     Int? // null = no per-minute cap
+  allowedModels    String[] @default([]) // empty = all models allowed
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@index([companyId])
 }
@@ -1964,13 +2058,13 @@ model MemberProxyPolicy {
 model ProxyProviderKey {
   id           String    @id @default(uuid())
   provider     String    @default("deepseek")
-  scope        String    // 'platform' | 'company'
-  companyId    String?   // null for platform scope
-  scopeKey     String    // 'platform' or the companyId — the uniqueness discriminator
-  encryptedKey String    // AES-256-GCM cipher text (token.crypto v1 format)
-  keyLast4     String    // last 4 chars for masked display; never the full key
+  scope        String // 'platform' | 'company'
+  companyId    String? // null for platform scope
+  scopeKey     String // 'platform' or the companyId — the uniqueness discriminator
+  encryptedKey String // AES-256-GCM cipher text (token.crypto v1 format)
+  keyLast4     String // last 4 chars for masked display; never the full key
   status       String    @default("active") // 'active' | 'disabled'
-  createdBy    String?   // admin userId who set it
+  createdBy    String? // admin userId who set it
   lastUsedAt   DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -1991,14 +2085,14 @@ model ProxyRequestLog {
   channel         String   @default("desktop")
   provider        String   @default("deepseek")
   agentTarget     String   @default("pi")
-  decision        String   // 'allowed' | 'denied'
-  reason          String?  // gate reason / error type when not allowed
-  httpStatus      Int      // status returned to the caller
+  decision        String // 'allowed' | 'denied'
+  reason          String? // gate reason / error type when not allowed
+  httpStatus      Int // status returned to the caller
   cacheHitTokens  Int      @default(0)
   cacheMissTokens Int      @default(0)
   outputTokens    Int      @default(0)
   latencyMs       Int      @default(0)
-  keySource       String?  // 'company' | 'platform' | 'env'
+  keySource       String? // 'company' | 'platform' | 'env'
   createdAt       DateTime @default(now())
 
   @@index([companyId, createdAt])

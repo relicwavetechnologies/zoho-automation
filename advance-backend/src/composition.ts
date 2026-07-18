@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { resolve } from 'node:path';
 import type { TypedEnv } from './config/env';
 import { resolveRedisUrl } from './config/env';
 import { RuntimeApprovalRepository } from './infrastructure/persistence/runtime-approval.repository';
@@ -113,6 +114,9 @@ import { DeepSeekPersonaLearningExtractor } from './application/persona-learning
 import { PersonaLearningService } from './application/persona-learning/persona-learning.service';
 import { PersonaLearningPromotionService } from './application/persona-learning/persona-learning-promotion.service';
 import { ManagerPersonaRuntimeService } from './application/persona-learning/manager-persona-runtime.service';
+import { ManagerPersonaRevisionService } from './application/persona-learning/manager-persona-revision.service';
+import { ManagerTeachQueue } from './application/persona-learning/manager-teach.queue';
+import { ManagerTeachService } from './application/persona-learning/manager-teach.service';
 import { LlmRerankerService } from './application/retrieval/llm-reranker.service';
 import { DocumentRagBroker } from './application/retrieval/document-rag.broker';
 import { DocumentRagTool } from './application/orchestration/tools/families/document-rag.tool';
@@ -242,6 +246,10 @@ export interface Container {
   personaLearningService: PersonaLearningService;
   personaLearningPromotionService: PersonaLearningPromotionService;
   managerPersonaRuntimeService: ManagerPersonaRuntimeService;
+  managerPersonaRevisionService: ManagerPersonaRevisionService;
+  managerTeachQueue: ManagerTeachQueue;
+  managerTeachService: ManagerTeachService;
+  managerTeachUploadDir: string;
   cloudinaryAdapter: CloudinaryAdapter;
   fileAssetRepo: FileAssetRepository;
   fileAccessPolicyRepo: FileAccessPolicyRepository;
@@ -859,6 +867,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   });
   const personaLearningPromotionService = new PersonaLearningPromotionService({ prisma, logger });
   const managerPersonaRuntimeService = new ManagerPersonaRuntimeService({ prisma, logger });
+  const managerPersonaRevisionService = new ManagerPersonaRevisionService({ prisma, logger });
+  const managerTeachQueue = new ManagerTeachQueue(queueRedisUrl, env.REDIS_MANAGER_TEACH_QUEUE_NAME);
+  const managerTeachUploadDir = resolve(env.MANAGER_TEACH_UPLOAD_DIR);
+  const managerTeachService = new ManagerTeachService({
+    prisma,
+    queue: managerTeachQueue,
+    logger,
+    maxVideoBytes: env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
+    rawRetentionHours: env.MANAGER_TEACH_RAW_RETENTION_HOURS,
+  });
 
   const llmReranker = new LlmRerankerService(
     env.GROQ_API_KEY,
@@ -1336,6 +1354,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     personaLearningService,
     personaLearningPromotionService,
     managerPersonaRuntimeService,
+    managerPersonaRevisionService,
+    managerTeachQueue,
+    managerTeachService,
+    managerTeachUploadDir,
     cloudinaryAdapter,
     fileAssetRepo,
     fileAccessPolicyRepo,

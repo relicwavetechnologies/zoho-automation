@@ -42,6 +42,8 @@ import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
 import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
+import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
+import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
 
 export const createServer = (c: Container) => {
   const app = express();
@@ -85,6 +87,15 @@ export const createServer = (c: Container) => {
     concurrency: c.env.PERSONA_LEARNING_WORKER_CONCURRENCY,
   });
   personaLearningWorker.start();
+
+  const managerTeachWorker = new ManagerTeachWorker({
+    redisUrl: c.queueRedisUrl,
+    queueName: c.env.REDIS_MANAGER_TEACH_QUEUE_NAME,
+    service: c.managerTeachService,
+    logger: c.logger,
+    concurrency: c.env.MANAGER_TEACH_WORKER_CONCURRENCY,
+  });
+  managerTeachWorker.start();
 
   c.scheduledWorkflowService.start();
 
@@ -411,6 +422,21 @@ export const createServer = (c: Container) => {
       prisma:          c.prisma,
       logger:          c.logger,
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+    }),
+  );
+
+  // Explicit manager Teach recording ingestion. The router owns member auth
+  // and enforces the live department MANAGER membership on every new session.
+  app.use(
+    '/api/desktop/teach',
+    createManagerTeachRoutes({
+      prisma: c.prisma,
+      memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+      logger: c.logger,
+      service: c.managerTeachService,
+      revisions: c.managerPersonaRevisionService,
+      uploadDir: c.managerTeachUploadDir,
+      maxVideoBytes: c.env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
     }),
   );
 

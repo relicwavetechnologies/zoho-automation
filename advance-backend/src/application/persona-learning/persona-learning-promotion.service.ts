@@ -1,6 +1,7 @@
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { isSafePublishedMemoryFact } from '../memory/memory-fact-safety';
+import { ManagerPersonaRevisionService } from './manager-persona-revision.service';
 
 const MIN_NARROW_RULE_SUPPORT = 2;
 const MIN_BROAD_OR_PROCEDURAL_RULE_SUPPORT = 3;
@@ -40,9 +41,11 @@ export interface PersonaLearningPromotionServiceDeps {
  */
 export class PersonaLearningPromotionService {
   private readonly log: Logger;
+  private readonly revisions: ManagerPersonaRevisionService;
 
   constructor(private readonly deps: PersonaLearningPromotionServiceDeps) {
     this.log = deps.logger.child({ service: 'persona-learning-promotion' });
+    this.revisions = new ManagerPersonaRevisionService(deps);
   }
 
   async promoteEligibleCandidates(limit = 100): Promise<number> {
@@ -97,6 +100,9 @@ export class PersonaLearningPromotionService {
         // A later phase handles contradiction/supersession. P4 never revives
         // or overwrites a node that has been deliberately quarantined.
         if (existing?.status === 'quarantined' || existing?.status === 'superseded') return false;
+        if (!existing) {
+          await this.revisions.captureBeforeMutation(tx, tree.id, 'passive_learning');
+        }
         const node = existing ?? await tx.managerPersonaNode.create({
           data: {
             treeId: tree.id,

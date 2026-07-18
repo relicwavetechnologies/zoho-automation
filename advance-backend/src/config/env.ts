@@ -189,6 +189,14 @@ const EnvSchema = z.object({
   PERSONA_LEARNING_WORKER_CONCURRENCY: positiveInt(1),
   PERSONA_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
 
+  // ── Explicit manager Teach ingestion ────────────────────────────────────
+  REDIS_MANAGER_TEACH_QUEUE_NAME: z.string().default('manager-teach'),
+  MANAGER_TEACH_WORKER_CONCURRENCY: positiveInt(1),
+  /** Raw videos are streamed here; never buffer them in Express memory. */
+  MANAGER_TEACH_UPLOAD_DIR: z.string().default('.data/manager-teach'),
+  MANAGER_TEACH_MAX_VIDEO_MB: positiveInt(2_047),
+  MANAGER_TEACH_RAW_RETENTION_HOURS: positiveInt(24),
+
   // ── RAG retrieval tuning ──────────────────────────────────────────────────
   RAG_GRADE_THRESHOLD:   positiveNum(3),
   RAG_MAX_REWRITES:      positiveInt(1),
