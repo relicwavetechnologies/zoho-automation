@@ -19,12 +19,29 @@ const h = vi.hoisted(() => ({
   pickRecording: vi.fn(),
   recordScreen: vi.fn(),
   uploadRecording: vi.fn(),
-  undoPersona: vi.fn(),
+  navigate: vi.fn(),
+  createThread: vi.fn(),
+  updateThread: vi.fn(),
+  threadsState: { threads: {} as Record<string, any> },
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: h.listen,
 }))
+
+vi.mock('@tanstack/react-router', () => ({
+  useRouter: () => ({ navigate: h.navigate }),
+}))
+
+vi.mock('@/hooks/useThreads', () => {
+  const useThreads: any = (selector: any) => selector({
+    ...h.threadsState,
+    createThread: h.createThread,
+    updateThread: h.updateThread,
+  })
+  useThreads.getState = () => h.threadsState
+  return { useThreads }
+})
 
 vi.mock('@/lib/divo-teach', () => ({
   cancelTeachRecording: h.cancelRecording,
@@ -39,21 +56,6 @@ vi.mock('@/lib/divo-teach', () => ({
   pickTeachRecording: h.pickRecording,
   recordTeachScreen: h.recordScreen,
   uploadTeachRecording: h.uploadRecording,
-  undoManagerPersona: h.undoPersona,
-}))
-
-vi.mock('./TeachAgentChat', () => ({
-  TeachAgentChat: ({ session, onUndo, undoMessage }: any) => (
-    <div data-testid="teach-agent-chat">
-      <p>Interactive Teach</p>
-      <p>{session.appliedChangeCount} persona rules written</p>
-      <p>{session.understanding}</p>
-      {session.appliedChanges.map((change: any) => <p key={change.ruleKey}>{change.instruction}</p>)}
-      <p>DeepSeek Pro · Max thinking</p>
-      {session.remainingUndos > 0 && <button onClick={onUndo}>Undo ({session.remainingUndos} left)</button>}
-      {undoMessage && <p>{undoMessage}</p>}
-    </div>
-  ),
 }))
 
 const recording = {
@@ -138,7 +140,14 @@ describe('TeachMode', () => {
     h.createSession.mockResolvedValue(teachSession('awaiting_upload'))
     h.uploadRecording.mockResolvedValue(teachSession('queued'))
     h.getSession.mockResolvedValue(teachSession('completed'))
-    h.undoPersona.mockResolvedValue({ revision: 4, remainingUndos: 1 })
+    h.navigate.mockResolvedValue(undefined)
+    h.createThread.mockResolvedValue({
+      id: 'normal-teach-thread-1',
+      title: 'Teach: manager-demo',
+      metadata: {},
+    })
+    h.threadsState.threads = {}
+    sessionStorage.clear()
   })
 
   it('requires a selected managed department before teaching', async () => {
@@ -255,7 +264,7 @@ describe('TeachMode', () => {
     expect(screen.getByText(/has not reported success or failure yet/)).toBeInTheDocument()
   })
 
-  it('uploads a selected recording, learns persona rules and supports Undo', async () => {
+  it('uploads a selected recording and hands it to a persistent normal chat thread', async () => {
     const user = userEvent.setup()
     render(<TeachMode />)
 
@@ -268,15 +277,25 @@ describe('TeachMode', () => {
     await act(async () => {
       await vi.waitFor(() => expect(h.getSession).toHaveBeenCalledWith('teach-session-1'))
     })
-    expect(await screen.findByText('2 persona rules written')).toBeInTheDocument()
-    expect(screen.getByText(/reviews weekly reports/i)).toBeInTheDocument()
-    expect(screen.getByText('Review weekly reports with risks first.')).toBeInTheDocument()
-    expect(screen.getByText('DeepSeek Pro · Max thinking')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Undo (2 left)' }))
-    expect(h.undoPersona).toHaveBeenCalledWith('department-1')
-    expect(await screen.findByText('Persona change undone.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Undo (1 left)' })).toBeInTheDocument()
+    await waitFor(() => expect(h.navigate).toHaveBeenCalledWith({
+      to: '/threads/$threadId',
+      params: { threadId: 'normal-teach-thread-1' },
+    }))
+    expect(h.createThread).toHaveBeenCalledWith(
+      { id: 'pi-agent', provider: 'pi' },
+      'Teach: manager-demo'
+    )
+    expect(h.updateThread).toHaveBeenCalledWith('normal-teach-thread-1', {
+      metadata: {
+        divoTeachProfile: {
+          kind: 'teach',
+          teachSessionId: 'teach-session-1',
+          departmentId: 'department-1',
+        },
+      },
+    })
+    const initial = JSON.parse(sessionStorage.getItem('initial-message-normal-teach-thread-1') ?? '{}')
+    expect(initial.text).toMatch(/finished recording this workflow/i)
   })
 
   it('removes a Divo-owned recording only after persona processing succeeds', async () => {
@@ -292,7 +311,7 @@ describe('TeachMode', () => {
     await waitFor(() => expect(h.finalizeLocal).toHaveBeenCalledWith(ownedRecording.path, 'teach-session-1'))
   })
 
-  it('moves into one interactive Teach conversation after evidence is ready', async () => {
+  it('moves into the standard chat route after evidence is ready', async () => {
     h.getSession.mockResolvedValue(teachSession('evidence_ready'))
     const user = userEvent.setup()
     render(<TeachMode />)
@@ -300,12 +319,28 @@ describe('TeachMode', () => {
     const uploadButton = await screen.findByRole('button', { name: 'Upload recording' })
     await waitFor(() => expect(uploadButton).toBeEnabled())
     await user.click(uploadButton)
-    expect(await screen.findByText('Interactive Teach')).toBeInTheDocument()
-    expect(screen.getByTestId('teach-agent-chat')).toBeInTheDocument()
+    await waitFor(() => expect(h.navigate).toHaveBeenCalledWith({
+      to: '/threads/$threadId',
+      params: { threadId: 'normal-teach-thread-1' },
+    }))
+    expect(screen.queryByTestId('teach-agent-chat')).not.toBeInTheDocument()
   })
 
-  it('shows a clean no-learning result without an Undo action', async () => {
-    h.getSession.mockResolvedValue({ ...teachSession('completed'), appliedChangeCount: 0, appliedChanges: [], understanding: 'No durable rule was clear enough to save.', remainingUndos: 0 })
+  it('reopens an existing Teach thread instead of creating a duplicate conversation', async () => {
+    h.threadsState.threads = {
+      'existing-teach-thread': {
+        id: 'existing-teach-thread',
+        title: 'Teach: existing workflow',
+        metadata: {
+          divoTeachProfile: {
+            kind: 'teach',
+            teachSessionId: 'teach-session-1',
+            departmentId: 'department-1',
+          },
+        },
+      },
+    }
+    h.getSession.mockResolvedValue(teachSession('evidence_ready'))
     const user = userEvent.setup()
     render(<TeachMode />)
 
@@ -313,8 +348,10 @@ describe('TeachMode', () => {
     await waitFor(() => expect(uploadButton).toBeEnabled())
     await user.click(uploadButton)
 
-    expect(await screen.findByText('0 persona rules written')).toBeInTheDocument()
-    expect(screen.getByText(/no durable rule was clear enough/i)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Undo/ })).not.toBeInTheDocument()
+    await waitFor(() => expect(h.navigate).toHaveBeenCalledWith({
+      to: '/threads/$threadId',
+      params: { threadId: 'existing-teach-thread' },
+    }))
+    expect(h.createThread).not.toHaveBeenCalled()
   })
 })

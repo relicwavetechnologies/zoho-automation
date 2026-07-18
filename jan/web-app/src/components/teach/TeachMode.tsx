@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { useRouter } from '@tanstack/react-router'
 import {
   ArrowLeft,
   CircleStop,
@@ -29,7 +30,11 @@ import {
 } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
 import { TeachProcessingExperience } from './TeachExperience'
-import { TeachAgentChat } from './TeachAgentChat'
+import { SESSION_STORAGE_PREFIX } from '@/constants/chat'
+import { route } from '@/constants/routes'
+import { useThreads } from '@/hooks/useThreads'
+import { DIVO_THREAD_MODEL } from '@/lib/pi'
+import { DIVO_TEACH_PROFILE_METADATA_KEY, readDivoTeachProfile } from '@/lib/divo-teach-thread'
 import {
   cancelTeachRecording,
   cancelTeachSession,
@@ -43,13 +48,12 @@ import {
   pickTeachRecording,
   recordTeachScreen,
   uploadTeachRecording,
-  undoManagerPersona,
   type TeachRecordingFile,
   type TeachLocalRecording,
   type TeachSession,
 } from '@/lib/divo-teach'
 
-type TeachStage = 'intro' | 'recording' | 'uploading' | 'processing' | 'agent' | 'error'
+type TeachStage = 'intro' | 'recording' | 'uploading' | 'processing' | 'error'
 type TeachErrorKind = 'manager' | 'recorder' | 'upload' | 'processing' | 'generic'
 
 type UploadProgress = {
@@ -83,6 +87,9 @@ const formatLearningDate = (value: string) => new Intl.DateTimeFormat(undefined,
 }).format(new Date(value))
 
 export function TeachMode() {
+  const router = useRouter()
+  const createThread = useThreads(state => state.createThread)
+  const updateThread = useThreads(state => state.updateThread)
   const [stage, setStage] = useState<TeachStage>('intro')
   const [departmentId, setDepartmentId] = useState<string>()
   const [checkingAccess, setCheckingAccess] = useState(true)
@@ -90,8 +97,6 @@ export function TeachMode() {
   const [uploadProgress, setUploadProgress] = useState(0)
   const [errorKind, setErrorKind] = useState<TeachErrorKind>('generic')
   const [statusWarning, setStatusWarning] = useState<string>()
-  const [undoing, setUndoing] = useState(false)
-  const [undoMessage, setUndoMessage] = useState<string>()
   const [activeRecording, setActiveRecording] = useState<TeachRecordingFile>()
   const [localRecordings, setLocalRecordings] = useState<TeachLocalRecording[]>([])
   const [recentLearnings, setRecentLearnings] = useState<TeachSession[]>([])
@@ -101,6 +106,56 @@ export function TeachMode() {
   const [deletingRecording, setDeletingRecording] = useState(false)
   const sessionId = session?.id
   const sessionStatus = session?.status
+  const handoffSessionId = useRef<string | undefined>(undefined)
+
+  const openTeachConversation = useCallback(async (current: TeachSession) => {
+    if (handoffSessionId.current === current.id) return
+    handoffSessionId.current = current.id
+
+    try {
+      const existingThread = Object.values(useThreads.getState().threads).find(thread =>
+        readDivoTeachProfile(thread.metadata)?.teachSessionId === current.id
+      )
+      if (existingThread) {
+        await router.navigate({
+          to: route.threadsDetail,
+          params: { threadId: existingThread.id },
+        })
+        return
+      }
+
+      const title = current.originalFileName
+        ? `Teach: ${current.originalFileName.replace(/\.[^.]+$/, '')}`
+        : 'Teach Divo my workflow'
+      const newThread = await createThread({ ...DIVO_THREAD_MODEL }, title)
+      updateThread(newThread.id, {
+        metadata: {
+          ...(newThread.metadata ?? {}),
+          [DIVO_TEACH_PROFILE_METADATA_KEY]: {
+            kind: 'teach',
+            teachSessionId: current.id,
+            departmentId: current.departmentId,
+          },
+        },
+      })
+      sessionStorage.setItem(
+        `${SESSION_STORAGE_PREFIX.INITIAL_MESSAGE}${newThread.id}`,
+        JSON.stringify({
+          text: 'I finished recording this workflow. Analyze the teaching evidence, ask me any important clarifying questions, and help Divo learn it.',
+          files: [],
+        })
+      )
+      await router.navigate({
+        to: route.threadsDetail,
+        params: { threadId: newThread.id },
+      })
+    } catch (error) {
+      handoffSessionId.current = undefined
+      console.warn('Teach conversation handoff failed', error)
+      setErrorKind('generic')
+      setStage('error')
+    }
+  }, [createThread, router, updateThread])
 
   useEffect(() => {
     let active = true
@@ -199,10 +254,10 @@ export function TeachMode() {
         setStatusWarning(undefined)
         setSession(current)
         if (current.status === 'evidence_ready' || current.status === 'agent_processing') {
-          setStage('agent')
+          void openTeachConversation(current)
         }
         if (current.status === 'completed' || current.status === 'persona_updated' || current.status === 'no_learning') {
-          setStage('agent')
+          void openTeachConversation(current)
           if (activeRecording?.localOwned) {
             void finalizeLocalTeachRecording(activeRecording.path, current.id)
               .then(() => {
@@ -233,7 +288,7 @@ export function TeachMode() {
       active = false
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [activeRecording, sessionId, sessionStatus])
+  }, [activeRecording, openTeachConversation, sessionId, sessionStatus])
 
   const reset = useCallback(() => {
     setStage('intro')
@@ -241,9 +296,8 @@ export function TeachMode() {
     setUploadProgress(0)
     setErrorKind('generic')
     setStatusWarning(undefined)
-    setUndoing(false)
-    setUndoMessage(undefined)
     setActiveRecording(undefined)
+    handoffSessionId.current = undefined
   }, [])
 
   const ingest = useCallback(async (
@@ -284,8 +338,8 @@ export function TeachMode() {
     const current = await getTeachSession(recording.sessionId)
     setActiveRecording(recording)
     setSession(current)
-    setStage('agent')
-  }, [])
+    await openTeachConversation(current)
+  }, [openTeachConversation])
 
   const deleteLocalRecording = useCallback(async () => {
     if (!recordingToDelete) return
@@ -334,21 +388,6 @@ export function TeachMode() {
     if (session?.canCancel) await cancelTeachSession(session.id).catch(() => undefined)
     reset()
   }, [reset, session, stage])
-
-  const undo = useCallback(async () => {
-    if (!departmentId || !session || session.remainingUndos < 1) return
-    try {
-      setUndoing(true)
-      const result = await undoManagerPersona(departmentId)
-      setSession(current => current ? { ...current, remainingUndos: result.remainingUndos } : current)
-      setUndoMessage('Persona change undone.')
-    } catch (error) {
-      console.warn('Teach persona Undo failed', error)
-      setUndoMessage('Undo could not be completed. Please try again.')
-    } finally {
-      setUndoing(false)
-    }
-  }, [departmentId, session])
 
   if (stage === 'intro') {
     return (
@@ -568,18 +607,6 @@ export function TeachMode() {
         session={session}
         statusWarning={statusWarning}
         onCancel={session.canCancel ? () => void cancel() : undefined}
-      />
-    )
-  }
-
-  if (stage === 'agent' && session) {
-    return (
-      <TeachAgentChat
-        session={session}
-        undoing={undoing}
-        undoMessage={undoMessage}
-        onUndo={() => void undo()}
-        onFinish={reset}
       />
     )
   }

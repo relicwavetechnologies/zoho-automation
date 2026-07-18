@@ -40,6 +40,7 @@ import { extractFilesFromPrompt, type FileMetadata } from '@/lib/fileMetadata'
 import { isPredefinedRemoteProvider, getProviderApiType } from '@/lib/providerCaps'
 import { createPiMessageStream, type PiTeachProfile } from './pi-stream'
 import { PI_MODEL_ID, PI_PROVIDER_ID } from './pi/constants'
+import { readDivoTeachProfile } from '@/lib/divo-teach-thread'
 import { paramsSettings } from '@/lib/predefinedParams'
 import {
   buildDivoSkillReferenceContext,
@@ -980,7 +981,11 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         threadId,
         message: userMessage,
         abortSignal: options.abortSignal,
-        profile: this.piProfile,
+        profile:
+          this.piProfile ??
+          readDivoTeachProfile(
+            useThreads.getState().threads[threadId]?.metadata
+          ),
         isStale: () => this.streamGeneration !== myGeneration,
         onRunStateChange: (runId, state) => {
           if (this.streamGeneration !== myGeneration) return

@@ -285,6 +285,47 @@ describe('CustomChatTransport', () => {
     )
   })
 
+  it('activates Teach from persistent normal-thread metadata', async () => {
+    mockState.threads['thread-1'] = {
+      id: 'thread-1',
+      metadata: {
+        divoTeachProfile: {
+          kind: 'teach',
+          teachSessionId: 'teach-session-1',
+          departmentId: 'department-1',
+        },
+      },
+    }
+
+    await transport.sendMessages({
+      chatId: 'thread-1',
+      messages: [
+        {
+          id: 'message-1',
+          role: 'user',
+          parts: [{ type: 'text', text: 'Analyze my recorded workflow.' }],
+        },
+      ],
+      abortSignal: undefined,
+      trigger: 'submit-message',
+      messageId: undefined,
+    } as any)
+
+    await vi.waitFor(() =>
+      expect(piRuntime.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({
+          threadId: 'thread-1',
+          profile: 'teach',
+          teachSessionId: 'teach-session-1',
+          departmentId: 'department-1',
+          modelId: 'deepseek-v4-pro',
+          thinkingLevel: 'xhigh',
+        })
+      )
+    )
+  })
+
   it('isolates concurrent Pi transport streams and removes only the terminal listener', async () => {
     // Reproduce the packaged-app regression: Jan localStorage selected an
     // OpenRouter model. Divo transport must still dispatch both runs to Pi.
