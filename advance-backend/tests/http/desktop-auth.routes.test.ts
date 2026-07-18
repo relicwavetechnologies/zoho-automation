@@ -33,6 +33,9 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     skillCatalog: {
       listVisible: async () => [],
     } as any,
+    managerPersonaRuntime: {
+      getDepartmentBrief: async () => null,
+    } as any,
     logger: noopLogger,
     memberJwtSecret: 'test-member-secret-32-bytes-long',
     backendPublicUrl: 'https://backend.example.com',
@@ -460,6 +463,44 @@ describe('desktop auth routes', () => {
 
     assert.equal(result.status, 403);
     assert.equal(result.body.success, false);
+  });
+
+  it('appends the active manager persona brief without making it a permission grant', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        departmentMembership: {
+          findFirst: async () => ({
+            department: {
+              id: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
+              name: 'Finance',
+              agentConfig: {
+                desktopPersonaPrompt: 'Prefer verified records.',
+                isActive: true,
+                updatedAt: new Date('2026-07-11T10:00:00.000Z'),
+              },
+            },
+          }),
+        },
+      },
+      managerPersonaRuntime: {
+        getDepartmentBrief: async () => ({
+          version: 'manager-persona:4:2026-07-18T10:00:00.000Z',
+          prompt: 'MANAGER PERSONA TREE — backend-generated learned operating context.',
+        }),
+      },
+    }));
+    const result = await callRoute(router, 'GET', '/runtime-context', {
+      query: { departmentId: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd' },
+      locals: { userId: 'user-1', companyId: 'company-1' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.match(result.body.data.personaPrompt, /Prefer verified records/);
+    assert.match(result.body.data.personaPrompt, /MANAGER PERSONA TREE/);
+    assert.equal(
+      result.body.data.version,
+      '2026-07-11T10:00:00.000Z|manager-persona:4:2026-07-18T10:00:00.000Z',
+    );
   });
 
   it('returns a permission-filtered Finance capability bootstrap', async () => {

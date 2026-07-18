@@ -13,6 +13,7 @@ import type { TypedEnv } from '../../config/env';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import type { PermissionService } from '../../application/permissions/permission.service';
 import type { SkillCatalogService } from '../../application/skills/skill-catalog.service';
+import type { ManagerPersonaRuntimeService } from '../../application/persona-learning/manager-persona-runtime.service';
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
@@ -27,6 +28,7 @@ export interface DesktopAuthRoutesDeps {
   connectionRepo:         IntegrationConnectionRepository;
   permissions:            PermissionService;
   skillCatalog:           SkillCatalogService;
+  managerPersonaRuntime:  ManagerPersonaRuntimeService;
   logger:                 Logger;
   env:                    TypedEnv;
   memberJwtSecret:        string;
@@ -839,6 +841,22 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       const config = membership.department.agentConfig;
       const active = config?.isActive === true;
+      let managerPersonaPrompt = '';
+      let managerPersonaVersion: string | null = null;
+      try {
+        const brief = await deps.managerPersonaRuntime.getDepartmentBrief({
+          companyId,
+          departmentId: membership.department.id,
+        });
+        managerPersonaPrompt = brief?.prompt ?? '';
+        managerPersonaVersion = brief?.version ?? null;
+      } catch (error) {
+        // Runtime delivery is advisory. A read failure must not break desktop
+        // login, membership checks, or the normal department persona.
+        log.warn('runtime_context.manager_persona_failed', {
+          error: String(error), userId, companyId, departmentId,
+        });
+      }
       let capabilityBootstrap;
       if (isFinanceDepartment(membership.department.name, membership.department.slug)) {
         try {
@@ -885,8 +903,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         data: {
           departmentId: membership.department.id,
           departmentName: membership.department.name,
-          personaPrompt: active ? config.desktopPersonaPrompt : '',
-          version: active ? config.updatedAt.toISOString() : null,
+          personaPrompt: [
+            active ? config.desktopPersonaPrompt : '',
+            managerPersonaPrompt,
+          ].filter(Boolean).join('\n\n'),
+          version: [
+            active ? config.updatedAt.toISOString() : null,
+            managerPersonaVersion,
+          ].filter((value): value is string => Boolean(value)).join('|') || null,
           ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
         },
       });

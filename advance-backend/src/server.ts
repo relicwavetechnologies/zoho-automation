@@ -395,6 +395,7 @@ export const createServer = (c: Container) => {
       connectionRepo:         c.integrationConnectionRepo,
       permissions:            c.permissions,
       skillCatalog:           c.skillCatalog,
+      managerPersonaRuntime:  c.managerPersonaRuntimeService,
       logger:                 c.logger,
       env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,

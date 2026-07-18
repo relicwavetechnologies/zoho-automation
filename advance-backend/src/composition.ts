@@ -112,6 +112,7 @@ import { PersonaLearningQueue } from './application/persona-learning/persona-lea
 import { DeepSeekPersonaLearningExtractor } from './application/persona-learning/persona-learning.extractor';
 import { PersonaLearningService } from './application/persona-learning/persona-learning.service';
 import { PersonaLearningPromotionService } from './application/persona-learning/persona-learning-promotion.service';
+import { ManagerPersonaRuntimeService } from './application/persona-learning/manager-persona-runtime.service';
 import { LlmRerankerService } from './application/retrieval/llm-reranker.service';
 import { DocumentRagBroker } from './application/retrieval/document-rag.broker';
 import { DocumentRagTool } from './application/orchestration/tools/families/document-rag.tool';
@@ -240,6 +241,7 @@ export interface Container {
   personaLearningQueue: PersonaLearningQueue;
   personaLearningService: PersonaLearningService;
   personaLearningPromotionService: PersonaLearningPromotionService;
+  managerPersonaRuntimeService: ManagerPersonaRuntimeService;
   cloudinaryAdapter: CloudinaryAdapter;
   fileAssetRepo: FileAssetRepository;
   fileAccessPolicyRepo: FileAccessPolicyRepository;
@@ -856,6 +858,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger,
   });
   const personaLearningPromotionService = new PersonaLearningPromotionService({ prisma, logger });
+  const managerPersonaRuntimeService = new ManagerPersonaRuntimeService({ prisma, logger });
 
   const llmReranker = new LlmRerankerService(
     env.GROQ_API_KEY,
@@ -1331,6 +1334,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     personaLearningQueue,
     personaLearningService,
     personaLearningPromotionService,
+    managerPersonaRuntimeService,
     cloudinaryAdapter,
     fileAssetRepo,
     fileAccessPolicyRepo,
