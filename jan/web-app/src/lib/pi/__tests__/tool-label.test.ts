@@ -41,6 +41,10 @@ describe('resolveToolLabel', () => {
     )
   })
 
+  it('uses a concise label for the Pi-owned subagent runner', () => {
+    expect(resolveToolLabel({ type: 'tool-divo_subagents' })).toBe('subagents')
+  })
+
   it('scrapes op from partial JSON still streaming in', () => {
     // op is the first key on the wire, so it resolves before the payload closes.
     expect(

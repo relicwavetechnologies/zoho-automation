@@ -142,6 +142,9 @@ export function resolveToolIdentity(part: ToolLikePart): ToolIdentity {
   // whenever it looks like a gateway call (by name OR by shape), so the real
   // command still surfaces even before the tool name has landed.
   let label = name ? name.replaceAll('_', ' ') : ''
+  if (name === 'divo_subagents') {
+    label = 'subagents'
+  }
   if (name === 'divo_gateway' || op || toolId) {
     if (op === 'tools.invoke' && toolId) label = humanizeToolId(toolId)
     else if (op) label = OP_LABELS[op] ?? humanizeOp(op)

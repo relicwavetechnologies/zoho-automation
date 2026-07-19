@@ -48,6 +48,8 @@ import { injectCitationMarkers } from '@/lib/grounding'
 import { isPiTraceMessage, splitPiMessageParts } from '@/lib/pi'
 import { resolveToolLabel } from '@/lib/pi/tool-label'
 import { PiTraceTimeline } from '@/components/pi/PiTraceTimeline'
+import { SubagentRunCard } from '@/components/pi/SubagentRunCard'
+import { isDivoSubagentTool } from '@/lib/pi/subagent'
 
 const CHAT_STATUS = {
   STREAMING: 'streaming',
@@ -449,6 +451,15 @@ export const MessageItem = memo(
     const renderToolInline = (part: any, partIndex: number) => {
       if (!part.type.startsWith('tool-') || !('state' in part)) {
         return null
+      }
+
+      if (isDivoSubagentTool(part)) {
+        return (
+          <SubagentRunCard
+            key={`${message.id}-${partIndex}`}
+            part={part}
+          />
+        )
       }
 
       const toolName = resolveToolLabel(part)

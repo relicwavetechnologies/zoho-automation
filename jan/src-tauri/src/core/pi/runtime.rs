@@ -24,9 +24,10 @@ const CHROME_DEVTOOLS_MCP_REL: &str =
 const DEFAULT_PI_PROVIDER: &str = "deepseek";
 const DEFAULT_PI_MODEL: &str = "deepseek-v4-flash";
 const LEGACY_DEFAULT_PI_MODEL: &str = "deepseek-v4-pro";
-const COMPANY_EXTENSION_NAMES: [&str; 3] = ["divo-llm", "divo-gateway", "divo-memory"];
+const COMPANY_EXTENSION_NAMES: [&str; 4] =
+    ["divo-llm", "divo-gateway", "divo-memory", "divo-subagents"];
 const COMPANY_TOOL_ALLOWLIST: &str =
-    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory";
+    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PiRuntimeMode {
@@ -547,6 +548,7 @@ mod tests {
                 PathBuf::from("/bundle/pi-extensions/divo-llm/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-gateway/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-memory/index.ts"),
+                PathBuf::from("/bundle/pi-extensions/divo-subagents/index.ts"),
             ],
             browser_cdp_fingerprint: None,
         };
@@ -565,10 +567,10 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair == [
                 "--tools",
-                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory",
+                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents",
             ]
         }));
-        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 3);
+        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 4);
         assert_eq!(args.iter().filter(|arg| *arg == "--skill").count(), 1);
     }
 

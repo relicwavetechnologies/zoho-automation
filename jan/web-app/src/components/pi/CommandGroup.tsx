@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { resolveToolLabel } from '@/lib/pi/tool-label'
 import { ChevronDownIcon } from 'lucide-react'
 import { ToolIcon } from './ToolIcon'
+import { isDivoSubagentTool } from '@/lib/pi/subagent'
 
 export type CommandGroupTool = {
   part: Record<string, unknown>
@@ -79,6 +80,16 @@ export const CommandGroup = memo(
     return (
       <div className="flex flex-col gap-1.5">
         {tools.map((t) => {
+          // A subagent tool has its own live child-run UI. Rendering it as a
+          // compact generic command row would hide progress until completion.
+          if (isDivoSubagentTool(t.part)) {
+            return (
+              <div key={`${messageId}-cmd-${t.partIndex}`}>
+                {renderTool(t.part, t.partIndex)}
+              </div>
+            )
+          }
+
           const status = toolRunStatus(t.part)
           const running = status === 'running'
           // While the burst is live, unfinished calls say Running; finished

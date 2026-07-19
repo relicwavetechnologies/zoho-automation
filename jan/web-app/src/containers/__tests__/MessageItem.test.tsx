@@ -203,6 +203,40 @@ describe('MessageItem', () => {
     expect(screen.getByText('(inline)')).toBeInTheDocument()
   })
 
+  it('renders a live subagent card inside its owning assistant message', () => {
+    render(
+      <MessageItem
+        message={
+          makeMsg({
+            parts: [
+              {
+                type: 'tool-divo_subagents',
+                toolCallId: 'parent-tool-1',
+                state: 'input-available',
+                input: {
+                  tasks: [
+                    { agent: 'scout', task: 'Inspect the Pi runtime' },
+                    { agent: 'reviewer', task: 'Review the stream mapper' },
+                  ],
+                },
+              },
+            ],
+          }) as any
+        }
+        isFirstMessage
+        isLastMessage
+        status={'streaming' as any}
+      />
+    )
+
+    expect(screen.getByTestId('subagent-run-card')).toHaveAttribute(
+      'data-parent-tool-call-id',
+      'parent-tool-1'
+    )
+    expect(screen.getByText('Inspect the Pi runtime')).toBeInTheDocument()
+    expect(screen.getByText('Review the stream mapper')).toBeInTheDocument()
+  })
+
   it('fires onRegenerate when regenerate button clicked (assistant, last)', () => {
     const onRegenerate = vi.fn()
     render(
