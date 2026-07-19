@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   listen: vi.fn(),
   pickRecording: vi.fn(),
   recordScreen: vi.fn(),
+  undoPersona: vi.fn(),
   uploadRecording: vi.fn(),
   navigate: vi.fn(),
   ensureConversation: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock('@/lib/divo-teach', () => ({
   listRecentTeachLearnings: h.listRecent,
   pickTeachRecording: h.pickRecording,
   recordTeachScreen: h.recordScreen,
+  undoManagerPersona: h.undoPersona,
   uploadTeachRecording: h.uploadRecording,
 }))
 
@@ -136,6 +138,7 @@ describe('TeachMode', () => {
     h.uploadRecording.mockResolvedValue(teachSession('queued'))
     h.getSession.mockResolvedValue(teachSession('completed'))
     h.getPersonaTree.mockResolvedValue(null)
+    h.undoPersona.mockResolvedValue({ revision: 2, remainingUndos: 1 })
     h.navigate.mockResolvedValue(undefined)
     h.ensureConversation.mockResolvedValue({
       id: 'normal-teach-thread-1',
@@ -378,5 +381,98 @@ describe('TeachMode', () => {
       params: { threadId: 'existing-teach-thread' },
     }))
     expect(h.ensureConversation).toHaveBeenCalledOnce()
+  })
+
+  it('undoes the most recent learning only after confirmation', async () => {
+    h.listRecent.mockResolvedValue([teachSession('persona_updated')])
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    await user.click(await screen.findByRole('button', { name: /Undo this learning/ }))
+    expect(h.undoPersona).not.toHaveBeenCalled()
+    // Undo rolls the whole department persona back a revision, so the dialog
+    // has to say so rather than implying a single row is being removed.
+    expect(screen.getByText(/rolls back to the revision before this/i)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Undo learning' }))
+    expect(h.undoPersona).toHaveBeenCalledWith('department-1')
+  })
+
+  it('offers undo on only the newest learning, because undo pops a stack', async () => {
+    // The backend endpoint is POST /persona/{department}/undo — it reverts the
+    // latest revision, not an addressable session. Offering it on an older row
+    // would silently revert someone else's newer change.
+    const newer = { ...teachSession('persona_updated'), id: 'newer', updatedAt: '2026-07-19T00:00:00.000Z' }
+    const older = { ...teachSession('persona_updated'), id: 'older', updatedAt: '2026-07-17T00:00:00.000Z' }
+    h.listRecent.mockResolvedValue([newer, older])
+    render(<TeachMode />)
+
+    expect(await screen.findAllByText(/Only the most recent learning can be undone/)).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /Undo this learning/ })).toHaveLength(1)
+  })
+
+  it('hides undo when the session has no undos left', async () => {
+    h.listRecent.mockResolvedValue([
+      { ...teachSession('persona_updated'), remainingUndos: 0 },
+    ])
+    render(<TeachMode />)
+
+    expect(await screen.findByText('No undos remaining')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Undo this learning/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps the persona unchanged and says so when undo fails', async () => {
+    h.listRecent.mockResolvedValue([teachSession('persona_updated')])
+    h.undoPersona.mockRejectedValue('persona service unavailable')
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    await user.click(await screen.findByRole('button', { name: /Undo this learning/ }))
+    await user.click(screen.getByRole('button', { name: 'Undo learning' }))
+
+    expect(
+      await screen.findByText('That learning could not be undone. Your persona is unchanged.')
+    ).toBeInTheDocument()
+  })
+
+  it('lets a failed recorder retry in place instead of returning to the start', async () => {
+    h.recordScreen.mockRejectedValue('macOS screen recorder failed')
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    const recordButton = await screen.findByRole('button', { name: 'Record teaching' })
+    await waitFor(() => expect(recordButton).toBeEnabled())
+    await user.click(recordButton)
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }))
+    expect(h.recordScreen).toHaveBeenCalledTimes(2)
+  })
+
+  it('tells the user the recording survived an upload failure, and retries it', async () => {
+    h.createSession.mockRejectedValueOnce('Teach service unavailable')
+    const user = userEvent.setup()
+    render(<TeachMode />)
+
+    const uploadButton = await screen.findByRole('button', { name: 'Upload recording' })
+    await waitFor(() => expect(uploadButton).toBeEnabled())
+    await user.click(uploadButton)
+
+    expect(await screen.findByText('Upload failed')).toBeInTheDocument()
+    expect(screen.getByText(/Your recording is safe on this Mac/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Retry upload' }))
+    expect(h.createSession).toHaveBeenCalledTimes(2)
+  })
+
+  it('explains the flow in a dialog instead of a permanent panel', async () => {
+    const user = userEvent.setup()
+    h.listRecent.mockResolvedValue([teachSession('persona_updated')])
+    render(<TeachMode />)
+
+    await user.click(await screen.findByRole('button', { name: 'How it works' }))
+    expect(await screen.findByText('How Teach works')).toBeInTheDocument()
+    expect(
+      screen.getByText(/Nothing is recorded in the background/)
+    ).toBeInTheDocument()
   })
 })
