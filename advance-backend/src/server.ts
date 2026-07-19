@@ -26,6 +26,7 @@ import { createControlsRoutes } from './http/admin/controls.routes';
 import { createRbacRoutes } from './http/admin/rbac.routes';
 import { createAiModelsRoutes } from './http/admin/ai-models.routes';
 import { createAiProvidersRoutes } from './http/admin/ai-providers.routes';
+import { createWebSearchAdminRoutes } from './http/admin/web-search.routes';
 import { createRuntimeRoutes } from './http/admin/runtime.routes';
 import { createAnalyticsRoutes } from './http/admin/analytics.routes';
 import { createTokenUsageRoutes } from './http/admin/token-usage.routes';
@@ -561,6 +562,9 @@ export const createServer = (c: Container) => {
     logger: c.logger,
     invalidateGatewayProviderCache: c.invalidateGatewayProviderCache,
   }));
+
+  // Company-owned Serper connection metadata and Divo-observed usage.
+  app.use('/api/admin/web-search', adminAuth, createWebSearchAdminRoutes({ prisma: c.prisma }));
 
   // Runtime task list (delegates to execution query service)
   app.use('/api/admin/runtime', adminAuth, createRuntimeRoutes({ executionQueryService: c.executionQueryService, logger: c.logger }));

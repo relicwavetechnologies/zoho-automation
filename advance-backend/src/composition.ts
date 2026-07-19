@@ -537,10 +537,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     apiKey:    env.SERPER_API_KEY ?? '',
     timeoutMs: env.SERPER_TIMEOUT_MS,
   });
-  const webSearchService    = new WebSearchService(
-    serperClient,
-    logger.child({ service: 'web-search' }),
-  );
   const serperEncryptionKey = env.SERPER_CONNECTION_ENCRYPTION_KEY ?? env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '';
   const companySerperConnectionRepo = new CompanySerperConnectionRepository(prisma, serperEncryptionKey);
   const companySerperService = new CompanySerperService(
@@ -550,6 +546,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'company-serper' }),
     env.SERPER_API_KEY ?? '',
   );
+  const webSearchService = new WebSearchService({
+    search(input, companyId) {
+      return companyId
+        ? companySerperService.search(companyId, input)
+        : serperClient.search(input);
+    },
+  }, logger.child({ service: 'web-search' }));
 
   // ── Lark user OAuth ───────────────────────────────────────────────────────
   const larkOAuthService = new LarkOAuthService(
@@ -991,7 +994,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       : {}),
   });
 
-  // Thin adapter: WebSearchService → WebSearchClientPort (used by web-search tool)
+  // Adapter: company-owned Serper pool → gateway web-search tool.
   const webSearchClientAdapter = {
     async search(companyId: string, query: string, limit = 5): Promise<Array<{ title: string; url: string; snippet: string }>> {
       const result = await companySerperService.search(companyId, { query, num: limit });

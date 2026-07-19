@@ -41,8 +41,9 @@ const scopeSchema = z.union([
   z.object({ scope: z.literal('department'), departmentId: z.string().uuid() }).strict(),
 ]);
 const serperTestSchema = z.object({ apiKey: z.string().min(1).max(512) }).strict();
-const serperSaveSchema = z.object({ label: z.string().trim().min(1).max(100), apiKey: z.string().min(1).max(512), verificationToken: z.string().uuid() }).strict();
+const serperSaveSchema = z.object({ label: z.string().trim().min(1).max(100), apiKey: z.string().min(1).max(512), verificationToken: z.string().uuid(), remainingCredits: z.number().int().min(0).max(100_000_000).optional() }).strict();
 const serperStatusSchema = z.object({ enabled: z.boolean() }).strict();
+const serperCreditsSchema = z.object({ remainingCredits: z.number().int().min(0).max(100_000_000) }).strict();
 
 function actor(res: Response) {
   return { userId: res.locals.userId as string, companyId: res.locals.companyId as string, role: res.locals.aiRole as string };
@@ -124,7 +125,14 @@ export function createDesktopToolsRoutes(deps: DesktopToolsRouteDeps): Router {
     const parsed = serperSaveSchema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'label, apiKey, and verificationToken are required' }); return; }
     try {
-      res.status(201).json({ connection: await deps.serperService.saveVerified({ companyId: res.locals.companyId as string, userId: res.locals.userId as string, ...parsed.data }) });
+      res.status(201).json({ connection: await deps.serperService.saveVerified({
+        companyId: res.locals.companyId as string,
+        userId: res.locals.userId as string,
+        label: parsed.data.label,
+        apiKey: parsed.data.apiKey,
+        verificationToken: parsed.data.verificationToken,
+        ...(parsed.data.remainingCredits === undefined ? {} : { remainingCredits: parsed.data.remainingCredits }),
+      }) });
     } catch (error) {
       res.status(422).json({ error: 'connection_not_verified', message: error instanceof Error ? error.message : 'Test the key before saving it' });
     }
@@ -135,6 +143,17 @@ export function createDesktopToolsRoutes(deps: DesktopToolsRouteDeps): Router {
     const parsed = serperStatusSchema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'enabled must be a boolean' }); return; }
     const connection = await deps.serperConnectionRepo.setStatus(res.locals.companyId as string, req.params.connectionId!, parsed.data.enabled ? 'connected' : 'disabled');
+    if (!connection) { res.status(404).json({ error: 'not_found' }); return; }
+    res.json({ connection });
+  });
+
+  // Serper does not expose a supported balance endpoint for API-key-only clients.
+  // Admins copy the current balance from Serper; Divo then subtracts requests it observes.
+  router.put('/tools/webSearch/connections/:connectionId/credits', memberAuth, async (req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    const parsed = serperCreditsSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'remainingCredits must be a non-negative integer' }); return; }
+    const connection = await deps.serperConnectionRepo.setRemainingCredits(res.locals.companyId as string, req.params.connectionId!, parsed.data.remainingCredits);
     if (!connection) { res.status(404).json({ error: 'not_found' }); return; }
     res.json({ connection });
   });

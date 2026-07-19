@@ -41,10 +41,12 @@ export type SearchErrorCode = 'search_unavailable' | 'search_invalid_response' |
 
 export class SearchIntegrationError extends Error {
   readonly code: SearchErrorCode;
-  constructor(message: string, code: SearchErrorCode) {
+  readonly retryAfterMs: number | undefined;
+  constructor(message: string, code: SearchErrorCode, retryAfterMs?: number) {
     super(message);
     this.name = 'SearchIntegrationError';
     this.code = code;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -52,6 +54,15 @@ export class SearchIntegrationError extends Error {
 
 const asRecord = (v: unknown): Record<string, unknown> | null =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+
+const retryAfterMs = (header: string | null): number | undefined => {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1_000);
+  const retryAt = Date.parse(header);
+  if (Number.isNaN(retryAt)) return undefined;
+  return Math.max(0, retryAt - Date.now());
+};
 
 function coerceResponse(raw: unknown): SerperSearchResponse {
   const record = asRecord(raw);
@@ -148,6 +159,7 @@ export class SerperClient {
       throw new SearchIntegrationError(
         `Serper HTTP ${res.status}: ${raw.slice(0, 240)}`,
         code,
+        code === 'search_rate_limited' ? retryAfterMs(res.headers.get('retry-after')) : undefined,
       );
     }
 

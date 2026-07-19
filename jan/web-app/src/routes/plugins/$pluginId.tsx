@@ -803,7 +803,23 @@ function FallbackToolDetail({ group, onBack, onUpdated }: { group: NonNullable<R
   )
 }
 
-type SerperConnection = { id: string; label: string; status: 'connected' | 'disabled'; priority: number; lastTestedAt: string | null; lastSucceededAt: string | null; lastFailureAt: string | null; lastFailureCode: string | null }
+type SerperConnection = {
+  id: string
+  label: string
+  status: 'connected' | 'disabled'
+  priority: number
+  lastTestedAt: string | null
+  lastSucceededAt: string | null
+  lastFailureAt: string | null
+  lastFailureCode: string | null
+  lastUsedAt: string | null
+  successfulRequestCount: number
+  creditsAtLastSync: number | null
+  creditsSyncedAt: string | null
+  observedRequestsSinceCreditSync: number
+  estimatedCreditsRemaining?: number
+  unavailableUntil: string | null
+}
 type SerperConnectionsResponse = { connections: SerperConnection[] }
 
 function WebSearchPluginDetail({ group, onBack, onUpdated }: { group: NonNullable<ReturnType<typeof groupToolsForDetail>>; onBack: () => void; onUpdated: () => void }) {
@@ -813,6 +829,8 @@ function WebSearchPluginDetail({ group, onBack, onUpdated }: { group: NonNullabl
   const [busy, setBusy] = useState(false)
   const [apiKey, setApiKey] = useState('')
   const [label, setLabel] = useState('Company Web Search')
+  const [remainingCredits, setRemainingCredits] = useState('')
+  const [creditDrafts, setCreditDrafts] = useState<Record<string, string>>({})
   const [verificationToken, setVerificationToken] = useState<string | null>(null)
   const load = useCallback(async () => {
     setLoading(true)
@@ -835,10 +853,12 @@ function WebSearchPluginDetail({ group, onBack, onUpdated }: { group: NonNullabl
   }
   const save = async () => {
     if (!verificationToken) return toast.error('Test this key successfully before saving it')
+    const parsedCredits = remainingCredits.trim() === '' ? undefined : Number(remainingCredits)
+    if (parsedCredits !== undefined && (!Number.isSafeInteger(parsedCredits) || parsedCredits < 0)) return toast.error('Remaining credits must be a non-negative whole number')
     setBusy(true)
     try {
-      await invoke('divo_serper_save_connection', { label, apiKey, api_key: apiKey, verificationToken, verification_token: verificationToken })
-      setApiKey(''); setVerificationToken(null); await load(); toast.success('Company Web Search connection saved')
+      await invoke('divo_serper_save_connection', { label, apiKey, api_key: apiKey, verificationToken, verification_token: verificationToken, remainingCredits: parsedCredits, remaining_credits: parsedCredits })
+      setApiKey(''); setRemainingCredits(''); setVerificationToken(null); await load(); toast.success('Company Web Search connection saved')
     } catch (error) { toast.error('Could not save connection', { description: String(error) }) } finally { setBusy(false) }
   }
   const toggle = async (connection: SerperConnection) => {
@@ -851,10 +871,22 @@ function WebSearchPluginDetail({ group, onBack, onUpdated }: { group: NonNullabl
     try { await invoke('divo_serper_disconnect_connection', { connectionId: id, connection_id: id }); await load(); toast.success('Web Search connection disconnected') }
     catch (error) { toast.error('Could not disconnect connection', { description: String(error) }) } finally { setBusy(false) }
   }
+  const saveRemainingCredits = async (connection: SerperConnection) => {
+    const raw = creditDrafts[connection.id] ?? ''
+    const value = Number(raw)
+    if (!raw.trim() || !Number.isSafeInteger(value) || value < 0) return toast.error('Enter a non-negative whole number of remaining credits')
+    setBusy(true)
+    try {
+      await invoke('divo_serper_set_remaining_credits', { connectionId: connection.id, connection_id: connection.id, remainingCredits: value, remaining_credits: value })
+      await load()
+      setCreditDrafts(drafts => ({ ...drafts, [connection.id]: '' }))
+      toast.success('Estimated credit balance updated')
+    } catch (error) { toast.error('Could not update credit balance', { description: String(error) }) } finally { setBusy(false) }
+  }
   return <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background"><main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6 lg:px-8">
-    <header className="rounded-lg border border-border/70 bg-card/30 p-5"><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-4" />Back to Tools</Button><div className="mt-5 flex items-center gap-4"><span className="flex size-14 items-center justify-center rounded-lg border border-border/70 bg-muted/40"><Icon className="size-7" /></span><div><h1 className="text-2xl font-medium">Web Search</h1><p className="mt-2 text-sm text-muted-foreground">Company-shared Serper connections. Divo automatically uses the first healthy connection and falls back when quota or rate limits are reached.</p></div></div></header>
-    <section className="rounded-lg border border-border/70 p-5"><h2 className="text-lg font-medium">Add company connection</h2><p className="mt-1 text-sm text-muted-foreground">Only company admins can add keys. A live Serper test is required before the encrypted key can be saved.</p><div className="mt-5 grid gap-3"><input value={label} onChange={e => setLabel(e.target.value)} placeholder="Connection label" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><input value={apiKey} onChange={e => { setApiKey(e.target.value); setVerificationToken(null) }} type="password" placeholder="Serper API key" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><div className="flex gap-2"><Button variant="outline" disabled={busy} onClick={() => void test()}>{verificationToken ? <Check className="size-4" /> : <KeyRound className="size-4" />}{verificationToken ? 'Verified' : 'Test key'}</Button><Button disabled={busy || !verificationToken} onClick={() => void save()}><Plus className="size-4" />Save connection</Button></div></div></section>
-    <section className="rounded-lg border border-border/70 p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-medium">Company connections</h2><p className="mt-1 text-sm text-muted-foreground">Keys remain encrypted on the backend and are never displayed here.</p></div><Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4" />Refresh</Button></div><div className="mt-4 space-y-3">{connections.map((connection, index) => <div key={connection.id} className="flex items-center justify-between gap-4 rounded-md border border-border/70 p-4"><div><div className="flex items-center gap-2 font-medium"><span className={cn('size-2 rounded-full', connection.status === 'connected' ? 'bg-emerald-400' : 'bg-muted-foreground')} />{connection.label}{index === 0 && connection.status === 'connected' ? <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">Default</span> : null}</div><p className="mt-1 text-xs text-muted-foreground">{connection.lastFailureCode ? `Last issue: ${connection.lastFailureCode}` : connection.lastSucceededAt ? 'Validated and ready' : 'Not yet used'}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={() => void toggle(connection)}>{connection.status === 'connected' ? 'Disable' : 'Enable'}</Button><Button size="sm" variant="ghost" disabled={busy} className="text-destructive hover:text-destructive" onClick={() => void remove(connection.id)}><Trash2 className="size-4" />Disconnect</Button></div></div>)}{!loading && connections.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">No company Web Search connection yet.</p> : null}</div></section>
+    <header className="rounded-lg border border-border/70 bg-card/30 p-5"><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-4" />Back to Tools</Button><div className="mt-5 flex items-center gap-4"><span className="flex size-14 items-center justify-center rounded-lg border border-border/70 bg-muted/40"><Icon className="size-7" /></span><div><h1 className="text-2xl font-medium">Web Search</h1><p className="mt-2 text-sm text-muted-foreground">Company-authorised Serper connections. Divo uses the first healthy key, records its successful searches, and falls back when a key is rate-limited or rejected.</p></div></div></header>
+    <section className="rounded-lg border border-border/70 p-5"><h2 className="text-lg font-medium">Add company connection</h2><p className="mt-1 text-sm text-muted-foreground">Only company admins can add keys. A live Serper test is required before the encrypted key can be saved; the test itself may use one Serper credit.</p><div className="mt-5 grid gap-3"><input value={label} onChange={e => setLabel(e.target.value)} placeholder="Connection label" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><input value={apiKey} onChange={e => { setApiKey(e.target.value); setVerificationToken(null) }} type="password" placeholder="Serper API key" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><input value={remainingCredits} onChange={e => setRemainingCredits(e.target.value)} inputMode="numeric" placeholder="Current Serper balance after test (optional)" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><p className="text-xs text-muted-foreground">Serper does not provide Divo a supported live-balance API. Copy the balance after testing from Serper’s dashboard; Divo then shows an estimate after subtracting searches it observes.</p><div className="flex gap-2"><Button variant="outline" disabled={busy} onClick={() => void test()}>{verificationToken ? <Check className="size-4" /> : <KeyRound className="size-4" />}{verificationToken ? 'Verified' : 'Test key'}</Button><Button disabled={busy || !verificationToken} onClick={() => void save()}><Plus className="size-4" />Save connection</Button></div></div></section>
+    <section className="rounded-lg border border-border/70 p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-medium">Company connections</h2><p className="mt-1 text-sm text-muted-foreground">Keys remain encrypted on the backend. Usage is Divo-observed; estimated remaining credits begin from the balance you last copied from Serper.</p></div><Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4" />Refresh</Button></div><div className="mt-4 space-y-3">{connections.map((connection, index) => <div key={connection.id} className="flex flex-col gap-4 rounded-md border border-border/70 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-2 font-medium"><span className={cn('size-2 rounded-full', connection.status === 'connected' && !connection.unavailableUntil ? 'bg-emerald-400' : 'bg-muted-foreground')} />{connection.label}{index === 0 && connection.status === 'connected' ? <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">Default</span> : null}</div><p className="mt-1 text-xs text-muted-foreground">{connection.unavailableUntil ? `Temporarily skipped until ${new Date(connection.unavailableUntil).toLocaleString()}` : connection.lastFailureCode ? `Last issue: ${connection.lastFailureCode}` : connection.lastSucceededAt ? 'Validated and ready' : 'Not yet used'}</p><p className="mt-1 text-xs text-muted-foreground">Divo-observed successful searches: {connection.successfulRequestCount}</p>{connection.creditsAtLastSync !== null ? <p className="mt-1 text-xs text-muted-foreground">Estimated remaining: {connection.estimatedCreditsRemaining ?? 0} credits ({connection.observedRequestsSinceCreditSync} observed since the balance update)</p> : <p className="mt-1 text-xs text-muted-foreground">No Serper balance recorded yet.</p>}</div><div className="flex flex-wrap items-center gap-2"><input value={creditDrafts[connection.id] ?? ''} onChange={e => setCreditDrafts(drafts => ({ ...drafts, [connection.id]: e.target.value }))} inputMode="numeric" placeholder="Current credits" aria-label={`Current Serper credits for ${connection.label}`} className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs" /><Button size="sm" variant="outline" disabled={busy} onClick={() => void saveRemainingCredits(connection)}>Update balance</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => void toggle(connection)}>{connection.status === 'connected' ? 'Disable' : 'Enable'}</Button><Button size="sm" variant="ghost" disabled={busy} className="text-destructive hover:text-destructive" onClick={() => void remove(connection.id)}><Trash2 className="size-4" />Disconnect</Button></div></div>)}{!loading && connections.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">No company Web Search connection yet.</p> : null}</div></section>
     <ToolAccessSection items={group.childTools} embedded onUpdated={onUpdated} />
   </main></div>
 }

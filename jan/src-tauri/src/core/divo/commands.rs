@@ -1398,12 +1398,18 @@ pub async fn divo_serper_save_connection<R: Runtime>(
     label: String,
     api_key: String,
     verification_token: String,
+    remaining_credits: Option<i64>,
 ) -> Result<Value, String> {
+    let mut body =
+        json!({ "label": label, "apiKey": api_key, "verificationToken": verification_token });
+    if let Some(remaining_credits) = remaining_credits {
+        body["remainingCredits"] = json!(remaining_credits);
+    }
     divo_desktop_json_request(
         &app,
         reqwest::Method::POST,
         "/tools/webSearch/connections",
-        Some(json!({ "label": label, "apiKey": api_key, "verificationToken": verification_token })),
+        Some(body),
         "Web Search connection save",
     )
     .await
@@ -1421,6 +1427,27 @@ pub async fn divo_serper_set_connection_enabled<R: Runtime>(
         &format!("/tools/webSearch/connections/{connection_id}"),
         Some(json!({ "enabled": enabled })),
         "Web Search connection update",
+    )
+    .await
+}
+
+/// Record the balance currently shown in Serper's dashboard. Divo uses it only
+/// as a local estimate and subtracts searches it observes after this update.
+#[tauri::command]
+pub async fn divo_serper_set_remaining_credits<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    remaining_credits: i64,
+) -> Result<Value, String> {
+    if remaining_credits < 0 {
+        return Err("remainingCredits must be non-negative".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::PUT,
+        &format!("/tools/webSearch/connections/{connection_id}/credits"),
+        Some(json!({ "remainingCredits": remaining_credits })),
+        "Web Search credit balance update",
     )
     .await
 }

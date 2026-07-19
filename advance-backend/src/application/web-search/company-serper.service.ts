@@ -5,8 +5,20 @@ import { SerperClient, SearchIntegrationError, type SerperSearchInput, type Serp
 import { CompanySerperConnectionRepository, serperKeyFingerprint } from '../../infrastructure/persistence/company-serper-connection.repository';
 
 const TEST_TTL_SECONDS = 10 * 60;
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000;
+const AUTH_FAILURE_COOLDOWN_MS = 15 * 60_000;
 const verificationKey = (token: string) => `serper:verification:${token}`;
 type Verification = { companyId: string; userId: string; fingerprint: string };
+
+const cooldownUntil = (error: unknown): Date => {
+  if (error instanceof SearchIntegrationError) {
+    const delayMs = error.code === 'search_rate_limited'
+      ? error.retryAfterMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS
+      : AUTH_FAILURE_COOLDOWN_MS;
+    return new Date(Date.now() + delayMs);
+  }
+  return new Date(Date.now() + DEFAULT_RATE_LIMIT_COOLDOWN_MS);
+};
 
 /** Owns company Serper credential validation, storage proof, and safe failover. */
 export class CompanySerperService {
@@ -28,7 +40,7 @@ export class CompanySerperService {
     return { verificationToken };
   }
 
-  async saveVerified(input: { companyId: string; userId: string; label: string; apiKey: string; verificationToken: string }) {
+  async saveVerified(input: { companyId: string; userId: string; label: string; apiKey: string; verificationToken: string; remainingCredits?: number }) {
     const proof = await this.cache.get<Verification>(verificationKey(input.verificationToken));
     await this.cache.del(verificationKey(input.verificationToken));
     if (!proof.ok || !proof.value || proof.value.companyId !== input.companyId || proof.value.userId !== input.userId || proof.value.fingerprint !== serperKeyFingerprint(input.apiKey)) {
@@ -39,20 +51,59 @@ export class CompanySerperService {
 
   async search(companyId: string, input: SerperSearchInput): Promise<SerperSearchResponse> {
     const configured = await this.connections.activeKeys(companyId);
-    const candidates = configured.length > 0 ? configured : this.legacyApiKey ? [{ id: 'legacy-env', apiKey: this.legacyApiKey }] : [];
-    if (candidates.length === 0) throw new SearchIntegrationError('No Web Search connection is configured for this company', 'search_not_configured');
+    const hasCompanyConnection = configured.length > 0 || await this.connections.hasConnection(companyId);
+    const candidates = configured.length > 0
+      ? configured
+      : !hasCompanyConnection && this.legacyApiKey
+        ? [{ id: 'legacy-env', apiKey: this.legacyApiKey }]
+        : [];
+    if (candidates.length === 0) {
+      throw new SearchIntegrationError(
+        hasCompanyConnection
+          ? 'No eligible Web Search connection is available for this company'
+          : 'No Web Search connection is configured for this company',
+        hasCompanyConnection ? 'search_unavailable' : 'search_not_configured',
+      );
+    }
     let lastError: unknown;
     for (const candidate of candidates) {
       try {
         const result = await new SerperClient({ apiKey: candidate.apiKey, timeoutMs: this.timeoutMs }).search(input);
-        if (candidate.id !== 'legacy-env') void this.connections.markSuccess(candidate.id);
+        if (candidate.id !== 'legacy-env') {
+          try {
+            await this.connections.markSuccess(candidate.id);
+          } catch (error) {
+            this.logger.error('serper.connection.usage_record_failed', {
+              companyId,
+              connectionId: candidate.id,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
         return result;
       } catch (error) {
         lastError = error;
         const code = error instanceof SearchIntegrationError ? error.code : 'search_unavailable';
-        if (candidate.id !== 'legacy-env') void this.connections.markFailure(candidate.id, code);
-        if (code !== 'search_rate_limited' && code !== 'search_auth_failed') throw error;
-        this.logger.warn('serper.connection.failed_over', { companyId, connectionId: candidate.id, code });
+        const shouldFailOver = code === 'search_rate_limited' || code === 'search_auth_failed';
+        const unavailableUntil = candidate.id !== 'legacy-env' && shouldFailOver ? cooldownUntil(error) : undefined;
+        if (unavailableUntil) {
+          try {
+            await this.connections.markFailure(candidate.id, code, unavailableUntil);
+          } catch (markError) {
+            this.logger.error('serper.connection.failure_record_failed', {
+              companyId,
+              connectionId: candidate.id,
+              reason: markError instanceof Error ? markError.message : String(markError),
+            });
+          }
+        }
+        if (!shouldFailOver) throw error;
+        this.logger.warn('serper.connection.failed_over', {
+          companyId,
+          connectionId: candidate.id,
+          code,
+          ...(unavailableUntil ? { unavailableUntil: unavailableUntil.toISOString() } : {}),
+        });
       }
     }
     throw lastError instanceof Error ? lastError : new SearchIntegrationError('All company Web Search connections are unavailable', 'search_unavailable');

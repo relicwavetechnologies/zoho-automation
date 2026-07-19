@@ -132,6 +132,21 @@ describe('ContextSearchBroker — source selection', () => {
     assert.equal(webCalled, true);
   });
 
+  it('passes the company scope to the web search connection pool', async () => {
+    let companyId: string | undefined;
+    const broker = makeBroker({
+      webSearch: {
+        search: async (input: { companyId?: string }) => {
+          companyId = input.companyId;
+          return { query: '', focusedSiteSearch: false, items: [], sourceRefs: [] };
+        },
+      } as unknown as WebSearchService,
+    });
+
+    await broker.search({ ...BASE_INPUT, sources: { web: true } });
+    assert.equal(companyId, 'company-1');
+  });
+
   it('workspace auto-enables when workspacePath is provided', async () => {
     const result = await makeBroker().search({ ...BASE_INPUT, workspacePath: '/nonexistent/path' });
     assert.equal(result.sourceCoverage.workspace.enabled, true);

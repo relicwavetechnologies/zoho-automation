@@ -131,6 +131,18 @@ describe('SerperClient.search', () => {
     );
   });
 
+  it('preserves Retry-After for rate-limited calls', async () => {
+    mockResponses.push({ status: 429, body: 'Too Many Requests', headers: { 'retry-after': '12' } });
+    await assert.rejects(
+      () => makeClient().search({ query: 'test' }),
+      (e: SearchIntegrationError) => {
+        assert.equal(e.code, 'search_rate_limited');
+        assert.equal(e.retryAfterMs, 12_000);
+        return true;
+      },
+    );
+  });
+
   it('throws SearchIntegrationError on HTTP 5xx', async () => {
     mockResponses.push({ status: 503, body: 'Service Unavailable' });
     await assert.rejects(
@@ -194,6 +206,19 @@ describe('SerperClient.search', () => {
 // ─── B. WebSearchService ──────────────────────────────────────────────────────
 
 describe('WebSearchService.search', () => {
+  it('forwards the company scope to the configured Serper pool', async () => {
+    let companyId: string | undefined;
+    const service = new WebSearchService({
+      search: async (_input, scope) => {
+        companyId = scope;
+        return { organic: [] };
+      },
+    }, noopLogger, (globalThis as any).fetch);
+
+    await service.search({ companyId: 'company-1', query: 'test', pageContextLimit: 0 });
+    assert.equal(companyId, 'company-1');
+  });
+
   it('returns empty result for empty query', async () => {
     const svc = makeService();
     const result = await svc.search({ query: '   ' });

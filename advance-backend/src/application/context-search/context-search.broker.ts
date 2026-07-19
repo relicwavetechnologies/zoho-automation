@@ -918,6 +918,7 @@ export class ContextSearchBroker {
 
   private async runWeb(input: ContextSearchInput, limit: number): Promise<ContextSearchResult[]> {
     const result = await this.deps.webSearch.search({
+      companyId:         input.companyId,
       query:             input.query,
       ...(input.site ? { exactDomain: input.site.trim() } : {}),
       searchResultsLimit: limit,
@@ -1088,7 +1089,7 @@ export class ContextSearchBroker {
 
     if (scope === 'web') {
       const url = decodeRef(sourceId);
-      const res = await this.deps.webSearch.search({ query: url, searchResultsLimit: 1, pageContextLimit: 1 });
+      const res = await this.deps.webSearch.search({ companyId: input.companyId, query: url, searchResultsLimit: 1, pageContextLimit: 1 });
       const item = res.items[0];
       const text = item?.pageContext?.excerpt ?? item?.snippet ?? '';
       if (!text.trim()) return null;

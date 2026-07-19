@@ -1379,6 +1379,13 @@ model CompanySerperConnection {
   lastFailureAt   DateTime?
   lastFailureCode String?
   lastUsedAt      DateTime?
+  successfulRequestCount Int      @default(0)
+  // A company admin copies this value from the Serper dashboard. Divo subtracts
+  // only requests it observes after this timestamp; it is not a provider-synced balance.
+  creditsAtLastSync       Int?
+  usageAtLastCreditSync   Int      @default(0)
+  creditsSyncedAt         DateTime?
+  unavailableUntil        DateTime?
   createdBy       String?
   createdByUser   User?     @relation("CompanySerperConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
   createdAt       DateTime  @default(now())
@@ -1387,6 +1394,7 @@ model CompanySerperConnection {
 
   @@unique([companyId, keyFingerprint])
   @@index([companyId, status, priority])
+  @@index([companyId, status, unavailableUntil])
 }
 
 model IntegrationConnectionGrant {

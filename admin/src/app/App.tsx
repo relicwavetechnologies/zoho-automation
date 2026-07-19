@@ -15,6 +15,7 @@ import { MembersPage } from "@/pages/MembersPage"
 import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { OverviewPage } from "@/pages/OverviewPage"
 import { GuardrailsPage } from "@/pages/GuardrailsPage"
+import { WebSearchPage } from "@/pages/WebSearchPage"
 import { RunDetailPage } from "@/pages/RunDetailPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
 import { SkillsLabPage } from "@/pages/SkillsLabPage"
@@ -89,6 +90,7 @@ export function App() {
           <Route path="ai-ops/runs/:runId" element={<RunDetailPage />} />
           <Route path="skills" element={<SkillsLabPage />} />
           <Route path="guardrails" element={<GuardrailsPage />} />
+          <Route path="web-search" element={<WebSearchPage />} />
           <Route path="ai-providers" element={<Legacy><AiProvidersPage /></Legacy>} />
           <Route path="agents" element={<Legacy><AgentsPage /></Legacy>} />
           <Route path="memories" element={<Legacy><MemoriesPage /></Legacy>} />
