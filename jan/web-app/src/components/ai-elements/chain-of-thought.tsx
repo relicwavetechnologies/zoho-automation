@@ -22,6 +22,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import { Streamdown } from 'streamdown'
@@ -149,6 +150,40 @@ export type ChainOfThoughtHeaderProps = ComponentProps<
   icon?: ReactNode
 }
 
+/** `56s`, `1m 04s` — compact enough to sit in a one-line header. */
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+}
+
+/**
+ * Seconds since the turn began, ticking while it streams.
+ *
+ * The header is the only place the user can see that a long turn is still
+ * alive, so the number has to move. It ticks only while streaming — the
+ * interval is torn down the moment the turn settles.
+ */
+function useLiveElapsed(isStreaming: boolean): number {
+  const [seconds, setSeconds] = useState(0)
+  const startRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!isStreaming) {
+      startRef.current = null
+      return
+    }
+    if (startRef.current === null) startRef.current = Date.now()
+    setSeconds(0)
+    const id = setInterval(() => {
+      if (startRef.current === null) return
+      setSeconds(Math.floor((Date.now() - startRef.current) / MS_IN_S))
+    }, MS_IN_S)
+    return () => clearInterval(id)
+  }, [isStreaming])
+
+  return seconds
+}
+
 export const ChainOfThoughtHeader = memo(
   ({
     className,
@@ -161,6 +196,7 @@ export const ChainOfThoughtHeader = memo(
   }: ChainOfThoughtHeaderProps) => {
     const { isStreaming, isOpen, duration } = useChainOfThought()
     const streaming = isStreaming || duration === 0
+    const elapsed = useLiveElapsed(streaming)
 
     return (
       <CollapsibleTrigger
@@ -174,14 +210,23 @@ export const ChainOfThoughtHeader = memo(
           <>
             {icon ?? <SparklesIcon className="size-4 shrink-0" />}
             {streaming ? (
-              <Shimmer duration={1}>{streamingLabel}</Shimmer>
+              <span className="flex items-baseline gap-1.5">
+                <Shimmer duration={1}>{streamingLabel}</Shimmer>
+                {/* Held back for the first second so short turns don't flash
+                    "for 0s" on their way past. */}
+                {elapsed > 0 && (
+                  <span className="text-muted-foreground/70 tabular-nums">
+                    for {formatElapsed(elapsed)}
+                  </span>
+                )}
+              </span>
             ) : title ? (
               <p>{title}</p>
             ) : duration === undefined ? (
               <p>{completedVerb} for a few seconds</p>
             ) : (
               <p>
-                {completedVerb} for {duration} seconds
+                {completedVerb} for {formatElapsed(duration)}
               </p>
             )}
             <ChevronDownIcon

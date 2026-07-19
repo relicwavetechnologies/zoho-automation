@@ -389,30 +389,109 @@ function DivoBootSkeleton() {
 
   if (!visible) return <div className="h-svh bg-background">{dragStrip}</div>
 
-  const block = 'rounded-lg bg-sidebar-foreground/[0.07]'
-
   return (
     <div className="flex h-svh overflow-hidden bg-background animate-in fade-in duration-500">
       {dragStrip}
-      <div className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar p-2 md:flex">
-        <div className="flex flex-col gap-1 motion-reduce:animate-none animate-pulse">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className={cn(block, 'h-9')} />
+
+      <div className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-2 pb-2 md:flex">
+        {/* Window-controls strip — empty on purpose, it's where the traffic
+            lights already sit. */}
+        <div className="h-8 shrink-0" />
+
+        {/* Brand row: mark, wordmark, search affordance. Drawn rather than
+            skeletoned — these are the parts of the chrome we already know, so
+            faking them as grey bars would be pretending not to. */}
+        <div className="flex h-10 items-center gap-2 px-1">
+          <div className="size-5 rounded-md bg-sidebar-foreground/[0.10]" />
+          <SkeletonBar className="h-3.5 w-16" delay={0} />
+          <div className="ml-auto size-4 rounded bg-sidebar-foreground/[0.07]" />
+        </div>
+
+        <div className="mt-2 flex flex-col gap-1">
+          {NAV_WIDTHS.map((width, index) => (
+            <SkeletonRow key={index} width={width} delay={80 + index * 70} />
           ))}
         </div>
-        <div className="mt-6 flex flex-col gap-1 motion-reduce:animate-none animate-pulse">
-          <div className="mx-2.5 mb-1 h-3 w-14 rounded bg-sidebar-foreground/[0.05]" />
-          {Array.from({ length: 7 }).map((_, index) => (
-            <div key={index} className="h-8 rounded-lg bg-sidebar-foreground/[0.04]" />
+
+        <div className="mt-5 flex flex-col gap-1">
+          <SkeletonBar className="mx-3 mb-1 h-2.5 w-10" delay={300} />
+          {CHAT_WIDTHS.map((width, index) => (
+            <SkeletonRow
+              key={index}
+              width={width}
+              delay={340 + index * 55}
+              // Thread rows carry no icon, so the bar runs the full row.
+              bare
+            />
           ))}
         </div>
-        <div className={cn(block, 'mt-auto h-11 motion-reduce:animate-none animate-pulse')} />
+
+        <div className="mt-auto flex h-9 items-center gap-2 rounded-lg px-1">
+          <div className="size-6 rounded-full bg-sidebar-foreground/[0.09]" />
+          <SkeletonBar className="h-3 w-20" delay={820} />
+        </div>
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-6 px-6">
-        <div className="h-7 w-64 max-w-full rounded-md bg-foreground/[0.06] motion-reduce:animate-none animate-pulse" />
+      {/* The mark is the one thing worth actually rendering: it tells the user
+          which app is starting, which no arrangement of grey boxes can. */}
+      <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-7 px-6">
+        <DivoBrandGlyph />
+        <SkeletonBar className="h-3 w-40 rounded-full" delay={120} />
         <div className="h-28 w-full max-w-2xl rounded-2xl border border-border/60 bg-card/40" />
       </div>
+    </div>
+  )
+}
+
+/**
+ * Placeholder widths, as percentages.
+ *
+ * Fixed rather than random: uniform full-width blocks are the single biggest
+ * tell that a skeleton is fake, but random widths would reshuffle on every
+ * render and jitter. These are hand-picked to look like real nav labels and
+ * thread titles — a couple of long ones, a couple of stubs.
+ */
+const NAV_WIDTHS = [46, 62, 38]
+const CHAT_WIDTHS = [78, 55, 88, 41, 70, 84, 49, 63]
+
+/** One sheened bar. `delay` staggers it against its neighbours. */
+function SkeletonBar({
+  className,
+  delay = 0,
+}: {
+  className?: string
+  delay?: number
+}) {
+  return (
+    <div
+      className={cn(
+        'skeleton-sheen rounded bg-sidebar-foreground/[0.06]',
+        className
+      )}
+      style={{ animationDelay: `${delay}ms` }}
+    />
+  )
+}
+
+/** A sidebar row: optional leading icon block plus a label bar. */
+function SkeletonRow({
+  width,
+  delay,
+  bare = false,
+}: {
+  width: number
+  delay: number
+  bare?: boolean
+}) {
+  return (
+    <div className="flex h-7 items-center gap-2.5 px-1">
+      {!bare && (
+        <div className="size-4 shrink-0 rounded bg-sidebar-foreground/[0.07]" />
+      )}
+      {/* The bar takes the remaining space and a spacer eats the rest, so
+          `width` reads as "how much of the row this label fills". */}
+      <SkeletonBar className="h-3 min-w-0 flex-1" delay={delay} />
+      <div style={{ width: `${100 - width}%` }} className="shrink-0" />
     </div>
   )
 }

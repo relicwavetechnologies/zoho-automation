@@ -13,6 +13,16 @@ describe('interactive Teach Pi profile', () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /list, pause, resume, cancel, and run_now/);
 	});
 
+	it('teaches the primary agent selective company-wide subagent orchestration', () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /silently evaluate whether subagents would create a clear advantage/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /company-wide workstreams such as research, retrieval from separate systems/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Subagents do not receive the parent conversation automatically/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /business objective.*department.*persona.*skill context/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /do not delegate approval authority, external mutations, messages/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Keep this orchestration private/i);
+		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /use subagents whenever possible/i);
+	});
+
 	it('reads trusted desktop metadata and builds the evidence-first agent prompt', async () => {
 		const dir = await mkdtemp(join(tmpdir(), 'divo-teach-profile-'));
 		const path = join(dir, 'run-context.json');
@@ -49,6 +59,8 @@ describe('interactive Teach Pi profile', () => {
 		assert.match(prompt, /scheduledWorkflows/);
 		assert.match(prompt, /explicitly requested activation/i);
 		assert.match(prompt, /never silently activate inferred automation/i);
+		assert.match(prompt, /sole coordinator and writer for this Teach session/i);
+		assert.match(prompt, /Never delegate manager clarification.*teach\.learning\.apply/i);
 		await rm(dir, { recursive: true, force: true });
 	});
 });

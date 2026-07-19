@@ -188,7 +188,7 @@ describe('ThreadList — reserved thread-state slot placement', () => {
         const idleSlot = titleSpan().previousElementSibling
         expect(idleSlot).not.toBeNull()
         expect(idleSlot).toHaveAttribute('data-thread-state', 'idle')
-        expect(idleSlot).toHaveClass('size-3', 'shrink-0')
+        expect(idleSlot).toHaveClass('h-4', 'w-3', 'shrink-0')
         expect(idleSlot).toHaveAttribute('aria-hidden', 'true')
 
         // Capture title geometry-bearing attributes before any state change.
@@ -202,7 +202,7 @@ describe('ThreadList — reserved thread-state slot placement', () => {
 
         const activeSlot = titleSpan().previousElementSibling
         expect(activeSlot).toHaveAttribute('data-thread-state', 'running')
-        expect(activeSlot).toHaveClass('size-3', 'shrink-0')
+        expect(activeSlot).toHaveClass('h-4', 'w-3', 'shrink-0')
 
         // The title itself never changed its layout classes or label.
         expect(titleSpan().className).toBe(titleClassBefore)

@@ -199,6 +199,110 @@
   }
 }
 
+/* Boot skeleton: a highlight sweeps left-to-right across each placeholder.
+
+   This replaces `animate-pulse` on the boot screen. A uniform opacity pulse
+   makes every block breathe on the same beat, which reads as "this UI is
+   broken" rather than "this UI is arriving" — the sweep, staggered per row by
+   the caller's `animation-delay`, reads as content streaming in.
+
+   The gradient sits over each block's own background colour, so the base tint
+   still shows through between sweeps. */
+@keyframes skeleton-sheen {
+  from {
+    background-position: 180% 0;
+  }
+  to {
+    background-position: -80% 0;
+  }
+}
+
+.skeleton-sheen {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--foreground) 5%, transparent) 42%,
+    color-mix(in oklab, var(--foreground) 10%, transparent) 50%,
+    color-mix(in oklab, var(--foreground) 5%, transparent) 58%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: skeleton-sheen 1.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-sheen {
+    animation: none;
+    background-image: none;
+  }
+}
+
+/* The running indicator: a 2x3 dot matrix. Two rhythms, used in two places.
+
+   `dot-wave` — the work log. Every dot fades on a diagonal stagger. It reads as
+   "activity" without implying forward motion, which matters because a tool row
+   can sit unchanged for a minute and a progress-flavoured glyph would be
+   quietly lying about it.
+
+   The contrast range is deliberately wide (0.12 → 1). An earlier pass used
+   0.18 → 1 on 2px dots and the animation was invisible at that scale — the grid
+   read as a static glyph. Don't narrow it without also growing the dots. */
+@keyframes dot-wave {
+  0%,
+  100% {
+    opacity: 0.12;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.dot-wave-cell {
+  animation: dot-wave 1.05s ease-in-out infinite;
+}
+
+/* `dot-scatter` — the sidebar thread list. THREE of the six dots are lit at any
+   instant, and which three keeps changing, so the cluster looks alive rather
+   than like a single travelling pixel.
+
+   Exactly three, not roughly three: each dot is lit for half the cycle and the
+   six phases are spread evenly at 1/6 intervals, so the count is invariant —
+   one dot switches off exactly as another switches on. The scattered LOOK comes
+   from which grid cell gets which phase (see `DELAYS` in DotsLoader), not from
+   randomness, which CSS can't do and which would flicker anyway. */
+@keyframes dot-scatter {
+  0%,
+  44% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+  50%,
+  94% {
+    opacity: 0.12;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.dot-scatter-cell {
+  animation: dot-scatter 1.8s ease-in-out infinite;
+}
+
+/* Held mid-sweep rather than stopped: motion-sensitive users still need to see
+   that these rows are live, and a frozen dot grid is indistinguishable from a
+   settled one. */
+@media (prefers-reduced-motion: reduce) {
+  .dot-wave-cell,
+  .dot-scatter-cell {
+    animation: none;
+    opacity: 0.65;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveToolLabel } from '../tool-label'
+import { resolveToolIdentity, resolveToolLabel } from '../tool-label'
 
 describe('resolveToolLabel', () => {
   it('surfaces the gateway op instead of the dispatcher name', () => {
@@ -125,5 +125,80 @@ describe('resolveToolLabel', () => {
 
   it('returns empty only when nothing is known yet', () => {
     expect(resolveToolLabel({ type: 'tool-', input: undefined })).toBe('')
+  })
+})
+
+describe('resolveToolIdentity — detail', () => {
+  const detail = (part: Parameters<typeof resolveToolIdentity>[0]) =>
+    resolveToolIdentity(part).detail
+
+  it('surfaces the search query rather than just naming the tool', () => {
+    // "Ran web search" tells the user nothing; the query is the information.
+    // A tools.invoke dispatch nests args TWO deep — see
+    // `toolsInvokePayloadSchema` in advance-backend: { toolId, args }.
+    expect(
+      detail({
+        type: 'tool-divo_gateway',
+        input: {
+          op: 'tools.invoke',
+          payload: {
+            toolId: 'webSearch',
+            args: { query: 'india payroll compliance' },
+          },
+        },
+      })
+    ).toBe('india payroll compliance')
+  })
+
+  it('still finds args placed directly on the payload', () => {
+    expect(
+      detail({
+        type: 'tool-divo_gateway',
+        input: {
+          op: 'tools.invoke',
+          payload: { toolId: 'webSearch', query: 'gst filing deadlines' },
+        },
+      })
+    ).toBe('gst filing deadlines')
+  })
+
+  it('shows the query while the call is still streaming in', () => {
+    expect(
+      detail({
+        type: 'tool-divo_gateway',
+        input: '{"op":"tools.invoke","payload":{"toolId":"webSearch","query":"hr pain points',
+      })
+    ).toBe('hr pain points')
+  })
+
+  it('reduces a file path to its basename for file tools', () => {
+    // A row is too narrow for a full path; the tail identifies the file.
+    expect(
+      detail({ type: 'tool-write', input: { file_path: '/a/b/c/report.html' } })
+    ).toBe('report.html')
+    expect(
+      detail({ type: 'tool-edit', input: { path: '/x/y/main.ts' } })
+    ).toBe('main.ts')
+  })
+
+  it('keeps a shell command intact — it is not a path', () => {
+    expect(
+      detail({ type: 'tool-bash', input: { command: 'ls -la /tmp/build' } })
+    ).toBe('ls -la /tmp/build')
+  })
+
+  it('never surfaces file contents, however the write is shaped', () => {
+    // `content` runs to megabytes and is useless truncated to a row.
+    expect(
+      detail({
+        type: 'tool-write',
+        input: { content: 'x'.repeat(5_000) },
+      })
+    ).toBeUndefined()
+  })
+
+  it('is absent when the call has no single argument worth naming', () => {
+    expect(detail({ type: 'tool-divo_gateway', input: { op: 'skills.list' } }))
+      .toBeUndefined()
   })
 })

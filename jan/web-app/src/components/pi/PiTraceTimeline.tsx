@@ -1,6 +1,6 @@
-import { memo, useLayoutEffect, useRef } from 'react'
+import { memo, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { motion } from 'motion/react'
+import { ChevronRightIcon } from 'lucide-react'
 import {
   ChainOfThought,
   ChainOfThoughtHeader,
@@ -56,15 +56,86 @@ function coalesceSegments(steps: PiTraceStep[]): Segment[] {
 }
 
 /**
- * The agent's working trace, rendered as a live vertical timeline.
+ * Reasoning, in its two states.
  *
- * While the turn streams the timeline is open: reasoning, narration, and tool
- * runs sit on a rail with a beam of light travelling down it, the current step
- * pulsing at the head. The body is capped to a fixed ~200px window and scrolls
- * inside itself so the chat thread doesn't grow endlessly. When the turn
- * finishes the whole thing wraps up into a single "Worked for N seconds" line
- * (re-expandable to the same fixed scroll viewport). The deliverable answer
- * renders below, outside the trace.
+ * While it streams it gets a short fixed-height window that scrolls itself and
+ * fades at the top — you can watch the model think without the page growing
+ * under you. The moment it settles it folds to a single "Thought" line and the
+ * narration it produced takes over the flow.
+ *
+ * That ordering is the whole point of the redesign: thinking and talking used
+ * to render at the same weight, so a turn read as one undifferentiated wall.
+ * Here the thought is the receipt and the narration is the content.
+ */
+const ThoughtStep = memo(
+  ({ text, live }: { text: string; live: boolean }) => {
+    const [open, setOpen] = useState(false)
+    const windowRef = useRef<HTMLDivElement>(null)
+
+    // Pin the live window to its own bottom so the newest sentence shows.
+    useLayoutEffect(() => {
+      if (!live) return
+      const el = windowRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    }, [live, text])
+
+    if (live) {
+      return (
+        <div
+          ref={windowRef}
+          data-testid="pi-thought-live"
+          dir="auto"
+          className={cn(
+            'max-h-[68px] max-w-[70ch] overflow-y-hidden text-[13px] leading-relaxed text-muted-foreground/85',
+            // Fade the outgoing top edge so lines dissolve rather than clip.
+            '[mask-image:linear-gradient(to_bottom,transparent_0,#000_26px,#000_100%)]'
+          )}
+        >
+          <Streamdown>{text}</Streamdown>
+        </div>
+      )
+    }
+
+    return (
+      <div className="flex flex-col">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="group flex w-full items-center gap-1.5 py-0.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ChevronRightIcon
+            className={cn(
+              'size-3.5 shrink-0 text-muted-foreground/50 transition-transform',
+              open && 'rotate-90'
+            )}
+          />
+          <span className="text-[13px]">Thought</span>
+        </button>
+        {open && (
+          <div
+            dir="auto"
+            className="my-1 ml-[6px] max-w-[70ch] border-l border-border pl-4 text-[13px] leading-relaxed text-muted-foreground/80"
+          >
+            <Streamdown>{text}</Streamdown>
+          </div>
+        )}
+      </div>
+    )
+  }
+)
+
+ThoughtStep.displayName = 'PiTraceThoughtStep'
+
+/**
+ * The agent's working trace.
+ *
+ * Everything here follows one rule: a step is expanded while it is happening
+ * and compacts to a single expandable line once it is not. Reasoning folds to
+ * "Thought", a burst of tool calls folds to "Explored 8 files, ran 4 commands",
+ * and when the turn ends the whole log folds to "Worked for 56s" with the
+ * answer below it. Narration is the exception — it is content, not metadata, so
+ * it stays at full weight.
  */
 export const PiTraceTimeline = memo(
   ({
@@ -107,7 +178,7 @@ export const PiTraceTimeline = memo(
         data-testid="pi-trace"
       >
         <ChainOfThoughtHeader
-          streamingLabel={awaitingApproval ? 'Waiting for approval...' : 'Working...'}
+          streamingLabel={awaitingApproval ? 'Waiting for approval' : 'Working'}
           completedVerb={hasTools ? 'Worked' : 'Thought'}
           // Divo's own mark rather than a generic sparkle — this row is the
           // product reporting on itself.
@@ -115,7 +186,7 @@ export const PiTraceTimeline = memo(
         />
         <CollapsibleContent
           className={cn(
-            'mt-3 text-sm outline-none',
+            'mt-2 text-sm outline-none',
             'data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 data-[state=closed]:animate-out data-[state=open]:animate-in'
           )}
         >
@@ -131,10 +202,13 @@ export const PiTraceTimeline = memo(
                 distanceFromBottom <= STICK_BOTTOM_THRESHOLD_PX
             }}
             className={cn(
-              'overflow-y-auto overflow-x-hidden pr-1 [scrollbar-gutter:stable]',
-              // Cap the work log so the thread doesn't grow forever. Give a bit
-              // more room when approval UI is up so controls aren't cramped.
-              awaitingApproval ? 'max-h-[min(50vh,28rem)]' : 'max-h-[200px]'
+              'overflow-x-hidden',
+              // The log no longer needs a hard height cap: settled steps fold
+              // themselves, so it can sit inline and grow with the thread the
+              // way the rest of the message does. Approval is the exception —
+              // its controls are tall, so that one gets a scrolling window.
+              awaitingApproval &&
+                'max-h-[min(50vh,28rem)] overflow-y-auto pr-1 [scrollbar-gutter:stable]'
             )}
           >
             <TimelineBody
@@ -173,26 +247,9 @@ const TimelineBody = memo(
     renderTool,
     renderNarration,
   }: TimelineBodyProps) => (
-    <div className="relative flex w-full flex-col gap-3.5">
-      {/* The rail — a hairline the whole timeline hangs from, centered at
-          x=6px. Nodes are opaque and centered on the same axis so each one
-          caps the rail cleanly. While the turn streams, a beam of light
-          travels down it end to end. */}
-      <div className="pointer-events-none absolute left-[6px] top-2.5 bottom-2.5 w-px -translate-x-1/2 overflow-hidden bg-border">
-        {isStreaming && (
-          <motion.div
-            className="absolute inset-x-[-1px] h-10 bg-linear-to-b from-transparent via-primary to-transparent"
-            initial={{ top: '-14%' }}
-            animate={{ top: ['-14%', '114%'] }}
-            transition={{
-              duration: 1.7,
-              repeat: Infinity,
-              ease: 'linear',
-            }}
-          />
-        )}
-      </div>
-
+    // Flat and inline — no rail, no nodes. Structure comes from the fold state
+    // of each step and from the weight difference between narration and meta.
+    <div className="flex w-full flex-col gap-1.5">
       {segments.map((seg, i) => {
         const active = isStreaming && i === lastSegmentIndex
         return (
@@ -202,46 +259,24 @@ const TimelineBody = memo(
                 ? `${messageId}-cmds-${seg.tools[0].partIndex}`
                 : `${messageId}-talk-${seg.step.partIndex}`
             }
-            className="relative flex gap-3"
+            className="min-w-0"
           >
-            {/* Timeline node. The head pulses while it's the live step;
-                settled steps are quiet filled dots. */}
-            <div className="relative w-3 shrink-0">
-              <span
-                className={cn(
-                  'absolute left-1/2 top-1.5 -translate-x-1/2 rounded-full transition-colors',
-                  active
-                    ? 'size-2.5 bg-primary ring-[3px] ring-primary/20'
-                    : 'size-2 bg-muted-foreground'
-                )}
+            {seg.kind === 'tools' ? (
+              <CommandGroup
+                messageId={messageId}
+                tools={seg.tools}
+                active={active}
+                awaitingApproval={awaitingApproval && i === lastSegmentIndex}
+                renderTool={renderTool}
               />
-              {active && (
-                <span className="absolute left-1/2 top-1.5 size-2.5 -translate-x-1/2 rounded-full bg-primary/30 animate-ping" />
-              )}
-            </div>
-
-            <div className="min-w-0 flex-1">
-              {seg.kind === 'tools' ? (
-                <CommandGroup
-                  messageId={messageId}
-                  tools={seg.tools}
-                  active={active}
-                  awaitingApproval={awaitingApproval && i === lastSegmentIndex}
-                  renderTool={renderTool}
-                />
-              ) : seg.step.kind === 'thought' ? (
-                // Reasoning: the model's thinking. Same prose, dimmed.
-                <div
-                  dir="auto"
-                  className="min-w-0 max-w-[72ch] select-text text-sm leading-relaxed text-main-view-fg/55"
-                >
-                  <Streamdown>{seg.step.text}</Streamdown>
-                </div>
-              ) : (
-                // Narration: rendered exactly like the final answer.
-                renderNarration(seg.step.text, seg.step.partIndex)
-              )}
-            </div>
+            ) : seg.step.kind === 'thought' ? (
+              <ThoughtStep text={seg.step.text} live={active} />
+            ) : (
+              // Narration: rendered exactly like the final answer.
+              <div className="py-1">
+                {renderNarration(seg.step.text, seg.step.partIndex)}
+              </div>
+            )}
           </div>
         )
       })}

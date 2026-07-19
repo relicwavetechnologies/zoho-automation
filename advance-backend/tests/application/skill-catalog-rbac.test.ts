@@ -200,3 +200,49 @@ describe('SkillCatalogService — governed contact routing', () => {
     assert.equal((await search('search Lark Contacts for Anish'))[0]?.skill.id, 'lark-contacts');
   });
 });
+
+describe('SkillCatalogService — scheduling intent routing', () => {
+  const scheduledWork = {
+    ...row('schedule-divo-work', ['scheduledWorkflows']),
+    name: 'Schedule Divo Work',
+    summary: 'Create recurring Divo work, reminders, reports, and monitoring.',
+    markdown: 'Use for agent work that runs later. Ask whether vague scheduling means a calendar event or Divo work.',
+    tags: ['scheduling', 'automation', 'recurring', 'monitoring', 'reminder'],
+    aliases: ['schedule something', 'schedule work', 'scheduled work', 'recurring task', 'run later'],
+  };
+  const googleCalendar = {
+    ...row('google-calendar', ['googleCalendar']),
+    name: 'Google Calendar',
+    summary: 'Create calendar events, invite attendees, and check free/busy.',
+    markdown: 'Use for meetings and reserving time on a calendar.',
+    tags: ['google', 'calendar', 'events'],
+    aliases: ['google events', 'schedule', 'availability'],
+  };
+  const schedulePermission = {
+    allowedToolIds: new Set([asToolId('scheduledWorkflows'), asToolId('googleCalendar')]),
+    allowedActionsByTool: new Map(),
+    decisions: [],
+  } as unknown as PermissionResult;
+
+  async function search(query: string) {
+    const candidates = [googleCalendar, scheduledWork];
+    const service = new SkillCatalogService({ repo: makeRepo(candidates), logger: noopLogger });
+    return service.searchVisible({
+      companyId: 'co', departmentId: 'dep', permission: schedulePermission,
+      grantedSkillIds: new Set(candidates.map((candidate) => candidate.id)), query, limit: 3,
+    });
+  }
+
+  it('routes a vague scheduling capability question to the Divo scheduling skill', async () => {
+    const results = await search('can you schedule something?');
+    assert.equal(results[0]?.skill.id, 'schedule-divo-work');
+    assert(results[0]!.score >= 8);
+  });
+
+  it('keeps meetings and attendee scheduling on the calendar skill', async () => {
+    assert.equal(
+      (await search('schedule a calendar meeting with attendees'))[0]?.skill.id,
+      'google-calendar',
+    );
+  });
+});

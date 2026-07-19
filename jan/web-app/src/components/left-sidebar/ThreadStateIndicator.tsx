@@ -1,6 +1,7 @@
 import { memo } from 'react'
-import { CircleAlert, Clock, Loader2, ShieldAlert } from 'lucide-react'
+import { CircleAlert, Clock, ShieldAlert } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { DotsLoader } from '@/components/pi/DotsLoader'
 import {
   selectPiThreadCapacityWaiting,
   useAppState,
@@ -50,14 +51,19 @@ export function deriveThreadRuntimeState(input: {
 }
 
 type IndicatorSpec = {
-  Icon: typeof Loader2
+  Icon?: typeof CircleAlert
+  /**
+   * Running uses the scattered dot loader instead of a lucide glyph — the same
+   * family as the work log's indicator, so a thread reads the same in the rail
+   * as it does in the transcript. A spinner here reads as "stuck".
+   */
+  dots?: boolean
   label: string
   className: string
-  spin?: boolean
 }
 
-// Familiar status icons only — no rounded text pills. Every icon shares the
-// same box size so transitions between states never reflow the row.
+// Familiar status icons only — no rounded text pills. Every indicator shares
+// the same box size so transitions between states never reflow the row.
 const INDICATOR_SPECS: Record<
   Exclude<ThreadRuntimeState, 'idle'>,
   IndicatorSpec
@@ -78,10 +84,9 @@ const INDICATOR_SPECS: Record<
     className: 'text-muted-foreground',
   },
   running: {
-    Icon: Loader2,
+    dots: true,
     label: 'Working',
     className: 'text-muted-foreground',
-    spin: true,
   },
 }
 
@@ -113,8 +118,11 @@ function ThreadStateIndicatorImpl({
 
   // The slot is always rendered so the icon box + flex gap are permanent; the
   // title position and truncation width never change as state comes and goes.
+  // A line box, not a square: `h-4` lets the taller 2x3 dot grid sit centred on
+  // the thread title instead of riding high above it. Width stays at the old
+  // 0.75rem so no row's title shifts horizontally.
   const baseClassName = cn(
-    'flex size-3 shrink-0 items-center justify-center',
+    'flex h-4 w-3 shrink-0 items-center justify-center',
     className
   )
 
@@ -130,7 +138,7 @@ function ThreadStateIndicatorImpl({
     )
   }
 
-  const { Icon, label, className: toneClassName, spin } =
+  const { Icon, dots, label, className: toneClassName } =
     INDICATOR_SPECS[runtimeState]
 
   // `role="img"` + aria-label names the icon when the user reaches this row,
@@ -144,10 +152,16 @@ function ThreadStateIndicatorImpl({
       data-thread-state={runtimeState}
       className={baseClassName}
     >
-      <Icon
-        aria-hidden="true"
-        className={cn('size-3 shrink-0', toneClassName, spin && 'animate-spin')}
-      />
+      {dots ? (
+        <DotsLoader variant="scatter" size="sm" className={toneClassName} />
+      ) : (
+        Icon && (
+          <Icon
+            aria-hidden="true"
+            className={cn('size-3 shrink-0', toneClassName)}
+          />
+        )
+      )}
     </span>
   )
 }

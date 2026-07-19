@@ -35,16 +35,16 @@ Use this skill to make Divo perform work once in the future or on an hourly, dai
 1. Resolve the task normally so the intent uses the correct company skills, accounts, filters, output, and safety rules.
 2. Before the first scheduler invocation, call:
 
-```json
+~~~json
 {
   "op": "tools.list",
   "payload": { "toolId": "scheduledWorkflows" }
 }
-```
+~~~
 
 3. Read the returned schema. Invoke the scheduler only through:
 
-```json
+~~~json
 {
   "op": "tools.invoke",
   "payload": {
@@ -52,24 +52,24 @@ Use this skill to make Divo perform work once in the future or on an hourly, dai
     "args": { "operation": "<operation>", "...": "operation-specific fields" }
   }
 }
-```
+~~~
 
-Keep `operation` and every schedule field inside `payload.args`. Never put scheduler fields beside `payload` or `toolId`.
+Keep **operation** and every schedule field inside **payload.args**. Never put scheduler fields beside **payload** or **toolId**.
 
 ## Create contract
 
 Every create requires:
 
-- `name`: short label, at most 120 characters.
-- `intent`: complete instructions that can run without this chat history. State the task, source/account, time window, filters, required skills/tools, output format, delivery expectation, external-action boundary, and what to do when data is missing or a tool fails.
-- `timezone`: exact IANA timezone such as `Asia/Kolkata`.
-- `scheduleType` and only the timing fields for that type.
+- **name**: short label, at most 120 characters.
+- **intent**: complete instructions that can run without this chat history. State the task, source/account, time window, filters, required skills/tools, output format, delivery expectation, external-action boundary, and what to do when data is missing or a tool fails.
+- **timezone**: exact IANA timezone such as **Asia/Kolkata**.
+- **scheduleType** and only the timing fields for that type.
 
 Do not guess a material task, time, timezone, recurrence, monitoring scope, recipient, external side effect, or failure behavior. Ask only for missing material details.
 
 ### One time
 
-```json
+~~~json
 {
   "operation": "create",
   "name": "Send launch reminder",
@@ -78,11 +78,11 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "timezone": "Asia/Kolkata",
   "runAt": "2026-07-20T09:30:00+05:30"
 }
-```
+~~~
 
 ### Hourly
 
-```json
+~~~json
 {
   "operation": "create",
   "name": "Check urgent support mail",
@@ -93,11 +93,11 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "minute": 15
 }
 
-```
+~~~
 
 ### Daily
 
-```json
+~~~json
 {
   "operation": "create",
   "name": "Daily inbox summary",
@@ -107,11 +107,11 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "hour": 10,
   "timeMinute": 0
 }
-```
+~~~
 
 ### Weekly
 
-```json
+~~~json
 {
   "operation": "create",
   "name": "Monday pipeline review",
@@ -122,11 +122,11 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "hour": 9,
   "timeMinute": 30
 }
-```
+~~~
 
 ### Monthly
 
-```json
+~~~json
 {
   "operation": "create",
   "name": "Monthly finance pack",
@@ -137,25 +137,25 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "hour": 10,
   "timeMinute": 0
 }
-```
+~~~
 
-For recurring schedules, `hour` uses 0-23 local time and `timeMinute` uses 0-59. For one-time schedules, `runAt` must be a future ISO 8601 timestamp with an explicit UTC offset.
+For recurring schedules, **hour** uses 0-23 local time and **timeMinute** uses 0-59. For one-time schedules, **runAt** must be a future ISO 8601 timestamp with an explicit UTC offset.
 
 ## Manage schedules
 
-- List: `{ "operation": "list", "includeInactive": false }`
-- List including paused/archived: `{ "operation": "list", "includeInactive": true }`
-- Pause: `{ "operation": "pause", "scheduleId": "<UUID from create/list>" }`
-- Resume: `{ "operation": "resume", "scheduleId": "<UUID from create/list>" }`
-- Cancel: `{ "operation": "cancel", "scheduleId": "<UUID from create/list>" }`
-- Run now: `{ "operation": "run_now", "scheduleId": "<UUID from create/list>" }`
+- List: **{ "operation": "list", "includeInactive": false }**
+- List including paused/archived: **{ "operation": "list", "includeInactive": true }**
+- Pause: **{ "operation": "pause", "scheduleId": "<UUID from create/list>" }**
+- Resume: **{ "operation": "resume", "scheduleId": "<UUID from create/list>" }**
+- Cancel: **{ "operation": "cancel", "scheduleId": "<UUID from create/list>" }**
+- Run now: **{ "operation": "run_now", "scheduleId": "<UUID from create/list>" }**
 
 Never invent a schedule ID. Use the exact ID returned by create or list.
 
 ## Completion contract
 
 - A request is not scheduled when the tool is merely available, arguments are drafted, approval is pending, or invocation fails.
-- Claim success only after `tools.invoke` returns `operation: "create"` with a schedule ID and status.
+- Claim success only after **tools.invoke** returns **operation: "create"** with a schedule ID and status.
 - Report the schedule name, recurrence in the user's local wording, timezone, next run, and schedule ID.
 - If approval is required, say it is pending. After approval, retry the exact same invocation; changing arguments requires a new approval.
 - Treat pause, resume, cancel, and run-now as complete only when the returned schedule confirms the requested state/action.`;

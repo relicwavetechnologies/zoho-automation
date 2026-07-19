@@ -5,11 +5,10 @@ import {
   ChevronDownIcon,
   CircleIcon,
   CircleXIcon,
-  Clock3Icon,
   LoaderCircleIcon,
-  WrenchIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { DotsLoader } from './DotsLoader'
 import {
   readDivoSubagentDetails,
   type DivoSubagentChild,
@@ -81,41 +80,83 @@ function statusText(child: DivoSubagentChild): string {
   return stateLabel(child.state)
 }
 
+/**
+ * One child run, laid out the way Cursor lays out its subagents: a glyph, the
+ * role, its model beside it in a dimmer weight, and the live activity on a
+ * second line underneath.
+ *
+ * A running child's activity line shimmers. It is a tool call one level down,
+ * so it gets the same running treatment as a tool row in the parent trace —
+ * without it, a card of four working children looks completely static.
+ */
 const ChildRow = memo(({ child }: { child: DivoSubagentChild }) => {
   const [expanded, setExpanded] = useState(false)
   const usage = formatUsage(child)
   const duration = elapsed(child)
   const hasDetails = Boolean(child.events.length || child.outputPreview || child.finalOutput || child.error)
   const output = child.error || child.finalOutput || child.outputPreview
+  const running = child.state === 'running' || child.state === 'queued'
 
   return (
-    <div className="rounded-md border border-border/70 bg-background/45">
+    <div>
       <button
         type="button"
-        className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left hover:bg-muted/35"
+        className="group flex w-full items-start gap-2.5 rounded-md px-1 py-1.5 text-left transition-colors hover:bg-muted/30"
         onClick={() => hasDetails && setExpanded((value) => !value)}
         aria-expanded={hasDetails ? expanded : undefined}
         disabled={!hasDetails}
       >
-        <StateIcon state={child.state} className="mt-0.5 size-4 shrink-0" />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2">
-            <span className="font-medium text-foreground capitalize">{child.role}</span>
-            {child.model && <span className="truncate text-xs text-muted-foreground">{child.model}</span>}
-          </span>
-          <span className="mt-0.5 block truncate text-xs text-muted-foreground">{child.task}</span>
-          <span className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-            {child.activity.kind === 'tool' ? <WrenchIcon className="size-3 shrink-0" /> : <Clock3Icon className="size-3 shrink-0" />}
-            <span className="truncate">{statusText(child)}</span>
-            {duration && <span className="shrink-0">· {duration}</span>}
-            {usage && <span className="truncate">· {usage}</span>}
-          </span>
+        {/* A fixed line box so the glyph centres on the row's FIRST line
+            rather than on the whole three-line block. Both branches share it,
+            so settling never nudges the text sideways or down. */}
+        <span className="flex h-5 shrink-0 items-center">
+          {running ? (
+            // Scatter, not wave: a child run is a whole agent working, and
+            // several of these sit stacked. The busier rhythm keeps the group
+            // reading as live rather than as a static list of labels.
+            <DotsLoader variant="scatter" className="text-foreground/80" />
+          ) : (
+            <StateIcon state={child.state} className="size-4 shrink-0" />
+          )}
         </span>
-        {hasDetails && <ChevronDownIcon className={cn('mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform', expanded && 'rotate-180')} />}
+        <span className="min-w-0 flex-1">
+          {/* Role and model, mirroring Cursor's "name · model" head line. */}
+          <span className="flex items-baseline gap-2">
+            <span className={cn('text-sm capitalize', running ? 'text-foreground' : 'text-muted-foreground')}>
+              {child.role}
+            </span>
+            {child.model && <span className="truncate text-[13px] text-muted-foreground/70">{child.model}</span>}
+          </span>
+          <span className="mt-0.5 block truncate text-[13px] text-muted-foreground/70">
+            {child.task}
+          </span>
+          {/* The live line. Once a child settles, "Completed" only repeats the
+              check icon, so the row drops to its timings — or disappears
+              entirely if there are none. */}
+          {(running || duration || usage || child.error) && (
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[13px] text-muted-foreground/80">
+              {(running || child.error) && (
+                <span className={cn('truncate', running && 'text-shimmer')}>
+                  {statusText(child)}
+                </span>
+              )}
+              {duration && <span className="shrink-0 text-muted-foreground/60">{duration}</span>}
+              {usage && <span className="truncate text-muted-foreground/60">· {usage}</span>}
+            </span>
+          )}
+        </span>
+        {hasDetails && (
+          <ChevronDownIcon
+            className={cn(
+              'mt-0.5 size-4 shrink-0 text-muted-foreground/50 opacity-0 transition-all group-hover:opacity-100',
+              expanded && 'rotate-180 opacity-100'
+            )}
+          />
+        )}
       </button>
 
       {expanded && (
-        <div className="border-t border-border/60 px-3 py-2.5 text-xs">
+        <div className="mb-1 ml-[9px] border-l border-border pl-4 text-xs">
           {child.events.length > 0 && (
             <ol className="space-y-1.5 text-muted-foreground">
               {child.events.map((event) => (
@@ -158,26 +199,32 @@ export const SubagentRunCard = memo(({ part }: SubagentRunCardProps) => {
           ? 'Stopped'
           : `${summary.completed}/${summary.total} complete · ${summary.failed} failed`
 
+  const running = details.state === 'running'
+
   return (
+    // Deliberately unboxed. Inside the work log this sits between plain tool
+    // rows, and a bordered card there reads as a different kind of object —
+    // the children are just a nested list of the same running steps.
     <section
-      className="rounded-lg border border-border bg-card/75 shadow-xs"
+      className="flex flex-col"
       data-testid="subagent-run-card"
       data-parent-tool-call-id={details.parentToolCallId}
     >
-      <div className="flex items-center gap-2.5 border-b border-border/70 px-3 py-2.5">
-        <span className="grid size-7 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
-          <BotIcon className="size-4" />
+      <div className="flex items-center gap-2.5 py-0.5 text-sm">
+        {running ? (
+          <DotsLoader variant="scatter" className="text-foreground/80" />
+        ) : (
+          <BotIcon className="size-4 shrink-0 text-muted-foreground/70" />
+        )}
+        <span className={cn('text-[13px]', running && 'text-shimmer')}>
+          {running ? 'Running' : 'Ran'} subagents
         </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-medium text-foreground">Subagents</span>
-          <span className="block text-xs text-muted-foreground capitalize">{details.mode} · {status}</span>
-        </span>
-        {details.state === 'running' && <LoaderCircleIcon className="size-4 animate-spin text-primary" />}
+        <span className="truncate text-[13px] text-muted-foreground/60">{status}</span>
       </div>
-      <div className="space-y-2 p-2.5">
+      <div className="mt-0.5 flex flex-col pl-[7px]">
         {details.children.map((child) => <ChildRow key={child.id} child={child} />)}
         {details.children.length === 0 && (
-          <p className="px-1 py-2 text-xs text-muted-foreground">Preparing subagents…</p>
+          <p className="px-1 py-1.5 text-[13px] text-muted-foreground/70">Preparing subagents…</p>
         )}
       </div>
     </section>

@@ -128,7 +128,7 @@ describe('ThreadStateIndicator — reserved slot + accessibility', () => {
     expect(slot).not.toHaveAttribute('role')
     expect(slot?.querySelector('svg')).toBeNull()
     // Same fixed-size box as the visible states, so geometry is constant.
-    expect(slot).toHaveClass('size-3', 'shrink-0')
+    expect(slot).toHaveClass('h-4', 'w-3', 'shrink-0')
   })
 
   it('names the visible icon via role="img" without a live region', () => {
@@ -140,24 +140,27 @@ describe('ThreadStateIndicator — reserved slot + accessibility', () => {
     expect(slot).not.toHaveAttribute('role', 'status')
     expect(slot).toHaveAttribute('aria-label', 'Working')
     expect(slot).toHaveAttribute('title', 'Working')
-    expect(slot).toHaveClass('size-3', 'shrink-0')
+    expect(slot).toHaveClass('h-4', 'w-3', 'shrink-0')
   })
 })
 
 describe('ThreadStateIndicator — per-state rendering', () => {
-  it('shows a spinning "Working" indicator while running', () => {
+  it('shows the scattered dot loader while running', () => {
+    // Running is the one state with motion, and it uses the same dot loader as
+    // the work log rather than a spinner — a spinner here reads as "stuck".
     setRunning()
     const { container } = render(<ThreadStateIndicator threadId={THREAD_ID} />)
     expect(slotState(container)).toBe('running')
-    expect(container.querySelector('.animate-spin')).not.toBeNull()
+    expect(container.querySelector('[data-dots-loader="scatter"]')).not.toBeNull()
   })
 
-  it('shows a non-spinning "Waiting for capacity" indicator', () => {
+  it('shows a still "Waiting for capacity" indicator', () => {
     setWaiting()
     const { container } = render(<ThreadStateIndicator threadId={THREAD_ID} />)
     const slot = container.querySelector('[data-thread-state]')
     expect(slot).toHaveAttribute('data-thread-state', 'waiting')
     expect(slot).toHaveAttribute('aria-label', 'Waiting for capacity')
+    expect(container.querySelector('[data-dots-loader]')).toBeNull()
     expect(container.querySelector('.animate-spin')).toBeNull()
   })
 

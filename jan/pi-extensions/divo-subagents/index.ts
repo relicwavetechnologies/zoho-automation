@@ -433,14 +433,15 @@ export default function divoSubagentsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "divo_subagents",
 		label: "Divo subagents",
-		description: "Delegate focused work to isolated Pi child agents. Supports a single task, independent parallel tasks, or a sequential chain. Pi owns child execution, progress, cancellation, and result synthesis.",
-		promptSnippet: "Use divo_subagents when independent investigation, review, planning, or bounded implementation work can proceed in parallel without losing the parent conversation's context.",
+		description: "Delegate bounded company research, retrieval, analysis, planning, preparation, or verification to isolated Pi child agents. Supports a single task, independent parallel tasks, or a sequential chain. The primary agent owns coordination, validation, and synthesis.",
+		promptSnippet: "Use divo_subagents selectively when substantial independent company workstreams can proceed in parallel, when a focused investigation protects the main context, or when an independent review materially improves reliability.",
 		promptGuidelines: [
-			"Roles: scout for reconnaissance, planner for plans, reviewer for review, worker for detailed read-only analysis.",
-			"Child agents have divo_gateway and divo_skill_resolve plus read-only local tools. Delegate Divo/company or public-research work through those Divo tools; child roles do not have Bash, Write, or Edit.",
-			"Use tasks for independent work only. The parent remains responsible for clear delegated prompts and for acting on the results.",
+			"Roles: scout for rapid source and system reconnaissance, planner for business workflows, reviewer for independent quality checks, and worker for detailed read-only analysis or preparation.",
+			"Each child starts in an isolated context and does not receive the parent conversation. Make every task self-contained with its objective, relevant context, scope, exclusions, sources, permitted actions, deliverable, acceptance criteria, and required evidence.",
+			"Child agents have divo_gateway and divo_skill_resolve plus read-only local tools. They may research, inspect, analyze, compare, plan, draft, or review; do not delegate approvals, external mutations, messages, schedule activation, Teach writes, or irreversible actions.",
+			"Use tasks for substantial independent work only, normally with two to four non-overlapping assignments. Do not delegate simple requests or duplicate work unless independent verification is intentional.",
 			"Use chain for dependent steps and {previous} only where the next role genuinely needs the prior final result.",
-			"The parent agent remains responsible for choosing what to delegate, checking results, and giving the user the final answer.",
+			"The parent remains responsible for user interaction, permissions and approvals, checking evidence, reconciling conflicts, taking final actions, and giving the user one synthesized answer.",
 		],
 		parameters: SubagentParams,
 
