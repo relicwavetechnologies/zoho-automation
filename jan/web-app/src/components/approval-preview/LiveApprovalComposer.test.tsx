@@ -294,4 +294,110 @@ describe('LiveApprovalComposer', () => {
     ).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Approve & run' })).toBeDisabled()
   })
+
+  function scheduleRequest(
+    operation: string,
+    action: string,
+    details: Record<string, unknown>
+  ): PiApprovalRequest {
+    return {
+      requestId: 'schedule-1',
+      threadId: 'thread-1',
+      descriptor: {
+        version: 1,
+        toolCallId: 'tool-call-1',
+        source: 'generic',
+        kind: `generic.scheduledWorkflows.${operation}`,
+        action,
+        title: `Review scheduled workflows ${operation}`,
+        presentation: { details: { operation, ...details } },
+      },
+      receivedAt: 100,
+      expiresAt: 10_000,
+      status: 'pending',
+    }
+  }
+
+  it('routes scheduler requests to the schedule card, not the JSON fallback', () => {
+    render(
+      <LiveApprovalComposer
+        {...baseProps}
+        request={scheduleRequest('create', 'create', {
+          name: 'Daily Email Summary to Lark DM',
+          intent: 'Summarise the last 24 hours of mail.',
+          scheduleType: 'daily',
+          timezone: 'Asia/Kolkata',
+          hour: 3,
+          timeMinute: 10,
+        })}
+      />
+    )
+
+    expect(screen.getByTestId('schedule-cadence')).toHaveTextContent(
+      'Every day at 3:10 AM'
+    )
+    expect(screen.getByText('New scheduled work')).toBeInTheDocument()
+    // The generic fallback dumps the whole presentation as JSON; the schedule
+    // card replacing it is the point of this wiring.
+    expect(screen.queryByText(/"scheduleType"/)).not.toBeInTheDocument()
+  })
+
+  it('names the schedule in the approve button instead of the CRUD verb', () => {
+    render(
+      <LiveApprovalComposer
+        {...baseProps}
+        request={scheduleRequest('create', 'create', {
+          name: 'Daily summary',
+          scheduleType: 'daily',
+          hour: 3,
+          timeMinute: 10,
+        })}
+      />
+    )
+    expect(
+      screen.getByRole('button', { name: 'Approve schedule' })
+    ).toBeInTheDocument()
+  })
+
+  it('separates pause from resume, which share one descriptor action', () => {
+    const { unmount } = render(
+      <LiveApprovalComposer
+        {...baseProps}
+        request={scheduleRequest('pause', 'update', { scheduleId: 'abc' })}
+      />
+    )
+    expect(
+      screen.getByRole('button', { name: 'Approve pause' })
+    ).toBeInTheDocument()
+    unmount()
+
+    render(
+      <LiveApprovalComposer
+        {...baseProps}
+        request={scheduleRequest('resume', 'update', { scheduleId: 'abc' })}
+      />
+    )
+    expect(
+      screen.getByRole('button', { name: 'Approve resume' })
+    ).toBeInTheDocument()
+  })
+
+  it('keeps a schedule whose intent mentions Gmail on the schedule card', () => {
+    // appKind checks vendor substrings against the whole identity, so an intent
+    // that names Gmail must not pull the request onto the Gmail card.
+    render(
+      <LiveApprovalComposer
+        {...baseProps}
+        request={scheduleRequest('create', 'create', {
+          name: 'Gmail digest',
+          intent: 'Read Gmail every morning.',
+          scheduleType: 'daily',
+          hour: 8,
+          timeMinute: 0,
+        })}
+      />
+    )
+    expect(screen.getByTestId('schedule-cadence')).toBeInTheDocument()
+    expect(screen.queryByText('Subject')).not.toBeInTheDocument()
+  })
 })

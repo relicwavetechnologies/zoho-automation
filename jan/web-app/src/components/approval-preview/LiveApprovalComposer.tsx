@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  CalendarClock,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -14,6 +15,7 @@ import { useState } from 'react'
 
 import { GmailIcon, LarkIcon, ZohoIcon } from '@/components/brand-icons'
 import { LarkRequest } from './LarkRequest'
+import { ScheduleRequest } from './ScheduleRequest'
 import { MemoryReviewCard } from '@/components/memory-review/MemoryReviewCard'
 import { TeachClarificationCard } from '@/components/teach/TeachClarificationCard'
 import { Button } from '@/components/ui/button'
@@ -37,7 +39,7 @@ import { isPiMemoryReviewRequest } from '@/lib/pi/memory-review'
 import { isPiTeachClarificationRequest } from '@/lib/pi/teach-clarification'
 import { cn } from '@/lib/utils'
 
-type ApprovalAppKind = 'gmail' | 'zoho' | 'lark' | 'generic'
+type ApprovalAppKind = 'gmail' | 'zoho' | 'lark' | 'schedule' | 'generic'
 
 type LiveApprovalComposerProps = {
   request: PiPendingUiRequest
@@ -101,6 +103,10 @@ function appKind(
   >
 ): ApprovalAppKind {
   const identity = appIdentity(request)
+  // Checked before the vendor names: a schedule whose intent mentions Gmail is
+  // still a scheduling approval, and the descriptor kind
+  // (generic.scheduledWorkflows.*) is what identifies it.
+  if (identity.includes('schedul')) return 'schedule'
   if (identity.includes('gmail')) return 'gmail'
   if (identity.includes('zoho')) return 'zoho'
   if (identity.includes('lark')) return 'lark'
@@ -111,7 +117,22 @@ function appName(kind: ApprovalAppKind, source: string) {
   if (kind === 'gmail') return 'Gmail'
   if (kind === 'zoho') return 'Zoho'
   if (kind === 'lark') return 'Lark'
+  if (kind === 'schedule') return 'Scheduled work'
   return source
+}
+
+/**
+ * Scheduling labels name the schedule, not the CRUD verb — "Approve creation"
+ * says nothing about the fact that this grants Divo standing permission to act
+ * later. Keyed off the operation in the payload, since the descriptor action
+ * collapses pause and resume into a single "update".
+ */
+const SCHEDULE_APPROVE_LABEL: Record<string, string> = {
+  create: 'Approve schedule',
+  pause: 'Approve pause',
+  resume: 'Approve resume',
+  cancel: 'Approve cancellation',
+  run_now: 'Approve & run now',
 }
 
 function approveLabel(action: string) {
@@ -191,6 +212,12 @@ export function LiveApprovalComposer({
   const deliveryFailed = request.status === 'error'
   const expired = request.expiresAt <= now
   const canAlwaysAllowBash = descriptor.source === 'bash'
+  const scheduleLabel =
+    kind === 'schedule'
+      ? SCHEDULE_APPROVE_LABEL[
+          stringValue(details.operation ?? details.op).toLowerCase()
+        ]
+      : undefined
   const description =
     stringValue(descriptor.presentation.description ?? details.description) ||
     `${appName(kind, descriptor.source)} is waiting to perform this action.`
@@ -256,6 +283,8 @@ export function LiveApprovalComposer({
             presentation={descriptor.presentation}
             identity={appIdentity(request)}
           />
+        ) : kind === 'schedule' ? (
+          <ScheduleRequest presentation={descriptor.presentation} />
         ) : (
           <GenericRequest presentation={descriptor.presentation} />
         )}
@@ -322,7 +351,7 @@ export function LiveApprovalComposer({
             ) : (
               <ShieldCheck data-icon="inline-start" />
             )}
-            {approveLabel(descriptor.action)}
+            {scheduleLabel ?? approveLabel(descriptor.action)}
           </Button>
         </div>
       </CardFooter>
@@ -343,6 +372,8 @@ function BrandTile({ kind }: { kind: ApprovalAppKind }) {
         <ZohoIcon className="h-6 w-8" />
       ) : kind === 'lark' ? (
         <LarkIcon className="size-6" />
+      ) : kind === 'schedule' ? (
+        <CalendarClock className="size-6 text-amber-600 dark:text-amber-400" />
       ) : (
         <ShieldCheck className="size-6" />
       )}
