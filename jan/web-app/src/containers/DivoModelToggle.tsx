@@ -1,11 +1,18 @@
+import { Check, ChevronDown } from 'lucide-react'
 import { useEffect } from 'react'
 
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { DIVO_MODELS, useDivoModel } from '@/hooks/useDivoModel'
 import { cn } from '@/lib/utils'
 
 /**
- * Input-bar model switch for Divo. Renders nothing unless the signed-in member
+ * Input-bar model picker for Divo. Renders nothing unless the signed-in member
  * is allowed more than one model by the admin — so a single-model member sees
  * no control at all. The proxy backend remains authoritative on each request.
  */
@@ -23,39 +30,42 @@ export function DivoModelToggle({ disabled }: { disabled?: boolean }) {
   if (allowedModels.length < 2) return null
 
   return (
-    <div
-      className={cn(
-        'inline-flex items-center gap-0.5 rounded-full border bg-secondary/40 p-0.5',
-        disabled && 'pointer-events-none opacity-50'
-      )}
-      role="group"
-      aria-label="Model"
-    >
-      {allowedModels.map((model) => {
-        const active = model === selectedModel
-        return (
-          <Tooltip key={model}>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-pressed={active}
-                onClick={() => void setModel(model)}
-                className={cn(
-                  'rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors',
-                  active
-                    ? 'bg-background text-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                {DIVO_MODELS[model].label}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>{DIVO_MODELS[model].hint}</p>
-            </TooltipContent>
-          </Tooltip>
-        )
-      })}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={disabled}
+          aria-label="Model"
+          className={cn(
+            'h-7 gap-1 px-2 text-xs font-normal text-muted-foreground',
+            'hover:bg-accent/60 hover:text-foreground data-[state=open]:text-foreground'
+          )}
+        >
+          {DIVO_MODELS[selectedModel].label}
+          <ChevronDown className="size-3.5 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        {allowedModels.map((model) => (
+          <DropdownMenuItem
+            key={model}
+            onSelect={() => void setModel(model)}
+            className="items-start gap-2"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-sm">{DIVO_MODELS[model].label}</p>
+              <p className="text-xs text-muted-foreground">
+                {DIVO_MODELS[model].hint}
+              </p>
+            </div>
+            {model === selectedModel ? (
+              <Check className="mt-0.5 size-4 shrink-0" />
+            ) : null}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

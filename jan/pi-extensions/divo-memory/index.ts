@@ -18,6 +18,8 @@ Do not save task progress, temporary TODOs, one-off file paths, logs, raw data d
 Use target "user" for user preferences, communication style, and personal workflow expectations. Use target "memory" only for stable local environment facts, tool quirks, or durable lessons about how this desktop setup works.
 
 Memory is injected into the system prompt at the start of each agent run from local markdown files. Mid-run memory writes are durable immediately, but the new snapshot appears on the next agent run.
+
+Apply injected entries as compatible personal defaults; a separate read call is not required merely to recall them. They may refine presentation and working style, but they do not override the user's current instruction, a task-specific department persona rule or exact linked skill, company policy, permissions, approvals, or security requirements. When a more specific rule conflicts, follow the specific rule and do not silently combine incompatible requirements.
 </divo_user_memory>`;
 
 const MEMORY_OPERATION = {

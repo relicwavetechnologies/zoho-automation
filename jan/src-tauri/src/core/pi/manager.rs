@@ -29,10 +29,40 @@ use crate::core::threads::utils::ensure_thread_dir_exists;
 
 const DIVO_APPROVAL_PROTOCOL_TITLE: &str = "divo_approval_v1";
 const DIVO_MEMORY_REVIEW_PROTOCOL_TITLE: &str = "divo_memory_review_v1";
+const DIVO_TEACH_CLARIFICATION_PROTOCOL_TITLE: &str = "divo_teach_clarification_v1";
 const MAX_MEMORY_REVIEW_MESSAGE_BYTES: usize = 16_000;
+const MAX_TEACH_CLARIFICATION_MESSAGE_BYTES: usize = 24_000;
 const CODING_SESSION_FILE: &str = "pi-coding-session.jsonl";
 /// Pi is intentionally bounded because every runtime is a complete Bun process.
-const RUNTIME_POOL_CAPACITY: usize = 2;
+pub(crate) const MIN_RUNTIME_POOL_CAPACITY: usize = 1;
+pub(crate) const MAX_RUNTIME_POOL_CAPACITY: usize = 8;
+
+/// Leave one logical CPU for the UI/OS and cap the default conservatively. A
+/// user can choose a lower or higher persisted limit, but the desktop never
+/// creates an unbounded number of Bun workers.
+pub(crate) fn default_runtime_pool_capacity() -> usize {
+    #[cfg(test)]
+    {
+        // Keep admission-control tests deterministic regardless of CI host CPU count.
+        return 2;
+    }
+
+    #[cfg(not(test))]
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get().saturating_sub(1))
+        .unwrap_or(2)
+        .clamp(MIN_RUNTIME_POOL_CAPACITY, 4)
+}
+
+pub(crate) fn validate_runtime_pool_capacity(capacity: usize) -> Result<(), String> {
+    if (MIN_RUNTIME_POOL_CAPACITY..=MAX_RUNTIME_POOL_CAPACITY).contains(&capacity) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Pi parallelism must be between {MIN_RUNTIME_POOL_CAPACITY} and {MAX_RUNTIME_POOL_CAPACITY}"
+        ))
+    }
+}
 
 fn runtime_session_path(
     data_folder: &std::path::Path,
@@ -96,6 +126,7 @@ struct ExtensionUiReconciliation {
 enum ExtensionUiProtocol {
     Approval,
     MemoryReview,
+    TeachClarification,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +172,25 @@ fn take_pending_memory_review(
     }
     if pending.method != "editor" || pending.protocol != ExtensionUiProtocol::MemoryReview {
         return Err("This extension UI request is not a Divo memory review".into());
+    }
+    Ok(requests
+        .remove(request_id)
+        .expect("request existed while the state lock was held"))
+}
+
+fn take_pending_teach_clarification(
+    requests: &mut HashMap<String, PendingExtensionUiRequest>,
+    request_id: &str,
+    owner: &RunOwner,
+) -> Result<PendingExtensionUiRequest, String> {
+    let pending = requests
+        .get(request_id)
+        .ok_or("Unknown or already resolved Teach clarification request")?;
+    if pending.owner != *owner {
+        return Err("Teach clarification response does not match its active run".into());
+    }
+    if pending.method != "editor" || pending.protocol != ExtensionUiProtocol::TeachClarification {
+        return Err("This extension UI request is not a Divo Teach clarification".into());
     }
     Ok(requests
         .remove(request_id)
@@ -436,6 +486,141 @@ fn valid_memory_review_response(value: &str) -> bool {
     }
 }
 
+fn valid_teach_clarification_request(value: &serde_json::Value) -> bool {
+    let Some(prefill) = value.get("prefill").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    if prefill.len() > MAX_TEACH_CLARIFICATION_MESSAGE_BYTES {
+        return false;
+    }
+    let Ok(descriptor) = serde_json::from_str::<serde_json::Value>(prefill) else {
+        return false;
+    };
+    if descriptor.get("version").and_then(|value| value.as_u64()) != Some(1)
+        || !is_non_empty_bounded_string(descriptor.get("reason"), 1_000)
+    {
+        return false;
+    }
+    let Some(questions) = descriptor
+        .get("questions")
+        .and_then(|value| value.as_array())
+    else {
+        return false;
+    };
+    if questions.is_empty() || questions.len() > 3 {
+        return false;
+    }
+    let mut question_ids = HashSet::new();
+    questions.iter().all(|question| {
+        let Some(id) = question.get("id").and_then(|value| value.as_str()) else {
+            return false;
+        };
+        if id.trim().is_empty() || id.chars().count() > 120 || !question_ids.insert(id) {
+            return false;
+        }
+        if !is_non_empty_bounded_string(question.get("question"), 500)
+            || !matches!(
+                question.get("selection").and_then(|value| value.as_str()),
+                Some("single" | "multiple")
+            )
+            || !question
+                .get("allowCustom")
+                .is_some_and(|value| value.is_boolean())
+            || question
+                .get("whyItMatters")
+                .is_some_and(|value| !is_non_empty_bounded_string(Some(value), 500))
+        {
+            return false;
+        }
+        let Some(options) = question.get("options").and_then(|value| value.as_array()) else {
+            return false;
+        };
+        if !(2..=5).contains(&options.len()) {
+            return false;
+        }
+        let mut option_ids = HashSet::new();
+        options.iter().all(|option| {
+            let Some(option_id) = option.get("id").and_then(|value| value.as_str()) else {
+                return false;
+            };
+            !option_id.trim().is_empty()
+                && option_id.chars().count() <= 120
+                && option_ids.insert(option_id)
+                && is_non_empty_bounded_string(option.get("label"), 240)
+                && !option
+                    .get("description")
+                    .is_some_and(|value| !is_non_empty_bounded_string(Some(value), 500))
+        })
+    })
+}
+
+fn is_divo_teach_clarification_request(value: &serde_json::Value, thread_id: &str) -> bool {
+    !thread_id.is_empty()
+        && value.get("method").and_then(|value| value.as_str()) == Some("editor")
+        && value.get("title").and_then(|value| value.as_str())
+            == Some(DIVO_TEACH_CLARIFICATION_PROTOCOL_TITLE)
+        && valid_teach_clarification_request(value)
+}
+
+fn valid_teach_clarification_response(value: &str) -> bool {
+    if value.len() > MAX_TEACH_CLARIFICATION_MESSAGE_BYTES {
+        return false;
+    }
+    let Ok(response) = serde_json::from_str::<serde_json::Value>(value) else {
+        return false;
+    };
+    if response.get("version").and_then(|value| value.as_u64()) != Some(1) {
+        return false;
+    }
+    let Some(decision) = response.get("decision").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    let Some(answers) = response.get("answers").and_then(|value| value.as_array()) else {
+        return false;
+    };
+    if decision == "cancel" {
+        return answers.is_empty();
+    }
+    if decision != "answer" || answers.is_empty() || answers.len() > 3 {
+        return false;
+    }
+    let mut question_ids = HashSet::new();
+    answers.iter().all(|answer| {
+        let Some(question_id) = answer.get("questionId").and_then(|value| value.as_str()) else {
+            return false;
+        };
+        if question_id.trim().is_empty()
+            || question_id.chars().count() > 120
+            || !question_ids.insert(question_id)
+        {
+            return false;
+        }
+        let Some(selected_ids) = answer
+            .get("selectedOptionIds")
+            .and_then(|value| value.as_array())
+        else {
+            return false;
+        };
+        if selected_ids.len() > 5 {
+            return false;
+        }
+        let mut unique_ids = HashSet::new();
+        if selected_ids.iter().any(|value| {
+            let Some(id) = value.as_str() else {
+                return true;
+            };
+            id.trim().is_empty() || id.chars().count() > 120 || !unique_ids.insert(id)
+        }) {
+            return false;
+        }
+        let custom_text = answer.get("customText");
+        let custom_valid = custom_text
+            .map(|value| is_non_empty_bounded_string(Some(value), 1_000))
+            .unwrap_or(false);
+        selected_ids.len() > 0 || custom_valid
+    })
+}
+
 fn approval_source(value: &serde_json::Value) -> Option<ApprovalSource> {
     let message = value.get("message")?.as_str()?;
     let descriptor: serde_json::Value = serde_json::from_str(message).ok()?;
@@ -556,6 +741,23 @@ fn register_divo_ui_request(
                 method: method.into(),
                 source: None,
                 protocol: ExtensionUiProtocol::MemoryReview,
+            },
+        );
+        return ExtensionUiRegistration::Registered {
+            owner,
+            auto_allow_bash: false,
+        };
+    }
+    if is_divo_teach_clarification_request(value, &owner.thread_id)
+        && descriptor_run_owner(value, "prefill").as_ref() == Some(&owner)
+    {
+        state.pending_extension_ui.insert(
+            id.into(),
+            PendingExtensionUiRequest {
+                owner: owner.clone(),
+                method: method.into(),
+                source: None,
+                protocol: ExtensionUiProtocol::TeachClarification,
             },
         );
         return ExtensionUiRegistration::Registered {
@@ -726,6 +928,7 @@ impl Drop for SlotLease {
 
 struct PoolState {
     config: Option<RuntimeConfig>,
+    runtime_pool_capacity: usize,
     slots: HashMap<String, Arc<RuntimeSlot>>,
     waiters: VecDeque<QueuedAdmission>,
     next_ticket: u64,
@@ -776,6 +979,7 @@ impl PiManager {
         Self {
             pool: Arc::new(Mutex::new(PoolState {
                 config: None,
+                runtime_pool_capacity: default_runtime_pool_capacity(),
                 slots: HashMap::new(),
                 waiters: VecDeque::new(),
                 next_ticket: 0,
@@ -863,7 +1067,7 @@ impl PiManager {
                             })
                         },
                     );
-                    let available = pool.slots.len() < RUNTIME_POOL_CAPACITY;
+                    let available = pool.slots.len() < pool.runtime_pool_capacity;
                     let idle = if is_front && !available {
                         idle_runtime_thread(&pool.slots)
                     } else {
@@ -1647,6 +1851,12 @@ impl PiManager {
                     || current.data_folder != config.data_folder
                     || current.mode != config.mode
             });
+            if changed && pool.slots.values().any(|slot| !slot.reclaimable()) {
+                return Err(
+                    "Cannot change the Pi workspace or mode while an agent is running or waiting for input. Stop or finish those agents first."
+                        .into(),
+                );
+            }
             pool.config = Some(config);
             if changed {
                 std::mem::take(&mut pool.slots)
@@ -1677,8 +1887,10 @@ impl PiManager {
         run_id: String,
         message: String,
     ) -> Result<(), String> {
-        self.prompt_with_model(thread_id, run_id, message, None, None, None, None, None, None)
-            .await
+        self.prompt_with_model(
+            thread_id, run_id, message, None, None, None, None, None, None,
+        )
+        .await
     }
 
     /// Start the owning thread runtime if necessary, apply its chosen model,
@@ -1781,7 +1993,10 @@ impl PiManager {
             _ => return Err("Pi model provider and model id must be supplied together".into()),
         }
         if let Some(level) = thinking_level.as_deref() {
-            if !matches!(level, "off" | "minimal" | "low" | "medium" | "high" | "xhigh") {
+            if !matches!(
+                level,
+                "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
+            ) {
                 return Err("Unsupported Pi thinking level".into());
             }
             Self::send_rpc(
@@ -1806,13 +2021,9 @@ impl PiManager {
             }
             state.active_run = Some(owner.clone());
         }
-        if let Err(error) = publish_run_context(
-            &slot,
-            &owner,
-            profile,
-            teach_session_id,
-            department_id,
-        ) {
+        if let Err(error) =
+            publish_run_context(&slot, &owner, profile, teach_session_id, department_id)
+        {
             clear_active_run_if_matches(&mut slot.state.lock().unwrap().active_run, &owner);
             self.wake_capacity();
             return Err(error);
@@ -2014,6 +2225,11 @@ impl PiManager {
                     &request_id,
                     &owner,
                 )?,
+                ExtensionUiProtocol::TeachClarification => take_pending_teach_clarification(
+                    &mut state.pending_extension_ui,
+                    &request_id,
+                    &owner,
+                )?,
             };
             if always_allow_bash
                 && !can_enable_always_allow_bash(&pending, confirmed.unwrap_or(false))
@@ -2038,15 +2254,28 @@ impl PiManager {
                 ExtensionUiProtocol::MemoryReview => {
                     serde_json::json!({"type":"extension_ui_response","id":request_id,"cancelled":true})
                 }
+                ExtensionUiProtocol::TeachClarification if cancelled => {
+                    serde_json::json!({"type":"extension_ui_response","id":request_id,"cancelled":true})
+                }
+                ExtensionUiProtocol::TeachClarification
+                    if value
+                        .as_deref()
+                        .is_some_and(valid_teach_clarification_response) =>
+                {
+                    serde_json::json!({"type":"extension_ui_response","id":request_id,"value":value})
+                }
+                ExtensionUiProtocol::TeachClarification => {
+                    serde_json::json!({"type":"extension_ui_response","id":request_id,"cancelled":true})
+                }
             }
         };
         if let Err(error) = Self::write_stdin(&slot, &response.to_string()) {
-            // The request was consumed under the lifecycle lock. Do not reinsert
+            // The UI request was consumed under the lifecycle lock. Do not reinsert
             // it after a process exit/stop may have performed terminal cleanup.
             // Keep the card visible in its non-retryable error state so the
             // user sees the real recovery action instead of a stale-card race.
             return Err(format!(
-                "The local Divo runtime could not deliver this approval. Stop the run and send the request again. ({error})"
+                "The local Divo runtime could not deliver this response. Stop the run and send the request again. ({error})"
             ));
         }
         if always_allow_bash {
@@ -2092,6 +2321,59 @@ impl PiManager {
     pub async fn persistent_bash_approval_allowed(&self) -> bool {
         self.pool.lock().await.persistent_bash_allowed
     }
+
+    /// Apply a new physical-worker ceiling. Increasing the ceiling is immediate.
+    /// A decrease is deliberately deferred while any slot is active or awaiting
+    /// user input: terminating such a slot would violate run ownership. Once
+    /// all slots are reclaimable, excess idle workers are stopped before the
+    /// new ceiling becomes active.
+    pub async fn set_runtime_pool_capacity(&self, capacity: usize) -> Result<bool, String> {
+        validate_runtime_pool_capacity(capacity)?;
+        let (removed, app) = {
+            let mut pool = self.pool.lock().await;
+            let current = pool.runtime_pool_capacity;
+            if capacity == current {
+                return Ok(true);
+            }
+            if capacity > current {
+                pool.runtime_pool_capacity = capacity;
+                (Vec::new(), None)
+            } else {
+                if pool.slots.values().any(|slot| !slot.reclaimable()) {
+                    return Ok(false);
+                }
+                let mut removable = pool
+                    .slots
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                removable.sort();
+                let remove_count = pool.slots.len().saturating_sub(capacity);
+                let removed = removable
+                    .into_iter()
+                    .take(remove_count)
+                    .filter_map(|thread_id| pool.slots.remove(&thread_id))
+                    .collect::<Vec<_>>();
+                pool.runtime_pool_capacity = capacity;
+                let app = pool.config.as_ref().map(|config| config.app.clone());
+                (removed, app)
+            }
+        };
+
+        if let Some(app) = app.as_ref() {
+            for slot in removed {
+                self.revoke_slot_bash_rule(&slot).await;
+                Self::stop_slot(&slot, Some(app), "pool_capacity_reduced").await;
+            }
+        }
+        self.wake_capacity();
+        Ok(true)
+    }
+
+    pub async fn runtime_pool_capacity(&self) -> usize {
+        self.pool.lock().await.runtime_pool_capacity
+    }
+
     pub async fn is_running(&self) -> bool {
         self.pool
             .lock()
@@ -2119,16 +2401,21 @@ impl PiManager {
         .await
     }
 
-    /// Switch the active model on every running Pi runtime. The backend proxy
-    /// remains authoritative over which models are allowed; this only changes
-    /// which model id Pi sends. No-op when nothing is running — the desktop
-    /// re-applies the preference after each `pi_start`.
+    /// Update only idle Pi runtimes after a desktop model preference changes.
+    /// Active runs retain the model chosen in their owning `pi_prompt`; changing
+    /// one chat's picker must not alter another chat mid-turn.
     pub async fn set_model(&self, provider: String, model_id: String) -> Result<(), String> {
         let slots: Vec<std::sync::Arc<RuntimeSlot>> = {
             let pool = self.pool.lock().await;
             pool.slots
                 .iter()
-                .filter(|(_, slot)| slot.state.lock().unwrap().process.is_some())
+                .filter(|(_, slot)| {
+                    let state = slot.state.lock().unwrap();
+                    state.process.is_some()
+                        && state.active_run.is_none()
+                        && state.pending_extension_ui.is_empty()
+                        && state.pending.is_empty()
+                })
                 .map(|(_, slot)| slot.clone())
                 .collect()
         };
@@ -2186,7 +2473,7 @@ impl PiManager {
 
     pub async fn get_pool_state(&self) -> serde_json::Value {
         let pool = self.pool.lock().await;
-        serde_json::json!({"poolCapacity":RUNTIME_POOL_CAPACITY,"runtimes":pool.slots.values().map(|slot| { let state=slot.state.lock().unwrap(); serde_json::json!({"threadId":slot.thread_id,"running":state.process.is_some(),"activeRunId":state.active_run.as_ref().map(|owner| owner.run_id.clone()),"pendingUi":state.pending_extension_ui.len(),"admissionLeases":state.admission_leases,"pendingRpcs":state.pending.len()}) }).collect::<Vec<_>>(),"waiting":pool.waiters.iter().filter(|waiter| waiter.state.load(Ordering::Acquire) == WAITER_QUEUED).count()})
+        serde_json::json!({"poolCapacity":pool.runtime_pool_capacity,"runtimes":pool.slots.values().map(|slot| { let state=slot.state.lock().unwrap(); serde_json::json!({"threadId":slot.thread_id,"running":state.process.is_some(),"activeRunId":state.active_run.as_ref().map(|owner| owner.run_id.clone()),"pendingUi":state.pending_extension_ui.len(),"admissionLeases":state.admission_leases,"pendingRpcs":state.pending.len()}) }).collect::<Vec<_>>(),"waiting":pool.waiters.iter().filter(|waiter| waiter.state.load(Ordering::Acquire) == WAITER_QUEUED).count()})
     }
 }
 
@@ -2195,12 +2482,15 @@ mod tests {
     use super::{
         approval_source, can_enable_always_allow_bash, clear_active_run_if_matches,
         drain_pending_extension_ui, event_owner_payload, fail_pending_rpc, idle_runtime_thread,
-        is_divo_approval_request, is_divo_memory_review_request, reconcile_lifecycle_event,
-        require_active_run, response_clears_active_run, revoke_slot_bash_rule,
-        runtime_session_path, should_auto_allow_bash, take_pending_confirm,
-        take_pending_memory_review, valid_memory_review_response, ApprovalSource,
-        ExtensionUiProtocol, PendingExtensionUiRequest, PendingRpc, PiManager, PiRuntimeMode,
-        RunOwner, RuntimeSlot, DIVO_APPROVAL_PROTOCOL_TITLE, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
+        is_divo_approval_request, is_divo_memory_review_request,
+        is_divo_teach_clarification_request, reconcile_lifecycle_event, require_active_run,
+        response_clears_active_run, revoke_slot_bash_rule, runtime_session_path,
+        should_auto_allow_bash, take_pending_confirm, take_pending_memory_review,
+        take_pending_teach_clarification, valid_memory_review_response,
+        valid_teach_clarification_response, validate_runtime_pool_capacity, ApprovalSource, ExtensionUiProtocol,
+        PendingExtensionUiRequest, PendingRpc, PiManager, PiRuntimeMode, RunOwner, RuntimeSlot,
+        DIVO_APPROVAL_PROTOCOL_TITLE, DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
+        DIVO_TEACH_CLARIFICATION_PROTOCOL_TITLE, MAX_RUNTIME_POOL_CAPACITY,
     };
     use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
@@ -2337,6 +2627,35 @@ mod tests {
         })
     }
 
+    fn teach_clarification_ui(owner: &RunOwner) -> serde_json::Value {
+        serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "teach-clarification-1",
+            "method": "editor",
+            "title": DIVO_TEACH_CLARIFICATION_PROTOCOL_TITLE,
+            "prefill": serde_json::json!({
+                "version": 1,
+                "reason": "The trigger materially changes the workflow.",
+                "questions": [{
+                    "id": "trigger",
+                    "question": "When should Divo run this workflow?",
+                    "selection": "single",
+                    "options": [
+                        {"id":"daily","label":"Every day"},
+                        {"id":"weekly","label":"Every week"}
+                    ],
+                    "allowCustom": true
+                }],
+                "runCorrelation": {
+                    "version": 1,
+                    "threadId": owner.thread_id,
+                    "runId": owner.run_id,
+                    "profile": "teach"
+                },
+            }).to_string(),
+        })
+    }
+
     fn activate_context(slot: &RuntimeSlot, owner: RunOwner) {
         let mut state = slot.state.lock().unwrap();
         state.active_run = Some(owner.clone());
@@ -2363,10 +2682,14 @@ mod tests {
     }
 
     #[test]
-    fn delayed_a1_ui_is_cancelled_without_an_a2_event_for_approval_or_memory_review() {
+    fn delayed_a1_ui_is_cancelled_without_an_a2_event_for_named_divo_protocols() {
         for (request, expected_id) in [
             (approval_ui(&owner("thread-a", "a1"), true), "approval-1"),
             (memory_review_ui(&owner("thread-a", "a1")), "memory-1"),
+            (
+                teach_clarification_ui(&owner("thread-a", "a1")),
+                "teach-clarification-1",
+            ),
         ] {
             let slot = RuntimeSlot::new("thread-a".into());
             let a1 = owner("thread-a", "a1");
@@ -2411,6 +2734,25 @@ mod tests {
         assert_eq!(slot.state.lock().unwrap().pending_extension_ui.len(), 1);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, a2);
+        assert!(responses.is_empty());
+    }
+
+    #[test]
+    fn normal_correlated_teach_clarification_registers_and_emits() {
+        let slot = RuntimeSlot::new("thread-a".into());
+        let run = owner("thread-a", "run-a");
+        activate_context(&slot, run.clone());
+
+        let (events, responses) = dispatch_extension_ui(&slot, teach_clarification_ui(&run));
+
+        let state = slot.state.lock().unwrap();
+        let pending = state
+            .pending_extension_ui
+            .get("teach-clarification-1")
+            .expect("Teach clarification should be pending");
+        assert_eq!(pending.protocol, ExtensionUiProtocol::TeachClarification);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, run);
         assert!(responses.is_empty());
     }
 
@@ -2643,6 +2985,7 @@ mod tests {
         second.state.lock().unwrap().bash_always_allowed = true;
         let mut pool = super::PoolState {
             config: None,
+            runtime_pool_capacity: super::default_runtime_pool_capacity(),
             slots: HashMap::from([
                 ("thread-a".into(), first.clone()),
                 ("thread-b".into(), second.clone()),
@@ -2773,6 +3116,62 @@ mod tests {
                 .is_ok()
         );
         assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn teach_clarification_requests_and_responses_are_validated_and_run_bound() {
+        let run = owner("thread-1", "run-1");
+        let valid_request = teach_clarification_ui(&run);
+        assert!(is_divo_teach_clarification_request(
+            &valid_request,
+            "thread-1"
+        ));
+        assert!(!is_divo_teach_clarification_request(&valid_request, ""));
+
+        let malformed_request = serde_json::json!({
+            "method": "editor",
+            "title": DIVO_TEACH_CLARIFICATION_PROTOCOL_TITLE,
+            "prefill": serde_json::json!({
+                "version": 1,
+                "reason": "Need a trigger",
+                "questions": []
+            }).to_string()
+        });
+        assert!(!is_divo_teach_clarification_request(
+            &malformed_request,
+            "thread-1"
+        ));
+
+        let mut request = pending("editor", "thread-1", "run-1");
+        request.protocol = ExtensionUiProtocol::TeachClarification;
+        let mut requests = HashMap::from([("clarify-1".to_string(), request)]);
+        assert!(take_pending_teach_clarification(
+            &mut requests,
+            "clarify-1",
+            &owner("thread-1", "run-2")
+        )
+        .is_err());
+        assert!(take_pending_teach_clarification(&mut requests, "clarify-1", &run).is_ok());
+
+        assert!(valid_teach_clarification_response(
+            &serde_json::json!({
+                "version": 1,
+                "decision": "answer",
+                "answers": [{
+                    "questionId": "trigger",
+                    "selectedOptionIds": ["daily"]
+                }]
+            })
+            .to_string()
+        ));
+        assert!(!valid_teach_clarification_response(
+            &serde_json::json!({
+                "version": 1,
+                "decision": "answer",
+                "answers": []
+            })
+            .to_string()
+        ));
     }
 
     #[test]
@@ -2933,6 +3332,38 @@ mod tests {
         assert!(!manager.bash_approval_allowed("thread-a").await);
     }
 
+    #[tokio::test]
+    async fn pool_capacity_increase_is_immediate_and_a_live_run_defers_a_decrease() {
+        let manager = PiManager::new();
+        assert_eq!(manager.runtime_pool_capacity().await, 2);
+
+        assert!(manager.set_runtime_pool_capacity(4).await.unwrap());
+        assert_eq!(manager.runtime_pool_capacity().await, 4);
+
+        let active = Arc::new(RuntimeSlot::new("thread-a".into()));
+        active.state.lock().unwrap().active_run = Some(owner("thread-a", "run-a"));
+        manager
+            .pool
+            .lock()
+            .await
+            .slots
+            .insert("thread-a".into(), active.clone());
+
+        assert!(!manager.set_runtime_pool_capacity(1).await.unwrap());
+        assert_eq!(manager.runtime_pool_capacity().await, 4);
+
+        active.state.lock().unwrap().active_run = None;
+        assert!(manager.set_runtime_pool_capacity(1).await.unwrap());
+        assert_eq!(manager.runtime_pool_capacity().await, 1);
+        assert_eq!(manager.pool.lock().await.slots.len(), 1);
+    }
+
+    #[test]
+    fn pool_capacity_rejects_values_outside_the_explicit_safe_bounds() {
+        assert!(validate_runtime_pool_capacity(0).is_err());
+        assert!(validate_runtime_pool_capacity(MAX_RUNTIME_POOL_CAPACITY + 1).is_err());
+    }
+
     #[test]
     fn two_overlapping_runs_remain_owned_by_their_thread_slots() {
         let first = Arc::new(RuntimeSlot::new("thread-a".into()));
@@ -2963,7 +3394,7 @@ mod tests {
             ("thread-b".to_string(), second),
         ]);
 
-        assert_eq!(slots.len(), super::RUNTIME_POOL_CAPACITY);
+        assert_eq!(slots.len(), super::default_runtime_pool_capacity());
         assert_eq!(idle_runtime_thread(&slots), None);
 
         first.state.lock().unwrap().active_run = None;
@@ -2974,7 +3405,7 @@ mod tests {
             "thread-c".into(),
             Arc::new(RuntimeSlot::new("thread-c".into())),
         );
-        assert_eq!(slots.len(), super::RUNTIME_POOL_CAPACITY);
+        assert_eq!(slots.len(), super::default_runtime_pool_capacity());
         assert!(slots.contains_key("thread-c"));
     }
 
@@ -3181,7 +3612,7 @@ mod tests {
             .await
             .expect_err("a missing Pi process cannot receive the approval");
 
-        assert!(error.contains("could not deliver this approval"));
+        assert!(error.contains("could not deliver this response"));
         assert!(!manager.bash_approval_allowed("thread-a").await);
         assert!(!slot.state.lock().unwrap().bash_always_allowed);
         assert!(slot.state.lock().unwrap().pending_extension_ui.is_empty());
@@ -3263,7 +3694,7 @@ mod tests {
         hook.reached.notified().await;
         {
             let pool = manager.pool.lock().await;
-            assert_eq!(pool.slots.len(), super::RUNTIME_POOL_CAPACITY);
+            assert_eq!(pool.slots.len(), super::default_runtime_pool_capacity());
             assert_eq!(pool.waiters.len(), 1);
             assert_eq!(pool.waiters[0].owner, Some(owner("c", "c-run")));
         }
@@ -3277,7 +3708,7 @@ mod tests {
             .unwrap();
         let pool = manager.pool.lock().await;
         assert!(pool.waiters.is_empty());
-        assert_eq!(pool.slots.len(), super::RUNTIME_POOL_CAPACITY);
+        assert_eq!(pool.slots.len(), super::default_runtime_pool_capacity());
         assert!(!pool.slots.contains_key("a"));
         assert!(pool.slots.contains_key("b"));
         assert!(pool.slots.contains_key("c"));
@@ -3324,7 +3755,7 @@ mod tests {
         .unwrap();
 
         let pool = manager.pool.lock().await;
-        assert_eq!(pool.slots.len(), super::RUNTIME_POOL_CAPACITY);
+        assert_eq!(pool.slots.len(), super::default_runtime_pool_capacity());
         assert!(Arc::ptr_eq(pool.slots.get("thread-a").unwrap(), &a_slot));
         assert!(pool.slots.contains_key("thread-c"));
         assert!(!pool.slots.contains_key("thread-b"));

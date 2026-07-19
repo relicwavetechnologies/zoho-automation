@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   createSession: vi.fn(),
   deleteLocal: vi.fn(),
   getSession: vi.fn(),
+  getPersonaTree: vi.fn(),
   getStatus: vi.fn(),
   finalizeLocal: vi.fn(),
   listLocal: vi.fn(),
@@ -20,9 +21,7 @@ const h = vi.hoisted(() => ({
   recordScreen: vi.fn(),
   uploadRecording: vi.fn(),
   navigate: vi.fn(),
-  createThread: vi.fn(),
-  updateThread: vi.fn(),
-  threadsState: { threads: {} as Record<string, any> },
+  ensureConversation: vi.fn(),
 }))
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -33,15 +32,9 @@ vi.mock('@tanstack/react-router', () => ({
   useRouter: () => ({ navigate: h.navigate }),
 }))
 
-vi.mock('@/hooks/useThreads', () => {
-  const useThreads: any = (selector: any) => selector({
-    ...h.threadsState,
-    createThread: h.createThread,
-    updateThread: h.updateThread,
-  })
-  useThreads.getState = () => h.threadsState
-  return { useThreads }
-})
+vi.mock('@/lib/divo-teach-thread', () => ({
+  ensureDivoTeachConversation: h.ensureConversation,
+}))
 
 vi.mock('@/lib/divo-teach', () => ({
   cancelTeachRecording: h.cancelRecording,
@@ -50,6 +43,7 @@ vi.mock('@/lib/divo-teach', () => ({
   deleteLocalTeachRecording: h.deleteLocal,
   getDivoSessionStatus: h.getStatus,
   getTeachSession: h.getSession,
+  getManagerPersonaTree: h.getPersonaTree,
   finalizeLocalTeachRecording: h.finalizeLocal,
   listLocalTeachRecordings: h.listLocal,
   listRecentTeachLearnings: h.listRecent,
@@ -86,7 +80,7 @@ const teachSession = (status: 'awaiting_upload' | 'queued' | 'evidence_ready' | 
     : status === 'no_learning' ? 'No durable rule was clear enough to save.' : null,
   appliedChanges: ['completed', 'persona_updated'].includes(status) ? [
     {
-      operation: 'add' as const,
+      operation: 'create' as const,
       kind: 'workflow',
       scopeKey: 'reporting.weekly',
       ruleKey: 'weekly-report.review',
@@ -95,7 +89,7 @@ const teachSession = (status: 'awaiting_upload' | 'queued' | 'evidence_ready' | 
       evidenceRefs: ['transcript:1', 'frame:2'],
     },
     {
-      operation: 'add' as const,
+      operation: 'create' as const,
       kind: 'preference',
       scopeKey: 'reporting.weekly',
       ruleKey: 'weekly-report.concise',
@@ -104,6 +98,7 @@ const teachSession = (status: 'awaiting_upload' | 'queued' | 'evidence_ready' | 
       evidenceRefs: ['transcript:1'],
     },
   ] : [],
+  appliedSkills: [],
   evidence: {
     durationSeconds: 74,
     frameCount: 8,
@@ -140,13 +135,19 @@ describe('TeachMode', () => {
     h.createSession.mockResolvedValue(teachSession('awaiting_upload'))
     h.uploadRecording.mockResolvedValue(teachSession('queued'))
     h.getSession.mockResolvedValue(teachSession('completed'))
+    h.getPersonaTree.mockResolvedValue(null)
     h.navigate.mockResolvedValue(undefined)
-    h.createThread.mockResolvedValue({
+    h.ensureConversation.mockResolvedValue({
       id: 'normal-teach-thread-1',
       title: 'Teach: manager-demo',
-      metadata: {},
+      metadata: {
+        divoTeachProfile: {
+          kind: 'teach',
+          teachSessionId: 'teach-session-1',
+          departmentId: 'department-1',
+        },
+      },
     })
-    h.threadsState.threads = {}
     sessionStorage.clear()
   })
 
@@ -173,11 +174,44 @@ describe('TeachMode', () => {
     }
     h.listLocal.mockResolvedValue([localRecording])
     h.listRecent.mockResolvedValue([teachSession('persona_updated')])
+    h.getPersonaTree.mockResolvedValue({
+      revision: 4,
+      updatedAt: '2026-07-18T00:00:00.000Z',
+      nodes: [{
+        id: 'persona-node-1',
+        kind: 'workflow',
+        scopeKey: 'data-presentation',
+        ruleKey: 'html-dashboard',
+        instruction: 'Create an HTML dashboard when data benefits from visual review.',
+        confidence: 0.97,
+        learningSources: [{
+          source: 'teach',
+          sourceId: 'teach-session-1',
+          decision: 'create',
+          rationale: 'The manager explicitly demonstrated this presentation preference.',
+          evidenceRefs: ['transcript:1'],
+          learnedAt: '2026-07-18T00:00:00.000Z',
+        }],
+        linkedSkills: [{
+          id: 'skill-1',
+          slug: 'cursor-design-html-dashboard',
+          name: 'Cursor Design HTML Dashboard',
+          summary: 'Build a dashboard.',
+          revision: 1,
+          toolIds: ['dataProcessor'],
+        }],
+      }],
+    })
     const user = userEvent.setup()
     render(<TeachMode />)
 
     expect(await screen.findByText('local-teach.mov')).toBeInTheDocument()
-    expect(screen.getByText('Recent persona learnings')).toBeInTheDocument()
+    expect(screen.getByText('Recent Teach learnings')).toBeInTheDocument()
+    expect(screen.getByText('Department persona graph')).toBeInTheDocument()
+    expect(screen.getByText('Cursor Design HTML Dashboard')).toBeInTheDocument()
+    expect(screen.getAllByText('html-dashboard')).toHaveLength(2)
+    expect(screen.getByText('97% confidence')).toBeInTheDocument()
+    expect(screen.getByText('Learned from')).toBeInTheDocument()
     expect(screen.getByText('Review weekly reports with risks first.')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Retry' }))
@@ -221,6 +255,21 @@ describe('TeachMode', () => {
     expect(h.recordScreen).toHaveBeenCalledOnce()
     expect(await screen.findByText('Screen recorder could not start')).toBeInTheDocument()
     expect(screen.getByText(/Screen & System Audio Recording and Microphone access/)).toBeInTheDocument()
+  })
+
+  it('does not cancel an active native recording when Teach is unmounted', async () => {
+    h.recordScreen.mockReturnValue(new Promise(() => undefined))
+    const user = userEvent.setup()
+    const view = render(<TeachMode />)
+
+    const recordButton = await screen.findByRole('button', { name: 'Record teaching' })
+    await waitFor(() => expect(recordButton).toBeEnabled())
+    await user.click(recordButton)
+    expect(await screen.findByText('Recording in progress')).toBeInTheDocument()
+
+    view.unmount()
+
+    expect(h.cancelRecording).not.toHaveBeenCalled()
   })
 
   it('states that upload failed without blaming the completed recording', async () => {
@@ -281,21 +330,9 @@ describe('TeachMode', () => {
       to: '/threads/$threadId',
       params: { threadId: 'normal-teach-thread-1' },
     }))
-    expect(h.createThread).toHaveBeenCalledWith(
-      { id: 'pi-agent', provider: 'pi' },
-      'Teach: manager-demo'
+    expect(h.ensureConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'teach-session-1' })
     )
-    expect(h.updateThread).toHaveBeenCalledWith('normal-teach-thread-1', {
-      metadata: {
-        divoTeachProfile: {
-          kind: 'teach',
-          teachSessionId: 'teach-session-1',
-          departmentId: 'department-1',
-        },
-      },
-    })
-    const initial = JSON.parse(sessionStorage.getItem('initial-message-normal-teach-thread-1') ?? '{}')
-    expect(initial.text).toMatch(/finished recording this workflow/i)
   })
 
   it('removes a Divo-owned recording only after persona processing succeeds', async () => {
@@ -327,19 +364,7 @@ describe('TeachMode', () => {
   })
 
   it('reopens an existing Teach thread instead of creating a duplicate conversation', async () => {
-    h.threadsState.threads = {
-      'existing-teach-thread': {
-        id: 'existing-teach-thread',
-        title: 'Teach: existing workflow',
-        metadata: {
-          divoTeachProfile: {
-            kind: 'teach',
-            teachSessionId: 'teach-session-1',
-            departmentId: 'department-1',
-          },
-        },
-      },
-    }
+    h.ensureConversation.mockResolvedValue({ id: 'existing-teach-thread' })
     h.getSession.mockResolvedValue(teachSession('evidence_ready'))
     const user = userEvent.setup()
     render(<TeachMode />)
@@ -352,6 +377,6 @@ describe('TeachMode', () => {
       to: '/threads/$threadId',
       params: { threadId: 'existing-teach-thread' },
     }))
-    expect(h.createThread).not.toHaveBeenCalled()
+    expect(h.ensureConversation).toHaveBeenCalledOnce()
   })
 })

@@ -23,55 +23,63 @@ function fromModelResponse(
 
 export class DefaultThreadsService implements ThreadsService {
   async fetchThreads(): Promise<Thread[]> {
-    return (
-      ExtensionManager.getInstance()
-        .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
-        ?.listThreads()
-        .then((threads) => {
-          if (!Array.isArray(threads)) return []
+    const extension = ExtensionManager.getInstance()
+      .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
+    let threads: Thread[] | undefined
+    if (extension) {
+      try {
+        threads = await extension.listThreads()
+      } catch (error) {
+        console.warn('Conversational extension could not list threads; reading durable core storage directly.', error)
+      }
+    }
+    if (!Array.isArray(threads)) {
+      const listThreads = window.core?.api?.listThreads
+      if (typeof listThreads !== 'function') {
+        throw new Error('Durable thread storage is unavailable')
+      }
+      threads = await listThreads()
+    }
+    if (!Array.isArray(threads)) {
+      throw new Error('Durable thread storage returned an invalid response')
+    }
 
-          // new String("id") !== "id"
-          threads.forEach((e) => {
-            e.id = e.id?.toString()
-            e.assistants?.forEach((a) => {
-              a.id = a.id?.toString()
-              if (a.model) a.model.id = a.model.id?.toString()
-            })
-          })
+    // new String("id") !== "id"
+    threads.forEach((e) => {
+      e.id = e.id?.toString()
+      e.assistants?.forEach((a) => {
+        a.id = a.id?.toString()
+        if (a.model) a.model.id = a.model.id?.toString()
+      })
+    })
 
-          // Filter out temporary threads from the list
-          const filteredThreads = threads.filter(
-            (e) => e.id !== TEMPORARY_CHAT_ID
-          )
-
-          return filteredThreads.map((e) => {
-            const model = fromModelResponse(e.assistants?.[0]?.model)
-            const assistants = e.assistants
-
-            return {
-              ...e,
-              updated:
-                typeof e.updated === 'number' && e.updated > 1e12
-                  ? Math.floor(e.updated / 1000)
-                  : (e.updated ?? 0),
-              order: e.metadata?.order,
-              isFavorite: e.metadata?.is_favorite,
-              model,
-              assistants,
-              metadata: {
-                ...e.metadata,
-                // Override extracted fields to avoid duplication
-                order: e.metadata?.order,
-                is_favorite: e.metadata?.is_favorite,
-              },
-            } as Thread
-          })
-        })
-        ?.catch((e) => {
-          console.error('Error fetching threads:', e)
-          return []
-        }) ?? []
+    // Filter out temporary threads from the list
+    const filteredThreads = threads.filter(
+      (e) => e.id !== TEMPORARY_CHAT_ID
     )
+
+    return filteredThreads.map((e) => {
+      const model = fromModelResponse(e.assistants?.[0]?.model)
+      const assistants = e.assistants
+
+      return {
+        ...e,
+        updated:
+          typeof e.updated === 'number' && e.updated > 1e12
+            ? Math.floor(e.updated / 1000)
+            : (e.updated ?? 0),
+        order: e.metadata?.order,
+        isFavorite: e.metadata?.is_favorite,
+        model,
+        assistants,
+        metadata: {
+          ...e.metadata,
+          // Override extracted fields to avoid duplication
+          order: e.metadata?.order,
+          is_favorite: e.metadata?.is_favorite,
+        },
+      } as Thread
+    })
   }
 
   async createThread(thread: Thread): Promise<Thread> {
@@ -89,10 +97,10 @@ export class DefaultThreadsService implements ThreadsService {
       ? [{ ...thread.assistants![0], model: modelPayload }]
       : [{ id: 'model-only', name: 'Model', model: modelPayload }]
 
-    return (
-      ExtensionManager.getInstance()
-        .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
-        ?.createThread({
+    const extension = ExtensionManager.getInstance()
+      .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
+    const persisted = extension
+      ? await extension.createThread({
           ...thread,
           assistants: assistantsPayload,
           metadata: {
@@ -100,21 +108,28 @@ export class DefaultThreadsService implements ThreadsService {
             order: thread.order,
           },
         })
-        .then((e) => {
-          const model = fromModelResponse(e.assistants?.[0]?.model, thread.model)
-
-          const assistants = e.assistants
-
-          return {
-            ...e,
-            updated: e.updated,
-            model,
-            order: e.metadata?.order ?? thread.order,
-            assistants,
-          } as Thread
+      : await window.core?.api?.createThread?.({
+          thread: {
+            ...thread,
+            assistants: assistantsPayload,
+            metadata: { ...thread.metadata, order: thread.order },
+          },
         })
-        .catch(() => thread) ?? thread
-    )
+    if (!persisted || typeof persisted !== 'object') {
+      throw new Error('Thread was not saved to durable storage')
+    }
+    const e = persisted as Thread
+    const model = fromModelResponse(e.assistants?.[0]?.model, thread.model)
+
+    const assistants = e.assistants
+
+    return {
+      ...e,
+      updated: e.updated,
+      model,
+      order: e.metadata?.order ?? thread.order,
+      assistants,
+    } as Thread
   }
 
   async updateThread(thread: Thread): Promise<void> {
@@ -123,9 +138,7 @@ export class DefaultThreadsService implements ThreadsService {
       return
     }
 
-    await ExtensionManager.getInstance()
-      .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
-      ?.modifyThread({
+    const payload = {
         ...thread,
         assistants: thread.assistants?.map((e) => ({
           ...e,
@@ -141,7 +154,16 @@ export class DefaultThreadsService implements ThreadsService {
         object: 'thread',
         created: Date.now() / 1000,
         updated: Date.now() / 1000,
-      })
+      }
+    const extension = ExtensionManager.getInstance()
+      .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
+    if (extension) {
+      await extension.modifyThread(payload)
+      return
+    }
+    const modifyThread = window.core?.api?.modifyThread
+    if (typeof modifyThread !== 'function') throw new Error('Durable thread storage is unavailable')
+    await modifyThread({ thread: payload })
   }
 
   async deleteThread(threadId: string): Promise<void> {
@@ -150,8 +172,14 @@ export class DefaultThreadsService implements ThreadsService {
       return
     }
 
-    await ExtensionManager.getInstance()
+    const extension = ExtensionManager.getInstance()
       .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
-      ?.deleteThread(threadId)
+    if (extension) {
+      await extension.deleteThread(threadId)
+      return
+    }
+    const deleteThread = window.core?.api?.deleteThread
+    if (typeof deleteThread !== 'function') throw new Error('Durable thread storage is unavailable')
+    await deleteThread({ threadId })
   }
 }

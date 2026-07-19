@@ -85,7 +85,7 @@ function makeScopedPermissionService(
 
 function makeSkillPublishingPrisma() {
   const creates: unknown[] = [];
-  const prisma = {
+  const tx = {
     skill: {
       findFirst: async () => null,
       create: async (args: { data: Record<string, unknown> }) => {
@@ -114,7 +114,11 @@ function makeSkillPublishingPrisma() {
     skillRegistryRevision: {
       upsert: async () => ({}),
     },
+    skillAccessGrant: {
+      upsert: async () => ({}),
+    },
   };
+  const prisma = { ...tx, $transaction: async (fn: (store: typeof tx) => unknown) => fn(tx) };
 
   return { prisma: prisma as never, creates };
 }
@@ -792,6 +796,56 @@ describe('LocalApprovalIntentService', () => {
     assert.equal(committed.ok, true);
   });
 
+  it('binds a local approval intent to one exact desktop thread, run, and action', async () => {
+    const executed: unknown[] = [];
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      permissionCheck: () => ok('create'),
+      execute: async (args) => {
+        executed.push(args);
+        return ok({ result: `echo:${args.query}` });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['create'])),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const approvals = makeLocalApprovals(executor);
+    const execution = {
+      version: 1 as const,
+      threadId: 'thread-a',
+      runId: 'run-a',
+      actionId: 'tool-call-a',
+    };
+    const prepared = await approvals.prepare({
+      member,
+      toolId: 'fakeTool',
+      args: { query: 'isolated' },
+      execution,
+    });
+    const intentId = (prepared.data as any).intentId as string;
+
+    const wrongRun = await approvals.commit({
+      member,
+      intentId,
+      execution: { ...execution, runId: 'run-b' },
+    });
+    assert.equal(wrongRun.status, 'approval_intent_not_found');
+
+    const wrongAction = await approvals.commit({
+      member,
+      intentId,
+      execution: { ...execution, actionId: 'tool-call-b' },
+    });
+    assert.equal(wrongAction.status, 'approval_intent_not_found');
+
+    const committed = await approvals.commit({ member, intentId, execution });
+    assert.equal(committed.ok, true);
+    assert.deepEqual(executed, [{ query: 'isolated' }]);
+  });
+
   it('expires uncommitted intents using the injected clock', async () => {
     let nowMs = Date.parse('2026-07-10T00:00:00.000Z');
     const clock: Clock = { now: () => new Date(nowMs), nowMs: () => nowMs };
@@ -914,6 +968,15 @@ describe('GatewayDispatcher', () => {
     toolIds: ['zohoCrm'],
     revision: 1,
   };
+  const instructionOnlySkill: CatalogSkill = {
+    id: 'instruction-only-skill',
+    slug: 'instruction-only-skill',
+    name: 'Instruction only',
+    description: 'A recipe that declares no backend tools',
+    instructions: 'Follow these presentation instructions',
+    toolIds: [],
+    revision: 1,
+  };
 
   function makeDispatcher(perm = makeAllowedPerm('fakeTool', ['read'])) {
     const registry = new ToolRegistry();
@@ -929,7 +992,7 @@ describe('GatewayDispatcher', () => {
     return new GatewayDispatcher({
       permissions: makePermissionService(perm),
       toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([allowedSkill, blockedSkill]),
+      skillCatalog: makeSkillCatalog([allowedSkill, blockedSkill, instructionOnlySkill]),
       toolExecutor,
       logger: noopLogger,
     });
@@ -1521,6 +1584,17 @@ describe('GatewayDispatcher', () => {
     }, member);
     assert.equal(denied.ok, false);
     assert.equal(denied.status, 'permission_denied');
+  });
+
+  it('returns a granted instruction-only skill without requiring a fake tool', async () => {
+    const dispatcher = makeDispatcher();
+    const result = await dispatcher.dispatch({
+      op: 'skills.get',
+      payload: { skillId: 'instruction-only-skill' },
+    }, member);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual((result.data as { skill: { toolIds: string[] } }).skill.toolIds, []);
   });
 
   it('returns RBAC-filtered ranked skills.search results', async () => {

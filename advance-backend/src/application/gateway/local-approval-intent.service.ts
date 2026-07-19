@@ -3,7 +3,11 @@ import type { ToolActionGroup } from '../../domain/permissions/tool-action-group
 import type { Clock } from '../../shared/clock';
 import type { Logger } from '../../shared/logger';
 import { computeArgsHash } from '../approval/approval-policy';
-import type { GatewayMemberContext, GatewayResponse } from './gateway.types';
+import type {
+  GatewayExecutionContext,
+  GatewayMemberContext,
+  GatewayResponse,
+} from './gateway.types';
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
 import type { PreparedToolInvocation, ToolExecutor } from './tool-executor';
 import { googleWorkspaceProductByToolId } from '../google/google-workspace-mcp-manifest';
@@ -28,6 +32,7 @@ interface StoredApprovalIntent {
   readonly userId: string;
   readonly sessionId: string;
   readonly departmentId: string | null;
+  readonly execution?: GatewayExecutionContext;
   readonly toolId: string;
   readonly action: ToolActionGroup;
   readonly args: Record<string, unknown>;
@@ -86,10 +91,16 @@ export class InMemoryApprovalIntentRepository {
     return true;
   }
 
-  claim(intentId: string, member: GatewayMemberContext, departmentId: string | undefined, nowMs: number): ClaimResult {
+  claim(
+    intentId: string,
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    execution: GatewayExecutionContext | undefined,
+    nowMs: number,
+  ): ClaimResult {
     this.sweep(nowMs);
     const intent = this.intents.get(intentId);
-    if (!intent || !ownedBy(intent, member, departmentId)) return { kind: 'not_found' };
+    if (!intent || !ownedBy(intent, member, departmentId, execution)) return { kind: 'not_found' };
 
     if (intent.state === 'consumed') return { kind: 'consumed' };
     if (intent.state === 'expired' || nowMs >= intent.expiresAtMs) {
@@ -143,11 +154,24 @@ function ownedBy(
   intent: StoredApprovalIntent,
   member: GatewayMemberContext,
   departmentId: string | undefined,
+  execution: GatewayExecutionContext | undefined,
 ): boolean {
   return intent.companyId === member.companyId
     && intent.userId === member.userId
     && intent.sessionId === member.sessionId
-    && intent.departmentId === (departmentId ?? null);
+    && intent.departmentId === (departmentId ?? null)
+    && executionMatches(intent.execution, execution);
+}
+
+function executionMatches(
+  stored: GatewayExecutionContext | undefined,
+  requested: GatewayExecutionContext | undefined,
+): boolean {
+  if (!stored || !requested) return stored === requested;
+  return stored.version === requested.version
+    && stored.threadId === requested.threadId
+    && stored.runId === requested.runId
+    && stored.actionId === requested.actionId;
 }
 
 export interface LocalApprovalIntentServiceDeps {
@@ -170,6 +194,7 @@ export class LocalApprovalIntentService {
     readonly departmentId?: string;
     readonly toolId: string;
     readonly args: Record<string, unknown>;
+    readonly execution?: GatewayExecutionContext;
   }): Promise<GatewayResponse> {
     const prepared = await this.deps.toolExecutor.prepare(input);
     if (!prepared.ok || !prepared.data) return prepared;
@@ -189,6 +214,7 @@ export class LocalApprovalIntentService {
       readonly departmentId?: string;
       readonly toolId: string;
       readonly args: Record<string, unknown>;
+      readonly execution?: GatewayExecutionContext;
     },
     prepared: PreparedToolInvocation,
   ): Promise<GatewayResponse> {
@@ -221,6 +247,7 @@ export class LocalApprovalIntentService {
       userId: input.member.userId,
       sessionId: input.member.sessionId,
       departmentId: input.departmentId ?? null,
+      ...(input.execution ? { execution: input.execution } : {}),
       toolId,
       action,
       args: storedArgs,
@@ -241,6 +268,9 @@ export class LocalApprovalIntentService {
       userId: input.member.userId,
       companyId: input.member.companyId,
       departmentId: input.departmentId ?? null,
+      threadId: input.execution?.threadId ?? null,
+      runId: input.execution?.runId ?? null,
+      actionId: input.execution?.actionId ?? null,
       expiresAt,
     });
 
@@ -260,12 +290,14 @@ export class LocalApprovalIntentService {
     readonly member: GatewayMemberContext;
     readonly departmentId?: string;
     readonly intentId: string;
+    readonly execution?: GatewayExecutionContext;
   }): Promise<GatewayResponse> {
     const nowMs = this.deps.clock.nowMs();
     const claimed = this.deps.repository.claim(
       input.intentId,
       input.member,
       input.departmentId,
+      input.execution,
       nowMs,
     );
 
@@ -299,6 +331,7 @@ export class LocalApprovalIntentService {
       toolId: claimed.intent.toolId,
       args: cloneJsonRecord(claimed.intent.args),
       expectedAction: claimed.intent.action,
+      ...(claimed.intent.execution ? { execution: claimed.intent.execution } : {}),
     });
 
     // Manager approval can be asynchronous. In that one case the locally-approved exact
@@ -315,6 +348,9 @@ export class LocalApprovalIntentService {
       action: claimed.intent.action,
       status: result.status,
       consumed: result.status !== 'approval_required',
+      threadId: claimed.intent.execution?.threadId ?? null,
+      runId: claimed.intent.execution?.runId ?? null,
+      actionId: claimed.intent.execution?.actionId ?? null,
     });
     return result;
   }

@@ -148,10 +148,9 @@ export class SkillCatalogService {
 
   /**
    * Agent-facing discovery has two independent gates: the skill must be
-   * granted and all required tools must be executable in the current policy
-   * context. Grants remain independently manageable in the admin registry,
-   * but a non-executable recipe must never be presented to the runtime as a
-   * usable skill.
+   * granted and all declared tools must be executable in the current policy
+   * context. A skill with no tools is an instruction-only recipe and is valid;
+   * loading it does not grant any execution authority.
    */
   private isVisible(
     row: SkillRow,
@@ -160,8 +159,9 @@ export class SkillCatalogService {
   ): boolean {
     if (!this.isLanguageSafe(row)) return false;
     const granted = grantedSkillIds ? grantedSkillIds.has(row.id) : true;
-    const executable = row.toolIds.length > 0
-      && row.toolIds.every((toolId) => permission.allowedToolIds.has(asToolId(toolId)));
+    const executable = row.toolIds.every((toolId) =>
+      permission.allowedToolIds.has(asToolId(toolId))
+    );
     return granted && executable;
   }
 

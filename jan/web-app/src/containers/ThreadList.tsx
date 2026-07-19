@@ -29,16 +29,23 @@ import { RenameThreadDialog, DeleteThreadDialog } from '@/containers/dialogs'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { ThreadMessage } from '@janhq/core'
+import {
+  readDivoTeachProfile,
+  teachThreadDisplayTitle,
+} from '@/lib/divo-teach-thread'
 
 const ThreadItem = memo(
   ({
     thread,
     isMobile,
     currentProjectId,
+    hideTeachBadge,
   }: {
     thread: Thread
     isMobile: boolean
     currentProjectId?: string
+    /** Set when the surrounding group already identifies these as Teach. */
+    hideTeachBadge?: boolean
   }) => {
     const deleteThread = useThreads((state) => state.deleteThread)
     const renameThread = useThreads((state) => state.renameThread)
@@ -143,6 +150,21 @@ const ThreadItem = memo(
       select: (params) => params.threadId,
     })
     const isSelected = currentThreadId === thread.id
+    const isTeachThread = Boolean(readDivoTeachProfile(thread.metadata))
+    const rawTitle = thread.title || t('common:newThread')
+    // The badge already says "Teach"; the prefix would repeat it.
+    const displayTitle = isTeachThread
+      ? teachThreadDisplayTitle(rawTitle)
+      : rawTitle
+
+    const teachBadge = isTeachThread && !hideTeachBadge ? (
+      <span
+        className="shrink-0 rounded border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-violet-400"
+        title="Teach conversation"
+      >
+        Teach
+      </span>
+    ) : null
 
     return (
       <SidebarMenuItem>
@@ -150,7 +172,8 @@ const ThreadItem = memo(
           <Link to="/threads/$threadId" params={{ threadId: thread.id }} className={cn("bg-card dark:bg-secondary/20 mb-2 px-4 py-4 border hover:dark:bg-secondary/30 rounded-lg block max-w-full overflow-hidden", isSelected && "border-primary")}>
               <div className="flex items-center gap-1.5 min-w-0">
                 <ThreadStateIndicator threadId={thread.id} />
-                <span className={cn("block truncate", isSelected && "font-medium text-primary")} title={thread.title || t('common:newThread')}>{thread.title || t('common:newThread')}</span>
+                <span className={cn("block min-w-0 flex-1 truncate", isSelected && "font-medium text-primary")} title={displayTitle}>{displayTitle}</span>
+                {teachBadge}
               </div>
               {currentProjectId && lastUserMessageText && (
                 <div className="text-muted-foreground text-xs mt-1 line-clamp-1 pr-10">
@@ -162,7 +185,8 @@ const ThreadItem = memo(
           <SidebarMenuButton asChild isActive={isSelected}>
             <Link to="/threads/$threadId" params={{ threadId: thread.id }}>
               <ThreadStateIndicator threadId={thread.id} />
-              <span className={cn("block truncate", isSelected && "font-medium")} title={thread.title || t('common:newThread')}>{thread.title || t('common:newThread')}</span>
+              <span className={cn("block min-w-0 flex-1 truncate", isSelected && "font-medium")} title={displayTitle}>{displayTitle}</span>
+              {teachBadge}
             </Link>
           </SidebarMenuButton>
         }
@@ -278,9 +302,15 @@ const ThreadItem = memo(
 type ThreadListProps = {
   threads: Thread[]
   currentProjectId?: string
+  /** Set when the surrounding group already identifies these as Teach. */
+  hideTeachBadge?: boolean
 }
 
-function ThreadList({ threads, currentProjectId }: ThreadListProps) {
+function ThreadList({
+  threads,
+  currentProjectId,
+  hideTeachBadge,
+}: ThreadListProps) {
   const { isMobile } = useSidebar()
 
   const sortedThreads = useMemo(() => {
@@ -297,6 +327,7 @@ function ThreadList({ threads, currentProjectId }: ThreadListProps) {
           thread={thread}
           isMobile={isMobile}
           currentProjectId={currentProjectId}
+          hideTeachBadge={hideTeachBadge}
         />
       ))}
     </>

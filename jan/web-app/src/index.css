@@ -57,7 +57,10 @@
   --color-sidebar-ring: var(--sidebar-ring);
   --animate-hue-rotate: hue-rotate 4s infinite;
   --font-studio: "StudioFeixenSans";
-  --font-sans: "Inter", sans-serif;
+  /* System stack, matching the Codex macOS app — SF Pro on Mac, Segoe on
+     Windows. Inter stays as the packaged fallback for Linux webviews. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+    sans-serif;
 
   /* Font scale based on --font-size-base */
   --text-xs: calc(var(--font-size-base) * 0.75); /* ~12px */
@@ -101,48 +104,99 @@
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: #194D24;
-  --sidebar-foreground: oklch(0.145 0 0);
+  /* Neutral grey sidebar surface — flat, no tint. */
+  --sidebar: #f6f6f6;
+  --sidebar-foreground: oklch(0.28 0 0);
   --sidebar-primary: oklch(0.205 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-accent: #e6e6e6;
+  --sidebar-accent-foreground: oklch(0.18 0 0);
+  --sidebar-border: oklch(0.9 0 0);
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+/* Dark surfaces follow the Codex palette: flat neutral greys, no tint, and a
+   very narrow spread between them (#181818 → #303030). `--background` #181818
+   and `--sidebar` #242424 are sampled from the Codex app itself — don't drift
+   them. Borders are near-invisible: separation comes from the step in fill, not
+   from a line. `--primary` is the user's accent (see `useInterfaceSettings`)
+   and is deliberately left alone. */
 .dark {
-  --background: oklch(0.18 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
+  --background: #181818;
+  --foreground: #ededed;
+  --card: #1f1f1f;
+  --card-foreground: #ededed;
+  --popover: #242424;
+  --popover-foreground: #ededed;
   --primary: oklch(0.7003 0.1611 35.09);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --primary-foreground: #181818;
+  --secondary: #262626;
+  --secondary-foreground: #ededed;
+  --muted: #262626;
+  --muted-foreground: #9b9b9b;
+  --accent: #262626;
+  --accent-foreground: #ededed;
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --border: oklch(1 0 0 / 7%);
+  --input: oklch(1 0 0 / 10%);
+  --ring: #4d4d4d;
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: #194D24;
-  --sidebar-foreground: oklch(0.985 0 0);
+  /* The rail is the *raised* surface and the content pane recedes below it —
+     the opposite of the usual dark-app instinct, and what makes Codex read the
+     way it does. Keep `--sidebar` lighter than `--background`. */
+  --sidebar: #242424;
+  /* Rows read near-white in Codex — only group labels and metadata recede
+     (they take this at reduced opacity). */
+  --sidebar-foreground: #d6d6d6;
   --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar-primary-foreground: #ededed;
+  --sidebar-accent: #303030;
+  --sidebar-accent-foreground: #ededed;
+  --sidebar-border: oklch(1 0 0 / 6%);
+  --sidebar-ring: #4d4d4d;
+}
+
+/* Running-state text: a highlight sweeps left-to-right across the label instead
+   of a spinner sitting beside it. The element carries its own colour through the
+   gradient, so it must be removed (not just paused) when work finishes —
+   callers apply this class conditionally. */
+@keyframes text-shimmer {
+  from {
+    background-position: 150% center;
+  }
+  to {
+    background-position: -50% center;
+  }
+}
+
+.text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: text-shimmer 1.4s linear infinite;
+}
+
+/* Reduced motion still needs a "this is live" signal — hold the sweep at the
+   bright end rather than dropping to transparent text. */
+@media (prefers-reduced-motion: reduce) {
+  .text-shimmer {
+    animation: none;
+    background-image: none;
+    color: var(--foreground);
+  }
 }
 
 @layer base {

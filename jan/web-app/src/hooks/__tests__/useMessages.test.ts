@@ -282,6 +282,40 @@ describe('useMessages', () => {
         })
       )
     })
+
+    it('serializes a checkpoint update behind its initial create', async () => {
+      let resolveCreate: (message: ThreadMessage) => void
+      mockCreateMessage.mockImplementation(
+        () =>
+          new Promise<ThreadMessage>((resolve) => {
+            resolveCreate = resolve
+          })
+      )
+      mockModifyMessage.mockResolvedValue(undefined)
+
+      const { result } = renderHook(() => useMessages())
+      const checkpoint: ThreadMessage = {
+        id: 'checkpoint-1',
+        thread_id: 'thread1',
+        role: 'assistant',
+        content: 'partial',
+        created_at: Date.now(),
+      }
+      const completed = { ...checkpoint, content: 'complete' }
+
+      act(() => {
+        result.current.addMessage(checkpoint)
+        result.current.updateMessage(completed)
+      })
+
+      expect(mockCreateMessage).toHaveBeenCalledWith(checkpoint)
+      expect(mockModifyMessage).not.toHaveBeenCalled()
+
+      resolveCreate!(checkpoint)
+      await vi.waitFor(() => {
+        expect(mockModifyMessage).toHaveBeenCalledWith(completed)
+      })
+    })
   })
 
   describe('deleteMessage', () => {

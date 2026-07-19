@@ -146,6 +146,23 @@ export class PersonaLearningService {
         take: 20,
         select: { claim: true },
       });
+      const existingTree = await this.deps.prisma.managerPersonaTree.findUnique({
+        where: {
+          companyId_managerId_departmentId: {
+            companyId: job.evidence.companyId,
+            managerId: job.evidence.managerId,
+            departmentId: job.evidence.departmentId,
+          },
+        },
+        select: {
+          nodes: {
+            where: { status: 'active' },
+            orderBy: { updatedAt: 'desc' },
+            take: 100,
+            select: { kind: true, scopeKey: true, ruleKey: true, instruction: true },
+          },
+        },
+      });
       const extraction = await this.deps.extractor.extract({
         companyId: job.evidence.companyId,
         departmentId: job.evidence.departmentId,
@@ -155,6 +172,7 @@ export class PersonaLearningService {
         tools,
         runSummary: job.evidence.runSummary,
         existingCandidateClaims: existingCandidateClaims.map(candidate => candidate.claim),
+        existingCanonicalRules: existingTree?.nodes ?? [],
       });
 
       await this.deps.prisma.$transaction(async tx => {

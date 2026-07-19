@@ -2,7 +2,8 @@
  * Skill-catalog visibility under per-skill RBAC enforcement.
  *
  * The gateway always supplies `grantedSkillIds`, so visibility is deny-by-default
- * and requires both an explicit grant and executable required tools.
+ * and requires both an explicit grant and permission for every declared tool.
+ * Instruction-only skills declare no tools and remain safe to load.
  */
 
 import { describe, it } from 'node:test';
@@ -45,6 +46,7 @@ const permission = {
 const rows = [
   row('sk-books', ['zohoBooks']),        // tool-usable
   row('sk-crm', ['zohoCrm']),            // NOT tool-usable
+  row('sk-instructions', []),             // instruction-only
 ];
 
 function catalog() {
@@ -54,15 +56,15 @@ function catalog() {
 describe('SkillCatalogService — tool-derived fallback (no grants supplied)', () => {
   it('shows only skills whose every tool the member can use', async () => {
     const visible = await catalog().listVisible({ companyId: 'co', departmentId: 'dep', permission });
-    assert.deepEqual(visible.map((s) => s.id), ['sk-books']);
+    assert.deepEqual(visible.map((s) => s.id), ['sk-books', 'sk-instructions']);
   });
 });
 
 describe('SkillCatalogService — grant-based visibility (the live model)', () => {
   it('requires both a grant and permission for every required tool', async () => {
-    const grantedSkillIds = new Set(['sk-books', 'sk-crm']);
+    const grantedSkillIds = new Set(['sk-books', 'sk-crm', 'sk-instructions']);
     const visible = await catalog().listVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds });
-    assert.deepEqual(visible.map((s) => s.id), ['sk-books']);
+    assert.deepEqual(visible.map((s) => s.id), ['sk-books', 'sk-instructions']);
   });
 
   it('hides everything when nothing is granted (deny-by-default)', async () => {
@@ -71,11 +73,13 @@ describe('SkillCatalogService — grant-based visibility (the live model)', () =
   });
 
   it('applies the same gate to getVisible', async () => {
-    const grantedSkillIds = new Set(['sk-books', 'sk-crm']);
+    const grantedSkillIds = new Set(['sk-books', 'sk-crm', 'sk-instructions']);
     const crm = await catalog().getVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds, skillId: 'sk-crm' });
     const books = await catalog().getVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds, skillId: 'sk-books' });
+    const instructions = await catalog().getVisible({ companyId: 'co', departmentId: 'dep', permission, grantedSkillIds, skillId: 'sk-instructions' });
     assert.equal(crm, null);
     assert.equal(books?.id, 'sk-books');
+    assert.equal(instructions?.id, 'sk-instructions');
   });
 });
 

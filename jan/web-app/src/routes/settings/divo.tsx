@@ -33,9 +33,20 @@ export const Route = createFileRoute(route.settings.divo as any)({
   component: DivoSettings,
 })
 
+type PiParallelismStatus = {
+  configuredCapacity: number | null
+  effectiveCapacity: number
+  defaultCapacity: number
+  minCapacity: number
+  maxCapacity: number
+  applied?: boolean
+  restartRequired?: boolean
+}
+
 function DivoSettings() {
   const [backendUrl, setBackendUrl] = useState(getStoredDivoBackendUrl)
   const [workspace, setWorkspace] = useState<DivoWorkspaceStatus | null>(null)
+  const [parallelism, setParallelism] = useState<PiParallelismStatus | null>(null)
   const [status, setStatus] = useState<DivoSessionStatus>({
     configured: false,
     departments: [],
@@ -44,16 +55,19 @@ function DivoSettings() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [isChangingDepartment, setIsChangingDepartment] = useState(false)
+  const [isChangingParallelism, setIsChangingParallelism] = useState(false)
 
   const refreshStatus = async () => {
     setIsLoadingStatus(true)
     try {
-      const [next, workspaceStatus] = await Promise.all([
+      const [next, workspaceStatus, parallelismStatus] = await Promise.all([
         validateDivoSession(),
         getPiWorkspaceStatus(),
+        invoke<PiParallelismStatus>('pi_get_parallelism'),
       ])
       setStatus(normalizeDivoSessionStatus(next))
       setWorkspace(workspaceStatus)
+      setParallelism(parallelismStatus)
       if (status.departmentId && status.departmentId !== next.departmentId) {
         await restartPiForWorkspaceChange()
       }
@@ -124,6 +138,23 @@ function DivoSettings() {
     }
   }
 
+  const handleParallelismChange = async (capacity: number) => {
+    setIsChangingParallelism(true)
+    try {
+      const next = await invoke<PiParallelismStatus>('pi_set_parallelism', { capacity })
+      setParallelism(next)
+      if (next.restartRequired) {
+        toast.info('Parallel-agent limit will apply after active agents finish or Pi is restarted')
+      } else {
+        toast.success(`Divo can now run up to ${next.effectiveCapacity} Pi agents at once`)
+      }
+    } catch (error) {
+      toast.error('Failed to update parallel-agent limit', { description: String(error) })
+    } finally {
+      setIsChangingParallelism(false)
+    }
+  }
+
   const handleDisconnect = async () => {
     setIsDisconnecting(true)
     try {
@@ -162,6 +193,13 @@ function DivoSettings() {
   const workspaceDescription = selectedWorkspacePath
     ? 'Divo starts in the selected workspace folder.'
     : 'Divo starts in the default workspace.'
+  const configuredParallelism = parallelism?.configuredCapacity ?? parallelism?.effectiveCapacity
+  const parallelismOptions = parallelism
+    ? Array.from(
+      { length: parallelism.maxCapacity - parallelism.minCapacity + 1 },
+      (_, index) => parallelism.minCapacity + index
+    )
+    : []
 
   return (
     <div className="flex flex-col h-svh w-full">
@@ -288,6 +326,38 @@ function DivoSettings() {
               <CardItem
                 title="User Skills"
                 description={workspace?.userSkillsPath ?? 'Not resolved yet'}
+              />
+            </Card>
+
+            <Card title="Parallel Agents">
+              <CardItem
+                title="Concurrent Pi Agents"
+                description={
+                  parallelism
+                    ? `Up to ${parallelism.effectiveCapacity} active Pi runtimes. Each chat remains isolated; additional chats wait independently.`
+                    : 'Loading the current Pi runtime limit…'
+                }
+                actions={
+                  parallelism ? (
+                    <select
+                      value={configuredParallelism ?? parallelism.defaultCapacity}
+                      disabled={isChangingParallelism}
+                      onChange={(event) => void handleParallelismChange(Number(event.target.value))}
+                      className="h-8 w-28 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                      aria-label="Concurrent Pi agents"
+                    >
+                      {parallelismOptions.map((capacity) => (
+                        <option key={capacity} value={capacity}>
+                          {capacity}
+                        </option>
+                      ))}
+                    </select>
+                  ) : undefined
+                }
+              />
+              <CardItem
+                title="Safety boundary"
+                description="Agents in the same workspace can still edit the same files. Use separate workspaces or worktrees for concurrent coding tasks."
               />
             </Card>
 

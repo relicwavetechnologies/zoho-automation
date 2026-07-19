@@ -28,6 +28,12 @@ export interface PersonaLearningExtractionInput {
   readonly tools: readonly PersonaLearningToolSummary[];
   readonly runSummary?: string | null;
   readonly existingCandidateClaims: readonly string[];
+  readonly existingCanonicalRules?: readonly {
+    readonly kind: string;
+    readonly scopeKey: string;
+    readonly ruleKey: string;
+    readonly instruction: string;
+  }[];
 }
 
 export interface PersonaLearningExtractor {
@@ -54,6 +60,12 @@ Use one of:
 scopeKey must be a short, stable task scope such as "reporting.weekly", "email.client", or "general". A preference for one scope must not be generalized to all work.
 
 ruleKey must be a stable lower-case identifier for the exact reusable rule, such as "weekly-report.bullets" or "client-email.direct-subject". Reuse exactly the same ruleKey when later evidence supports the same rule. Never use a manager name, a date, an arbitrary task ID, or a generated UUID.
+
+The input may contain existingCanonicalRules. Compare every observation against them before returning JSON:
+- same durable meaning without conflict: reuse the exact existing kind, scopeKey, and ruleKey;
+- conflicting manager guidance: return kind "contradiction" and reuse the existing scopeKey and ruleKey;
+- genuinely different concept: create a new stable scopeKey and ruleKey.
+Do not create a synonym or differently named duplicate of an existing rule.
 
 Return exactly:
 {"schemaVersion":1,"observations":[{"kind":"preference","scopeKey":"reporting.weekly","ruleKey":"weekly-report.bullets","claim":"...","rationale":"...","evidenceStrength":"explicit"}]}
@@ -83,6 +95,7 @@ export class DeepSeekPersonaLearningExtractor implements PersonaLearningExtracto
           runSummary: input.runSummary ?? null,
         },
         existingShadowCandidateClaims: input.existingCandidateClaims,
+        existingCanonicalRules: input.existingCanonicalRules ?? [],
       }),
       temperature: 0,
       maxOutputTokens: 2_000,

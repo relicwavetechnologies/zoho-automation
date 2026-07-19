@@ -14,7 +14,9 @@ advance-backend/pnpm-workspace.yaml
 graphify-out/
 
 # External reference codebases used for local research only
+research/
 research/hermes-agent/
+research/graphiti/
 
 # production/local secrets
 .env

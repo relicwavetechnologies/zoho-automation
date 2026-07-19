@@ -37,6 +37,11 @@ import { useAgentMode } from '@/hooks/useAgentMode'
 import { TEMPORARY_CHAT_ID } from '@/constants/chat'
 import { PlatformShortcuts, ShortcutAction } from '@/lib/shortcuts'
 
+/**
+ * Shortcut chips are revealed on row hover rather than shown permanently. Three
+ * of the five rows carry one, and standing they read as a second column of
+ * content competing with the labels.
+ */
 type AnimatedIconHandle =
   | SearchIconHandle
   | MessageCircleIconHandle
@@ -68,7 +73,7 @@ const getNavMainItems = (
     animatedIcon: MessageCircleIcon,
     onClick: onNewChat,
     shortcut: (
-      <KbdGroup className="ml-auto scale-90 gap-0">
+      <KbdGroup className="ml-auto scale-90 gap-0 opacity-0 transition-opacity group-hover/menu-item:opacity-100">
         <Kbd className="bg-transparent size-3">
           <PlatformMetaKey />
         </Kbd>
@@ -81,7 +86,7 @@ const getNavMainItems = (
     animatedIcon: BotIcon,
     onClick: onJanClaw,
     shortcut: (
-      <KbdGroup className="ml-auto scale-90 gap-0">
+      <KbdGroup className="ml-auto scale-90 gap-0 opacity-0 transition-opacity group-hover/menu-item:opacity-100">
         <Kbd className="bg-transparent size-3">
           <PlatformMetaKey />
         </Kbd>
@@ -94,7 +99,7 @@ const getNavMainItems = (
     animatedIcon: SearchIcon,
     onClick: onSearch,
     shortcut: (
-      <KbdGroup className="ml-auto scale-90 gap-0">
+      <KbdGroup className="ml-auto scale-90 gap-0 opacity-0 transition-opacity group-hover/menu-item:opacity-100">
         <Kbd className="bg-transparent size-3">
           <PlatformMetaKey />
         </Kbd>
@@ -164,7 +169,11 @@ export function NavMain() {
       useAgentMode.getState().setAgentMode(TEMPORARY_CHAT_ID, true)
       navigate({ to: route.home })
     }
-  ).filter((item) => item.title !== 'common:newAgentChat')
+  ).filter(
+    // Search moved to the branded header row (Codex-style); agent chat is off.
+    (item) =>
+      item.title !== 'common:newAgentChat' && item.title !== 'common:search'
+  )
 
   const handleCreateProject = async (name: string, assistantId?: string) => {
     const newProject = await addFolder(name, assistantId)

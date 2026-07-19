@@ -139,6 +139,32 @@ describe('ThreadList — long-URL overflow guard (#7959)', () => {
   })
 })
 
+describe('ThreadList — Teach conversations', () => {
+  it('shows a Teach badge only for a thread created by Teach mode', async () => {
+    render(
+      <ThreadList
+        threads={[
+          makeThread({
+            id: 'teach-thread',
+            metadata: {
+              divoTeachProfile: {
+                kind: 'teach',
+                teachSessionId: 'teach-session-1',
+                departmentId: 'department-1',
+              },
+            },
+          }),
+          makeThread({ id: 'normal-thread', title: 'A normal chat' }),
+        ]}
+      />
+    )
+    await flushEffects()
+
+    expect(screen.getByTitle('Teach conversation')).toHaveTextContent('Teach')
+    expect(screen.getAllByText('Teach')).toHaveLength(1)
+  })
+})
+
 describe('ThreadList — reserved thread-state slot placement', () => {
   const titleSpan = () =>
     screen.getAllByText(longUrl).find((el) => el.tagName === 'SPAN')!

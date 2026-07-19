@@ -80,6 +80,7 @@ export function PermissionRulesPopover() {
           size="icon-sm"
           aria-label="Permission rules"
           data-testid="permission-rules-trigger"
+          className="rounded-full text-muted-foreground hover:text-foreground"
         >
           <ShieldCheck />
         </Button>

@@ -109,6 +109,9 @@ export function FinanceQuickStarts({ onSubmit, variant = 'home' }: Props) {
   const [selected, setSelected] = useState<FinanceQuickStartDefinition | null>(null)
   const [values, setValues] = useState<Record<string, string>>({})
   const [launcherOpen, setLauncherOpen] = useState(false)
+  // The home grid is opt-in: it sits behind a toggle at the bottom of the page
+  // so an empty chat opens clean.
+  const [homeOpen, setHomeOpen] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -209,9 +212,11 @@ export function FinanceQuickStarts({ onSubmit, variant = 'home' }: Props) {
               variant="ghost"
               size="sm"
               aria-label="Open Finance quick starts"
-              className="mb-1"
+              // Matches DivoModelToggle — every labelled control in the
+              // composer bar reads at the same quiet weight.
+              className="h-7 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:text-foreground"
             >
-              <ZohoIcon data-icon="inline-start" />
+              <ZohoIcon className="size-3.5" />
               Quick starts
             </Button>
           </PopoverTrigger>
@@ -248,42 +253,64 @@ export function FinanceQuickStarts({ onSubmit, variant = 'home' }: Props) {
         </Popover>
       ) : (
         <>
-          <div className="mb-3 flex items-center justify-between gap-3 px-1">
-            <div className="min-w-0">
-              <p className="text-sm font-medium">Finance quick starts</p>
-              <p className="truncate text-xs text-muted-foreground">
-                Exact Zoho Books routes, ready for your details
-              </p>
-            </div>
-            {connections.length > 1 && connection ? (
-              <AccountMenu
-                connections={connections}
-                selected={connection}
-                onSelect={setSelectedConnectionId}
+          <div className="flex justify-center">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-expanded={homeOpen}
+              aria-controls="finance-quick-starts-panel"
+              className="text-muted-foreground"
+              onClick={() => setHomeOpen((current) => !current)}
+            >
+              <ZohoIcon data-icon="inline-start" />
+              Finance quick starts
+              <ChevronDown
+                data-icon="inline-end"
+                className={cn('transition-transform', homeOpen && 'rotate-180')}
               />
-            ) : connection ? (
-              <span className="inline-flex max-w-52 shrink-0 items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs text-muted-foreground">
-                <Building2 className="size-3 shrink-0" />
-                <span className="truncate">{displayConnection(connection)}</span>
-              </span>
-            ) : null}
+            </Button>
           </div>
 
-          {connections.length === 0 ? (
-            <Card className="rounded-2xl border-dashed bg-card/60">
-              <CardContent className="flex items-center gap-3 p-4">
-                <span className="flex size-9 items-center justify-center rounded-xl border bg-background">
-                  <ZohoIcon className="size-5" />
-                </span>
-                <div>
-                  <p className="text-sm font-medium">Connect Zoho Books to use quick starts</p>
-                  <p className="text-xs text-muted-foreground">Your department permissions still control every action.</p>
+          {homeOpen ? (
+            <div id="finance-quick-starts-panel" className="mt-4">
+              <div className="mb-3 flex items-center justify-between gap-3 px-1">
+                <div className="min-w-0">
+                  <p className="truncate text-xs text-muted-foreground">
+                    Exact Zoho Books routes, ready for your details
+                  </p>
                 </div>
-              </CardContent>
-            </Card>
-          ) : (
-            <QuickStartGrid groups={groups} onOpen={open} />
-          )}
+                {connections.length > 1 && connection ? (
+                  <AccountMenu
+                    connections={connections}
+                    selected={connection}
+                    onSelect={setSelectedConnectionId}
+                  />
+                ) : connection ? (
+                  <span className="inline-flex max-w-52 shrink-0 items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-xs text-muted-foreground">
+                    <Building2 className="size-3 shrink-0" />
+                    <span className="truncate">{displayConnection(connection)}</span>
+                  </span>
+                ) : null}
+              </div>
+
+              {connections.length === 0 ? (
+                <Card className="rounded-2xl border-dashed bg-card/60">
+                  <CardContent className="flex items-center gap-3 p-4">
+                    <span className="flex size-9 items-center justify-center rounded-xl border bg-background">
+                      <ZohoIcon className="size-5" />
+                    </span>
+                    <div>
+                      <p className="text-sm font-medium">Connect Zoho Books to use quick starts</p>
+                      <p className="text-xs text-muted-foreground">Your department permissions still control every action.</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <QuickStartGrid groups={groups} onOpen={open} />
+              )}
+            </div>
+          ) : null}
         </>
       )}
 

@@ -73,10 +73,35 @@ describe('FinanceQuickStarts', () => {
     )
   })
 
+  it('keeps the home grid collapsed until the toggle is opened', async () => {
+    render(<FinanceQuickStarts onSubmit={vi.fn()} />)
+
+    const toggle = await screen.findByRole('button', {
+      name: /Finance quick starts/i,
+    })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(
+      screen.queryByRole('button', { name: /Receivables/i })
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(
+      screen.getByRole('button', { name: /Receivables/i })
+    ).toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    expect(
+      screen.queryByRole('button', { name: /Receivables/i })
+    ).not.toBeInTheDocument()
+  })
+
   it('pins the selected accessible Zoho account into the compiled request', async () => {
     const onSubmit = vi.fn()
     render(<FinanceQuickStarts onSubmit={onSubmit} />)
-    await screen.findByText('Finance quick starts')
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Finance quick starts/i })
+    )
 
     expect(screen.getByRole('button', { name: /Branch Books/i })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /Receivables/i }))

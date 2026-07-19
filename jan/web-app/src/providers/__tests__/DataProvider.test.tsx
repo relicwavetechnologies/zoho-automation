@@ -231,6 +231,33 @@ describe('DataProvider', () => {
     })
   })
 
+  it('retries durable chat hydration without clearing existing sidebar state', async () => {
+    vi.useFakeTimers()
+    h.isDev.mockReturnValue(true)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    hubState.fetchThreads
+      .mockRejectedValueOnce(new Error('storage is starting'))
+      .mockResolvedValueOnce([{ id: 'recovered-thread' }])
+
+    render(<DataProvider />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(hubState.fetchThreads).toHaveBeenCalledTimes(1)
+    expect(h.setThreads).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+
+    expect(hubState.fetchThreads).toHaveBeenCalledTimes(2)
+    expect(h.setThreads).toHaveBeenCalledWith([{ id: 'recovered-thread' }])
+    warn.mockRestore()
+    vi.useRealTimers()
+  })
+
   it('passes DEFAULT_MCP_SETTINGS when mcp config lacks values', async () => {
     hubState.getMCPConfig.mockResolvedValue({})
     render(<DataProvider />)

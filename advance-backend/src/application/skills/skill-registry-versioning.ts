@@ -29,7 +29,7 @@ export type SkillRegistryVersioningStore = Pick<
 export async function recordSkillRegistryMutation(
   store: SkillRegistryVersioningStore,
   skill: VersionedSkillRecord,
-  source: 'publish' | 'archive' | 'system' = 'publish',
+  source: 'publish' | 'archive' | 'system' | 'teach' = 'publish',
 ): Promise<void> {
   await store.skillVersion.upsert({
     where: { skillId_revision: { skillId: skill.id, revision: skill.revision } },

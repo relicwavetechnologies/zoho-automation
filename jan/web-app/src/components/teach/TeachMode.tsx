@@ -30,11 +30,9 @@ import {
 } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
 import { TeachProcessingExperience } from './TeachExperience'
-import { SESSION_STORAGE_PREFIX } from '@/constants/chat'
+import { PersonaGraph } from './PersonaGraph'
 import { route } from '@/constants/routes'
-import { useThreads } from '@/hooks/useThreads'
-import { DIVO_THREAD_MODEL } from '@/lib/pi'
-import { DIVO_TEACH_PROFILE_METADATA_KEY, readDivoTeachProfile } from '@/lib/divo-teach-thread'
+import { ensureDivoTeachConversation } from '@/lib/divo-teach-thread'
 import {
   cancelTeachRecording,
   cancelTeachSession,
@@ -43,6 +41,7 @@ import {
   finalizeLocalTeachRecording,
   getDivoSessionStatus,
   getTeachSession,
+  getManagerPersonaTree,
   listLocalTeachRecordings,
   listRecentTeachLearnings,
   pickTeachRecording,
@@ -51,6 +50,7 @@ import {
   type TeachRecordingFile,
   type TeachLocalRecording,
   type TeachSession,
+  type ManagerPersonaTree,
 } from '@/lib/divo-teach'
 
 type TeachStage = 'intro' | 'recording' | 'uploading' | 'processing' | 'error'
@@ -65,12 +65,12 @@ type UploadProgress = {
 
 const describeProcessingFailure = (lastError: string | null | undefined) => {
   if (lastError?.includes('Failed to process successful response')) {
-    return "The recording was processed, but Divo could not validate the persona model's response. No persona changes were saved."
+    return "The recording was processed, but Divo could not validate the Teach model's response. No persona or skill changes were saved."
   }
   if (lastError?.includes('Transaction not found') || lastError?.includes("Can't reach database server")) {
-    return 'The recording was processed, but Divo lost its database connection while saving the persona. No persona changes were saved.'
+    return 'The recording was processed, but Divo lost its database connection while saving the learning. No persona or skill changes were saved.'
   }
-  return 'The recording was processed, but Divo could not update your persona. No persona changes were saved.'
+  return 'The recording was processed, but Divo could not save the learning. No persona or skill changes were saved.'
 }
 
 const formatBytes = (bytes: number | null) => {
@@ -88,8 +88,6 @@ const formatLearningDate = (value: string) => new Intl.DateTimeFormat(undefined,
 
 export function TeachMode() {
   const router = useRouter()
-  const createThread = useThreads(state => state.createThread)
-  const updateThread = useThreads(state => state.updateThread)
   const [stage, setStage] = useState<TeachStage>('intro')
   const [departmentId, setDepartmentId] = useState<string>()
   const [checkingAccess, setCheckingAccess] = useState(true)
@@ -100,6 +98,7 @@ export function TeachMode() {
   const [activeRecording, setActiveRecording] = useState<TeachRecordingFile>()
   const [localRecordings, setLocalRecordings] = useState<TeachLocalRecording[]>([])
   const [recentLearnings, setRecentLearnings] = useState<TeachSession[]>([])
+  const [personaTree, setPersonaTree] = useState<ManagerPersonaTree | null>(null)
   const [loadingOverview, setLoadingOverview] = useState(false)
   const [overviewWarning, setOverviewWarning] = useState<string>()
   const [recordingToDelete, setRecordingToDelete] = useState<TeachLocalRecording>()
@@ -107,44 +106,19 @@ export function TeachMode() {
   const sessionId = session?.id
   const sessionStatus = session?.status
   const handoffSessionId = useRef<string | undefined>(undefined)
+  const routeActiveRef = useRef(true)
+
+  useEffect(() => () => {
+    routeActiveRef.current = false
+  }, [])
 
   const openTeachConversation = useCallback(async (current: TeachSession) => {
     if (handoffSessionId.current === current.id) return
     handoffSessionId.current = current.id
 
     try {
-      const existingThread = Object.values(useThreads.getState().threads).find(thread =>
-        readDivoTeachProfile(thread.metadata)?.teachSessionId === current.id
-      )
-      if (existingThread) {
-        await router.navigate({
-          to: route.threadsDetail,
-          params: { threadId: existingThread.id },
-        })
-        return
-      }
-
-      const title = current.originalFileName
-        ? `Teach: ${current.originalFileName.replace(/\.[^.]+$/, '')}`
-        : 'Teach Divo my workflow'
-      const newThread = await createThread({ ...DIVO_THREAD_MODEL }, title)
-      updateThread(newThread.id, {
-        metadata: {
-          ...(newThread.metadata ?? {}),
-          [DIVO_TEACH_PROFILE_METADATA_KEY]: {
-            kind: 'teach',
-            teachSessionId: current.id,
-            departmentId: current.departmentId,
-          },
-        },
-      })
-      sessionStorage.setItem(
-        `${SESSION_STORAGE_PREFIX.INITIAL_MESSAGE}${newThread.id}`,
-        JSON.stringify({
-          text: 'I finished recording this workflow. Analyze the teaching evidence, ask me any important clarifying questions, and help Divo learn it.',
-          files: [],
-        })
-      )
+      const newThread = await ensureDivoTeachConversation(current)
+      if (!routeActiveRef.current) return
       await router.navigate({
         to: route.threadsDetail,
         params: { threadId: newThread.id },
@@ -155,7 +129,7 @@ export function TeachMode() {
       setErrorKind('generic')
       setStage('error')
     }
-  }, [createThread, router, updateThread])
+  }, [router])
 
   useEffect(() => {
     let active = true
@@ -206,7 +180,12 @@ export function TeachMode() {
       setOverviewWarning('Local recording history could not be loaded.')
     }
     try {
-      setRecentLearnings(await listRecentTeachLearnings(departmentId, 6))
+      const [learnings, tree] = await Promise.all([
+        listRecentTeachLearnings(departmentId, 6),
+        getManagerPersonaTree(departmentId),
+      ])
+      setRecentLearnings(learnings)
+      setPersonaTree(tree)
     } catch (error) {
       console.warn('Teach recent learnings unavailable', error)
       setOverviewWarning(current => current ?? 'Recent database learnings could not be loaded.')
@@ -218,11 +197,6 @@ export function TeachMode() {
   useEffect(() => {
     if (stage === 'intro' && departmentId) void refreshOverview()
   }, [departmentId, refreshOverview, stage])
-
-  useEffect(() => () => {
-    // Leaving Teach must never leave the macOS recorder running invisibly.
-    void cancelTeachRecording().catch(() => undefined)
-  }, [])
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined
@@ -402,7 +376,7 @@ export function TeachMode() {
                 Teach Divo how you want work done.
               </h1>
               <p className="mt-4 max-w-xl text-base leading-7 text-muted-foreground">
-                Record your main screen while you work and explain your decisions. Divo will use the demonstration to grow your department persona.
+                Record your main screen while you work and explain your decisions. Divo will use the demonstration to grow your department persona and reusable skills.
               </p>
 
               <div className="mt-7 flex flex-wrap gap-3">
@@ -512,8 +486,8 @@ export function TeachMode() {
                 <div className="flex items-center gap-2">
                   <Database className="size-4 text-muted-foreground" />
                   <div>
-                    <h2 className="text-sm font-medium">Recent persona learnings</h2>
-                    <p className="mt-0.5 text-xs text-muted-foreground">Read directly from the Teach database</p>
+                    <h2 className="text-sm font-medium">Recent Teach learnings</h2>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Persona rules and reusable skills from the database</p>
                   </div>
                 </div>
                 <Badge variant="outline">From DB</Badge>
@@ -521,12 +495,15 @@ export function TeachMode() {
               <div className="divide-y">
                 {recentLearnings.length === 0 ? (
                   <p className="px-5 py-6 text-sm text-muted-foreground">
-                    {loadingOverview ? 'Loading recent learnings…' : 'No completed persona learnings yet.'}
+                    {loadingOverview ? 'Loading recent learnings…' : 'No completed Teach learnings yet.'}
                   </p>
                 ) : recentLearnings.slice(0, 4).map(learning => (
                   <div key={learning.id} className="px-5 py-4">
                     <div className="flex items-center justify-between gap-3">
-                      <Badge variant="secondary">{learning.appliedChangeCount} {learning.appliedChangeCount === 1 ? 'rule' : 'rules'}</Badge>
+                      <Badge variant="secondary">
+                        {learning.appliedChanges.length} {learning.appliedChanges.length === 1 ? 'rule' : 'rules'}
+                        {' · '}{learning.appliedSkills.length} {learning.appliedSkills.length === 1 ? 'skill' : 'skills'}
+                      </Badge>
                       <span className="font-mono text-[10px] text-muted-foreground">{formatLearningDate(learning.updatedAt)}</span>
                     </div>
                     <p className="mt-2 line-clamp-2 text-sm leading-5">{learning.understanding}</p>
@@ -535,11 +512,17 @@ export function TeachMode() {
                         {learning.appliedChanges[0].instruction}
                       </p>
                     )}
+                    {learning.appliedSkills[0] && (
+                      <p className="mt-2 text-xs text-violet-500">
+                        {learning.appliedSkills[0].outcome === 'created' ? 'Created' : 'Updated'} skill: {learning.appliedSkills[0].name} v{learning.appliedSkills[0].revision}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
             </section>
           </div>
+          <PersonaGraph tree={personaTree} loading={loadingOverview} />
           {overviewWarning && <p className="mt-3 text-xs text-amber-600" role="status">{overviewWarning}</p>}
         </div>
 

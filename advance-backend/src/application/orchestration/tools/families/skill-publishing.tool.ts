@@ -12,7 +12,7 @@ import { unknownSkillToolIds } from '../../../skills/skill-tool-validation';
 import { recordSkillRegistryMutation } from '../../../skills/skill-registry-versioning';
 import { larkSkillEnglishOnlyError } from '../../../skills/lark-skill-language-policy';
 
-const toolIdsSchema = z.array(z.string().min(1).max(120)).min(1).max(50);
+const toolIdsSchema = z.array(z.string().min(1).max(120)).max(50);
 
 const Schema = z.discriminatedUnion('operation', [
   z.object({
@@ -74,7 +74,7 @@ export const createSkillPublishingTool = (deps: {
     '- publish: writes a skill only after the user explicitly asks to share it.',
     'scope: company or department. Department publishing uses departmentId or the active gateway department.',
     'markdown: complete SKILL.md content. The backend stores shared skills as markdown.',
-    'toolIds: backend gateway tools the skill requires, e.g. webSearch, zohoBooks, larkTask.',
+    'toolIds: backend gateway tools the skill requires, e.g. webSearch, zohoBooks, larkTask. Use [] for an instruction-only skill.',
     'Lark skills must be written in English. Translate all Lark skill content to English before publishing.',
   ].join('\n'),
 
@@ -177,24 +177,45 @@ export const createSkillPublishingTool = (deps: {
         }));
       }
 
-      const skill = await deps.prisma.skill.create({
-        data: {
-          companyId: ctx.runContext.companyId,
-          departmentId,
-          scope,
-          name: args.name.trim(),
-          slug,
-          summary: args.summary?.trim() ?? '',
-          markdown: args.markdown,
-          toolIds: args.toolIds,
-          tags: args.tags ?? [],
-          status: 'active',
-          createdBy: ctx.runContext.userId,
-          updatedBy: ctx.runContext.userId,
-        },
+      const skill = await deps.prisma.$transaction(async tx => {
+        const created = await tx.skill.create({
+          data: {
+            companyId: ctx.runContext.companyId,
+            departmentId,
+            scope,
+            name: args.name.trim(),
+            slug,
+            summary: args.summary?.trim() ?? '',
+            markdown: args.markdown,
+            toolIds: args.toolIds,
+            tags: args.tags ?? [],
+            status: 'active',
+            createdBy: ctx.runContext.userId,
+            updatedBy: ctx.runContext.userId,
+          },
+        });
+        if (departmentId) {
+          await tx.skillAccessGrant.upsert({
+            where: {
+              skillId_granteeType_granteeId: {
+                skillId: created.id,
+                granteeType: 'department',
+                granteeId: departmentId,
+              },
+            },
+            create: {
+              companyId: ctx.runContext.companyId,
+              skillId: created.id,
+              granteeType: 'department',
+              granteeId: departmentId,
+              grantedBy: ctx.runContext.userId,
+            },
+            update: {},
+          });
+        }
+        await recordSkillRegistryMutation(tx, created);
+        return created;
       });
-
-      await recordSkillRegistryMutation(deps.prisma, skill);
 
       return ok({
         operation: 'publish',

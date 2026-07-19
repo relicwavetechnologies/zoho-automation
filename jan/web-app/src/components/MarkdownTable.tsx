@@ -143,8 +143,9 @@ export function MarkdownTable({
         </DropdownMenu>
       </div>
       <div className="overflow-x-auto">
+        {/* Border-free: row hairlines come from `.markdown table` styles. */}
         <table
-          className={cn('w-full border-collapse border border-border', className)}
+          className={cn('w-full border-collapse', className)}
           data-streamdown="table"
           {...props}
         >

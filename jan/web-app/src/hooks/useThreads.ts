@@ -60,14 +60,24 @@ const cleanupVectorDB = async (threadId: string) => {
 }
 
 const cleanupThreadRuntime = (threadId: string) => {
+  const activeRunId = useAppState.getState().piThreadRunStates[threadId]?.runId
+  const abort = activeRunId
+    ? invoke('pi_abort', { threadId, runId: activeRunId })
+    : Promise.resolve()
+
   useAgentMode.getState().removeThread(threadId)
-  // stop() propagates through the AI SDK abort signal to the exact Pi
-  // thread/run pair before the session is removed from the client store.
+  // The chat stop is best effort; `pi_abort` above is the ownership-checked
+  // authority for the active thread/run pair.
   useChatSessions.getState().removeSession(threadId)
   useAppState.getState().clearThreadState(threadId)
-  // A process stop or an already-finished stream may leave a presentation-only
-  // approval queued briefly. Deleted threads must never retain actionable UI.
-  usePiApproval.getState().discardThreadAfterAbort(threadId)
+  // Do not discard an approval card until Rust has accepted the exact abort.
+  // If that fails, retain the record for terminal reconciliation instead of
+  // silently hiding a live action from an unrelated parallel run.
+  void abort
+    .then(() => usePiApproval.getState().discardThreadAfterAbort(threadId, activeRunId))
+    .catch((error) => {
+      console.warn(`[Threads] Failed to abort Pi run before deleting ${threadId}:`, error)
+    })
 }
 
 export const useThreads = create<ThreadState>()((set, get) => ({

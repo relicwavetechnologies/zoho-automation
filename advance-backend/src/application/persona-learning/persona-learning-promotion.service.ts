@@ -101,8 +101,9 @@ export class PersonaLearningPromotionService {
             select: { id: true, status: true },
           });
 
-          // A later phase handles contradiction/supersession. P4 never revives
-          // or overwrites a node that has been deliberately quarantined.
+          // Passive learning never resolves contradictions autonomously. They
+          // remain shadow evidence until an explicit Teach clarification can
+          // merge, replace, or retire the canonical rule.
           if (existing?.status === 'quarantined' || existing?.status === 'superseded') return false;
           if (!existing) {
             const claimedTree = await tx.managerPersonaTree.updateMany({

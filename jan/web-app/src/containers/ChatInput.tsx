@@ -16,7 +16,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { ArrowRight, PlusIcon } from 'lucide-react'
+import { ArrowUp, PlusIcon } from 'lucide-react'
 import {
   IconPhoto,
   IconMusic,
@@ -400,15 +400,6 @@ const ChatInput = memo(function ChatInput({
       displayedThreadId in state.cancelToolCalls
     )
   })
-  const hasAnotherActiveChat = useAppState((state) => {
-    const activeThreadIds = new Set([
-      ...Object.keys(state.busyThreads),
-      ...Object.keys(state.streamingContents),
-      ...Object.keys(state.loadingModels),
-      ...Object.keys(state.cancelToolCalls),
-    ])
-    return [...activeThreadIds].some((id) => id !== displayedThreadId)
-  })
   const activePiRunId = useAppState((state) =>
     displayedThreadId ? state.piThreadRunStates[displayedThreadId]?.runId : undefined
   )
@@ -653,10 +644,6 @@ const ChatInput = memo(function ChatInput({
     }
     if (ingestingAny) {
       toast.info('Please wait for attachments to finish processing')
-      return
-    }
-    if (hasAnotherActiveChat) {
-      toast.info('First stop the previous chat running, and then send.')
       return
     }
     setMessage('')
@@ -958,7 +945,10 @@ const ChatInput = memo(function ChatInput({
       } else {
         abortControllers[threadId]?.abort()
       }
-      cancelToolCall?.()
+      // Pi carries cancellation in the owning thread/run transport. Calling
+      // the legacy global callback here could cancel a different concurrent
+      // chat, so retain it only for non-Pi providers.
+      if (!isPiProvider) cancelToolCall?.()
       // Escalate: if the llama.cpp model is still processing after the HTTP
       // abort, force-unload it so generation actually stops. KV cache is lost.
       const modelId = selectedModel?.id
@@ -970,7 +960,7 @@ const ChatInput = memo(function ChatInput({
         }, 500)
       }
     },
-    [abortControllers, cancelToolCall, onStop, selectedModel?.id, selectedProvider]
+    [abortControllers, cancelToolCall, isPiProvider, onStop, selectedModel?.id, selectedProvider]
   )
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -2237,7 +2227,7 @@ const ChatInput = memo(function ChatInput({
       <div className="relative">
         <div
           className={cn(
-            'relative overflow-hidden p-0.5 rounded-3xl'
+            'relative overflow-hidden p-0.5 rounded-2xl'
           )}
         >
           {isComposerBusy && (
@@ -2254,8 +2244,11 @@ const ChatInput = memo(function ChatInput({
 
           <div
             className={cn(
-              'relative z-20 px-0 pb-10 border rounded-3xl border-input bg-white dark:bg-input/30',
-              isFocused && 'ring-1 ring-ring/50',
+              // Flat, low-contrast shell: a hairline border over a barely-lifted
+              // fill, so the composer reads as part of the page rather than a
+              // card stuck on top of it.
+              'relative z-20 px-0 pb-10 rounded-2xl border border-border/50 bg-card dark:bg-white/[0.02] transition-colors',
+              isFocused && 'border-border/80 dark:bg-white/[0.04]',
               isDragOver && 'ring-2 ring-ring/50 border-primary'
             )}
             data-drop-zone={dropAcceptsAnything ? 'true' : undefined}
@@ -2595,9 +2588,9 @@ const ChatInput = memo(function ChatInput({
           </div>
         </div>
 
-        <div className="absolute z-20 bg-transparent bottom-0 w-full p-2 ">
-          <div className="flex justify-between items-center w-full">
-            <div className="px-1 flex items-center gap-1 flex-1 min-w-0">
+        <div className="absolute z-20 bg-transparent bottom-0 w-full px-2.5 pb-2">
+          <div className="flex w-full items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-0.5">
               <div
                 className={cn(
                   'flex items-center gap-1',
@@ -2607,8 +2600,13 @@ const ChatInput = memo(function ChatInput({
                 {/* Attachments are first-class Divo inputs. */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="secondary" size="icon-sm" className='rounded-full mr-2 mb-1'>
-                      <PlusIcon size={18} className="text-muted-foreground" />
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Add attachment"
+                      className="rounded-full text-muted-foreground hover:text-foreground"
+                    >
+                      <PlusIcon size={18} />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start">
@@ -2679,9 +2677,12 @@ const ChatInput = memo(function ChatInput({
                   </DropdownMenu>
               </div>
               <PermissionRulesPopover />
+              {/* Splits the icon-only actions from the labelled ones, so the
+                  bar reads as two groups instead of one mixed run. */}
+              <span className="mx-1 h-4 w-px shrink-0 bg-border/60" aria-hidden />
               <div
                 className={cn(
-                  'flex min-w-0 flex-1 items-center gap-1',
+                  'flex min-w-0 flex-1 items-center gap-0.5',
                   isComposerBusy && 'opacity-50 pointer-events-none'
                 )}
               >
@@ -2699,7 +2700,7 @@ const ChatInput = memo(function ChatInput({
                     <TooltipTrigger asChild>
                       <Button
                         variant="ghost"
-                        size="icon-xs"
+                        size="icon-sm"
                         disabled={isJanBrowserMCPLoading}
                         className={cn(janBrowserMCPActive && "text-primary")}
                         onClick={
@@ -2741,7 +2742,7 @@ const ChatInput = memo(function ChatInput({
                     <TooltipTrigger asChild>
                       <Button
                           variant="ghost"
-                          size="icon-xs"
+                          size="icon-sm"
                         >
                         <IconCodeCircle2
                           size={18}
@@ -2759,7 +2760,7 @@ const ChatInput = memo(function ChatInput({
                 {!effectiveAgentMode && selectedModel?.capabilities?.includes('web_search') && (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <Button variant="ghost" size="icon-xs">
+                      <Button variant="ghost" size="icon-sm">
                         <IconWorld
                           size={18}
                           className="text-muted-foreground"
@@ -2836,7 +2837,7 @@ const ChatInput = memo(function ChatInput({
                             <DropdownMenuTrigger asChild>
                               <Button
                                 variant="ghost"
-                                size="icon-xs"
+                                size="icon-sm"
                                 aria-label={`Reasoning: ${label}`}
                               >
                                 <IconBrain
@@ -2907,7 +2908,7 @@ const ChatInput = memo(function ChatInput({
                       variant="destructive"
                       size="icon-sm"
                       aria-label="Stop generating"
-                      className="rounded-full mr-1 mb-1"
+                      className="rounded-full"
                       onClick={() => {
                         if (displayedThreadId) stopStreaming(displayedThreadId)
                       }}
@@ -2928,9 +2929,9 @@ const ChatInput = memo(function ChatInput({
                   }
                   data-test-id="send-message-button"
                   onClick={() => handleSendMessage(prompt)}
-                  className="rounded-full mr-1 mb-1"
+                  className="rounded-full"
                 >
-                  <ArrowRight className="text-primary-fg" />
+                  <ArrowUp className="text-primary-fg" />
                 </Button>
               )}
             </div>

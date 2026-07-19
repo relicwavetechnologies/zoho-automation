@@ -26,7 +26,7 @@ const DEFAULT_PI_MODEL: &str = "deepseek-v4-flash";
 const LEGACY_DEFAULT_PI_MODEL: &str = "deepseek-v4-pro";
 const COMPANY_EXTENSION_NAMES: [&str; 3] = ["divo-llm", "divo-gateway", "divo-memory"];
 const COMPANY_TOOL_ALLOWLIST: &str =
-    "divo_gateway,divo_skill_resolve,divo_memory_recall,divo_memory_review,memory";
+    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PiRuntimeMode {
@@ -565,14 +565,8 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair == [
                 "--tools",
-                "divo_gateway,divo_skill_resolve,divo_memory_recall,divo_memory_review,memory",
+                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory",
             ]
-        }));
-        assert!(!args.iter().any(|arg| {
-            matches!(
-                arg.as_str(),
-                "bash" | "read" | "write" | "edit" | "grep" | "find" | "ls"
-            )
         }));
         assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 3);
         assert_eq!(args.iter().filter(|arg| *arg == "--skill").count(), 1);

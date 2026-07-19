@@ -36,8 +36,8 @@ describe('CommandGroup', () => {
       />
     )
 
-    expect(screen.getByText('Running skills.search')).toBeInTheDocument()
-    expect(screen.getByText('Running connections.list')).toBeInTheDocument()
+    expect(screen.getByText('Running skill search')).toBeInTheDocument()
+    expect(screen.getByText('Running connection list')).toBeInTheDocument()
     expect(screen.queryByText(/Ran \d+ commands/)).not.toBeInTheDocument()
     expect(renderTool).not.toHaveBeenCalled()
   })
@@ -70,7 +70,7 @@ describe('CommandGroup', () => {
       />
     )
 
-    expect(screen.getByText('Ran skills.search')).toBeInTheDocument()
+    expect(screen.getByText('Ran skill search')).toBeInTheDocument()
     expect(screen.getByText('Running zoho books')).toBeInTheDocument()
   })
 
@@ -105,12 +105,56 @@ describe('CommandGroup', () => {
       />
     )
 
-    expect(screen.getByText('Ran skills.list')).toBeInTheDocument()
-    expect(screen.getByText('Ran connections.list')).toBeInTheDocument()
+    expect(screen.getByText('Ran skill list')).toBeInTheDocument()
+    expect(screen.getByText('Ran connection list')).toBeInTheDocument()
     expect(screen.queryByTestId('tool-card-2')).not.toBeInTheDocument()
 
-    await user.click(screen.getByText('Ran skills.list'))
+    await user.click(screen.getByText('Ran skill list'))
     expect(screen.getByTestId('tool-card-2')).toHaveTextContent('tc-2')
+  })
+
+  it('shimmers the running label and stops once the tool settles', () => {
+    // The shimmer paints the text via a gradient, so leaving the class on a
+    // finished row would keep animating it — it has to come off, not pause.
+    const { rerender } = render(
+      <CommandGroup
+        messageId="m1"
+        active
+        awaitingApproval={false}
+        renderTool={renderTool}
+        tools={[
+          {
+            partIndex: 0,
+            part: {
+              type: 'tool-bash',
+              state: 'input-available',
+              input: { op: 'skills.search' },
+            },
+          },
+        ]}
+      />
+    )
+    expect(screen.getByText('Running skill search')).toHaveClass('text-shimmer')
+
+    rerender(
+      <CommandGroup
+        messageId="m1"
+        active
+        awaitingApproval={false}
+        renderTool={renderTool}
+        tools={[
+          {
+            partIndex: 0,
+            part: {
+              type: 'tool-bash',
+              state: 'output-available',
+              input: { op: 'skills.search' },
+            },
+          },
+        ]}
+      />
+    )
+    expect(screen.getByText('Ran skill search')).not.toHaveClass('text-shimmer')
   })
 
   it('renders real tool cards while awaiting approval', () => {

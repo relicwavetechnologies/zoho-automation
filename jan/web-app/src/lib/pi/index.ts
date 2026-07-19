@@ -5,6 +5,11 @@ export {
   PI_TRACE_TIMELINE_METADATA_KEY,
 } from './constants'
 export { isPiTraceMessage } from './is-pi-trace-message'
+export {
+  isPiStreamCheckpoint,
+  recoverPiStreamCheckpoint,
+  withPiStreamCheckpoint,
+} from './stream-checkpoint'
 export { closePiUiMessageBlocks, mapPiEventToUiChunks } from './pi-event-mapper'
 export {
   findFinalAnswerTextIndex,

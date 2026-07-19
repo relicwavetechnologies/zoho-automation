@@ -2,8 +2,7 @@ import { dynamicTool } from 'ai';
 import { z } from 'zod';
 import type { PrismaClient } from '../../../../generated/prisma';
 import type { RunContext } from '../../../../domain/orchestration/run-context';
-import type { ScheduleConfig } from '../../../scheduling/schedule-config';
-import { getNextScheduledRunAt, formatScheduledSlot } from '../../../scheduling/schedule-calculator';
+import { ScheduledWorkflowControlService } from '../../../scheduling/scheduled-workflow-control.service';
 
 const schema = z.object({
   name: z.string().describe('Short display name for the scheduled task'),
@@ -19,21 +18,6 @@ const schema = z.object({
   dayOfMonth: z.number().int().min(1).max(31).optional().describe('For monthly: day of month (1-31)'),
 });
 
-function buildConfig(args: z.infer<typeof schema>): ScheduleConfig {
-  switch (args.scheduleType) {
-    case 'one_time':
-      return { type: 'one_time', timezone: args.timezone, runAt: args.runAt! };
-    case 'hourly':
-      return { type: 'hourly', timezone: args.timezone, intervalHours: args.intervalHours ?? 1, minute: args.minute ?? 0 };
-    case 'daily':
-      return { type: 'daily', timezone: args.timezone, time: { hour: args.hour ?? 9, minute: args.timeMinute ?? 0 } };
-    case 'weekly':
-      return { type: 'weekly', timezone: args.timezone, daysOfWeek: (args.daysOfWeek ?? ['MO']) as ScheduleConfig & { type: 'weekly' } extends { daysOfWeek: infer D } ? D : never, time: { hour: args.hour ?? 9, minute: args.timeMinute ?? 0 } };
-    case 'monthly':
-      return { type: 'monthly', timezone: args.timezone, dayOfMonth: args.dayOfMonth ?? 1, time: { hour: args.hour ?? 9, minute: args.timeMinute ?? 0 } };
-  }
-}
-
 export function createScheduleTaskTool(
   prisma: PrismaClient,
   runContext: RunContext,
@@ -44,41 +28,12 @@ export function createScheduleTaskTool(
     inputSchema: schema as never,
     execute: async (input: unknown): Promise<string> => {
       const args = schema.parse(input);
-
-      if (args.scheduleType === 'one_time' && !args.runAt) {
-        return 'Error: runAt is required for one_time schedules (ISO 8601 datetime).';
+      try {
+        const created = await new ScheduledWorkflowControlService(prisma).create(runContext, args);
+        return `Scheduled "${created.schedule.name}" — next run: ${created.nextRunLabel} (id:${created.schedule.id})`;
+      } catch (error) {
+        return `Error: ${error instanceof Error ? error.message : String(error)}`;
       }
-
-      const config = buildConfig(args);
-      const nextRunAt = getNextScheduledRunAt(config);
-
-      if (!nextRunAt) {
-        return 'Error: this schedule has no future run time. Check the date/time.';
-      }
-
-      const workflow = await prisma.scheduledWorkflow.create({
-        data: {
-          companyId:             String(runContext.companyId),
-          createdByUserId:       String(runContext.userId),
-          name:                  args.name,
-          userIntent:            args.intent,
-          compiledPrompt:        args.intent,
-          scheduleType:          args.scheduleType,
-          scheduleConfigJson:    config,
-          timezone:              args.timezone,
-          workflowSpecJson:      {},
-          capabilitySummaryJson: {},
-          outputConfigJson:      {},
-          status:                'scheduled_active',
-          scheduleEnabled:       true,
-          nextRunAt,
-          originChatId:          runContext.chatId ?? null,
-        },
-        select: { id: true, name: true },
-      });
-
-      const when = formatScheduledSlot(nextRunAt, config.timezone);
-      return `Scheduled "${workflow.name}" — next run: ${when} (id:${workflow.id})`;
     },
   });
 }

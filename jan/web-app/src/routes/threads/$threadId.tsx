@@ -90,6 +90,18 @@ import {
   type DivoSkillReferenceSubmitOptions,
 } from '@/lib/divo-skill-reference-context'
 import { DIVO_QUICK_START_METADATA_KEY } from '@/lib/divo-finance-quick-start'
+import {
+  clearDivoTeachPendingMessage,
+  readDivoTeachPendingMessage,
+  readDivoTeachProfile,
+  teachThreadDisplayTitle,
+} from '@/lib/divo-teach-thread'
+import {
+  isPiStreamCheckpoint,
+  isPiTraceMessage,
+  recoverPiStreamCheckpoint,
+  withPiStreamCheckpoint,
+} from '@/lib/pi'
 
 const CHAT_STATUS = {
   STREAMING: 'streaming',
@@ -235,6 +247,16 @@ function ThreadDetail() {
   const selectedProvider = useModelProvider((state) => state.selectedProvider)
   const getProviderByName = useModelProvider((state) => state.getProviderByName)
   const threadRef = useRef(thread)
+  const initialMessageRequiresHydrationRef = useRef(
+    Boolean(
+      sessionStorage.getItem(
+        `${SESSION_STORAGE_PREFIX.INITIAL_MESSAGE}${threadId}`
+      ) || readDivoTeachPendingMessage(thread?.metadata)
+    )
+  )
+  const [messagesHydrated, setMessagesHydrated] = useState(
+    !initialMessageRequiresHydrationRef.current
+  )
   const projectId = threadRef.current?.metadata?.project?.id
 
   // Get system message from thread's assistant instructions (if thread has an assigned assistant)
@@ -306,6 +328,61 @@ function ThreadDetail() {
   // composer Stop button should turn a partial response into durable
   // interrupted history.
   const userStopRequestedRef = useRef(false)
+
+  /**
+   * Store meaningful Pi output while it is still arriving. The final onFinish
+   * path replaces this record with the completed response, but if the desktop
+   * exits first, the checkpoint is enough to restore the conversation exactly
+   * as far as the user had seen it.
+   */
+  const persistPiStreamCheckpoint = (message: UIMessage) => {
+    if (!uiMessageHasMeaningfulContent(message)) return
+
+    const messageMetadata = (message.metadata || {}) as Record<string, unknown>
+    const existingMessages = useMessages.getState().getMessages(threadId)
+    const existingMessage = existingMessages.find((m) => m.id === message.id)
+    const existingParent = existingMessage
+      ? getParentId(existingMessage)
+      : undefined
+
+    let parentForAssistant = existingParent ?? pendingAssistantParentId.current
+    if (
+      parentForAssistant == null &&
+      hasBranching(existingMessages)
+    ) {
+      parentForAssistant = resolveAssistantParent(undefined)
+    }
+
+    const assistantMessage: ThreadMessage = {
+      type: 'text',
+      role: ChatCompletionRole.Assistant,
+      content: extractContentPartsFromUIMessage(message),
+      id: message.id,
+      object: 'thread.message',
+      thread_id: threadId,
+      status: MessageStatus.Ready,
+      created_at: existingMessage?.created_at || Date.now(),
+      completed_at: Date.now(),
+      metadata:
+        parentForAssistant != null
+          ? {
+              ...withPiStreamCheckpoint(messageMetadata),
+              parentId: parentForAssistant,
+            }
+          : withPiStreamCheckpoint(messageMetadata),
+    }
+
+    if (existingMessage) {
+      updateMessage(assistantMessage)
+      return
+    }
+
+    addMessage(assistantMessage)
+    if (parentForAssistant) {
+      const parent = existingMessages.find((m) => m.id === parentForAssistant)
+      if (parent) updateMessage(withActiveChild(parent, assistantMessage.id))
+    }
+  }
 
   // Use the AI SDK chat hook
   const {
@@ -650,7 +727,52 @@ function ThreadDetail() {
   // "Using tools…" indicator shimmers forever. Force a terminal status when a
   // banner is up — regenerate/reload restarts the turn anyway.
   const hasBannerError = !!(oomError || backendError || contextLimitError)
-  const effectiveStatus = hasBannerError ? 'ready' : status
+  const isPiRuntimeActive = useAppState(
+    (state) =>
+      threadId in state.busyThreads || threadId in state.piThreadRunStates
+  )
+  const lastChatMessage = chatMessages[chatMessages.length - 1]
+  const hasSettledPiAssistant = Boolean(
+    lastChatMessage?.role === 'assistant' &&
+      isPiTraceMessage(
+        lastChatMessage.metadata as Record<string, unknown> | undefined
+      )
+  )
+  // The AI SDK hook can briefly retain the previously selected chat's status
+  // while its Chat subscription moves between thread-scoped instances. Pi's
+  // runtime ownership is the authoritative live signal: once that marker is
+  // gone, a completed assistant turn must render as history even if the cached
+  // SDK status still says submitted/streaming.
+  const hasStalePiStatus =
+    (status === CHAT_STATUS.SUBMITTED || status === CHAT_STATUS.STREAMING) &&
+    hasSettledPiAssistant &&
+    !isPiRuntimeActive
+  const effectiveStatus =
+    hasBannerError || hasStalePiStatus ? 'ready' : status
+
+  // The AI SDK keeps streamed assistant content in browser memory until the
+  // generation ends. Checkpoint Pi-owned output as it changes, but only while
+  // the runtime still owns this thread; historical messages with a stale SDK
+  // status must never be re-written as in-progress work.
+  useEffect(() => {
+    if (!isPiRuntimeActive) return
+
+    const inFlightAssistant = [...chatMessages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === 'assistant' &&
+          isPiTraceMessage(
+            message.metadata as Record<string, unknown> | undefined
+          )
+      )
+    if (!inFlightAssistant) return
+
+    persistPiStreamCheckpoint(inFlightAssistant)
+    // `persistPiStreamCheckpoint` intentionally reads current stores and
+    // thread-local refs so it can be called for every streamed snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatMessages, isPiRuntimeActive, threadId])
 
   // Get disabled tools for this thread to trigger re-render when they change
   const disabledTools = useToolAvailable((state) =>
@@ -781,6 +903,9 @@ function ThreadDetail() {
 
   // Load messages on first mount
   useEffect(() => {
+    if (initialMessageRequiresHydrationRef.current) {
+      setMessagesHydrated(false)
+    }
     // Skip if chat already has messages (e.g., returning to a streaming conversation)
     const existingSession = useChatSessions.getState().sessions[threadId]
     if (
@@ -788,9 +913,13 @@ function ThreadDetail() {
       existingSession?.isStreaming ||
       currentThread.current === threadId
     ) {
+      if (initialMessageRequiresHydrationRef.current) {
+        setMessagesHydrated(true)
+      }
       return
     }
 
+    let active = true
     serviceHub
       .messages()
       .fetchMessages(threadId)
@@ -831,6 +960,39 @@ function ThreadDetail() {
             }
           }
 
+          // A persisted checkpoint means Pi was still streaming when the
+          // desktop last disappeared. Pi is process-scoped, so that run cannot
+          // resume on launch. Keep the exact visible output, mark it honestly
+          // as incomplete, and require an explicit user follow-up instead of
+          // replaying a potentially side-effectful task.
+          const recoveredCheckpoints = messagesToSet
+            .filter((message) => {
+              const metadata = message.metadata as
+                | Record<string, unknown>
+                | undefined
+              return (
+                message.role === ChatCompletionRole.Assistant &&
+                isPiStreamCheckpoint(metadata)
+              )
+            })
+            .map((message) => ({
+              ...message,
+              metadata: recoverPiStreamCheckpoint(
+                (message.metadata ?? {}) as Record<string, unknown>
+              ),
+            }))
+          if (recoveredCheckpoints.length > 0) {
+            const recoveredById = new Map(
+              recoveredCheckpoints.map((message) => [message.id, message])
+            )
+            messagesToSet = messagesToSet.map(
+              (message) => recoveredById.get(message.id) ?? message
+            )
+            for (const message of recoveredCheckpoints) {
+              updateMessage(message)
+            }
+          }
+
           // Migrate threads corrupted by the pre-#8357 bug: assistant replies
           // saved with parentId:null are phantom roots that computeActivePath
           // drops. Re-parent them to the user turn they answer and persist.
@@ -862,12 +1024,21 @@ function ThreadDetail() {
             computeActivePath(messagesToSet, activeRootId)
           )
           setChatMessages(uiMessages)
-          currentThread.current = threadId
         }
       })
       .catch((error) =>
         console.error('Failed to fetch messages for thread:', threadId, error)
       )
+      .finally(() => {
+        if (!active) return
+        currentThread.current = threadId
+        if (initialMessageRequiresHydrationRef.current) {
+          setMessagesHydrated(true)
+        }
+      })
+    return () => {
+      active = false
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId, serviceHub])
 
@@ -937,6 +1108,7 @@ function ThreadDetail() {
       const quickStartMetadata = options?.quickStartPlan
         ? { [DIVO_QUICK_START_METADATA_KEY]: options.quickStartPlan }
         : {}
+      const callerMessageMetadata = options?.messageMetadata ?? {}
 
       // Cancel any in-flight title summarization so it doesn't compete with this request
       titleAbortRef.current?.abort()
@@ -1107,6 +1279,7 @@ function ThreadDetail() {
       )
       baseUserMessage.metadata = {
         ...(baseUserMessage.metadata ?? {}),
+        ...callerMessageMetadata,
         ...skillReferenceMetadata,
         ...quickStartMetadata,
       }
@@ -1250,18 +1423,35 @@ function ThreadDetail() {
     ]
   )
 
-  // Check for and send initial message from sessionStorage
+  // Check for and send a pending first turn. Normal new chats use
+  // sessionStorage; Teach also persists this handoff in thread metadata so a
+  // route change or webview refresh cannot lose the analysis request.
   const initialMessageSentRef = useRef(false)
 
   useEffect(() => {
     // Prevent duplicate sends
-    if (initialMessageSentRef.current) return
+    if (initialMessageSentRef.current || !messagesHydrated) return
 
     const initialMessageKey = `${SESSION_STORAGE_PREFIX.INITIAL_MESSAGE}${threadId}`
-
     const storedMessage = sessionStorage.getItem(initialMessageKey)
+    const pendingTeachMessage = readDivoTeachPendingMessage(thread?.metadata)
 
-    if (storedMessage) {
+    if (storedMessage || pendingTeachMessage) {
+      const alreadyPersisted = pendingTeachMessage
+        ? useMessages.getState().getMessages(threadId).some((message) =>
+            (message.metadata as Record<string, unknown> | undefined)
+              ?.divoTeachSessionId === pendingTeachMessage.teachSessionId
+          )
+        : false
+      if (alreadyPersisted) {
+        initialMessageSentRef.current = true
+        sessionStorage.removeItem(initialMessageKey)
+        void clearDivoTeachPendingMessage(threadId).catch((error) =>
+          console.warn('Failed to clear completed Teach handoff:', error)
+        )
+        return
+      }
+
       // Mark as sent immediately to prevent duplicate sends
       sessionStorage.removeItem(initialMessageKey)
       initialMessageSentRef.current = true
@@ -1269,23 +1459,31 @@ function ThreadDetail() {
       // Process message asynchronously
       ;(async () => {
         try {
-          const message = JSON.parse(storedMessage) as {
-            text: string
-            files?: Array<{ type: string; mediaType: string; url: string }>
-            skillReferences?: DivoSkillReference[]
-            quickStartPlan?: DivoSkillReferenceSubmitOptions['quickStartPlan']
-          }
+          const message = storedMessage
+            ? JSON.parse(storedMessage) as {
+                text: string
+                files?: Array<{ type: string; mediaType: string; url: string }>
+                skillReferences?: DivoSkillReference[]
+                quickStartPlan?: DivoSkillReferenceSubmitOptions['quickStartPlan']
+              }
+            : { text: pendingTeachMessage!.text, files: [] }
 
           await processAndSendMessage(message.text, message.files, {
             skillReferences: message.skillReferences,
             quickStartPlan: message.quickStartPlan,
+            messageMetadata: pendingTeachMessage
+              ? { divoTeachSessionId: pendingTeachMessage.teachSessionId }
+              : undefined,
           })
+          if (pendingTeachMessage) {
+            await clearDivoTeachPendingMessage(threadId)
+          }
         } catch (error) {
-          console.error('Failed to parse initial message:', error)
+          console.error('Failed to send initial message:', error)
         }
       })()
     }
-  }, [threadId, processAndSendMessage])
+  }, [messagesHydrated, processAndSendMessage, thread?.metadata, threadId])
 
   const stripBannerMetadata = useCallback(() => {
     const tmsgs = useMessages.getState().getMessages(threadId)
@@ -1815,7 +2013,19 @@ function ThreadDetail() {
   return (
     <div className="flex flex-col h-[calc(100dvh-(env(safe-area-inset-bottom)+env(safe-area-inset-top)))]">
       <HeaderPage>
-        <div className="flex items-center justify-between w-full pr-2">
+        {/* Codex titlebar structure: thread title anchored left, workspace
+            control on the right. */}
+        <div className="flex w-full items-center justify-between gap-3 pr-2">
+          <span
+            className="min-w-0 truncate text-sm font-medium"
+            title={thread?.title}
+          >
+            {thread?.title
+              ? readDivoTeachProfile(thread.metadata)
+                ? teachThreadDisplayTitle(thread.title)
+                : thread.title
+              : 'New chat'}
+          </span>
           <DivoWorkspaceSelector />
         </div>
       </HeaderPage>
@@ -1824,7 +2034,7 @@ function ThreadDetail() {
         <div className="flex-1 relative">
           <Conversation className="absolute inset-0 text-start">
             <ConversationContent
-              className={cn('mx-auto w-full md:w-4/5 xl:w-4/6')}
+              className={cn('mx-auto w-full md:w-[58%] xl:w-[48%]')}
             >
               {chatMessages.map((message, index) => {
                 const isLastMessage = index === chatMessages.length - 1
@@ -1984,7 +2194,7 @@ function ThreadDetail() {
         </div>
 
         {/* Chat Input - Fixed at bottom */}
-        <div className="py-4 mx-auto w-full md:w-4/5 xl:w-4/6">
+        <div className="py-4 mx-auto w-full md:w-[58%] xl:w-[48%]">
           <ChatInput
             threadId={threadId}
             model={threadModel}

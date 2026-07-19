@@ -22,7 +22,8 @@ const HeaderPage = memo(function HeaderPage({ children }: HeaderPageProps) {
   return (
     <div
       className={cn(
-        'h-15 flex items-center shrink-0',
+        // Slim Codex-style titlebar — the content owns the height statement.
+        'h-11 flex items-center shrink-0',
         (IS_MACOS && !open) ? 'pl-24' : ' pl-4',
         children === undefined && 'border-none'
       )}

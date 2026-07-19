@@ -145,6 +145,8 @@ export type ChainOfThoughtHeaderProps = ComponentProps<
   streamingLabel?: string
   /** Past-tense verb for the completed state, e.g. "Worked". Defaults to "Thought". */
   completedVerb?: string
+  /** Leading mark. Defaults to a sparkle; pass a product mark to brand the row. */
+  icon?: ReactNode
 }
 
 export const ChainOfThoughtHeader = memo(
@@ -153,6 +155,7 @@ export const ChainOfThoughtHeader = memo(
     title,
     streamingLabel = 'Reasoning...',
     completedVerb = 'Thought',
+    icon,
     children,
     ...props
   }: ChainOfThoughtHeaderProps) => {
@@ -169,7 +172,7 @@ export const ChainOfThoughtHeader = memo(
       >
         {children ?? (
           <>
-            <SparklesIcon className="size-4 shrink-0" />
+            {icon ?? <SparklesIcon className="size-4 shrink-0" />}
             {streaming ? (
               <Shimmer duration={1}>{streamingLabel}</Shimmer>
             ) : title ? (

@@ -86,6 +86,9 @@ export default function AddEditCustomCliDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
+        // Multi-field form — keeps the roomier width the shared
+        // dialog default used to provide before it was narrowed.
+        className="sm:max-w-2xl"
         showCloseButton={false}
         onInteractOutside={(e) => {
           e.preventDefault()

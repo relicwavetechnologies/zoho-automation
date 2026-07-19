@@ -195,44 +195,36 @@ export function ZohoIcon({ title = 'Zoho', ...props }: BrandIconProps) {
   )
 }
 
-/** Lark-style app mark: a blue→teal gradient tile with a white swallow. */
+/**
+ * Official Lark mark: two overlapping wings forming a dove.
+ *
+ * Traced from Lark's own artwork, so the geometry and the three brand colours
+ * (`#4C6FFB` blue, `#78D5B9` teal, `#293E96` where they overlap) are exact
+ * rather than approximated — the previous hand-drawn "swallow on a gradient
+ * tile" was not the real logo. Draw order matters: the overlap is painted last,
+ * on top of both wings.
+ */
 export function LarkIcon({ title = 'Lark', ...props }: BrandIconProps) {
-  const gradientSuffix = useId().replaceAll(':', '')
-  const tileGradientId = `lark-tile-${gradientSuffix}`
-
   return (
     <svg
-      viewBox="0 0 192 192"
+      viewBox="20.9 33.7 156.8 127.9"
       fill="none"
       role="img"
       aria-label={title}
       {...props}
     >
-      <rect width="192" height="192" rx="46" fill={`url(#${tileGradientId})`} />
       <path
-        fill="#fff"
-        d="M58 60c26-4 47 4 63 25 9 12 21 19 37 20-5 17-19 30-38 33 9 11 22 16 37 15-16 16-42 18-62 6-18-11-28-31-27-53-6-4-11-9-14-16 1-2 3-3 4-3z"
-        opacity=".95"
+        fill="#4C6FFB"
+        d="M62.8 156.2C46.2 153.6 26.1 144.7 23.5 138.9C22.1 135.9 21.9 71.7 23.3 71.2C23.8 71 26.4 73.2 31.4 78.1C45.1 91.5 59.7 102 77.1 111L82.3 113.7L86 111.6C92.8 107.7 98.6 102.9 109.5 92.2C115.4 86.4 121.7 80.6 123.6 79.3C138.1 69 157.7 67.1 174.7 74.2L176.6 75.1L174.3 77.5C170.8 81.2 168.2 85.7 161.8 98.4C153.3 115.4 148.8 122.1 140.5 130.5C120.7 150.5 90 160.6 62.8 156.2Z"
       />
       <path
-        fill="#fff"
-        d="M96 118c11 7 24 9 37 6-14 14-36 16-53 6 6-4 11-8 16-12z"
-        opacity=".8"
+        fill="#78D5B9"
+        d="M118 126.2C113.3 125.2 105 122.7 99.1 120.5C83.4 114.6 81.2 113.1 85.7 111.7C86.3 111.5 86.9 111.2 87 111C87.1 110.9 88.5 109.9 90 109C91.5 108.1 92.9 107.2 93 107C93.1 106.8 93.9 106.2 94.8 105.6C103.2 99.3 103 100 98.8 93.1C86.7 73 70.6 54.9 51.6 40C49 38 47 36.1 47.1 35.8C47.3 35.2 113.6 34.7 116.9 35.3C122.1 36.2 136.8 61.8 137.6 71.3C137.7 71.9 137.9 72.3 138.1 72.2C138.3 72.1 138.9 71.8 139.5 71.7C140.5 71.5 141.1 71.4 143.6 70.7C148.6 69.5 158 69.5 163.5 70.7C164.2 70.9 165.5 71.1 166.5 71.3C167.5 71.5 168.5 71.8 168.9 72.1C169.2 72.4 169.5 72.5 169.5 72.2C169.5 72 169.9 72.2 170.3 72.6C170.8 72.9 171.2 73.2 171.2 73C171.3 72.6 174.9 74.1 175.5 74.8C176 75.3 175.6 76.1 173.5 78.6C169.1 84 170 82.4 162.7 97.1C159.4 103.7 156.6 109 156.4 109C156.2 109 155.9 109.5 155.7 110.1C155.5 110.6 155.1 111.5 154.7 111.9C154.3 112.4 154 112.9 154.1 113C154.2 113.2 152.3 115 150 117.2C141.1 125.4 129.4 128.7 118 126.2Z"
       />
-      <defs>
-        <linearGradient
-          id={tileGradientId}
-          x1="24"
-          y1="18"
-          x2="172"
-          y2="180"
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop stopColor="#3B7CFF" />
-          <stop offset=".55" stopColor="#0AC0E0" />
-          <stop offset="1" stopColor="#00D6B9" />
-        </linearGradient>
-      </defs>
+      <path
+        fill="#293E96"
+        d="M118 126.2C110.1 124.5 91.1 117.8 84.5 114.5L82.8 113.6L84.3 112.7C94.5 106.5 97.3 104.2 109.5 92.2C115.4 86.4 121.7 80.7 123.5 79.4C136.6 70.1 154.1 67.5 169.8 72.5C176.6 74.7 176.7 74.8 173.9 77.9C170.3 81.9 168.6 84.9 162.5 97C155.5 110.9 153.8 113.7 149.4 117.8C141.2 125.3 129 128.6 118 126.2Z"
+      />
     </svg>
   )
 }

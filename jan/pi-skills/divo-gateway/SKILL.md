@@ -5,7 +5,7 @@ description: Use when the user asks for Divo/company capabilities, Zoho, Lark, G
 
 # Divo Gateway
 
-Use `divo_skill_resolve` before choosing a company skill. It resolves only the authenticated, RBAC-filtered backend company skill registry; local skill files are never candidates. Use the `divo_gateway` tool for every company-owned capability and backend-owned research capability, including public web search and deep research. Do not call SaaS APIs directly, invent company data, ask the user for backend tokens, use local Serper credentials, or bypass approval/RBAC decisions.
+Use `divo_skill_resolve` once before planning every meaningful company task. It combines the current department persona with the authenticated, RBAC-filtered backend skill registry, loads exact persona-linked recipes, searches complementary skills, and rejects weak mismatches. Local skill files are never candidates. Use `divo_gateway` for every company-owned capability and backend-owned research capability, including public web search and deep research. Do not call SaaS APIs directly, invent company data, ask the user for backend tokens, use local Serper credentials, or bypass approval/RBAC decisions.
 
 The backend is the authority for identity, departments, RBAC, approvals, audit, SaaS credentials, and tool execution. Pi is only the local reasoning/runtime layer.
 
@@ -19,26 +19,32 @@ First call:
 
 ```json
 {
-  "query": "original user request"
+  "query": "exact original user request",
+  "variants": [
+    "core task/domain rewrite preserving every constraint",
+    "output, integration, scheduling, or monitoring rewrite preserving every constraint"
+  ]
 }
 ```
 
-The resolver ranks only backend Divo skills. If it selects a skill, call `divo_gateway` with `skills.get` for that backend `skillId`. If the backend registry is unavailable, do not substitute a local skill.
+`variants` is optional and accepts at most two entries. The exact request is always searched, so never replace it with a summary. The resolver returns matching persona rules, provenance, full exact linked recipes, complementary searched recipes, and rejected fuzzy matches. Apply all compatible selected recipes and never use rejected ones. Do not repeat `persona.resolve`, `skills.search`, or `skills.get` for results already returned inline. If the backend registry is unavailable, do not substitute a local skill.
 
 For backend gateway operations, call:
 
 ```json
 {
-  "op": "skills.search",
+  "op": "work.resolve",
   "departmentId": "optional",
   "payload": {
-    "query": "original user request"
+    "query": "exact original user request",
+    "variants": ["optional core task rewrite", "optional output/integration rewrite"]
   }
 }
 ```
 
 Supported operations are:
 
+- `work.resolve`: unified current-persona resolution, exact linked-recipe loading, and bounded multi-query complementary skill search.
 - `skills.search`: search backend-provided company skills/instructions for the user's request.
 - `capabilities.get`: discover the current user's allowed departments, tools, skills, and constraints.
 - `tools.list`: list tools available to the current user and department.
@@ -46,6 +52,8 @@ Supported operations are:
 - `skills.get`: fetch one backend-provided skill or instruction payload by id.
 - `connections.list`: list backend-visible personal/shared integration connections, e.g. Google Workspace and Lark accounts.
 - `tools.invoke`: execute a backend tool with `payload: { "toolId": "...", "args": { ... } }`.
+
+Scheduling is available in normal and Teach conversations through the backend `scheduledWorkflows` tool. Resolve the exact request first so the company-wide Schedule Divo Work skill and task-specific skills are returned together. Use `scheduledWorkflows` for agent work, reminders, reports, or monitoring that runs later or repeatedly; use a calendar skill for meetings, invitations, free/busy, or reserving time. If the request is ambiguous, ask which one the user means. Follow the returned scheduling skill exactly: call `tools.list` with payload `{ "toolId": "scheduledWorkflows" }`, then `tools.invoke` with `{ "toolId": "scheduledWorkflows", "args": { ... } }`. Keep all operation and timing fields inside `args`. Never guess material details or claim success before the backend returns the created schedule.
 
 For `connections.list`, provider ids are exact backend enums:
 
@@ -82,8 +90,8 @@ Use the department id only when the user has selected or implied a department co
    `divo_gateway({ "op": "media.image_ocr", "payload": { "filePath": "<attached image path>", "mimeType": "<attached image MIME type>", "fileName": "<attached image name>" } })`.
    Desktop normalizes unsupported image formats and compresses oversized images before attachment metadata is sent to Pi, so do not convert or compress the image yourself first.
    The gateway tool converts `filePath` into the backend payload. Do this before `Read`, shell OCR, local image skills, or `divo_skill_resolve`.
-3. For Divo-relevant, plugin, SaaS, non-image file-processing, document, or ambiguous skill-guided requests, first call `divo_skill_resolve` with the original user request.
-4. If the resolver selects a backend skill, call `skills.get` for that skill before acting. If multiple backend skills are plausible, read the top 2-3 backend skills before acting.
+3. For every meaningful Divo-relevant, plugin, SaaS, non-image file-processing, document, research, deliverable, workflow, or scheduled/monitored request, call `divo_skill_resolve` once with the exact original request. Add at most two intent-preserving variants when the task has distinct core and output/integration needs.
+4. Apply the matching persona rules, exact persona-linked recipes, and complementary recipes returned inline. Do not reload them or choose a rejected fuzzy match.
 5. If the resolver is inconclusive or does not select a useful exact backend skill, silently continue with `divo_gateway` discovery. Do not tell the user the resolver failed or went sideways.
 6. If the registry is unavailable or returns no exact skill, use only backend discovery calls such as `capabilities.get`, `tools.list`, `skills.list`, or `connections.list`; never substitute a local skill.
 7. Follow the returned backend skill recipe exactly.
@@ -120,7 +128,7 @@ Use the department id only when the user has selected or implied a department co
 - `approval_rejected`: tell the user the manager rejected the exact action. Do not retry the same args; ask what should change before trying again.
 - `approval_misconfigured`: tell the user an admin/manager configuration is missing.
 - `unauthorized`: ask the user to sign in again through the desktop app.
-- `unknown_op`, `unknown_tool`, `invalid_args`, or `bad_request`: inspect `skills.search`, `skills.get`, `tools.list`, or `capabilities.get` before retrying.
+- `unknown_op`, `unknown_tool`, `invalid_args`, or `bad_request`: for work routing inspect `work.resolve`; for execution inspect `tools.list`, the returned skill recipe, or `capabilities.get` before retrying.
 - Network or backend failure: report the failure plainly. Do not fabricate company data.
 
 ## Security Rules

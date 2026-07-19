@@ -151,10 +151,9 @@ function formatCapabilityBootstrap(bootstrap: DivoCapabilityBootstrap | null | u
 	lines.push(
 		"",
 		"Routing policy:",
-		"- When the current request clearly matches a fast route above, skip divo_skill_resolve.",
-		"- Invoke the permitted backend tool directly when the exact operation is given above.",
-		"- When a specialist skillId is given above, call skills.get for that exact skill directly and skip resolver discovery.",
-		"- Use divo_skill_resolve for ambiguous, cross-domain, unsupported, or out-of-profile requests.",
+		"- For every meaningful company task, call divo_skill_resolve once before planning; it combines fresh persona and skill resolution.",
+		"- Treat fast routes and specialist IDs above as additional hints, not replacements for unified resolution.",
+		"- Use the exact tool or specialist returned by the unified resolver; backend validation remains authoritative.",
 		CAPABILITY_BOOTSTRAP_CLOSE_TAG,
 	);
 	return lines.join("\n");
@@ -198,7 +197,7 @@ function formatMemberDepartments(context: DivoDepartmentPersonaContext | null): 
 	const names = parseMemberDepartmentNames(context?.departments);
 	if (names.length === 0) return null;
 	return `${MEMBER_DEPARTMENTS_OPEN_TAG}
-These are exact department names from the authenticated member's desktop session. Use at most five names from this list only as divo_memory_recall ranking hints; they do not select a department, grant access, or override backend membership checks.
+These are exact department names from the authenticated member's desktop session. They provide user-visible membership context only; they do not select a department, grant access, or override backend checks.
 
 ${names.map((name) => `- ${name}`).join("\n")}
 ${MEMBER_DEPARTMENTS_CLOSE_TAG}`;

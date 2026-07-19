@@ -98,6 +98,19 @@ export function createManagerTeachRoutes(deps: {
     }
   });
 
+  router.get('/persona/:departmentId', async (req, res) => {
+    try {
+      const tree = await deps.service.getPersonaTree({
+        companyId: res.locals.companyId as string,
+        managerId: res.locals.userId as string,
+        departmentId: req.params.departmentId!,
+      });
+      res.json({ data: tree });
+    } catch (error) {
+      respondError(res, error);
+    }
+  });
+
   router.put('/sessions/:sessionId/video', async (req, res) => {
     const companyId = res.locals.companyId as string;
     const managerId = res.locals.userId as string;

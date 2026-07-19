@@ -264,14 +264,48 @@ pub async fn divo_teach_cancel_recording() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn divo_teach_pick_recording() -> Result<Option<TeachRecordingFile>, String> {
+pub async fn divo_teach_pick_recording<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Option<TeachRecordingFile>, String> {
     let selected = AsyncFileDialog::new()
         .add_filter("Screen recordings", &["mp4", "mov", "webm"])
         .pick_file()
         .await;
-    selected
-        .map(|file| recording_file(file.path(), false))
-        .transpose()
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let source = selected.path();
+    recording_file(source, false)?;
+
+    // Imports are copied into Divo's managed retry inbox before upload. The
+    // original remains untouched, while the managed copy survives navigation,
+    // refreshes, network failures, and backend restarts until Teach succeeds.
+    let directory = recording_dir(&app);
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create recording folder: {error}"))?;
+    let original_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("teaching.mov");
+    let destination = directory.join(format!(
+        "teach-upload-{}-{original_name}",
+        Uuid::new_v4().simple()
+    ));
+    tokio::fs::copy(source, &destination)
+        .await
+        .map_err(|error| format!("Could not save a retryable copy of the recording: {error}"))?;
+    let recording = match recording_file(&destination, true) {
+        Ok(recording) => recording,
+        Err(error) => {
+            let _ = fs::remove_file(&destination);
+            return Err(error);
+        }
+    };
+    if let Err(error) = write_recording_metadata(&destination, None, "ready", None) {
+        let _ = fs::remove_file(&destination);
+        return Err(error);
+    }
+    Ok(Some(recording))
 }
 
 #[tauri::command]
@@ -502,7 +536,7 @@ pub async fn divo_teach_finalize_local_recording<R: Runtime>(
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !matches!(status, "persona_updated" | "no_learning") {
+    if !matches!(status, "completed" | "persona_updated" | "no_learning") {
         return Err("Local Teach recording is retained until processing succeeds".to_string());
     }
     remove_local_recording_files(&path)?;
@@ -546,6 +580,23 @@ pub async fn divo_teach_list_recent_learnings<R: Runtime>(
     )
     .await?;
     response_data(response, "Teach recent learnings")
+}
+
+#[tauri::command]
+pub async fn divo_teach_get_persona_tree<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+) -> Result<Value, String> {
+    let department_id = validate_identifier(&department_id, "departmentId")?;
+    let response = teach_json_request(
+        &app,
+        reqwest::Method::GET,
+        &format!("/persona/{department_id}"),
+        None,
+        "Manager persona tree",
+    )
+    .await?;
+    response_data(response, "Manager persona tree")
 }
 
 #[tauri::command]

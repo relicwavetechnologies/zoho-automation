@@ -4,11 +4,16 @@ import { z } from 'zod';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { isSafePublishedMemoryFact } from '../memory/memory-fact-safety';
+import { recordSkillRegistryMutation } from '../skills/skill-registry-versioning';
+import { unknownSkillToolIds } from '../skills/skill-tool-validation';
+import { larkSkillEnglishOnlyError } from '../skills/lark-skill-language-policy';
 import { ManagerPersonaRevisionService } from './manager-persona-revision.service';
 import type {
   ManagerTeachPersonaChange,
   ManagerTeachPersonaEvidenceInput,
-  ManagerTeachPersonaPatch,
+  ManagerTeachLearningPatch,
+  ManagerTeachIgnoredLearning,
+  ManagerTeachSkillChange,
   ManagerTeachPersonaTarget,
 } from './manager-teach-persona.types';
 
@@ -39,14 +44,80 @@ const manifestSchema = z.object({
   warnings: z.array(z.string()),
 });
 
+const TEACH_WRITE_CONTRACT = {
+  schemaVersion: 2,
+  readiness: {
+    requiredFields: [
+      'classifications',
+      'outcome',
+      'whenToUse',
+      'inputs',
+      'expectedOutput',
+      'decisionRules',
+      'exceptions',
+      'automationTrigger',
+      'monitoringScope',
+      'autonomyBoundary',
+      'failureHandling',
+      'clarificationAnswers',
+      'unresolvedMaterialQuestions',
+    ],
+    nullableFields: [
+      'inputs',
+      'expectedOutput',
+      'decisionRules',
+      'exceptions',
+      'automationTrigger',
+      'monitoringScope',
+      'autonomyBoundary',
+      'failureHandling',
+    ],
+    rule: 'Include every readiness field. Use null, never omission or an empty string, when a nullable field genuinely does not apply.',
+  },
+  skillOperations: {
+    create: 'Use operation=create for a new slug. Do not include targetSkillId.',
+    merge: 'Use operation=merge and targetSkillId copied exactly from existingSkills[].id.',
+    allowed: ['create', 'merge'],
+  },
+  personaOperations: {
+    create: 'Use operation=create with kind, scopeKey, and ruleKey for a genuinely new concept. Do not include target.',
+    merge: 'Use operation=merge when refining the same rule without contradiction.',
+    replace: 'Use operation=replace when new manager guidance changes or contradicts the prior rule.',
+    retire: 'Use operation=retire only when the prior rule no longer applies and has no replacement.',
+    existingTarget: 'For merge, replace, or retire, copy the full exact target { nodeId: existingPersona[].id, kind, scopeKey, ruleKey } from one existingPersona entry.',
+    allowed: ['create', 'merge', 'replace', 'retire'],
+  },
+  evidence: 'Use only exact transcript:* and frame:* refs returned in this response. Every written item requires at least one transcript ref.',
+  arrays: 'Always include skills, changes, and ignored as arrays, including [] when empty.',
+  preflight: [
+    'No upsert or add operations.',
+    'Every skill merge has an exact targetSkillId.',
+    'Every persona merge, replace, or retire has the full exact target object.',
+    'Every readiness key is present; non-applicable nullable values are null, not empty strings.',
+    'unresolvedMaterialQuestions is empty before applying.',
+    'baseRevision and evidence refs exactly match this context response.',
+  ],
+} as const;
+
 const unsafeAuthorityPattern = /\b(?:bypass|disable|ignore|skip|override|weaken)\b.{0,80}\b(?:approval|auth(?:entication|orization)?|permission|rbac|security|system|policy|instruction)\b|\b(?:approval|auth(?:entication|orization)?|permission|rbac|security|system|policy|instruction)\b.{0,80}\b(?:bypass|disable|ignore|skip|override|weaken)\b|\b(?:grant|elevate)\b.{0,50}\b(?:access|permission|role)\b/i;
 const promptInjectionPattern = /\b(?:ignore|disregard|forget)\b.{0,60}\b(?:previous|prior|system|developer|instruction|prompt)\b/i;
+const TEACH_LEARNING_TRANSACTION_MAX_WAIT_MS = 10_000;
+const TEACH_LEARNING_TRANSACTION_TIMEOUT_MS = 30_000;
 
 export interface ManagerTeachPersonaProcessResult {
   readonly sessionId: string;
   readonly status: 'completed';
   readonly understanding: string;
   readonly appliedChangeCount: number;
+  readonly appliedPersonaChangeCount: number;
+  readonly appliedSkillCount: number;
+  readonly skills: readonly {
+    readonly id: string;
+    readonly slug: string;
+    readonly name: string;
+    readonly revision: number;
+    readonly outcome: 'created' | 'updated';
+  }[];
   readonly personaRevision: number | null;
   readonly remainingUndos: number;
 }
@@ -56,6 +127,11 @@ export interface ManagerTeachAgentContext {
   readonly departmentId: string;
   readonly source: 'recording' | 'upload';
   readonly originalFileName: string | null;
+  readonly writePolicy: {
+    readonly minConfidence: number;
+    readonly atomic: true;
+  };
+  readonly writeContract: typeof TEACH_WRITE_CONTRACT;
   readonly evidence: ManagerTeachPersonaEvidenceInput;
 }
 
@@ -108,6 +184,11 @@ export class ManagerTeachPersonaProcessor {
       departmentId: session.departmentId,
       source: session.source,
       originalFileName: session.originalFileName,
+      writePolicy: {
+        minConfidence: this.deps.minConfidence,
+        atomic: true,
+      },
+      writeContract: TEACH_WRITE_CONTRACT,
       evidence: loaded.evidence,
     };
   }
@@ -118,7 +199,7 @@ export class ManagerTeachPersonaProcessor {
     departmentId: string;
     sessionId: string;
     mutationKey: string;
-    patch: ManagerTeachPersonaPatch;
+    patch: ManagerTeachLearningPatch;
   }): Promise<ManagerTeachPersonaProcessResult> {
     const priorByKey = await this.deps.prisma.managerTeachSession.findUnique({
       where: { agentMutationKey: input.mutationKey },
@@ -156,13 +237,67 @@ export class ManagerTeachPersonaProcessor {
     if (input.patch.baseRevision !== loaded.evidence.baseRevision) {
       throw new Error('Manager persona changed; reload Teach context before writing');
     }
-    const accepted = validateTeachPersonaChanges(
+    const belowConfidenceThreshold = [
+      ...input.patch.skills.map(skill => ({
+        type: 'skill',
+        key: skill.slug,
+        confidence: skill.confidence,
+      })),
+      ...input.patch.changes.map(change => ({
+        type: 'persona',
+        key: change.operation === 'create' ? change.ruleKey : change.target.ruleKey,
+        confidence: change.confidence,
+      })),
+    ].filter(item => item.confidence < this.deps.minConfidence);
+    if (belowConfidenceThreshold.length > 0) {
+      const rejected = belowConfidenceThreshold
+        .map(item => `${item.type} "${item.key}" (${item.confidence.toFixed(2)})`)
+        .join(', ');
+      throw new Error(
+        `Teach learning patch was not applied: ${rejected} is below the required confidence `
+        + `${this.deps.minConfidence.toFixed(2)}. Clarify material uncertainty or omit the uncertain item, `
+        + 'then reload Teach context and submit one corrected atomic patch. Do not inflate confidence.',
+      );
+    }
+    const acceptedPersona = validateTeachPersonaChanges(
       input.patch.changes,
       loaded.evidence,
       loaded.nodes,
       this.deps.minConfidence,
     );
-    const understanding = safeUnderstanding(input.patch.understanding, accepted.length > 0);
+    const acceptedSkills = validateTeachSkillChanges(
+      input.patch.skills,
+      loaded.evidence,
+      this.deps.minConfidence,
+    );
+    const acceptedIgnored = validateIgnoredTeachLearnings(input.patch.ignored, loaded.evidence, loaded.nodes);
+    if (
+      acceptedPersona.length !== input.patch.changes.length
+      || acceptedSkills.length !== input.patch.skills.length
+      || acceptedIgnored.length !== input.patch.ignored.length
+    ) {
+      const acceptedPersonaSet = new Set(acceptedPersona);
+      const acceptedSkillSet = new Set(acceptedSkills);
+      const rejected = [
+        ...input.patch.changes
+          .filter(change => !acceptedPersonaSet.has(change))
+          .map(change => `persona "${change.operation === 'create' ? change.ruleKey : change.target.ruleKey}"`),
+        ...input.patch.skills
+          .filter(skill => !acceptedSkillSet.has(skill))
+          .map(skill => `skill "${skill.slug}"`),
+        ...input.patch.ignored
+          .filter(ignored => !acceptedIgnored.includes(ignored))
+          .map(ignored => `ignored concept "${ignored.conceptKey}"`),
+      ].join(', ');
+      throw new Error(
+        `Teach learning patch was not applied: ${rejected} failed evidence, safety, duplication, or target validation. `
+        + 'Reload Teach context and submit one corrected atomic patch.',
+      );
+    }
+    const understanding = safeUnderstanding(
+      input.patch.understanding,
+      acceptedPersona.length + acceptedSkills.length > 0,
+    );
 
     let targetSessionId = priorByKey?.id ?? rootSession.id;
     if (!priorByKey && rootSession.personaMutation) {
@@ -236,7 +371,7 @@ export class ManagerTeachPersonaProcessor {
           throw new Error('Manager persona changed while Teach was being processed');
         }
 
-        if (accepted.length === 0) {
+        if (acceptedPersona.length === 0 && acceptedSkills.length === 0) {
           const mutation = await tx.managerTeachPersonaMutation.create({
             data: {
               sessionId: targetSessionId,
@@ -248,7 +383,14 @@ export class ManagerTeachPersonaProcessor {
               modelId: this.deps.modelId,
               status: 'no_learning',
               understanding,
-              patchJson: toJson({ schemaVersion: 1, changes: [] }),
+              patchJson: toJson({
+                schemaVersion: 2,
+                understanding,
+                readiness: input.patch.readiness,
+                skills: [],
+                changes: [],
+                ignored: acceptedIgnored,
+              }),
               appliedChangeCount: 0,
             },
           });
@@ -266,8 +408,163 @@ export class ManagerTeachPersonaProcessor {
         }
 
         const mutationTime = new Date();
-        let liveTree: { id: string; revision: number };
-        if (!currentTree) {
+        const appliedSkills: Array<{
+          id: string;
+          slug: string;
+          name: string;
+          revision: number;
+          outcome: 'created' | 'updated';
+        }> = [];
+        const provenanceRows: Array<{
+          personaNodeId?: string;
+          skillId?: string;
+          decision: 'create' | 'merge' | 'replace' | 'retire';
+          evidenceRefs: string[];
+          rationale: string;
+          priorStateJson?: Prisma.InputJsonValue;
+        }> = [];
+        for (const skillChange of acceptedSkills) {
+          const existing = skillChange.operation === 'merge'
+            ? await tx.skill.findFirst({
+              where: {
+                id: skillChange.targetSkillId,
+                companyId: currentSession.companyId,
+                departmentId: currentSession.departmentId,
+                scope: 'department',
+                status: { not: 'archived' },
+              },
+            })
+            : null;
+          if (skillChange.operation === 'merge' && !existing) {
+            throw new Error(`Canonical Teach skill target is unavailable: ${skillChange.targetSkillId}`);
+          }
+          const conflictingSlug = await tx.skill.findFirst({
+            where: {
+              companyId: currentSession.companyId,
+              departmentId: currentSession.departmentId,
+              scope: 'department',
+              slug: skillChange.slug,
+              status: { not: 'archived' },
+            },
+          });
+          if (skillChange.operation === 'create' && conflictingSlug) {
+            throw new Error(`Teach skill "${skillChange.slug}" already exists; merge targetSkillId ${conflictingSlug.id}`);
+          }
+          if (existing && (existing.id !== conflictingSlug?.id || existing.slug !== skillChange.slug)) {
+            throw new Error('Teach skill merge target and slug do not identify the same canonical skill');
+          }
+          const skill = existing
+            ? await tx.skill.update({
+              where: { id: existing.id },
+              data: {
+                name: skillChange.name,
+                summary: skillChange.summary,
+                markdown: skillChange.markdown,
+                toolIds: skillChange.toolIds,
+                tags: skillChange.tags,
+                revision: { increment: 1 },
+                status: 'active',
+                updatedBy: currentSession.managerId,
+              },
+            })
+            : await tx.skill.create({
+              data: {
+                companyId: currentSession.companyId,
+                departmentId: currentSession.departmentId,
+                scope: 'department',
+                name: skillChange.name,
+                slug: skillChange.slug,
+                summary: skillChange.summary,
+                markdown: skillChange.markdown,
+                toolIds: skillChange.toolIds,
+                tags: skillChange.tags,
+                status: 'active',
+                createdBy: currentSession.managerId,
+                updatedBy: currentSession.managerId,
+              },
+            });
+          await tx.skillAccessGrant.upsert({
+            where: {
+              skillId_granteeType_granteeId: {
+                skillId: skill.id,
+                granteeType: 'department',
+                granteeId: currentSession.departmentId,
+              },
+            },
+            create: {
+              companyId: currentSession.companyId,
+              skillId: skill.id,
+              granteeType: 'department',
+              granteeId: currentSession.departmentId,
+              grantedBy: currentSession.managerId,
+            },
+            update: {},
+          });
+          await recordSkillRegistryMutation(tx, skill, 'teach');
+          appliedSkills.push({
+            id: skill.id,
+            slug: skill.slug,
+            name: skill.name,
+            revision: skill.revision,
+            outcome: existing ? 'updated' : 'created',
+          });
+          provenanceRows.push({
+            skillId: skill.id,
+            decision: existing ? 'merge' : 'create',
+            evidenceRefs: [...skillChange.evidenceRefs],
+            rationale: skillChange.rationale,
+            ...(existing ? {
+              priorStateJson: toJson({
+                revision: existing.revision,
+                name: existing.name,
+                slug: existing.slug,
+                summary: existing.summary,
+                markdown: existing.markdown,
+                toolIds: existing.toolIds,
+                tags: existing.tags,
+              }),
+            } : {}),
+          });
+        }
+
+        const referencedSkillSlugs = new Set<string>();
+        for (const change of acceptedPersona) {
+          if (change.operation === 'create') {
+            change.skillSlugs.forEach(slug => referencedSkillSlugs.add(slug));
+          } else if (change.operation === 'merge' || change.operation === 'replace') {
+            change.skillSlugs?.forEach(slug => referencedSkillSlugs.add(slug));
+          }
+        }
+        const referencedSkills = referencedSkillSlugs.size > 0
+          ? await tx.skill.findMany({
+            where: {
+              companyId: currentSession.companyId,
+              slug: { in: [...referencedSkillSlugs] },
+              status: 'active',
+              OR: [
+                { scope: 'global', departmentId: null },
+                { scope: 'department', departmentId: currentSession.departmentId },
+              ],
+            },
+            orderBy: [{ revision: 'desc' }],
+          })
+          : [];
+        const skillsBySlug = new Map<string, typeof referencedSkills[number]>();
+        for (const skill of referencedSkills) {
+          const current = skillsBySlug.get(skill.slug);
+          if (!current || skill.departmentId === currentSession.departmentId) {
+            skillsBySlug.set(skill.slug, skill);
+          }
+        }
+        const missingSkillSlugs = [...referencedSkillSlugs].filter(slug => !skillsBySlug.has(slug));
+        if (missingSkillSlugs.length > 0) {
+          throw new Error(`Persona links reference unavailable skills: ${missingSkillSlugs.join(', ')}`);
+        }
+
+        let liveTree: { id: string; revision: number } | null = currentTree
+          ? { id: currentTree.id, revision: currentTree.revision }
+          : null;
+        if (acceptedPersona.length > 0 && !currentTree) {
           liveTree = await tx.managerPersonaTree.create({
             data: {
               companyId: currentSession.companyId,
@@ -277,7 +574,7 @@ export class ManagerTeachPersonaProcessor {
             select: { id: true, revision: true },
           });
           await this.revisions.captureBeforeMutation(tx, liveTree.id, 'teach', 0);
-        } else {
+        } else if (acceptedPersona.length > 0 && currentTree) {
           const revisionClaim = await tx.managerPersonaTree.updateMany({
             where: { id: currentTree.id, revision: currentTree.revision },
             data: { revision: { increment: 1 } },
@@ -289,11 +586,10 @@ export class ManagerTeachPersonaProcessor {
           await this.revisions.captureBeforeMutation(tx, liveTree.id, 'teach', currentTree.revision);
         }
 
-        const nodesByTarget = new Map(
-          (currentTree?.nodes ?? []).map(node => [targetKey(node), node]),
-        );
-        for (const change of accepted) {
-          if (change.operation === 'add') {
+        const nodesById = new Map((currentTree?.nodes ?? []).map(node => [node.id, node]));
+        for (const change of acceptedPersona) {
+          if (!liveTree) throw new Error('Teach could not create the manager persona tree');
+          if (change.operation === 'create') {
             const node = await tx.managerPersonaNode.create({
               data: {
                 treeId: liveTree.id,
@@ -311,24 +607,60 @@ export class ManagerTeachPersonaProcessor {
                 status: 'active',
               },
             });
-            nodesByTarget.set(targetKey(change), node);
+            await replaceNodeSkillLinks(tx, node.id, change.skillSlugs, skillsBySlug);
+            nodesById.set(node.id, node);
+            provenanceRows.push({
+              personaNodeId: node.id,
+              decision: 'create',
+              evidenceRefs: [...change.evidenceRefs],
+              rationale: change.rationale,
+            });
             continue;
           }
 
-          const target = nodesByTarget.get(targetKey(change.target));
+          const target = nodesById.get(change.target.nodeId);
           if (!target) throw new Error('Teach persona target disappeared during application');
-          if (change.operation === 'replace') {
+          if (targetKey(target) !== targetKey(change.target)) {
+            throw new Error('Teach persona target identity changed during application');
+          }
+          const priorStateJson = toJson({
+            kind: target.kind,
+            scopeKey: target.scopeKey,
+            ruleKey: target.ruleKey,
+            instruction: target.instruction,
+            confidence: target.confidence,
+            evidenceCount: target.evidenceCount,
+            firstEvidenceAt: target.firstEvidenceAt.toISOString(),
+            lastEvidenceAt: target.lastEvidenceAt.toISOString(),
+            status: target.status,
+          });
+          if (change.operation === 'merge' || change.operation === 'replace') {
             const updated = await tx.managerPersonaNode.update({
               where: { id: target.id },
               data: {
                 instruction: change.instruction,
-                confidence: change.confidence,
-                evidenceCount: change.evidenceRefs.length,
+                confidence: change.operation === 'merge'
+                  ? Math.max(target.confidence, change.confidence)
+                  : change.confidence,
+                evidenceCount: change.operation === 'merge'
+                  ? target.evidenceCount + change.evidenceRefs.length
+                  : change.evidenceRefs.length,
+                ...(change.operation === 'replace' ? { firstEvidenceAt: mutationTime } : {}),
                 lastEvidenceAt: mutationTime,
                 status: 'active',
               },
             });
-            nodesByTarget.set(targetKey(change.target), updated);
+            if (change.skillSlugs !== undefined) {
+              await replaceNodeSkillLinks(tx, updated.id, change.skillSlugs, skillsBySlug);
+            }
+            nodesById.set(updated.id, updated);
+            provenanceRows.push({
+              personaNodeId: updated.id,
+              decision: change.operation,
+              evidenceRefs: [...change.evidenceRefs],
+              rationale: change.rationale,
+              priorStateJson,
+            });
           } else {
             const updated = await tx.managerPersonaNode.update({
               where: { id: target.id },
@@ -339,25 +671,53 @@ export class ManagerTeachPersonaProcessor {
                 lastEvidenceAt: mutationTime,
               },
             });
-            nodesByTarget.set(targetKey(change.target), updated);
+            nodesById.set(updated.id, updated);
+            provenanceRows.push({
+              personaNodeId: updated.id,
+              decision: 'retire',
+              evidenceRefs: [...change.evidenceRefs],
+              rationale: change.rationale,
+              priorStateJson,
+            });
           }
         }
 
         const mutation = await tx.managerTeachPersonaMutation.create({
           data: {
             sessionId: targetSessionId,
-            treeId: liveTree.id,
+            treeId: liveTree?.id ?? null,
             baseRevision: currentRevision,
-            appliedRevision: liveTree.revision,
+            appliedRevision: (liveTree?.revision ?? currentRevision) || null,
             evidenceHash: loaded.evidenceHash,
             modelProvider: this.deps.modelProvider,
             modelId: this.deps.modelId,
             status: 'applied',
             understanding,
-            patchJson: toJson({ schemaVersion: 1, changes: accepted }),
-            appliedChangeCount: accepted.length,
+            patchJson: toJson({
+              schemaVersion: 2,
+              understanding,
+              readiness: input.patch.readiness,
+              skills: appliedSkills,
+              changes: acceptedPersona,
+              ignored: acceptedIgnored,
+            }),
+            appliedChangeCount: acceptedPersona.length + appliedSkills.length,
           },
         });
+        if (provenanceRows.length > 0) {
+          await tx.managerLearningProvenance.createMany({
+            data: provenanceRows.map(row => ({
+              teachSessionId: targetSessionId,
+              mutationId: mutation.id,
+              personaNodeId: row.personaNodeId ?? null,
+              skillId: row.skillId ?? null,
+              decision: row.decision,
+              evidenceRefs: row.evidenceRefs,
+              rationale: row.rationale,
+              ...(row.priorStateJson !== undefined ? { priorStateJson: row.priorStateJson } : {}),
+            })),
+          });
+        }
         await tx.managerTeachSession.update({
           where: { id: targetSessionId },
           data: {
@@ -365,14 +725,20 @@ export class ManagerTeachPersonaProcessor {
             agentMutationKey: input.mutationKey,
           },
         });
-        const remainingUndos = await tx.managerPersonaRevision.count({ where: { treeId: liveTree.id } });
+        const remainingUndos = liveTree
+          ? await tx.managerPersonaRevision.count({ where: { treeId: liveTree.id } })
+          : 0;
         return this.toResult(mutation, remainingUndos);
+      }, {
+        maxWait: TEACH_LEARNING_TRANSACTION_MAX_WAIT_MS,
+        timeout: TEACH_LEARNING_TRANSACTION_TIMEOUT_MS,
       });
 
-    this.log.info('manager-teach.agent.persona_applied', {
+    this.log.info('manager-teach.agent.learning_applied', {
       sessionId: targetSessionId,
       rootSessionId: rootSession.id,
       appliedChangeCount: result.appliedChangeCount,
+      appliedSkillCount: result.appliedSkillCount,
       personaRevision: result.personaRevision,
     });
     return result;
@@ -389,11 +755,17 @@ export class ManagerTeachPersonaProcessor {
     evidenceHash: string;
     evidence: ManagerTeachPersonaEvidenceInput;
     nodes: readonly {
+      id: string;
       kind: 'preference' | 'correction' | 'workflow' | 'skill' | 'contradiction';
       scopeKey: string;
       ruleKey: string;
       instruction: string;
+      confidence: number;
+      evidenceCount: number;
       status: 'active' | 'superseded' | 'quarantined';
+      skillLinks: readonly {
+        skill: { id: string; slug: string; name: string; revision: number };
+      }[];
     }[];
   }> {
     const artifact = session.artifacts[0];
@@ -423,7 +795,35 @@ export class ManagerTeachPersonaProcessor {
           departmentId: session.departmentId,
         },
       },
-      include: { nodes: { orderBy: { createdAt: 'asc' } } },
+      include: {
+        nodes: {
+          include: {
+            skillLinks: {
+              include: { skill: { select: { id: true, slug: true, name: true, revision: true } } },
+            },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    const existingSkills = await this.deps.prisma.skill.findMany({
+      where: {
+        companyId: session.companyId,
+        departmentId: session.departmentId,
+        scope: 'department',
+        status: 'active',
+      },
+      orderBy: [{ updatedAt: 'desc' }, { name: 'asc' }],
+      take: 100,
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        summary: true,
+        revision: true,
+        toolIds: true,
+        tags: true,
+      },
     });
     return {
       evidenceHash: createHash('sha256').update(bytes).digest('hex'),
@@ -431,6 +831,7 @@ export class ManagerTeachPersonaProcessor {
         manifest,
         tree?.revision ?? 0,
         tree?.nodes ?? [],
+        existingSkills,
         this.deps.maxInputChars,
       ),
       nodes: tree?.nodes ?? [],
@@ -460,17 +861,23 @@ export class ManagerTeachPersonaProcessor {
       appliedChangeCount: number;
       appliedRevision: number | null;
       baseRevision: number | null;
+      patchJson: unknown;
     },
     knownRemainingUndos?: number,
   ): Promise<ManagerTeachPersonaProcessResult> {
     const remainingUndos = knownRemainingUndos ?? (mutation.treeId
       ? await this.deps.prisma.managerPersonaRevision.count({ where: { treeId: mutation.treeId } })
       : 0);
+    const skills = appliedSkillsFromPatch(mutation.patchJson);
+    const personaChangeCount = appliedPersonaChangeCountFromPatch(mutation.patchJson);
     return {
       sessionId: mutation.sessionId,
       status: 'completed',
       understanding: mutation.understanding,
       appliedChangeCount: mutation.appliedChangeCount,
+      appliedPersonaChangeCount: personaChangeCount,
+      appliedSkillCount: skills.length,
+      skills,
       personaRevision: mutation.appliedRevision ?? mutation.baseRevision,
       remainingUndos,
     };
@@ -481,11 +888,26 @@ export function buildBoundedTeachPersonaEvidence(
   manifest: z.infer<typeof manifestSchema>,
   baseRevision: number,
   nodes: readonly {
+    id: string;
     kind: 'preference' | 'correction' | 'workflow' | 'skill' | 'contradiction';
     scopeKey: string;
     ruleKey: string;
     instruction: string;
+    confidence: number;
+    evidenceCount: number;
     status: 'active' | 'superseded' | 'quarantined';
+    skillLinks?: readonly {
+      skill: { id: string; slug: string; name: string; revision: number };
+    }[];
+  }[],
+  skills: readonly {
+    id: string;
+    slug: string;
+    name: string;
+    summary: string;
+    revision: number;
+    toolIds: readonly string[];
+    tags: readonly string[];
   }[],
   maxChars: number,
 ): ManagerTeachPersonaEvidenceInput {
@@ -495,19 +917,41 @@ export function buildBoundedTeachPersonaEvidence(
   let personaUsed = 0;
   for (const node of nodes.slice(0, 500)) {
     const item = {
+      id: node.id,
       kind: node.kind,
       scopeKey: node.scopeKey,
       ruleKey: node.ruleKey,
       instruction: node.instruction.slice(0, 1_000),
+      confidence: node.confidence,
+      evidenceCount: node.evidenceCount,
       status: node.status,
+      linkedSkills: (node.skillLinks ?? []).map(link => link.skill),
     };
     const cost = JSON.stringify(item).length;
     if (personaUsed + cost > personaBudget) break;
     existingPersona.push(item);
     personaUsed += cost;
   }
+  const existingSkills: ManagerTeachPersonaEvidenceInput['existingSkills'][number][] = [];
+  const skillsBudget = Math.floor(limit * 0.15);
+  let skillsUsed = 0;
+  for (const skill of skills) {
+    const item = {
+      id: skill.id,
+      slug: skill.slug,
+      name: skill.name,
+      summary: skill.summary.slice(0, 1_024),
+      revision: skill.revision,
+      toolIds: [...skill.toolIds],
+      tags: [...skill.tags],
+    };
+    const cost = JSON.stringify(item).length;
+    if (skillsUsed + cost > skillsBudget) break;
+    existingSkills.push(item);
+    skillsUsed += cost;
+  }
   const warnings = manifest.warnings.slice(0, 20).map(warning => warning.slice(0, 500));
-  let remaining = Math.max(0, limit - personaUsed - JSON.stringify(warnings).length - 1_000);
+  let remaining = Math.max(0, limit - personaUsed - skillsUsed - JSON.stringify(warnings).length - 1_000);
   const transcriptBudget = Math.floor(remaining * 0.65);
   let transcriptUsed = 0;
   const transcript: ManagerTeachPersonaEvidenceInput['transcript'][number][] = [];
@@ -535,13 +979,68 @@ export function buildBoundedTeachPersonaEvidence(
     remaining -= cost;
   }
 
-  return { baseRevision, existingPersona, transcript, frames, warnings };
+  return { baseRevision, existingPersona, existingSkills, transcript, frames, warnings };
+}
+
+export function validateTeachSkillChanges(
+  skills: readonly ManagerTeachSkillChange[],
+  evidence: ManagerTeachPersonaEvidenceInput,
+  minConfidence: number,
+): ManagerTeachSkillChange[] {
+  const availableRefs = new Set([
+    ...evidence.transcript.map(item => item.ref),
+    ...evidence.frames.map(item => item.ref),
+  ]);
+  const seenSlugs = new Set<string>();
+  const seenTargets = new Set<string>();
+  const existingById = new Map(evidence.existingSkills.map(skill => [skill.id, skill]));
+  const existingBySlug = new Map(evidence.existingSkills.map(skill => [skill.slug, skill]));
+  const accepted: ManagerTeachSkillChange[] = [];
+  for (const skill of skills) {
+    if (skill.confidence < minConfidence) continue;
+    if (seenSlugs.has(skill.slug)) continue;
+    if (skill.evidenceRefs.some(ref => !availableRefs.has(ref))) continue;
+    if (!skill.evidenceRefs.some(ref => ref.startsWith('transcript:'))) continue;
+    if (!isSafePersonaText(skill.rationale)) continue;
+    const unknownToolIds = unknownSkillToolIds(skill.toolIds);
+    if (unknownToolIds.length > 0) {
+      throw new Error(`Teach skill contains unknown toolIds: ${unknownToolIds.join(', ')}`);
+    }
+    const languageError = larkSkillEnglishOnlyError({
+      slug: skill.slug,
+      name: skill.name,
+      summary: skill.summary,
+      markdown: skill.markdown,
+      toolIds: skill.toolIds,
+      tags: skill.tags,
+    });
+    if (languageError) throw new Error(languageError);
+    const skillText = [skill.name, skill.summary, skill.markdown].join('\n');
+    if (unsafeAuthorityPattern.test(skillText) || promptInjectionPattern.test(skillText)) continue;
+    if (skill.operation === 'merge') {
+      const target = existingById.get(skill.targetSkillId);
+      if (!target || target.slug !== skill.slug || seenTargets.has(target.id)) continue;
+      seenTargets.add(target.id);
+    } else {
+      if (existingBySlug.has(skill.slug)) continue;
+      const duplicate = evidence.existingSkills.some(existing => isLikelyDuplicate(
+        [skill.slug, skill.name, skill.summary, ...skill.tags].join(' '),
+        [existing.slug, existing.name, existing.summary, ...existing.tags].join(' '),
+        0.9,
+      ));
+      if (duplicate) continue;
+    }
+    seenSlugs.add(skill.slug);
+    accepted.push(skill);
+  }
+  return accepted;
 }
 
 export function validateTeachPersonaChanges(
   changes: readonly ManagerTeachPersonaChange[],
   evidence: ManagerTeachPersonaEvidenceInput,
   nodes: readonly {
+    id: string;
     kind: string;
     scopeKey: string;
     ruleKey: string;
@@ -554,7 +1053,8 @@ export function validateTeachPersonaChanges(
     ...evidence.transcript.map(item => item.ref),
     ...evidence.frames.map(item => item.ref),
   ]);
-  const existing = new Map(nodes.map(node => [targetKey(node), node]));
+  const existingByKey = new Map(nodes.map(node => [targetKey(node), node]));
+  const existingById = new Map(nodes.map(node => [node.id, node]));
   const usedTargets = new Set<string>();
   const accepted: ManagerTeachPersonaChange[] = [];
 
@@ -564,24 +1064,86 @@ export function validateTeachPersonaChanges(
     if (!change.evidenceRefs.some(ref => ref.startsWith('transcript:'))) continue;
     if (!isSafePersonaText(change.rationale)) continue;
 
-    if (change.operation === 'add') {
+    if (change.operation === 'create') {
       const key = targetKey(change);
-      if (existing.has(key) || usedTargets.has(key) || !isSafePersonaText(change.instruction)) continue;
-      existing.set(key, { ...change, status: 'active' });
+      if (existingByKey.has(key) || usedTargets.has(key) || !isSafePersonaText(change.instruction)) continue;
+      const duplicate = nodes.some(node => node.status === 'active'
+        && node.kind === change.kind
+        && isLikelyDuplicate(
+          [change.scopeKey, change.ruleKey, change.instruction].join(' '),
+          [node.scopeKey, node.ruleKey, node.instruction].join(' '),
+          0.9,
+        ));
+      if (duplicate) continue;
       usedTargets.add(key);
       accepted.push(change);
       continue;
     }
 
     const key = targetKey(change.target);
-    const target = existing.get(key);
-    if (!target || target.status !== 'active' || usedTargets.has(key)) continue;
-    if (change.operation === 'replace' && !isSafePersonaText(change.instruction)) continue;
-    usedTargets.add(key);
-    if (change.operation === 'retire') existing.set(key, { ...target, status: 'superseded' });
+    const target = existingById.get(change.target.nodeId);
+    if (
+      !target
+      || targetKey(target) !== key
+      || target.status !== 'active'
+      || usedTargets.has(target.id)
+    ) continue;
+    if (change.operation !== 'retire' && !isSafePersonaText(change.instruction)) continue;
+    if (
+      change.operation === 'replace'
+      && normalizeComparableText(change.instruction) === normalizeComparableText(target.instruction)
+    ) continue;
+    usedTargets.add(target.id);
     accepted.push(change);
   }
   return accepted;
+}
+
+export function validateIgnoredTeachLearnings(
+  ignored: readonly ManagerTeachIgnoredLearning[],
+  evidence: ManagerTeachPersonaEvidenceInput,
+  nodes: readonly { id: string; kind: string; scopeKey: string; ruleKey: string }[],
+): ManagerTeachIgnoredLearning[] {
+  const availableRefs = new Set([
+    ...evidence.transcript.map(item => item.ref),
+    ...evidence.frames.map(item => item.ref),
+  ]);
+  const nodesById = new Map(nodes.map(node => [node.id, node]));
+  const seen = new Set<string>();
+  return ignored.filter(item => {
+    if (seen.has(item.conceptKey) || !isSafePersonaText(item.reason)) return false;
+    if (item.evidenceRefs.some(ref => !availableRefs.has(ref))) return false;
+    if (item.matchedTarget) {
+      const target = nodesById.get(item.matchedTarget.nodeId);
+      if (!target || targetKey(target) !== targetKey(item.matchedTarget)) return false;
+    }
+    seen.add(item.conceptKey);
+    return true;
+  });
+}
+
+const canonicalStopWords = new Set([
+  'and', 'are', 'for', 'from', 'into', 'that', 'the', 'their', 'then', 'this', 'use', 'when', 'with',
+]);
+
+function normalizeComparableText(value: string): string {
+  return [...canonicalTokenSet(value)].sort().join(' ');
+}
+
+function canonicalTokenSet(value: string): Set<string> {
+  return new Set(value.toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3 && !canonicalStopWords.has(token)));
+}
+
+function isLikelyDuplicate(left: string, right: string, threshold: number): boolean {
+  const leftTokens = canonicalTokenSet(left);
+  const rightTokens = canonicalTokenSet(right);
+  if (Math.min(leftTokens.size, rightTokens.size) < 4) return false;
+  let intersection = 0;
+  for (const token of leftTokens) if (rightTokens.has(token)) intersection += 1;
+  const dice = (2 * intersection) / (leftTokens.size + rightTokens.size);
+  return dice >= threshold;
 }
 
 function isSafePersonaText(text: string): boolean {
@@ -599,6 +1161,53 @@ function safeUnderstanding(understanding: string, applied: boolean): string {
 
 function targetKey(target: ManagerTeachPersonaTarget | { kind: string; scopeKey: string; ruleKey: string }): string {
   return [target.kind, target.scopeKey, target.ruleKey].join('\u0000');
+}
+
+async function replaceNodeSkillLinks(
+  tx: Pick<Prisma.TransactionClient, 'managerPersonaSkillLink'>,
+  personaNodeId: string,
+  skillSlugs: readonly string[],
+  skillsBySlug: ReadonlyMap<string, { id: string }>,
+): Promise<void> {
+  await tx.managerPersonaSkillLink.deleteMany({ where: { personaNodeId } });
+  if (skillSlugs.length === 0) return;
+  await tx.managerPersonaSkillLink.createMany({
+    data: skillSlugs.map(slug => ({
+      personaNodeId,
+      skillId: skillsBySlug.get(slug)!.id,
+    })),
+    skipDuplicates: true,
+  });
+}
+
+function appliedSkillsFromPatch(value: unknown): ManagerTeachPersonaProcessResult['skills'] {
+  if (!value || typeof value !== 'object') return [];
+  const skills = (value as { skills?: unknown }).skills;
+  if (!Array.isArray(skills)) return [];
+  return skills.flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const skill = item as Record<string, unknown>;
+    if (
+      typeof skill.id !== 'string'
+      || typeof skill.slug !== 'string'
+      || typeof skill.name !== 'string'
+      || typeof skill.revision !== 'number'
+      || !['created', 'updated'].includes(String(skill.outcome))
+    ) return [];
+    return [{
+      id: skill.id,
+      slug: skill.slug,
+      name: skill.name,
+      revision: skill.revision,
+      outcome: skill.outcome as 'created' | 'updated',
+    }];
+  });
+}
+
+function appliedPersonaChangeCountFromPatch(value: unknown): number {
+  if (!value || typeof value !== 'object') return 0;
+  const changes = (value as { changes?: unknown }).changes;
+  return Array.isArray(changes) ? changes.length : 0;
 }
 
 function toJson(value: unknown): Prisma.InputJsonValue {

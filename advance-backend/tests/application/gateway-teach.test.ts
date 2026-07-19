@@ -35,7 +35,7 @@ describe('gateway interactive Teach operations', () => {
           calls.push({ operation: 'context', input });
           return { teachSessionId: '29a63a44-c348-4414-b5eb-25246d7eb13d', evidence: { baseRevision: 1 } };
         },
-        applyAgentPersona: async (input: unknown) => {
+        applyAgentLearning: async (input: unknown) => {
           calls.push({ operation: 'apply', input });
           return { sessionId: '29a63a44-c348-4414-b5eb-25246d7eb13d', status: 'completed', appliedChangeCount: 0 };
         },
@@ -49,12 +49,23 @@ describe('gateway interactive Teach operations', () => {
     assert.equal(context.ok, true);
 
     const applied = await dispatcher.dispatch({
-      op: 'teach.persona.apply',
+      op: 'teach.learning.apply',
       departmentId: 'department-1',
       payload: {
         teachSessionId: sessionId,
         mutationKey: 'teach-initial-write-001',
-        patch: { schemaVersion: 1, baseRevision: 1, understanding: 'No durable rule.', changes: [] },
+        patch: {
+          schemaVersion: 2,
+          baseRevision: 1,
+          understanding: 'No durable rule.',
+          readiness: {
+            classifications: ['no_learning'], outcome: 'No durable learning.', whenToUse: 'Not applicable.',
+            inputs: null, expectedOutput: null, decisionRules: null, exceptions: null,
+            automationTrigger: null, monitoringScope: null, autonomyBoundary: null, failureHandling: null,
+            clarificationAnswers: [], unresolvedMaterialQuestions: [],
+          },
+          skills: [], changes: [],
+        },
       },
     }, member);
     assert.equal(applied.ok, true);

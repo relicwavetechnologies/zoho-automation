@@ -12,8 +12,10 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 
-import { GmailIcon, ZohoIcon } from '@/components/brand-icons'
+import { GmailIcon, LarkIcon, ZohoIcon } from '@/components/brand-icons'
+import { LarkRequest } from './LarkRequest'
 import { MemoryReviewCard } from '@/components/memory-review/MemoryReviewCard'
+import { TeachClarificationCard } from '@/components/teach/TeachClarificationCard'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup } from '@/components/ui/button-group'
 import {
@@ -32,9 +34,10 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { usePiApproval, type PiPendingUiRequest } from '@/hooks/usePiApproval'
 import { isPiMemoryReviewRequest } from '@/lib/pi/memory-review'
+import { isPiTeachClarificationRequest } from '@/lib/pi/teach-clarification'
 import { cn } from '@/lib/utils'
 
-type ApprovalAppKind = 'gmail' | 'zoho' | 'generic'
+type ApprovalAppKind = 'gmail' | 'zoho' | 'lark' | 'generic'
 
 type LiveApprovalComposerProps = {
   request: PiPendingUiRequest
@@ -81,16 +84,33 @@ function presentationDetails(
   return presentation
 }
 
-function appKind(request: Exclude<PiPendingUiRequest, { protocol: 'memory-review' }>): ApprovalAppKind {
-  const identity = `${request.descriptor.source} ${request.descriptor.kind}`.toLowerCase()
+/** The descriptor text that identifies the vendor, e.g. `generic.larkDoc.create`. */
+function appIdentity(
+  request: Exclude<
+    PiPendingUiRequest,
+    { protocol: 'memory-review' | 'teach-clarification' }
+  >
+): string {
+  return `${request.descriptor.source} ${request.descriptor.kind}`.toLowerCase()
+}
+
+function appKind(
+  request: Exclude<
+    PiPendingUiRequest,
+    { protocol: 'memory-review' | 'teach-clarification' }
+  >
+): ApprovalAppKind {
+  const identity = appIdentity(request)
   if (identity.includes('gmail')) return 'gmail'
   if (identity.includes('zoho')) return 'zoho'
+  if (identity.includes('lark')) return 'lark'
   return 'generic'
 }
 
 function appName(kind: ApprovalAppKind, source: string) {
   if (kind === 'gmail') return 'Gmail'
   if (kind === 'zoho') return 'Zoho'
+  if (kind === 'lark') return 'Lark'
   return source
 }
 
@@ -134,6 +154,27 @@ export function LiveApprovalComposer({
           void usePiApproval
             .getState()
             .resolveMemory(
+              request.threadId,
+              request.requestId,
+              response,
+              request.runId
+            )
+        }
+      />
+    )
+  }
+  if (isPiTeachClarificationRequest(request)) {
+    return (
+      <TeachClarificationCard
+        key={request.requestId}
+        request={request}
+        position={position}
+        total={total}
+        onMove={onMove}
+        onSubmit={(response) =>
+          void usePiApproval
+            .getState()
+            .resolveTeachClarification(
               request.threadId,
               request.requestId,
               response,
@@ -210,6 +251,11 @@ export function LiveApprovalComposer({
           <GmailRequest presentation={descriptor.presentation} />
         ) : kind === 'zoho' ? (
           <ZohoRequest presentation={descriptor.presentation} />
+        ) : kind === 'lark' ? (
+          <LarkRequest
+            presentation={descriptor.presentation}
+            identity={appIdentity(request)}
+          />
         ) : (
           <GenericRequest presentation={descriptor.presentation} />
         )}
@@ -295,6 +341,8 @@ function BrandTile({ kind }: { kind: ApprovalAppKind }) {
         <GmailIcon className="size-6" />
       ) : kind === 'zoho' ? (
         <ZohoIcon className="h-6 w-8" />
+      ) : kind === 'lark' ? (
+        <LarkIcon className="size-6" />
       ) : (
         <ShieldCheck className="size-6" />
       )}
@@ -471,7 +519,10 @@ function GenericRequest({
 function ExactRequestDetails({
   request,
 }: {
-  request: Exclude<PiPendingUiRequest, { protocol: 'memory-review' }>
+  request: Exclude<
+    PiPendingUiRequest,
+    { protocol: 'memory-review' | 'teach-clarification' }
+  >
 }) {
   const [open, setOpen] = useState(false)
   const { descriptor } = request

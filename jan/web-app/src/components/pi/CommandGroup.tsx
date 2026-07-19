@@ -2,7 +2,8 @@ import { memo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { resolveToolLabel } from '@/lib/pi/tool-label'
-import { TerminalIcon, Loader2Icon, ChevronDownIcon } from 'lucide-react'
+import { ChevronDownIcon } from 'lucide-react'
+import { ToolIcon } from './ToolIcon'
 
 export type CommandGroupTool = {
   part: Record<string, unknown>
@@ -98,12 +99,13 @@ export const CommandGroup = memo(
                 <button
                   type="button"
                   onClick={() => toggle(t.partIndex)}
-                  className="flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                  className="group flex items-center gap-2.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
                 >
-                  <span className="grid place-items-center size-[22px] rounded-md border bg-secondary text-muted-foreground shrink-0">
-                    <TerminalIcon className="size-3.5" />
-                  </span>
-                  <span className="font-mono text-xs capitalize truncate">
+                  <ToolIcon
+                    part={t.part}
+                    className="size-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-muted-foreground"
+                  />
+                  <span className="text-[13px] capitalize truncate">
                     {status === 'error' ? `Failed ${label}` : `Ran ${label}`}
                   </span>
                   <ChevronDownIcon
@@ -114,17 +116,20 @@ export const CommandGroup = memo(
                   />
                 </button>
               ) : (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <span className="grid place-items-center size-[22px] rounded-md bg-secondary text-muted-foreground shrink-0">
-                    <Loader2Icon className="size-3.5 animate-spin" />
-                  </span>
-                  <span className="font-mono text-xs capitalize truncate">
+                // Running rows keep the tool's own icon and shimmer the label,
+                // so the row doesn't change shape when it settles into "Ran".
+                <div className="flex items-center gap-2.5 text-sm text-muted-foreground">
+                  <ToolIcon
+                    part={t.part}
+                    className="size-4 shrink-0 text-muted-foreground/70"
+                  />
+                  <span className="text-shimmer text-[13px] capitalize truncate">
                     Running {label}
                   </span>
                 </div>
               )}
               {canExpand && isOpen && (
-                <div className="mt-2 ml-[30px]">
+                <div className="mt-2 ml-[26px]">
                   {renderTool(t.part, t.partIndex)}
                 </div>
               )}

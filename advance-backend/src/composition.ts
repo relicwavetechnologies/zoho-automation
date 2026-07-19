@@ -151,6 +151,8 @@ import { createMemoryPublishingTool } from './application/orchestration/tools/fa
 import { createMemoryRecallTool } from './application/orchestration/tools/families/memory-recall.tool';
 import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
+import { createScheduledWorkflowsTool } from './application/orchestration/tools/families/scheduled-workflows.tool';
+import { ScheduledDesktopChannelAdapter } from './infrastructure/channels/desktop/scheduled-desktop.adapter';
 import { ToolExecutor } from './application/gateway/tool-executor';
 import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
 import {
@@ -1157,6 +1159,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     csvLinkTtl:  env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   }));
   toolRegistry.register(createRunCommandTool());
+  toolRegistry.register(createScheduledWorkflowsTool({ prisma }));
 
   logger.info('tool.registry.built', { toolCount: toolRegistry.ids().length, tools: toolRegistry.ids() });
 
@@ -1418,7 +1421,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     scheduledWorkflowService: new (await import('./application/scheduling/scheduled-workflow.service')).ScheduledWorkflowService({
       prisma,
       engine,
-      channelAdapter: larkAdapter,
+      channelAdapters: {
+        lark: larkAdapter,
+        desktop: new ScheduledDesktopChannelAdapter({
+          prisma,
+          logger: logger.child({ service: 'scheduled-desktop-channel' }),
+        }),
+      },
       channelIdentityRepo,
       logger: logger.child({ service: 'scheduled-workflow' }),
       clock:  systemClock,

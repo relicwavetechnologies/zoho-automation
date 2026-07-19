@@ -152,6 +152,16 @@ enum ManagerPersonaNodeStatus {
   quarantined
 }
 
+// Canonical learning decision recorded for every Teach-sourced persona or
+// skill transition. Clarification happens before a mutation and is retained in
+// the mutation readiness receipt, so it is intentionally not an applied edge.
+enum ManagerLearningDecision {
+  create
+  merge
+  replace
+  retire
+}
+
 // Explicit manager teaching is separate from passive after-run learning.
 // Media compilation is durable on the backend; an interactive desktop Pi
 // session interprets that evidence and submits governed persona/skill writes.
@@ -940,32 +950,34 @@ model Department {
 }
 
 model Skill {
-  id           String             @id @default(uuid())
+  id           String                    @id @default(uuid())
   companyId    String
-  company      Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   departmentId String?
-  department   Department?        @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  department   Department?               @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   folderId     String?
-  folder       SkillFolder?       @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  folder       SkillFolder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
   scope        String
   name         String
   slug         String
   summary      String
   markdown     String
-  toolIds      String[]           @default([])
-  tags         String[]           @default([])
-  status       String             @default("active")
-  isSystem     Boolean            @default(false)
-  sortOrder    Int                @default(0)
-  revision     Int                @default(1)
+  toolIds      String[]                  @default([])
+  tags         String[]                  @default([])
+  status       String                    @default("active")
+  isSystem     Boolean                   @default(false)
+  sortOrder    Int                       @default(0)
+  revision     Int                       @default(1)
   createdBy    String?
   updatedBy    String?
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
   versions     SkillVersion[]
   aliases      SkillAlias[]
   capabilities SkillCapability[]
   accessGrants SkillAccessGrant[]
+  personaLinks ManagerPersonaSkillLink[]
+  learningProvenance ManagerLearningProvenance[]
 
   @@index([companyId, scope, status, sortOrder])
   @@index([departmentId, status, sortOrder])
@@ -1789,9 +1801,25 @@ model ManagerPersonaNode {
   createdAt       DateTime                     @default(now())
   updatedAt       DateTime                     @updatedAt
   candidates      PersonaLearningCandidate[]   @relation("ManagerPersonaNodeCandidates")
+  skillLinks      ManagerPersonaSkillLink[]
+  learningProvenance ManagerLearningProvenance[]
 
   @@unique([treeId, kind, scopeKey, ruleKey])
   @@index([companyId, departmentId, managerId, status, scopeKey])
+}
+
+// Persona nodes own the manager's trigger/preference; linked skills own the
+// reusable execution recipe. Runtime resolves this stable relation instead of
+// relying on fuzzy skill search to rediscover a known procedure.
+model ManagerPersonaSkillLink {
+  personaNodeId String
+  personaNode   ManagerPersonaNode @relation(fields: [personaNodeId], references: [id], onDelete: Cascade)
+  skillId       String
+  skill         Skill              @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  createdAt     DateTime           @default(now())
+
+  @@id([personaNodeId, skillId])
+  @@index([skillId])
 }
 
 // Durable job state for an explicit Teach recording. BullMQ executes the job,
@@ -1818,23 +1846,24 @@ model ManagerTeachSession {
   failedAt          DateTime?
   lastError         String?
   parentSessionId   String?
-  parentSession     ManagerTeachSession?            @relation("ManagerTeachRefinements", fields: [parentSessionId], references: [id], onDelete: SetNull)
-  refinements       ManagerTeachSession[]            @relation("ManagerTeachRefinements")
+  parentSession     ManagerTeachSession?         @relation("ManagerTeachRefinements", fields: [parentSessionId], references: [id], onDelete: SetNull)
+  refinements       ManagerTeachSession[]        @relation("ManagerTeachRefinements")
   managerCorrection String?
-  agentMutationKey  String?                       @unique
+  agentMutationKey  String?                      @unique
   createdAt         DateTime                     @default(now())
   updatedAt         DateTime                     @updatedAt
   artifacts         ManagerTeachArtifact[]
   personaMutation   ManagerTeachPersonaMutation?
+  learningProvenance ManagerLearningProvenance[]
 
   @@index([companyId, departmentId, managerId, createdAt])
   @@index([parentSessionId, createdAt])
   @@index([status, createdAt])
 }
 
-// One compact, idempotent mutation record per Teach session. Raw model output
-// and media evidence are not retained here; patchJson contains only the
-// validated changes that were safe to apply (or the no-learning decision).
+// One compact, idempotent learning mutation per Teach session. The historical
+// model/table name is retained for migration stability; patchJson now stores
+// validated canonical persona and department-skill changes atomically.
 model ManagerTeachPersonaMutation {
   id                 String                            @id @default(uuid())
   sessionId          String                            @unique
@@ -1852,9 +1881,36 @@ model ManagerTeachPersonaMutation {
   appliedChangeCount Int                               @default(0)
   createdAt          DateTime                          @default(now())
   updatedAt          DateTime                          @updatedAt
+  learningProvenance ManagerLearningProvenance[]
 
   @@index([treeId, createdAt])
   @@index([status, createdAt])
+}
+
+// Immutable provenance edges for explicit Teach learning. Passive chat/run
+// provenance remains available through ManagerPersonaNode.candidates ->
+// PersonaLearningEvidence. New writes set exactly one target; a target can
+// later become null when the referenced canonical record is deleted.
+model ManagerLearningProvenance {
+  id             String                      @id @default(uuid())
+  teachSessionId String
+  teachSession   ManagerTeachSession         @relation(fields: [teachSessionId], references: [id], onDelete: Cascade)
+  mutationId     String
+  mutation       ManagerTeachPersonaMutation @relation(fields: [mutationId], references: [id], onDelete: Cascade)
+  personaNodeId  String?
+  personaNode    ManagerPersonaNode?          @relation(fields: [personaNodeId], references: [id], onDelete: SetNull)
+  skillId        String?
+  skill          Skill?                       @relation(fields: [skillId], references: [id], onDelete: SetNull)
+  decision       ManagerLearningDecision
+  evidenceRefs   String[]                     @default([])
+  rationale      String
+  priorStateJson Json?
+  createdAt      DateTime                     @default(now())
+
+  @@index([teachSessionId, createdAt])
+  @@index([mutationId])
+  @@index([personaNodeId, createdAt])
+  @@index([skillId, createdAt])
 }
 
 model ManagerTeachArtifact {

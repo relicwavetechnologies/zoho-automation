@@ -54,7 +54,7 @@ describe("department persona", () => {
 		assert.ok(!refreshed.includes("Use Finance conventions."));
 		assert.ok(refreshed.includes("- Sales"));
 		assert.ok(!refreshed.includes("- Finance"));
-		assert.match(refreshed, /ranking hints/i);
+		assert.match(refreshed, /membership context only/i);
 		assert.equal(
 			composeDivoSystemPrompt(refreshed, COMPANY_PROMPT, {
 				departmentName: "Sales",
@@ -122,7 +122,7 @@ describe("department persona", () => {
 		assert.match(first, /Department function: finance/);
 		assert.match(first, /Finance Ops Core \[skillId=skill-finance\]/);
 		assert.match(first, /connectionId=connection-1/);
-		assert.match(first, /skip divo_skill_resolve/);
+		assert.match(first, /call divo_skill_resolve once before planning/);
 
 		const refreshed = composeDivoSystemPrompt(first, COMPANY_PROMPT, {
 			departmentName: "Engineering",

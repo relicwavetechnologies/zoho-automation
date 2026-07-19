@@ -52,13 +52,20 @@ export type TeachSession = {
   lastError: string | null
   understanding: string | null
   appliedChanges: Array<{
-    operation: 'add' | 'replace' | 'retire'
+    operation: 'create' | 'merge' | 'replace' | 'retire'
     kind: string
     scopeKey: string
     ruleKey: string
     instruction: string | null
     confidence: number
     evidenceRefs: string[]
+  }>
+  appliedSkills: Array<{
+    id: string
+    slug: string
+    name: string
+    revision: number
+    outcome: 'created' | 'updated'
   }>
   evidence: {
     durationSeconds: number | null
@@ -79,6 +86,35 @@ export type TeachSession = {
   canCancel: boolean
   createdAt: string
   updatedAt: string
+}
+
+export type ManagerPersonaTree = {
+  revision: number
+  updatedAt: string
+  nodes: Array<{
+    id: string
+    kind: string
+    scopeKey: string
+    ruleKey: string
+    instruction: string
+    confidence: number
+    learningSources: Array<{
+      source: 'teach' | 'conversation'
+      sourceId: string
+      decision: string
+      rationale: string
+      evidenceRefs: string[]
+      learnedAt: string
+    }>
+    linkedSkills: Array<{
+      id: string
+      slug: string
+      name: string
+      summary: string
+      revision: number
+      toolIds: string[]
+    }>
+  }>
 }
 
 export type DivoSessionStatus = {
@@ -115,20 +151,37 @@ export const createTeachSession = (
     recording,
   })
 
-export const uploadTeachRecording = (
+const activeTeachUploads = new Set<string>()
+
+export const isTeachUploadActive = (sessionId: string) =>
+  activeTeachUploads.has(sessionId)
+
+export const uploadTeachRecording = async (
   sessionId: string,
   recording: TeachRecordingFile
-) =>
-  invoke<TeachSession>('divo_teach_upload_recording', {
-    sessionId,
-    recording,
-  })
+) => {
+  if (activeTeachUploads.has(sessionId)) {
+    throw new Error('This Teach recording is already uploading')
+  }
+  activeTeachUploads.add(sessionId)
+  try {
+    return await invoke<TeachSession>('divo_teach_upload_recording', {
+      sessionId,
+      recording,
+    })
+  } finally {
+    activeTeachUploads.delete(sessionId)
+  }
+}
 
 export const getTeachSession = (sessionId: string) =>
   invoke<TeachSession>('divo_teach_get_session', { sessionId })
 
 export const listRecentTeachLearnings = (departmentId: string, limit = 10) =>
   invoke<TeachSession[]>('divo_teach_list_recent_learnings', { departmentId, limit })
+
+export const getManagerPersonaTree = (departmentId: string) =>
+  invoke<ManagerPersonaTree | null>('divo_teach_get_persona_tree', { departmentId })
 
 export const finalizeLocalTeachRecording = (path: string, sessionId: string) =>
   invoke<void>('divo_teach_finalize_local_recording', { path, sessionId })

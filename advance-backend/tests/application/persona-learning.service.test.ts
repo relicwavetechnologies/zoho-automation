@@ -103,6 +103,7 @@ describe('PersonaLearningService', () => {
   it('writes only shadow candidates and marks a successful no-prompt execution as complete', async () => {
     const updates: any[] = [];
     const candidateWrites: any[] = [];
+    const extractionInputs: any[] = [];
     const prisma = {
       personaLearningJob: {
         findUnique: async () => ({
@@ -117,6 +118,12 @@ describe('PersonaLearningService', () => {
         update: async ({ data }: any) => { updates.push(data); },
       },
       personaLearningCandidate: { findMany: async () => [] },
+      managerPersonaTree: { findUnique: async () => ({
+        nodes: [{
+          kind: 'preference', scopeKey: 'reporting.weekly', ruleKey: 'weekly-report.bullets',
+          instruction: 'Use bullet summaries.',
+        }],
+      }) },
       $transaction: async (fn: any) => fn({
         personaLearningCandidate: {
           upsert: async ({ create }: any) => { candidateWrites.push(create); },
@@ -129,7 +136,13 @@ describe('PersonaLearningService', () => {
     const service = new PersonaLearningService({
       prisma: prisma as never,
       queue: {} as never,
-      extractor,
+      extractor: {
+        ...extractor,
+        extract: async (input) => {
+          extractionInputs.push(input);
+          return extractor.extract(input);
+        },
+      },
       logger: noopLogger,
     });
 
@@ -139,5 +152,6 @@ describe('PersonaLearningService', () => {
     assert.equal(candidateWrites[0].status, 'shadow');
     assert.equal(candidateWrites[0].claim, 'Use bullet summaries.');
     assert.equal(updates.at(-1).status, 'shadow_complete');
+    assert.equal(extractionInputs[0].existingCanonicalRules[0].ruleKey, 'weekly-report.bullets');
   });
 });

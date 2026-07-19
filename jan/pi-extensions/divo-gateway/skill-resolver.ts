@@ -16,28 +16,49 @@ export interface ResolvedSkill {
 	description: string;
 	score: number;
 	confidence: "high" | "medium" | "low";
-	nextAction: string;
 	reason: string;
+	source: "persona_link" | "skill_search" | "google_plan";
 	toolIds?: string[];
 	instructions?: string;
 	revision?: number;
+	matchedQueries?: string[];
+	personaReferences?: Array<{ nodeId: string; scopeKey: string; ruleKey: string }>;
 	orchestrationPlan?: GoogleVendorOnboardingPlan;
+}
+
+export interface ResolvedPersonaRule {
+	nodeId: string;
+	scopeKey: string;
+	ruleKey: string;
+	kind: string;
+	instruction: string;
+	confidence: number;
+	matchScore: number;
+	matchedOn: string[];
+	learningSources: Array<{
+		source: "teach" | "conversation";
+		sourceId: string;
+		rationale: string;
+		evidenceRefs: string[];
+		learnedAt: string;
+	}>;
 }
 
 export interface SkillResolveResult {
 	policy: typeof DIVO_SKILL_POLICY;
 	query: string;
+	queries: string[];
 	selected: ResolvedSkill | null;
 	results: ResolvedSkill[];
+	personaRules: ResolvedPersonaRule[];
+	rejected: Array<{
+		id: string;
+		name: string;
+		bestScore: number;
+		matchedQueries: string[];
+		reason: string;
+	}>;
 	notes: string[];
-}
-
-interface BackendSkillCandidate {
-	id: string;
-	name: string;
-	description: string;
-	score?: number;
-	toolIds?: string[];
 }
 
 interface GoogleVendorOnboardingPlan {
@@ -75,6 +96,7 @@ type GoogleVendorOnboardingPhaseId =
 
 export async function resolveDivoSkills(options: {
 	query: string;
+	variants?: string[];
 	limit?: number;
 	departmentId?: string;
 	env?: NodeJS.ProcessEnv;
@@ -90,11 +112,24 @@ export async function resolveDivoSkills(options: {
 		return {
 			policy: DIVO_SKILL_POLICY,
 			query,
+			queries: [query],
 			selected: null,
 			results: [],
+			personaRules: [],
+			rejected: [],
 			notes,
 		};
 	}
+
+	const work = await resolveBackendWork({
+		query,
+		variants: normalizeVariants(query, options.variants ?? []),
+		limit,
+		departmentId: options.departmentId,
+		config,
+		fetchImpl: options.fetchImpl,
+		notes,
+	});
 	const requestedGooglePhases = deriveVendorOnboardingGooglePhases(query);
 	const vendorOnboarding = isVendorOnboardingRequest(query) && requestedGooglePhases.length > 1;
 	const googlePlan = vendorOnboarding
@@ -114,8 +149,8 @@ export async function resolveDivoSkills(options: {
 			description: `Backend-planned ${googlePlan.phases.map((phase) => phase.name).join(" → ")} workflow.`,
 			score: 10,
 			confidence: "high",
+			source: "google_plan",
 			reason: "Matched the governed Google vendor-onboarding workflow.",
-			nextAction: "Follow the phase order. Use the first inline recipe, then load later exact skill IDs immediately before their phase.",
 			toolIds: googlePlan.phases.map((phase) => phase.toolId),
 			...(first ? {
 				instructions: [
@@ -129,84 +164,97 @@ export async function resolveDivoSkills(options: {
 			} : {}),
 			orchestrationPlan: googlePlan,
 		};
-		return { policy: DIVO_SKILL_POLICY, query, selected, results: [selected], notes };
+		const results = [selected, ...(work?.results ?? [])];
+		return {
+			policy: DIVO_SKILL_POLICY,
+			query,
+			queries: work?.queries ?? [query],
+			selected,
+			results,
+			personaRules: work?.personaRules ?? [],
+			rejected: work?.rejected ?? [],
+			notes,
+		};
 	}
 	if (vendorOnboarding) {
 		// A partial specialist match is not a usable substitute for the requested
 		// multi-phase workflow. The plan endpoint already recorded the precise
 		// RBAC or contract reason in notes, so fail closed instead of reranking.
-		return { policy: DIVO_SKILL_POLICY, query, selected: null, results: [], notes };
-	}
-	const results = await searchBackendSkills({
-		query,
-		limit,
-		departmentId: options.departmentId,
-		config,
-		fetchImpl: options.fetchImpl,
-		notes,
-	});
-
-	// The backend is the ranking authority: it has the complete cloud registry
-	// and applies RBAC before returning candidates. Preserve that ordering.
-	const ranked = results
-		.slice(0, limit)
-		.map((skill) => ({ ...skill, confidence: confidenceForScore(skill.score) }));
-	const selected = ranked[0]
-		? await loadSelectedSkill({
-			candidate: ranked[0],
-			departmentId: options.departmentId,
-			config,
-			fetchImpl: options.fetchImpl,
+		return {
+			policy: DIVO_SKILL_POLICY,
+			query,
+			queries: work?.queries ?? [query],
+			selected: null,
+			results: work?.results.filter(skill => skill.source === "persona_link") ?? [],
+			personaRules: work?.personaRules ?? [],
+			rejected: work?.rejected ?? [],
 			notes,
-		})
-		: null;
-
+		};
+	}
+	if (work) return { policy: DIVO_SKILL_POLICY, query, selected: work.results[0] ?? null, ...work, notes };
 	return {
 		policy: DIVO_SKILL_POLICY,
 		query,
-		selected,
-		results: ranked,
+		queries: [query],
+		selected: null,
+		results: [],
+		personaRules: [],
+		rejected: [],
 		notes,
 	};
 }
 
 export function formatSkillResolveResult(result: SkillResolveResult): string {
-	if (result.results.length === 0) {
+	if (result.results.length === 0 && result.personaRules.length === 0) {
 		const notes = result.notes.length ? `\n\nNotes:\n${result.notes.map((note) => `- ${note}`).join("\n")}` : "";
 		return `No matching company skills found for "${result.query}".${notes}`;
 	}
 
-	const selected = result.selected;
 	const lines = [
-		`Company skill resolver completed for: "${result.query}"`,
+		`Divo work context resolved for: "${result.query}"`,
 		"",
-		selected
-			? `Selected: ${selected.name} (${selected.confidence} confidence)`
-			: "Selected: none",
+		"Queries searched:",
+		...result.queries.map((query, index) => `${index + 1}. ${index === 0 ? "Exact request" : `Variant ${index}`}: ${query}`),
 		"",
-		"Ranked company skills:",
 	];
 
-	for (const skill of result.results) {
-		lines.push(`- ${skill.name} score=${skill.score.toFixed(2)} confidence=${skill.confidence}`);
-		lines.push(`  reason: ${skill.reason}`);
-		lines.push(`  next: ${skill.nextAction}`);
-		if (skill.toolIds?.length) lines.push(`  tools: ${skill.toolIds.join(", ")}`);
+	if (result.personaRules.length) {
+		lines.push("Manager persona matches:");
+		for (const rule of result.personaRules) {
+			lines.push(`- ${rule.scopeKey} / ${rule.ruleKey} (${Math.round(rule.confidence * 100)}% confidence)`);
+			lines.push(`  instruction: ${rule.instruction}`);
+			lines.push(`  matched on: ${rule.matchedOn.join(", ") || "task context"}`);
+			for (const source of rule.learningSources) {
+				lines.push(`  evidence: ${source.source} ${source.sourceId} — ${source.rationale}`);
+			}
+		}
+		lines.push("");
 	}
-	if (selected?.instructions) {
-		lines.push(
-			"",
-			`Loaded approved recipe${selected.revision ? ` (revision ${selected.revision})` : ""}:`,
-			selected.instructions,
-		);
+
+	const personaSkills = result.results.filter(skill => skill.source === "persona_link");
+	const searchedSkills = result.results.filter(skill => skill.source === "skill_search");
+	if (personaSkills.length) {
+		lines.push("Required persona-linked skills:");
+		for (const skill of personaSkills) appendSkill(lines, skill);
 	}
-	if (selected?.orchestrationPlan) {
+	if (searchedSkills.length) {
+		lines.push("Complementary skills selected by search:");
+		for (const skill of searchedSkills) appendSkill(lines, skill);
+	}
+	const planned = result.results.find(skill => skill.orchestrationPlan);
+	if (planned?.orchestrationPlan) {
 		lines.push("", "Google workflow phases:");
-		for (const [index, phase] of selected.orchestrationPlan.phases.entries()) {
+		for (const [index, phase] of planned.orchestrationPlan.phases.entries()) {
 			lines.push(`${index + 1}. ${phase.name} — ${phase.skillId}`);
 		}
-		lines.push(selected.orchestrationPlan.connection.message);
+		lines.push(planned.orchestrationPlan.connection.message);
 		lines.push("The first phase recipe is loaded above; load each later exact skill ID immediately before its phase.");
+	}
+	if (result.rejected.length) {
+		lines.push("", "Rejected fuzzy matches (do not use):");
+		for (const skill of result.rejected) {
+			lines.push(`- ${skill.name} score=${skill.bestScore.toFixed(2)} — ${skill.reason}`);
+		}
 	}
 
 	if (result.notes.length) {
@@ -215,6 +263,18 @@ export function formatSkillResolveResult(result: SkillResolveResult): string {
 	}
 
 	return lines.join("\n");
+}
+
+function appendSkill(lines: string[], skill: ResolvedSkill): void {
+	lines.push(`- ${skill.name} · revision ${skill.revision ?? "unknown"} · ${skill.confidence} confidence`);
+	lines.push(`  source: ${skill.source === "persona_link" ? "exact manager-persona link" : "multi-query skill search"}`);
+	lines.push(`  reason: ${skill.reason}`);
+	if (skill.personaReferences?.length) {
+		lines.push(`  references: ${skill.personaReferences.map(reference => `${reference.scopeKey}/${reference.ruleKey}`).join(", ")}`);
+	}
+	if (skill.matchedQueries?.length) lines.push(`  matched queries: ${skill.matchedQueries.join(" | ")}`);
+	if (skill.toolIds?.length) lines.push(`  tools: ${skill.toolIds.join(", ")}`);
+	if (skill.instructions) lines.push("", `  Loaded recipe for ${skill.name}:`, skill.instructions, "");
 }
 
 function isVendorOnboardingRequest(query: string): boolean {
@@ -331,145 +391,200 @@ function confidenceForScore(score: number): "high" | "medium" | "low" {
 	return "low";
 }
 
-async function searchBackendSkills(options: {
+interface BackendWorkResolution {
+	queries: string[];
+	results: ResolvedSkill[];
+	personaRules: ResolvedPersonaRule[];
+	rejected: SkillResolveResult["rejected"];
+}
+
+async function resolveBackendWork(options: {
 	query: string;
+	variants: string[];
 	limit: number;
 	departmentId?: string;
 	config: DivoGatewayConfig;
 	fetchImpl?: typeof fetch;
 	notes: string[];
-}): Promise<ResolvedSkill[]> {
-	try {
-		const searchResponse = await callDivoGateway(
-			options.config,
-			{
-				op: "skills.search",
-				departmentId: options.departmentId,
-				payload: { query: options.query, limit: options.limit },
-			},
-			options.fetchImpl ?? fetch,
-		);
-		if (!searchResponse.body.ok || searchResponse.body.status !== "success") {
-			options.notes.push(`Backend skills.search returned ${searchResponse.body.status}.`);
-			return [];
-		}
-
-		return readBackendSkills(searchResponse.body.data)
-			.map(toResolvedBackendSkill);
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		options.notes.push(`Company skill registry request failed: ${message}`);
-		return [];
-	}
-}
-
-async function loadSelectedSkill(options: {
-	candidate: ResolvedSkill;
-	departmentId?: string;
-	config: DivoGatewayConfig;
-	fetchImpl?: typeof fetch;
-	notes: string[];
-}): Promise<ResolvedSkill> {
+}): Promise<BackendWorkResolution | null> {
 	try {
 		const response = await callDivoGateway(
 			options.config,
 			{
-				op: "skills.get",
+				op: "work.resolve",
 				departmentId: options.departmentId,
-				payload: { skillId: options.candidate.id },
+				payload: {
+					query: options.query,
+					...(options.variants.length ? { variants: options.variants } : {}),
+					limit: options.limit,
+				},
 			},
 			options.fetchImpl ?? fetch,
 		);
 		if (!response.body.ok || response.body.status !== "success") {
-			options.notes.push(`Backend skills.get returned ${response.body.status} for the selected skill.`);
-			return options.candidate;
+			options.notes.push(`Backend work.resolve returned ${response.body.status}.`);
+			return null;
 		}
-		const skill = readLoadedSkill(response.body.data);
-		if (!skill || skill.id !== options.candidate.id) {
-			options.notes.push("Backend skills.get returned an invalid selected-skill contract.");
-			return options.candidate;
-		}
-		return {
-			...options.candidate,
-			name: skill.name,
-			description: skill.description,
-			toolIds: skill.toolIds,
-			instructions: skill.instructions,
-			revision: skill.revision,
-			nextAction: "Follow the loaded approved recipe directly; do not repeat skill or catalogue discovery.",
-		};
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		options.notes.push(`Selected company skill could not be loaded: ${message}`);
-		return options.candidate;
+		const resolved = readBackendWorkResolution(response.body.data);
+		if (!resolved) options.notes.push("Backend work.resolve returned an invalid resolution contract.");
+		return resolved;
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		options.notes.push(`Company work resolution failed: ${message}`);
+		return null;
 	}
 }
 
-function readLoadedSkill(data: unknown): {
-	id: string;
-	name: string;
-	description: string;
-	instructions: string;
-	toolIds: string[];
-	revision?: number;
-} | null {
+function normalizeVariants(originalQuery: string, variants: readonly string[]): string[] {
+	const exact = originalQuery.replace(/\s+/g, " ").trim().toLowerCase();
+	const seen = new Set([exact]);
+	const normalized: string[] = [];
+	for (const value of variants) {
+		const variant = value.replace(/\s+/g, " ").trim();
+		const key = variant.toLowerCase();
+		if (!variant || seen.has(key)) continue;
+		seen.add(key);
+		normalized.push(variant);
+		if (normalized.length === 2) break;
+	}
+	return normalized;
+}
+
+function readBackendWorkResolution(data: unknown): BackendWorkResolution | null {
 	if (!data || typeof data !== "object") return null;
-	const skill = (data as { skill?: unknown }).skill;
-	if (!skill || typeof skill !== "object") return null;
-	const raw = skill as Record<string, unknown>;
-	const id = readString(raw.id);
-	const name = readString(raw.name);
-	const description = readString(raw.description);
-	const instructions = readString(raw.instructions);
-	if (!id || !name || !description || !instructions || !Array.isArray(raw.toolIds)) return null;
-	return {
-		id,
-		name,
-		description,
-		instructions,
-		toolIds: raw.toolIds.filter((value): value is string => typeof value === "string"),
-		revision: typeof raw.revision === "number" ? raw.revision : undefined,
-	};
+	const raw = data as Record<string, unknown>;
+	const queries = Array.isArray(raw.queries)
+		? raw.queries.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+		: [];
+	const persona = raw.persona && typeof raw.persona === "object"
+		? raw.persona as Record<string, unknown>
+		: {};
+	const personaRules = readPersonaRules(persona.rules);
+	const personaSkills = readResolvedSkills(persona.linkedSkills, "persona_link");
+	const additionalSkills = readResolvedSkills(raw.additionalSkills, "skill_search");
+	const rejected = readRejectedSkills(raw.rejectedSkills);
+	if (!queries.length) return null;
+	return { queries, results: [...personaSkills, ...additionalSkills], personaRules, rejected };
 }
 
-function toResolvedBackendSkill(skill: BackendSkillCandidate): ResolvedSkill {
-	return {
-		id: skill.id,
-		name: skill.name,
-		description: skill.description,
-		score: skill.score ?? 1,
-		confidence: "low",
-		toolIds: skill.toolIds,
-		reason: "Matched the RBAC-filtered company skill registry.",
-		nextAction: "The resolver will load this recipe automatically if selected.",
-	};
-}
-
-function readBackendSkills(data: unknown): BackendSkillCandidate[] {
-	if (!data || typeof data !== "object") return [];
-	const skills = (data as { skills?: unknown }).skills;
-	if (!Array.isArray(skills)) return [];
-
-	return skills.flatMap((item): BackendSkillCandidate[] => {
+function readResolvedSkills(value: unknown, source: "persona_link" | "skill_search"): ResolvedSkill[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item): ResolvedSkill[] => {
 		if (!item || typeof item !== "object") return [];
-		const raw = item as Record<string, unknown>;
-		const id = readString(raw.id);
-		const name = readString(raw.name);
-		const description = readString(raw.description);
-		if (!id || !name || !description) return [];
+		const envelope = item as Record<string, unknown>;
+		const rawSkill = envelope.skill;
+		if (!rawSkill || typeof rawSkill !== "object") return [];
+		const skill = rawSkill as Record<string, unknown>;
+		const id = readString(skill.id);
+		const name = readString(skill.name);
+		const description = readString(skill.description);
+		const instructions = readString(skill.instructions);
+		if (!id || !name || !description || !instructions || !Array.isArray(skill.toolIds)) return [];
+		const score = source === "skill_search" && typeof envelope.bestScore === "number"
+			? envelope.bestScore
+			: 10;
+		const references = Array.isArray(envelope.references)
+			? envelope.references.flatMap((reference): NonNullable<ResolvedSkill["personaReferences"]> => {
+				if (!reference || typeof reference !== "object") return [];
+				const raw = reference as Record<string, unknown>;
+				const nodeId = readString(raw.nodeId);
+				const scopeKey = readString(raw.scopeKey);
+				const ruleKey = readString(raw.ruleKey);
+				return nodeId && scopeKey && ruleKey ? [{ nodeId, scopeKey, ruleKey }] : [];
+			})
+			: undefined;
 		return [{
 			id,
 			name,
 			description,
-			score: typeof raw.score === "number" ? raw.score : undefined,
-			toolIds: Array.isArray(raw.toolIds) ? raw.toolIds.filter((value): value is string => typeof value === "string") : undefined,
+			score,
+			confidence: confidenceForScore(score),
+			source,
+			reason: readString(envelope.reason) ?? (source === "persona_link"
+				? "Selected by an exact manager-persona link."
+				: "Selected by the bounded multi-query skill search."),
+			toolIds: skill.toolIds.filter((toolId): toolId is string => typeof toolId === "string"),
+			instructions,
+			revision: typeof skill.revision === "number" ? skill.revision : undefined,
+			matchedQueries: Array.isArray(envelope.matchedQueries)
+				? envelope.matchedQueries.filter((query): query is string => typeof query === "string")
+				: undefined,
+			personaReferences: references,
+		}];
+	});
+}
+
+function readPersonaRules(value: unknown): ResolvedPersonaRule[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item): ResolvedPersonaRule[] => {
+		if (!item || typeof item !== "object") return [];
+		const raw = item as Record<string, unknown>;
+		const nodeId = readString(raw.nodeId);
+		const scopeKey = readString(raw.scopeKey);
+		const ruleKey = readString(raw.ruleKey);
+		const kind = readString(raw.kind);
+		const instruction = readString(raw.instruction);
+		if (!nodeId || !scopeKey || !ruleKey || !kind || !instruction) return [];
+		return [{
+			nodeId,
+			scopeKey,
+			ruleKey,
+			kind,
+			instruction,
+			confidence: typeof raw.confidence === "number" ? raw.confidence : 0,
+			matchScore: typeof raw.matchScore === "number" ? raw.matchScore : 0,
+			matchedOn: Array.isArray(raw.matchedOn) ? raw.matchedOn.filter((field): field is string => typeof field === "string") : [],
+			learningSources: readLearningSources(raw.learningSources),
+		}];
+	});
+}
+
+function readLearningSources(value: unknown): ResolvedPersonaRule["learningSources"] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item): ResolvedPersonaRule["learningSources"] => {
+		if (!item || typeof item !== "object") return [];
+		const raw = item as Record<string, unknown>;
+		const source = raw.source === "teach" || raw.source === "conversation" ? raw.source : undefined;
+		const sourceId = readString(raw.sourceId);
+		const rationale = readString(raw.rationale);
+		const learnedAt = readString(raw.learnedAt);
+		if (!source || !sourceId || !rationale || !learnedAt) return [];
+		return [{
+			source,
+			sourceId,
+			rationale,
+			evidenceRefs: Array.isArray(raw.evidenceRefs)
+				? raw.evidenceRefs.filter((ref): ref is string => typeof ref === "string")
+				: [],
+			learnedAt,
+		}];
+	});
+}
+
+function readRejectedSkills(value: unknown): SkillResolveResult["rejected"] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item): SkillResolveResult["rejected"] => {
+		if (!item || typeof item !== "object") return [];
+		const raw = item as Record<string, unknown>;
+		const id = readString(raw.id);
+		const name = readString(raw.name);
+		const reason = readString(raw.reason);
+		if (!id || !name || !reason) return [];
+		return [{
+			id,
+			name,
+			bestScore: typeof raw.bestScore === "number" ? raw.bestScore : 0,
+			matchedQueries: Array.isArray(raw.matchedQueries)
+				? raw.matchedQueries.filter((query): query is string => typeof query === "string")
+				: [],
+			reason,
 		}];
 	});
 }
 
 function clampLimit(limit: number | undefined): number {
 	if (!limit || !Number.isFinite(limit)) return 5;
-	return Math.max(1, Math.min(10, Math.floor(limit)));
+	return Math.max(1, Math.min(5, Math.floor(limit)));
 }
 
 function readString(value: unknown): string | undefined {

@@ -1,6 +1,10 @@
 import type { ToolRegistry } from '../orchestration/tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
-import type { SkillCatalogService } from '../skills/skill-catalog.service';
+import type {
+  CatalogSkill,
+  CatalogSkillSearchResult,
+  SkillCatalogService,
+} from '../skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
 import type { Logger } from '../../shared/logger';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
@@ -14,9 +18,10 @@ import type { ConnectionRegistryPort } from '../connections/connection-registry.
 import type { AuditService } from '../observability/audit.service';
 import type { ManagerPersonaRuntimeService } from '../persona-learning/manager-persona-runtime.service';
 import type { ManagerTeachService } from '../persona-learning/manager-teach.service';
-import { managerTeachPersonaApplySchema } from '../persona-learning/manager-teach-persona.types';
+import { managerTeachLearningApplySchema } from '../persona-learning/manager-teach-persona.types';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type {
+  GatewayExecutionContext,
   GatewayMemberContext,
   GatewayRequest,
   GatewayResponse,
@@ -36,6 +41,7 @@ import {
   toolsPreflightPayloadSchema,
   toolsCommitPayloadSchema,
   toolsListPayloadSchema,
+  workResolvePayloadSchema,
 } from './gateway.types';
 import { buildGoogleVendorOnboardingPlan } from './google-orchestration.service';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
@@ -80,6 +86,7 @@ export class GatewayDispatcher {
     }
 
     const departmentId = request.departmentId;
+    const execution = request.execution;
 
     switch (request.op) {
       case 'capabilities.get':
@@ -92,12 +99,14 @@ export class GatewayDispatcher {
         return this.handleSkillsSearch(member, departmentId, request.payload);
       case 'skills.get':
         return this.handleSkillsGet(member, departmentId, request.payload);
+      case 'work.resolve':
+        return this.handleWorkResolve(member, departmentId, request.payload);
       case 'persona.resolve':
         return this.handlePersonaResolve(member, departmentId, request.payload);
       case 'teach.context.get':
         return this.handleTeachContextGet(member, departmentId, request.payload);
-      case 'teach.persona.apply':
-        return this.handleTeachPersonaApply(member, departmentId, request.payload);
+      case 'teach.learning.apply':
+        return this.handleTeachLearningApply(member, departmentId, request.payload);
       case 'google.plan':
         return this.handleGooglePlan(member, departmentId, request.payload);
       case 'connections.list':
@@ -105,13 +114,13 @@ export class GatewayDispatcher {
       case 'media.image_ocr':
         return this.handleMediaImageOcr(member, departmentId, request.payload);
       case 'tools.invoke':
-        return this.handleToolsInvoke(member, departmentId, request.payload);
+        return this.handleToolsInvoke(member, departmentId, request.payload, execution);
       case 'tools.prepare':
-        return this.handleToolsPrepare(member, departmentId, request.payload);
+        return this.handleToolsPrepare(member, departmentId, request.payload, execution);
       case 'tools.preflight':
-        return this.handleToolsPreflight(member, departmentId, request.payload);
+        return this.handleToolsPreflight(member, departmentId, request.payload, execution);
       case 'tools.commit':
-        return this.handleToolsCommit(member, departmentId, request.payload);
+        return this.handleToolsCommit(member, departmentId, request.payload, execution);
       default:
         return gatewayFailure('unknown_op', `Unknown operation: ${request.op}`);
     }
@@ -362,11 +371,11 @@ export class GatewayDispatcher {
       return gatewayFailure('bad_request', `Unknown skillId "${parsed.data.skillId}"`);
     }
 
-    // Runtime skill use requires both the registry grant and executable tools.
-    // The admin registry may manage these independently, but the agent must not
-    // receive instructions for a capability it cannot invoke.
+    // Runtime skill use requires both the registry grant and permission for
+    // every declared tool. An empty tool list is a valid instruction-only
+    // recipe; it grants no execution authority of its own.
     const granted = grantedSkillIds ? grantedSkillIds.has(skill.id) : true;
-    const executable = skill.toolIds.length > 0 && skill.toolIds.every((toolId) =>
+    const executable = skill.toolIds.every((toolId) =>
       discoveryPerm.allowedToolIds.has(asToolId(toolId)),
     );
     const allowed = granted && executable;
@@ -441,6 +450,142 @@ export class GatewayDispatcher {
     });
   }
 
+  private async handleWorkResolve(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload?: Record<string, unknown>,
+  ): Promise<GatewayResponse> {
+    const parsed = workResolvePayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map(error => `${error.path.join('.') || '(root)'}: ${error.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid work.resolve payload — ${issues}`);
+    }
+
+    const permission = await this.resolvePerm(member, departmentId);
+    if (!permission) return this.permissionDenied('Permission resolution failed');
+    const discoveryPermission = withGatewayDiscoveryPermissions(permission);
+    const grantedSkillIds = await this.grantedSkillIds(member);
+    const queries = uniqueQueries(parsed.data.query, parsed.data.variants ?? []);
+    const perQueryLimit = 5;
+
+    const [personaRules, searches] = await Promise.all([
+      departmentId && this.deps.managerPersonaRuntime
+        ? this.deps.managerPersonaRuntime.resolveDepartmentRules({
+          companyId: member.companyId,
+          departmentId,
+          query: parsed.data.query,
+          limit: 5,
+        })
+        : Promise.resolve([]),
+      Promise.all(queries.map(query => this.deps.skillCatalog.searchVisible({
+        companyId: member.companyId,
+        ...(departmentId ? { departmentId } : {}),
+        permission: discoveryPermission,
+        ...(grantedSkillIds ? { grantedSkillIds } : {}),
+        query,
+        limit: perQueryLimit,
+      }))),
+    ]);
+
+    const personaSkillReferences = new Map<string, Array<{
+      nodeId: string;
+      scopeKey: string;
+      ruleKey: string;
+    }>>();
+    for (const rule of personaRules) {
+      for (const skill of rule.linkedSkills) {
+        const references = personaSkillReferences.get(skill.id) ?? [];
+        references.push({ nodeId: rule.nodeId, scopeKey: rule.scopeKey, ruleKey: rule.ruleKey });
+        personaSkillReferences.set(skill.id, references);
+      }
+    }
+
+    const personaSkills = (await Promise.all([...personaSkillReferences.entries()].map(async ([skillId, references]) => {
+      const skill = await this.deps.skillCatalog.getVisible({
+        companyId: member.companyId,
+        ...(departmentId ? { departmentId } : {}),
+        permission: discoveryPermission,
+        ...(grantedSkillIds ? { grantedSkillIds } : {}),
+        skillId,
+      });
+      return skill ? { source: 'persona_link' as const, references, skill: agentFacingSkill(skill) } : null;
+    }))).filter(isPresent);
+
+    const aggregated = aggregateSkillSearches(queries, searches);
+    const fuzzyCandidates = aggregated.filter(candidate => !personaSkillReferences.has(candidate.skill.id));
+    const personaCoveredCandidates = fuzzyCandidates.filter(candidate =>
+      personaSkills.some(personaSkill => similarSkillIntent(candidate.skill, personaSkill.skill)),
+    );
+    const uncoveredFuzzyCandidates = fuzzyCandidates.filter(candidate =>
+      !personaCoveredCandidates.includes(candidate),
+    );
+    const selectedFuzzy = uncoveredFuzzyCandidates
+      .filter(isStrongSkillMatch)
+      .slice(0, parsed.data.limit ?? 3)
+      .map(candidate => ({
+        source: 'skill_search' as const,
+        matchedQueries: candidate.matchedQueries,
+        bestScore: candidate.bestScore,
+        reason: candidate.matchedQueries.length > 1
+          ? 'Matched more than one intent-preserving query.'
+          : 'Passed the strong fuzzy-match threshold for this request.',
+        skill: agentFacingSkill(candidate.skill),
+      }));
+    const selectedIds = new Set(selectedFuzzy.map(candidate => candidate.skill.id));
+    const rejectedSkills = [
+      ...personaCoveredCandidates.map(candidate => ({
+        id: candidate.skill.id,
+        name: candidate.skill.name,
+        bestScore: candidate.bestScore,
+        matchedQueries: candidate.matchedQueries,
+        reason: 'Superseded by a more specific exact persona-linked skill.',
+      })),
+      ...uncoveredFuzzyCandidates
+        .filter(candidate => !selectedIds.has(candidate.skill.id))
+        .map(candidate => ({
+          id: candidate.skill.id,
+          name: candidate.skill.name,
+          bestScore: candidate.bestScore,
+          matchedQueries: candidate.matchedQueries,
+          reason: isStrongSkillMatch(candidate)
+            ? 'Strong complementary match omitted because the bounded result limit was reached.'
+            : 'Below the strong relevance threshold; do not apply this recipe automatically.',
+        })),
+    ].slice(0, 5);
+
+    const registryRevision = await this.skillRegistryRevision(member.companyId);
+    this.recordSkillAudit(member, 'gateway.work.resolve', 'success', {
+      departmentId: departmentId ?? null,
+      queryCount: queries.length,
+      personaRuleCount: personaRules.length,
+      personaSkillIds: personaSkills.map(candidate => candidate.skill.id),
+      searchedSkillIds: selectedFuzzy.map(candidate => candidate.skill.id),
+      rejectedSkillIds: rejectedSkills.map(candidate => candidate.id),
+      registryRevision,
+    });
+
+    return gatewaySuccess({
+      originalQuery: parsed.data.query,
+      queries,
+      registryRevision,
+      persona: {
+        rules: personaRules,
+        linkedSkills: personaSkills,
+      },
+      additionalSkills: selectedFuzzy,
+      rejectedSkills,
+      resolutionOrder: [
+        'Apply the current user request and backend policy.',
+        'Apply matching persona rules and their exact linked skill recipes.',
+        'Apply complementary skill-search recipes only where they do not conflict.',
+        'Use injected local personal memory only as a compatible default.',
+      ],
+      note: 'This resolution is advisory context. Backend permission and approval checks remain authoritative.',
+    });
+  }
+
   private async handleTeachContextGet(
     member: GatewayMemberContext,
     departmentId: string | undefined,
@@ -480,26 +625,26 @@ export class GatewayDispatcher {
     }
   }
 
-  private async handleTeachPersonaApply(
+  private async handleTeachLearningApply(
     member: GatewayMemberContext,
     departmentId: string | undefined,
     payload?: Record<string, unknown>,
   ): Promise<GatewayResponse> {
-    const parsed = managerTeachPersonaApplySchema.safeParse(payload ?? {});
+    const parsed = managerTeachLearningApplySchema.safeParse(payload ?? {});
     if (!parsed.success) {
       const issues = parsed.error.errors
         .map(error => `${error.path.join('.') || '(root)'}: ${error.message}`)
         .join('; ');
-      return gatewayFailure('bad_request', `Invalid teach.persona.apply payload — ${issues}`);
+      return gatewayFailure('bad_request', `Invalid teach.learning.apply payload — ${issues}`);
     }
     if (!departmentId) {
-      return gatewayFailure('bad_request', 'teach.persona.apply requires the active departmentId');
+      return gatewayFailure('bad_request', 'teach.learning.apply requires the active departmentId');
     }
     if (!this.deps.managerTeachService) {
       return gatewayFailure('tool_error', 'Teach is not configured');
     }
     try {
-      const result = await this.deps.managerTeachService.applyAgentPersona({
+      const result = await this.deps.managerTeachService.applyAgentLearning({
         companyId: member.companyId,
         managerId: member.userId,
         departmentId,
@@ -507,14 +652,14 @@ export class GatewayDispatcher {
         mutationKey: parsed.data.mutationKey,
         patch: parsed.data.patch,
       });
-      this.recordSkillAudit(member, 'gateway.teach.persona.apply', 'success', {
+      this.recordSkillAudit(member, 'gateway.teach.learning.apply', 'success', {
         departmentId,
         teachSessionId: parsed.data.teachSessionId,
         appliedChangeCount: result.appliedChangeCount,
       });
       return gatewaySuccess(result);
     } catch (error) {
-      this.recordSkillAudit(member, 'gateway.teach.persona.apply', 'failure', {
+      this.recordSkillAudit(member, 'gateway.teach.learning.apply', 'failure', {
         departmentId,
         teachSessionId: parsed.data.teachSessionId,
       });
@@ -526,6 +671,7 @@ export class GatewayDispatcher {
     member: GatewayMemberContext,
     departmentId: string | undefined,
     payload: Record<string, unknown> | undefined,
+    execution: GatewayExecutionContext | undefined,
   ): Promise<GatewayResponse> {
     const parsed = toolsInvokePayloadSchema.safeParse(payload ?? {});
     if (!parsed.success) {
@@ -547,16 +693,17 @@ export class GatewayDispatcher {
       ...(departmentId ? { departmentId } : {}),
       toolId: parsed.data.toolId,
       args: parsed.data.args,
+      ...(execution ? { execution } : {}),
     };
     const prepared = await this.deps.toolExecutor.prepare(input);
     if (!prepared.ok || !prepared.data) {
-      this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, prepared);
+      this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, prepared, execution);
       return prepared;
     }
     if (prepared.data.action !== 'read') {
       if (!this.deps.localApprovalIntents) {
         const response = gatewayFailure('tool_error', 'Local approval intents are not configured');
-        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response);
+        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
         return response;
       }
       const intent = await this.deps.localApprovalIntents.createIntentForPreparedInvocation(
@@ -564,16 +711,16 @@ export class GatewayDispatcher {
         prepared.data,
       );
       if (!intent.ok || !intent.data) {
-        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, intent);
+        this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, intent, execution);
         return intent;
       }
       const response = gatewayLocalApprovalRequired(intent.data);
-      this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response);
+      this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
       return response;
     }
 
     const response = await this.deps.toolExecutor.invoke({ ...input, expectedAction: 'read' });
-    this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response);
+    this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
     return response;
   }
 
@@ -610,6 +757,7 @@ export class GatewayDispatcher {
     member: GatewayMemberContext,
     departmentId: string | undefined,
     payload: Record<string, unknown> | undefined,
+    execution: GatewayExecutionContext | undefined,
   ): Promise<GatewayResponse> {
     const parsed = toolsPreflightPayloadSchema.safeParse(payload ?? {});
     if (!parsed.success) {
@@ -622,6 +770,7 @@ export class GatewayDispatcher {
         ...(departmentId ? { departmentId } : {}),
         toolId: invocation.toolId,
         args: invocation.args,
+        ...(execution ? { execution } : {}),
       });
       return {
         toolId: invocation.toolId,
@@ -641,6 +790,7 @@ export class GatewayDispatcher {
     member: GatewayMemberContext,
     departmentId: string | undefined,
     payload: Record<string, unknown> | undefined,
+    execution: GatewayExecutionContext | undefined,
   ): Promise<GatewayResponse> {
     const parsed = toolsInvokePayloadSchema.safeParse(payload ?? {});
     if (!parsed.success) {
@@ -658,6 +808,7 @@ export class GatewayDispatcher {
       ...(departmentId ? { departmentId } : {}),
       toolId: parsed.data.toolId,
       args: parsed.data.args,
+      ...(execution ? { execution } : {}),
     });
   }
 
@@ -665,6 +816,7 @@ export class GatewayDispatcher {
     member: GatewayMemberContext,
     departmentId: string | undefined,
     payload: Record<string, unknown> | undefined,
+    execution: GatewayExecutionContext | undefined,
   ): Promise<GatewayResponse> {
     const parsed = toolsCommitPayloadSchema.safeParse(payload ?? {});
     if (!parsed.success) {
@@ -681,6 +833,7 @@ export class GatewayDispatcher {
       member,
       ...(departmentId ? { departmentId } : {}),
       intentId: parsed.data.intentId,
+      ...(execution ? { execution } : {}),
     });
   }
 
@@ -838,6 +991,7 @@ export class GatewayDispatcher {
     departmentId: string | undefined,
     toolId: string,
     response: GatewayResponse,
+    execution: GatewayExecutionContext | undefined,
   ): void {
     this.deps.auditService?.record({
       actorId: member.userId,
@@ -848,6 +1002,14 @@ export class GatewayDispatcher {
         departmentId: departmentId ?? null,
         toolId,
         gatewayStatus: response.status,
+        execution: execution
+          ? {
+            version: execution.version,
+            threadId: execution.threadId,
+            runId: execution.runId,
+            actionId: execution.actionId,
+          }
+          : null,
       },
     });
   }
@@ -855,6 +1017,109 @@ export class GatewayDispatcher {
 
 function safeGatewayMessage(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 1_000);
+}
+
+function uniqueQueries(originalQuery: string, variants: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const queries: string[] = [];
+  for (const value of [originalQuery, ...variants]) {
+    const query = value.replace(/\s+/g, ' ').trim();
+    const key = query.toLowerCase();
+    if (!query || seen.has(key)) continue;
+    seen.add(key);
+    queries.push(query);
+  }
+  return queries.slice(0, 3);
+}
+
+interface AggregatedSkillCandidate {
+  readonly skill: CatalogSkill;
+  readonly bestScore: number;
+  readonly matchedQueries: readonly string[];
+  readonly rankScore: number;
+}
+
+function aggregateSkillSearches(
+  queries: readonly string[],
+  searches: readonly (readonly CatalogSkillSearchResult[])[],
+): AggregatedSkillCandidate[] {
+  const candidates = new Map<string, {
+    skill: CatalogSkill;
+    bestScore: number;
+    matchedQueries: string[];
+    rankScore: number;
+  }>();
+
+  searches.forEach((results, queryIndex) => {
+    results.forEach((result, rank) => {
+      const candidate = candidates.get(result.skill.id) ?? {
+        skill: result.skill,
+        bestScore: 0,
+        matchedQueries: [],
+        rankScore: 0,
+      };
+      candidate.bestScore = Math.max(candidate.bestScore, result.score);
+      candidate.rankScore += 1 / (rank + 1);
+      const query = queries[queryIndex];
+      if (query && !candidate.matchedQueries.includes(query)) candidate.matchedQueries.push(query);
+      candidates.set(result.skill.id, candidate);
+    });
+  });
+
+  return [...candidates.values()]
+    .sort((left, right) =>
+      right.matchedQueries.length - left.matchedQueries.length
+      || right.bestScore - left.bestScore
+      || right.rankScore - left.rankScore
+      || left.skill.name.localeCompare(right.skill.name),
+    );
+}
+
+function isStrongSkillMatch(candidate: AggregatedSkillCandidate): boolean {
+  // Repetition of generic words across variants must not promote a domain
+  // mismatch (for example, "research" selecting an SEO-only recipe for TTS).
+  // Variants improve the chance of one strong semantic/identity match; they do
+  // not lower the acceptance threshold.
+  return candidate.bestScore >= 8;
+}
+
+const skillIntentStopWords = new Set([
+  'and', 'company', 'create', 'for', 'from', 'generate', 'system', 'the', 'use', 'using', 'with',
+]);
+
+function similarSkillIntent(
+  candidate: CatalogSkill,
+  personaSkill: { slug: string; name: string; description: string },
+): boolean {
+  const left = skillIntentTokens(`${candidate.slug} ${candidate.name} ${candidate.description}`);
+  const right = skillIntentTokens(`${personaSkill.slug} ${personaSkill.name} ${personaSkill.description}`);
+  if (left.size === 0 || right.size === 0) return false;
+  let intersection = 0;
+  for (const token of left) if (right.has(token)) intersection += 1;
+  const union = new Set([...left, ...right]).size;
+  return intersection >= 3 && intersection / union >= 0.3;
+}
+
+function skillIntentTokens(value: string): Set<string> {
+  return new Set(value.toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length >= 3 && !skillIntentStopWords.has(token)));
+}
+
+function agentFacingSkill(skill: CatalogSkill) {
+  return {
+    id: skill.id,
+    slug: skill.slug,
+    name: skill.name,
+    description: skill.description,
+    instructions: skill.instructions,
+    toolIds: [...skill.toolIds],
+    revision: skill.revision,
+  };
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }
 
 function withGatewayDiscoveryPermissions(perm: PermissionResult): PermissionResult {

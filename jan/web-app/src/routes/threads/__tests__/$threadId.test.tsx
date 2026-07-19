@@ -55,6 +55,7 @@ const h = vi.hoisted(() => {
     setOomError: vi.fn(),
     setBackendError: vi.fn(),
     busyThreads: {} as Record<string, boolean>,
+    piThreadRunStates: {} as Record<string, { runId: string; state: string }>,
     embeddingThreads: {} as Record<string, boolean>,
     setThreadBusy: vi.fn(),
     setThreadEmbedding: vi.fn(),
@@ -263,6 +264,7 @@ vi.mock('@/containers/MessageItem', () => ({
 vi.mock('@/components/ai-elements/conversation', () => ({
   Conversation: ({ children }: any) => <div>{children}</div>,
   ConversationContent: ({ children }: any) => <div>{children}</div>,
+  ConversationPinSpacer: () => <div data-testid="pin-spacer" />,
   ConversationScrollButton: () => <div data-testid="scroll-btn" />,
 }))
 
@@ -496,6 +498,8 @@ describe('ThreadDetail route', () => {
     h.agentModeState.agentThreads = {}
     h.modelProviderState.selectedProvider = 'openai'
     h.appStateState.oomError = undefined
+    h.appStateState.busyThreads = {}
+    h.appStateState.piThreadRunStates = {}
     sessionStorage.clear()
   })
 
@@ -535,6 +539,66 @@ describe('ThreadDetail route', () => {
     renderComponent()
     expect(screen.getByTestId('message-m-a')).toBeInTheDocument()
     expect(screen.getByTestId('message-m-b')).toBeInTheDocument()
+  })
+
+  it('settles a completed Pi chat when a cached SDK status is still streaming', () => {
+    h.chatState.status = 'streaming'
+    h.chatState.messages = [
+      {
+        id: 'assistant-complete',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Final answer' }],
+        metadata: { piTraceTimeline: true },
+      },
+    ]
+
+    renderComponent()
+
+    expect(screen.getByTestId('chat-status')).toHaveTextContent('ready')
+  })
+
+  it('keeps an active Pi chat streaming while its runtime owns the thread', () => {
+    h.chatState.status = 'streaming'
+    h.chatState.messages = [
+      {
+        id: 'assistant-active',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Working on it' }],
+        metadata: { piTraceTimeline: true },
+      },
+    ]
+    h.appStateState.busyThreads = { 'thread-1': true }
+
+    renderComponent()
+
+    expect(screen.getByTestId('chat-status')).toHaveTextContent('streaming')
+  })
+
+  it('checkpoints meaningful Pi output while its runtime owns the thread', async () => {
+    h.chatState.status = 'streaming'
+    h.chatState.messages = [
+      {
+        id: 'assistant-checkpoint',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'The saved partial answer' }],
+        metadata: { piTraceTimeline: true },
+      },
+    ]
+    h.appStateState.busyThreads = { 'thread-1': true }
+
+    renderComponent()
+
+    await waitFor(() => {
+      expect(h.messagesState.addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'assistant-checkpoint',
+          metadata: expect.objectContaining({
+            piTraceTimeline: true,
+            piStreamCheckpoint: { state: 'in_progress' },
+          }),
+        })
+      )
+    })
   })
 
   it('submits user text via ChatInput -> sendMessage', async () => {

@@ -105,6 +105,13 @@ export const MessageItem = memo(
     )
     const metadata = message.metadata as Record<string, unknown> | undefined
     const isPiTraceTimeline = isPiTraceMessage(metadata)
+    const interruption = metadata?.interruption as
+      | { state?: unknown; reason?: unknown }
+      | undefined
+    const wasRecoveredAfterAppClose =
+      metadata?.interrupted === true &&
+      interruption?.state === 'interrupted' &&
+      interruption.reason === 'app_closed'
     const useFoldedCot = foldInterstitialReasoning || isPiTraceTimeline
     const messageError = useMessageErrors((s) => s.errors[message.id])
     const createdAt = (metadata?.createdAt as Date) ?? new Date()
@@ -167,11 +174,22 @@ export const MessageItem = memo(
       })
     }, [hasPendingToolCall, message.parts, pendingApprovals])
 
+    // Pi executes its tools inside one continuous runtime-owned stream. A
+    // rehydrated historical tool part can lack a serializable output and look
+    // `input-available` again, but it must not reopen a turn whose thread
+    // status is terminal. Keep the legacy ready-between-tools behavior for
+    // non-Pi providers only.
+    const hasLivePendingToolCall =
+      hasPendingToolCall &&
+      (!isPiTraceTimeline ||
+        status === CHAT_STATUS.STREAMING ||
+        status === CHAT_STATUS.SUBMITTED)
+
     const isStreaming =
       (isLastMessage &&
         (status === CHAT_STATUS.STREAMING ||
           status === CHAT_STATUS.SUBMITTED)) ||
-      hasPendingToolCall
+      hasLivePendingToolCall
 
     // Aggregate RAG citations in part order and record each rag tool part's
     // base offset, so its card numbers/anchors continue the same global
@@ -642,6 +660,7 @@ export const MessageItem = memo(
         if (steps.length > 0) {
           elements.push(
             <PiTraceTimeline
+              key={`${message.id}-pi-trace`}
               messageId={message.id}
               steps={steps}
               isStreaming={isStreaming}
@@ -814,11 +833,18 @@ export const MessageItem = memo(
         {/* Render message parts */}
         {renderedParts}
 
+        {wasRecoveredAfterAppClose && (
+          <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-muted-foreground">
+            Divo closed before this run finished. This is the last saved
+            checkpoint; unfinished work was not resumed automatically.
+          </div>
+        )}
+
         {isLastMessage &&
           message.role === 'assistant' &&
           !awaitingApproval &&
-          hasPendingToolCall && (
-            <PromptProgress hideIdle={hasPendingToolCall} />
+          hasLivePendingToolCall && (
+            <PromptProgress hideIdle={hasLivePendingToolCall} />
           )}
 
         {typeof messageError === 'string' && messageError.length > 0 && (

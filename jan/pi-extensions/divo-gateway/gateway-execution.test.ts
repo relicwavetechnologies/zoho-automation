@@ -40,6 +40,12 @@ describe("gateway execution protocol", () => {
 			op: "tools.invoke",
 			departmentId: "dept-1",
 			payload: { toolId: "googleGmail", args: { op: "send" } },
+			execution: {
+				version: 1,
+				threadId: "thread-1",
+				runId: "run-1",
+				actionId: "tool-write",
+			},
 		};
 		const result = await executeGatewayRequest(config, original, "call-write", ctx, {
 			callGateway: async (_config, request) => {
@@ -68,7 +74,12 @@ describe("gateway execution protocol", () => {
 		}]);
 		assert.deepEqual(requests, [
 			original,
-			{ op: "tools.commit", departmentId: "dept-1", payload: { intentId: "intent-1" } },
+			{
+				op: "tools.commit",
+				departmentId: "dept-1",
+				payload: { intentId: "intent-1" },
+				execution: original.execution,
+			},
 		]);
 	});
 });

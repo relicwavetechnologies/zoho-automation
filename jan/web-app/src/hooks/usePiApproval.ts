@@ -12,11 +12,21 @@ import {
   type PiMemoryReviewRequest,
   type PiMemoryReviewResponse,
 } from '@/lib/pi/memory-review'
+import {
+  isPiTeachClarificationRequest,
+  parsePiTeachClarificationEvent,
+  validatePiTeachClarificationResponse,
+  type PiTeachClarificationRequest,
+  type PiTeachClarificationResponse,
+} from '@/lib/pi/teach-clarification'
 import type { PiRawEvent } from '@/lib/pi'
 
 export const PI_APPROVAL_RESPONSE_COMMAND = 'pi_extension_ui_respond'
 
-export type PiPendingUiRequest = PiApprovalRequest | PiMemoryReviewRequest
+export type PiPendingUiRequest =
+  | PiApprovalRequest
+  | PiMemoryReviewRequest
+  | PiTeachClarificationRequest
 
 type PiApprovalState = {
   queues: Record<string, PiPendingUiRequest[]>
@@ -25,18 +35,24 @@ type PiApprovalState = {
     threadId: string,
     requestId: string,
     confirmed: boolean,
-    runId?: string
+    runId: string
   ) => Promise<boolean>
   resolveMemory: (
     threadId: string,
     requestId: string,
     response: PiMemoryReviewResponse,
-    runId?: string
+    runId: string
+  ) => Promise<boolean>
+  resolveTeachClarification: (
+    threadId: string,
+    requestId: string,
+    response: PiTeachClarificationResponse,
+    runId: string
   ) => Promise<boolean>
   allowBashForTask: (
     threadId: string,
     requestId: string,
-    runId?: string
+    runId: string
   ) => Promise<boolean>
   denyExpired: (now?: number) => Promise<void>
   denyThread: (threadId: string, runId?: string) => Promise<void>
@@ -134,6 +150,22 @@ async function sendMemoryResponse(
   })
 }
 
+async function sendTeachClarificationResponse(
+  requestId: string,
+  threadId: string,
+  runId: string,
+  response?: PiTeachClarificationResponse
+) {
+  await invoke(PI_APPROVAL_RESPONSE_COMMAND, {
+    requestId,
+    threadId,
+    runId,
+    ...(response
+      ? { value: JSON.stringify(response) }
+      : { cancelled: true }),
+  })
+}
+
 export const usePiApproval = create<PiApprovalState>()((set, get) => ({
   queues: {},
 
@@ -156,11 +188,12 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     const request = get().queues[threadId]?.find(
       (candidate) =>
         candidate.requestId === requestId &&
-        (runId === undefined || candidate.runId === runId)
+        candidate.runId === runId
     )
     if (
       !request ||
       isPiMemoryReviewRequest(request) ||
+      isPiTeachClarificationRequest(request) ||
       request.status === 'submitting'
     ) {
       return false
@@ -209,7 +242,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     const request = get().queues[threadId]?.find(
       (candidate) =>
         candidate.requestId === requestId &&
-        (runId === undefined || candidate.runId === runId)
+        candidate.runId === runId
     )
     if (
       !request ||
@@ -275,15 +308,122 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     }
   },
 
+  resolveTeachClarification: async (
+    threadId,
+    requestId,
+    response,
+    runId
+  ) => {
+    const request = get().queues[threadId]?.find(
+      (candidate) =>
+        candidate.requestId === requestId &&
+        candidate.runId === runId
+    )
+    if (
+      !request ||
+      !isPiTeachClarificationRequest(request) ||
+      request.status === 'submitting'
+    ) {
+      return false
+    }
+
+    let validated: PiTeachClarificationResponse
+    try {
+      validated = validatePiTeachClarificationResponse(request, response)
+    } catch (error) {
+      try {
+        await sendTeachClarificationResponse(
+          requestId,
+          threadId,
+          request.runId
+        )
+        set((state) => ({
+          queues: removeRequest(
+            state.queues,
+            threadId,
+            requestId,
+            request.runId
+          ),
+        }))
+      } catch (deliveryError) {
+        set((state) => ({
+          queues: updateRequest(
+            state.queues,
+            threadId,
+            requestId,
+            request.runId,
+            (entry) => ({
+              ...entry,
+              status: 'error',
+              error:
+                deliveryError instanceof Error
+                  ? deliveryError.message
+                  : error instanceof Error
+                    ? error.message
+                    : 'Could not cancel invalid Teach clarification',
+            })
+          ),
+        }))
+      }
+      return false
+    }
+
+    set((state) => ({
+      queues: updateRequest(
+        state.queues,
+        threadId,
+        requestId,
+        request.runId,
+        (entry) => ({ ...entry, status: 'submitting', error: undefined })
+      ),
+    }))
+    try {
+      await sendTeachClarificationResponse(
+        requestId,
+        threadId,
+        request.runId,
+        validated
+      )
+      set((state) => ({
+        queues: removeRequest(
+          state.queues,
+          threadId,
+          requestId,
+          request.runId
+        ),
+      }))
+      return true
+    } catch (error) {
+      set((state) => ({
+        queues: updateRequest(
+          state.queues,
+          threadId,
+          requestId,
+          request.runId,
+          (entry) => ({
+            ...entry,
+            status: 'error',
+            error: errorMessage(
+              error,
+              'Could not deliver the Teach clarification answers'
+            ),
+          })
+        ),
+      }))
+      return false
+    }
+  },
+
   allowBashForTask: async (threadId, requestId, runId) => {
     const request = get().queues[threadId]?.find(
       (candidate) =>
         candidate.requestId === requestId &&
-        (runId === undefined || candidate.runId === runId)
+        candidate.runId === runId
     )
     if (
       !request ||
       isPiMemoryReviewRequest(request) ||
+      isPiTeachClarificationRequest(request) ||
       request.status === 'submitting' ||
       request.descriptor.source !== 'bash' ||
       request.expiresAt <= Date.now()
@@ -336,6 +476,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
       .filter(
         (request) =>
           !isPiMemoryReviewRequest(request) &&
+          !isPiTeachClarificationRequest(request) &&
           request.expiresAt <= now &&
           request.status !== 'submitting'
       )
@@ -360,6 +501,14 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
             selectedTarget: null,
             selectedBulletIds: [],
           }, request.runId)
+        }
+        if (isPiTeachClarificationRequest(request)) {
+          return get().resolveTeachClarification(
+            threadId,
+            request.requestId,
+            { version: 1, decision: 'cancel', answers: [] },
+            request.runId
+          )
         }
         return get().resolve(threadId, request.requestId, false, request.runId)
       })
@@ -438,25 +587,54 @@ export async function consumePiApprovalEvent(event: PiRawEvent) {
   }
 
   const memoryReview = parsePiMemoryReviewEvent(event)
-  if (memoryReview.kind === 'not-memory-review') return false
   if (memoryReview.kind === 'memory-review') {
     usePiApproval.getState().enqueue(memoryReview.request)
     return true
   }
+  if (memoryReview.kind === 'invalid') {
+    console.error(
+      `[Pi memory review] Rejected invalid request: ${memoryReview.reason}`
+    )
+    if (memoryReview.requestId && memoryReview.threadId && memoryReview.runId) {
+      try {
+        await sendMemoryResponse(
+          memoryReview.requestId,
+          memoryReview.threadId,
+          memoryReview.runId
+        )
+      } catch (error) {
+        console.error(
+          '[Pi memory review] Failed to deliver automatic cancellation',
+          error
+        )
+      }
+    }
+    return true
+  }
 
+  const teachClarification = parsePiTeachClarificationEvent(event)
+  if (teachClarification.kind === 'not-teach-clarification') return false
+  if (teachClarification.kind === 'teach-clarification') {
+    usePiApproval.getState().enqueue(teachClarification.request)
+    return true
+  }
   console.error(
-    `[Pi memory review] Rejected invalid request: ${memoryReview.reason}`
+    `[Pi Teach clarification] Rejected invalid request: ${teachClarification.reason}`
   )
-  if (memoryReview.requestId && memoryReview.threadId && memoryReview.runId) {
+  if (
+    teachClarification.requestId &&
+    teachClarification.threadId &&
+    teachClarification.runId
+  ) {
     try {
-      await sendMemoryResponse(
-        memoryReview.requestId,
-        memoryReview.threadId,
-        memoryReview.runId
+      await sendTeachClarificationResponse(
+        teachClarification.requestId,
+        teachClarification.threadId,
+        teachClarification.runId
       )
     } catch (error) {
       console.error(
-        '[Pi memory review] Failed to deliver automatic cancellation',
+        '[Pi Teach clarification] Failed to deliver automatic cancellation',
         error
       )
     }

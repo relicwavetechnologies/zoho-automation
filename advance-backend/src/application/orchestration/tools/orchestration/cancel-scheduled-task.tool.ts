@@ -2,6 +2,7 @@ import { dynamicTool } from 'ai';
 import { z } from 'zod';
 import type { PrismaClient } from '../../../../generated/prisma';
 import type { RunContext } from '../../../../domain/orchestration/run-context';
+import { ScheduledWorkflowControlService } from '../../../scheduling/scheduled-workflow-control.service';
 
 const schema = z.object({
   id: z.string().describe('The schedule ID to cancel or pause'),
@@ -19,31 +20,16 @@ export function createCancelScheduledTaskTool(
     inputSchema: schema as never,
     execute: async (input: unknown): Promise<string> => {
       const args = input as { id: string; action: 'cancel' | 'pause' };
-      const workflow = await prisma.scheduledWorkflow.findFirst({
-        where: {
-          id:              args.id,
-          companyId:       String(runContext.companyId),
-          createdByUserId: String(runContext.userId),
-        },
-        select: { id: true, name: true, status: true },
-      });
-
-      if (!workflow) return `error: schedule ${args.id} not found`;
-
-      const newStatus = args.action === 'cancel' ? 'archived' : 'paused';
-      const now = new Date();
-
-      await prisma.scheduledWorkflow.update({
-        where: { id: args.id },
-        data: {
-          status:          newStatus,
-          scheduleEnabled: false,
-          ...(args.action === 'cancel' ? { archivedAt: now } : { pausedAt: now }),
-        },
-      });
-
-      const verb = args.action === 'cancel' ? 'Cancelled' : 'Paused';
-      return `${verb} "${workflow.name}" (id:${workflow.id})`;
+      try {
+        const service = new ScheduledWorkflowControlService(prisma);
+        const workflow = args.action === 'cancel'
+          ? await service.cancel(runContext, args.id)
+          : await service.pause(runContext, args.id);
+        const verb = args.action === 'cancel' ? 'Cancelled' : 'Paused';
+        return `${verb} "${workflow.name}" (id:${workflow.id})`;
+      } catch (error) {
+        return `error: ${error instanceof Error ? error.message : String(error)}`;
+      }
     },
   });
 }

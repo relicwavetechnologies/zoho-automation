@@ -7,60 +7,119 @@ import {
 	resolveDivoSkills,
 } from "./skill-resolver.ts";
 
+function workResolutionData() {
+	return {
+		originalQuery: "Research the best TTS models and write an HTML document",
+		queries: [
+			"Research the best TTS models and write an HTML document",
+			"Compare current TTS models using public web research and benchmarks",
+			"Present the findings as an interactive HTML dashboard",
+		],
+		registryRevision: 9,
+		persona: {
+			rules: [{
+				nodeId: "persona-node-1",
+				scopeKey: "project-prototyping",
+				ruleKey: "html-preview-first",
+				kind: "workflow",
+				instruction: "Use the linked Cursor dashboard skill.",
+				confidence: 0.95,
+				matchScore: 8.5,
+				matchedOn: ["instruction", "skill"],
+				learningSources: [{
+					source: "teach",
+					sourceId: "teach-1",
+					rationale: "The manager demonstrated this presentation style.",
+					evidenceRefs: ["frame-1"],
+					learnedAt: "2026-07-19T00:00:00.000Z",
+				}],
+				linkedSkills: [],
+			}],
+			linkedSkills: [{
+				source: "persona_link",
+				references: [{ nodeId: "persona-node-1", scopeKey: "project-prototyping", ruleKey: "html-preview-first" }],
+				skill: {
+					id: "cursor-dashboard",
+					slug: "cursor-dashboard",
+					name: "Cursor Design HTML Dashboard",
+					description: "Interactive HTML dashboard",
+					instructions: "Use Cursor tokens, tabs, and state transitions.",
+					toolIds: [],
+					revision: 2,
+				},
+			}],
+		},
+		additionalSkills: [{
+			source: "skill_search",
+			matchedQueries: ["Compare current TTS models using public web research and benchmarks"],
+			bestScore: 14,
+			reason: "Passed the strong fuzzy-match threshold for this request.",
+			skill: {
+				id: "web-search",
+				slug: "web-search",
+				name: "Web Search",
+				description: "Research current public information",
+				instructions: "Search multiple current sources and cite evidence.",
+				toolIds: ["webSearch"],
+				revision: 1,
+			},
+		}],
+		rejectedSkills: [{
+			id: "seo-report",
+			name: "Competitive SEO Analysis Report",
+			bestScore: 7,
+			matchedQueries: ["Research the best TTS models and write an HTML document"],
+			reason: "Below the strong relevance threshold; do not apply this recipe automatically.",
+		}],
+	};
+}
+
 describe("resolveDivoSkills", () => {
-	it("uses skills.search as the backend ranking authority", async () => {
+	it("uses one unified work.resolve response with persona provenance and full recipes", async () => {
 		clearDivoGatewaySkillCache();
-		let calls = 0;
-		const operations: string[] = [];
-		const fetchImpl = async (_url: string, init?: RequestInit) => {
-			calls += 1;
-			const operation = JSON.parse(String(init?.body)).op as string;
-			operations.push(operation);
-			if (operation === "skills.get") {
-				return new Response(JSON.stringify({
-					ok: true,
-					status: "success",
-					data: { skill: {
-						id: "google-workspace",
-						name: "Google Workspace",
-						description: "Use connected Google Workspace Gmail Drive Calendar accounts.",
-						instructions: "Use the governed Google tool and preserve account selection.",
-						toolIds: ["googleGmail", "googleDrive", "googleCalendar"],
-						revision: 4,
-					} },
-				}), { status: 200, headers: { "Content-Type": "application/json" } });
-			}
-			return new Response(JSON.stringify({
-				ok: true,
-				status: "success",
-				data: { skills: [{
-					id: "google-workspace",
-					name: "Google Workspace",
-					description: "Use connected Google Workspace Gmail Drive Calendar accounts.",
-					toolIds: ["googleGmail", "googleDrive", "googleCalendar"],
-				}] },
-			}), { status: 200, headers: { "Content-Type": "application/json" } });
-		};
+		const requests: Array<{ op: string; payload?: Record<string, unknown> }> = [];
 		const env = {
 			DIVO_BACKEND_URL: "http://localhost:8000",
-			DIVO_MEMBER_TOKEN: "token-catalog-cache",
-			DIVO_SKILL_DIRS: "/untrusted/local/skills",
+			DIVO_MEMBER_TOKEN: "token-work-resolve",
 		};
+		const variants = [
+			"Compare current TTS models using public web research and benchmarks",
+			"Present the findings as an interactive HTML dashboard",
+		];
+		const fetchImpl = (async (_url: string, init?: RequestInit) => {
+			requests.push(JSON.parse(String(init?.body)));
+			return new Response(JSON.stringify({ ok: true, status: "success", data: workResolutionData() }), { status: 200 });
+		}) as typeof fetch;
 
-		const first = await resolveDivoSkills({ query: "gmail", env, fetchImpl: fetchImpl as typeof fetch });
-		const second = await resolveDivoSkills({ query: "calendar", env, fetchImpl: fetchImpl as typeof fetch });
-		const cached = await resolveDivoSkills({ query: "gmail", env, fetchImpl: fetchImpl as typeof fetch });
+		const first = await resolveDivoSkills({
+			query: "Research the best TTS models and write an HTML document",
+			variants,
+			env,
+			fetchImpl,
+		});
+		const cached = await resolveDivoSkills({
+			query: "Research the best TTS models and write an HTML document",
+			variants,
+			env,
+			fetchImpl,
+		});
 
-		assert.equal(calls, 3);
-		assert.deepEqual(operations, ["skills.search", "skills.get", "skills.search"]);
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0]?.op, "work.resolve");
+		assert.equal(requests[0]?.payload?.query, "Research the best TTS models and write an HTML document");
+		assert.deepEqual(requests[0]?.payload?.variants, variants);
 		assert.equal(first.policy, DIVO_SKILL_POLICY);
-		assert.equal(first.selected?.id, "google-workspace");
-		assert.equal(second.selected?.id, "google-workspace");
-		assert.equal(cached.selected?.id, "google-workspace");
-		assert.equal(first.selected?.instructions, "Use the governed Google tool and preserve account selection.");
-		assert.equal(first.selected?.revision, 4);
-		assert.match(formatSkillResolveResult(first), /Loaded approved recipe \(revision 4\)/);
-		assert.doesNotMatch(formatSkillResolveResult(first), /local skill|read .*skill\.md|call .*skills\.get/i);
+		assert.equal(first.selected?.id, "cursor-dashboard");
+		assert.equal(cached.selected?.id, "cursor-dashboard");
+		assert.deepEqual(first.results.map(skill => skill.id), ["cursor-dashboard", "web-search"]);
+		assert.equal(first.personaRules[0]?.learningSources[0]?.sourceId, "teach-1");
+		const formatted = formatSkillResolveResult(first);
+		assert.match(formatted, /Manager persona matches/);
+		assert.match(formatted, /exact manager-persona link/);
+		assert.match(formatted, /multi-query skill search/);
+		assert.match(formatted, /Rejected fuzzy matches/);
+		assert.match(formatted, /Use Cursor tokens, tabs, and state transitions/);
+		assert.doesNotMatch(formatted, /call .*skills\.get/i);
 	});
 
 	it("fails closed when the backend registry is unavailable even when local paths exist", async () => {
@@ -76,14 +135,25 @@ describe("resolveDivoSkills", () => {
 		assert.match(formatSkillResolveResult(result), /No matching company skills found/i);
 	});
 
-	it("uses the backend Google plan for vendor onboarding and keeps later recipes lazy", async () => {
+	it("resolves work context before adding the governed Google vendor-onboarding plan", async () => {
 		clearDivoGatewaySkillCache();
 		const requests: Array<{ op: string; payload?: Record<string, unknown> }> = [];
 		const result = await resolveDivoSkills({
 			query: "Find the vendor onboarding Gmail thread, resolve through Google Contacts, create a Google Doc and Google Sheet tracker",
 			env: { DIVO_BACKEND_URL: "http://localhost:8000", DIVO_MEMBER_TOKEN: "token-plan" },
 			fetchImpl: (async (_url: string, init?: RequestInit) => {
-				requests.push(JSON.parse(String(init?.body)));
+				const request = JSON.parse(String(init?.body));
+				requests.push(request);
+				if (request.op === "work.resolve") {
+					return new Response(JSON.stringify({
+						ok: true, status: "success", data: {
+							originalQuery: request.payload.query,
+							queries: [request.payload.query],
+							persona: { rules: [], linkedSkills: [] },
+							additionalSkills: [], rejectedSkills: [],
+						},
+					}), { status: 200 });
+				}
 				return new Response(JSON.stringify({
 					ok: true, status: "success", data: {
 						workflow: "vendor_onboarding",
@@ -99,62 +169,45 @@ describe("resolveDivoSkills", () => {
 				}), { status: 200 });
 			}) as typeof fetch,
 		});
-		assert.deepEqual(requests.map((request) => request.op), ["google.plan"]);
-		assert.deepEqual(requests[0]?.payload?.phaseIds, ["gmail_source", "google_contact", "google_doc", "google_sheet"]);
+
+		assert.deepEqual(requests.map(request => request.op), ["work.resolve", "google.plan"]);
+		assert.deepEqual(requests[1]?.payload?.phaseIds, ["gmail_source", "google_contact", "google_doc", "google_sheet"]);
 		assert.match(result.selected?.instructions ?? "", /Compact parent guidance/);
-		assert.match(result.selected?.instructions ?? "", /Gmail recipe/);
 		assert.match(formatSkillResolveResult(result), /Google Contacts — contacts-id/);
-		assert.match(formatSkillResolveResult(result), /later exact skill ID/i);
-		assert.match(formatSkillResolveResult(result), /Compact parent guidance/);
-		assert.doesNotMatch(formatSkillResolveResult(result), /Google Contacts recipe/);
 	});
 
-	it("routes a Gmail-only vendor thread request to the Gmail specialist instead of the multi-product plan", async () => {
-		clearDivoGatewaySkillCache();
-		const operations: string[] = [];
-		const result = await resolveDivoSkills({
-			query: "Find the single latest Gmail thread related to vendor onboarding; this is read-only",
-			env: { DIVO_BACKEND_URL: "http://localhost:8000", DIVO_MEMBER_TOKEN: "token-gmail-only" },
-			fetchImpl: (async (_url: string, init?: RequestInit) => {
-				const operation = JSON.parse(String(init?.body)).op as string;
-				operations.push(operation);
-				if (operation === "skills.get") {
-					return new Response(JSON.stringify({
-						ok: true, status: "success", data: { skill: {
-							id: "gmail-id", name: "Gmail", description: "mail", instructions: "Bounded Gmail recipe",
-							toolIds: ["googleGmail"], revision: 5,
-						} },
-					}), { status: 200 });
-				}
-				return new Response(JSON.stringify({
-					ok: true, status: "success", data: { skills: [{
-						id: "gmail-id", name: "Gmail", description: "mail", toolIds: ["googleGmail"], score: 12,
-					}] },
-				}), { status: 200 });
-			}) as typeof fetch,
-		});
-
-		assert.deepEqual(operations, ["skills.search", "skills.get"]);
-		assert.equal(result.selected?.id, "gmail-id");
-		assert.match(result.selected?.instructions ?? "", /Bounded Gmail recipe/);
-	});
-
-	it("does not fall back to a partial generic skill when the required Google plan is denied", async () => {
+	it("does not expose a partial searched skill when the required Google plan is denied", async () => {
 		clearDivoGatewaySkillCache();
 		const operations: string[] = [];
 		const result = await resolveDivoSkills({
 			query: "vendor onboarding from Gmail into Google Contacts, Google Docs, and Google Sheets",
 			env: { DIVO_BACKEND_URL: "http://localhost:8000", DIVO_MEMBER_TOKEN: "token-denied-plan" },
 			fetchImpl: (async (_url: string, init?: RequestInit) => {
-				operations.push(JSON.parse(String(init?.body)).op);
+				const request = JSON.parse(String(init?.body));
+				operations.push(request.op);
+				if (request.op === "work.resolve") {
+					return new Response(JSON.stringify({
+						ok: true, status: "success", data: {
+							originalQuery: request.payload.query,
+							queries: [request.payload.query],
+							persona: { rules: [], linkedSkills: [] },
+							additionalSkills: [{
+								source: "skill_search", matchedQueries: [request.payload.query], bestScore: 10,
+								reason: "strong", skill: { id: "generic", name: "Generic", description: "generic", instructions: "generic", toolIds: [], revision: 1 },
+							}],
+							rejectedSkills: [],
+						},
+					}), { status: 200 });
+				}
 				return new Response(JSON.stringify({
 					ok: false, status: "permission_denied", error: { message: "Google Docs update is not granted" },
 				}), { status: 200 });
 			}) as typeof fetch,
 		});
-		assert.deepEqual(operations, ["google.plan"]);
+
+		assert.deepEqual(operations, ["work.resolve", "google.plan"]);
 		assert.equal(result.selected, null);
 		assert.deepEqual(result.results, []);
-		assert.ok(result.notes.some((note) => /google\.plan returned permission_denied/i.test(note)));
+		assert.ok(result.notes.some(note => /google\.plan returned permission_denied/i.test(note)));
 	});
 });

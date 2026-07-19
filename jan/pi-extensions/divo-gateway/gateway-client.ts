@@ -8,10 +8,23 @@ export interface DivoGatewayConfig {
 	defaultDepartmentId?: string;
 }
 
+/**
+ * Desktop run provenance attached by the extension, never model input. The
+ * backend treats it as correlation/idempotency metadata only; member auth and
+ * RBAC remain server-authoritative.
+ */
+export interface GatewayExecutionContext {
+	version: 1;
+	threadId: string;
+	runId: string;
+	actionId: string;
+}
+
 export interface GatewayRequestBody {
 	op: string;
 	departmentId?: string;
 	payload?: unknown;
+	execution?: GatewayExecutionContext;
 }
 
 export interface GatewayErrorBody {
@@ -139,7 +152,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			body.error?.message ??
 			"The gateway rejected the request shape or target.";
 		return {
-			text: `Request rejected (${code}).\n\n${message}\n\nCheck the request against skills.search, skills.get, tools.list, or the returned skill recipe before retrying.`,
+			text: `Request rejected (${code}).\n\n${message}\n\nFor work routing, re-check the unified work.resolve result. For execution, inspect tools.list or the returned skill recipe before retrying.`,
 			isError: true,
 		};
 	}
@@ -221,6 +234,9 @@ export async function callDivoGateway(
 	};
 	if (departmentId) {
 		payload.departmentId = departmentId;
+	}
+	if (request.execution) {
+		payload.execution = request.execution;
 	}
 
 	const response = await fetchImpl(`${config.backendUrl}/api/gateway`, {
@@ -328,6 +344,21 @@ function skillCacheKey(
 			tokenCacheKey(config.memberToken),
 			departmentId ?? "",
 			query,
+			String(payload?.limit ?? ""),
+		].join("|");
+	}
+
+	if (request.op === "work.resolve") {
+		const payload = asRecord(request.payload);
+		const query = getString(payload?.query);
+		if (!query) return null;
+		return [
+			"work.resolve",
+			config.backendUrl,
+			tokenCacheKey(config.memberToken),
+			departmentId ?? "",
+			query,
+			Array.isArray(payload?.variants) ? payload.variants.join("\u001f") : "",
 			String(payload?.limit ?? ""),
 		].join("|");
 	}

@@ -657,6 +657,62 @@ describe('ChatInput', () => {
     })
   })
 
+  it('replaces the composer with Teach clarification and resumes the same run', async () => {
+    usePiApproval.getState().enqueue({
+      protocol: 'teach-clarification',
+      requestId: 'clarify-request-1',
+      threadId: 'thread-1',
+      runId: 'run-1',
+      status: 'pending',
+      descriptor: {
+        version: 1,
+        reason: 'The workflow trigger is unclear.',
+        questions: [{
+          id: 'trigger',
+          question: 'When should Divo run this?',
+          selection: 'single',
+          options: [
+            { id: 'new-email', label: 'When a new email arrives' },
+            { id: 'manual', label: 'Only when I ask' },
+          ],
+          allowCustom: true,
+        }],
+        runCorrelation: {
+          version: 1,
+          threadId: 'thread-1',
+          runId: 'run-1',
+          profile: 'teach',
+        },
+      },
+    })
+
+    renderInput()
+
+    expect(screen.queryByTestId('chat-input')).toBeNull()
+    expect(screen.getByTestId('teach-clarification-card')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'When a new email arrives' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue teaching' }))
+
+    await waitFor(() => {
+      expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
+        'pi_extension_ui_respond',
+        {
+          requestId: 'clarify-request-1',
+          threadId: 'thread-1',
+          runId: 'run-1',
+          value: JSON.stringify({
+            version: 1,
+            decision: 'answer',
+            answers: [{
+              questionId: 'trigger',
+              selectedOptionIds: ['new-email'],
+            }],
+          }),
+        }
+      )
+    })
+  })
+
   it('disables the send button when prompt is empty', () => {
     renderInput()
     const btn = document.querySelector(
@@ -895,7 +951,7 @@ describe('ChatInput', () => {
     'loadingModels',
     'cancelToolCalls',
   ] as const)(
-    'blocks Enter sends while another chat is active in %s',
+    'allows an isolated Enter send while another chat is active in %s',
     (activityStore) => {
       promptState = 'second chat message'
       appStateOverrides = { [activityStore]: { 'thread-running': true } }
@@ -905,18 +961,15 @@ describe('ChatInput', () => {
 
       fireEvent.keyDown(getTextarea(), { key: 'Enter' })
 
-      expect(onSubmit).not.toHaveBeenCalled()
+      expect(onSubmit).toHaveBeenCalledWith('second chat message', undefined)
       expect(enqueueMock).not.toHaveBeenCalled()
-      expect(addToHistoryMock).not.toHaveBeenCalled()
-      expect(setPromptMock).not.toHaveBeenCalled()
-      expect(promptState).toBe('second chat message')
-      expect(toast.info).toHaveBeenCalledWith(
-        'First stop the previous chat running, and then send.'
-      )
+      expect(addToHistoryMock).toHaveBeenCalledWith('second chat message')
+      expect(setPromptMock).toHaveBeenCalledWith('')
+      expect(toast.info).not.toHaveBeenCalled()
     }
   )
 
-  it('blocks send-button clicks while another chat is active', () => {
+  it('allows send-button clicks while another chat is active', () => {
     promptState = 'second chat message'
     appStateOverrides = { busyThreads: { 'thread-running': true } }
     const onSubmit = vi.fn()
@@ -929,14 +982,14 @@ describe('ChatInput', () => {
       ) as HTMLButtonElement
     )
 
-    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onSubmit).toHaveBeenCalledWith('second chat message', undefined)
     expect(enqueueMock).not.toHaveBeenCalled()
-    expect(toast.info).toHaveBeenCalledWith(
-      'First stop the previous chat running, and then send.'
-    )
+    expect(addToHistoryMock).toHaveBeenCalledWith('second chat message')
+    expect(setPromptMock).toHaveBeenCalledWith('')
+    expect(toast.info).not.toHaveBeenCalled()
   })
 
-  it('blocks a new chat from the home composer while another chat is active', () => {
+  it('allows a new chat from the home composer while another chat is active', () => {
     currentThreadId = undefined
     promptState = 'new chat message'
     appStateOverrides = { busyThreads: { 'thread-running': true } }
@@ -946,11 +999,11 @@ describe('ChatInput', () => {
 
     fireEvent.keyDown(getTextarea(), { key: 'Enter' })
 
-    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onSubmit).toHaveBeenCalledWith('new chat message', undefined)
     expect(createThreadMock).not.toHaveBeenCalled()
-    expect(toast.info).toHaveBeenCalledWith(
-      'First stop the previous chat running, and then send.'
-    )
+    expect(addToHistoryMock).toHaveBeenCalledWith('new chat message')
+    expect(setPromptMock).toHaveBeenCalledWith('')
+    expect(toast.info).not.toHaveBeenCalled()
   })
 
   it('does NOT submit on Shift+Enter (newline behavior)', () => {

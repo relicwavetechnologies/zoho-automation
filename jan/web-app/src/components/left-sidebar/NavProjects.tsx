@@ -124,7 +124,10 @@ export function NavProjects() {
   return (
     <>
       <SidebarGroup className="group-data-[collapsible=icon]:hidden">
-        <SidebarGroupLabel>{t('common:projects.title')}</SidebarGroupLabel>
+        {/* Pinned to the top of the sidebar scroller while its rows scroll under. */}
+        <SidebarGroupLabel className="sticky top-0 z-10 bg-sidebar">
+          {t('common:projects.title')}
+        </SidebarGroupLabel>
         <SidebarMenu>
           {folders.map((item) => (
             <ProjectItem

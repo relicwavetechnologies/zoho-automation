@@ -8,7 +8,8 @@ import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts
 
 function makePrisma(existing: { id: string } | null = null) {
   let created: unknown = null;
-  const prisma = {
+  const grants: unknown[] = [];
+  const tx = {
     skill: {
       findFirst: async () => existing,
       create: async (args: { data: Record<string, unknown> }) => {
@@ -23,8 +24,12 @@ function makePrisma(existing: { id: string } | null = null) {
     },
     skillVersion: { upsert: async () => ({}) },
     skillRegistryRevision: { upsert: async () => ({}) },
+    skillAccessGrant: {
+      upsert: async ({ create }: any) => { grants.push(create); return create; },
+    },
   };
-  return { prisma: prisma as never, getCreated: () => created };
+  const prisma = { ...tx, $transaction: async (fn: any) => fn(tx) };
+  return { prisma: prisma as never, getCreated: () => created, getGrants: () => grants };
 }
 
 describe('skillPublishing tool', () => {
@@ -90,7 +95,7 @@ describe('skillPublishing tool', () => {
   });
 
   it('allows department managers to publish department-scope skills', async () => {
-    const { prisma } = makePrisma();
+    const { prisma, getGrants } = makePrisma();
     const tool = createSkillPublishingTool({ prisma });
     const args = {
       operation: 'publish' as const,
@@ -118,6 +123,28 @@ describe('skillPublishing tool', () => {
     const result = await tool.execute({ ...args, departmentId: 'dept-1' }, { ...ctx, perm });
     assert.equal(result.ok, true);
     assert.equal((result as any).value.skill.departmentId, 'dept-1');
+    assert.deepEqual(getGrants(), [{
+      companyId: 'co-test',
+      skillId: 'skill-1',
+      granteeType: 'department',
+      granteeId: 'dept-1',
+      grantedBy: 'user-test',
+    }]);
+  });
+
+  it('publishes instruction-only skills without fake backend tool dependencies', async () => {
+    const { prisma } = makePrisma();
+    const tool = createSkillPublishingTool({ prisma });
+    const args = {
+      operation: 'publish' as const,
+      scope: 'company' as const,
+      name: 'HTML Prototype',
+      markdown: '# HTML Prototype',
+      toolIds: [],
+    };
+    const ctx = makeCtx('skillPublishing', ['create'], { companyRole: asCompanyRoleSlug('COMPANY_ADMIN') });
+    assert.equal(tool.argsSchema.safeParse(args).success, true);
+    assert.equal((await tool.execute(args, ctx)).ok, true);
   });
 
   it('denies members publishing company-scope skills', async () => {

@@ -31,6 +31,10 @@ vi.mock('@/components/ai-elements/chain-of-thought', () => ({
   ),
 }))
 
+vi.mock('@/components/ui/collapsible', () => ({
+  CollapsibleContent: ({ children }: any) => <div>{children}</div>,
+}))
+
 // Stub Tool
 vi.mock('@/components/ai-elements/tool', () => ({
   Tool: ({ children }: any) => <div data-testid="tool">{children}</div>,
@@ -142,6 +146,30 @@ describe('MessageItem', () => {
       />
     )
     expect(screen.getByTestId('render-markdown')).toHaveTextContent('Hello assistant')
+  })
+
+  it('labels a checkpoint recovered after Divo closed as incomplete', () => {
+    render(
+      <MessageItem
+        message={
+          makeMsg({
+            metadata: {
+              createdAt: new Date(),
+              piTraceTimeline: true,
+              interrupted: true,
+              interruption: { state: 'interrupted', reason: 'app_closed' },
+            },
+          }) as any
+        }
+        isFirstMessage
+        isLastMessage
+        status={'ready' as any}
+      />
+    )
+
+    expect(
+      screen.getByText(/last saved checkpoint; unfinished work was not resumed/i)
+    ).toBeInTheDocument()
   })
 
   it('renders user message in a bubble (no markdown renderer)', () => {
@@ -454,6 +482,35 @@ describe('MessageItem', () => {
       />
     )
     expect(screen.getByTestId('prompt-progress')).toBeInTheDocument()
+  })
+
+  it('does not reopen completed Pi history for a rehydrated pending tool part', () => {
+    render(
+      <MessageItem
+        message={
+          makeMsg({
+            metadata: { createdAt: new Date(), piTraceTimeline: true },
+            parts: [
+              {
+                type: 'tool-search',
+                state: 'input-available',
+                toolCallId: 'tc-history',
+                input: { q: 'done' },
+              },
+              { type: 'text', text: 'Final answer is preserved' },
+            ],
+          }) as any
+        }
+        isFirstMessage
+        isLastMessage
+        status={'ready' as any}
+      />
+    )
+
+    expect(screen.getByTestId('render-markdown')).toHaveTextContent(
+      'Final answer is preserved'
+    )
+    expect(screen.queryByTestId('prompt-progress')).not.toBeInTheDocument()
   })
 
   it('hides progress while a tool call awaits approval', () => {

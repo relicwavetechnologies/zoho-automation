@@ -9,8 +9,9 @@ import {
   toolsListPayloadSchema,
   toolsInvokePayloadSchema,
   toolsPreflightPayloadSchema,
+  workResolvePayloadSchema,
 } from '../../src/application/gateway/gateway.types';
-import { managerTeachPersonaApplySchema } from '../../src/application/persona-learning/manager-teach-persona.types';
+import { managerTeachLearningApplySchema } from '../../src/application/persona-learning/manager-teach-persona.types';
 import { mediaImageOcrPayloadSchema } from '../../src/application/gateway/media-ocr.service';
 
 describe('public gateway request contract', () => {
@@ -24,6 +25,37 @@ describe('public gateway request contract', () => {
     assert.equal(parsed.success, false);
     if (parsed.success) return;
     assert(parsed.error.errors.some((issue) => issue.code === 'unrecognized_keys'));
+  });
+
+  it('accepts only a bounded, exact desktop execution context', () => {
+    assert.equal(gatewayRequestSchema.safeParse({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        threadId: 'thread-1',
+        runId: 'run-1',
+        actionId: 'tool-call-1',
+      },
+    }).success, true);
+    assert.equal(gatewayRequestSchema.safeParse({
+      op: 'tools.invoke',
+      execution: {
+        version: 2,
+        threadId: 'thread-1',
+        runId: 'run-1',
+        actionId: 'tool-call-1',
+      },
+    }).success, false);
+    assert.equal(gatewayRequestSchema.safeParse({
+      op: 'tools.invoke',
+      execution: {
+        version: 1,
+        threadId: 'thread-1',
+        runId: 'run-1',
+        actionId: 'tool-call-1',
+        forged: true,
+      },
+    }).success, false);
   });
 
   it('accepts only toolId and args inside tools.invoke payload', () => {
@@ -51,6 +83,25 @@ describe('public gateway request contract', () => {
     assert.equal(connectionsListPayloadSchema.safeParse({ provider: 'google' }).success, false);
     assert.equal(connectionsListPayloadSchema.safeParse({ provider: 'google_workspace' }).success, true);
     assert.equal(skillsSearchPayloadSchema.safeParse({ query: 'Gmail', offset: 20 }).success, false);
+  });
+
+  it('keeps unified work resolution bounded to the exact request plus two variants', () => {
+    assert.equal(workResolvePayloadSchema.safeParse({
+      query: 'Research the best TTS models and write an HTML document',
+      variants: [
+        'Compare current TTS models using public web research and benchmarks',
+        'Present the findings as an interactive HTML dashboard',
+      ],
+    }).success, true);
+    assert.equal(workResolvePayloadSchema.safeParse({
+      query: 'Research TTS models',
+      variants: ['research capability', 'presentation capability', 'fourth query'],
+    }).success, false);
+    assert.equal(workResolvePayloadSchema.safeParse({
+      query: 'Research TTS models',
+      variants: ['Research TTS models'],
+      hiddenFilter: 'finance',
+    }).success, false);
   });
 
   it('allows only an exact toolId filter for tools.list', () => {
@@ -86,17 +137,24 @@ describe('public gateway request contract', () => {
     }).success, false);
   });
 
-  it('keeps Teach context and persona writes narrow and evidence-revisioned', () => {
+  it('keeps Teach context and learning writes narrow and evidence-revisioned', () => {
     const sessionId = '29a63a44-c348-4414-b5eb-25246d7eb13d';
     assert.equal(teachContextGetPayloadSchema.safeParse({ teachSessionId: sessionId }).success, true);
     assert.equal(teachContextGetPayloadSchema.safeParse({ teachSessionId: sessionId, correction: 'hidden' }).success, false);
-    assert.equal(managerTeachPersonaApplySchema.safeParse({
+    assert.equal(managerTeachLearningApplySchema.safeParse({
       teachSessionId: sessionId,
       mutationKey: 'teach-initial-write-001',
       patch: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         baseRevision: 3,
         understanding: 'The manager wants risks first.',
+        readiness: {
+          classifications: ['preference'], outcome: 'Keep risks prominent.', whenToUse: 'Weekly reporting.',
+          inputs: null, expectedOutput: null, decisionRules: null, exceptions: null,
+          automationTrigger: null, monitoringScope: null, autonomyBoundary: null, failureHandling: null,
+          clarificationAnswers: [], unresolvedMaterialQuestions: [],
+        },
+        skills: [],
         changes: [],
       },
     }).success, true);

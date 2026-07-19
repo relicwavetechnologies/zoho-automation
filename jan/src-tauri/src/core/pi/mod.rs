@@ -9,8 +9,13 @@ pub mod session;
 use crate::core::app::commands::get_jan_data_folder_path;
 use crate::core::divo::commands::divo_sync_pi_env;
 use crate::core::divo::workspace::resolve_workspace_dir_for_app;
-use manager::PiManager;
-use permissions::{load_persistent_bash_allow, save_persistent_bash_allow};
+use manager::{
+    default_runtime_pool_capacity, PiManager, MAX_RUNTIME_POOL_CAPACITY, MIN_RUNTIME_POOL_CAPACITY,
+};
+use permissions::{
+    load_persistent_bash_allow, load_runtime_pool_capacity, save_persistent_bash_allow,
+    save_runtime_pool_capacity,
+};
 use runtime::PiRuntimeMode;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -41,6 +46,11 @@ pub async fn pi_start(
         .manager
         .set_persistent_bash_approval(persistent_bash_allow)
         .await;
+    if let Some(capacity) = load_runtime_pool_capacity(&app)? {
+        // A lower saved limit never interrupts a live run. If pi_start is
+        // called during active work, it remains pending until a clean restart.
+        let _ = state.manager.set_runtime_pool_capacity(capacity).await?;
+    }
     let data_folder = get_jan_data_folder_path(app.clone());
     let scratch_dir = data_folder.join(PI_SCRATCH_DIR);
     let workspace_dir = resolve_workspace_dir_for_app(&app, workspace_path)?;
@@ -129,6 +139,42 @@ pub async fn pi_get_state(state: State<'_, PiState>) -> Result<serde_json::Value
 #[tauri::command]
 pub async fn pi_get_pool_state(state: State<'_, PiState>) -> Result<serde_json::Value, String> {
     Ok(state.manager.get_pool_state().await)
+}
+
+/// Read the persisted desired physical-worker limit and the manager's current
+/// effective ceiling. Logical chats remain independent even when workers wait.
+#[tauri::command]
+pub async fn pi_get_parallelism(
+    state: State<'_, PiState>,
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "configuredCapacity": load_runtime_pool_capacity(&app)?,
+        "effectiveCapacity": state.manager.runtime_pool_capacity().await,
+        "defaultCapacity": default_runtime_pool_capacity(),
+        "minCapacity": MIN_RUNTIME_POOL_CAPACITY,
+        "maxCapacity": MAX_RUNTIME_POOL_CAPACITY,
+    }))
+}
+
+/// Persist a bounded Pi-worker ceiling. Raising capacity applies immediately;
+/// lowering it waits for a clean restart if any agent is currently active.
+#[tauri::command]
+pub async fn pi_set_parallelism(
+    state: State<'_, PiState>,
+    app: AppHandle,
+    capacity: usize,
+) -> Result<serde_json::Value, String> {
+    save_runtime_pool_capacity(&app, capacity)?;
+    let applied = state.manager.set_runtime_pool_capacity(capacity).await?;
+    Ok(serde_json::json!({
+        "configuredCapacity": capacity,
+        "effectiveCapacity": state.manager.runtime_pool_capacity().await,
+        "applied": applied,
+        "restartRequired": !applied,
+        "minCapacity": MIN_RUNTIME_POOL_CAPACITY,
+        "maxCapacity": MAX_RUNTIME_POOL_CAPACITY,
+    }))
 }
 
 /// Switch the model Pi uses (e.g. deepseek-v4-flash / deepseek-v4-pro). The

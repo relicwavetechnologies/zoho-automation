@@ -21,7 +21,9 @@ import { cn } from '@/lib/utils'
 
 function displayWorkspacePath(path: string): string {
   if (!path) return 'Resolving workspace...'
-  return path
+  // Titlebar shows only the folder name; the tooltip carries the full path.
+  const tail = path.replace(/[/\\]+$/, '').split(/[/\\]/).pop()
+  return tail || path
 }
 
 export default function DivoWorkspaceSelector() {
@@ -83,22 +85,23 @@ export default function DivoWorkspaceSelector() {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
+        {/* Quiet Codex-style titlebar control (cf. its "Open in" button) — the
+            full path lives in the tooltip, only the tail is shown here. */}
         <Button
           type="button"
           variant="ghost"
           className={cn(
-            'h-9 max-w-[min(720px,calc(100vw-12rem))] rounded-full border px-4',
-            'justify-start gap-2 text-sm font-medium'
+            'h-7 max-w-[min(360px,calc(100vw-24rem))] rounded-lg border px-2.5',
+            'justify-start gap-1.5 text-xs font-normal text-muted-foreground hover:text-foreground'
           )}
           onClick={handleChooseWorkspace}
           disabled={loading}
           aria-label="Choose Divo Dex workspace"
         >
-          <IconFolderOpen size={16} className="shrink-0 text-muted-foreground" />
-          <span className="shrink-0 text-foreground">Workspace</span>
-          <span className="truncate text-muted-foreground">{label}</span>
+          <IconFolderOpen size={14} className="shrink-0" />
+          <span className="truncate">{label}</span>
           {!selectedWorkspacePath && workspacePath && (
-            <span className="shrink-0 text-muted-foreground">Default</span>
+            <span className="shrink-0 opacity-60">Default</span>
           )}
         </Button>
       </TooltipTrigger>

@@ -4,7 +4,7 @@ import { NavMain } from './NavMain'
 import { NavProjects } from './NavProjects'
 import { useLeftPanel } from '@/hooks/useLeftPanel'
 import { useEffect, useState } from 'react'
-import { UserRound, LogOut, Settings2, ChevronsUpDown, Building2 } from 'lucide-react'
+import { UserRound, LogOut, Settings2, ChevronsUpDown, Building2, Search } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { useNavigate } from '@tanstack/react-router'
@@ -27,6 +27,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import { useSearchDialog } from '@/hooks/useSearchDialog'
 import { DivoDexWordmark } from '@/components/DivoDexBrand'
 import { useTitlebarLayout } from '@/stores/titlebar-layout-store'
 import { route } from '@/constants/routes'
@@ -131,21 +133,18 @@ function DivoProfileFooter() {
   }
 
   return (
-    <SidebarFooter className="border-t border-sidebar-border/70 p-2">
+    <SidebarFooter className="border-t border-sidebar-border p-2">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className="group-data-[collapsible=icon]:hidden flex min-w-0 items-center gap-2 rounded-lg border border-sidebar-border/70 bg-sidebar-accent/30 p-2 text-left outline-none transition-colors hover:bg-sidebar-accent/60 focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-sidebar-accent/60"
+            className="group-data-[collapsible=icon]:hidden flex min-w-0 items-center gap-2.5 rounded-lg p-1.5 text-left outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-sidebar-accent"
           >
-            <Avatar className="size-9" />
+            <Avatar className="size-7 rounded-full" />
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium">{name}</p>
-              <p className="truncate text-xs capitalize text-muted-foreground">
-                {role}
-              </p>
+              <p className="truncate text-sm">{name}</p>
             </div>
-            <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground opacity-60 transition-opacity group-hover:opacity-100" />
+            <ChevronsUpDown className="size-4 shrink-0 text-sidebar-foreground/40 transition-colors hover:text-sidebar-foreground/70" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -216,28 +215,44 @@ function DivoProfileFooter() {
 
 export function LeftSidebar() {
   const { open: isLeftPanelOpen } = useLeftPanel()
-  // Right-align the header when native controls own the top-left (macOS, or a Linux
-  // DE placing buttons left); the wordmark moves into the right cluster except on macOS.
+  const setSearchOpen = useSearchDialog((s) => s.setOpen)
+  // Right-align the controls strip when native window buttons own the top-left
+  // (macOS, or a Linux DE placing buttons left).
   const leftButtons = useTitlebarLayout((s) => s.layout.left.length)
   const controlsOnLeft = !IS_MACOS && leftButtons > 0
   const reserveLeft = IS_MACOS || controlsOnLeft
   return (
     <div className='relative z-50'>
-      <Sidebar variant="floating" collapsible="offcanvas">
-        <SidebarHeader className="flex px-1">
-          <div className={cn("flex items-center w-full justify-between", reserveLeft && "justify-end")}>
-            {!reserveLeft && <DivoDexWordmark className="ml-2" />}
+      <Sidebar variant="sidebar" collapsible="offcanvas">
+        {/* Codex header anatomy: a slim window-controls strip, then a branded
+            row — big wordmark left, search right — then the nav list. */}
+        <SidebarHeader className="flex gap-0 px-1">
+          <div className={cn("flex h-8 items-center w-full", reserveLeft ? "justify-end" : "justify-start")}>
             <div className="flex items-center">
-              {controlsOnLeft && (
-                <DivoDexWordmark className="mr-2" />
-              )}
               {isLeftPanelOpen && <DownloadManagement />}
-              <SidebarTrigger className="text-muted-foreground rounded-full hover:bg-sidebar-foreground/8! -mt-0.5 relative z-50 ml-0.5" />
+              <SidebarTrigger className="text-muted-foreground rounded-full hover:bg-sidebar-foreground/8! relative z-50 ml-0.5" />
             </div>
+          </div>
+          <div className="flex items-center justify-between px-2 pt-2 pb-3">
+            <DivoDexWordmark
+              markClassName="size-5"
+              textClassName="text-lg font-semibold tracking-tight"
+            />
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Search"
+              className="rounded-full text-muted-foreground hover:text-foreground"
+              onClick={() => setSearchOpen(true)}
+            >
+              <Search className="size-4" />
+            </Button>
           </div>
           <NavMain />
         </SidebarHeader>
-        <SidebarContent className="mask-b-from-95% mask-t-from-98%">
+        {/* No top mask: it would fade the sticky group headers pinned to this
+            scroller's top edge. The bottom fade still applies. */}
+        <SidebarContent className="mask-b-from-95%">
           <NavProjects />
           <NavChats />
         </SidebarContent>

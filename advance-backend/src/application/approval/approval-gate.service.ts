@@ -20,6 +20,13 @@ export interface ApprovalGateInput {
   chatId:         string;
   /** Human-readable summary of what the tool call would do (shown on approval card). */
   argsSummary:    string;
+  /** Optional, non-authoritative desktop execution provenance for audit/match checks. */
+  execution?: {
+    readonly version: 1;
+    readonly threadId: string;
+    readonly runId: string;
+    readonly actionId: string;
+  };
 }
 
 export interface ApprovalGateOptions {
@@ -36,7 +43,7 @@ export class ApprovalGateService {
   ) {}
 
   async check(input: ApprovalGateInput): Promise<ApprovalDecision> {
-    const { toolId, action, args, perm, runContext, chatId, argsSummary } = input;
+    const { toolId, action, args, perm, runContext, chatId, argsSummary, execution } = input;
 
     const policyResult = checkApprovalPolicy({ toolId, action, args, perm, runContext });
 
@@ -64,6 +71,7 @@ export class ApprovalGateService {
           argsHash,
           runContext,
           chatId,
+          execution,
         });
       }
 
@@ -132,6 +140,7 @@ export class ApprovalGateService {
         resolvedManagerOpenId:  manager.larkOpenId,
         resolvedManagerUserId:  manager.userId,
         resolvedManagerName:    manager.displayName,
+        execution: execution ?? null,
       },
       channel:        'lark',
       requestedBy:    String(runContext.userId),
@@ -221,10 +230,11 @@ export class ApprovalGateService {
     argsHash:   string;
     runContext: RunContext;
     chatId:     string;
+    execution?: ApprovalGateInput['execution'];
   }): Promise<ApprovalDecision> {
-    const { approval, toolId, action, argsHash, runContext, chatId } = input;
+    const { approval, toolId, action, argsHash, runContext, chatId, execution } = input;
 
-    if (!isExactApprovalMatch(approval, { toolId, action, argsHash, runContext, chatId })) {
+    if (!isExactApprovalMatch(approval, { toolId, action, argsHash, runContext, chatId, execution })) {
       this.logger.warn('approval.gate.approved_grant_mismatch', { approvalId: approval.id, toolId, action });
       return {
         kind: 'misconfigured',
@@ -259,6 +269,7 @@ function isExactApprovalMatch(
     argsHash:   string;
     runContext: RunContext;
     chatId:     string;
+    execution?: ApprovalGateInput['execution'];
   },
 ): boolean {
   const payload = isRecord(approval.payloadJson) ? approval.payloadJson : {};
@@ -274,7 +285,24 @@ function isExactApprovalMatch(
     && payload['argsHash'] === expected.argsHash
     && meta['requesterId'] === String(expected.runContext.userId)
     && meta['chatId'] === expected.chatId
-    && (meta['departmentId'] ?? null) === expectedDepartmentId;
+    && (meta['departmentId'] ?? null) === expectedDepartmentId
+    && executionMetadataMatches(meta['execution'], expected.execution);
+}
+
+function executionMetadataMatches(
+  actual: unknown,
+  expected: ApprovalGateInput['execution'],
+): boolean {
+  if (!expected) return actual === null || actual === undefined;
+  if (!isRecord(actual)) return false;
+  // Retrying an approved manager-gated request creates a fresh Pi tool-call
+  // ID, but it must remain usable for the same exact desktop run and args.
+  // `chatId` already carries that thread/run partition and argsHash is checked
+  // above. actionId remains audit-only here; local approval intents bind it
+  // strictly because their prepare/commit pair never creates a new tool call.
+  return actual['version'] === expected.version
+    && actual['threadId'] === expected.threadId
+    && actual['runId'] === expected.runId;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

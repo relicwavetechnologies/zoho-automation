@@ -85,7 +85,55 @@ function humanizeToolId(id: string): string {
     .toLowerCase()
 }
 
-export function resolveToolLabel(part: ToolLikePart): string {
+/**
+ * Display phrases for the gateway ops (`GATEWAY_OPS` in advance-backend).
+ *
+ * The rows read "Ran {label}" / "Running {label}", so these are noun phrases,
+ * not the dotted identifiers — "Ran teach.learning.apply" is wire format
+ * leaking into the UI. Anything unmapped falls back to `humanizeOp`, so a new
+ * backend op degrades to readable words rather than dots.
+ */
+const OP_LABELS: Record<string, string> = {
+  'capabilities.get': 'capability check',
+  'tools.list': 'tool list',
+  'tools.preflight': 'tool preflight',
+  'tools.prepare': 'tool preparation',
+  'tools.commit': 'tool commit',
+  'tools.invoke': 'tool call',
+  'skills.list': 'skill list',
+  'skills.search': 'skill search',
+  'skills.get': 'skill details',
+  'persona.resolve': 'persona lookup',
+  'teach.context.get': 'teach context',
+  'teach.learning.apply': 'teach learning update',
+  'google.plan': 'google plan',
+  'connections.list': 'connection list',
+  'media.image_ocr': 'image OCR',
+}
+
+/** Dotted/underscored op → spaced words, for ops with no explicit phrase. */
+function humanizeOp(op: string): string {
+  return op.replace(/[._-]+/g, ' ').trim()
+}
+
+/**
+ * Everything known about a tool call: the display label plus the raw
+ * identifiers behind it. Icon resolution needs the identifiers — by the time a
+ * call has been humanised to "Zoho Books" the vendor is only recoverable by
+ * parsing English back apart.
+ */
+export type ToolIdentity = {
+  /** The tool's own name, e.g. `divo_gateway`, `divo_memory_recall`. */
+  name: string
+  /** Gateway op, e.g. `tools.invoke`, `skills.search`. */
+  op?: string
+  /** Concrete backend tool for `tools.invoke`, e.g. `zohoBooks`. */
+  toolId?: string
+  /** Humanised label for display. */
+  label: string
+}
+
+export function resolveToolIdentity(part: ToolLikePart): ToolIdentity {
   const name = toolBaseName(part)
   const { op, toolId } = extractGatewayCall(part.input)
 
@@ -93,11 +141,16 @@ export function resolveToolLabel(part: ToolLikePart): string {
   // for tools.invoke the concrete tool it dispatches to. We check the input
   // whenever it looks like a gateway call (by name OR by shape), so the real
   // command still surfaces even before the tool name has landed.
+  let label = name ? name.replaceAll('_', ' ') : ''
   if (name === 'divo_gateway' || op || toolId) {
-    if (op === 'tools.invoke' && toolId) return humanizeToolId(toolId)
-    if (op) return op
-    if (toolId) return humanizeToolId(toolId)
+    if (op === 'tools.invoke' && toolId) label = humanizeToolId(toolId)
+    else if (op) label = OP_LABELS[op] ?? humanizeOp(op)
+    else if (toolId) label = humanizeToolId(toolId)
   }
 
-  return name ? name.replaceAll('_', ' ') : ''
+  return { name, op, toolId, label }
+}
+
+export function resolveToolLabel(part: ToolLikePart): string {
+  return resolveToolIdentity(part).label
 }

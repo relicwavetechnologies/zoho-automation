@@ -107,7 +107,7 @@ describe('ManagerTeachService', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('delegates context and persona writes to the governed processor', async () => {
+  it('delegates context and learning writes to the governed processor', async () => {
     const calls: string[] = [];
     const service = new ManagerTeachService({
       prisma: { managerTeachArtifact: { findMany: async () => [] } } as never,
@@ -128,9 +128,20 @@ describe('ManagerTeachService', () => {
     await service.getAgentContext({
       companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', sessionId: 'teach-1',
     });
-    await service.applyAgentPersona({
+    await service.applyAgentLearning({
       companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', sessionId: 'teach-1',
-      mutationKey: 'teach-1-write', patch: { schemaVersion: 1, baseRevision: 0, understanding: 'Done', changes: [] },
+      mutationKey: 'teach-1-write', patch: {
+        schemaVersion: 2,
+        baseRevision: 0,
+        understanding: 'Done',
+        readiness: {
+          classifications: ['no_learning'], outcome: 'No durable learning.', whenToUse: 'Not applicable.',
+          inputs: null, expectedOutput: null, decisionRules: null, exceptions: null,
+          automationTrigger: null, monitoringScope: null, autonomyBoundary: null, failureHandling: null,
+          clarificationAnswers: [], unresolvedMaterialQuestions: [],
+        },
+        skills: [], changes: [],
+      },
     });
     assert.deepEqual(calls, ['context', 'apply']);
   });

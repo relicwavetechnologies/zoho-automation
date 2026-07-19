@@ -18,12 +18,23 @@ export class DefaultMessagesService implements MessagesService {
       return []
     }
 
-    return (
-      ExtensionManager.getInstance()
-        .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
-        ?.listMessages(threadId)
-        ?.catch(() => []) ?? []
-    )
+    const extension = ExtensionManager.getInstance()
+      .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
+    let messages: ThreadMessage[] | undefined
+    if (extension) {
+      try {
+        messages = await extension.listMessages(threadId)
+      } catch (error) {
+        console.warn('Conversational extension could not list messages; reading durable core storage directly.', error)
+      }
+    }
+    if (!Array.isArray(messages)) {
+      const listMessages = window.core?.api?.listMessages
+      if (typeof listMessages !== 'function') throw new Error('Durable message storage is unavailable')
+      messages = await listMessages({ threadId })
+    }
+    if (!Array.isArray(messages)) throw new Error('Durable message storage returned an invalid response')
+    return messages
   }
 
   async createMessage(message: ThreadMessage): Promise<ThreadMessage> {
@@ -32,12 +43,15 @@ export class DefaultMessagesService implements MessagesService {
       return message
     }
 
-    return (
-      ExtensionManager.getInstance()
-        .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
-        ?.createMessage(message)
-        ?.catch(() => message) ?? message
-    )
+    const extension = ExtensionManager.getInstance()
+      .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
+    const persisted = extension
+      ? await extension.createMessage(message)
+      : await window.core?.api?.createMessage?.({ message })
+    if (!persisted || typeof persisted !== 'object') {
+      throw new Error('Message was not saved to durable storage')
+    }
+    return persisted as ThreadMessage
   }
 
   async modifyMessage(message: ThreadMessage): Promise<ThreadMessage> {
@@ -46,12 +60,15 @@ export class DefaultMessagesService implements MessagesService {
       return message
     }
 
-    return (
-      ExtensionManager.getInstance()
-        .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
-        ?.modifyMessage(message)
-        ?.catch(() => message) ?? message
-    )
+    const extension = ExtensionManager.getInstance()
+      .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
+    const persisted = extension
+      ? await extension.modifyMessage(message)
+      : await window.core?.api?.modifyMessage?.({ message })
+    if (!persisted || typeof persisted !== 'object') {
+      throw new Error('Message update was not saved to durable storage')
+    }
+    return persisted as ThreadMessage
   }
 
   async deleteMessage(threadId: string, messageId: string): Promise<void> {
@@ -60,8 +77,14 @@ export class DefaultMessagesService implements MessagesService {
       return
     }
 
-    await ExtensionManager.getInstance()
+    const extension = ExtensionManager.getInstance()
       .get<ConversationalExtension>(ExtensionTypeEnum.Conversational)
-      ?.deleteMessage(threadId, messageId)
+    if (extension) {
+      await extension.deleteMessage(threadId, messageId)
+      return
+    }
+    const deleteMessage = window.core?.api?.deleteMessage
+    if (typeof deleteMessage !== 'function') throw new Error('Durable message storage is unavailable')
+    await deleteMessage({ threadId, messageId })
   }
 }

@@ -85,7 +85,7 @@ describe('usePiApproval', () => {
   it('delivers a payload-bound decision and removes it only after success', async () => {
     usePiApproval.getState().enqueue(request('request-1'))
 
-    await usePiApproval.getState().resolve('thread-1', 'request-1', true)
+    await usePiApproval.getState().resolve('thread-1', 'request-1', true, 'run-1')
 
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
       requestId: 'request-1',
@@ -100,7 +100,7 @@ describe('usePiApproval', () => {
     mocks.invoke.mockRejectedValueOnce(new Error('desktop unavailable'))
     usePiApproval.getState().enqueue(request('request-1'))
 
-    await usePiApproval.getState().resolve('thread-1', 'request-1', true)
+    await usePiApproval.getState().resolve('thread-1', 'request-1', true, 'run-1')
 
     expect(usePiApproval.getState().queues['thread-1']?.[0]).toMatchObject({
       status: 'error',
@@ -114,7 +114,7 @@ describe('usePiApproval', () => {
     )
     usePiApproval.getState().enqueue(request('request-1'))
 
-    await usePiApproval.getState().resolve('thread-1', 'request-1', true)
+    await usePiApproval.getState().resolve('thread-1', 'request-1', true, 'run-1')
 
     expect(usePiApproval.getState().queues['thread-1']?.[0]).toMatchObject({
       status: 'error',
@@ -141,7 +141,7 @@ describe('usePiApproval', () => {
 
     const allowed = await usePiApproval
       .getState()
-      .allowBashForTask('thread-1', 'request-bash')
+      .allowBashForTask('thread-1', 'request-bash', 'run-1')
 
     expect(allowed).toBe(true)
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
@@ -173,7 +173,7 @@ describe('usePiApproval', () => {
 
     const allowed = await usePiApproval
       .getState()
-      .allowBashForTask('thread-1', 'request-bash')
+      .allowBashForTask('thread-1', 'request-bash', 'run-1')
 
     expect(allowed).toBe(false)
     expect(usePiApproval.getState().queues['thread-1']?.[0]).toMatchObject({
@@ -187,7 +187,7 @@ describe('usePiApproval', () => {
 
     const allowed = await usePiApproval
       .getState()
-      .allowBashForTask('thread-1', 'request-divo')
+      .allowBashForTask('thread-1', 'request-divo', 'run-1')
 
     expect(allowed).toBe(false)
     expect(mocks.invoke).not.toHaveBeenCalled()
@@ -199,7 +199,7 @@ describe('usePiApproval', () => {
       .getState()
       .enqueue(request('request-1', { expiresAt: Date.now() - 1 }))
 
-    await usePiApproval.getState().resolve('thread-1', 'request-1', true)
+    await usePiApproval.getState().resolve('thread-1', 'request-1', true, 'run-1')
 
     expect(mocks.invoke).toHaveBeenCalledWith(
       PI_APPROVAL_RESPONSE_COMMAND,
@@ -271,13 +271,18 @@ describe('usePiApproval', () => {
       requestId: 'review-1',
     })
 
-    await usePiApproval.getState().resolveMemory('thread-1', 'review-1', {
-      version: 1,
-      proposalId: 'proposal-1',
-      decision: 'approve',
-      selectedTarget: { scope: 'personal' },
-      selectedBulletIds: ['fact-1'],
-    })
+    await usePiApproval.getState().resolveMemory(
+      'thread-1',
+      'review-1',
+      {
+        version: 1,
+        proposalId: 'proposal-1',
+        decision: 'approve',
+        selectedTarget: { scope: 'personal' },
+        selectedBulletIds: ['fact-1'],
+      },
+      'run-1'
+    )
 
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
       requestId: 'review-1',
@@ -313,13 +318,18 @@ describe('usePiApproval', () => {
 
     const delivered = await usePiApproval
       .getState()
-      .resolveMemory('thread-1', 'review-1', {
-        version: 1,
-        proposalId: 'proposal-1',
-        decision: 'approve',
-        selectedTarget: { scope: 'company' },
-        selectedBulletIds: ['fact-1'],
-      })
+      .resolveMemory(
+        'thread-1',
+        'review-1',
+        {
+          version: 1,
+          proposalId: 'proposal-1',
+          decision: 'approve',
+          selectedTarget: { scope: 'company' },
+          selectedBulletIds: ['fact-1'],
+        },
+        'run-1'
+      )
 
     expect(delivered).toBe(false)
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
@@ -327,6 +337,68 @@ describe('usePiApproval', () => {
       threadId: 'thread-1',
       runId: 'run-1',
       cancelled: true,
+    })
+    expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
+  })
+
+  it('queues Teach clarification and resumes the same run with structured answers', async () => {
+    const consumed = await consumePiApprovalEvent({
+      type: 'extension_ui_request',
+      thread_id: 'thread-1',
+      run_id: 'run-1',
+      id: 'clarify-1',
+      method: 'editor',
+      title: 'divo_teach_clarification_v1',
+      prefill: JSON.stringify({
+        version: 1,
+        reason: 'The workflow trigger is unclear.',
+        questions: [{
+          id: 'trigger',
+          question: 'When should Divo run this?',
+          selection: 'single',
+          options: [
+            { id: 'new-email', label: 'When a new email arrives' },
+            { id: 'manual', label: 'Only when I ask' },
+          ],
+          allowCustom: true,
+        }],
+        runCorrelation: {
+          version: 1,
+          threadId: 'thread-1',
+          runId: 'run-1',
+          profile: 'teach',
+          teachSessionId: 'teach-1',
+          departmentId: 'department-1',
+        },
+      }),
+    })
+
+    expect(consumed).toBe(true)
+    expect(usePiApproval.getState().queues['thread-1']?.[0]).toMatchObject({
+      protocol: 'teach-clarification',
+      requestId: 'clarify-1',
+    })
+
+    await usePiApproval.getState().resolveTeachClarification(
+      'thread-1',
+      'clarify-1',
+      {
+        version: 1,
+        decision: 'answer',
+        answers: [{ questionId: 'trigger', selectedOptionIds: ['new-email'] }],
+      },
+      'run-1'
+    )
+
+    expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
+      requestId: 'clarify-1',
+      threadId: 'thread-1',
+      runId: 'run-1',
+      value: JSON.stringify({
+        version: 1,
+        decision: 'answer',
+        answers: [{ questionId: 'trigger', selectedOptionIds: ['new-email'] }],
+      }),
     })
     expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
   })

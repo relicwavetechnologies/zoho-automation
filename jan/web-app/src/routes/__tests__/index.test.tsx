@@ -20,9 +20,19 @@ vi.mock('@/i18n/react-i18next-compat', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }))
 
-vi.mock('@/hooks/useThreads', () => ({
-  useThreads: () => ({ setCurrentThreadId: h.setCurrentThreadId }),
-}))
+// Selector-aware: the route destructures the store directly, while RecentChats
+// subscribes with selectors. A bare object breaks the latter.
+vi.mock('@/hooks/useThreads', () => {
+  const state = {
+    setCurrentThreadId: h.setCurrentThreadId,
+    getFilteredThreads: () => [],
+    threads: {},
+  }
+  return {
+    useThreads: (selector?: (value: typeof state) => unknown) =>
+      typeof selector === 'function' ? selector(state) : state,
+  }
+})
 
 vi.mock('@/hooks/useTools', () => ({
   useTools: h.useTools,
@@ -46,6 +56,14 @@ vi.mock('@/containers/DivoWorkspaceSelector', () => ({
 
 vi.mock('@/components/finance-quick-starts/FinanceQuickStarts', () => ({
   FinanceQuickStarts: () => <div data-testid="finance-quick-starts" />,
+}))
+
+vi.mock('@/components/home/HomeGreeting', () => ({
+  HomeGreeting: () => <div data-testid="home-greeting" />,
+}))
+
+vi.mock('@/components/home/ConsistencyHeatmap', () => ({
+  ConsistencyHeatmap: () => <div data-testid="consistency-heatmap" />,
 }))
 
 vi.mock('@/components/teach/TeachMode', () => ({
@@ -86,10 +104,17 @@ describe('Index route', () => {
 
   it('renders the Divo chat UI when no local or remote model is configured', () => {
     renderComponent()
+    expect(screen.getByTestId('home-route-shell')).toHaveClass(
+      'h-svh',
+      'min-h-0',
+      'overflow-hidden'
+    )
     expect(screen.getByTestId('chat-input')).toBeInTheDocument()
     expect(screen.getByTestId('header-page')).toBeInTheDocument()
     expect(screen.getByTestId('workspace-selector')).toBeInTheDocument()
-    expect(screen.getByText('chat:description')).toBeInTheDocument()
+    expect(screen.getByTestId('home-greeting')).toBeInTheDocument()
+    expect(screen.getByTestId('consistency-heatmap')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Recruit' })).not.toBeInTheDocument()
   })
 
   it('passes threadModel from search into ChatInput without exposing the model selector', () => {
@@ -104,18 +129,6 @@ describe('Index route', () => {
     renderComponent()
     expect(h.setCurrentThreadId).toHaveBeenCalledWith(undefined)
     expect(h.useTools).toHaveBeenCalled()
-  })
-
-  it('opens the mock workflow learning experience from Automate mode', async () => {
-    const user = userEvent.setup()
-    renderComponent()
-
-    await user.click(screen.getByTestId('automate-mode-toggle'))
-
-    expect(screen.getByTestId('automate-mode')).toBeInTheDocument()
-    expect(screen.getByText('Show Divo how your work gets done.')).toBeInTheDocument()
-    expect(screen.getByTestId('start-workflow-recording')).toBeInTheDocument()
-    expect(screen.queryByTestId('chat-input')).not.toBeInTheDocument()
   })
 
   it('opens the manager teaching experience from Teach mode', async () => {

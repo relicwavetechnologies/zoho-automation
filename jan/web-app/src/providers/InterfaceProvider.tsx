@@ -1,6 +1,5 @@
 import { useEffect } from 'react'
 import { useInterfaceSettings } from '@/hooks/useInterfaceSettings'
-import { useTheme } from '@/hooks/useTheme'
 import { ACCENT_COLORS } from '@/hooks/useInterfaceSettings'
 
 /**
@@ -9,7 +8,6 @@ import { ACCENT_COLORS } from '@/hooks/useInterfaceSettings'
  */
 export function InterfaceProvider() {
   const { fontSize, accentColor } = useInterfaceSettings()
-  const { isDark } = useTheme()
 
   // Apply interface settings on mount and when they change
   useEffect(() => {
@@ -17,17 +15,14 @@ export function InterfaceProvider() {
     document.documentElement.style.setProperty('--font-size-base', fontSize)
   }, [fontSize])
 
-  // Apply accent color when it changes or theme changes
+  // Apply accent color. Accent drives --primary only; the sidebar is a fixed
+  // neutral grey owned by index.css, so it no longer varies with the accent.
   useEffect(() => {
     const color = ACCENT_COLORS.find((c) => c.value === accentColor)
     if (!color) return
 
-    const root = document.documentElement
-    const sidebarColor = isDark ? color.sidebar.dark : color.sidebar.light
-
-    root.style.setProperty('--sidebar', sidebarColor)
-    root.style.setProperty('--primary', color.primary)
-  }, [accentColor, isDark])
+    document.documentElement.style.setProperty('--primary', color.primary)
+  }, [accentColor])
 
   return null
 }

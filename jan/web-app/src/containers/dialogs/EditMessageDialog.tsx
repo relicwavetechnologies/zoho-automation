@@ -100,7 +100,7 @@ export function EditMessageDialog({
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>{triggerElement || defaultTrigger}</DialogTrigger>
-      <DialogContent>
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t('common:dialogs.editMessage.title')}</DialogTitle>
           {(keptImages.length > 0 || keptFiles.length > 0) && (

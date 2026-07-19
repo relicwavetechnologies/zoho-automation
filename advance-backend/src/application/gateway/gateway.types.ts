@@ -6,9 +6,10 @@ export const GATEWAY_OPS = [
   'skills.list',
   'skills.search',
   'skills.get',
+  'work.resolve',
   'persona.resolve',
   'teach.context.get',
-  'teach.persona.apply',
+  'teach.learning.apply',
   'google.plan',
   'connections.list',
   'media.image_ocr',
@@ -41,10 +42,25 @@ export const GATEWAY_STATUSES = [
 
 export type GatewayStatus = typeof GATEWAY_STATUSES[number];
 
+/**
+ * Desktop-provided provenance for one Pi tool action. It is useful for
+ * routing, idempotency, and audit records, but never grants identity or
+ * permission: those continue to come exclusively from the member session.
+ */
+export const gatewayExecutionContextSchema = z.object({
+  version: z.literal(1),
+  threadId: z.string().trim().min(1).max(200),
+  runId: z.string().trim().min(1).max(200),
+  actionId: z.string().trim().min(1).max(256),
+}).strict();
+
+export type GatewayExecutionContext = z.infer<typeof gatewayExecutionContextSchema>;
+
 export const gatewayRequestSchema = z.object({
   op: z.string().min(1),
   departmentId: z.string().optional(),
   payload: z.record(z.unknown()).optional(),
+  execution: gatewayExecutionContextSchema.optional(),
 }).strict();
 
 export type GatewayRequest = z.infer<typeof gatewayRequestSchema>;
@@ -102,6 +118,19 @@ export const skillsSearchPayloadSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().min(1).max(5).optional(),
   context: z.record(z.unknown()).optional(),
+}).strict();
+
+/**
+ * Resolves one user request against both the current department persona and
+ * the RBAC-filtered company skill registry. The exact request is always
+ * searched; callers may add at most two intent-preserving variants so a
+ * multi-part request can surface complementary execution and presentation
+ * skills without turning the search into an unbounded agent loop.
+ */
+export const workResolvePayloadSchema = z.object({
+  query: z.string().trim().min(3).max(2_000),
+  variants: z.array(z.string().trim().min(3).max(2_000)).max(2).optional(),
+  limit: z.number().int().min(1).max(5).optional(),
 }).strict();
 
 /** Reads advisory, already-promoted manager persona rules for one task. */

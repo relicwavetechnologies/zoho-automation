@@ -2,12 +2,15 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import {
 	callDivoGateway,
 	formatGatewayResponse,
 	resolveDivoGatewayConfig,
 	type DivoGatewayConfig,
+	type GatewayExecutionContext,
+	type GatewayRequestBody,
 	type GatewayResponseBody,
 } from "./gateway-client.ts";
 import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correlation.ts";
@@ -59,7 +62,7 @@ export interface MemoryReviewDependencies {
 	resolveConfig: () => DivoGatewayConfig | { error: string };
 	callGateway: (
 		config: DivoGatewayConfig,
-		request: { op: string; departmentId?: string; payload?: unknown },
+		request: GatewayRequestBody,
 	) => Promise<{ body: GatewayResponseBody; httpStatus: number }>;
 }
 
@@ -175,10 +178,12 @@ function parseCanonicalTargets(value: unknown): MemoryReviewTargetV1[] {
 async function buildAuthorizedReviewRequest(
 	proposal: MemoryReviewProposalV1,
 	config: DivoGatewayConfig,
+	execution: GatewayExecutionContext,
 	dependencies: MemoryReviewDependencies,
 ): Promise<MemoryReviewPayloadV1> {
 	const authority = await dependencies.callGateway(config, {
 		op: "tools.invoke",
+		execution,
 		payload: {
 			toolId: "memoryPublishing",
 			args: { operation: "check_authority" },
@@ -273,11 +278,11 @@ export function parseMemoryReviewResponse(
 async function presentMemoryReview(
 	ctx: Pick<ExtensionContext, "ui">,
 	request: MemoryReviewPayloadV1,
+	runCorrelation: DivoRunCorrelationV1,
 ): Promise<MemoryReviewResponseV1> {
-	// Capture provenance before Pi creates the raw extension UI request.
 	const correlatedRequest: MemoryReviewRequestV1 = {
 		...request,
-		runCorrelation: await readDivoRunCorrelation(),
+		runCorrelation,
 	};
 	const raw = await ctx.ui.editor(
 		DIVO_MEMORY_REVIEW_PROTOCOL_TITLE,
@@ -305,6 +310,7 @@ async function publishApprovedMemory(
 	request: MemoryReviewPayloadV1,
 	response: MemoryReviewResponseV1,
 	config: DivoGatewayConfig,
+	execution: GatewayExecutionContext,
 	dependencies: MemoryReviewDependencies,
 ): Promise<
 	| {
@@ -322,6 +328,7 @@ async function publishApprovedMemory(
 	const departmentId = target.scope === "department" ? target.departmentId : undefined;
 	const prepared = await dependencies.callGateway(config, {
 		op: "tools.prepare",
+		execution,
 		...(departmentId ? { departmentId } : {}),
 		payload: {
 			toolId: "memoryPublishing",
@@ -344,6 +351,7 @@ async function publishApprovedMemory(
 	try {
 		const committed = await dependencies.callGateway(config, {
 			op: "tools.commit",
+			execution,
 			...(departmentId ? { departmentId } : {}),
 			payload: { intentId },
 		});
@@ -380,11 +388,29 @@ export async function executeMemoryReview(
 		};
 	}
 
+	let runCorrelation: DivoRunCorrelationV1;
+	try {
+		runCorrelation = await readDivoRunCorrelation();
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			content: [{ type: "text" as const, text: `Memory review cancelled safely: ${message}` }],
+			details: { decision: "cancel", error: message },
+		};
+	}
+	const execution: GatewayExecutionContext = {
+		version: 1,
+		threadId: runCorrelation.threadId,
+		runId: runCorrelation.runId,
+		actionId: `memory-review:${randomUUID()}`,
+	};
+
 	let request: MemoryReviewPayloadV1;
 	try {
 		request = await buildAuthorizedReviewRequest(
-			proposal,
+		proposal,
 			resolved,
+			execution,
 			dependencies,
 		);
 	} catch (error) {
@@ -402,7 +428,7 @@ export async function executeMemoryReview(
 
 	let response: MemoryReviewResponseV1;
 	try {
-		response = await presentMemoryReview(ctx, request);
+		response = await presentMemoryReview(ctx, request, runCorrelation);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return {
@@ -428,6 +454,7 @@ export async function executeMemoryReview(
 			request,
 			response,
 			resolved,
+			execution,
 			dependencies,
 		);
 		if (published.outcome === "indeterminate") {

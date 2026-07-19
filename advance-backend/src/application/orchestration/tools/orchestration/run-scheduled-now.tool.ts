@@ -7,6 +7,7 @@ import { dynamicTool } from 'ai';
 import { z } from 'zod';
 import type { PrismaClient } from '../../../../generated/prisma';
 import type { RunContext } from '../../../../domain/orchestration/run-context';
+import { ScheduledWorkflowControlService } from '../../../scheduling/scheduled-workflow-control.service';
 
 const schema = z.object({
   id: z.string().describe('The schedule ID to run immediately'),
@@ -22,28 +23,12 @@ export function createRunScheduledNowTool(
     inputSchema: schema as never,
     execute: async (input: unknown): Promise<string> => {
       const args = input as { id: string };
-      const workflow = await prisma.scheduledWorkflow.findFirst({
-        where: {
-          id:              args.id,
-          companyId:       String(runContext.companyId),
-          createdByUserId: String(runContext.userId),
-        },
-        select: { id: true, name: true, status: true },
-      });
-
-      if (!workflow) return `error: schedule ${args.id} not found`;
-      if (workflow.status === 'archived') return `error: "${workflow.name}" is archived and cannot be run`;
-
-      await prisma.scheduledWorkflow.update({
-        where: { id: args.id },
-        data: {
-          nextRunAt:       new Date(),
-          scheduleEnabled: true,
-          status:          'scheduled_active',
-        },
-      });
-
-      return `Triggered "${workflow.name}" to run now — it will execute on the next scheduler cycle.`;
+      try {
+        const workflow = await new ScheduledWorkflowControlService(prisma).runNow(runContext, args.id);
+        return `Triggered "${workflow.name}" to run now — it will execute on the next scheduler cycle.`;
+      } catch (error) {
+        return `error: ${error instanceof Error ? error.message : String(error)}`;
+      }
     },
   });
 }

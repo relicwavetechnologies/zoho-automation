@@ -6,6 +6,7 @@ import {
   ChainOfThoughtHeader,
 } from '@/components/ai-elements/chain-of-thought'
 import { CollapsibleContent } from '@/components/ui/collapsible'
+import { DivoDexMark } from '@/components/DivoDexBrand'
 import { CommandGroup } from './CommandGroup'
 import type { CommandGroupTool } from './CommandGroup'
 import { Streamdown } from 'streamdown'
@@ -108,6 +109,9 @@ export const PiTraceTimeline = memo(
         <ChainOfThoughtHeader
           streamingLabel={awaitingApproval ? 'Waiting for approval...' : 'Working...'}
           completedVerb={hasTools ? 'Worked' : 'Thought'}
+          // Divo's own mark rather than a generic sparkle — this row is the
+          // product reporting on itself.
+          icon={<DivoDexMark decorative className="size-4 shrink-0 opacity-70" />}
         />
         <CollapsibleContent
           className={cn(

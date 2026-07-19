@@ -237,6 +237,12 @@ describe("callDivoGateway", () => {
 			{
 				op: "tools.invoke",
 				payload: { toolId: "zohoCrm", args: { op: "search" } },
+				execution: {
+					version: 1,
+					threadId: "thread-1",
+					runId: "run-1",
+					actionId: "tool-call-1",
+				},
 			},
 			fetchImpl as typeof fetch,
 		);
@@ -253,6 +259,12 @@ describe("callDivoGateway", () => {
 		assert.deepEqual(body.payload, {
 			toolId: "zohoCrm",
 			args: { op: "search" },
+		});
+		assert.deepEqual(body.execution, {
+			version: 1,
+			threadId: "thread-1",
+			runId: "run-1",
+			actionId: "tool-call-1",
 		});
 		assert.equal(result.body.status, "success");
 	});

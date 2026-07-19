@@ -12,6 +12,7 @@ import { asCompanyId, asUserId, asChatId, asCorrelationId, asDepartmentId } from
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { scheduleConfigSchema } from './schedule-config';
 import { getNextScheduledRunAt } from './schedule-calculator';
+import { readDeliveryChannel } from './scheduled-workflow-control.service';
 
 const STALE_CLAIM_MS = 10 * 60 * 1000;
 const MAX_DUE_PER_POLL = 5;
@@ -21,7 +22,21 @@ export function usesLockedCurrentChatDelivery(compiledPrompt: string): boolean {
   return CURRENT_CHAT_DELIVERY_LINE.test(compiledPrompt);
 }
 
-export function buildScheduledExecutionPrompt(compiledPrompt: string, lockedChatId: string): string {
+export function buildScheduledExecutionPrompt(
+  compiledPrompt: string,
+  lockedChatId: string,
+  deliveryChannel: 'lark' | 'desktop' = 'lark',
+): string {
+  if (deliveryChannel === 'desktop') {
+    return [
+      compiledPrompt,
+      '',
+      'RUNTIME DELIVERY OVERRIDE:',
+      `- Return the completed result to the originating Divo desktop conversation (${lockedChatId}) as your final reply.`,
+      '- Do not use a messaging tool merely to deliver the final reply; the runtime persists it in that conversation.',
+      '- External actions explicitly required by the scheduled task are still allowed subject to normal permissions and approvals.',
+    ].join('\n');
+  }
   if (!usesLockedCurrentChatDelivery(compiledPrompt)) {
     return compiledPrompt;
   }
@@ -44,7 +59,10 @@ export function buildScheduledExecutionPrompt(compiledPrompt: string, lockedChat
 export interface ScheduledWorkflowServiceDeps {
   readonly prisma:              PrismaClient;
   readonly engine:              OrchestrationEngine;
-  readonly channelAdapter:      ChannelAdapter;
+  readonly channelAdapters:     Readonly<{
+    lark: ChannelAdapter;
+    desktop: ChannelAdapter;
+  }>;
   readonly channelIdentityRepo: ChannelIdentityRepoPort;
   readonly logger:              Logger;
   readonly clock:               Clock;
@@ -179,8 +197,15 @@ export class ScheduledWorkflowService {
       return;
     }
 
-    const currentChatDeliveryLocked = usesLockedCurrentChatDelivery(workflow.compiledPrompt);
-    const executionPrompt = buildScheduledExecutionPrompt(workflow.compiledPrompt, targetChatId);
+    const deliveryChannel = readDeliveryChannel(workflow.outputConfigJson);
+    const currentChatDeliveryLocked = deliveryChannel === 'desktop'
+      || usesLockedCurrentChatDelivery(workflow.compiledPrompt);
+    const executionPrompt = buildScheduledExecutionPrompt(
+      workflow.compiledPrompt,
+      targetChatId,
+      deliveryChannel,
+    );
+    const channelAdapter = this.deps.channelAdapters[deliveryChannel];
 
     const run = await this.deps.prisma.scheduledWorkflowRun.upsert({
       where: { workflowId_scheduledFor: { workflowId, scheduledFor } },
@@ -192,11 +217,13 @@ export class ScheduledWorkflowService {
     const syntheticCorrelationId = asCorrelationId(`sched-${run.id}`);
 
     const incoming: IncomingMessage = {
-      channel: 'lark',
+      channel: deliveryChannel,
       messageId: `scheduled-${run.id}` as any,
       chatId: syntheticChatId,
       chatType: 'p2p',
-      userExternalId: identity.larkOpenId ?? workflow.createdByUserId,
+      userExternalId: deliveryChannel === 'lark'
+        ? identity.larkOpenId ?? workflow.createdByUserId
+        : workflow.createdByUserId,
       text: executionPrompt,
       attachments: [],
       timestamp: new Date().toISOString(),
@@ -210,17 +237,23 @@ export class ScheduledWorkflowService {
       companyId:      asCompanyId(workflow.companyId),
       userId:         asUserId(workflow.createdByUserId),
       companyRole:    asCompanyRoleSlug(identity.aiRole),
-      channel:        'lark',
+      channel:        deliveryChannel,
       traceId:        `sched-${run.id}`,
       requestId:      `sched-${run.id}`,
-      userExternalId: identity.larkOpenId ?? workflow.createdByUserId,
+      userExternalId: deliveryChannel === 'lark'
+        ? identity.larkOpenId ?? workflow.createdByUserId
+        : workflow.createdByUserId,
       chatId:         targetChatId,
       ...(currentChatDeliveryLocked ? { deliveryMode: 'current_chat_only' as const } : {}),
-      ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
+      ...(workflow.departmentId
+        ? { departmentId: asDepartmentId(workflow.departmentId) }
+        : identity.activeDepartmentId
+          ? { departmentId: asDepartmentId(identity.activeDepartmentId) }
+          : {}),
     };
 
     const conversation: ConversationHandle = {
-      channel:          'lark',
+      channel:          deliveryChannel,
       chatId:           syntheticChatId,
       correlationId:    syntheticCorrelationId,
       replyInThread:    false,
@@ -231,7 +264,7 @@ export class ScheduledWorkflowService {
         incoming,
         runContext,
         conversation,
-        channelAdapter: this.deps.channelAdapter,
+        channelAdapter,
       });
 
       const summary = result.ok

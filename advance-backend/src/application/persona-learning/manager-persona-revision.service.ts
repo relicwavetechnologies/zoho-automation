@@ -15,6 +15,7 @@ const snapshotNodeSchema = z.object({
   lastEvidenceAt: z.string().datetime(),
   status: z.enum(['active', 'superseded', 'quarantined']),
   candidateIds: z.array(z.string()),
+  linkedSkillIds: z.array(z.string()).default([]),
 });
 
 const personaSnapshotSchema = z.object({
@@ -23,7 +24,7 @@ const personaSnapshotSchema = z.object({
 
 type RevisionTx = Pick<
   Prisma.TransactionClient,
-  'managerPersonaTree' | 'managerPersonaNode' | 'managerPersonaRevision' | 'personaLearningCandidate'
+  'managerPersonaTree' | 'managerPersonaNode' | 'managerPersonaRevision' | 'managerPersonaSkillLink' | 'personaLearningCandidate'
 >;
 
 export class ManagerPersonaRevisionError extends Error {
@@ -57,7 +58,10 @@ export class ManagerPersonaRevisionService {
       where: { id: treeId },
       include: {
         nodes: {
-          include: { candidates: { select: { id: true } } },
+          include: {
+            candidates: { select: { id: true } },
+            skillLinks: { select: { skillId: true } },
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -76,6 +80,7 @@ export class ManagerPersonaRevisionService {
         lastEvidenceAt: node.lastEvidenceAt.toISOString(),
         status: node.status,
         candidateIds: node.candidates.map(candidate => candidate.id),
+        linkedSkillIds: node.skillLinks.map(link => link.skillId),
       })),
     } satisfies z.infer<typeof personaSnapshotSchema>;
 
@@ -189,6 +194,12 @@ export class ManagerPersonaRevisionService {
               promotedNodeId: restored.id,
               promotedAt: new Date(),
             },
+          });
+        }
+        if (node.linkedSkillIds.length > 0) {
+          await tx.managerPersonaSkillLink.createMany({
+            data: node.linkedSkillIds.map(skillId => ({ personaNodeId: restored.id, skillId })),
+            skipDuplicates: true,
           });
         }
       }

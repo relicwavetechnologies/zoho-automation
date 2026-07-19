@@ -215,12 +215,23 @@ export function DataProvider() {
   }, [serviceHub])
 
   useEffect(() => {
-    serviceHub
-      .threads()
-      .fetchThreads()
-      .then((threads) => {
-        setThreads(threads)
-      })
+    let active = true
+    let retryTimer: number | undefined
+    const hydrateThreads = async () => {
+      try {
+        const threads = await serviceHub.threads().fetchThreads()
+        if (active) setThreads(threads)
+      } catch (error) {
+        if (!active) return
+        console.warn('Failed to hydrate durable chats; retrying without clearing the sidebar.', error)
+        retryTimer = window.setTimeout(() => void hydrateThreads(), 1_000)
+      }
+    }
+    void hydrateThreads()
+    return () => {
+      active = false
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+    }
   }, [serviceHub, setThreads])
 
   // Sync remote providers with backend when providers change

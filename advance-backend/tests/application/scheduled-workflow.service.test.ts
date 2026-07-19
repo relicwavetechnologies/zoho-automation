@@ -59,8 +59,10 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       name: 'Daily email summary',
       companyId: 'co-1',
       createdByUserId: 'user-1',
+      departmentId: 'dept-1',
       originChatId: 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50',
       compiledPrompt,
+      outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: {
         type: 'daily',
         timezone: 'Asia/Kolkata',
@@ -103,7 +105,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     const svc = new ScheduledWorkflowService({
       prisma,
       engine,
-      channelAdapter: {} as any,
+      channelAdapters: { lark: {} as any, desktop: {} as any },
       channelIdentityRepo,
       logger: noopLogger,
       clock: fakeClock as any,
@@ -115,8 +117,60 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     assert.ok(capturedInput, 'engine.run should be called');
     assert.equal(capturedInput.runContext.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
     assert.equal(capturedInput.runContext.deliveryMode, 'current_chat_only');
+    assert.equal(capturedInput.runContext.departmentId, 'dept-1');
     assert.equal(capturedInput.conversation.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
     assert.match(capturedInput.incoming.text, /runtime_locked_current_chat/);
     assert.match(capturedInput.incoming.text, /Do NOT call larkMessaging/i);
+  });
+
+  it('runs desktop schedules headlessly and persists delivery through the desktop adapter', async () => {
+    const workflow = {
+      id: 'wf-desktop',
+      name: 'Daily review',
+      companyId: 'co-1',
+      createdByUserId: 'user-1',
+      departmentId: 'dept-finance',
+      originChatId: 'desktop-thread-1',
+      compiledPrompt: 'Review new invoices and summarize exceptions.',
+      outputConfigJson: { deliveryChannel: 'desktop' },
+      scheduleConfigJson: {
+        type: 'daily',
+        timezone: 'Asia/Kolkata',
+        time: { hour: 9, minute: 0 },
+      },
+    };
+    let capturedInput: any = null;
+    const desktopAdapter = { key: 'desktop' } as any;
+    const prisma = {
+      scheduledWorkflow: { findUnique: async () => workflow, update: async () => ({}) },
+      scheduledWorkflowRun: { upsert: async () => ({ id: 'run-desktop' }), update: async () => ({}) },
+    } as any;
+    const svc = new ScheduledWorkflowService({
+      prisma,
+      engine: {
+        run: async (input: any) => {
+          capturedInput = input;
+          return ok({ finalReply: { kind: 'final', text: 'Done', format: 'text' }, toolsCalled: [] });
+        },
+      } as any,
+      channelAdapters: { lark: { key: 'lark' } as any, desktop: desktopAdapter },
+      channelIdentityRepo: {
+        resolveByUserId: async () => ok({
+          userId: 'user-1', companyId: 'co-1', aiRole: 'MEMBER', channel: 'lark', larkOpenId: 'ou_123',
+        }),
+      } as any,
+      logger: noopLogger,
+      clock: fakeClock as any,
+      pollIntervalMs: 1_000,
+    });
+
+    await (svc as any).executeWorkflow('wf-desktop', new Date('2026-05-15T16:45:00.000Z'));
+
+    assert.equal(capturedInput.incoming.channel, 'desktop');
+    assert.equal(capturedInput.runContext.channel, 'desktop');
+    assert.equal(capturedInput.runContext.departmentId, 'dept-finance');
+    assert.equal(capturedInput.conversation.chatId, 'desktop-thread-1');
+    assert.equal(capturedInput.channelAdapter, desktopAdapter);
+    assert.match(capturedInput.incoming.text, /originating Divo desktop conversation/);
   });
 });

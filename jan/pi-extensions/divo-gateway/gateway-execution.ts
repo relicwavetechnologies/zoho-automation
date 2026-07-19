@@ -49,6 +49,7 @@ export async function executeGatewayRequest(
 		op: "tools.commit",
 		departmentId: request.departmentId,
 		payload: { intentId },
+		...(request.execution ? { execution: request.execution } : {}),
 	});
 	return result;
 }

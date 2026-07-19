@@ -39,6 +39,7 @@ import MissingDependenciesDialog from '@/containers/dialogs/MissingDependenciesD
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { DivoDexMark } from '@/components/DivoDexBrand'
+import { DivoShowcase } from '@/components/sign-in/DivoShowcase'
 import {
   type DivoSessionStatus,
   getStoredDivoBackendUrl,
@@ -48,6 +49,7 @@ import {
   validateDivoSession,
 } from '@/lib/divo-auth'
 import { cn } from '@/lib/utils'
+import { TeachReliabilityProvider } from '@/providers/TeachReliabilityProvider'
 
 export const Route = createRootRoute({
   component: RootLayout,
@@ -121,12 +123,14 @@ const LogsLayout = () => {
 function DivoSignInGate({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<DivoSessionStatus | null>(null)
   const [backendUrl, setBackendUrl] = useState(getStoredDivoBackendUrl)
-  const [isChecking, setIsChecking] = useState(true)
+  // Only the first validation gates the app. `divo_validate_session` is two
+  // network round-trips (GET /me + runtime context refresh), so re-running it
+  // blocking on every session event would unmount the whole UI mid-session.
+  const [isBooting, setIsBooting] = useState(true)
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const refreshSession = useCallback(async () => {
-    setIsChecking(true)
     try {
       const next = await validateDivoSession()
       setSession(next.configured ? next : null)
@@ -139,7 +143,7 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
       setSession(null)
       setError(err instanceof Error ? err.message : 'Unable to verify the Divo session.')
     } finally {
-      setIsChecking(false)
+      setIsBooting(false)
     }
   }, [])
 
@@ -158,7 +162,7 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
         return
       }
       setSession(null)
-      setIsChecking(false)
+      setIsBooting(false)
       void invoke('pi_stop').catch(() => undefined)
     }).then((dispose) => {
       if (cancelled) {
@@ -190,17 +194,8 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
     }
   }
 
-  if (isChecking) {
-    return (
-      <div className="relative grid h-svh place-items-center overflow-hidden bg-background text-foreground">
-        <DivoAmbientBackdrop />
-        <div className="relative flex flex-col items-center gap-4">
-          <DivoBrandGlyph pulse />
-          <p className="text-sm text-muted-foreground">Checking your session…</p>
-        </div>
-      </div>
-    )
-  }
+  if (isBooting) return <DivoBootSkeleton />
+
 
   if (session?.configured) return <>{children}</>
 
@@ -232,43 +227,13 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
             </div>
           </motion.div>
 
-          <div className="max-w-xl">
-            <motion.p
-              variants={SIGN_IN_ITEM}
-              className="text-xs font-medium uppercase tracking-[0.28em] text-primary/80"
-            >
-              Your agent workspace
-            </motion.p>
-            <motion.h1
-              variants={SIGN_IN_ITEM}
-              className="mt-5 font-studio text-4xl font-medium leading-[1.12] tracking-tight xl:text-5xl"
-            >
-              An assistant that already knows your tools and your work.
-            </motion.h1>
-            <motion.p
-              variants={SIGN_IN_ITEM}
-              className="mt-5 max-w-md text-base leading-7 text-white/55"
-            >
-              Sign in and just ask. Divo picks up your connected apps, your
-              company knowledge, and the right permissions — so you can get
-              straight to work.
-            </motion.p>
-          </div>
-
-          <motion.div variants={SIGN_IN_ITEM} className="grid max-w-md gap-2.5">
-            {[
-              'Your connected tools, ready to use',
-              'Answers grounded in your company knowledge',
-              'You approve every action Divo takes',
-            ].map((item) => (
-              <div
-                key={item}
-                className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-white/70 backdrop-blur-sm"
-              >
-                <span className="size-1.5 shrink-0 rounded-full bg-primary" />
-                {item}
-              </div>
-            ))}
+          {/* The panel is a running product demo rather than a static pitch —
+              five miniatures of real Divo surfaces, cycling. */}
+          <motion.div
+            variants={SIGN_IN_ITEM}
+            className="flex flex-1 items-center justify-center py-8"
+          >
+            <DivoShowcase />
           </motion.div>
         </motion.div>
       </section>
@@ -400,8 +365,60 @@ const SIGN_IN_ITEM: Variants = {
   },
 }
 
+/** Hold off on any loading UI so a fast session check never flashes a screen. */
+const BOOT_SKELETON_DELAY_MS = 500
+
+/**
+ * Shown only while the *first* session validation is in flight, and only once
+ * it has run long enough to be worth acknowledging. Mirrors the real layout —
+ * sidebar rail plus composer — so the app appears to be arriving rather than
+ * blocked behind a gate.
+ */
+function DivoBootSkeleton() {
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setVisible(true), BOOT_SKELETON_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [])
+
+  // Keep the frameless window draggable even while nothing else is painted.
+  const dragStrip = IS_TAURI ? (
+    <div className="fixed inset-x-0 top-0 z-30 h-10" data-tauri-drag-region aria-hidden />
+  ) : null
+
+  if (!visible) return <div className="h-svh bg-background">{dragStrip}</div>
+
+  const block = 'rounded-lg bg-sidebar-foreground/[0.07]'
+
+  return (
+    <div className="flex h-svh overflow-hidden bg-background animate-in fade-in duration-500">
+      {dragStrip}
+      <div className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar p-2 md:flex">
+        <div className="flex flex-col gap-1 motion-reduce:animate-none animate-pulse">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className={cn(block, 'h-9')} />
+          ))}
+        </div>
+        <div className="mt-6 flex flex-col gap-1 motion-reduce:animate-none animate-pulse">
+          <div className="mx-2.5 mb-1 h-3 w-14 rounded bg-sidebar-foreground/[0.05]" />
+          {Array.from({ length: 7 }).map((_, index) => (
+            <div key={index} className="h-8 rounded-lg bg-sidebar-foreground/[0.04]" />
+          ))}
+        </div>
+        <div className={cn(block, 'mt-auto h-11 motion-reduce:animate-none animate-pulse')} />
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-6 px-6">
+        <div className="h-7 w-64 max-w-full rounded-md bg-foreground/[0.06] motion-reduce:animate-none animate-pulse" />
+        <div className="h-28 w-full max-w-2xl rounded-2xl border border-border/60 bg-card/40" />
+      </div>
+    </div>
+  )
+}
+
 /** The Divo mark, framed by a soft coral glow that breathes. */
-function DivoBrandGlyph({ pulse = false }: { pulse?: boolean }) {
+function DivoBrandGlyph() {
   const reduce = useReducedMotion()
   return (
     <div className="relative grid size-16 place-items-center">
@@ -413,7 +430,7 @@ function DivoBrandGlyph({ pulse = false }: { pulse?: boolean }) {
             ? undefined
             : { opacity: [0.35, 0.7, 0.35], scale: [0.9, 1.08, 0.9] }
         }
-        transition={{ duration: pulse ? 2.2 : 4.5, repeat: Infinity, ease: 'easeInOut' }}
+        transition={{ duration: 4.5, repeat: Infinity, ease: 'easeInOut' }}
       />
       <div className="relative grid size-16 place-items-center rounded-[20px] border border-border/60 bg-card/60 backdrop-blur-sm">
         <DivoDexMark decorative className="size-8 text-primary" />
@@ -509,6 +526,7 @@ function RootLayout() {
             <DataProvider />
             <GlobalEventHandler />
             <DivoSignInGate>
+              <TeachReliabilityProvider />
               {IS_LOGS_ROUTE ? <LogsLayout /> : <AppLayout />}
             </DivoSignInGate>
           </ExtensionProvider>

@@ -11,6 +11,7 @@ export type DivoSkillReference = Pick<
 export type DivoSkillReferenceSubmitOptions = {
   skillReferences?: DivoSkillReference[]
   quickStartPlan?: DivoQuickStartPlan
+  messageMetadata?: Record<string, unknown>
 }
 
 export function normalizeDivoSkillReferences(

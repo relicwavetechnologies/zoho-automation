@@ -5,7 +5,7 @@ import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { ManagerTeachMediaProcessor } from './manager-teach-media.processor';
 import { ManagerTeachPersonaProcessor } from './manager-teach-persona.processor';
-import type { ManagerTeachPersonaPatch } from './manager-teach-persona.types';
+import type { ManagerTeachLearningPatch } from './manager-teach-persona.types';
 import { ManagerTeachQueue } from './manager-teach.queue';
 
 export type ManagerTeachSourceInput = 'recording' | 'upload';
@@ -34,13 +34,21 @@ export interface ManagerTeachEvidenceReceipt {
 }
 
 export interface ManagerTeachAppliedChangeView {
-  readonly operation: 'add' | 'replace' | 'retire';
+  readonly operation: 'create' | 'merge' | 'replace' | 'retire';
   readonly kind: string;
   readonly scopeKey: string;
   readonly ruleKey: string;
   readonly instruction: string | null;
   readonly confidence: number;
   readonly evidenceRefs: readonly string[];
+}
+
+export interface ManagerTeachAppliedSkillView {
+  readonly id: string;
+  readonly slug: string;
+  readonly name: string;
+  readonly revision: number;
+  readonly outcome: 'created' | 'updated';
 }
 
 export interface ManagerTeachSessionView {
@@ -69,6 +77,7 @@ export interface ManagerTeachSessionView {
   readonly lastError: string | null;
   readonly understanding: string | null;
   readonly appliedChanges: readonly ManagerTeachAppliedChangeView[];
+  readonly appliedSkills: readonly ManagerTeachAppliedSkillView[];
   readonly evidence: ManagerTeachEvidenceReceipt | null;
   readonly modelProvider: string | null;
   readonly modelId: string | null;
@@ -80,6 +89,35 @@ export interface ManagerTeachSessionView {
   readonly canCancel: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface ManagerPersonaTreeView {
+  readonly revision: number;
+  readonly updatedAt: string;
+  readonly nodes: readonly {
+    readonly id: string;
+    readonly kind: string;
+    readonly scopeKey: string;
+    readonly ruleKey: string;
+    readonly instruction: string;
+    readonly confidence: number;
+    readonly learningSources: readonly {
+      readonly source: 'teach' | 'conversation';
+      readonly sourceId: string;
+      readonly decision: string;
+      readonly rationale: string;
+      readonly evidenceRefs: readonly string[];
+      readonly learnedAt: string;
+    }[];
+    readonly linkedSkills: readonly {
+      readonly id: string;
+      readonly slug: string;
+      readonly name: string;
+      readonly summary: string;
+      readonly revision: number;
+      readonly toolIds: readonly string[];
+    }[];
+  }[];
 }
 
 export class ManagerTeachError extends Error {
@@ -138,7 +176,8 @@ const evidenceReceiptSchema = z.object({
 
 /**
  * Authoritative explicit-Teach service. Media ingestion stops at durable
- * evidence; an authenticated Pi Teach session requests governed persona writes.
+ * evidence; an authenticated Pi Teach session requests one atomic governed
+ * persona-and-skill learning write.
  */
 export class ManagerTeachService {
   private readonly log: Logger;
@@ -223,6 +262,91 @@ export class ManagerTeachService {
     )));
   }
 
+  async getPersonaTree(input: {
+    companyId: string;
+    managerId: string;
+    departmentId: string;
+  }): Promise<ManagerPersonaTreeView | null> {
+    await this.assertManager(input);
+    const tree = await this.deps.prisma.managerPersonaTree.findUnique({
+      where: { companyId_managerId_departmentId: input },
+      select: {
+        revision: true,
+        updatedAt: true,
+        nodes: {
+          where: { status: 'active' },
+          orderBy: [{ scopeKey: 'asc' }, { createdAt: 'asc' }],
+          select: {
+            id: true,
+            kind: true,
+            scopeKey: true,
+            ruleKey: true,
+            instruction: true,
+            confidence: true,
+            learningProvenance: {
+              orderBy: { createdAt: 'desc' },
+              take: 3,
+              select: {
+                teachSessionId: true,
+                decision: true,
+                rationale: true,
+                evidenceRefs: true,
+                createdAt: true,
+              },
+            },
+            candidates: {
+              orderBy: { promotedAt: 'desc' },
+              take: 3,
+              select: {
+                rationale: true,
+                promotedAt: true,
+                evidence: { select: { id: true, executionRunId: true, capturedAt: true } },
+              },
+            },
+            skillLinks: {
+              where: { skill: { status: 'active' } },
+              select: {
+                skill: { select: { id: true, slug: true, name: true, summary: true, revision: true, toolIds: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!tree) return null;
+    return {
+      revision: tree.revision,
+      updatedAt: tree.updatedAt.toISOString(),
+      nodes: tree.nodes.map(node => ({
+        id: node.id,
+        kind: node.kind,
+        scopeKey: node.scopeKey,
+        ruleKey: node.ruleKey,
+        instruction: node.instruction,
+        confidence: node.confidence,
+        learningSources: [
+          ...node.learningProvenance.map(source => ({
+            source: 'teach' as const,
+            sourceId: source.teachSessionId,
+            decision: source.decision,
+            rationale: source.rationale,
+            evidenceRefs: source.evidenceRefs,
+            learnedAt: source.createdAt.toISOString(),
+          })),
+          ...node.candidates.map(candidate => ({
+            source: 'conversation' as const,
+            sourceId: candidate.evidence.executionRunId,
+            decision: 'promote',
+            rationale: candidate.rationale,
+            evidenceRefs: [candidate.evidence.id],
+            learnedAt: (candidate.promotedAt ?? candidate.evidence.capturedAt).toISOString(),
+          })),
+        ].sort((left, right) => right.learnedAt.localeCompare(left.learnedAt)).slice(0, 3),
+        linkedSkills: node.skillLinks.map(link => link.skill),
+      })),
+    };
+  }
+
   async getAgentContext(input: {
     companyId: string;
     managerId: string;
@@ -232,13 +356,13 @@ export class ManagerTeachService {
     return this.deps.personaProcessor.getContext(input);
   }
 
-  async applyAgentPersona(input: {
+  async applyAgentLearning(input: {
     companyId: string;
     managerId: string;
     departmentId: string;
     sessionId: string;
     mutationKey: string;
-    patch: ManagerTeachPersonaPatch;
+    patch: ManagerTeachLearningPatch;
   }) {
     const result = await this.deps.personaProcessor.apply(input);
     await this.cleanupSessionRawVideo(input.sessionId).catch(error => {
@@ -613,6 +737,7 @@ function toSessionView(session: {
     lastError: session.lastError,
     understanding: mutation?.understanding ?? null,
     appliedChanges: mutation ? appliedChangesFromPatch(mutation.patchJson) : [],
+    appliedSkills: mutation ? appliedSkillsFromPatch(mutation.patchJson) : [],
     evidence,
     modelProvider: mutation?.modelProvider ?? null,
     modelId: mutation?.modelId ?? null,
@@ -654,9 +779,12 @@ function appliedChangesFromPatch(value: unknown): ManagerTeachAppliedChangeView[
   return changes.flatMap(change => {
     if (!change || typeof change !== 'object') return [];
     const item = change as Record<string, unknown>;
-    const operation = item.operation;
-    const target = operation === 'add' ? item : item.target;
-    if (!['add', 'replace', 'retire'].includes(String(operation)) || !target || typeof target !== 'object') return [];
+    const storedOperation = item.operation;
+    // `add` was the pre-canonicalization name for `create`. Keep historical
+    // Teach receipts readable without accepting it in new write requests.
+    const operation = storedOperation === 'add' ? 'create' : storedOperation;
+    const target = operation === 'create' ? item : item.target;
+    if (!['create', 'merge', 'replace', 'retire'].includes(String(operation)) || !target || typeof target !== 'object') return [];
     const typedTarget = target as Record<string, unknown>;
     if (![typedTarget.kind, typedTarget.scopeKey, typedTarget.ruleKey].every(value => typeof value === 'string')) return [];
     return [{
@@ -669,6 +797,30 @@ function appliedChangesFromPatch(value: unknown): ManagerTeachAppliedChangeView[
       evidenceRefs: Array.isArray(item.evidenceRefs)
         ? item.evidenceRefs.filter((ref): ref is string => typeof ref === 'string')
         : [],
+    }];
+  });
+}
+
+function appliedSkillsFromPatch(value: unknown): ManagerTeachAppliedSkillView[] {
+  if (!value || typeof value !== 'object') return [];
+  const skills = (value as { skills?: unknown }).skills;
+  if (!Array.isArray(skills)) return [];
+  return skills.flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const skill = item as Record<string, unknown>;
+    if (
+      typeof skill.id !== 'string'
+      || typeof skill.slug !== 'string'
+      || typeof skill.name !== 'string'
+      || typeof skill.revision !== 'number'
+      || !['created', 'updated'].includes(String(skill.outcome))
+    ) return [];
+    return [{
+      id: skill.id,
+      slug: skill.slug,
+      name: skill.name,
+      revision: skill.revision,
+      outcome: skill.outcome as ManagerTeachAppliedSkillView['outcome'],
     }];
   });
 }

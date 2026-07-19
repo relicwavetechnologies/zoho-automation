@@ -12,6 +12,7 @@ import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/id
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
 import type {
+  GatewayExecutionContext,
   GatewayMemberContext,
   GatewayResponse,
 } from './gateway.types';
@@ -24,6 +25,8 @@ export interface ToolExecutorInput {
   readonly toolId: string;
   readonly args: Record<string, unknown>;
   readonly requestId?: string;
+  /** Non-authoritative desktop provenance for one isolated Pi action. */
+  readonly execution?: GatewayExecutionContext;
   /** Optional invariant used by prepared commits to prevent action reclassification. */
   readonly expectedAction?: ToolActionGroup;
 }
@@ -127,8 +130,9 @@ export class ToolExecutor {
         args: validatedArgs,
         perm,
         runContext,
-        chatId: `gateway:${member.sessionId}`,
+        chatId: gatewayApprovalChatId(member, input.execution),
         argsSummary,
+        ...(input.execution ? { execution: input.execution } : {}),
       });
 
       if (decision.kind === 'pending') {
@@ -273,7 +277,13 @@ export class ToolExecutor {
 
     const action = permCheck.value;
 
-    const runContext = this.buildRunContext(member, effectiveDepartmentId, perm.department?.zohoReadScope, input.requestId);
+    const runContext = this.buildRunContext(
+      member,
+      effectiveDepartmentId,
+      perm.department?.zohoReadScope,
+      input.requestId ?? input.execution?.actionId,
+      input.execution,
+    );
     return {
       ok: true,
       value: {
@@ -293,6 +303,7 @@ export class ToolExecutor {
     departmentId: string | undefined,
     departmentZohoReadScope: string | undefined,
     requestId: string | undefined,
+    execution: GatewayExecutionContext | undefined,
   ): RunContext {
     return {
       companyId: asCompanyId(member.companyId),
@@ -305,9 +316,26 @@ export class ToolExecutor {
       ...(departmentZohoReadScope ? { departmentZohoReadScope } : {}),
       requesterAiRole: member.aiRole,
       ...(requestId ? { traceId: requestId, requestId } : {}),
-      chatId: `gateway:${member.sessionId}`,
+      // Tool runtime context needs the real durable desktop thread so
+      // background work can return there. Approval idempotency continues to
+      // use the separate, run-scoped gatewayApprovalChatId above.
+      chatId: execution?.threadId ?? `gateway:${member.sessionId}`,
     };
   }
+}
+
+/**
+ * A manager approval may be retried within one run, but must never be shared
+ * by two independent desktop chats or two separate user turns. The execution
+ * context is not trusted for authorization; it only partitions an already
+ * authenticated member session's approval/idempotency namespace.
+ */
+function gatewayApprovalChatId(
+  member: GatewayMemberContext,
+  execution: GatewayExecutionContext | undefined,
+): string {
+  if (!execution) return `gateway:${member.sessionId}`;
+  return `gateway:${member.sessionId}:thread:${execution.threadId}:run:${execution.runId}`;
 }
 
 function isPublishingAuthorityCheck(toolId: string, args: unknown): boolean {

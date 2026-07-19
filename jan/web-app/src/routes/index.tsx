@@ -2,7 +2,6 @@
 import { createFileRoute, useSearch } from '@tanstack/react-router'
 import ChatInput from '@/containers/ChatInput'
 import HeaderPage from '@/containers/HeaderPage'
-import { useTranslation } from '@/i18n/react-i18next-compat'
 import { useTools } from '@/hooks/useTools'
 import { cn } from '@/lib/utils'
 
@@ -23,10 +22,11 @@ import {
   FinanceQuickStarts,
   type FinanceQuickStartRequest,
 } from '@/components/finance-quick-starts/FinanceQuickStarts'
-import { AutomateMode } from '@/components/automate/AutomateMode'
 import { TeachMode } from '@/components/teach/TeachMode'
+import { HomeGreeting } from '@/components/home/HomeGreeting'
+import { ConsistencyHeatmap } from '@/components/home/ConsistencyHeatmap'
 import { Button } from '@/components/ui/button'
-import { GraduationCap, MessageCircle, Workflow } from 'lucide-react'
+import { GraduationCap, MessageCircle } from 'lucide-react'
 
 export const Route = createFileRoute(route.home as any)({
   component: Index,
@@ -40,13 +40,12 @@ export const Route = createFileRoute(route.home as any)({
 })
 
 function Index() {
-  const { t } = useTranslation()
   const search = useSearch({ from: route.home as any })
   const threadModel = search.threadModel
   const { setCurrentThreadId } = useThreads()
   const [quickStartRequest, setQuickStartRequest] =
     useState<FinanceQuickStartRequest | null>(null)
-  const [mode, setMode] = useState<'ask' | 'automate' | 'teach'>('ask')
+  const [mode, setMode] = useState<'ask' | 'teach'>('ask')
   useTools()
 
   useEffect(() => {
@@ -54,7 +53,10 @@ function Index() {
   }, [setCurrentThreadId])
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      className="flex h-svh min-h-0 flex-col overflow-hidden"
+      data-testid="home-route-shell"
+    >
       <HeaderPage>
         <div className="flex w-full items-center justify-between gap-3 pr-4">
           <DivoWorkspaceSelector />
@@ -72,17 +74,6 @@ function Index() {
             <Button
               type="button"
               size="sm"
-              variant={mode === 'automate' ? 'secondary' : 'ghost'}
-              className={cn('h-7 px-3 shadow-none', mode === 'automate' && 'bg-background shadow-xs text-primary')}
-              onClick={() => setMode('automate')}
-              aria-pressed={mode === 'automate'}
-              data-testid="automate-mode-toggle"
-            >
-              <Workflow /> Automate
-            </Button>
-            <Button
-              type="button"
-              size="sm"
               variant={mode === 'teach' ? 'secondary' : 'ghost'}
               className={cn('h-7 px-3 shadow-none', mode === 'teach' && 'bg-background shadow-xs text-violet-500')}
               onClick={() => setMode('teach')}
@@ -94,43 +85,29 @@ function Index() {
           </div>
         </div>
       </HeaderPage>
-      {mode === 'automate' ? (
-        <div className="min-h-0 flex-1 border-t" data-testid="automate-mode">
-          <AutomateMode />
-        </div>
-      ) : mode === 'teach' ? (
+      {mode === 'teach' ? (
         <div className="min-h-0 flex-1 border-t">
           <TeachMode />
         </div>
       ) : (
-        <div
-          className={cn(
-            'h-full overflow-y-auto inline-flex flex-col gap-2 justify-center px-3 py-8'
-          )}
-        >
-          <div
-            className={cn(
-              'mx-auto w-full md:w-4/5 xl:w-4/6 -mt-10',
-            )}
-          >
-            <div className={cn('text-center mb-4')}>
-              <h1
-                className={cn(
-                  'text-2xl mt-2 font-studio font-medium',
-                )}
-              >
-                {t('chat:description')}
-              </h1>
-            </div>
-            <div className="flex-1 shrink-0">
+        <div className="h-full overflow-y-auto px-6">
+          {/* Centres the block in the viewport, biased slightly above true
+              centre by the heavier bottom padding. Grows into a normal scrolling
+              column once the recents list makes it taller than the screen. */}
+          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center pt-12 pb-28">
+            <HomeGreeting />
+
+            <div className="mt-10">
               <ChatInput
-                showSpeedToken={false}
                 model={threadModel}
                 initialMessage={true}
                 quickStartRequest={quickStartRequest}
               />
             </div>
+
             <FinanceQuickStarts onSubmit={setQuickStartRequest} />
+
+            <ConsistencyHeatmap />
           </div>
         </div>
       )}

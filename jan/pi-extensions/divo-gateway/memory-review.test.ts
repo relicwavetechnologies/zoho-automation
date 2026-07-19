@@ -169,33 +169,49 @@ describe("memory review protocol", () => {
 			),
 			false,
 		);
-		assert.deepEqual(calls, [
-			{
-				op: "tools.invoke",
-				payload: {
-					toolId: "memoryPublishing",
-					args: { operation: "check_authority" },
-				},
-			},
-			{
-				op: "tools.prepare",
-				departmentId: "dept-1",
-				payload: {
-					toolId: "memoryPublishing",
-					args: {
-						operation: "publish",
-						scope: "department",
-						departmentId: "dept-1",
-						facts: ["Acme uses net-60 payment terms."],
+		const gatewayCalls = calls as Array<{
+			op: string;
+			departmentId?: string;
+			payload?: unknown;
+			execution?: { version: number; threadId: string; runId: string; actionId: string };
+		}>;
+		assert.deepEqual(
+			gatewayCalls.map(({ execution, ...call }) => call),
+			[
+				{
+					op: "tools.invoke",
+					payload: {
+						toolId: "memoryPublishing",
+						args: { operation: "check_authority" },
 					},
 				},
-			},
-			{
-				op: "tools.commit",
-				departmentId: "dept-1",
-				payload: { intentId: "intent-1" },
-			},
-		]);
+				{
+					op: "tools.prepare",
+					departmentId: "dept-1",
+					payload: {
+						toolId: "memoryPublishing",
+						args: {
+							operation: "publish",
+							scope: "department",
+							departmentId: "dept-1",
+							facts: ["Acme uses net-60 payment terms."],
+						},
+					},
+				},
+				{
+					op: "tools.commit",
+					departmentId: "dept-1",
+					payload: { intentId: "intent-1" },
+				},
+			],
+		);
+		const executions = gatewayCalls.map((call) => call.execution);
+		assert.ok(executions.every((execution) => execution !== undefined));
+		assert.ok(executions.every((execution) => execution?.version === 1));
+		assert.ok(executions.every((execution) => execution?.threadId === "thread-1"));
+		assert.ok(executions.every((execution) => execution?.runId === "run-1"));
+		assert.equal(new Set(executions.map((execution) => execution?.actionId)).size, 1);
+		assert.match(executions[0]?.actionId ?? "", /^memory-review:/);
 		assert.equal((result.details as { published?: boolean }).published, true);
 	});
 

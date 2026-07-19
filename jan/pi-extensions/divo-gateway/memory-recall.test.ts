@@ -222,7 +222,7 @@ describe("memory recall extension", () => {
 		assert.deepEqual(parseMemoryRecallResult(response), recallResult);
 	});
 
-	it("registers a query-only recall tool and mandatory guidance", () => {
+	it("keeps the legacy recall tool bounded without making it part of the default company prompt", () => {
 		const registered: Array<Record<string, unknown>> = [];
 		registerMemoryRecallTool({
 			registerTool: (tool: Record<string, unknown>) => registered.push(tool),
@@ -241,9 +241,9 @@ describe("memory recall extension", () => {
 			5,
 		);
 		assert.match(String(registered[0]?.promptGuidelines), /distinct from the local memory tool/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /you must call divo_memory_recall/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /once per request unless a distinct recall need emerges/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /departmentPreferences ranking hints/i);
+		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /must call divo_memory_recall/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Personal memory is local and is injected/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /unified work resolver owns fresh department-persona/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /LARK IS STRICTLY GATEWAY-ONLY/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never use Bash, lark-cli, curl/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /there is no local Lark fallback/i);
