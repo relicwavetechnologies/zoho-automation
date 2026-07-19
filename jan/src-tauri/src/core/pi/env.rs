@@ -17,6 +17,7 @@ pub const DIVO_GATEWAY_ENV_VARS: &[&str] = &[
 const DIVO_PROCESS_ONLY_ENV_VARS: &[&str] = &[
     "DIVO_RUN_CONTEXT_PATH",
     "DIVO_SKILL_DIRS",
+    "DIVO_BUNDLED_SKILLS_DIR",
     "DIVO_WORKSPACE_DIR",
     "DIVO_INTERNAL_DIR",
     "DIVO_RUN_ID",
@@ -128,6 +129,17 @@ pub fn apply_divo_workspace_env(
 pub fn apply_divo_skill_env(cmd: &mut Command, skill_dirs: &[PathBuf]) {
     if let Ok(joined) = std::env::join_paths(skill_dirs) {
         cmd.env("DIVO_SKILL_DIRS", joined);
+    }
+}
+
+/// Exposes the immutable packaged skill asset root for a server-resolved Divo
+/// recipe. Unlike DIVO_SKILL_DIRS, this does not opt a directory into Pi skill
+/// loading or discovery.
+pub fn apply_divo_skill_assets_env(cmd: &mut Command, bundled_skills_dir: Option<&Path>) {
+    if let Some(path) = bundled_skills_dir {
+        cmd.env("DIVO_BUNDLED_SKILLS_DIR", path);
+    } else {
+        cmd.env_remove("DIVO_BUNDLED_SKILLS_DIR");
     }
 }
 
@@ -373,6 +385,22 @@ mod tests {
         assert!(removed.contains("DIVO_RUNTIME_CONTEXT_PATH"));
         assert!(removed.contains("DIVO_RUN_CONTEXT_PATH"));
         assert!(removed.contains("DIVO_SKILL_DIRS"));
+        assert!(removed.contains("DIVO_BUNDLED_SKILLS_DIR"));
+    }
+
+    #[test]
+    fn company_mode_exposes_bundled_skill_assets_without_enabling_skill_discovery() {
+        let mut cmd = Command::new("env");
+        apply_divo_skill_assets_env(&mut cmd, Some(Path::new("/bundle/pi-skills")));
+
+        let configured = cmd
+            .get_envs()
+            .find_map(|(key, value)| {
+                (key == "DIVO_BUNDLED_SKILLS_DIR").then_some(value.unwrap())
+            })
+            .unwrap();
+        assert_eq!(configured, Path::new("/bundle/pi-skills").as_os_str());
+        assert!(cmd.get_args().next().is_none());
     }
 
     #[test]

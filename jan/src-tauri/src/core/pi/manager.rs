@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::browser::current_browser_cdp_fingerprint;
 use super::env::{
-    apply_coding_provider_env, apply_divo_gateway_env, apply_divo_skill_env,
+    apply_coding_provider_env, apply_divo_gateway_env, apply_divo_skill_assets_env, apply_divo_skill_env,
     apply_divo_workspace_env, remove_divo_process_env, remove_provider_env,
 };
 use super::run_context::{
@@ -1383,6 +1383,7 @@ impl PiManager {
                 remove_provider_env(&mut command);
                 apply_divo_gateway_env(&mut command, &runtime.agent_dir);
                 apply_divo_skill_env(&mut command, &runtime.trusted_skill_dirs);
+                apply_divo_skill_assets_env(&mut command, runtime.bundled_skills_dir.as_deref());
                 apply_divo_workspace_env(&mut command, &config.workspace_dir, &layout);
             }
             PiRuntimeMode::Coding => {

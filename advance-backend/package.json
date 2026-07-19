@@ -14,6 +14,8 @@
     "provision:share-memory": "tsx scripts/provision-share-memory.ts",
     "provision:lark-skills": "tsx scripts/provision-lark-skills.ts",
     "provision:google-workspace-skills": "tsx scripts/provision-google-workspace-skills.ts",
+    "provision:document-intelligence-skill": "tsx scripts/provision-document-intelligence-skill.ts",
+    "provision:divo-presentations-skill": "tsx scripts/provision-divo-presentations-skill.ts",
     "provision:scheduled-work-skill": "tsx scripts/provision-scheduled-work-skill.ts",
     "provision:zoho-finance-skills": "tsx scripts/provision-zoho-finance-skills.ts",
     "backfill:dept-permissions": "tsx scripts/backfill-dept-permissions.ts",

@@ -58,6 +58,9 @@ pub struct PiRuntimePaths {
     pub bun: PathBuf,
     pub cli_js: PathBuf,
     pub agent_dir: PathBuf,
+    /// Bundled helper assets available to server-resolved Divo skills. This is
+    /// not passed to Pi as a skill directory and cannot trigger local skill discovery.
+    pub bundled_skills_dir: Option<PathBuf>,
     pub trusted_skill_dirs: Vec<PathBuf>,
     pub trusted_extension_paths: Vec<PathBuf>,
     /// CDP WebSocket fingerprint — changes when the browser restarts debugging.
@@ -104,11 +107,16 @@ impl PiRuntimePaths {
             ),
             PiRuntimeMode::Coding => (Vec::new(), Vec::new()),
         };
+        let bundled_skills_dir = match mode {
+            PiRuntimeMode::Company => resolve_bundled_skills_dir(&resource_dir),
+            PiRuntimeMode::Coding => None,
+        };
 
         Ok(PiRuntimePaths {
             bun,
             cli_js,
             agent_dir,
+            bundled_skills_dir,
             trusted_skill_dirs,
             trusted_extension_paths,
             browser_cdp_fingerprint: (mode == PiRuntimeMode::Coding)
@@ -309,7 +317,8 @@ fn resolve_trusted_extension_paths(resource_dir: &Path) -> Result<Vec<PathBuf>, 
 
 /// Only the read-only bundled router skill is loaded into Pi. Company skills
 /// themselves are resolved through the authenticated backend registry; no
-/// writable user or local company skill directory is passed to Pi.
+/// writable user or local company skill directory is passed to Pi. Other
+/// bundled directories may be exposed as fixed helper assets, never as skills.
 fn resolve_trusted_skill_dirs(resource_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let skills_root = resolve_bundled_skills_dir(resource_dir).ok_or_else(|| {
         format!(
@@ -543,6 +552,7 @@ mod tests {
             bun: PathBuf::from("/bundle/bun"),
             cli_js: PathBuf::from("/bundle/pi/cli.js"),
             agent_dir: PathBuf::from("/data/pi-agent"),
+            bundled_skills_dir: Some(PathBuf::from("/bundle/pi-skills")),
             trusted_skill_dirs: vec![PathBuf::from("/bundle/pi-skills/divo-gateway")],
             trusted_extension_paths: vec![
                 PathBuf::from("/bundle/pi-extensions/divo-llm/index.ts"),
