@@ -7,7 +7,7 @@
     "typebox": "1.1.38"
   },
   "scripts": {
-    "test": "node --import tsx --test index.test.ts progress.test.ts"
+    "test": "node --import tsx --test agents.test.ts index.test.ts progress.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.4"

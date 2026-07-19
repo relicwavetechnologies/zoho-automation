@@ -188,11 +188,12 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
-function resolveDivoLlmExtension(): string | undefined {
+function resolveDivoChildExtensions(): string[] {
 	const agentDir = process.env.PI_CODING_AGENT_DIR;
-	if (!agentDir) return undefined;
-	const extensionPath = path.join(agentDir, "extensions", "divo-llm", "index.ts");
-	return fs.existsSync(extensionPath) ? extensionPath : undefined;
+	if (!agentDir) return [];
+	return ["divo-llm", "divo-gateway"]
+		.map((name) => path.join(agentDir, "extensions", name, "index.ts"))
+		.filter((extensionPath) => fs.existsSync(extensionPath));
 }
 
 async function writePromptToTempFile(role: string, prompt: string): Promise<{ dir: string; filePath: string }> {
@@ -297,8 +298,9 @@ async function runChild(
 			"--append-system-prompt",
 			promptPath,
 		];
-		const divoLlmExtension = resolveDivoLlmExtension();
-		if (divoLlmExtension) args.push("--extension", divoLlmExtension);
+		for (const extensionPath of resolveDivoChildExtensions()) {
+			args.push("--extension", extensionPath);
+		}
 		args.push(`Task: ${delegatedTask}`);
 
 		const exitCode = await new Promise<number>((resolve) => {
@@ -434,8 +436,9 @@ export default function divoSubagentsExtension(pi: ExtensionAPI) {
 		description: "Delegate focused work to isolated Pi child agents. Supports a single task, independent parallel tasks, or a sequential chain. Pi owns child execution, progress, cancellation, and result synthesis.",
 		promptSnippet: "Use divo_subagents when independent investigation, review, planning, or bounded implementation work can proceed in parallel without losing the parent conversation's context.",
 		promptGuidelines: [
-			"Roles: scout for reconnaissance, planner for plans, reviewer for review, worker for one bounded implementation task.",
-			"Use tasks for independent work only. Do not run workers in parallel when they could edit the same files.",
+			"Roles: scout for reconnaissance, planner for plans, reviewer for review, worker for detailed read-only analysis.",
+			"Child agents have divo_gateway and divo_skill_resolve plus read-only local tools. Delegate Divo/company or public-research work through those Divo tools; child roles do not have Bash, Write, or Edit.",
+			"Use tasks for independent work only. The parent remains responsible for clear delegated prompts and for acting on the results.",
 			"Use chain for dependent steps and {previous} only where the next role genuinely needs the prior final result.",
 			"The parent agent remains responsible for choosing what to delegate, checking results, and giving the user the final answer.",
 		],
