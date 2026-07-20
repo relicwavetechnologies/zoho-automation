@@ -23,11 +23,18 @@ export class LarkDocClient implements LarkDocClientPort {
 
   async getDoc(docToken: string): Promise<unknown> {
     type GetResponse = { document: DocRecord };
-    const data = await this.http.request<GetResponse>(
-      'GET',
-      `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}`,
-    );
-    return data.document;
+    type RawContentResponse = { content?: string };
+    const [metadata, rawContent] = await Promise.all([
+      this.http.request<GetResponse>(
+        'GET',
+        `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}`,
+      ),
+      this.http.request<RawContentResponse>(
+        'GET',
+        `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/raw_content`,
+      ),
+    ]);
+    return { ...metadata.document, content: rawContent.content ?? '' };
   }
 
   async createDoc(title: string): Promise<{ docToken: string; url?: string }> {
@@ -85,12 +92,25 @@ export class LarkDocClient implements LarkDocClientPort {
   }
 
   async listBlocks(docToken: string): Promise<unknown[]> {
-    type BlocksResponse = { items?: DocRecord[] };
-    const data = await this.http.request<BlocksResponse>(
-      'GET',
-      `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/blocks`,
-    );
-    return data.items ?? [];
+    type BlocksResponse = { items?: DocRecord[]; page_token?: string; has_more?: boolean };
+    const blocks: DocRecord[] = [];
+    let pageToken: string | undefined;
+    do {
+      const data = await this.http.request<BlocksResponse>(
+        'GET',
+        `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/blocks`,
+        {
+          query: {
+            page_size: 500,
+            document_revision_id: -1,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        },
+      );
+      blocks.push(...(data.items ?? []));
+      pageToken = data.has_more ? data.page_token : undefined;
+    } while (pageToken);
+    return blocks;
   }
 
   async updateBlock(docToken: string, blockId: string, content: string): Promise<void> {
@@ -107,10 +127,23 @@ export class LarkDocClient implements LarkDocClientPort {
   }
 
   async deleteBlock(docToken: string, blockId: string): Promise<void> {
+    const blocks = await this.listBlocks(docToken) as DocRecord[];
+    const parent = blocks.find(block => childBlockIds(block).includes(blockId));
+    if (!parent) {
+      throw new LarkApiError(`Could not find the parent block for ${blockId}`, 200);
+    }
+    const parentBlockId = stringValue(parent['block_id']) ?? stringValue(parent['blockId']);
+    const childIndex = childBlockIds(parent).indexOf(blockId);
+    if (!parentBlockId || childIndex < 0) {
+      throw new LarkApiError(`Could not resolve the delete range for block ${blockId}`, 200);
+    }
     await this.http.request(
       'DELETE',
-      `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/blocks/${encodeURIComponent(blockId)}/children/batch_delete`,
-      { body: { document_revision_id: -1 } },
+      `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/blocks/${encodeURIComponent(parentBlockId)}/children/batch_delete`,
+      {
+        query: { document_revision_id: -1 },
+        body: { start_index: childIndex, end_index: childIndex + 1 },
+      },
     );
   }
 
@@ -209,4 +242,15 @@ function buildRichTextBlock(content: string, requestedType?: string): DocRecord 
 
 function isSupportedBlockType(value: string | undefined): value is SupportedBlockType {
   return value !== undefined && Object.prototype.hasOwnProperty.call(BLOCK_TYPE_NUM, value);
+}
+
+function childBlockIds(block: DocRecord): string[] {
+  const raw = block['children'] ?? block['child_ids'];
+  return Array.isArray(raw)
+    ? raw.filter((id): id is string => typeof id === 'string')
+    : [];
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined;
 }

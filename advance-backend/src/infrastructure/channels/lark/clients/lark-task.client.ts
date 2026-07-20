@@ -55,13 +55,16 @@ export class LarkTaskClient implements LarkTaskClientPort {
     tasklist?: string;
   }): Promise<{ taskId: string; title: string }> {
     const due = params.dueDate ? toTimestamp(params.dueDate) : undefined;
+    const members = [
+      ...(params.assigneeIds ?? []).map(id => ({ id, type: 'user', role: 'assignee' })),
+      ...(params.followerIds ?? []).map(id => ({ id, type: 'user', role: 'follower' })),
+    ];
     const body: Record<string, unknown> = {
       summary: params.title,
       ...(params.notes    ? { description: params.notes } : {}),
       ...(due             ? { due } : {}),
-      ...(params.assigneeIds?.length
-        ? { members: params.assigneeIds.map(id => ({ id, type: 'user', role: 'assignee' })) }
-        : {}),
+      ...(members.length ? { members } : {}),
+      ...(params.tasklist ? { tasklists: [{ tasklist_guid: params.tasklist }] } : {}),
     };
     type CreateTaskResponse = { task: TaskRecord };
     const data = await this.http.request<CreateTaskResponse>('POST', '/open-apis/task/v2/tasks', { body });
@@ -75,30 +78,34 @@ export class LarkTaskClient implements LarkTaskClientPort {
     assigneeIds?: string[];
     notes?: string;
   }): Promise<void> {
-    const body: Record<string, unknown> = {};
-    const update_fields: string[] = [];
-    if (params.title     !== undefined) { body['summary']     = params.title;                      update_fields.push('summary'); }
-    if (params.notes     !== undefined) { body['description'] = params.notes;                      update_fields.push('description'); }
+    const task: Record<string, unknown> = {};
+    const updateFields: string[] = [];
+    if (params.title     !== undefined) { task['summary']     = params.title;                      updateFields.push('summary'); }
+    if (params.notes     !== undefined) { task['description'] = params.notes;                      updateFields.push('description'); }
     if (params.dueDate !== undefined) {
       const due = toTimestamp(params.dueDate);
       if (due) {
-        body['due'] = due;
-        update_fields.push('due');
+        task['due'] = due;
+        updateFields.push('due');
       }
     }
     if (params.assigneeIds !== undefined) {
-      body['members'] = params.assigneeIds.map(id => ({ id, type: 'user', role: 'assignee' }));
-      update_fields.push('members');
+      task['members'] = params.assigneeIds.map(id => ({ id, type: 'user', role: 'assignee' }));
+      updateFields.push('members');
     }
-    if (update_fields.length === 0) return;
+    if (updateFields.length === 0) return;
     await this.http.request('PATCH', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}`, {
-      query: { update_fields: update_fields.join(',') },
-      body,
+      body: { task, update_fields: updateFields },
     });
   }
 
   async completeTask(taskId: string): Promise<void> {
-    await this.http.request('POST', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}/complete`);
+    await this.http.request('PATCH', `/open-apis/task/v2/tasks/${encodeURIComponent(taskId)}`, {
+      body: {
+        task: { completed_at: String(Date.now()) },
+        update_fields: ['completed_at'],
+      },
+    });
   }
 
   async deleteTask(taskId: string): Promise<void> {
@@ -111,29 +118,39 @@ export class LarkTaskClient implements LarkTaskClientPort {
     assigneeOpenId?: string;
     completed?: boolean;
   }): Promise<Array<{ taskId: string; title: string; completed: boolean; dueDate?: string }>> {
-    type ListResponse = { items?: TaskRecord[] };
+    type ListResponse = { items?: TaskRecord[]; page_token?: string; has_more?: boolean };
 
     // Collect tasks across all tasklists (like legacy), or from a specific one.
     const limit = params.limit ?? 50;
     const seen = new Map<string, TaskRecord>();
-    const collect = async (tasklistId?: string, pageSize = 100) => {
-      const data = await this.http.request<ListResponse>('GET', '/open-apis/task/v2/tasks', {
-        query: {
-          page_size: pageSize,
-          ...(tasklistId ? { tasklist_id: tasklistId } : {}),
-        },
-      });
-      for (const item of (data.items ?? [])) {
-        const key = (item['guid'] ?? item['task_id'] ?? item['id'] ?? '') as string;
-        if (key) seen.set(key, item);
-      }
+    const collect = async (tasklistId?: string) => {
+      let pageToken: string | undefined;
+      do {
+        const data = await this.http.request<ListResponse>(
+          'GET',
+          tasklistId
+            ? `/open-apis/task/v2/tasklists/${encodeURIComponent(tasklistId)}/tasks`
+            : '/open-apis/task/v2/tasks',
+          {
+            query: {
+              page_size: Math.min(100, Math.max(1, limit - seen.size)),
+              ...(pageToken ? { page_token: pageToken } : {}),
+            },
+          },
+        );
+        for (const item of (data.items ?? [])) {
+          const key = (item['guid'] ?? item['task_id'] ?? item['id'] ?? '') as string;
+          if (key) seen.set(key, item);
+        }
+        pageToken = data.has_more && seen.size < limit ? data.page_token : undefined;
+      } while (pageToken && seen.size < limit);
     };
 
     if (params.tasklist) {
-      await collect(params.tasklist, limit);
+      await collect(params.tasklist);
     } else {
       // First try without tasklist filter
-      await collect(undefined, limit);
+      await collect();
       // If empty, iterate all tasklists to find tasks
       if (seen.size === 0) {
         type TLResponse = { items?: Array<Record<string, unknown>> };
@@ -142,7 +159,7 @@ export class LarkTaskClient implements LarkTaskClientPort {
         });
         for (const tl of (tlData.items ?? [])) {
           const tlId = tl['guid'] as string;
-          if (tlId) await collect(tlId);
+          if (tlId && seen.size < limit) await collect(tlId);
         }
       }
     }
@@ -178,15 +195,23 @@ export class LarkTaskClient implements LarkTaskClientPort {
     return {
       taskId:    (task['guid'] ?? task['task_id'] ?? taskId) as string,
       title:     (task['summary'] ?? '') as string,
-      completed: (task['completed'] ?? false) as boolean,
+      completed: isTaskCompleted(task),
       ...(dueDateStr !== undefined ? { dueDate: dueDateStr } : {}),
     };
   }
 
   async listTasklists(): Promise<Array<{ guid: string; name: string }>> {
-    type ListResponse = { items?: Array<Record<string, unknown>> };
-    const data = await this.http.request<ListResponse>('GET', '/open-apis/task/v2/tasklists');
-    return (data.items ?? []).map(t => ({
+    type ListResponse = { items?: Array<Record<string, unknown>>; page_token?: string; has_more?: boolean };
+    const items: Array<Record<string, unknown>> = [];
+    let pageToken: string | undefined;
+    do {
+      const data = await this.http.request<ListResponse>('GET', '/open-apis/task/v2/tasklists', {
+        query: { page_size: 100, ...(pageToken ? { page_token: pageToken } : {}) },
+      });
+      items.push(...(data.items ?? []));
+      pageToken = data.has_more ? data.page_token : undefined;
+    } while (pageToken);
+    return items.map(t => ({
       guid: t['guid'] as string ?? '',
       name: t['name'] as string ?? '',
     }));
@@ -211,16 +236,16 @@ export class LarkTaskClient implements LarkTaskClientPort {
   async addTaskToTasklist(tasklistGuid: string, taskGuid: string): Promise<void> {
     await this.http.request(
       'POST',
-      `/open-apis/task/v2/tasklists/${encodeURIComponent(tasklistGuid)}/tasks/add`,
-      { body: { tasks: [{ guid: taskGuid }] } },
+      `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/add_tasklist`,
+      { body: { tasklist_guid: tasklistGuid } },
     );
   }
 
   async removeTaskFromTasklist(tasklistGuid: string, taskGuid: string): Promise<void> {
     await this.http.request(
       'POST',
-      `/open-apis/task/v2/tasklists/${encodeURIComponent(tasklistGuid)}/tasks/remove`,
-      { body: { tasks: [{ guid: taskGuid }] } },
+      `/open-apis/task/v2/tasks/${encodeURIComponent(taskGuid)}/remove_tasklist`,
+      { body: { tasklist_guid: tasklistGuid } },
     );
   }
 

@@ -3,7 +3,11 @@ import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type EventRecord = Record<string, unknown>;
 
-const toTimestamp = (iso: string) => ({ timestamp: String(Math.floor(new Date(iso).getTime() / 1000)), timezone: 'UTC' });
+const toTimestamp = (iso: string) => {
+  const milliseconds = new Date(iso).getTime();
+  if (Number.isNaN(milliseconds)) throw new Error(`Invalid calendar timestamp: ${iso}`);
+  return { timestamp: String(Math.floor(milliseconds / 1000)), timezone: 'UTC' };
+};
 
 const normalizeEvent = (r: EventRecord) => ({
   eventId:   (r['event_id'] ?? r['id'] ?? '') as string,
@@ -16,8 +20,14 @@ function buildRRule(r: { frequency: string; days?: string[]; until?: string; cou
   let rule = `RRULE:FREQ=${r.frequency.toUpperCase()}`;
   if (r.days?.length) rule += `;BYDAY=${r.days.join(',')}`;
   if (r.count)        rule += `;COUNT=${r.count}`;
-  else if (r.until)   rule += `;UNTIL=${r.until.replace(/[-:]/g, '').replace(/\.\d+/, '')}Z`;
+  else if (r.until)   rule += `;UNTIL=${toRRuleTimestamp(r.until)}`;
   return rule;
+}
+
+function toRRuleTimestamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) throw new Error(`Invalid recurrence end time: ${iso}`);
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 }
 
 export class LarkCalendarClient implements LarkCalendarClientPort {
@@ -164,7 +174,7 @@ export class LarkCalendarClient implements LarkCalendarClientPort {
         .filter(a => a.user_id && removeSet.has(a.user_id))
         .map(a => a.attendee_id);
       if (attendeeIds.length > 0) {
-        await this.http.request('DELETE', `${base}/batch_delete`, {
+        await this.http.request('POST', `${base}/batch_delete`, {
           body: { attendee_ids: attendeeIds },
         });
       }

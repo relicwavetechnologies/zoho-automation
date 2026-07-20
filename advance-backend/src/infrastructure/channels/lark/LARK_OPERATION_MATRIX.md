@@ -6,7 +6,7 @@ No desktop or Pi process receives an OAuth refresh token or Lark app secret.
 
 | Divo capability | Lark API family | Token mode | Required Lark permissions (minimum) | SDK path |
 | --- | --- | --- | --- | --- |
-| `larkMessaging` (managed connection) | IM v1 messages, replies, reactions | User access token from resolved `IntegrationConnection` | `im:message`, `im:message.send_as_user`, `im:message:readonly`, user group/P2P history scopes, and `im:chat:read` | SDK `request` fallback until each existing operation is converted to the generated method |
+| `larkMessaging` (managed connection) | IM v1 history and message content reads | User access token from resolved `IntegrationConnection` | `im:message.group_msg:get_as_user`, `im:message.p2p_msg:get_as_user`, `im:message:get_as_user`, and `im:chat:read` | SDK `request` fallback until each existing operation is converted to the generated method |
 | Bot replies, cards, webhook follow-up | IM v1 | Installed app tenant token | Bot/IM permissions configured for the company app | Generated `im.v1.message` for direct bot sends; SDK `request` for legacy adapter operations |
 | `larkCalendar` | Calendar v4 | User access token | event create/read/update/delete, calendar read, and free/busy read matching action | SDK `request` fallback |
 | `larkMeeting` | Video Conferencing v1 | User access token | `vc:meeting.search:read`, `vc:meeting.meetingevent:read`, `vc:record:readonly` | SDK `request` fallback; read-only search/detail/recording |

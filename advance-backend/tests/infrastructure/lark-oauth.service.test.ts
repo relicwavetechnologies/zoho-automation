@@ -95,6 +95,7 @@ describe('LarkOAuthService', () => {
       'im:chat:read',
       'im:message',
       'im:message.group_msg:get_as_user',
+      'im:message:get_as_user',
       'im:message.p2p_msg:get_as_user',
       'im:message.send_as_user',
       'im:message:readonly',

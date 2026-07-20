@@ -20,6 +20,8 @@ const Schema = z.object({
   recordId: z.string().optional(),
   fields: z.record(z.unknown()).optional(),
   filter: z.string().optional(),
+  /** Field to search. Defaults to the table's Lark primary field. */
+  fieldName: z.string().optional(),
   limit: z.number().int().min(1).max(100).optional(),
   /** Divo-managed Lark connection. Required when more than one is accessible. */
   connectionId: z.string().uuid().optional(),
@@ -34,7 +36,7 @@ export interface LarkBaseClientPort {
   createRecord(appToken: string, tableId: string, fields: Record<string, unknown>): Promise<{ recordId: string }>;
   updateRecord(appToken: string, tableId: string, recordId: string, fields: Record<string, unknown>): Promise<void>;
   deleteRecord(appToken: string, tableId: string, recordId: string): Promise<void>;
-  searchRecords(appToken: string, tableId: string, filter: string, limit?: number): Promise<unknown[]>;
+  searchRecords(appToken: string, tableId: string, filter: string, limit?: number, fieldName?: string): Promise<unknown[]>;
 }
 
 export const createLarkBaseTool = (deps: {
@@ -46,7 +48,7 @@ export const createLarkBaseTool = (deps: {
   actionGroups: new Set(['read', 'create', 'update', 'delete']),
   argsSchema: Schema, resultSchema: ResultSchema,
   description: 'Read, create, update, or delete records in Lark Base (multi-dimensional tables).',
-  parameterDocs: 'op: list_records|get_record|create_record|update_record|delete_record|search_records. appToken, tableId, recordId, fields, connectionId (a connected or shared Lark account; required when more than one is available).',
+  parameterDocs: 'op: list_records|get_record|create_record|update_record|delete_record|search_records. appToken, tableId, recordId, fields, filter, fieldName (optional; defaults to the table primary field), connectionId (a connected or shared Lark account; required when more than one is available).',
   permissionCheck(args, perm) {
     const op = args.op;
     const action: ToolActionGroup = op === 'list_records' || op === 'get_record' || op === 'search_records' ? 'read'
@@ -100,7 +102,7 @@ export const createLarkBaseTool = (deps: {
         case 'search_records': {
           if (!args.filter) return err(new ToolError({ toolId: 'larkBase', reason: 'bad_args', message: 'filter required' }));
           ctx.onProgress?.('Searching Lark Base…');
-          return ok({ success: true, data: await client.searchRecords(appToken, tableId, args.filter, args.limit) });
+          return ok({ success: true, data: await client.searchRecords(appToken, tableId, args.filter, args.limit, args.fieldName) });
         }
       }
     } catch (e) {

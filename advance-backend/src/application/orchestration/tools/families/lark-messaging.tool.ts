@@ -23,10 +23,14 @@ const LarkMsgArgsSchema = z.object({
   recipientName: z.string().optional(),
   query: z.string().optional(),
   mentionNames: z.array(z.string()).optional(),
+  /** Card 2.0 is the default so Markdown is rendered consistently in outbound Divo messages. */
+  rendering: z.enum(['card', 'text']).optional(),
   /** Divo-managed Lark connection. Required when more than one is accessible. */
   connectionId: z.string().uuid().optional(),
 });
 type LarkMsgArgs = z.infer<typeof LarkMsgArgsSchema>;
+
+export type LarkMessageRendering = 'card' | 'text';
 
 const LarkMsgResultSchema = z.object({
   success: z.boolean(),
@@ -37,14 +41,14 @@ const LarkMsgResultSchema = z.object({
 type LarkMsgResult = z.infer<typeof LarkMsgResultSchema>;
 
 export interface LarkMessagingClientPort {
-  sendMessage(chatId: string, text: string): Promise<{ messageId: string }>;
-  replyMessage(messageId: string, text: string): Promise<{ messageId: string }>;
+  sendMessage(chatId: string, text: string, options?: { rendering?: LarkMessageRendering }): Promise<{ messageId: string }>;
+  replyMessage(messageId: string, text: string, options?: { rendering?: LarkMessageRendering }): Promise<{ messageId: string }>;
   listMessages(chatId: string, limit?: number): Promise<Array<{ messageId: string; text: string; senderId: string; timestamp: string }>>;
   getMessage(messageId: string): Promise<{ messageId: string; text: string; senderId: string; timestamp: string }>;
-  sendDm(openId: string, text: string): Promise<{ messageId: string }>;
+  sendDm(openId: string, text: string, options?: { rendering?: LarkMessageRendering }): Promise<{ messageId: string }>;
   listChats(limit?: number): Promise<Array<{ chatId: string; name: string; type: string; memberCount?: number }>>;
   searchMessages(chatId: string, query: string, limit?: number): Promise<Array<{ messageId: string; text: string; senderId: string; timestamp: string }>>;
-  mentionMessage(chatId: string, text: string, mentionOpenIds: string[]): Promise<{ messageId: string }>;
+  mentionMessage(chatId: string, text: string, mentionOpenIds: string[], options?: { rendering?: LarkMessageRendering }): Promise<{ messageId: string }>;
 }
 
 const inferAction = (op: LarkMsgArgs['op']): ToolActionGroup => {
@@ -69,7 +73,7 @@ export const createLarkMessagingTool = (deps: {
   actionGroups: new Set(['read', 'send']),
   argsSchema: LarkMsgArgsSchema,
   resultSchema: LarkMsgResultSchema,
-  description: 'Send messages, reply, send DMs, @mention people in group chats, list chats, or search messages in Lark.',
+  description: 'Send messages, reply, send DMs, @mention people in group chats, list chats, or find text in a bounded recent Lark history window.',
   parameterDocs: `
 - op: send|reply|list|get|send_dm|list_chats|search|mention
 - chatId: Target chat ID (required for send, list, search, mention)
@@ -77,8 +81,9 @@ export const createLarkMessagingTool = (deps: {
 - text: Message text (required for send/reply/send_dm/mention)
 - limit: Max messages/chats to return (default 20)
 - recipientName: Human-readable name to resolve for send_dm
-- query: Search query string (required for search)
+- query: Text to find in the newest 500 messages of a chat (required for search; Lark does not offer server-side full-text history search)
 - mentionNames: Array of names to @-tag in a group message, e.g. ["Anish", "Rahul"] (required for mention)
+- rendering: card|text. Defaults to card, which renders Markdown in a Divo Card 2.0 message. Use text only when plain text is explicitly required.
 - connectionId: A connected or shared Lark account. Required when more than one is available.
   `.trim(),
 
@@ -103,7 +108,11 @@ export const createLarkMessagingTool = (deps: {
       if (deps.userTokenResolver && userConnection.status === 'unavailable') {
         return err(new ToolError({ toolId: 'larkMessaging', reason: 'unrecoverable', message: larkConnectionRequiredMessage }));
       }
-      const client = userConnection.status === 'resolved' ? userConnection.client : deps.client;
+      // Reads use the selected member connection. Lark's documented interactive
+      // message APIs are app/bot operations, so writes deliberately use the
+      // backend-owned client after this connection check authorizes the member.
+      const readClient = userConnection.status === 'resolved' ? userConnection.client : deps.client;
+      const rendering = args.rendering ?? 'card';
       const lockedChatId = lockedCurrentChatId(ctx);
       switch (args.op) {
         case 'send': {
@@ -118,7 +127,7 @@ export const createLarkMessagingTool = (deps: {
           const chatId = args.chatId ?? lockedChatId;
           if (!chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for send' }));
           ctx.onProgress?.('Sending message…');
-          const r = await client.sendMessage(chatId, args.text);
+          const r = await deps.client.sendMessage(chatId, args.text, { rendering });
           return ok({ success: true, messageId: r.messageId, message: 'Message sent' });
         }
         case 'reply': {
@@ -131,18 +140,18 @@ export const createLarkMessagingTool = (deps: {
           }
           if (!args.messageId || !args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'messageId and text required for reply' }));
           ctx.onProgress?.('Sending reply…');
-          const r = await client.replyMessage(args.messageId, args.text);
+          const r = await deps.client.replyMessage(args.messageId, args.text, { rendering });
           return ok({ success: true, messageId: r.messageId, message: 'Reply sent' });
         }
         case 'list': {
           if (!args.chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId required for list' }));
           ctx.onProgress?.('Fetching messages…');
-          const msgs = await client.listMessages(args.chatId, args.limit ?? 20);
+          const msgs = await readClient.listMessages(args.chatId, args.limit ?? 20);
           return ok({ success: true, data: msgs, message: `Found ${msgs.length} messages` });
         }
         case 'get': {
           if (!args.messageId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'messageId required for get' }));
-          const msg = await client.getMessage(args.messageId);
+          const msg = await readClient.getMessage(args.messageId);
           return ok({ success: true, data: msg });
         }
         case 'send_dm': {
@@ -176,19 +185,19 @@ export const createLarkMessagingTool = (deps: {
           } else {
             return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'recipientName or chatId (as openId) required for send_dm' }));
           }
-          const r = await client.sendDm(openId, args.text);
+          const r = await deps.client.sendDm(openId, args.text, { rendering });
           return ok({ success: true, messageId: r.messageId, message: 'DM sent' });
         }
         case 'list_chats': {
-          const chats = await client.listChats(args.limit);
+          const chats = await readClient.listChats(args.limit);
           return ok({ success: true, data: chats, message: `Found ${chats.length} chats` });
         }
         case 'search': {
           if (!args.chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId required for search' }));
-          if (!args.query) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'query required for search' }));
+          if (!args.query?.trim()) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'query required for search' }));
           ctx.onProgress?.('Searching messages…');
-          const msgs = await client.searchMessages(args.chatId, args.query, args.limit);
-          return ok({ success: true, data: msgs, message: `Found ${msgs.length} messages` });
+          const msgs = await readClient.searchMessages(args.chatId, args.query, args.limit);
+          return ok({ success: true, data: msgs, message: `Found ${msgs.length} matching message(s) in the newest 500 messages` });
         }
         case 'mention': {
           if (!args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for mention' }));
@@ -214,7 +223,7 @@ export const createLarkMessagingTool = (deps: {
           if (resolved.notFound.length > 0) {
             return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: `Could not find: ${resolved.notFound.join(', ')}` }));
           }
-          const r = await client.mentionMessage(chatId, args.text, mentionOpenIds);
+          const r = await deps.client.mentionMessage(chatId, args.text, mentionOpenIds, { rendering });
           return ok({ success: true, messageId: r.messageId, message: `Message sent with ${mentionOpenIds.length} mention(s)` });
         }
       }
