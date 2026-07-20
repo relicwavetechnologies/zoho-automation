@@ -14,7 +14,7 @@ const h = vi.hoisted(() => {
     setServers: vi.fn(),
     setSettings: vi.fn(),
     setAssistants: vi.fn(),
-    setThreads: vi.fn(),
+    hydrateThreads: vi.fn().mockResolvedValue([]),
     setLastServerModels: vi.fn(),
     setServerPort: vi.fn(),
     setServerStatus: vi.fn(),
@@ -65,7 +65,10 @@ vi.mock('@/hooks/useAssistant', () => ({
 }))
 
 vi.mock('@/hooks/useThreads', () => ({
-  useThreads: () => ({ setThreads: h.setThreads }),
+  useThreads: (selector?: (state: { hydrateThreads: typeof h.hydrateThreads }) => unknown) => {
+    const state = { hydrateThreads: h.hydrateThreads }
+    return selector ? selector(state) : state
+  },
 }))
 
 vi.mock('@/hooks/useLocalApiServer', () => ({
@@ -168,6 +171,7 @@ const resetHubState = () => {
   hubState.getMCPConfig.mockResolvedValue({ mcpServers: { a: 1 }, mcpSettings: { s: 1 } })
   hubState.getAssistants.mockResolvedValue([])
   hubState.fetchThreads.mockResolvedValue([])
+  h.hydrateThreads.mockResolvedValue([])
   hubState.getServerStatus.mockResolvedValue(false)
   hubState.getActiveModels.mockResolvedValue([])
   hubState.startServer.mockResolvedValue(1337)
@@ -209,7 +213,7 @@ describe('DataProvider', () => {
       { provider: 'openai', active: true, models: [{ id: 'gpt' }], custom_header: [] },
     ])
     hubState.getAssistants.mockResolvedValue([{ id: 'a1' }])
-    hubState.fetchThreads.mockResolvedValue([{ id: 't1' }])
+    h.hydrateThreads.mockResolvedValue([{ id: 't1' }])
 
     render(<DataProvider />)
 
@@ -217,7 +221,7 @@ describe('DataProvider', () => {
       expect(hubState.getProviders).toHaveBeenCalled()
       expect(hubState.getMCPConfig).toHaveBeenCalled()
       expect(hubState.getAssistants).toHaveBeenCalled()
-      expect(hubState.fetchThreads).toHaveBeenCalled()
+      expect(h.hydrateThreads).toHaveBeenCalled()
     })
 
     await waitFor(() => {
@@ -227,7 +231,6 @@ describe('DataProvider', () => {
       expect(h.setServers).toHaveBeenCalledWith({ a: 1 })
       expect(h.setSettings).toHaveBeenCalledWith({ s: 1 })
       expect(h.setAssistants).toHaveBeenCalledWith([{ id: 'a1' }])
-      expect(h.setThreads).toHaveBeenCalledWith([{ id: 't1' }])
     })
   })
 
@@ -235,7 +238,7 @@ describe('DataProvider', () => {
     vi.useFakeTimers()
     h.isDev.mockReturnValue(true)
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    hubState.fetchThreads
+    h.hydrateThreads
       .mockRejectedValueOnce(new Error('storage is starting'))
       .mockResolvedValueOnce([{ id: 'recovered-thread' }])
 
@@ -245,15 +248,13 @@ describe('DataProvider', () => {
       await Promise.resolve()
     })
 
-    expect(hubState.fetchThreads).toHaveBeenCalledTimes(1)
-    expect(h.setThreads).not.toHaveBeenCalled()
+    expect(h.hydrateThreads).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000)
     })
 
-    expect(hubState.fetchThreads).toHaveBeenCalledTimes(2)
-    expect(h.setThreads).toHaveBeenCalledWith([{ id: 'recovered-thread' }])
+    expect(h.hydrateThreads).toHaveBeenCalledTimes(2)
     warn.mockRestore()
     vi.useRealTimers()
   })

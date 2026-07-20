@@ -7,6 +7,7 @@ import { ThreadMessage } from '@janhq/core'
 const mockCreateMessage = vi.fn()
 const mockModifyMessage = vi.fn()
 const mockDeleteMessage = vi.fn()
+const mockFetchMessages = vi.fn()
 
 vi.mock('@/hooks/useServiceHub', () => ({
   getServiceHub: () => ({
@@ -14,6 +15,7 @@ vi.mock('@/hooks/useServiceHub', () => ({
       createMessage: mockCreateMessage,
       modifyMessage: mockModifyMessage,
       deleteMessage: mockDeleteMessage,
+      fetchMessages: mockFetchMessages,
     }),
   }),
 }))
@@ -24,7 +26,7 @@ describe('useMessages', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     // Reset store state
-    useMessages.setState({ messages: {} })
+    useMessages.setState({ messages: {}, messageLoadStates: {} })
   })
 
   it('should initialize with empty messages', () => {
@@ -157,6 +159,63 @@ describe('useMessages', () => {
       })
 
       expect(result.current.messages['thread1']).toEqual(newMessages)
+    })
+  })
+
+  describe('hydrateMessages', () => {
+    it('deduplicates concurrent hydration for the same thread', async () => {
+      const messages = [
+        {
+          id: 'stored-message',
+          thread_id: 'thread-1',
+          role: 'user',
+          content: 'Stored message',
+          created_at: 1,
+        },
+      ] as ThreadMessage[]
+      mockFetchMessages.mockResolvedValue(messages)
+
+      const first = useMessages.getState().hydrateMessages('thread-1')
+      const second = useMessages.getState().hydrateMessages('thread-1')
+
+      await expect(Promise.all([first, second])).resolves.toEqual([
+        messages,
+        messages,
+      ])
+      expect(mockFetchMessages).toHaveBeenCalledTimes(1)
+      expect(useMessages.getState().messageLoadStates['thread-1']).toEqual({
+        status: 'ready',
+      })
+    })
+
+    it('keeps an optimistic message when durable storage is behind', async () => {
+      const optimistic = {
+        id: 'optimistic',
+        thread_id: 'thread-1',
+        role: 'user',
+        content: 'Still sending',
+        created_at: 2,
+      } as ThreadMessage
+      useMessages.setState({
+        messages: { 'thread-1': [optimistic] },
+        messageLoadStates: {},
+      })
+      mockFetchMessages.mockResolvedValue([
+        {
+          id: 'stored-message',
+          thread_id: 'thread-1',
+          role: 'assistant',
+          content: 'Stored answer',
+          created_at: 1,
+        },
+      ])
+
+      await useMessages.getState().hydrateMessages('thread-1')
+
+      expect(useMessages.getState().getMessages('thread-1')).toEqual([
+        expect.objectContaining({ id: 'stored-message' }),
+        optimistic,
+      ])
     })
   })
 

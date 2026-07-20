@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useParams } from '@tanstack/react-router'
 import { useTranslation } from '@/i18n/react-i18next-compat'
 import {
   Dialog,
@@ -16,6 +16,8 @@ import { IconTrash } from '@tabler/icons-react'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { toast } from 'sonner'
 import { route } from '@/constants/routes'
+import { useThreads } from '@/hooks/useThreads'
+import { getThreadDeletionDestination } from '@/lib/thread-navigation'
 
 interface DeleteThreadDialogProps {
   thread: Thread
@@ -38,6 +40,11 @@ export function DeleteThreadDialog({
 }: DeleteThreadDialogProps) {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const routeThreadId = useParams({
+    strict: false,
+    select: (params) => params.threadId,
+  })
+  const threadsById = useThreads((state) => state.threads)
   const [internalOpen, setInternalOpen] = useState(false)
   const deleteButtonRef = useRef<HTMLButtonElement>(null)
 
@@ -59,6 +66,11 @@ export function DeleteThreadDialog({
   }
 
   const handleDelete = () => {
+    const destinationThreadId = getThreadDeletionDestination(
+      Object.values(threadsById),
+      thread.id,
+      routeThreadId
+    )
     onDelete(thread.id)
     setOpenSafe(false)
     onDropdownClose?.()
@@ -66,10 +78,16 @@ export function DeleteThreadDialog({
       id: 'delete-thread',
       description: t('common:toast.deleteThread.description'),
     })
-    if (variant !== 'project') {
-      setTimeout(() => {
-        navigate({ to: route.home })
-      }, 0)
+    if (variant !== 'project' && routeThreadId === thread.id) {
+      if (destinationThreadId) {
+        navigate({
+          to: route.threadsDetail,
+          params: { threadId: destinationThreadId },
+          replace: true,
+        })
+      } else {
+        navigate({ to: route.home, replace: true })
+      }
     }
   }
 

@@ -32,8 +32,8 @@ vi.mock('@/hooks/useThreads', () => ({
 vi.mock('@/hooks/useMessages', () => ({
   useMessages: (selector: any) =>
     selector({
-      getMessages: () => [],
-      setMessages: vi.fn(),
+      messages: {},
+      hydrateMessages: vi.fn().mockResolvedValue([]),
     }),
 }))
 

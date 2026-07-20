@@ -6,6 +6,21 @@ import { useAppState } from '@/hooks/useAppState'
 import { usePiApproval } from '@/hooks/usePiApproval'
 import { DIVO_THREAD_MODEL } from '@/lib/pi/constants'
 
+const { mockFetchThreads } = vi.hoisted(() => ({
+  mockFetchThreads: vi.fn(),
+}))
+
+vi.mock('@/hooks/useServiceHub', () => ({
+  getServiceHub: () => ({
+    threads: () => ({
+      fetchThreads: mockFetchThreads,
+      createThread: vi.fn(),
+      deleteThread: vi.fn(),
+      updateThread: vi.fn(),
+    }),
+  }),
+}))
+
 const mockInvoke = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mockInvoke }))
@@ -45,6 +60,8 @@ describe('useThreads', () => {
         threads: {},
         currentThreadId: undefined,
         searchIndex: null,
+        threadLoadState: 'idle',
+        threadLoadError: undefined,
       })
     })
   })
@@ -78,6 +95,37 @@ describe('useThreads', () => {
       ...threads[1],
       model: DIVO_THREAD_MODEL,
     })
+  })
+
+  it('deduplicates concurrent durable thread hydration', async () => {
+    mockFetchThreads.mockResolvedValue([
+      { id: 'thread1', title: 'Thread 1', updated: 1 },
+    ])
+
+    const first = useThreads.getState().hydrateThreads()
+    const second = useThreads.getState().hydrateThreads()
+
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+    expect(mockFetchThreads).toHaveBeenCalledTimes(1)
+    expect(useThreads.getState().threadLoadState).toBe('ready')
+    expect(useThreads.getState().threads.thread1).toBeDefined()
+  })
+
+  it('keeps a newer in-memory thread when durable hydration is late', async () => {
+    mockFetchThreads.mockResolvedValue([
+      { id: 'thread1', title: 'Stored title', updated: 1 },
+    ])
+    useThreads.setState({
+      threads: {
+        thread1: { id: 'thread1', title: 'Edited locally', updated: 2 },
+        optimistic: { id: 'optimistic', title: 'Just created', updated: 3 },
+      },
+    })
+
+    await useThreads.getState().hydrateThreads()
+
+    expect(useThreads.getState().threads.thread1.title).toBe('Edited locally')
+    expect(useThreads.getState().threads.optimistic).toBeDefined()
   })
   it('should migrate legacy thread models to the Divo runtime', () => {
     const { result } = renderHook(() => useThreads())
@@ -224,7 +272,7 @@ describe('useThreads', () => {
     expect(Array.isArray(favorites)).toBe(true)
   })
 
-  it('should delete all threads', () => {
+  it('should delete all threads', async () => {
     const { result } = renderHook(() => useThreads())
 
     const threads = [
@@ -248,8 +296,9 @@ describe('useThreads', () => {
 
     expect(Object.keys(result.current.threads)).toHaveLength(2)
 
-    act(() => {
+    await act(async () => {
       result.current.deleteAllThreads()
+      await Promise.resolve()
     })
 
     expect(result.current.threads).toEqual({})
@@ -257,8 +306,8 @@ describe('useThreads', () => {
     expect(removeSession).toHaveBeenCalledWith('thread2')
     expect(clearThreadState).toHaveBeenCalledWith('thread1')
     expect(clearThreadState).toHaveBeenCalledWith('thread2')
-    expect(discardApproval).toHaveBeenCalledWith('thread1')
-    expect(discardApproval).toHaveBeenCalledWith('thread2')
+    expect(discardApproval).toHaveBeenCalledWith('thread1', undefined)
+    expect(discardApproval).toHaveBeenCalledWith('thread2', undefined)
     expect(mockInvoke).toHaveBeenCalledWith('pi_stop')
   })
 

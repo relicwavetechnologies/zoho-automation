@@ -42,16 +42,43 @@ function enqueuePersistence<T>(
 
 type MessageState = {
   messages: Record<string, ThreadMessage[]>
+  messageLoadStates: Record<
+    string,
+    {
+      status: 'idle' | 'loading' | 'ready' | 'error'
+      error?: string
+    }
+  >
   getMessages: (threadId: string) => ThreadMessage[]
   setMessages: (threadId: string, messages: ThreadMessage[]) => void
+  hydrateMessages: (
+    threadId: string,
+    options?: { force?: boolean }
+  ) => Promise<ThreadMessage[]>
   addMessage: (message: ThreadMessage) => void
   updateMessage: (message: ThreadMessage) => void
   deleteMessage: (threadId: string, messageId: string) => void
   clearAllMessages: () => void
 }
 
+const messageHydrations = new Map<string, Promise<ThreadMessage[]>>()
+
+function mergePersistedAndLocalMessages(
+  persisted: ThreadMessage[],
+  local: ThreadMessage[]
+): ThreadMessage[] {
+  const merged = new Map(persisted.map((message) => [message.id, message]))
+  // Local state contains just-sent messages and live Pi checkpoints that may
+  // not have reached durable storage yet. It must win over an older read.
+  for (const message of local) merged.set(message.id, message)
+  return [...merged.values()].sort(
+    (left, right) => (left.created_at ?? 0) - (right.created_at ?? 0)
+  )
+}
+
 export const useMessages = create<MessageState>()((set, get) => ({
   messages: {},
+  messageLoadStates: {},
   getMessages: (threadId) => {
     return get().messages[threadId] || []
   },
@@ -61,7 +88,62 @@ export const useMessages = create<MessageState>()((set, get) => ({
         ...state.messages,
         [threadId]: messages,
       },
+      messageLoadStates: {
+        ...state.messageLoadStates,
+        [threadId]: { status: 'ready' },
+      },
     }))
+  },
+  hydrateMessages: async (threadId, { force = false } = {}) => {
+    const currentState = get()
+    const loadState = currentState.messageLoadStates[threadId]
+    if (!force && loadState?.status === 'ready') {
+      return currentState.getMessages(threadId)
+    }
+
+    const inFlight = messageHydrations.get(threadId)
+    if (inFlight) return inFlight
+
+    set((state) => ({
+      messageLoadStates: {
+        ...state.messageLoadStates,
+        [threadId]: { status: 'loading' },
+      },
+    }))
+
+    const load = getServiceHub()
+      .messages()
+      .fetchMessages(threadId)
+      .then((persisted) => {
+        const messages = mergePersistedAndLocalMessages(
+          persisted,
+          get().getMessages(threadId)
+        )
+        set((state) => ({
+          messages: { ...state.messages, [threadId]: messages },
+          messageLoadStates: {
+            ...state.messageLoadStates,
+            [threadId]: { status: 'ready' },
+          },
+        }))
+        return messages
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        set((state) => ({
+          messageLoadStates: {
+            ...state.messageLoadStates,
+            [threadId]: { status: 'error', error: message },
+          },
+        }))
+        throw error
+      })
+      .finally(() => {
+        messageHydrations.delete(threadId)
+      })
+
+    messageHydrations.set(threadId, load)
+    return load
   },
   addMessage: (message) => {
     const newMessage = {
@@ -147,6 +229,7 @@ export const useMessages = create<MessageState>()((set, get) => ({
     }))
   },
   clearAllMessages: () => {
-    set({ messages: {} })
+    messageHydrations.clear()
+    set({ messages: {}, messageLoadStates: {} })
   },
 }))

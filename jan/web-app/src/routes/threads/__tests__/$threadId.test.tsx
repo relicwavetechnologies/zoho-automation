@@ -41,6 +41,7 @@ const h = vi.hoisted(() => {
 
   const messagesState: any = {
     setMessages: vi.fn(),
+    hydrateMessages: vi.fn().mockResolvedValue([]),
     addMessage: vi.fn(),
     updateMessage: vi.fn(),
     deleteMessage: vi.fn(),

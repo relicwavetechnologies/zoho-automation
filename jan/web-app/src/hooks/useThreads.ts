@@ -15,8 +15,11 @@ import { DIVO_THREAD_MODEL } from '@/lib/pi/constants'
 type ThreadState = {
   threads: Record<string, Thread>
   currentThreadId?: string
+  threadLoadState: 'idle' | 'loading' | 'ready' | 'error'
+  threadLoadError?: string
   getCurrentThread: () => Thread | undefined
   setThreads: (threads: Thread[]) => void
+  hydrateThreads: (options?: { force?: boolean }) => Promise<Thread[]>
   getFavoriteThreads: () => Thread[]
   getThreadById: (threadId: string) => Thread | undefined
   toggleFavorite: (threadId: string) => void
@@ -40,6 +43,30 @@ type ThreadState = {
   updateThread: (threadId: string, updates: Partial<Thread>) => void
   deleteAllThreadsByProject: (projectId: string) => void
   searchIndex: Fzf<Thread[]> | null
+}
+
+let threadsHydration: Promise<Thread[]> | undefined
+const locallyDeletedThreadIds = new Set<string>()
+
+function mergePersistedAndLocalThreads(
+  persisted: Thread[],
+  local: Record<string, Thread>
+): Thread[] {
+  const merged = new Map(
+    persisted
+      .filter((thread) => !locallyDeletedThreadIds.has(thread.id))
+      .map((thread) => [thread.id, thread])
+  )
+
+  for (const thread of Object.values(local)) {
+    if (locallyDeletedThreadIds.has(thread.id)) continue
+    const durable = merged.get(thread.id)
+    if (!durable || (thread.updated ?? 0) > (durable.updated ?? 0)) {
+      merged.set(thread.id, thread)
+    }
+  }
+
+  return [...merged.values()]
 }
 
 // Helper function to clean up vector DB collection for a thread
@@ -82,6 +109,8 @@ const cleanupThreadRuntime = (threadId: string) => {
 
 export const useThreads = create<ThreadState>()((set, get) => ({
   threads: {},
+  threadLoadState: 'idle',
+  threadLoadError: undefined,
   searchIndex: null,
   setThreads: (threads) => {
     const threadMap = threads.reduce(
@@ -120,6 +149,38 @@ export const useThreads = create<ThreadState>()((set, get) => ({
         selector: (item: Thread) => item.title ?? '',
       }),
     })
+  },
+  hydrateThreads: async ({ force = false } = {}) => {
+    const state = get()
+    if (!force && state.threadLoadState === 'ready') {
+      return Object.values(state.threads)
+    }
+    if (threadsHydration) return threadsHydration
+
+    set({ threadLoadState: 'loading', threadLoadError: undefined })
+    const load = getServiceHub()
+      .threads()
+      .fetchThreads()
+      .then((threads) => {
+        const hydratedThreads = mergePersistedAndLocalThreads(
+          threads,
+          get().threads
+        )
+        get().setThreads(hydratedThreads)
+        set({ threadLoadState: 'ready', threadLoadError: undefined })
+        return hydratedThreads
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        set({ threadLoadState: 'error', threadLoadError: message })
+        throw error
+      })
+      .finally(() => {
+        threadsHydration = undefined
+      })
+
+    threadsHydration = load
+    return load
   },
   getFilteredThreads: (searchTerm: string) => {
     const { threads, searchIndex } = get()
@@ -181,6 +242,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { [threadId]: _, ...remainingThreads } = state.threads
 
+      locallyDeletedThreadIds.add(threadId)
       cleanupThreadRuntime(threadId)
       cleanupVectorDB(threadId)
       getServiceHub().threads().deleteThread(threadId)
@@ -218,6 +280,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
 
       // Delete threads and clean up their vector DB collections
       threadsToDeleteIds.forEach((threadId) => {
+        locallyDeletedThreadIds.add(threadId)
         cleanupThreadRuntime(threadId)
         cleanupVectorDB(threadId)
         getServiceHub().threads().deleteThread(threadId)
@@ -259,6 +322,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
       const allThreadIds = Object.keys(state.threads)
 
       allThreadIds.forEach((threadId) => {
+        locallyDeletedThreadIds.add(threadId)
         cleanupThreadRuntime(threadId)
         cleanupVectorDB(threadId)
         getServiceHub().threads().deleteThread(threadId)
@@ -288,6 +352,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
       )
 
       threadsToDeleteIds.forEach((threadId) => {
+        locallyDeletedThreadIds.add(threadId)
         cleanupThreadRuntime(threadId)
         cleanupVectorDB(threadId)
         getServiceHub().threads().deleteThread(threadId)
@@ -348,6 +413,9 @@ export const useThreads = create<ThreadState>()((set, get) => ({
     projectMetadata,
     isTemporary
   ) => {
+    // Divo owns the runtime model; preserve the public API while rejecting a
+    // caller-selected provider/model here.
+    void _model
     const newThread: Thread = {
       id: isTemporary ? TEMPORARY_CHAT_ID : ulid(),
       title: title ?? (isTemporary ? 'Temporary Chat' : 'New Thread'),
@@ -367,6 +435,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
         },
       }),
     }
+    locallyDeletedThreadIds.delete(newThread.id)
     return await getServiceHub()
       .threads()
       .createThread(newThread)
@@ -414,6 +483,7 @@ export const useThreads = create<ThreadState>()((set, get) => ({
     })
   },
   updateCurrentThreadModel: (_model) => {
+    void _model
     set((state) => {
       if (!state.currentThreadId) return { ...state }
       const currentThread = state.getCurrentThread()

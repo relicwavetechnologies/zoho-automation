@@ -3,8 +3,7 @@ import { useThreads } from '@/hooks/useThreads'
 import { ThreadStateIndicator } from '@/components/left-sidebar/ThreadStateIndicator'
 import { useMessages } from '@/hooks/useMessages'
 import { useThreadManagement } from '@/hooks/useThreadManagement'
-import { useServiceHub } from '@/hooks/useServiceHub'
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 
 import {
   DropdownMenu,
@@ -28,7 +27,6 @@ import { Link, useParams } from '@tanstack/react-router'
 import { RenameThreadDialog, DeleteThreadDialog } from '@/containers/dialogs'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { ThreadMessage } from '@janhq/core'
 import {
   readDivoTeachProfile,
   teachThreadDisplayTitle,
@@ -56,55 +54,18 @@ const ThreadItem = memo(
     const [renameOpen, setRenameOpen] = useState(false)
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
 
-    const serviceHub = useServiceHub()
-    const getMessages = useMessages((state) => state.getMessages)
-    const setMessages = useMessages((state) => state.setMessages)
+    const messages = useMessages((state) => state.messages[thread.id])
+    const hydrateMessages = useMessages((state) => state.hydrateMessages)
 
-    // Use a ref to track if messages have been loaded
-    const messagesLoadedRef = useRef(false)
-    // Track current messages for comparison
-    const messagesLengthRef = useRef(0)
-
-    // Get messages reactively via ref tracking (to avoid infinite re-renders)
-    const [messages, setLocalMessages] = useState<ThreadMessage[]>(() =>
-      getMessages(thread.id)
-    )
-
-    // Fetch messages if not loaded yet
+    // Sidebar rows never need full conversation history. Project rows retain a
+    // temporary preview path until previews are written with thread metadata.
     useEffect(() => {
-      const currentMessages = getMessages(thread.id)
-
-      // Initial load: no messages yet, fetch them
-      if (currentMessages.length === 0 && !messagesLoadedRef.current) {
-        messagesLoadedRef.current = true
-        serviceHub
-          .messages()
-          .fetchMessages(thread.id)
-          .then((fetchedMessages) => {
-            // Only overwrite if the disk actually has content. A brand-new
-            // thread starts empty on disk, and racing this against the
-            // optimistic addMessage write was wiping the user message.
-            if (fetchedMessages && fetchedMessages.length > 0) {
-              setMessages(thread.id, fetchedMessages)
-              setLocalMessages(fetchedMessages)
-              messagesLengthRef.current = fetchedMessages.length
-            }
-          })
-          .catch(() => {
-            messagesLoadedRef.current = false
-          })
-        return
-      }
-
-      // Only update local state if messages length changed (prevents re-renders during streaming)
-      if (currentMessages.length !== messagesLengthRef.current) {
-        setLocalMessages(currentMessages)
-        messagesLengthRef.current = currentMessages.length
-      }
-    }, [thread.id, serviceHub, getMessages, setMessages])
+      if (!currentProjectId) return
+      void hydrateMessages(thread.id).catch(() => undefined)
+    }, [currentProjectId, hydrateMessages, thread.id])
 
     const lastUserMessageText = useMemo(() => {
-      const userMessages = messages.filter((m) => m.role === 'user')
+      const userMessages = (messages ?? []).filter((m) => m.role === 'user')
       const lastUserMessage = userMessages[userMessages.length - 1]
       if (!lastUserMessage) return undefined
       const textContent = lastUserMessage.content?.find((c) => c.type === 'text')

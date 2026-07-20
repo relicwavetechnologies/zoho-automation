@@ -199,6 +199,7 @@ function ThreadDetail() {
   const searchThreadModel = search.threadModel
   const setCurrentThreadId = useThreads((state) => state.setCurrentThreadId)
   const setMessages = useMessages((state) => state.setMessages)
+  const hydrateMessages = useMessages((state) => state.hydrateMessages)
   const addMessage = useMessages((state) => state.addMessage)
   const updateMessage = useMessages((state) => state.updateMessage)
   const deleteMessage = useMessages((state) => state.deleteMessage)
@@ -920,9 +921,7 @@ function ThreadDetail() {
     }
 
     let active = true
-    serviceHub
-      .messages()
-      .fetchMessages(threadId)
+    hydrateMessages(threadId)
       .then((fetchedMessages) => {
         if (fetchedMessages && fetchedMessages.length > 0) {
           const currentLocalMessages = useMessages
@@ -1040,7 +1039,7 @@ function ThreadDetail() {
       active = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, serviceHub])
+  }, [threadId, hydrateMessages])
 
   useEffect(() => {
     return () => {

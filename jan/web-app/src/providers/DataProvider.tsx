@@ -131,7 +131,9 @@ export function DataProvider() {
   const autoUpdateCheck = useGeneralSetting((s) => s.autoUpdateCheck)
   const { setServers, setSettings } = useMCPServers()
   const { setAssistants } = useAssistant()
-  const { setThreads } = useThreads()
+  const hydrateDurableThreads = useThreads(
+    (state) => state.hydrateThreads
+  )
   const navigate = useNavigate()
   const serviceHub = useServiceHub()
 
@@ -217,22 +219,21 @@ export function DataProvider() {
   useEffect(() => {
     let active = true
     let retryTimer: number | undefined
-    const hydrateThreads = async () => {
+    const hydrate = async () => {
       try {
-        const threads = await serviceHub.threads().fetchThreads()
-        if (active) setThreads(threads)
+        await hydrateDurableThreads()
       } catch (error) {
         if (!active) return
         console.warn('Failed to hydrate durable chats; retrying without clearing the sidebar.', error)
-        retryTimer = window.setTimeout(() => void hydrateThreads(), 1_000)
+        retryTimer = window.setTimeout(() => void hydrate(), 1_000)
       }
     }
-    void hydrateThreads()
+    void hydrate()
     return () => {
       active = false
       if (retryTimer !== undefined) window.clearTimeout(retryTimer)
     }
-  }, [serviceHub, setThreads])
+  }, [hydrateDurableThreads])
 
   // Sync remote providers with backend when providers change
   const providers = useModelProvider((s) => s.providers)
