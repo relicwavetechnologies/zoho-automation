@@ -92,6 +92,7 @@ export function buildDesktopCapabilityBootstrap(input: {
       actions: ACTION_PRIORITY.filter(action => actions.has(action)),
     }];
   }) : [];
+  const availableToolIds = new Set<string>(availableTools.map(tool => tool.toolId));
   const preferredToolIds = new Set<string>(preferredTools.map(tool => tool.toolId));
   const booksActions = new Set(
     preferredTools.find(tool => tool.toolId === 'zohoBooks')?.actions ?? [],
@@ -134,8 +135,10 @@ export function buildDesktopCapabilityBootstrap(input: {
   if (preferredToolIds.has('zohoCrm')) {
     routingHints.push('Customer, contact, account, deal, or relationship context -> use zohoCrm read operations.');
   }
-  if (preferredToolIds.has('webSearch')) {
-    routingHints.push('Current external facts, laws, market information, or verification -> use the backend web research route.');
+  if (availableToolIds.has('webSearch')) {
+    routingHints.push(
+      'Ordinary current external facts, pricing, comparisons, laws, market information, or verification -> invoke webSearch directly with args { query, limit }; do not resolve or search for a research skill first. Use an exact indexed deep-research skill only when the request is explicitly thorough/deep or the persona already links it.',
+    );
   }
 
   for (const specialistSlug of ['zoho-books-bill', 'zoho-bill-notify-accounts']) {

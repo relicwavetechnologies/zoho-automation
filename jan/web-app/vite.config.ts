@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
+import stylex from 'unplugin-stylex/vite'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
 import packageJson from './package.json'
 const host = process.env.TAURI_DEV_HOST
@@ -55,6 +56,24 @@ export default defineConfig(({ mode }) => {
         routeFileIgnorePattern: '.((test).ts)|test-page',
       }),
       react(),
+      // StyleX compiler.
+      //
+      // Astryx ships UNCOMPILED StyleX in its dist — it imports @stylexjs/stylex
+      // and calls stylex.create/stylex.props at module scope — and its prebuilt
+      // components have worked so far only because the package also ships the
+      // matching astryx.css. That falls apart the moment we `astryx swizzle` a
+      // component or author our own stylex.create: those need a real compiler,
+      // and the failure mode is silent (the component renders with NO styles,
+      // no build error, no runtime warning).
+      //
+      // `include` deliberately covers node_modules/@astryxdesign, because the
+      // source that needs compiling lives there, not only in src/.
+      stylex({
+        include: [
+          'src/**/*.{ts,tsx}',
+          'node_modules/@astryxdesign/**/*.{js,ts,tsx}',
+        ],
+      }),
       tailwindcss(),
       nodePolyfills({
         include: ['path'],

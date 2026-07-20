@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	createEmptyBoard,
 	createTodos,
+	resolveTodoReference,
 	restoreBoard,
 	snapshot,
 	updateTodo,
@@ -22,6 +23,7 @@ test("todo board creates a single active task and moves the prior task back to p
 test("snapshots replay safely and reject malformed or cross-task blocker data", () => {
 	const created = createTodos(createEmptyBoard(), [{ content: "Inspect runtime" }]);
 	const board = created.board!;
+	assert.equal(board.items[0]?.status, "in_progress");
 	const replayed = restoreBoard(snapshot(board, "create"));
 	assert.deepEqual(replayed, board);
 
@@ -31,7 +33,7 @@ test("snapshots replay safely and reject malformed or cross-task blocker data", 
 });
 
 test("updates validate task identity and preserve immutable historic snapshots", () => {
-	const created = createTodos(createEmptyBoard(), [{ content: "Plan rollout" }]);
+	const created = createTodos(createEmptyBoard(), [{ content: "Plan rollout", status: "pending" }]);
 	const board = created.board!;
 	const before = snapshot(board, "create");
 	const updated = updateTodo(board, board.items[0].id, { status: "completed" });
@@ -40,4 +42,15 @@ test("updates validate task identity and preserve immutable historic snapshots",
 	assert.equal(updated.board!.items[0].status, "completed");
 	assert.ok(updateTodo(board, "missing", { status: "completed" }).error);
 	assert.ok(updateTodo(board, board.items[0].id, { activeForm: "Working" }).error);
+});
+
+test("resolves model-friendly ordinal references without replacing durable UUIDs", () => {
+	const board = createTodos(createEmptyBoard(), [
+		{ content: "Research" },
+		{ content: "Write" },
+	]).board!;
+	assert.equal(resolveTodoReference(board, "#1"), board.items[0]?.id);
+	assert.equal(resolveTodoReference(board, "2"), board.items[1]?.id);
+	assert.equal(resolveTodoReference(board, board.items[0]!.id), board.items[0]?.id);
+	assert.equal(resolveTodoReference(board, "#3"), undefined);
 });

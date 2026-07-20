@@ -15,6 +15,7 @@ import {
 	createEmptyBoard,
 	createTodos,
 	restoreBoard,
+	resolveTodoReference,
 	snapshot,
 	updateTodo,
 	type TodoAction,
@@ -33,18 +34,18 @@ const TodoInputSchema = Type.Object({
 	description: Type.Optional(Type.String({ description: "Optional fuller task context.", maxLength: 2_000 })),
 	status: Type.Optional(TodoStatusSchema),
 	activeForm: Type.Optional(Type.String({ description: "Present-tense activity for the single active task.", maxLength: 500 })),
-	blockedBy: Type.Optional(Type.Array(Type.String({ description: "Existing task UUID blocking this task." }), { maxItems: 12 })),
+	blockedBy: Type.Optional(Type.Array(Type.String({ description: "Existing task UUID or #number blocking this task." }), { maxItems: 12 })),
 });
 
 const TodoParams = Type.Object({
 	action: StringEnum(["create", "update", "list", "clear"] as const),
 	tasks: Type.Optional(Type.Array(TodoInputSchema, { description: "Tasks to create (one to sixteen).", maxItems: 16 })),
-	id: Type.Optional(Type.String({ description: "Task UUID to update." })),
+	id: Type.Optional(Type.String({ description: "Task UUID or #number shown by create/list to update." })),
 	content: Type.Optional(Type.String({ description: "Replacement task title.", minLength: 1, maxLength: 500 })),
 	description: Type.Optional(Type.Union([Type.String({ maxLength: 2_000 }), Type.Null()])),
 	status: Type.Optional(TodoStatusSchema),
 	activeForm: Type.Optional(Type.Union([Type.String({ maxLength: 500 }), Type.Null()])),
-	blockedBy: Type.Optional(Type.Union([Type.Array(Type.String(), { maxItems: 12 }), Type.Null()])),
+	blockedBy: Type.Optional(Type.Union([Type.Array(Type.String({ description: "Task UUID or #number." }), { maxItems: 12 }), Type.Null()])),
 	completedOnly: Type.Optional(Type.Boolean({ description: "For clear: remove completed tasks only; otherwise clear the whole board." })),
 });
 
@@ -80,6 +81,10 @@ function result(board: TodoBoard, action: TodoAction, text: string, error?: stri
 	};
 }
 
+function resolveBlockers(board: TodoBoard, blockedBy: string[] | undefined): string[] | undefined {
+	return blockedBy?.map(reference => resolveTodoReference(board, reference) ?? reference);
+}
+
 export default function divoTodosExtension(pi: ExtensionAPI) {
 	let board = createEmptyBoard();
 	const restore = (ctx: ExtensionContext) => {
@@ -92,12 +97,14 @@ export default function divoTodosExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "divo_todos",
 		label: "Divo todos",
-		description: "Maintain the current chat's Pi-owned task board. Create a concise plan for substantial multi-step work, keep exactly one task actively in progress, record blockers, and mark tasks completed as work advances. State is isolated to this Pi session branch.",
-		promptSnippet: "For substantial multi-step work, use divo_todos to create a concise, current task board. Keep it accurate as you work; skip it for simple one-step replies.",
+		description: "Maintain the current chat's Pi-owned task board. Create a concise plan for substantial multi-step work, keep exactly one task actively in progress, record blockers, and mark tasks completed as work advances. Create/list returns model-friendly #numbers for updates. State is isolated to this Pi session branch.",
+		promptSnippet: "For substantial multi-step work, use divo_todos to create a concise, current task board. Update it as work advances and close completed, blocked, or cancelled tasks before the final answer. Skip it for simple one-step replies.",
 		promptGuidelines: [
 			"The board belongs only to this Pi chat session and branch. It is not a shared project queue and must never be used to coordinate unrelated chats.",
 			"Create a small, outcome-oriented plan before substantial multi-step work. Use one in-progress task at a time so the user sees a clear current activity.",
-			"Update task status as work advances, record blockers honestly, and complete or cancel tasks when they are no longer active. Do not create a board for trivial one-step answers.",
+			"Create/list returns task references such as #1. Use that exact reference for update; never guess an ID.",
+			"Update task status as work advances and, immediately before the final answer, mark every finished task completed and every unfinished task blocked or cancelled with an honest reason. Do not leave stale pending or in-progress tasks after presenting completed work.",
+			"Do not create a board for trivial one-step answers. A todo board is useful only when the user benefits from visible multi-step progress.",
 			"When using divo_subagents, the parent agent owns this board: add delegation as a parent task and update it from child results. Child agents do not share or modify this board.",
 			"This tool is planning state only. It does not grant permissions, request approvals, make external changes, or continue an agent run automatically.",
 		],
@@ -108,21 +115,32 @@ export default function divoTodosExtension(pi: ExtensionAPI) {
 				case "list":
 					return result(board, "list", boardText(board));
 				case "create": {
-					const created = createTodos(board, params.tasks ?? []);
+					const tasks = (params.tasks ?? []).map(task => ({
+						...task,
+						blockedBy: resolveBlockers(board, task.blockedBy),
+					}));
+					const created = createTodos(board, tasks);
 					if (created.error) return result(board, "create", `Unable to create tasks: ${created.error}`, created.error);
 					board = created.board!;
-					return result(board, "create", `Created ${params.tasks!.length} task${params.tasks!.length === 1 ? "" : "s"}.\n${boardText(board)}`);
+					return result(board, "create", `Created ${tasks.length} task${tasks.length === 1 ? "" : "s"}. Use the #references below for updates.\n${boardText(board)}`);
 				}
 				case "update": {
 					if (!params.id?.trim()) return result(board, "update", "Unable to update task: id is required.", "id is required");
+					const resolvedId = resolveTodoReference(board, params.id);
+					if (!resolvedId) {
+						const error = `Task reference ${params.id.trim()} was not found.`;
+						return result(board, "update", `Unable to update task: ${error}\n${boardText(board)}`, error);
+					}
 					const update: TodoUpdate = {
 						...(params.content !== undefined ? { content: params.content } : {}),
 						...(params.description !== undefined ? { description: params.description } : {}),
 						...(params.status !== undefined ? { status: params.status } : {}),
 						...(params.activeForm !== undefined ? { activeForm: params.activeForm } : {}),
-						...(params.blockedBy !== undefined ? { blockedBy: params.blockedBy } : {}),
+						...(params.blockedBy !== undefined ? {
+							blockedBy: params.blockedBy === null ? null : resolveBlockers(board, params.blockedBy),
+						} : {}),
 					};
-					const updated = updateTodo(board, params.id.trim(), update);
+					const updated = updateTodo(board, resolvedId, update);
 					if (updated.error) return result(board, "update", `Unable to update task: ${updated.error}`, updated.error);
 					board = updated.board!;
 					return result(board, "update", `Updated task.\n${boardText(board)}`);

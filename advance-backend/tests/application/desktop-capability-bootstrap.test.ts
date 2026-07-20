@@ -62,6 +62,9 @@ describe('desktop capability bootstrap', () => {
       { toolId: 'webSearch', actions: ['read'] },
     ]);
     assert.ok(bootstrap.routingHints.some(hint => hint.includes('build_overdue_report')));
+    assert.ok(bootstrap.routingHints.some(hint =>
+      hint.includes('invoke webSearch directly')
+      && hint.includes('do not resolve or search for a research skill first')));
     assert.ok(!bootstrap.routingHints.some(hint => hint.includes('zohoCrm')));
     assert.deepEqual(bootstrap.zohoConnection, { accessibleCount: 0 });
   });
@@ -75,6 +78,7 @@ describe('desktop capability bootstrap', () => {
         ['zohoBooks', ['read']],
         ['larkMessaging', ['send']],
         ['scheduledWorkflows', ['execute']],
+        ['webSearch', ['read']],
       ]),
       visibleSkills: [{
         id: 'engineering-runbook-id',
@@ -101,9 +105,11 @@ describe('desktop capability bootstrap', () => {
     assert.deepEqual(bootstrap.availableTools, [
       { toolId: 'larkMessaging', actions: ['send'] },
       { toolId: 'scheduledWorkflows', actions: ['execute'] },
+      { toolId: 'webSearch', actions: ['read'] },
       { toolId: 'zohoBooks', actions: ['read'] },
     ]);
     assert.deepEqual(bootstrap.preferredSkills, []);
-    assert.deepEqual(bootstrap.routingHints, []);
+    assert.equal(bootstrap.routingHints.length, 1);
+    assert.match(bootstrap.routingHints[0] ?? '', /invoke webSearch directly/);
   });
 });

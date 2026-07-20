@@ -41,7 +41,10 @@ import { useModelProvider } from '@/hooks/useModelProvider'
 import { useReconcileVideoCapability } from '@/hooks/useReconcileVideoCapability'
 
 import { useAppState } from '@/hooks/useAppState'
-import { MovingBorder } from './MovingBorder'
+import { Token as AstryxToken } from '@astryxdesign/core/Token'
+import { ChatComposerDrawer as AstryxComposerDrawer } from '@astryxdesign/core/Chat'
+import { DivoComposerShell } from './composer/DivoComposerShell'
+import { DivoComposerFrame } from './composer/DivoComposerFrame'
 import type { ChatStatus } from 'ai'
 import { useRouter } from '@tanstack/react-router'
 import { route } from '@/constants/routes'
@@ -2235,6 +2238,267 @@ const ChatInput = memo(function ChatInput({
     )
   }
 
+  // Composer input-row pieces, hoisted so the landing composer (Astryx
+  // ChatComposer, in slots) and the in-thread composer (our shell, one row)
+  // are driven by the SAME elements. Each closes over ChatInput's state, so
+  // moving one into a slot relocates where it renders without changing what it
+  // does — which is how the two composers stay behaviourally identical while
+  // looking different.
+
+  // The `+` attachment menu.
+  const composerAttachMenu = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Add attachment"
+          className="rounded-full text-muted-foreground hover:text-foreground"
+        >
+          <PlusIcon size={18} />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {imageAttachmentsSupported && (
+          <DropdownMenuItem onClick={() => void openImagePicker()}>
+            <IconPhoto size={18} className="text-muted-foreground" />
+            <span>Add Images</span>
+            <input
+              type="file"
+              ref={fileInputRef}
+              className="hidden"
+              multiple
+              onChange={handleFileChange}
+            />
+          </DropdownMenuItem>
+        )}
+        {audioSupported && (
+          <DropdownMenuItem onClick={() => void openAudioPicker()}>
+            <IconMusic size={18} className="text-muted-foreground" />
+            <span>Add Audio</span>
+            <input
+              type="file"
+              ref={audioInputRef}
+              className="hidden"
+              multiple
+              accept="audio/wav,audio/mpeg,.wav,.mp3"
+              onChange={handleAudioFileChange}
+            />
+          </DropdownMenuItem>
+        )}
+        {videoSupported && (
+          <DropdownMenuItem onClick={() => void openVideoPicker()}>
+            <IconVideo size={18} className="text-muted-foreground" />
+            <span>Add Video</span>
+            <input
+              type="file"
+              ref={videoInputRef}
+              className="hidden"
+              multiple
+              accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,.mp4,.mov,.webm,.mkv,.avi,.m4v"
+              onChange={handleVideoFileChange}
+            />
+          </DropdownMenuItem>
+        )}
+        {/* Local file references for Divo document and OCR skills. */}
+        <DropdownMenuItem
+          onClick={handleAttachDocsIngest}
+          disabled={ingestingDocs}
+        >
+          {ingestingDocs ? (
+            <IconLoader2
+              size={18}
+              className="text-muted-foreground animate-spin"
+            />
+          ) : (
+            <IconPaperclip
+              size={18}
+              className="text-muted-foreground"
+            />
+          )}
+          <span>
+            {ingestingDocs
+              ? 'Indexing documents…'
+              : 'Add documents or files'}
+          </span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+
+  // The prompt textarea. Carries the `/` menu, IME handling, history nav and
+  // Enter-to-send — none of which any slot may intercept.
+  const composerPromptField = (
+    <div className="relative min-w-0 flex-1">
+      <TextareaAutosize
+        dir="auto"
+        ref={textareaRef}
+        minRows={1}
+        rows={1}
+        maxRows={10}
+        value={prompt}
+        data-testid={'chat-input'}
+        onChange={(e) => {
+          const nextPrompt = e.target.value
+          setPrompt(nextPrompt)
+          const slashSearch = nextPrompt.match(/^\/([^\n]*)$/)
+          if (slashSearch) {
+            setSkillReferenceDrawerOpen(true)
+            setSkillReferenceSearch(slashSearch[1] ?? '')
+          } else if (skillReferenceDrawerOpen) {
+            setSkillReferenceDrawerOpen(false)
+            setSkillReferenceSearch('')
+            setSkillReferenceError(null)
+            setSkillReferenceResults([])
+          }
+          const newRows = (nextPrompt.match(/\n/g) || []).length + 1
+          setRows(Math.min(newRows, maxRows))
+        }}
+        onKeyDown={(e) => {
+          const isComposing =
+            e.nativeEvent.isComposing || e.keyCode === 229
+
+          if (skillReferenceDrawerOpen && !isComposing) {
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              setSkillReferenceDrawerOpen(false)
+              setSkillReferenceSearch('')
+              setSkillReferenceError(null)
+              setSkillReferenceResults([])
+              return
+            }
+            if (
+              e.key === 'Enter' &&
+              !e.shiftKey &&
+              matchesShareMemoryCommand(skillReferenceSearch)
+            ) {
+              e.preventDefault()
+              activateShareMemoryCommand()
+              return
+            }
+          }
+
+          if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
+            e.preventDefault()
+            if ((prompt.trim() || hasSendableAttachments) && !ingestingAny) {
+              handleSendMessage(prompt)
+            }
+          }
+          if (e.key === 'ArrowUp' && !isComposing) {
+            const textarea = e.currentTarget
+            const cursorAtStart =
+              textarea.selectionStart === 0 &&
+              textarea.selectionEnd === 0
+            if (cursorAtStart || !prompt) {
+              e.preventDefault()
+              navigateHistory('up')
+            }
+          }
+          if (e.key === 'ArrowDown' && !isComposing) {
+            const textarea = e.currentTarget
+            const cursorAtEnd =
+              textarea.selectionStart === prompt.length &&
+              textarea.selectionEnd === prompt.length
+            if (cursorAtEnd) {
+              e.preventDefault()
+              navigateHistory('down')
+            }
+          }
+        }}
+        onPaste={handlePaste}
+        placeholder={t(
+          hasConversation
+            ? 'common:placeholder.chatFollowUp'
+            : 'common:placeholder.chatInput'
+        )}
+        autoFocus
+        spellCheck={spellCheckChatInput}
+        data-gramm={spellCheckChatInput}
+        data-gramm_editor={spellCheckChatInput}
+        data-gramm_grammarly={spellCheckChatInput}
+        className={cn(
+          'bg-transparent w-full border-none resize-none outline-0 px-1.5 py-1.5',
+          showRotatingPlaceholder && 'placeholder:text-transparent',
+          rows < maxRows && 'scrollbar-hide',
+          className
+        )}
+      />
+      {showRotatingPlaceholder && (
+        <RotatingPlaceholder className="px-1.5 text-sm" />
+      )}
+    </div>
+  )
+
+  // Model selector.
+  const composerModelToggle = (
+    <div className={cn(isComposerBusy && 'opacity-50 pointer-events-none')}>
+      <DivoModelToggle disabled={isComposerBusy} />
+    </div>
+  )
+
+  // Send while idle, stop while streaming.
+  const composerSendControl = isComposerBusy ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="destructive"
+          size="icon-sm"
+          aria-label="Stop generating"
+          className="rounded-full"
+          onClick={() => {
+            if (displayedThreadId) stopStreaming(displayedThreadId)
+          }}
+        >
+          <IconPlayerStopFilled />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>
+        <p>Stop generating</p>
+      </TooltipContent>
+    </Tooltip>
+  ) : (
+    <Button
+      variant="default"
+      size="icon-sm"
+      disabled={
+        (!prompt.trim() && !hasSendableAttachments) || ingestingAny
+      }
+      data-test-id="send-message-button"
+      onClick={() => handleSendMessage(prompt)}
+      className="rounded-full"
+    >
+      <ArrowUp className="text-primary-fg" />
+    </Button>
+  )
+
+  // Attachments and skill references as chips, for the landing composer's
+  // drawer. The thread composer keeps its richer thumbnail previews; here the
+  // template's compact token row is the better fit and matches its look.
+  const landingChipCount = attachments.length + selectedSkillReferences.length
+  const composerLandingDrawer =
+    landingChipCount > 0 ? (
+      <AstryxComposerDrawer count={landingChipCount}>
+        {attachments.map((att, idx) => (
+          <AstryxToken
+            key={`att-${idx}-${att.name}`}
+            label={att.name}
+            onRemove={() => handleRemoveAttachment(idx)}
+          />
+        ))}
+        {selectedSkillReferences.map((skill) => (
+          <AstryxToken
+            key={`skill-${skill.id}`}
+            label={skill.name}
+            onRemove={() =>
+              setSelectedSkillReferences((current) =>
+                current.filter((item) => item.id !== skill.id)
+              )
+            }
+          />
+        ))}
+      </AstryxComposerDrawer>
+    ) : undefined
+
   return (
     <div className="relative">
       {/* Suggested actions and the current work status share one row above the
@@ -2307,53 +2571,46 @@ const ChatInput = memo(function ChatInput({
           />
         </div>
       )}
-      <div className="relative">
-        <div
-          className={cn(
-            'relative overflow-hidden p-0.5 rounded-[22px]'
-          )}
-        >
-          {isComposerBusy && (
-            <div className="absolute inset-0">
-              <MovingBorder rx="10%" ry="10%">
-                <div
-                  className={cn(
-                    'h-100 w-100 bg-[radial-gradient(var(--app-primary),transparent_60%)]'
-                  )}
-                />
-              </MovingBorder>
-            </div>
-          )}
-
-          <div
-            className={cn(
-              // Flat, low-contrast shell: a hairline border over a barely-lifted
-              // fill, so the composer reads as part of the page rather than a
-              // card stuck on top of it.
-              // One row when idle: the toolbar is a flex sibling of the
-              // textarea rather than an absolute strip under it, so an empty
-              // composer is a single stadium-shaped line — `+`, prompt,
-              // model, send — and only grows when the text does.
-              // Attachment previews and approval cards sit above the row as
-              // extra children, which is why this stays a column.
-              // Padding and radius are kept concentric with the round send
-              // button in the bottom-right corner: shell radius - inset must
-              // equal the button's radius (24 - 8 = 16 = size-8 / 2), otherwise
-              // the button reads as crammed into the corner curve.
-              // Padding is SYMMETRIC. `pb-2` with no top padding pinned the row
-              // against the top border and left 8px of dead space underneath,
-              // which is what made the placeholder read as sitting high in the
-              // pill. p-2 + the 32px row = a 48px stadium, centred.
-              'relative z-20 flex flex-col rounded-[24px] border border-border/50 bg-card p-2 dark:bg-white/[0.02] transition-colors',
-              isFocused && 'border-border/80 dark:bg-white/[0.04]',
-              isDragOver && 'ring-2 ring-ring/50 border-primary'
-            )}
-            data-drop-zone={dropAcceptsAnything ? 'true' : undefined}
-            onDragEnter={dropAcceptsAnything ? handleDragEnter : undefined}
-            onDragLeave={dropAcceptsAnything ? handleDragLeave : undefined}
-            onDragOver={dropAcceptsAnything ? handleDragOver : undefined}
-            onDrop={dropAcceptsAnything ? handleDrop : undefined}
-          >
+      {/* Two composers, one behaviour set. The LANDING is the Astryx
+          ChatComposer — a drawer of attachment chips, a tall input, and a
+          separated footer row (model · send) — fed the very same extracted
+          pieces the in-thread composer uses, so nothing about how it works
+          diverges. The IN-THREAD composer stays our single-row shell, which
+          has to sit quietly under a scrolling transcript. `initialMessage`
+          is the landing marker the component has always carried. */}
+      {initialMessage ? (
+        <DivoComposerFrame
+          value={prompt}
+          onChange={setPrompt}
+          onSubmit={(value) => void handleSendMessage(value || prompt)}
+          onStop={() => {
+            if (displayedThreadId) stopStreaming(displayedThreadId)
+          }}
+          isStopShown={isComposerBusy}
+          placeholder={t('common:placeholder.chatInput')}
+          drawer={composerLandingDrawer}
+          headerActions={composerAttachMenu}
+          input={composerPromptField}
+          footerActions={composerModelToggle}
+          sendButton={composerSendControl}
+          status={
+            skillReferenceError
+              ? { type: 'error', message: skillReferenceError }
+              : undefined
+          }
+        />
+      ) : (
+      <DivoComposerShell
+        variant="thread"
+        isComposerBusy={isComposerBusy}
+        isFocused={isFocused}
+        isDragOver={isDragOver}
+        dropAcceptsAnything={dropAcceptsAnything}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
             {attachments.length > 0 && (
               <div className="flex flex-col gap-2 p-2 pb-0">
                 <div className="flex gap-3 items-center">
@@ -2558,83 +2815,7 @@ const ChatInput = memo(function ChatInput({
                 )}
               >
                 {/* Attachments are first-class Divo inputs. */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label="Add attachment"
-                      className="rounded-full text-muted-foreground hover:text-foreground"
-                    >
-                      <PlusIcon size={18} />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    {imageAttachmentsSupported && (
-                      <DropdownMenuItem onClick={() => void openImagePicker()}>
-                        <IconPhoto size={18} className="text-muted-foreground" />
-                        <span>Add Images</span>
-                        <input
-                          type="file"
-                          ref={fileInputRef}
-                          className="hidden"
-                          multiple
-                          onChange={handleFileChange}
-                        />
-                      </DropdownMenuItem>
-                    )}
-                    {audioSupported && (
-                      <DropdownMenuItem onClick={() => void openAudioPicker()}>
-                        <IconMusic size={18} className="text-muted-foreground" />
-                        <span>Add Audio</span>
-                        <input
-                          type="file"
-                          ref={audioInputRef}
-                          className="hidden"
-                          multiple
-                          accept="audio/wav,audio/mpeg,.wav,.mp3"
-                          onChange={handleAudioFileChange}
-                        />
-                      </DropdownMenuItem>
-                    )}
-                    {videoSupported && (
-                      <DropdownMenuItem onClick={() => void openVideoPicker()}>
-                        <IconVideo size={18} className="text-muted-foreground" />
-                        <span>Add Video</span>
-                        <input
-                          type="file"
-                          ref={videoInputRef}
-                          className="hidden"
-                          multiple
-                          accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,.mp4,.mov,.webm,.mkv,.avi,.m4v"
-                          onChange={handleVideoFileChange}
-                        />
-                      </DropdownMenuItem>
-                    )}
-                    {/* Local file references for Divo document and OCR skills. */}
-                    <DropdownMenuItem
-                      onClick={handleAttachDocsIngest}
-                      disabled={ingestingDocs}
-                    >
-                      {ingestingDocs ? (
-                        <IconLoader2
-                          size={18}
-                          className="text-muted-foreground animate-spin"
-                        />
-                      ) : (
-                        <IconPaperclip
-                          size={18}
-                          className="text-muted-foreground"
-                        />
-                      )}
-                      <span>
-                        {ingestingDocs
-                          ? 'Indexing documents…'
-                          : 'Add documents or files'}
-                      </span>
-                    </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                {composerAttachMenu}
               </div>
               <div
                 className={cn(
@@ -2837,130 +3018,14 @@ const ChatInput = memo(function ChatInput({
             {/* The prompt shares the row with the controls, so the model
                 name and send sit on the SAME line as the placeholder
                 rather than on a strip beneath it. */}
-            <div className="relative min-w-0 flex-1">
-            <TextareaAutosize
-              dir="auto"
-              ref={textareaRef}
-              // One line at rest. The composer is a single stadium row when
-              // idle and grows from there; `minRows={2}` forced it two lines
-              // tall even when empty.
-              minRows={1}
-              rows={1}
-              maxRows={10}
-              value={prompt}
-              data-testid={'chat-input'}
-              onChange={(e) => {
-                const nextPrompt = e.target.value
-                setPrompt(nextPrompt)
-                const slashSearch = nextPrompt.match(/^\/([^\n]*)$/)
-                if (slashSearch) {
-                  setSkillReferenceDrawerOpen(true)
-                  setSkillReferenceSearch(slashSearch[1] ?? '')
-                } else if (skillReferenceDrawerOpen) {
-                  setSkillReferenceDrawerOpen(false)
-                  setSkillReferenceSearch('')
-                  setSkillReferenceError(null)
-                  setSkillReferenceResults([])
-                }
-                // Count the number of newlines to estimate rows
-                const newRows = (nextPrompt.match(/\n/g) || []).length + 1
-                setRows(Math.min(newRows, maxRows))
-              }}
-              onKeyDown={(e) => {
-                // e.keyCode 229 is for IME input with Safari
-                const isComposing =
-                  e.nativeEvent.isComposing || e.keyCode === 229
-
-                // The `/` menu is driven from this textarea, so its keys are
-                // handled here — it never takes focus of its own.
-                if (skillReferenceDrawerOpen && !isComposing) {
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    setSkillReferenceDrawerOpen(false)
-                    setSkillReferenceSearch('')
-                    setSkillReferenceError(null)
-                    setSkillReferenceResults([])
-                    return
-                  }
-                  if (
-                    e.key === 'Enter' &&
-                    !e.shiftKey &&
-                    matchesShareMemoryCommand(skillReferenceSearch)
-                  ) {
-                    e.preventDefault()
-                    activateShareMemoryCommand()
-                    return
-                  }
-                }
-
-                if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
-                  e.preventDefault()
-                  // Submit prompt when Enter is pressed without Shift and prompt is not empty.
-                  // If streaming, handleSendMessage will queue the message automatically.
-                  if ((prompt.trim() || hasSendableAttachments) && !ingestingAny) {
-                    handleSendMessage(prompt)
-                  }
-                  // When Shift+Enter is pressed, a new line is added (default behavior)
-                }
-                // Navigate prompt history with Up/Down arrow keys
-                if (e.key === 'ArrowUp' && !isComposing) {
-                  const textarea = e.currentTarget
-                  const cursorAtStart =
-                    textarea.selectionStart === 0 &&
-                    textarea.selectionEnd === 0
-                  if (cursorAtStart || !prompt) {
-                    e.preventDefault()
-                    navigateHistory('up')
-                  }
-                }
-                if (e.key === 'ArrowDown' && !isComposing) {
-                  const textarea = e.currentTarget
-                  const cursorAtEnd =
-                    textarea.selectionStart === prompt.length &&
-                    textarea.selectionEnd === prompt.length
-                  if (cursorAtEnd) {
-                    e.preventDefault()
-                    navigateHistory('down')
-                  }
-                }
-              }}
-              onPaste={handlePaste}
-              placeholder={t(
-                hasConversation
-                  ? 'common:placeholder.chatFollowUp'
-                  : 'common:placeholder.chatInput'
-              )}
-              autoFocus
-              spellCheck={spellCheckChatInput}
-              data-gramm={spellCheckChatInput}
-              data-gramm_editor={spellCheckChatInput}
-              data-gramm_grammarly={spellCheckChatInput}
-              className={cn(
-                // py-1.5 + the 20px line box = 32px, exactly the height of the
-                // round buttons beside it, so `items-end` puts the prompt text
-                // on the same optical line as the icons instead of ~4px above.
-                'bg-transparent w-full border-none resize-none outline-0 px-1.5 py-1.5',
-                // The animated placeholder overlays this one; hiding the native
-                // string avoids two placeholders stacked on top of each other,
-                // while keeping it in the DOM for screen readers.
-                showRotatingPlaceholder && 'placeholder:text-transparent',
-                rows < maxRows && 'scrollbar-hide',
-                className
-              )}
-            />
-              {showRotatingPlaceholder && (
-                <RotatingPlaceholder className="px-1.5 text-sm" />
-              )}
-            </div>
+            {composerPromptField}
 
             <div className="flex items-center gap-2">
               {/* The model name sits on the RIGHT, immediately before send —
                   Cursor's arrangement. It reads as "which model will answer
                   this", which belongs next to the send affordance rather than
                   grouped with the input tools on the far left. */}
-              <div className={cn(isComposerBusy && 'opacity-50 pointer-events-none')}>
-                <DivoModelToggle disabled={isComposerBusy} />
-              </div>
+              {composerModelToggle}
 
               {selectedProvider === 'llamacpp' &&
                 tokenCounterCompact &&
@@ -2975,44 +3040,11 @@ const ChatInput = memo(function ChatInput({
                   </div>
                 )}
 
-              {isComposerBusy ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="destructive"
-                      size="icon-sm"
-                      aria-label="Stop generating"
-                      className="rounded-full"
-                      onClick={() => {
-                        if (displayedThreadId) stopStreaming(displayedThreadId)
-                      }}
-                    >
-                      <IconPlayerStopFilled />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Stop generating</p>
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                <Button
-                  variant="default"
-                  size="icon-sm"
-                  disabled={
-                    (!prompt.trim() && !hasSendableAttachments) || ingestingAny
-                  }
-                  data-test-id="send-message-button"
-                  onClick={() => handleSendMessage(prompt)}
-                  className="rounded-full"
-                >
-                  <ArrowUp className="text-primary-fg" />
-                </Button>
-              )}
+              {composerSendControl}
             </div>
           </div>
-          </div>
-        </div>
-      </div>
+      </DivoComposerShell>
+      )}
 
       {message && (
         <div className="-mt-0.5 mx-2 pb-2 px-3 pt-1.5 rounded-b-lg text-xs text-destructive transition-all duration-200 ease-in-out">

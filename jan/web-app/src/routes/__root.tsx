@@ -36,10 +36,11 @@ import ErrorDialog from '@/containers/dialogs/ErrorDialog'
 import LlamacppBusyOnExitDialog from '@/containers/dialogs/LlamacppBusyOnExitDialog'
 import LlamacppOomListener from '@/containers/dialogs/LlamacppOomListener'
 import MissingDependenciesDialog from '@/containers/dialogs/MissingDependenciesDialog'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { DivoDexMark } from '@/components/DivoDexBrand'
-import { DivoShowcase } from '@/components/sign-in/DivoShowcase'
+import { Button as AstryxButton } from '@astryxdesign/core/Button'
+import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput'
+
+import { DivoRunReplay } from '@/components/sign-in/DivoRunReplay'
 import {
   type DivoSessionStatus,
   getStoredDivoBackendUrl,
@@ -233,7 +234,7 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
             variants={SIGN_IN_ITEM}
             className="flex flex-1 items-center justify-center py-8"
           >
-            <DivoShowcase />
+            <DivoRunReplay />
           </motion.div>
         </motion.div>
       </section>
@@ -281,26 +282,20 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
               </motion.div>
             ) : null}
 
-            <Button
-              className={cn(
-                'group relative h-11 w-full overflow-hidden text-sm font-medium'
-              )}
-              onClick={() => void signIn()}
-              disabled={isSigningIn}
-            >
-              {/* Sheen sweep on hover */}
-              <span className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 ease-out group-hover:translate-x-full" />
-              <span className="relative flex items-center justify-center gap-2">
-                {isSigningIn ? (
-                  <>
-                    <span className="size-3.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
-                    Waiting for Lark…
-                  </>
-                ) : (
-                  'Sign in with Lark'
-                )}
-              </span>
-            </Button>
+            {/* Astryx owns the pending state: `clickAction` keeps the spinner,
+                the disabled window, and the aria-busy announcement tied to the
+                actual promise, so they cannot drift out of sync the way a
+                hand-held `isSigningIn` flag can. */}
+            <AstryxButton
+              label={isSigningIn ? 'Waiting for Lark…' : 'Sign in with Lark'}
+              variant="primary"
+              size="lg"
+              // Full-width via the Tailwind bridge rather than `xstyle`:
+              // xstyle takes authored StyleX, which is the one thing in this
+              // setup that would drag in the StyleX compiler.
+              className="w-full"
+              clickAction={signIn}
+            />
           </motion.div>
 
           <motion.details
@@ -323,15 +318,18 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
                 />
               </svg>
             </summary>
-            <div className="mt-3 space-y-1.5">
-              <label className="block text-xs font-medium text-muted-foreground">
-                Backend URL
-              </label>
-              <Input
+            <div className="mt-3">
+              {/* Label hidden, not dropped: Astryx renders it at the full form
+                  type scale, which on a tucked-away advanced field out-shouted
+                  the page's own greeting. The disclosure summary above already
+                  names it for sighted users; screen readers still get it. */}
+              <AstryxTextInput
+                label="Backend URL"
+                isLabelHidden
                 value={backendUrl}
-                onChange={(event) => setBackendUrl(event.target.value)}
-                disabled={isSigningIn}
-                className="h-10 text-sm"
+                onChange={(value) => setBackendUrl(value)}
+                isDisabled={isSigningIn}
+                size="sm"
               />
             </div>
           </motion.details>

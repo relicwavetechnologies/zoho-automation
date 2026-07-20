@@ -5,6 +5,7 @@ const mockListMessages = vi.fn()
 const mockCreateMessage = vi.fn()
 const mockModifyMessage = vi.fn()
 const mockDeleteMessage = vi.fn()
+const mockCoreListMessages = vi.fn()
 
 const mockExtension = {
   listMessages: mockListMessages,
@@ -36,6 +37,11 @@ describe('DefaultMessagesService', () => {
   beforeEach(() => {
     svc = new DefaultMessagesService()
     vi.clearAllMocks()
+    window.core = {
+      api: {
+        listMessages: mockCoreListMessages,
+      },
+    } as any
   })
 
   describe('fetchMessages', () => {
@@ -51,10 +57,14 @@ describe('DefaultMessagesService', () => {
       expect(result).toEqual([{ id: 'msg1' }])
     })
 
-    it('returns empty array on extension error', async () => {
+    it('falls back to durable core storage on extension error', async () => {
       mockListMessages.mockRejectedValue(new Error('fail'))
+      mockCoreListMessages.mockResolvedValue([{ id: 'durable-msg' }])
       const result = await svc.fetchMessages('thread-1')
-      expect(result).toEqual([])
+      expect(result).toEqual([{ id: 'durable-msg' }])
+      expect(mockCoreListMessages).toHaveBeenCalledWith({
+        threadId: 'thread-1',
+      })
     })
   })
 
@@ -73,11 +83,10 @@ describe('DefaultMessagesService', () => {
       expect(result).toEqual({ ...msg, created: true })
     })
 
-    it('returns original message on extension error', async () => {
+    it('surfaces extension persistence errors', async () => {
       const msg = { thread_id: 'thread-1', id: 'msg1' } as any
       mockCreateMessage.mockRejectedValue(new Error('fail'))
-      const result = await svc.createMessage(msg)
-      expect(result).toBe(msg)
+      await expect(svc.createMessage(msg)).rejects.toThrow('fail')
     })
   })
 
@@ -96,11 +105,10 @@ describe('DefaultMessagesService', () => {
       expect(result).toEqual({ ...msg, modified: true })
     })
 
-    it('returns original message on extension error', async () => {
+    it('surfaces extension persistence errors', async () => {
       const msg = { thread_id: 'thread-1', id: 'msg1' } as any
       mockModifyMessage.mockRejectedValue(new Error('fail'))
-      const result = await svc.modifyMessage(msg)
-      expect(result).toBe(msg)
+      await expect(svc.modifyMessage(msg)).rejects.toThrow('fail')
     })
   })
 

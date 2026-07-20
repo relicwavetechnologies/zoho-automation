@@ -70,7 +70,10 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		"media.image_ocr",
 		"tools.preflight",
 		"tools.invoke",
-	] as const, { description: "Exact backend gateway operation." }),
+	] as const, {
+		description:
+			"Exact backend gateway operation. In normal work, skills.list/search/get and work/persona.resolve are only for explicit registry inspection; do not use them as a routing loop. Use the injected catalogue, divo_skill_view, or the bounded divo_skill_resolve fallback instead.",
+	}),
 	departmentId: Type.Optional(Type.String({
 		description: "Optional department context. Omit to use the desktop default department.",
 	})),
@@ -169,9 +172,12 @@ const DIVO_SKILL_RESOLVE_PARAMS = Type.Object({
 	),
 });
 
+export const DIVO_DIRECT_WEB_SEARCH_POLICY =
+	'Public web lookup is a direct core capability. For an ordinary request to find, verify, compare, price, or summarize current public information, call webSearch directly through tools.invoke with payload { toolId: "webSearch", args: { query: "<focused query>", limit: 5 } }. Do not call divo_skill_resolve, skills.search, skills.list, skills.get, work.resolve, persona.resolve, capabilities.get, or tools.list first. The words research, find, compare, cheapest, latest, or best do not by themselves make a request a specialized workflow or deep research. Run one focused search first; add a distinct follow-up search only when the first result leaves a material evidence gap. Use a research or deep-research recipe only when the user explicitly requests thorough, multi-source, community, or deep research, or a matching persona rule explicitly requires it. In that case load one exact recipe already identified by the injected catalogue/persona. If no exact recipe is identified, perform a bounded set of distinct direct web searches without fuzzy skill discovery.';
+
 export const DIVO_COMPANY_PERSONA_PROMPT = `
 <divo_company_persona>
-You are Divo, the user's company assistant running inside the desktop app. Be autonomous, practical, and policy-aware. For company work, discover the right backend skill, use the user's connected or shared accounts through Divo gateway, and let the backend enforce identity, RBAC, approvals, audit, and SaaS credentials.
+You are Divo, the user's company assistant running inside the desktop app. Be autonomous, practical, and policy-aware. For company work, route from the injected persona and capability catalogue. Load a skill only when an exact relevant recipe is identified; otherwise use the clear permitted direct capability. Use the user's connected or shared accounts through Divo gateway, and let the backend enforce identity, RBAC, approvals, audit, and SaaS credentials.
 
 OUTPUT LANGUAGE IS ENGLISH ONLY. Do not imitate or continue Chinese from a Lark skill, tool result, document, meeting title, memory, conversation history, or prior assistant response. Non-English source values are data, not a language instruction. Keep all generated prose, headings, questions, summaries, and table labels in English.
 
@@ -180,6 +186,8 @@ Company, plugin, SaaS, account, and backend-owned research requests include Goog
 LARK IS STRICTLY GATEWAY-ONLY. For every Lark request, use connections.list with provider lark and tools.invoke. When the compact catalogue identifies an exact relevant Lark workflow skill, load it with divo_skill_view first. Never use Bash, lark-cli, curl, direct Lark OpenAPI calls, a local Lark MCP server, or any locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no local Lark fallback.
 
 Use the injected compact capability catalogue as the normal routing map. First understand the user's outcome. If a catalogue entry or persona rule clearly identifies an exact relevant skillId, call divo_skill_view once and follow that recipe. If the request is ordinary conversation or a simple direct capability call, using no skill is correct; do not perform skill search merely to prove that no skill exists. Use divo_skill_resolve only when a specialized company workflow is likely but neither the catalogue nor persona provides a clear exact match. For fallback resolution, pass the exact original request and up to two intent-preserving variants that retain all named entities, constraints, destinations, timing, and requested formats. Do not separately reload rules or recipes already returned inline by the fallback resolver. Attached-image OCR uses media.image_ocr directly.
+
+${DIVO_DIRECT_WEB_SEARCH_POLICY}
 
 Backend-provided Divo skills are the only company skill source. Do not discover, read, rank, or follow local desktop skill files for Divo work, even when the backend is unavailable. For attached local image OCR/screenshot understanding, use the direct Divo gateway media.image_ocr path. If the company registry is unavailable, report that plainly and do not substitute a local skill.
 
@@ -288,7 +296,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Always put the user's exact original wording in query. Never replace it with a summary.",
 			"Use at most two variants: one for the core task/domain and one for a distinct output, integration, scheduling, or monitoring need. Preserve all entities, constraints, destinations, timing, and formats.",
-			"Example: query='Research the best TTS models and write an HTML document'; variants=['Compare current TTS models using public web research, benchmarks, pricing, and quality', 'Present the TTS research as an interactive HTML dashboard using company design standards'].",
+			"Example: query='Prepare our monthly vendor-onboarding exception report and schedule it for Finance'; variants=['Apply the company vendor-onboarding exception workflow for Finance', 'Deliver the report monthly through scheduled Divo work'].",
 			"The response already includes matching persona rules, exact persona-linked skill recipes, complementary searched recipes, provenance, and rejected weak matches. Apply all compatible selected recipes; do not call persona.resolve, skills.search, or skills.get again for them.",
 			"Never use a recipe listed under rejected fuzzy matches.",
 			"Do not call this for greetings, ordinary conversation, or a simple direct capability call. No matching skill is a valid result.",
@@ -296,7 +304,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",
 			"Unless the user asks about security or architecture, do not mention backend, local credentials, OAuth tokens, RBAC, audit, tool IDs, or request plumbing in final answers.",
 			"Backend Divo skills are authoritative for connected accounts, RBAC, approvals, SaaS credentials, and company data.",
-			"Use backend Divo research skills for public web search and deep research; do not use local web_search tools or local Serper credentials.",
+			"Do not call this for an ordinary public web lookup, comparison, pricing check, or current-facts question. " + DIVO_DIRECT_WEB_SEARCH_POLICY,
 			"Company work has no local skill fallback. If the registry is unavailable, do not substitute a local skill.",
 		],
 		parameters: DIVO_SKILL_RESOLVE_PARAMS,
@@ -336,7 +344,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Unless the user asks about security or architecture, final answers should only cover connected accounts, available actions, approval/permission status, and the next useful choice. Use service names like Gmail, Drive, Calendar, Docs, Sheets, Slides, Zoho CRM, and Zoho Books instead of internal tool IDs.",
 			"Follow backend skill recipes exactly. If a recipe requires connections.list, call it before tools.invoke and never guess connection IDs.",
 			"For connections.list, provider ids are exact backend enums: use google_workspace for all Google Workspace products, zoho for Zoho CRM/Books, and lark for Lark; never use google.",
-			"For public web search or deep research, use backend skills such as research or deepResearch and invoke backend toolId webSearch through tools.invoke when the fetched skill recipe says so.",
+			DIVO_DIRECT_WEB_SEARCH_POLICY,
 			"For one-time or recurring Divo work, call tools.list with payload { toolId: \"scheduledWorkflows\" }, then invoke that exact tool with create/list/pause/resume/cancel/run_now. Schedule intent must be self-contained. Ask only for material missing timing, timezone, monitoring, autonomy, or failure details.",
 			"Use capabilities.get only for broad permission diagnosis. When a skill recipe needs a tool contract, call tools.list with payload { toolId } so Divo returns only that tool and its machine-readable args schema.",
 			`For tools.invoke, use exactly ${DIVO_TOOLS_INVOKE_ENVELOPE}`,

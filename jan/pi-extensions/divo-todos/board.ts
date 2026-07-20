@@ -222,16 +222,26 @@ export function createTodos(board: TodoBoard, inputs: TodoInput[]): { board?: To
 	if (inputs.filter((input) => input.status === "in_progress").length > 1) {
 		return { error: "Only one task can be in progress at a time." };
 	}
+	const hasActiveTask = board.items.some(item => item.status === "in_progress");
+	const hasExplicitActiveInput = inputs.some(input => input.status === "in_progress");
+	const autoStartIndex = !hasActiveTask && !hasExplicitActiveInput
+		? inputs.findIndex(input => input.status === undefined)
+		: -1;
+	const normalizedInputs = inputs.map((input, index) => ({
+		...input,
+		status: index === autoStartIndex ? "in_progress" as const : input.status,
+	}));
+
 	const ids = new Set(board.items.map((item) => item.id));
-	for (const input of inputs) {
+	for (const input of normalizedInputs) {
 		const error = validateInput(input, ids);
 		if (error) return { error };
 	}
 
 	let items = clone(board.items);
-	if (inputs.some((input) => input.status === "in_progress")) items = settleExistingActive(items);
+	if (normalizedInputs.some((input) => input.status === "in_progress")) items = settleExistingActive(items);
 	const createdAt = now();
-	for (const input of inputs) {
+	for (const input of normalizedInputs) {
 		items.push({
 			id: randomUUID(),
 			content: input.content.trim(),
@@ -281,6 +291,25 @@ export function clearTodos(board: TodoBoard, completedOnly: boolean): TodoBoard 
 	return nextBoard(board, items);
 }
 
+/**
+ * Resolve the model-facing task reference shown by boardText. UUIDs remain
+ * valid for replay and callers that already have one, while #1/1 references
+ * keep normal model updates concise and reliable.
+ */
+export function resolveTodoReference(board: TodoBoard, reference: string): string | undefined {
+	const normalized = reference.trim();
+	const exact = board.items.find(item => item.id === normalized);
+	if (exact) return exact.id;
+	const ordinal = /^#?(\d+)$/.exec(normalized);
+	if (!ordinal) return undefined;
+	const index = Number(ordinal[1]) - 1;
+	return Number.isSafeInteger(index) && index >= 0 ? board.items[index]?.id : undefined;
+}
+
+function boundedLabel(value: string, maxChars = 120): string {
+	return value.length <= maxChars ? value : `${value.slice(0, maxChars - 1)}…`;
+}
+
 export function boardText(board: TodoBoard): string {
 	if (!board.items.length) return "No tasks on this chat's Pi todo board.";
 	const active = board.items.find((item) => item.status === "in_progress");
@@ -289,5 +318,8 @@ export function boardText(board: TodoBoard): string {
 		{ pending: 0, in_progress: 0, completed: 0, blocked: 0, cancelled: 0 },
 	);
 	const summary = `${counts.completed}/${board.items.length} completed, ${counts.in_progress} active, ${counts.pending} upcoming`;
-	return active ? `${summary}\nActive: ${active.activeForm || active.content}` : summary;
+	const taskReferences = board.items.map((item, index) =>
+		`#${index + 1} [${item.status}] ${boundedLabel(item.activeForm || item.content)}`,
+	);
+	return [summary, ...taskReferences].join("\n");
 }

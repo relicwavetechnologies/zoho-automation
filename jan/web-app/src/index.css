@@ -1,4 +1,37 @@
-@import 'tailwindcss';
+/* Astryx + Tailwind coexistence.
+   Tailwind's all-in-one `@import 'tailwindcss'` is split into its three real
+   layers so Astryx's system CSS can sit between the theme and the utilities,
+   which is the order its Tailwind bridge documents and requires.
+
+   ORDER IS LOAD-BEARING. Astryx's bridge aliases seven names Jan already
+   defines — primary, secondary, accent, card, popover, muted, border — and
+   three of them mean the OPPOSITE thing: Astryx maps --color-primary to
+   text-primary, whereas shadcn means a brand FILL you put behind
+   -primary-foreground. Left to Astryx, every `bg-primary` button in the app
+   would quietly render as a near-black text colour: no error, no build
+   failure, just ~1,300 utilities changing meaning at once.
+
+   So the bridge lands here, and Jan's own `@theme inline` block below wins by
+   coming later. Astryx components are unaffected — they read their own
+   unaliased system tokens (--color-text-primary, --color-background-card),
+   which collide with nothing. That lets Astryx pages look truly Astryx while
+   existing screens keep rendering exactly as before, so the design system
+   migrates page by page instead of in one breaking commit. */
+@layer reset, theme, base, astryx-base, astryx-theme, components, utilities;
+
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/preflight.css' layer(base);
+@import '@astryxdesign/core/reset.css';
+@import '@astryxdesign/core/astryx.css';
+@import '@astryxdesign/theme-neutral/theme.css';
+/* Divo's accent, overriding the stock theme. Astryx components colour
+   themselves from these tokens rather than Jan's Tailwind ones, so without
+   this an Astryx button renders in Astryx blue next to Divo's coral.
+   Regenerate with: yarn astryx theme build src/styles/divo.theme.ts */
+@import '@/styles/divo.css';
+@import '@astryxdesign/core/tailwind-theme.css';
+@import 'tailwindcss/utilities.css' layer(utilities);
+
 @import 'tw-animate-css';
 @import 'katex/dist/katex.min.css';
 /* Linked from 'self' so CSP keeps it: WebView2 drops sonner's runtime <style>

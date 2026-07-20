@@ -136,9 +136,10 @@ describe('CustomChatTransport', () => {
       { modelSupportsVision: false }
     )
 
-    expect(result).toContain('Your first action for this user request must be to call divo_skill_resolve')
-    expect(result).toContain('before using Read, Bash, Python, OCR')
-    expect(result).toContain('original user request')
+    expect(result).toContain('Read an ordinary local file directly')
+    expect(result).toContain('load it once with divo_skill_view')
+    expect(result).toContain('Use divo_skill_resolve only when a specialized company workflow is likely')
+    expect(result).toContain('Do not run fuzzy skill discovery merely because a file is attached')
     expect(result).toContain('current selected model does not support native image input')
     expect(result).toContain('do not use the Read tool')
     expect(result).toContain('[ATTACHED_FILES]')
@@ -182,6 +183,23 @@ describe('CustomChatTransport', () => {
     expect(result).toContain('path: /Users/test/screenshot.png')
     expect(result).toContain('Tell me what is in this image.')
     expect(result.match(/\[ATTACHED_FILES\]/g)).toHaveLength(1)
+  })
+
+  it('does not force skill resolution merely because a local document is attached', () => {
+    const result = transport.buildPiAttachmentRoutingContext([
+      {
+        id: 'doc-1',
+        name: 'brief.pdf',
+        path: '/Users/test/brief.pdf',
+        type: 'pdf',
+      },
+    ])
+
+    expect(result).toContain('Read an ordinary local file directly')
+    expect(result).toContain('Do not call divo_skill_resolve merely because a file path is present')
+    expect(result).toContain('load it once with divo_skill_view')
+    expect(result).not.toContain('your first tool call for this request must be divo_skill_resolve')
+    expect(result).not.toContain('local document skill')
   })
 
   it('buildPiUserMessage injects selected Divo skill references before the user request', () => {

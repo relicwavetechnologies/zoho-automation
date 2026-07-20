@@ -5,17 +5,17 @@ description: Use when the user asks for Divo/company capabilities, Zoho, Lark, G
 
 # Divo Gateway
 
-Use `divo_skill_resolve` once before planning every meaningful company task. It combines the current department persona with the authenticated, RBAC-filtered backend skill registry, loads exact persona-linked recipes, searches complementary skills, and rejects weak mismatches. Local skill files are never candidates. Use `divo_gateway` for every company-owned capability and backend-owned research capability, including public web search and deep research. Do not call SaaS APIs directly, invent company data, ask the user for backend tokens, use local Serper credentials, or bypass approval/RBAC decisions.
+Use the injected department persona and compact capability catalogue as the normal routing map. When they identify one exact relevant skill, load it once with `divo_skill_view`. When the request is an ordinary conversation or a simple direct capability call, using no skill is correct. Use `divo_skill_resolve` only as a bounded fallback for a likely specialized company workflow that has no clear exact catalogue or persona match. Local skill files are never company-skill candidates. Use `divo_gateway` for every company-owned capability and backend-owned web search. Do not call SaaS APIs directly, invent company data, ask the user for backend tokens, use local Serper credentials, or bypass approval/RBAC decisions.
 
 The backend is the authority for identity, departments, RBAC, approvals, audit, SaaS credentials, and tool execution. Pi is only the local reasoning/runtime layer.
 
-Do not mention resolver, routing, backend, backend enums, OAuth tokens, local credentials, internal tool IDs, tool-selection mechanics, gateway, or gateway plumbing in user-facing answers unless the user explicitly asks how Divo is wired or secured. If skill resolution is inconclusive, silently continue with gateway discovery calls such as `capabilities.get`, `tools.list`, `skills.list`, or `connections.list`.
+Do not mention resolver, routing, backend, backend enums, OAuth tokens, local credentials, internal tool IDs, tool-selection mechanics, gateway, or gateway plumbing in user-facing answers unless the user explicitly asks how Divo is wired or secured. Do not run registry or capability discovery merely to prove that a skill or permission exists. If fallback skill resolution is genuinely needed and inconclusive, silently continue with the clear permitted direct capability; use bounded discovery only when its target or contract is actually unknown.
 
 When calling Divo tools, do not add visible pre-tool text that describes the resolver, gateway, backend, routing, enum names, or tool mechanics. Call the tool directly, or use plain wording like "I'll check that."
 
-## Tool Shape
+## Fallback Resolver Shape
 
-First call:
+Only for a likely specialized workflow with no exact catalogue/persona match:
 
 ```json
 {
@@ -27,7 +27,7 @@ First call:
 }
 ```
 
-`variants` is optional and accepts at most two entries. The exact request is always searched, so never replace it with a summary. The resolver returns matching persona rules, provenance, full exact linked recipes, complementary searched recipes, and rejected fuzzy matches. Apply all compatible selected recipes and never use rejected ones. Do not repeat `persona.resolve`, `skills.search`, or `skills.get` for results already returned inline. If the backend registry is unavailable, do not substitute a local skill.
+`variants` is optional and accepts at most two entries. The exact request is always searched, so never replace it with a summary. The resolver returns matching persona rules, provenance, full exact linked recipes, complementary searched recipes, and rejected fuzzy matches. Apply all compatible selected recipes and never use rejected ones. Do not repeat `persona.resolve`, `skills.search`, or `skills.get` for results already returned inline. Do not use this fallback for an ordinary web lookup, comparison, pricing check, or current-facts question. If the backend registry is unavailable, do not substitute a local skill.
 
 For backend gateway operations, call:
 
@@ -44,8 +44,8 @@ For backend gateway operations, call:
 
 Supported operations are:
 
-- `work.resolve`: unified current-persona resolution, exact linked-recipe loading, and bounded multi-query complementary skill search.
-- `skills.search`: search backend-provided company skills/instructions for the user's request.
+- `work.resolve`: legacy/raw form of the bounded fallback resolver. Normal work should use `divo_skill_resolve` instead.
+- `skills.search`: explicit registry inspection and Teach canonicalization only. Do not use it as a second routing pass in a normal task.
 - `capabilities.get`: discover the current user's allowed departments, tools, skills, and constraints.
 - `tools.list`: list tools available to the current user and department.
 - `skills.list`: list backend-provided company skills/instructions available to the current user.
@@ -53,7 +53,7 @@ Supported operations are:
 - `connections.list`: list backend-visible personal/shared integration connections, e.g. Google Workspace and Lark accounts.
 - `tools.invoke`: execute a backend tool with `payload: { "toolId": "...", "args": { ... } }`.
 
-Scheduling is available in normal and Teach conversations through the backend `scheduledWorkflows` tool. Resolve the exact request first so the company-wide Schedule Divo Work skill and task-specific skills are returned together. Use `scheduledWorkflows` for agent work, reminders, reports, or monitoring that runs later or repeatedly; use a calendar skill for meetings, invitations, free/busy, or reserving time. If the request is ambiguous, ask which one the user means. Follow the returned scheduling skill exactly: call `tools.list` with payload `{ "toolId": "scheduledWorkflows" }`, then `tools.invoke` with `{ "toolId": "scheduledWorkflows", "args": { ... } }`. Keep all operation and timing fields inside `args`. Never guess material details or claim success before the backend returns the created schedule.
+Scheduling is available in normal and Teach conversations through the backend `scheduledWorkflows` tool. Load the exact Schedule Divo Work skill from the injected catalogue with `divo_skill_view`; use `divo_skill_resolve` only if that exact recipe is absent. Use `scheduledWorkflows` for agent work, reminders, reports, or monitoring that runs later or repeatedly; use a calendar skill for meetings, invitations, free/busy, or reserving time. If the request is ambiguous, ask which one the user means. Follow the returned scheduling skill exactly: call `tools.list` with payload `{ "toolId": "scheduledWorkflows" }`, then `tools.invoke` with `{ "toolId": "scheduledWorkflows", "args": { ... } }`. Keep all operation and timing fields inside `args`. Never guess material details or claim success before the backend returns the created schedule.
 
 For `connections.list`, provider ids are exact backend enums:
 
@@ -68,10 +68,11 @@ Every Lark request must use `divo_gateway`, including document creation and edit
 
 For a Lark document create result, preserve the returned `url` and present it as a clickable link. Do not derive a URL from `docToken`, search for the document after creation, or use Bash to recover a link. If a successful response is missing `url`, report the incomplete result instead of inventing a host.
 
-Backend web search is available through gateway skills and tools when RBAC allows it:
+Backend web search is a direct core capability when RBAC allows it:
 
-- For normal public web lookup, resolve/fetch the backend `research` skill, then invoke `tools.invoke` with `toolId: "webSearch"` and args like `{ "query": "...", "limit": 5 }` when the skill recipe calls for web results.
-- For multi-round deep research, resolve/fetch the backend `deepResearch` skill and follow its search strategy using the backend `webSearch` tool.
+- For a normal public lookup, comparison, pricing check, verification, or current-facts question, immediately invoke `tools.invoke` with payload `{ "toolId": "webSearch", "args": { "query": "<focused query>", "limit": 5 } }`. Do not call a resolver, skills operation, `capabilities.get`, or `tools.list` first.
+- The words “research,” “find,” “compare,” “cheapest,” “latest,” and “best” do not by themselves make a request deep research. Start with one focused search and add a distinct follow-up only for a material evidence gap.
+- Use a research/deep-research recipe only when the user explicitly requests thorough, multi-source, community, or deep research, or a matching persona rule explicitly requires it. In that case load one exact recipe already identified by the injected catalogue/persona. If no exact recipe is identified, perform a bounded set of distinct direct searches without fuzzy skill discovery.
 - Do not use local `web_search` tools, local browser search hacks, or any local Serper/OpenRouter key for web search. Backend owns credentials, audit, RBAC, and result execution.
 
 Skill publishing is backend-owned:
@@ -84,16 +85,16 @@ Use the department id only when the user has selected or implied a department co
 
 ## Workflow
 
-1. For Divo/company work, use the backend registry and gateway.
+1. For Divo/company work, use the injected persona/catalogue and gateway.
    - Requests involving Divo, company data, plugins, connected accounts, SaaS apps, CRM, Books, email, calendar, Drive, approvals, departments, shared workspaces, public web search, deep research, or ambiguous company context must use Divo.
 2. For attached local image OCR or screenshot understanding, call `divo_gateway` directly:
    `divo_gateway({ "op": "media.image_ocr", "payload": { "filePath": "<attached image path>", "mimeType": "<attached image MIME type>", "fileName": "<attached image name>" } })`.
    Desktop normalizes unsupported image formats and compresses oversized images before attachment metadata is sent to Pi, so do not convert or compress the image yourself first.
    The gateway tool converts `filePath` into the backend payload. Do this before `Read`, shell OCR, local image skills, or `divo_skill_resolve`.
-3. For every meaningful Divo-relevant, plugin, SaaS, non-image file-processing, document, research, deliverable, workflow, or scheduled/monitored request, call `divo_skill_resolve` once with the exact original request. Add at most two intent-preserving variants when the task has distinct core and output/integration needs.
-4. Apply the matching persona rules, exact persona-linked recipes, and complementary recipes returned inline. Do not reload them or choose a rejected fuzzy match.
-5. If the resolver is inconclusive or does not select a useful exact backend skill, silently continue with `divo_gateway` discovery. Do not tell the user the resolver failed or went sideways.
-6. If the registry is unavailable or returns no exact skill, use only backend discovery calls such as `capabilities.get`, `tools.list`, `skills.list`, or `connections.list`; never substitute a local skill.
+3. Scan the injected compact catalogue and persona. If one exact relevant skill is identified, load it once with `divo_skill_view`. If the task is a simple direct capability call, proceed without a skill.
+4. Use `divo_skill_resolve` once only when a specialized company workflow is likely but no exact injected match exists. Add at most two intent-preserving variants when the specialized task has distinct core and output/integration needs.
+5. Apply matching persona rules, exact persona-linked recipes, and complementary recipes returned inline. Do not reload them, run a second raw skill search, or choose a rejected fuzzy match.
+6. If the fallback resolver is inconclusive, silently continue with the clear permitted direct capability. Use `capabilities.get`, `tools.list`, `skills.list`, or `connections.list` only when the permission, contract, registry contents, or account choice is genuinely unknown; never substitute a local company skill.
 7. Follow the returned backend skill recipe exactly.
    - If it says to call `connections.list`, call that before `tools.invoke`.
    - For Google Workspace connections, call `connections.list` with payload `{ "provider": "google_workspace" }`.

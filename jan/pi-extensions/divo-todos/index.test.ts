@@ -47,6 +47,51 @@ test("tool results expose the versioned board snapshot without a separate transp
 	assert.match(details.boardId, /^[0-9a-f-]{36}$/i);
 });
 
+test("starts the first implicit task and accepts the displayed ordinal for updates", async () => {
+	let registered:
+		| {
+			execute?: (toolCallId: string, params: unknown) => Promise<{
+				content: Array<{ text: string }>;
+				details: unknown;
+				isError?: boolean;
+			}>;
+		}
+		| undefined;
+	extension({
+		registerTool(tool: typeof registered) {
+			registered = tool;
+		},
+		on() {},
+	} as never);
+
+	const created = await registered?.execute?.("todo-call", {
+		action: "create",
+		tasks: [{ content: "Research providers" }, { content: "Write recommendation" }],
+	});
+	assert.match(created?.content[0]?.text ?? "", /#1 \[in_progress\] Research providers/);
+	assert.match(created?.content[0]?.text ?? "", /#2 \[pending\] Write recommendation/);
+	const createdDetails = created?.details as { items: Array<{ status: string }> };
+	assert.deepEqual(createdDetails.items.map(item => item.status), ["in_progress", "pending"]);
+
+	const completed = await registered?.execute?.("todo-call", {
+		action: "update",
+		id: "#1",
+		status: "completed",
+	});
+	assert.equal(completed?.isError, undefined);
+	assert.match(completed?.content[0]?.text ?? "", /#1 \[completed\] Research providers/);
+	const completedDetails = completed?.details as { items: Array<{ status: string }> };
+	assert.equal(completedDetails.items[0]?.status, "completed");
+
+	const missing = await registered?.execute?.("todo-call", {
+		action: "update",
+		id: "#9",
+		status: "completed",
+	});
+	assert.equal(missing?.isError, true);
+	assert.match(missing?.content[0]?.text ?? "", /Task reference #9 was not found/);
+});
+
 test("reconstructs only the current Pi session branch after resume or branch switch", async () => {
 	let registered:
 		| {
