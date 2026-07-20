@@ -1,4 +1,4 @@
-import { useId, type SVGProps } from 'react'
+import { useId, type ReactNode, type SVGProps } from 'react'
 
 type BrandIconProps = SVGProps<SVGSVGElement> & {
   title?: string
@@ -196,6 +196,29 @@ export function ZohoIcon({ title = 'Zoho', ...props }: BrandIconProps) {
 }
 
 /**
+ * Semrush's comet mark — the round head with the forked trail behind it.
+ *
+ * A single silhouette, so it carries no colour of its own. Semrush's lockup
+ * prints it black on light; that inverts to invisible on our dark theme, so it
+ * is filled with the brand orange (`#FF642D`), which holds on both. Swap the
+ * fill to `currentColor` if it should instead take on the row's text colour.
+ *
+ * Redrawn rather than traced, like `CanvaIcon`: the proportions are eyeballed
+ * from the lockup and verified legible down to 14px, the size the work log
+ * renders it at.
+ */
+export function SemrushIcon({ title = 'Semrush', ...props }: BrandIconProps) {
+  return (
+    <svg viewBox="0 0 48 48" role="img" aria-label={title} {...props}>
+      <path
+        fill="#FF642D"
+        d="M26 24 L2 10 L27.6 12.5 A12.5 12.5 0 1 1 27.6 35.5 L2 38 Z"
+      />
+    </svg>
+  )
+}
+
+/**
  * Official Lark mark: two overlapping wings forming a dove.
  *
  * Traced from Lark's own artwork, so the geometry and the three brand colours
@@ -224,6 +247,145 @@ export function LarkIcon({ title = 'Lark', ...props }: BrandIconProps) {
       <path
         fill="#293E96"
         d="M118 126.2C110.1 124.5 91.1 117.8 84.5 114.5L82.8 113.6L84.3 112.7C94.5 106.5 97.3 104.2 109.5 92.2C115.4 86.4 121.7 80.7 123.5 79.4C136.6 70.1 154.1 67.5 169.8 72.5C176.6 74.7 176.7 74.8 173.9 77.9C170.3 81.9 168.6 84.9 162.5 97C155.5 110.9 153.8 113.7 149.4 117.8C141.2 125.3 129 128.6 118 126.2Z"
+      />
+    </svg>
+  )
+}
+
+/**
+ * The Workspace document family — Docs, Sheets, Slides, Forms.
+ *
+ * Google draws these as one silhouette (a page with a folded corner) recoloured
+ * per product, with a white glyph inside. Sharing the outline here keeps the
+ * services list visually even and means a new member of the family is a colour
+ * and a glyph, not another hand-drawn path.
+ */
+function WorkspaceDocMark({
+  title,
+  body,
+  fold,
+  children,
+  ...props
+}: BrandIconProps & { body: string; fold: string; children: ReactNode }) {
+  return (
+    <svg viewBox="0 0 48 48" role="img" aria-label={title} {...props}>
+      <path
+        fill={body}
+        d="M12 4h16.7L38 13.3V42a2 2 0 0 1-2 2H12a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"
+      />
+      <path fill={fold} d="M28.7 4 38 13.3h-7.3a2 2 0 0 1-2-2z" />
+      {children}
+    </svg>
+  )
+}
+
+/** Official Google Docs mark, bundled locally for offline desktop use. */
+export function GoogleDocsIcon({ title = 'Google Docs', ...props }: BrandIconProps) {
+  return (
+    <WorkspaceDocMark title={title} body="#4285f4" fold="#a1c2fa" {...props}>
+      <g fill="#fff">
+        <rect x="16" y="21" width="16" height="2" rx="1" />
+        <rect x="16" y="26" width="16" height="2" rx="1" />
+        <rect x="16" y="31" width="11" height="2" rx="1" />
+      </g>
+    </WorkspaceDocMark>
+  )
+}
+
+/** Official Google Sheets mark, bundled locally for offline desktop use. */
+export function GoogleSheetsIcon({ title = 'Google Sheets', ...props }: BrandIconProps) {
+  return (
+    <WorkspaceDocMark title={title} body="#0f9d58" fold="#87ceac" {...props}>
+      <path
+        fill="#fff"
+        d="M15 21h18v14H15zm2 2v3h6v-3zm8 0v3h6v-3zm-8 5v2h6v-2zm8 0v2h6v-2zm-8 4v2h6v-2zm8 0v2h6v-2z"
+      />
+    </WorkspaceDocMark>
+  )
+}
+
+/** Official Google Slides mark, bundled locally for offline desktop use. */
+export function GoogleSlidesIcon({ title = 'Google Slides', ...props }: BrandIconProps) {
+  return (
+    <WorkspaceDocMark title={title} body="#f4b400" fold="#fadb84" {...props}>
+      <path fill="#fff" d="M15 22h18v13H15z" />
+      <path fill="#f4b400" d="M18 25h12v7H18z" />
+    </WorkspaceDocMark>
+  )
+}
+
+/** Official Google Forms mark, bundled locally for offline desktop use. */
+export function GoogleFormsIcon({ title = 'Google Forms', ...props }: BrandIconProps) {
+  return (
+    <WorkspaceDocMark title={title} body="#7248b9" fold="#c3aede" {...props}>
+      <g fill="#fff">
+        <path d="m16.8 21.6 1.2-1.2 1.2 1.2-1.2 1.2z" />
+        <rect x="22" y="20.4" width="10" height="2" rx="1" />
+        <path d="m16.8 26.6 1.2-1.2 1.2 1.2-1.2 1.2z" />
+        <rect x="22" y="25.4" width="10" height="2" rx="1" />
+        <path d="m16.8 31.6 1.2-1.2 1.2 1.2-1.2 1.2z" />
+        <rect x="22" y="30.4" width="10" height="2" rx="1" />
+      </g>
+    </WorkspaceDocMark>
+  )
+}
+
+/** Official Google Tasks mark, bundled locally for offline desktop use. */
+export function GoogleTasksIcon({ title = 'Google Tasks', ...props }: BrandIconProps) {
+  return (
+    <svg viewBox="0 0 48 48" role="img" aria-label={title} {...props}>
+      <path
+        fill="#1a73e8"
+        d="M40.6 13.4a2.9 2.9 0 0 0-4.1 0L21.4 28.5l-5.9-5.9a2.9 2.9 0 1 0-4.1 4.1l8 8a2.9 2.9 0 0 0 4.1 0l17.1-17.1a2.9 2.9 0 0 0 0-4.2z"
+      />
+      <circle cx="12" cy="12" r="3.6" fill="#fbbc04" />
+    </svg>
+  )
+}
+
+/** Official Google Contacts mark, bundled locally for offline desktop use. */
+export function GoogleContactsIcon({ title = 'Google Contacts', ...props }: BrandIconProps) {
+  return (
+    <svg viewBox="0 0 48 48" role="img" aria-label={title} {...props}>
+      <circle cx="24" cy="17" r="7.5" fill="#4285f4" />
+      <path
+        fill="#1a73e8"
+        d="M24 27c-7.2 0-13 4.3-13 9.6V40a2 2 0 0 0 2 2h22a2 2 0 0 0 2-2v-3.4c0-5.3-5.8-9.6-13-9.6z"
+      />
+      <g fill="#a1c2fa">
+        <rect x="4" y="12" width="4" height="3" rx="1.5" />
+        <rect x="4" y="19" width="4" height="3" rx="1.5" />
+        <rect x="4" y="26" width="4" height="3" rx="1.5" />
+      </g>
+    </svg>
+  )
+}
+
+/** Official Google Chat mark, bundled locally for offline desktop use. */
+export function GoogleChatIcon({ title = 'Google Chat', ...props }: BrandIconProps) {
+  return (
+    <svg viewBox="0 0 48 48" role="img" aria-label={title} {...props}>
+      <path
+        fill="#00ac47"
+        d="M8 6h32a4 4 0 0 1 4 4v20a4 4 0 0 1-4 4H20l-9.4 8.2A1.5 1.5 0 0 1 8 41.1V34a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4z"
+      />
+      <g fill="#fff">
+        <circle cx="16" cy="20" r="2.6" />
+        <circle cx="24" cy="20" r="2.6" />
+        <circle cx="32" cy="20" r="2.6" />
+      </g>
+    </svg>
+  )
+}
+
+/** Official Google Apps Script mark, bundled locally for offline desktop use. */
+export function GoogleAppsScriptIcon({ title = 'Apps Script', ...props }: BrandIconProps) {
+  return (
+    <svg viewBox="0 0 48 48" role="img" aria-label={title} {...props}>
+      <rect x="5" y="5" width="38" height="38" rx="8" fill="#4285f4" />
+      <path
+        fill="#fff"
+        d="M19.9 15.6a2.2 2.2 0 0 1 0 3.1L14.6 24l5.3 5.3a2.2 2.2 0 0 1-3.1 3.1l-6.9-6.8a2.2 2.2 0 0 1 0-3.2l6.9-6.8a2.2 2.2 0 0 1 3.1 0zm8.2 0a2.2 2.2 0 0 1 3.1 0l6.9 6.8a2.2 2.2 0 0 1 0 3.2l-6.9 6.8a2.2 2.2 0 0 1-3.1-3.1l5.3-5.3-5.3-5.3a2.2 2.2 0 0 1 0-3.1z"
       />
     </svg>
   )

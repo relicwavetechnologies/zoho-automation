@@ -69,6 +69,7 @@ type ToolLikePart = {
 }
 
 const MAX_PREVIEW_CHARS = 1_200
+const MAX_FINAL_OUTPUT_CHARS = 16_000
 const MAX_EVENT_COUNT = 24
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -149,7 +150,10 @@ function childFromRecord(value: unknown, index: number, fallbackId: string): Div
     },
     model: string(record.model) || undefined,
     outputPreview: truncate(string(record.outputPreview)) || undefined,
-    finalOutput: truncate(string(record.finalOutput)) || undefined,
+    // Completed output has its own bounded contract in the Pi extension. Do
+    // not apply the live-preview budget here or completed subagent reports
+    // become indistinguishable from a truncated streaming update.
+    finalOutput: truncate(string(record.finalOutput), MAX_FINAL_OUTPUT_CHARS) || undefined,
     error: truncate(string(record.error)) || undefined,
     events,
   }

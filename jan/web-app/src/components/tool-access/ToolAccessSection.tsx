@@ -1,9 +1,9 @@
-import { RefreshCw } from 'lucide-react'
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 import { Switch } from '@/components/ui/switch'
 import { ToolInventoryMetadata } from '@/components/tool-access/ToolInventoryMetadata'
+import { AccessScopeSkeleton } from '@/components/tool-catalogue/ToolSkeletons'
 import {
   getDivoToolManageSnapshot,
   setDivoDepartmentMemberToolAction,
@@ -15,7 +15,6 @@ import {
   type ToolManagementScope,
 } from '@/lib/divo-tools'
 import { CommittedToolAccessGeneration } from '@/lib/tool-access-generation'
-import { cn } from '@/lib/utils'
 
 type ToolAccessSectionProps = {
   items: DivoToolInventoryItem[]
@@ -139,7 +138,7 @@ function ManagedToolAccess({ item, onUpdated }: { item: DivoToolInventoryItem; o
           </select>
         </label>
       ) : scope ? <p className="text-sm text-muted-foreground">Scope: {scopeLabel(scope)}</p> : null}
-      {!snapshot && !error ? <AccessState title="Loading current access" description="Checking this scope with Divo." loading /> : null}
+      {!snapshot && !error ? <AccessScopeSkeleton /> : null}
       {error ? <AccessState title="Could not load this scope" description={error} /> : null}
       {snapshot && isGlobalSnapshot(snapshot) ? <GlobalAccess snapshot={snapshot} saving={activeSaving} onUpdate={update} /> : null}
       {snapshot && !isGlobalSnapshot(snapshot) ? <DepartmentAccess snapshot={snapshot} saving={activeSaving} onUpdate={update} /> : null}
@@ -177,8 +176,9 @@ function AccessGroup({ title, description, children }: { title: string; descript
   return <section className="space-y-2"><div><h3 className="font-medium">{title}</h3><p className="text-sm text-muted-foreground">{description}</p></div><div className="space-y-2">{children}</div></section>
 }
 
-function AccessState({ title, description, loading = false }: { title: string; description: string; loading?: boolean }) {
-  return <div className="rounded-lg border border-dashed border-border/70 p-4 text-center"><div className="flex justify-center">{loading ? <RefreshCw className="size-5 animate-spin text-muted-foreground" /> : null}</div><h3 className={cn('font-medium', loading && 'mt-2')}>{title}</h3><p className="mt-1 text-sm text-muted-foreground">{description}</p></div>
+/** Dead ends only — loading is a skeleton now, not a dashed box with a spinner. */
+function AccessState({ title, description }: { title: string; description: string }) {
+  return <div className="rounded-lg border border-dashed border-border/70 p-4 text-center"><h3 className="font-medium">{title}</h3><p className="mt-1 text-sm text-muted-foreground">{description}</p></div>
 }
 
 function scopeKey(scope: ToolManagementScope | null): string { if (!scope) return ''; return scope.kind === 'global' ? 'global' : `department:${scope.department.id}` }

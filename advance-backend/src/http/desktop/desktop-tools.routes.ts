@@ -16,6 +16,8 @@ import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware
 import type { ToolRegistry } from '../../application/orchestration/tools/tool-registry';
 import type { CompanySerperConnectionRepository } from '../../infrastructure/persistence/company-serper-connection.repository';
 import type { CompanySerperService } from '../../application/web-search/company-serper.service';
+import type { CompanyOmsConnectionRepository } from '../../infrastructure/persistence/company-oms-connection.repository';
+import type { CompanyOmsSiteDataService } from '../../application/oms/company-oms-site-data.service';
 
 export interface DesktopToolsRouteDeps {
   prisma: PrismaClient;
@@ -32,6 +34,8 @@ export interface DesktopToolsRouteDeps {
   toolRegistry: ToolRegistry;
   serperConnectionRepo: CompanySerperConnectionRepository;
   serperService: CompanySerperService;
+  omsConnectionRepo: CompanyOmsConnectionRepository;
+  omsSiteDataService: CompanyOmsSiteDataService;
 }
 
 const enabledSchema = z.object({ enabled: z.boolean() });
@@ -44,6 +48,9 @@ const serperTestSchema = z.object({ apiKey: z.string().min(1).max(512) }).strict
 const serperSaveSchema = z.object({ label: z.string().trim().min(1).max(100), apiKey: z.string().min(1).max(512), verificationToken: z.string().uuid(), remainingCredits: z.number().int().min(0).max(100_000_000).optional() }).strict();
 const serperStatusSchema = z.object({ enabled: z.boolean() }).strict();
 const serperCreditsSchema = z.object({ remainingCredits: z.number().int().min(0).max(100_000_000) }).strict();
+const omsTestSchema = z.object({ apiKey: z.string().min(1).max(512) }).strict();
+const omsSaveSchema = z.object({ label: z.string().trim().min(1).max(100), apiKey: z.string().min(1).max(512), verificationToken: z.string().uuid() }).strict();
+const omsStatusSchema = z.object({ enabled: z.boolean() }).strict();
 
 function actor(res: Response) {
   return { userId: res.locals.userId as string, companyId: res.locals.companyId as string, role: res.locals.aiRole as string };
@@ -61,7 +68,7 @@ function respondError(res: Response, error: unknown): void {
 function requireCompanyAdmin(res: Response): boolean {
   const role = res.locals.aiRole as string;
   if (role === 'COMPANY_ADMIN' || role === 'SUPER_ADMIN') return true;
-  res.status(403).json({ error: 'forbidden', message: 'Only company admins can manage Web Search connections' });
+  res.status(403).json({ error: 'forbidden', message: 'Only company admins can manage company-owned provider connections' });
   return false;
 }
 
@@ -162,6 +169,79 @@ export function createDesktopToolsRoutes(deps: DesktopToolsRouteDeps): Router {
     if (!requireCompanyAdmin(res)) return;
     const deleted = await deps.serperConnectionRepo.revoke(res.locals.companyId as string, req.params.connectionId!);
     if (!deleted) { res.status(404).json({ error: 'not_found' }); return; }
+    res.json({ success: true });
+  });
+
+  // OMS Site Data is an admin-only, company-owned read capability. Like every
+  // provider connection, raw credentials are accepted only during test/save.
+  router.get('/tools/omsSiteData/connections', memberAuth, async (_req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    res.json({ connections: await deps.omsConnectionRepo.list(res.locals.companyId as string) });
+  });
+
+  router.post('/tools/omsSiteData/connections/test', memberAuth, async (req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    const parsed = omsTestSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'apiKey is required' }); return; }
+    try {
+      res.json(await deps.omsSiteDataService.verify(res.locals.companyId as string, res.locals.userId as string, parsed.data.apiKey));
+    } catch (error) {
+      res.status(422).json({ error: 'connection_test_failed', message: error instanceof Error ? error.message : 'Unable to verify this OMS Site Data API key' });
+    }
+  });
+
+  router.post('/tools/omsSiteData/connections', memberAuth, async (req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    const parsed = omsSaveSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'label, apiKey, and verificationToken are required' }); return; }
+    try {
+      const connection = await deps.omsSiteDataService.saveVerified({
+        companyId: res.locals.companyId as string,
+        userId: res.locals.userId as string,
+        label: parsed.data.label,
+        apiKey: parsed.data.apiKey,
+        verificationToken: parsed.data.verificationToken,
+      });
+      deps.auditService.record({
+        actorId: res.locals.userId as string,
+        companyId: res.locals.companyId as string,
+        action: 'oms.site_data.connection_saved',
+        outcome: 'success',
+        metadata: { connectionId: connection.id },
+      });
+      res.status(201).json({ connection });
+    } catch (error) {
+      res.status(422).json({ error: 'connection_not_verified', message: error instanceof Error ? error.message : 'Test the exact OMS Site Data key before saving it' });
+    }
+  });
+
+  router.patch('/tools/omsSiteData/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    const parsed = omsStatusSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'enabled must be a boolean' }); return; }
+    const connection = await deps.omsConnectionRepo.setStatus(res.locals.companyId as string, req.params.connectionId!, parsed.data.enabled ? 'connected' : 'disabled');
+    if (!connection) { res.status(404).json({ error: 'not_found' }); return; }
+    deps.auditService.record({
+      actorId: res.locals.userId as string,
+      companyId: res.locals.companyId as string,
+      action: 'oms.site_data.connection_status',
+      outcome: 'success',
+      metadata: { connectionId: connection.id, enabled: parsed.data.enabled },
+    });
+    res.json({ connection });
+  });
+
+  router.delete('/tools/omsSiteData/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    if (!requireCompanyAdmin(res)) return;
+    const deleted = await deps.omsConnectionRepo.revoke(res.locals.companyId as string, req.params.connectionId!);
+    if (!deleted) { res.status(404).json({ error: 'not_found' }); return; }
+    deps.auditService.record({
+      actorId: res.locals.userId as string,
+      companyId: res.locals.companyId as string,
+      action: 'oms.site_data.connection_revoked',
+      outcome: 'success',
+      metadata: { connectionId: req.params.connectionId! },
+    });
     res.json({ success: true });
   });
 

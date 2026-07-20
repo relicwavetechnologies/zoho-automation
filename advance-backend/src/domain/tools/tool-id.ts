@@ -33,6 +33,8 @@ export const CANONICAL_TOOL_IDS = [
   'documentRag',
   'dataProcessor',
   'scheduledWorkflows',
+  'semrush',
+  'omsSiteData',
   // NOTE: 'runCommand' is intentionally NOT here. The terminal tool runs on the
   // user's own machine and is gated per-command by the user, so it is exempt
   // from company/department RBAC. It lives in the tool registry + RegisteredTool
@@ -41,7 +43,7 @@ export const CANONICAL_TOOL_IDS = [
 
 export type CanonicalToolId = typeof CANONICAL_TOOL_IDS[number];
 
-export type ToolFamily = 'lark' | 'google' | 'canva' | 'zoho' | 'context' | 'skills' | 'memory' | 'rag' | 'data' | 'execution' | 'scheduling';
+export type ToolFamily = 'lark' | 'google' | 'canva' | 'zoho' | 'context' | 'skills' | 'memory' | 'rag' | 'data' | 'execution' | 'scheduling' | 'semrush' | 'oms';
 
 export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   larkMessaging:  'lark',
@@ -74,6 +76,8 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   documentRag:    'rag',
   dataProcessor:  'data',
   scheduledWorkflows: 'scheduling',
+  semrush: 'semrush',
+  omsSiteData: 'oms',
 };
 
 /** Action groups each tool supports. Drives permission defaults. */
@@ -108,6 +112,8 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   documentRag:    ['read'],
   dataProcessor:  ['read'],
   scheduledWorkflows: ['read', 'create', 'update', 'delete', 'execute'],
+  semrush: ['read'],
+  omsSiteData: ['read'],
 };
 
 /** Default permission per tool per built-in company role. */
@@ -142,6 +148,10 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   documentRag:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   dataProcessor:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   scheduledWorkflows: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  semrush: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  // OMS inventory access is deliberately fixed to live company administrators.
+  // PermissionService strips normal role overrides before applying that rule.
+  omsSiteData: { MEMBER: false, COMPANY_ADMIN: false, SUPER_ADMIN: false },
 };
 
 /**

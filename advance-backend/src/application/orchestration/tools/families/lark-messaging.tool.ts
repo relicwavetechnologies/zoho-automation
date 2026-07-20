@@ -15,7 +15,7 @@ import {
 } from './lark-user-connection';
 
 const LarkMsgArgsSchema = z.object({
-  op: z.enum(['send', 'list', 'get', 'reply', 'send_dm', 'list_chats', 'search', 'mention']),
+  op: z.enum(['send', 'list', 'reply', 'send_dm', 'list_chats', 'search', 'mention']),
   chatId: z.string().optional(),
   messageId: z.string().optional(),
   text: z.string().optional(),
@@ -44,7 +44,6 @@ export interface LarkMessagingClientPort {
   sendMessage(chatId: string, text: string, options?: { rendering?: LarkMessageRendering }): Promise<{ messageId: string }>;
   replyMessage(messageId: string, text: string, options?: { rendering?: LarkMessageRendering }): Promise<{ messageId: string }>;
   listMessages(chatId: string, limit?: number): Promise<Array<{ messageId: string; text: string; senderId: string; timestamp: string }>>;
-  getMessage(messageId: string): Promise<{ messageId: string; text: string; senderId: string; timestamp: string }>;
   sendDm(openId: string, text: string, options?: { rendering?: LarkMessageRendering }): Promise<{ messageId: string }>;
   listChats(limit?: number): Promise<Array<{ chatId: string; name: string; type: string; memberCount?: number }>>;
   searchMessages(chatId: string, query: string, limit?: number): Promise<Array<{ messageId: string; text: string; senderId: string; timestamp: string }>>;
@@ -75,9 +74,9 @@ export const createLarkMessagingTool = (deps: {
   resultSchema: LarkMsgResultSchema,
   description: 'Send messages, reply, send DMs, @mention people in group chats, list chats, or find text in a bounded recent Lark history window.',
   parameterDocs: `
-- op: send|reply|list|get|send_dm|list_chats|search|mention
+- op: send|reply|list|send_dm|list_chats|search|mention
 - chatId: Target chat ID (required for send, list, search, mention)
-- messageId: Message ID (required for reply and get)
+- messageId: Message ID (required for reply)
 - text: Message text (required for send/reply/send_dm/mention)
 - limit: Max messages/chats to return (default 20)
 - recipientName: Human-readable name to resolve for send_dm
@@ -148,11 +147,6 @@ export const createLarkMessagingTool = (deps: {
           ctx.onProgress?.('Fetching messages…');
           const msgs = await readClient.listMessages(args.chatId, args.limit ?? 20);
           return ok({ success: true, data: msgs, message: `Found ${msgs.length} messages` });
-        }
-        case 'get': {
-          if (!args.messageId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'messageId required for get' }));
-          const msg = await readClient.getMessage(args.messageId);
-          return ok({ success: true, data: msg });
         }
         case 'send_dm': {
           if (lockedChatId) {

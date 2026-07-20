@@ -15,9 +15,17 @@ import {
 import type { ComponentType } from 'react'
 import {
   GmailIcon,
+  GoogleAppsScriptIcon,
   GoogleCalendarIcon,
+  GoogleChatIcon,
+  GoogleContactsIcon,
+  GoogleDocsIcon,
   GoogleDriveIcon,
+  GoogleFormsIcon,
   GoogleIcon,
+  GoogleSheetsIcon,
+  GoogleSlidesIcon,
+  GoogleTasksIcon,
   CanvaIcon,
   LarkIcon,
   ZohoIcon,
@@ -206,18 +214,26 @@ export const pluginSkills: DivoPluginSkill[] = [
   },
 ]
 
+/**
+ * Every Workspace service carries its OWN product mark.
+ *
+ * These used to fall back to generic lucide glyphs, and the stand-ins actively
+ * misled: Slides drew a megaphone, Tasks a shield, Chat an envelope that reads
+ * as a second Gmail. A list titled "Available services" is a list of products,
+ * so each row has to be recognisable as the product the user already knows.
+ */
 export const googleWorkspaceServices = [
   { name: 'Gmail', icon: GmailIcon, description: 'Read, search, draft, and send email based on access.' },
   { name: 'Drive', icon: GoogleDriveIcon, description: 'Search files, inspect metadata, and read shared docs.' },
   { name: 'Calendar', icon: GoogleCalendarIcon, description: 'Read schedules and create events when allowed.' },
-  { name: 'Docs', icon: FileText, description: 'Create, edit, format, export, and comment on documents.' },
-  { name: 'Sheets', icon: FileSpreadsheet, description: 'Create, read, write, format, and manage spreadsheets.' },
-  { name: 'Slides', icon: Megaphone, description: 'Create, inspect, render, and update presentations.' },
-  { name: 'Forms', icon: FileText, description: 'Create forms and inspect responses when allowed.' },
-  { name: 'Tasks', icon: ShieldCheck, description: 'Read and manage task lists and tasks.' },
-  { name: 'Contacts', icon: Users, description: 'Search and manage contacts and groups.' },
-  { name: 'Chat', icon: Mail, description: 'Read spaces and messages or send messages when allowed.' },
-  { name: 'Apps Script', icon: GoogleIcon, description: 'Inspect, update, deploy, and run Apps Script projects.' },
+  { name: 'Docs', icon: GoogleDocsIcon, description: 'Create, edit, format, export, and comment on documents.' },
+  { name: 'Sheets', icon: GoogleSheetsIcon, description: 'Create, read, write, format, and manage spreadsheets.' },
+  { name: 'Slides', icon: GoogleSlidesIcon, description: 'Create, inspect, render, and update presentations.' },
+  { name: 'Forms', icon: GoogleFormsIcon, description: 'Create forms and inspect responses when allowed.' },
+  { name: 'Tasks', icon: GoogleTasksIcon, description: 'Read and manage task lists and tasks.' },
+  { name: 'Contacts', icon: GoogleContactsIcon, description: 'Search and manage contacts and groups.' },
+  { name: 'Chat', icon: GoogleChatIcon, description: 'Read spaces and messages or send messages when allowed.' },
+  { name: 'Apps Script', icon: GoogleAppsScriptIcon, description: 'Inspect, update, deploy, and run Apps Script projects.' },
 ]
 
 export const pluginAutomationCards = [

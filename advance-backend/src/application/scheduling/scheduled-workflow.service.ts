@@ -12,7 +12,7 @@ import { asCompanyId, asUserId, asChatId, asCorrelationId, asDepartmentId } from
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { scheduleConfigSchema } from './schedule-config';
 import { getNextScheduledRunAt } from './schedule-calculator';
-import { readDeliveryChannel } from './scheduled-workflow-control.service';
+import { readDeliveryChannel, readDeliveryTarget } from './scheduled-workflow-control.service';
 
 const STALE_CLAIM_MS = 10 * 60 * 1000;
 const MAX_DUE_PER_POLL = 5;
@@ -26,7 +26,18 @@ export function buildScheduledExecutionPrompt(
   compiledPrompt: string,
   lockedChatId: string,
   deliveryChannel: 'lark' | 'desktop' = 'lark',
+  deliveryTarget: 'origin_chat' | 'creator_dm' = 'origin_chat',
 ): string {
+  if (deliveryTarget === 'creator_dm') {
+    return [
+      compiledPrompt,
+      '',
+      'RUNTIME DELIVERY OVERRIDE:',
+      '- Return the completed result as your final reply. The runtime will deliver it to the authenticated schedule creator\'s Lark DM.',
+      '- Do not call larkMessaging merely to deliver the final result and do not search for the creator or a destination chat.',
+      '- External actions explicitly required by the scheduled task are still allowed subject to normal permissions and approvals.',
+    ].join('\n');
+  }
   if (deliveryChannel === 'desktop') {
     return [
       compiledPrompt,
@@ -61,6 +72,7 @@ export interface ScheduledWorkflowServiceDeps {
   readonly engine:              OrchestrationEngine;
   readonly channelAdapters:     Readonly<{
     lark: ChannelAdapter;
+    larkDm: ChannelAdapter;
     desktop: ChannelAdapter;
   }>;
   readonly channelIdentityRepo: ChannelIdentityRepoPort;
@@ -191,21 +203,30 @@ export class ScheduledWorkflowService {
     }
     const identity = identityResult.value;
 
-    const targetChatId = workflow.originChatId;
+    const deliveryChannel = readDeliveryChannel(workflow.outputConfigJson);
+    const deliveryTarget = readDeliveryTarget(workflow.outputConfigJson);
+    const targetChatId = deliveryTarget === 'creator_dm'
+      ? identity.larkOpenId
+      : workflow.originChatId;
     if (!targetChatId) {
-      await this.markFailed(workflowId, scheduledFor, 'No delivery target (missing originChatId)');
+      const reason = deliveryTarget === 'creator_dm'
+        ? 'No delivery target (creator has no connected Lark identity)'
+        : 'No delivery target (missing originChatId)';
+      await this.markFailed(workflowId, scheduledFor, reason);
       return;
     }
 
-    const deliveryChannel = readDeliveryChannel(workflow.outputConfigJson);
-    const currentChatDeliveryLocked = deliveryChannel === 'desktop'
-      || usesLockedCurrentChatDelivery(workflow.compiledPrompt);
+    const currentChatDeliveryLocked = deliveryTarget === 'origin_chat'
+      && (deliveryChannel === 'desktop' || usesLockedCurrentChatDelivery(workflow.compiledPrompt));
     const executionPrompt = buildScheduledExecutionPrompt(
       workflow.compiledPrompt,
       targetChatId,
       deliveryChannel,
+      deliveryTarget,
     );
-    const channelAdapter = this.deps.channelAdapters[deliveryChannel];
+    const channelAdapter = deliveryTarget === 'creator_dm'
+      ? this.deps.channelAdapters.larkDm
+      : this.deps.channelAdapters[deliveryChannel];
 
     const run = await this.deps.prisma.scheduledWorkflowRun.upsert({
       where: { workflowId_scheduledFor: { workflowId, scheduledFor } },
@@ -244,7 +265,11 @@ export class ScheduledWorkflowService {
         ? identity.larkOpenId ?? workflow.createdByUserId
         : workflow.createdByUserId,
       chatId:         targetChatId,
-      ...(currentChatDeliveryLocked ? { deliveryMode: 'current_chat_only' as const } : {}),
+      ...(deliveryTarget === 'creator_dm'
+        ? { deliveryMode: 'scheduled_runtime_delivery' as const }
+        : currentChatDeliveryLocked
+          ? { deliveryMode: 'current_chat_only' as const }
+          : {}),
       ...(workflow.departmentId
         ? { departmentId: asDepartmentId(workflow.departmentId) }
         : identity.activeDepartmentId

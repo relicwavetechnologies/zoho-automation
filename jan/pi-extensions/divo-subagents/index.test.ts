@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import extension from "./index.ts";
+import extension, { applyChildEvent } from "./index.ts";
+import { createChild, MAX_OUTPUT_PREVIEW_CHARS } from "./progress.ts";
 
 test("registers one Pi-owned subagent tool and a shutdown handler", () => {
 	const tools: Array<{
@@ -27,4 +28,20 @@ test("registers one Pi-owned subagent tool and a shutdown handler", () => {
 	assert.doesNotMatch(tools[0]?.promptSnippet ?? "", /without losing the parent conversation/i);
 	assert.ok(tools[0]?.promptGuidelines?.some((guideline) => /does not receive the parent conversation/i.test(guideline)));
 	assert.ok(tools[0]?.promptGuidelines?.some((guideline) => /do not delegate approvals, external mutations/i.test(guideline)));
+});
+
+test("keeps the full completed assistant message separate from its live preview", () => {
+	const child = createChild(0, "reviewer", "Review the escalation rules");
+	const report = "r".repeat(MAX_OUTPUT_PREVIEW_CHARS + 500);
+
+	const captured = applyChildEvent(child, {
+		type: "message_end",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: report }],
+		},
+	});
+
+	assert.equal(captured, report);
+	assert.equal(child.outputPreview, `${report.slice(0, MAX_OUTPUT_PREVIEW_CHARS)}…`);
 });

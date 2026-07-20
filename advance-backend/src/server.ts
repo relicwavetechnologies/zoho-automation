@@ -384,6 +384,8 @@ export const createServer = (c: Container) => {
       toolRegistry:           c.toolRegistry,
       serperConnectionRepo:   c.companySerperConnectionRepo,
       serperService:          c.companySerperService,
+      omsConnectionRepo:      c.companyOmsConnectionRepo,
+      omsSiteDataService:     c.companyOmsSiteDataService,
     }),
   );
   app.use(

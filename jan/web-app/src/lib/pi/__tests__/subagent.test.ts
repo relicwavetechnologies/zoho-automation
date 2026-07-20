@@ -70,4 +70,33 @@ describe('Divo subagent tool state', () => {
       state: 'queued',
     })
   })
+
+  it('preserves completed reports beyond the live-preview budget', () => {
+    const finalOutput = 'r'.repeat(1_700)
+    const details = readDivoSubagentDetails({
+      toolCallId: 'parent-tool-c',
+      output: {
+        details: {
+          parentToolCallId: 'parent-tool-c',
+          mode: 'single',
+          state: 'completed',
+          children: [{
+            id: 'child-c',
+            index: 0,
+            role: 'reviewer',
+            task: 'Review the escalation rules',
+            state: 'completed',
+            activity: { kind: 'complete', label: 'Completed' },
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 1 },
+            outputPreview: `${finalOutput.slice(0, 1_200)}…`,
+            finalOutput,
+            events: [],
+          }],
+        },
+      },
+    })
+
+    expect(details.children[0]?.outputPreview).toHaveLength(1_201)
+    expect(details.children[0]?.finalOutput).toBe(finalOutput)
+  })
 })

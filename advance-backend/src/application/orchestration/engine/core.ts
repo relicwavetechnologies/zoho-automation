@@ -291,10 +291,11 @@ export class OrchestrationEngine {
     }
 
     // ── 4. Load pre-supervisor context in parallel ────────────────────────
-    // Scheduled delivery runs must NOT load prior conversation history — the
-    // originChatId points to the user's real DM, so loading history would
-    // inject unrelated interactive turns that confuse the LLM.
-    const isScheduledDelivery = runContext.deliveryMode === 'current_chat_only';
+    // Scheduled runs are compiled to be self-contained. Their target can be an
+    // originating chat or a synthetic runtime destination such as a creator
+    // open_id, so loading interactive history would be wrong in either case.
+    const isScheduledDelivery = runContext.deliveryMode === 'current_chat_only'
+      || runContext.deliveryMode === 'scheduled_runtime_delivery';
     const [historyResult, memoryContext, groupContextResult] = await Promise.all([
       isScheduledDelivery
         ? Promise.resolve({ ok: true as const, value: { turns: [], truncated: false, tokenEstimate: 0 } })
@@ -352,7 +353,7 @@ export class OrchestrationEngine {
       if (incoming.chatType !== 'group' && this.deps.conversationSummarizer) {
         const chatIdStr = String(incoming.chatId);
         setImmediate(() => {
-          this.deps.conversationSummarizer!.maybeSummarize(chatIdStr, conversationScope)
+          this.deps.conversationSummarizer!.maybeSummarize(chatIdStr, conversationScope, larkModel)
             .catch(e => log.warn('engine.summarization.failed', { error: String(e) }));
         });
       }
@@ -549,7 +550,7 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
     ) {
       const chatIdStr = String(incoming.chatId);
       setImmediate(() => {
-        this.deps.conversationSummarizer!.maybeSummarize(chatIdStr, conversationScope)
+        this.deps.conversationSummarizer!.maybeSummarize(chatIdStr, conversationScope, larkModel)
           .catch(e => log.warn('engine.summarization.failed', { error: String(e) }));
       });
     }
@@ -572,7 +573,7 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
       });
       try {
         const condensed = await generateText({
-          model: this.deps.supervisor.getModel(),
+          model: larkModel ?? this.deps.supervisor.getModel(),
           system: `You are reformatting a response that was too large to display. Condense it into clean markdown under 3000 characters. Keep key data, numbers, and structure. Use tables with max 10 rows. Do not mention truncation or condensation — write as if this is the original response.${incoming.channel === 'lark' ? ` ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
           messages: [
             { role: 'user' as const, content: incoming.text },

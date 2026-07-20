@@ -19,10 +19,19 @@ import type { ComponentType } from 'react'
 import {
   CanvaIcon,
   GmailIcon,
+  GoogleAppsScriptIcon,
   GoogleCalendarIcon,
+  GoogleChatIcon,
+  GoogleContactsIcon,
+  GoogleDocsIcon,
   GoogleDriveIcon,
+  GoogleFormsIcon,
   GoogleIcon,
+  GoogleSheetsIcon,
+  GoogleSlidesIcon,
+  GoogleTasksIcon,
   LarkIcon,
+  SemrushIcon,
   ZohoIcon,
 } from '@/components/brand-icons'
 import { DivoDexMark } from '@/components/DivoDexBrand'
@@ -31,14 +40,22 @@ import { resolveToolIdentity } from '@/lib/pi/tool-label'
 type IconComponent = ComponentType<{ className?: string }>
 
 /**
- * Google surfaces that have their own recognisable mark. Everything else under
- * `google*` (Docs, Sheets, Slides, Chat, Tasks, Forms, Contacts, Apps Script)
- * falls back to the plain Google glyph rather than a wrong one.
+ * Google surfaces that have their own recognisable mark. Anything still
+ * unmapped under `google*` falls back to the plain Google glyph rather than a
+ * wrong one — a generic G is honest, a borrowed mark is not.
  */
 const GOOGLE_MARKS: Record<string, IconComponent> = {
   googlegmail: GmailIcon,
   googledrive: GoogleDriveIcon,
   googlecalendar: GoogleCalendarIcon,
+  googledocs: GoogleDocsIcon,
+  googlesheets: GoogleSheetsIcon,
+  googleslides: GoogleSlidesIcon,
+  googleforms: GoogleFormsIcon,
+  googletasks: GoogleTasksIcon,
+  googlecontacts: GoogleContactsIcon,
+  googlechat: GoogleChatIcon,
+  googleappsscript: GoogleAppsScriptIcon,
 }
 
 /**
@@ -67,6 +84,7 @@ const ACTION_ICONS: Record<string, IconComponent> = {
   fetch: GlobeIcon,
   todowrite: ListChecksIcon,
   todo: ListChecksIcon,
+  divotodos: ListChecksIcon,
 }
 
 /**
@@ -148,6 +166,10 @@ export function resolveToolIconComponent(
   if (key.startsWith('zoho')) return ZohoIcon
   if (key.startsWith('lark')) return LarkIcon
   if (key.startsWith('canva')) return CanvaIcon
+  // Ahead of the lookup rule below on purpose. Semrush IS a research tool, so
+  // once its ops grow names like `semrushKeywordSearch` the magnifier would
+  // start winning and the vendor would vanish from the log mid-family.
+  if (key.startsWith('semrush')) return SemrushIcon
   if (key.startsWith('google')) return GOOGLE_MARKS[key] ?? GoogleIcon
   // Web search keeps the globe — it is the one search that leaves the machine.
   if (key.startsWith('websearch')) return GlobeIcon

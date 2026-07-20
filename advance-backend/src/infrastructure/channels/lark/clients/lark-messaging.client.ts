@@ -216,15 +216,6 @@ export class LarkToolMessagingClient implements LarkMessagingClientPort {
     return (data.items ?? []).map(message => messageFromLarkApi(message));
   }
 
-  async getMessage(messageId: string): Promise<{ messageId: string; text: string; senderId: string; timestamp: string }> {
-    type GetResponse = { items?: Array<Record<string, unknown>> };
-    const data = await this.http.request<GetResponse>(
-      'GET',
-      `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
-    );
-    return messageFromLarkApi((data.items ?? [])[0] ?? {}, messageId);
-  }
-
   async sendDm(
     openId: string,
     text: string,

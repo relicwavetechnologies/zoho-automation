@@ -148,6 +148,40 @@ describe('PermissionService', () => {
       assert.ok(ids.includes('zohoBooks'),    'COMPANY_ADMIN should have zohoBooks');
     });
 
+    it('allows OMS Site Data for company admins only and ignores ordinary role overrides', async () => {
+      const toolPermRepo: ToolPermissionRepoPort = {
+        getForCompany: async () => ok([
+          { companyId: COMPANY_ID, toolId: 'omsSiteData', role: 'MEMBER', enabled: true } as ToolPermissionRow,
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({ toolPermRepo }));
+      const member = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+      const admin = await svc.resolve(baseQuery({ companyRole: 'COMPANY_ADMIN' as any, userId: 'admin-1' as any }));
+
+      assert.ok(member.ok);
+      assert.equal(member.value.allowedToolIds.has(asToolId('omsSiteData')), false);
+      assert.ok(admin.ok);
+      assert.deepEqual([...(admin.value.allowedActionsByTool.get(asToolId('omsSiteData')) ?? [])], ['read']);
+      assert.equal(admin.value.decisions.find(decision => String(decision.toolId) === 'omsSiteData')?.source, 'company_default');
+    });
+
+    it('allows Semrush through ordinary role defaults and ordinary RBAC overrides', async () => {
+      const toolPermRepo: ToolPermissionRepoPort = {
+        getForCompany: async () => ok([
+          { companyId: COMPANY_ID, toolId: 'semrush', role: 'MEMBER', enabled: false } as ToolPermissionRow,
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const defaultResult = await new PermissionServiceImpl(buildDeps()).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+      const overriddenResult = await new PermissionServiceImpl(buildDeps({ toolPermRepo })).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+
+      assert.ok(defaultResult.ok);
+      assert.deepEqual([...(defaultResult.value.allowedActionsByTool.get(asToolId('semrush')) ?? [])], ['read']);
+      assert.ok(overriddenResult.ok);
+      assert.equal(overriddenResult.value.allowedToolIds.has(asToolId('semrush')), false);
+    });
+
     it('SUPER_ADMIN gets every tool', async () => {
       const svc = new PermissionServiceImpl(buildDeps());
       const result = await svc.resolve(baseQuery({ companyRole: 'SUPER_ADMIN' as any }));
@@ -526,6 +560,21 @@ describe('PermissionService', () => {
       assert.ok(result.ok);
       const ids = [...result.value.allowedToolIds].map(String);
       assert.ok(ids.includes('larkBase'), 'COMPANY_ADMIN ceiling allows explicit larkBase grant');
+    });
+
+    it('keeps OMS Site Data available to a company admin in a department context without a department grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'COMPANY_ADMIN' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('omsSiteData')) ?? [])], ['read']);
     });
 
     it('dept cache: second call with same params does not re-query dept repos', async () => {

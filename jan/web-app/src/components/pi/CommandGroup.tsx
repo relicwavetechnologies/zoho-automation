@@ -4,9 +4,10 @@ import { cn } from '@/lib/utils'
 import { resolveToolIdentity, resolveToolLabel } from '@/lib/pi/tool-label'
 import { summarizeBurst } from '@/lib/pi/tool-summary'
 import { ChevronRightIcon } from 'lucide-react'
-import { ToolIcon } from './ToolIcon'
+import { ToolIcon, resolveToolIconComponent } from './ToolIcon'
 import { DotsLoader } from './DotsLoader'
 import { isDivoSubagentTool } from '@/lib/pi/subagent'
+import { isDivoGatewayApprovalTool } from '@/lib/pi/gateway-approval'
 
 export type CommandGroupTool = {
   part: Record<string, unknown>
@@ -39,6 +40,58 @@ function commandLabel(part: Record<string, unknown>, fallback: string): string {
 }
 
 /**
+ * How many distinct tool marks a folded burst shows before it gives up and
+ * counts the rest. Four fits the narrow rows without crowding the label.
+ */
+const ICON_STACK_MAX = 4
+
+/**
+ * The distinct tools a folded burst touched, as a row of their own marks.
+ *
+ * Without this, a collapsed burst reads "Ran 3 commands" and the user has to
+ * expand it to learn anything — the marks put Gmail, Lark, or a terminal right
+ * on the closed line.
+ *
+ * This is also what anchors the burst's LEFT edge, the same slot a single row
+ * gives to its own tool mark. The log used to lead every folded line with a
+ * disclosure arrow, which made the whole timeline a column of chevrons and told
+ * the user nothing about what had happened. The mark leads; the chevron trails.
+ *
+ * Deduped by the RESOLVED ICON, not by tool id: `googleGmail` and a bare
+ * `gmail` both draw the Gmail mark, and drawing it twice would imply two
+ * different tools. Presence is the signal, not volume — three Gmail calls are
+ * still one Gmail mark, because what the row needs to say is "this burst
+ * touched Gmail", not how often.
+ */
+function ToolIconStack({ parts }: { parts: Record<string, unknown>[] }) {
+  const icons: ReturnType<typeof resolveToolIconComponent>[] = []
+  for (const part of parts) {
+    const Icon = resolveToolIconComponent(part)
+    if (!icons.includes(Icon)) icons.push(Icon)
+  }
+
+  if (icons.length === 0) return null
+  const shown = icons.slice(0, ICON_STACK_MAX)
+  const overflow = icons.length - shown.length
+
+  return (
+    <span
+      data-testid="tool-icon-stack"
+      className="flex shrink-0 items-center gap-1"
+    >
+      {shown.map((Icon, i) => (
+        <Icon key={i} className="size-3.5 text-muted-foreground/70" />
+      ))}
+      {overflow > 0 && (
+        <span className="text-[11px] text-muted-foreground/50 tabular-nums">
+          +{overflow}
+        </span>
+      )}
+    </span>
+  )
+}
+
+/**
  * The call's headline argument, dimmed beside the label.
  *
  * "Ran web search" tells the user nothing; the query is the whole point. Same
@@ -66,6 +119,11 @@ function ToolDetail({ detail }: { detail?: string }) {
  *
  * The rows are never destroyed, only folded, so a finished burst stays fully
  * inspectable without leaving six lines of noise in the thread.
+ *
+ * A burst of ONE is not a burst. Wrapping a lone call in a "Ran 1 command"
+ * summary hid the only thing worth showing — which tool ran — behind a count
+ * and a disclosure arrow. A single call renders as its own row instead: its
+ * tool mark leads, and the chevron appears on hover at the end.
  *
  * Approval stays an exception: HITL controls must stay visible, so awaiting
  * tools render their real cards instead of the compact rows.
@@ -104,11 +162,16 @@ export const CommandGroup = memo(
       })
     }
 
-    // A subagent tool has its own live child-run UI. Rendering it as a compact
-    // command row — or folding it into a burst tally — would hide progress
-    // until completion, so it is split out and always rendered in full.
-    const subagents = tools.filter((t) => isDivoSubagentTool(t.part))
-    const commands = tools.filter((t) => !isDivoSubagentTool(t.part))
+    // Subagents have their own live child-run UI, while backend approval
+    // statuses carry the result that explains why a company action stopped.
+    // Neither should be reduced to a compact command row or folded into a
+    // burst tally, so both stay visible in their owning work log.
+    const persistentTools = tools.filter(
+      (t) => isDivoSubagentTool(t.part) || isDivoGatewayApprovalTool(t.part)
+    )
+    const commands = tools.filter(
+      (t) => !isDivoSubagentTool(t.part) && !isDivoGatewayApprovalTool(t.part)
+    )
 
     // The burst is live while the segment is streaming AND something in it is
     // still in flight. Once everything has landed it folds, even mid-turn.
@@ -179,13 +242,18 @@ export const CommandGroup = memo(
 
     return (
       <div className="flex flex-col gap-1">
-        {subagents.map((t) => (
+        {persistentTools.map((t) => (
           <div key={`${messageId}-cmd-${t.partIndex}`}>
             {renderTool(t.part, t.partIndex)}
           </div>
         ))}
 
-        {commands.length > 0 &&
+        {/* A lone call speaks for itself — no count, no wrapper, no loader
+            header repeating what the row already says. Running, it shimmers
+            behind its own mark; settled, it stays click-to-expand. */}
+        {commands.length === 1 && rows}
+
+        {commands.length > 1 &&
           (live ? (
             <div className="flex flex-col gap-0.5">
               <div className="flex items-center gap-2.5 py-0.5 text-sm">
@@ -201,21 +269,26 @@ export const CommandGroup = memo(
               <button
                 type="button"
                 onClick={() => setBurstOpen((v) => !v)}
-                className="group flex w-full items-center gap-1.5 py-0.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
+                className="group flex w-full items-center gap-2.5 py-0.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
                 aria-expanded={burstOpen}
               >
-                <ChevronRightIcon
-                  className={cn(
-                    'size-3.5 shrink-0 text-muted-foreground/50 transition-transform',
-                    burstOpen && 'rotate-90'
-                  )}
-                />
-                <span className="truncate text-[13px]">
+                {/* Leads the row in the same slot a single call gives its own
+                    mark, so the log's left edge is a column of tool marks
+                    rather than a column of arrows. Kept when open too — the
+                    line must not shift sideways as it folds. */}
+                <ToolIconStack parts={parts} />
+                <span className="shrink-0 text-[13px]">
                   {summarizeBurst(parts, false)}
                 </span>
+                <ChevronRightIcon
+                  className={cn(
+                    'size-3.5 shrink-0 text-muted-foreground/50 opacity-0 transition-all group-hover:opacity-100',
+                    burstOpen && 'rotate-90 opacity-100'
+                  )}
+                />
               </button>
               {burstOpen && (
-                <div className="mt-1 mb-1 ml-[6px] flex flex-col gap-0.5 border-l border-border pl-4">
+                <div className="mt-1 mb-1 ml-2 flex flex-col gap-0.5 border-l border-border pl-4">
                   {rows}
                 </div>
               )}

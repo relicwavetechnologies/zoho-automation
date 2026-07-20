@@ -178,6 +178,8 @@ const h = vi.hoisted(() => {
   }
 })
 
+const mockGenerateThreadTitle = vi.hoisted(() => vi.fn())
+
 // -----------------------------------------------------------------------------
 // Module mocks
 // -----------------------------------------------------------------------------
@@ -349,7 +351,7 @@ vi.mock('@/lib/attachmentProcessing', () => ({
 }))
 
 vi.mock('@/lib/thread-title-summarizer', () => ({
-  generateThreadTitle: vi.fn().mockResolvedValue('Short title'),
+  generateThreadTitle: mockGenerateThreadTitle,
 }))
 
 vi.mock('@/types/attachment', () => ({
@@ -452,6 +454,7 @@ const renderComponent = () => {
 describe('ThreadDetail route', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockGenerateThreadTitle.mockResolvedValue('Short title')
     h.mockSendMessage.mockImplementation((_message: any, options?: any) => {
       options?.body?.__divoOnStreamAccepted?.()
       return Promise.resolve()
@@ -513,6 +516,31 @@ describe('ThreadDetail route', () => {
   it('validateSearch handles missing threadModel', () => {
     const result = (Route as any).validateSearch({})
     expect(result.threadModel).toBeUndefined()
+  })
+
+  it('generates a Divo title immediately from the initial user turn', async () => {
+    h.threadsState.threads['thread-1'].title = 'New Thread'
+    sessionStorage.setItem(
+      'initial-message-thread-1',
+      JSON.stringify({ text: 'Prepare a Razorpay account health brief', files: [] })
+    )
+    mockGenerateThreadTitle.mockResolvedValue('Razorpay Account Health')
+
+    renderComponent()
+
+    await waitFor(() =>
+      expect(mockGenerateThreadTitle).toHaveBeenCalledWith(
+        'Prepare a Razorpay account health brief',
+        expect.any(AbortSignal),
+        'thread-1'
+      )
+    )
+    await waitFor(() =>
+      expect(h.threadsState.updateThread).toHaveBeenCalledWith('thread-1', {
+        title: 'Razorpay Account Health',
+        metadata: { titleGenerated: true },
+      })
+    )
   })
 
   it('renders header, workspace selector, and chat input', () => {

@@ -22,9 +22,12 @@ export type ThemeState = {
 export const useTheme = create<ThemeState>()(
   persist(
     (set) => {
-      // Initialize isDark based on OS preference if theme is auto
+      // First run resolves the OS preference ONCE into a concrete theme rather
+      // than sitting on 'auto'. The UI offers light/dark only, so a lingering
+      // 'auto' would keep flipping the app when the OS changed, with no
+      // control on screen to explain why.
       const initialState = {
-        activeTheme: 'auto' as AppTheme,
+        activeTheme: (checkOSDarkMode() ? 'dark' : 'light') as AppTheme,
         isDark: checkOSDarkMode(),
         setTheme: async (activeTheme: AppTheme) => {
           // Commit first so the theme-changed listener (which gates on
@@ -62,8 +65,14 @@ export const useTheme = create<ThemeState>()(
       // Linux where matchMedia is unreliable.
       onRehydrateStorage: () => (state) => {
         if (!state) return
-        if (state.activeTheme === 'auto') state.isDark = checkOSDarkMode()
-        else state.isDark = state.activeTheme === 'dark'
+        if (state.activeTheme === 'auto') {
+          // Migrate an older 'auto' preference to whatever it resolves to right
+          // now, so the switcher has a value it can actually show as selected.
+          state.isDark = checkOSDarkMode()
+          state.activeTheme = state.isDark ? 'dark' : 'light'
+        } else {
+          state.isDark = state.activeTheme === 'dark'
+        }
       },
     }
   )

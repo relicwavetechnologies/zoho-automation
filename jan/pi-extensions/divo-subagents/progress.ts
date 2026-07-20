@@ -155,7 +155,10 @@ export function completeChild(child: SubagentChild, finalOutput: string, exitCod
 		child.state = "completed";
 		child.activity = { kind: "complete", label: "Completed" };
 		child.finalOutput = truncateText(finalOutput, MAX_FINAL_OUTPUT_CHARS);
-		child.outputPreview = child.finalOutput || child.outputPreview;
+		// Keep the compact preview compact. `finalOutput` is the completed report;
+		// conflating the two used to make the child runner accidentally promote a
+		// 1,200-character preview into the permanent result.
+		child.outputPreview = truncateText(finalOutput, MAX_OUTPUT_PREVIEW_CHARS) || child.outputPreview;
 		addEvent(child, "completed", "Completed");
 		return;
 	}

@@ -1,4 +1,4 @@
-import { LucideIcon, Puzzle } from 'lucide-react'
+import { LucideIcon } from 'lucide-react'
 import { route } from '@/constants/routes'
 
 import {
@@ -28,6 +28,10 @@ import {
   BotIcon,
   type BotIconHandle,
 } from '@/components/animated-icon/bot'
+import {
+  BlocksIcon,
+  type BlocksIconHandle,
+} from '@/components/animated-icon/blocks'
 import AddProjectDialog from '@/containers/dialogs/AddProjectDialog'
 import { SearchDialog } from '@/containers/dialogs/SearchDialog'
 import { useThreadManagement } from '@/hooks/useThreadManagement'
@@ -47,6 +51,7 @@ type AnimatedIconHandle =
   | MessageCircleIconHandle
   | SettingsIconHandle
   | BotIconHandle
+  | BlocksIconHandle
 
 type NavMainItem = {
   title: string
@@ -108,9 +113,14 @@ const getNavMainItems = (
     ),
   },
   {
+    // Tools was the one row here still on a static lucide glyph, so it alone
+    // stayed dead while every neighbour animated on hover. The puzzle piece
+    // was also the wrong read: it says "add-on", and at 16px its interlocking
+    // curves collapse into a squiggle. Blocks is geometric enough to survive
+    // that size, and a block sliding into place is what this page is about.
     title: 'common:plugins',
     url: route.plugins.index,
-    icon: Puzzle,
+    animatedIcon: BlocksIcon,
   },
   {
     title: 'common:settings',

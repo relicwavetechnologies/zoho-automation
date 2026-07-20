@@ -164,6 +164,7 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_zoho_disconnect_connection,
         core::divo::commands::divo_tools_inventory,
         core::divo::commands::divo_get_model_options,
+        core::divo::commands::divo_generate_thread_title,
         core::divo::commands::divo_tool_manage_snapshot,
         core::divo::commands::divo_tool_set_global_action,
         core::divo::commands::divo_tool_set_department_role_action,

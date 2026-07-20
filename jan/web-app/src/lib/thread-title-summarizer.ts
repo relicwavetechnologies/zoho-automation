@@ -1,6 +1,8 @@
 import { generateText } from 'ai'
+import { invoke } from '@tauri-apps/api/core'
 import { ModelFactory } from './model-factory'
 import { useModelProvider } from '@/hooks/useModelProvider'
+import { PI_PROVIDER_ID } from './pi/constants'
 
 const MAX_TITLE_WORDS = 10
 const MAX_PROMPT_LENGTH = 1500
@@ -54,19 +56,47 @@ export function cleanTitle(raw: string): string | null {
 }
 
 /**
- * Generate a summarized thread title from the user's first message.
- * Uses the currently selected model via a non-streaming generateText call.
+ * Generate a summarized thread title from the conversation so far.
+ *
+ * Divo/Pi cannot use Jan's provider factory: its model credentials and policy
+ * live exclusively behind the backend proxy. A Divo thread is identified by
+ * its thread id, so title generation must never depend on the persisted Jan
+ * provider picker (which can be stale while the fixed Pi runtime is active).
+ * Calls without a thread id preserve the legacy local-provider behavior.
  * Returns null on failure or if the signal is aborted.
  */
 export async function generateThreadTitle(
   transcript: string,
-  abortSignal: AbortSignal
+  abortSignal: AbortSignal,
+  threadId?: string
 ): Promise<string | null> {
   try {
+    if (abortSignal.aborted) return null
+
+    if (threadId) {
+      const rawTitle = await invoke<string>('divo_generate_thread_title', {
+        threadId,
+        thread_id: threadId,
+        transcript,
+      })
+      const cleanedTitle = cleanTitle(rawTitle)
+      if (!cleanedTitle) {
+        console.warn('[ThreadTitle] Divo title response was unusable', {
+          responseLength: rawTitle.length,
+        })
+      }
+      return abortSignal.aborted ? null : cleanedTitle
+    }
+
     const { selectedModel, selectedProvider, getProviderByName } =
       useModelProvider.getState()
     if (!selectedModel || !selectedProvider) {
       console.warn('[ThreadTitle] No model/provider selected')
+      return null
+    }
+
+    if (selectedProvider === PI_PROVIDER_ID) {
+      console.warn('[ThreadTitle] Missing thread id for Divo title generation')
       return null
     }
 

@@ -32,7 +32,25 @@ interface ChatBody {
   stream_options?: { include_usage?: boolean };
   divo_run_id?: string;
   divo_trace_mode?: 'desktop';
+  /** Internal, non-conversation request kinds. Never forwarded upstream. */
+  divo_request_kind?: 'thread_title';
+  /** Local desktop thread id for auxiliary token attribution. */
+  divo_thread_id?: string;
   [k: string]: unknown;
+}
+
+const THREAD_TITLE_REQUEST_KIND = 'thread_title' as const;
+const THREAD_TITLE_AGENT_TARGET = 'desktop.thread_title';
+
+function isThreadTitleRequest(body: ChatBody): boolean {
+  return body.divo_request_kind === THREAD_TITLE_REQUEST_KIND;
+}
+
+function auxiliaryThreadId(body: ChatBody): string | undefined {
+  const threadId = typeof body.divo_thread_id === 'string'
+    ? body.divo_thread_id.trim()
+    : '';
+  return threadId || undefined;
 }
 
 /** Pull the last usage object + the resolved model id out of an SSE buffer. */
@@ -65,9 +83,21 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
 
     const startedAt = Date.now();
     const body = (req.body ?? {}) as ChatBody;
+    const threadTitleRequest = isThreadTitleRequest(body);
+    const threadId = auxiliaryThreadId(body);
+    const auxiliaryAuditTarget = threadTitleRequest
+      ? { agentTarget: THREAD_TITLE_AGENT_TARGET }
+      : {};
     // Canonicalize to one of our two priced models so the allow-list + pricing are exact.
     const model = canonicalModel(typeof body.model === 'string' ? body.model : undefined);
     const messages = Array.isArray(body.messages) ? body.messages : [];
+    if (threadTitleRequest) {
+      log.info('proxy.thread_title.accepted', {
+        userId,
+        threadId,
+        model,
+      });
+    }
 
     // ── Gate ────────────────────────────────────────────────────────────────
     const gate = await svc.gate({ companyId, userId, model });
@@ -75,7 +105,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       log.info('proxy.denied', { userId, model, reason: gate.reason });
       const httpStatus = gate.status ?? 403;
       res.status(httpStatus).json({ error: { message: gate.reason ?? 'Denied', type: 'guardrails' } });
-      void svc.recordAudit({ companyId, userId, model, decision: 'denied', reason: gate.reason ?? 'guardrails', httpStatus, latencyMs: Date.now() - startedAt });
+      void svc.recordAudit({ companyId, userId, model, decision: 'denied', reason: gate.reason ?? 'guardrails', httpStatus, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
       return;
     }
 
@@ -84,7 +114,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     if (!resolved) {
       log.warn('proxy.no_key', { companyId });
       res.status(503).json({ error: { message: 'The AI proxy has no DeepSeek key configured. Add one in Guardrails.', type: 'not_configured' } });
-      void svc.recordAudit({ companyId, userId, model, decision: 'denied', reason: 'not_configured', httpStatus: 503, latencyMs: Date.now() - startedAt });
+      void svc.recordAudit({ companyId, userId, model, decision: 'denied', reason: 'not_configured', httpStatus: 503, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
       return;
     }
 
@@ -92,30 +122,41 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const desktopOwnsTimeline = body.divo_trace_mode === 'desktop'
       && typeof body.divo_run_id === 'string'
       && body.divo_run_id.length > 0;
-    const runId =
-      (req.header('x-divo-run') || (typeof body.divo_run_id === 'string' ? body.divo_run_id : '') ||
-        req.header('session_id') || (res.locals['sessionId'] as string | undefined) || randomUUID());
     let executionId: string | null = null;
-    try {
-      executionId = await svc.ensureRun({ runId, companyId, userId });
-      if (!desktopOwnsTimeline) {
-        await svc.recordToolResults(executionId, messages as never[]);
+    if (!threadTitleRequest) {
+      const runId =
+        (req.header('x-divo-run') || (typeof body.divo_run_id === 'string' ? body.divo_run_id : '') ||
+          req.header('session_id') || (res.locals['sessionId'] as string | undefined) || randomUUID());
+      try {
+        executionId = await svc.ensureRun({ runId, companyId, userId });
+        if (!desktopOwnsTimeline) {
+          await svc.recordToolResults(executionId, messages as never[]);
+        }
+      } catch (e) {
+        log.warn('proxy.trace.pre_failed', { error: String(e) }); // never block the call on trace failure
       }
-    } catch (e) {
-      log.warn('proxy.trace.pre_failed', { error: String(e) }); // never block the call on trace failure
     }
 
     // ── Forward to DeepSeek ───────────────────────────────────────────────────
     const forwardBody: ChatBody = { ...body };
     delete forwardBody.divo_run_id;
     delete forwardBody.divo_trace_mode;
+    delete forwardBody.divo_request_kind;
+    delete forwardBody.divo_thread_id;
     const wantsStream = forwardBody.stream !== false;
     if (wantsStream && !forwardBody.stream_options?.include_usage) {
       forwardBody.stream_options = { ...(forwardBody.stream_options ?? {}), include_usage: true };
     }
 
     const controller = new AbortController();
-    req.on('close', () => controller.abort());
+    // `IncomingMessage.close` may fire after a fully received request. It is
+    // not equivalent to a client abort, and using it here races non-streaming
+    // auxiliary requests. Abort only when the request was actually aborted or
+    // the response closes before it has been written.
+    req.on('aborted', () => controller.abort());
+    res.on('close', () => {
+      if (!res.writableEnded) controller.abort();
+    });
 
     let upstream: globalThis.Response;
     try {
@@ -128,7 +169,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     } catch (e) {
       log.error('proxy.upstream.unreachable', { error: String(e) });
       res.status(502).json({ error: { message: 'Upstream unreachable', type: 'upstream' } });
-      void svc.recordAudit({ companyId, userId, executionId, model, decision: 'denied', reason: 'upstream', httpStatus: 502, latencyMs: Date.now() - startedAt, keySource: resolved.source });
+      void svc.recordAudit({ companyId, userId, executionId, model, decision: 'denied', reason: 'upstream', httpStatus: 502, latencyMs: Date.now() - startedAt, keySource: resolved.source, ...auxiliaryAuditTarget });
       return;
     }
     if (upstream.ok) void deps.store.touch(resolved.source, companyId);
@@ -143,12 +184,27 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
         usage: ok ? usage : null,
         latencyMs: Date.now() - startedAt,
         keySource: resolved.source,
+        ...auxiliaryAuditTarget,
       });
 
     const recordUsage = async (usage: DeepSeekUsage | null, responseModel?: string | null) => {
-      if (!usage || !executionId) return;
+      if (!usage) return;
       // Prefer the model DeepSeek actually served (aliases resolved), else the request's.
       const served = canonicalModel(responseModel ?? model);
+      if (threadTitleRequest) {
+        await svc.recordAuxiliaryUsage({
+          companyId,
+          userId,
+          model: served,
+          provider: 'deepseek',
+          usage,
+          agentTarget: THREAD_TITLE_AGENT_TARGET,
+          channel: 'desktop',
+          ...(threadId ? { threadId } : {}),
+        });
+        return;
+      }
+      if (!executionId) return;
       try {
         await svc.recordModelCall({
           executionId,
@@ -173,6 +229,15 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       let parsed: { usage?: DeepSeekUsage; model?: string } = {};
       if (upstream.ok) {
         try { parsed = JSON.parse(text) as { usage?: DeepSeekUsage; model?: string }; await recordUsage(parsed.usage ?? null, parsed.model ?? null); } catch { /* ignore */ }
+      }
+      if (threadTitleRequest) {
+        log.info('proxy.thread_title.completed', {
+          userId,
+          threadId,
+          model: canonicalModel(parsed.model ?? model),
+          status: upstream.status,
+          latencyMs: Date.now() - startedAt,
+        });
       }
       audit(upstream.ok, parsed.usage ?? null, parsed.model ?? null);
       return;
@@ -207,6 +272,16 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const ok = upstream.ok && !interrupted;
     const final = ok ? extractFinal(acc) : { usage: null, model: null };
     if (ok) await recordUsage(final.usage, final.model);
+    if (threadTitleRequest) {
+      log.info('proxy.thread_title.completed', {
+        userId,
+        threadId,
+        model: canonicalModel(final.model ?? model),
+        status: upstream.status,
+        latencyMs: Date.now() - startedAt,
+        interrupted,
+      });
+    }
     audit(ok, final.usage, final.model, interrupted ? 'stream_interrupted' : undefined);
   });
 

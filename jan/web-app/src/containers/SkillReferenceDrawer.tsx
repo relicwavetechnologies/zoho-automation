@@ -1,121 +1,118 @@
-import { IconSearch, IconX } from '@tabler/icons-react'
-import type { RefObject } from 'react'
+import { IconX } from '@tabler/icons-react'
+import { SparklesIcon } from 'lucide-react'
+import { useState } from 'react'
+import type { ReactNode } from 'react'
 import type { DivoSkillSearchResult } from '@/lib/divo-skill-search'
 
 const SKELETON_ROWS = [0, 1, 2]
 
+/** Rows shown before the list collapses behind "Show N more". */
+const VISIBLE_ROWS = 6
+
 type SkillReferenceDrawerProps = {
-  searchInputRef: RefObject<HTMLInputElement | null>
   search: string
   loading: boolean
   error: string | null
   results: DivoSkillSearchResult[]
-  onSearchChange: (value: string) => void
-  onClose: () => void
   onSelect: (skill: DivoSkillSearchResult) => void
+  /** Rendered above the skills group — e.g. the /share-memory command row. */
+  commands?: ReactNode
 }
 
+function GroupLabel({ children }: { children: ReactNode }) {
+  return (
+    <div className="px-3 pt-2.5 pb-1 text-[11px] font-normal text-muted-foreground/70">
+      {children}
+    </div>
+  )
+}
+
+/**
+ * The `/` command menu — a compact floating list, positioned by its caller
+ * above the composer.
+ *
+ * It has NO search field of its own. The `/query` the user is already typing in
+ * the composer drives the results (see the slash handler in ChatInput), so a
+ * second box here meant two inputs for one search, and opening it stole focus
+ * out of the composer mid-sentence. Typing, filtering and sending all stay on
+ * the textarea; this list only ever displays and selects.
+ */
 export function SkillReferenceDrawer({
-  searchInputRef,
   search,
   loading,
   error,
   results,
-  onSearchChange,
-  onClose,
   onSelect,
+  commands,
 }: SkillReferenceDrawerProps) {
+  const [expanded, setExpanded] = useState(false)
   const hasSearch = search.trim().length > 0
+  const shown = expanded ? results : results.slice(0, VISIBLE_ROWS)
+  const hidden = results.length - shown.length
 
   return (
     <div
       data-testid="skill-reference-drawer"
-      className="mx-3 mt-3 overflow-hidden rounded-2xl border border-border bg-background shadow-lg"
+      className="w-[380px] max-w-full overflow-hidden rounded-xl border border-border bg-popover py-1 shadow-xl"
     >
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <IconSearch size={17} className="shrink-0 text-muted-foreground" />
-        <input
-          ref={searchInputRef}
-          data-testid="skill-reference-search"
-          value={search}
-          onChange={(e) => onSearchChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key !== 'Escape') return
+      {commands}
 
-            e.preventDefault()
-            onClose()
-          }}
-          placeholder="Search skills"
-          className="h-8 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-        />
-        <button
-          type="button"
-          aria-label="Close skill reference drawer"
-          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          onClick={onClose}
-        >
-          <IconX size={16} />
-        </button>
-      </div>
-      <div className="space-y-2 px-3 py-3">
-        {loading ? (
-          SKELETON_ROWS.map((row) => (
-            <div
-              key={row}
-              className="flex items-center gap-3 rounded-lg px-1 py-1.5"
-            >
-              <div className="size-8 shrink-0 rounded-md bg-muted" />
-              <div className="min-w-0 flex-1 space-y-1.5">
-                <div className="h-2.5 w-2/5 rounded-full bg-muted" />
-                <div className="h-2 w-3/5 rounded-full bg-muted/70" />
-              </div>
-            </div>
-          ))
-        ) : error ? (
-          <div
-            data-testid="skill-reference-error"
-            className="px-2 py-6 text-center text-sm text-destructive"
-          >
-            {error}
+      <GroupLabel>Skills</GroupLabel>
+
+      {loading ? (
+        SKELETON_ROWS.map((row) => (
+          <div key={row} className="flex items-center gap-2.5 px-3 py-1.5">
+            <div className="size-4 shrink-0 rounded bg-muted" />
+            <div className="h-2.5 w-2/5 rounded-full bg-muted" />
           </div>
-        ) : results.length > 0 ? (
-          results.map((skill) => (
+        ))
+      ) : error ? (
+        <div
+          data-testid="skill-reference-error"
+          className="px-3 py-2 text-[13px] text-destructive"
+        >
+          {error}
+        </div>
+      ) : results.length > 0 ? (
+        <>
+          {shown.map((skill) => (
             <button
               key={skill.id}
               type="button"
               data-testid={`skill-reference-result-${skill.id}`}
-              className="flex w-full items-start gap-3 rounded-lg px-2 py-2 text-left hover:bg-muted"
+              className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
               onClick={() => onSelect(skill)}
             >
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-sky-500/10 text-xs font-semibold text-sky-700 dark:text-sky-300">
-                /
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate text-sm font-medium text-foreground">
-                    {skill.name}
-                  </span>
-                  <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                    {skill.category}
-                  </span>
-                </div>
-                <div className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
-                  {skill.description}
-                </div>
-              </div>
+              <SparklesIcon className="size-4 shrink-0 text-muted-foreground/70" />
+              <span className="min-w-0 flex-1 truncate">{skill.name}</span>
+              <span className="shrink-0 text-[11px] text-muted-foreground/60">
+                {skill.category}
+              </span>
             </button>
-          ))
-        ) : hasSearch ? (
-          <div
-            data-testid="skill-reference-empty"
-            className="px-2 py-6 text-center text-sm text-muted-foreground"
-          >
-            No matching skills
-          </div>
-        ) : (
-          <div className="h-2" />
-        )}
-      </div>
+          ))}
+          {hidden > 0 && (
+            <button
+              type="button"
+              data-testid="skill-reference-show-more"
+              className="w-full px-3 py-1.5 text-left text-[13px] text-muted-foreground/70 hover:text-foreground"
+              onClick={() => setExpanded(true)}
+            >
+              Show {hidden} more
+            </button>
+          )}
+        </>
+      ) : hasSearch ? (
+        <div
+          data-testid="skill-reference-empty"
+          className="px-3 py-2 text-[13px] text-muted-foreground"
+        >
+          No matching skills
+        </div>
+      ) : (
+        <div className="px-3 py-2 text-[13px] text-muted-foreground/70">
+          Type to search skills
+        </div>
+      )}
     </div>
   )
 }

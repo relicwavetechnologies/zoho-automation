@@ -1,16 +1,11 @@
 import type { ToolRegistry } from '../orchestration/tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
-import type {
-  CatalogSkill,
-  CatalogSkillSearchResult,
-  SkillCatalogService,
-} from '../skills/skill-catalog.service';
+import type { PermissionResult } from '../permissions/permission.types';
+import type { SkillCatalogService } from '../skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
 import type { Logger } from '../../shared/logger';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
-import type { PermissionResult } from '../permissions/permission.types';
-import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
 import type { ToolExecutor } from './tool-executor';
 import type { LocalApprovalIntentService } from './local-approval-intent.service';
 import { mediaImageOcrPayloadSchema, type MediaOcrService } from './media-ocr.service';
@@ -46,6 +41,10 @@ import {
 import { buildGoogleVendorOnboardingPlan } from './google-orchestration.service';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
 import { TOOL_PERMISSION_POLICY_REVISION } from '../../domain/tools/tool-id';
+import {
+  WorkResolutionService,
+  withWorkDiscoveryPermissions as withGatewayDiscoveryPermissions,
+} from './work-resolution.service';
 
 // zod-to-json-schema's recursive generic overflows when the registry erases a
 // concrete tool to Tool<unknown, unknown>. Keep that type mismatch at this
@@ -73,6 +72,8 @@ export interface GatewayDispatcherDeps {
   readonly skillAccessEnforcement?: SkillAccessEnforcementPort;
   readonly auditService?: Pick<AuditService, 'record'>;
   readonly managerPersonaRuntime?: ManagerPersonaRuntimeService;
+  /** Shared with backend-hosted channels so work routing never diverges. */
+  readonly workResolution?: WorkResolutionService;
   readonly managerTeachService?: ManagerTeachService;
   readonly logger: Logger;
 }
@@ -465,125 +466,30 @@ export class GatewayDispatcher {
 
     const permission = await this.resolvePerm(member, departmentId);
     if (!permission) return this.permissionDenied('Permission resolution failed');
-    const discoveryPermission = withGatewayDiscoveryPermissions(permission);
-    const grantedSkillIds = await this.grantedSkillIds(member);
-    const queries = uniqueQueries(parsed.data.query, parsed.data.variants ?? []);
-    const perQueryLimit = 5;
+    const resolution = await (this.deps.workResolution ?? new WorkResolutionService({
+      skillCatalog: this.deps.skillCatalog,
+      ...(this.deps.skillAccessEnforcement ? { skillAccessEnforcement: this.deps.skillAccessEnforcement } : {}),
+      ...(this.deps.managerPersonaRuntime ? { managerPersonaRuntime: this.deps.managerPersonaRuntime } : {}),
+    })).resolve({
+      companyId: member.companyId,
+      userId: member.userId,
+      ...(departmentId ? { departmentId } : {}),
+      permission,
+      query: parsed.data.query,
+      ...(parsed.data.variants ? { variants: parsed.data.variants } : {}),
+      ...(parsed.data.limit ? { limit: parsed.data.limit } : {}),
+    });
 
-    const [personaRules, searches] = await Promise.all([
-      departmentId && this.deps.managerPersonaRuntime
-        ? this.deps.managerPersonaRuntime.resolveDepartmentRules({
-          companyId: member.companyId,
-          departmentId,
-          query: parsed.data.query,
-          limit: 5,
-        })
-        : Promise.resolve([]),
-      Promise.all(queries.map(query => this.deps.skillCatalog.searchVisible({
-        companyId: member.companyId,
-        ...(departmentId ? { departmentId } : {}),
-        permission: discoveryPermission,
-        ...(grantedSkillIds ? { grantedSkillIds } : {}),
-        query,
-        limit: perQueryLimit,
-      }))),
-    ]);
-
-    const personaSkillReferences = new Map<string, Array<{
-      nodeId: string;
-      scopeKey: string;
-      ruleKey: string;
-    }>>();
-    for (const rule of personaRules) {
-      for (const skill of rule.linkedSkills) {
-        const references = personaSkillReferences.get(skill.id) ?? [];
-        references.push({ nodeId: rule.nodeId, scopeKey: rule.scopeKey, ruleKey: rule.ruleKey });
-        personaSkillReferences.set(skill.id, references);
-      }
-    }
-
-    const personaSkills = (await Promise.all([...personaSkillReferences.entries()].map(async ([skillId, references]) => {
-      const skill = await this.deps.skillCatalog.getVisible({
-        companyId: member.companyId,
-        ...(departmentId ? { departmentId } : {}),
-        permission: discoveryPermission,
-        ...(grantedSkillIds ? { grantedSkillIds } : {}),
-        skillId,
-      });
-      return skill ? { source: 'persona_link' as const, references, skill: agentFacingSkill(skill) } : null;
-    }))).filter(isPresent);
-
-    const aggregated = aggregateSkillSearches(queries, searches);
-    const fuzzyCandidates = aggregated.filter(candidate => !personaSkillReferences.has(candidate.skill.id));
-    const personaCoveredCandidates = fuzzyCandidates.filter(candidate =>
-      personaSkills.some(personaSkill => similarSkillIntent(candidate.skill, personaSkill.skill)),
-    );
-    const uncoveredFuzzyCandidates = fuzzyCandidates.filter(candidate =>
-      !personaCoveredCandidates.includes(candidate),
-    );
-    const selectedFuzzy = uncoveredFuzzyCandidates
-      .filter(isStrongSkillMatch)
-      .slice(0, parsed.data.limit ?? 3)
-      .map(candidate => ({
-        source: 'skill_search' as const,
-        matchedQueries: candidate.matchedQueries,
-        bestScore: candidate.bestScore,
-        reason: candidate.matchedQueries.length > 1
-          ? 'Matched more than one intent-preserving query.'
-          : 'Passed the strong fuzzy-match threshold for this request.',
-        skill: agentFacingSkill(candidate.skill),
-      }));
-    const selectedIds = new Set(selectedFuzzy.map(candidate => candidate.skill.id));
-    const rejectedSkills = [
-      ...personaCoveredCandidates.map(candidate => ({
-        id: candidate.skill.id,
-        name: candidate.skill.name,
-        bestScore: candidate.bestScore,
-        matchedQueries: candidate.matchedQueries,
-        reason: 'Superseded by a more specific exact persona-linked skill.',
-      })),
-      ...uncoveredFuzzyCandidates
-        .filter(candidate => !selectedIds.has(candidate.skill.id))
-        .map(candidate => ({
-          id: candidate.skill.id,
-          name: candidate.skill.name,
-          bestScore: candidate.bestScore,
-          matchedQueries: candidate.matchedQueries,
-          reason: isStrongSkillMatch(candidate)
-            ? 'Strong complementary match omitted because the bounded result limit was reached.'
-            : 'Below the strong relevance threshold; do not apply this recipe automatically.',
-        })),
-    ].slice(0, 5);
-
-    const registryRevision = await this.skillRegistryRevision(member.companyId);
     this.recordSkillAudit(member, 'gateway.work.resolve', 'success', {
       departmentId: departmentId ?? null,
-      queryCount: queries.length,
-      personaRuleCount: personaRules.length,
-      personaSkillIds: personaSkills.map(candidate => candidate.skill.id),
-      searchedSkillIds: selectedFuzzy.map(candidate => candidate.skill.id),
-      rejectedSkillIds: rejectedSkills.map(candidate => candidate.id),
-      registryRevision,
+      queryCount: resolution.queries.length,
+      personaRuleCount: resolution.persona.rules.length,
+      personaSkillIds: resolution.persona.linkedSkills.map(candidate => candidate.skill.id),
+      searchedSkillIds: resolution.additionalSkills.map(candidate => candidate.skill.id),
+      rejectedSkillIds: resolution.rejectedSkills.map(candidate => candidate.id),
+      registryRevision: resolution.registryRevision,
     });
-
-    return gatewaySuccess({
-      originalQuery: parsed.data.query,
-      queries,
-      registryRevision,
-      persona: {
-        rules: personaRules,
-        linkedSkills: personaSkills,
-      },
-      additionalSkills: selectedFuzzy,
-      rejectedSkills,
-      resolutionOrder: [
-        'Apply the current user request and backend policy.',
-        'Apply matching persona rules and their exact linked skill recipes.',
-        'Apply complementary skill-search recipes only where they do not conflict.',
-        'Use injected local personal memory only as a compatible default.',
-      ],
-      note: 'This resolution is advisory context. Backend permission and approval checks remain authoritative.',
-    });
+    return gatewaySuccess(resolution);
   }
 
   private async handleTeachContextGet(
@@ -1017,145 +923,4 @@ export class GatewayDispatcher {
 
 function safeGatewayMessage(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 1_000);
-}
-
-function uniqueQueries(originalQuery: string, variants: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const queries: string[] = [];
-  for (const value of [originalQuery, ...variants]) {
-    const query = value.replace(/\s+/g, ' ').trim();
-    const key = query.toLowerCase();
-    if (!query || seen.has(key)) continue;
-    seen.add(key);
-    queries.push(query);
-  }
-  return queries.slice(0, 3);
-}
-
-interface AggregatedSkillCandidate {
-  readonly skill: CatalogSkill;
-  readonly bestScore: number;
-  readonly matchedQueries: readonly string[];
-  readonly rankScore: number;
-}
-
-function aggregateSkillSearches(
-  queries: readonly string[],
-  searches: readonly (readonly CatalogSkillSearchResult[])[],
-): AggregatedSkillCandidate[] {
-  const candidates = new Map<string, {
-    skill: CatalogSkill;
-    bestScore: number;
-    matchedQueries: string[];
-    rankScore: number;
-  }>();
-
-  searches.forEach((results, queryIndex) => {
-    results.forEach((result, rank) => {
-      const candidate = candidates.get(result.skill.id) ?? {
-        skill: result.skill,
-        bestScore: 0,
-        matchedQueries: [],
-        rankScore: 0,
-      };
-      candidate.bestScore = Math.max(candidate.bestScore, result.score);
-      candidate.rankScore += 1 / (rank + 1);
-      const query = queries[queryIndex];
-      if (query && !candidate.matchedQueries.includes(query)) candidate.matchedQueries.push(query);
-      candidates.set(result.skill.id, candidate);
-    });
-  });
-
-  return [...candidates.values()]
-    .sort((left, right) =>
-      right.matchedQueries.length - left.matchedQueries.length
-      || right.bestScore - left.bestScore
-      || right.rankScore - left.rankScore
-      || left.skill.name.localeCompare(right.skill.name),
-    );
-}
-
-function isStrongSkillMatch(candidate: AggregatedSkillCandidate): boolean {
-  // Repetition of generic words across variants must not promote a domain
-  // mismatch (for example, "research" selecting an SEO-only recipe for TTS).
-  // Variants improve the chance of one strong semantic/identity match; they do
-  // not lower the acceptance threshold.
-  return candidate.bestScore >= 8;
-}
-
-const skillIntentStopWords = new Set([
-  'and', 'company', 'create', 'for', 'from', 'generate', 'system', 'the', 'use', 'using', 'with',
-]);
-
-function similarSkillIntent(
-  candidate: CatalogSkill,
-  personaSkill: { slug: string; name: string; description: string },
-): boolean {
-  const left = skillIntentTokens(`${candidate.slug} ${candidate.name} ${candidate.description}`);
-  const right = skillIntentTokens(`${personaSkill.slug} ${personaSkill.name} ${personaSkill.description}`);
-  if (left.size === 0 || right.size === 0) return false;
-  let intersection = 0;
-  for (const token of left) if (right.has(token)) intersection += 1;
-  const union = new Set([...left, ...right]).size;
-  return intersection >= 3 && intersection / union >= 0.3;
-}
-
-function skillIntentTokens(value: string): Set<string> {
-  return new Set(value.toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter(token => token.length >= 3 && !skillIntentStopWords.has(token)));
-}
-
-function agentFacingSkill(skill: CatalogSkill) {
-  return {
-    id: skill.id,
-    slug: skill.slug,
-    name: skill.name,
-    description: skill.description,
-    instructions: skill.instructions,
-    toolIds: [...skill.toolIds],
-    revision: skill.revision,
-  };
-}
-
-function isPresent<T>(value: T | null | undefined): value is T {
-  return value !== null && value !== undefined;
-}
-
-function withGatewayDiscoveryPermissions(perm: PermissionResult): PermissionResult {
-  const allowedActionsByTool = new Map(perm.allowedActionsByTool);
-  const allowedToolIds = new Set(perm.allowedToolIds);
-
-  const memoryPublishingToolId = asToolId('memoryPublishing');
-  const memoryActions = new Set<ToolActionGroup>(
-    allowedActionsByTool.get(memoryPublishingToolId) ?? [],
-  );
-  memoryActions.add('read');
-  allowedActionsByTool.set(memoryPublishingToolId, memoryActions);
-  allowedToolIds.add(memoryPublishingToolId);
-
-  const memoryRecallToolId = asToolId('memoryRecall');
-  const recallActions = new Set<ToolActionGroup>(
-    allowedActionsByTool.get(memoryRecallToolId) ?? [],
-  );
-  recallActions.add('read');
-  allowedActionsByTool.set(memoryRecallToolId, recallActions);
-  allowedToolIds.add(memoryRecallToolId);
-
-  if (perm.department?.roleSlug === 'MANAGER') {
-    const skillPublishingToolId = asToolId('skillPublishing');
-    const skillActions = new Set<ToolActionGroup>(
-      allowedActionsByTool.get(skillPublishingToolId) ?? [],
-    );
-    skillActions.add('read');
-    skillActions.add('create');
-    allowedActionsByTool.set(skillPublishingToolId, skillActions);
-    allowedToolIds.add(skillPublishingToolId);
-  }
-
-  return {
-    ...perm,
-    allowedToolIds,
-    allowedActionsByTool,
-  };
 }

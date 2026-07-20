@@ -50,19 +50,27 @@ export interface ConversationSummarizerDeps {
 export class ConversationSummarizer {
   constructor(private readonly deps: ConversationSummarizerDeps) {}
 
-  async maybeSummarize(chatId: string, scope?: ConversationScope): Promise<void> {
+  async maybeSummarize(
+    chatId: string,
+    scope?: ConversationScope,
+    modelOverride?: LanguageModel,
+  ): Promise<void> {
     const key = lockKey(chatId, scope);
     const lockResult = await this.deps.cache.setNx(key, 1, LOCK_TTL_SECONDS);
     if (!lockResult.ok || !lockResult.value) return;
 
     try {
-      await this.checkAndSummarize(chatId, scope);
+      await this.checkAndSummarize(chatId, scope, modelOverride ?? this.deps.model);
     } finally {
       void this.deps.cache.del(key);
     }
   }
 
-  private async checkAndSummarize(chatId: string, scope?: ConversationScope): Promise<void> {
+  private async checkAndSummarize(
+    chatId: string,
+    scope: ConversationScope | undefined,
+    model: LanguageModel,
+  ): Promise<void> {
     const metaResult = await this.deps.conversationRepo.getConversationMeta(chatId, scope);
     if (!metaResult.ok || !metaResult.value) return;
 
@@ -100,7 +108,7 @@ export class ConversationSummarizer {
 
     try {
       const { text } = await generateText({
-        model: this.deps.model,
+        model,
         system: scope?.channel === 'lark'
           ? `${SUMMARIZE_SYSTEM}\n\n${LARK_ENGLISH_OUTPUT_POLICY}`
           : SUMMARIZE_SYSTEM,

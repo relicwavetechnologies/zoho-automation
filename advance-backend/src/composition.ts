@@ -55,6 +55,11 @@ import {
 } from './application/connections/accessible-connection-selection';
 import { CompanySerperConnectionRepository } from './infrastructure/persistence/company-serper-connection.repository';
 import { CompanySerperService } from './application/web-search/company-serper.service';
+import { SemrushClient } from './infrastructure/semrush/semrush.client';
+import { SemrushService } from './application/semrush/semrush.service';
+import { CompanyOmsConnectionRepository } from './infrastructure/persistence/company-oms-connection.repository';
+import { OmsSiteDataClient } from './infrastructure/oms/oms-site-data.client';
+import { CompanyOmsSiteDataService } from './application/oms/company-oms-site-data.service';
 import { hasGoogleScopeGroups } from './domain/google/google-workspace-scope';
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
@@ -152,7 +157,11 @@ import { createMemoryRecallTool } from './application/orchestration/tools/famili
 import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/orchestration/tools/families/scheduled-workflows.tool';
+import { createSemrushTool } from './application/orchestration/tools/families/semrush.tool';
+import { createOmsSiteDataTool } from './application/orchestration/tools/families/oms-site-data.tool';
 import { ScheduledDesktopChannelAdapter } from './infrastructure/channels/desktop/scheduled-desktop.adapter';
+import { ScheduledLarkDmChannelAdapter } from './infrastructure/channels/lark/scheduled-lark-dm.adapter';
+import { LarkMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
 import { ToolExecutor } from './application/gateway/tool-executor';
 import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
 import { WorkResolutionService } from './application/gateway/work-resolution.service';
@@ -233,6 +242,9 @@ export interface Container {
   integrationConnectionRepo: IntegrationConnectionRepository;
   companySerperConnectionRepo: CompanySerperConnectionRepository;
   companySerperService: CompanySerperService;
+  semrushService: SemrushService;
+  companyOmsConnectionRepo: CompanyOmsConnectionRepository;
+  companyOmsSiteDataService: CompanyOmsSiteDataService;
   zohoTokenService: ZohoTokenService;
   zohoConnectionRepo: ZohoConnectionRepository;
   // Observability
@@ -326,6 +338,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const deptRepo              = new DepartmentRepository(prisma);
   const deptToolPermRepo      = new DeptToolPermissionRepository(prisma);
   const deptUserOverrideRepo  = new DeptUserOverrideRepository(prisma);
+  const omsEncryptionKey = env.OMS_CONNECTION_ENCRYPTION_KEY ?? env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '';
+  const companyOmsConnectionRepo = new CompanyOmsConnectionRepository(prisma, omsEncryptionKey);
   const conversationRepo      = new ConversationRepository(prisma, cache);
   const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache);
   const larkChatContextRepo   = new LarkChatContextRepository(prisma);
@@ -418,7 +432,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const chatContextService = new LarkChatContextService({
     repo: larkChatContextRepo,
-    model: fallbackModel,
+    // Group context keeps its deterministic compaction until it receives a
+    // per-run Lark Flash model; never let it silently use the global fallback.
     logger: logger.child({ service: 'chat-context' }),
   });
   logger.warn('ai.model.selected', {
@@ -546,6 +561,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     env.SERPER_TIMEOUT_MS,
     logger.child({ service: 'company-serper' }),
     env.SERPER_API_KEY ?? '',
+  );
+  const semrushService = new SemrushService(
+    new SemrushClient({ timeoutMs: env.SEMRUSH_TIMEOUT_MS }),
+    env.SEMRUSH_API_KEY,
+    logger.child({ service: 'semrush' }),
+  );
+  const companyOmsSiteDataService = new CompanyOmsSiteDataService(
+    companyOmsConnectionRepo,
+    new OmsSiteDataClient({ timeoutMs: env.OMS_SITE_DATA_TIMEOUT_MS }),
+    memoryCache,
+    logger.child({ service: 'company-oms-site-data' }),
+    env.OMS_SITE_DATA_API_KEY ?? '',
   );
   const webSearchService = new WebSearchService({
     search(input, companyId) {
@@ -1162,6 +1189,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     booksClient: zohoPaginatedBooksClient,
     csvLinkTtl:  env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   }));
+  toolRegistry.register(createSemrushTool({
+    service: semrushService,
+    cloudinary: cloudinaryAdapter,
+    audit: auditService,
+    csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+  }));
+  toolRegistry.register(createOmsSiteDataTool({
+    service: companyOmsSiteDataService,
+    cloudinary: cloudinaryAdapter,
+    audit: auditService,
+    csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+  }));
   toolRegistry.register(createRunCommandTool());
   toolRegistry.register(createScheduledWorkflowsTool({ prisma }));
 
@@ -1296,13 +1335,20 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'approval-gate' }),
     { disableManagerSelfBypass },
   );
+  const gatewayToolExecutor = new ToolExecutor({
+    toolRegistry,
+    permissions,
+    approvalGate,
+    logger: logger.child({ service: 'gateway-tool-executor' }),
+    clock:  systemClock,
+  });
   const approvalResumer  = new ApprovalResumerService({
     approvalRepo,
-    engine,
     larkAdapter,
     channelIdentityRepo,
-    conversationRepo,
     approvalGate,
+    toolExecutor: gatewayToolExecutor,
+    permissions,
     logger: logger.child({ service: 'approval-resumer' }),
   });
   const approvalCardHandler = new LarkApprovalCardHandler(
@@ -1312,13 +1358,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'approval-card-handler' }),
   );
 
-  const gatewayToolExecutor = new ToolExecutor({
-    toolRegistry,
-    permissions,
-    approvalGate,
-    logger: logger.child({ service: 'gateway-tool-executor' }),
-    clock:  systemClock,
-  });
   const localApprovalIntents = new LocalApprovalIntentService({
     toolExecutor: gatewayToolExecutor,
     repository: new InMemoryApprovalIntentRepository(),
@@ -1335,6 +1374,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     connectionRegistry: integrationConnectionRepo,
     mediaOcr,
     managerPersonaRuntime: managerPersonaRuntimeService,
+    workResolution,
     managerTeachService,
     skillAccessEnforcement,
     auditService,
@@ -1395,6 +1435,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     integrationConnectionRepo,
     companySerperConnectionRepo,
     companySerperService,
+    semrushService,
+    companyOmsConnectionRepo,
+    companyOmsSiteDataService,
     zohoConnectionRepo,
     zohoTokenService,
     // Observability
@@ -1443,6 +1486,15 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       engine,
       channelAdapters: {
         lark: larkAdapter,
+        larkDm: new ScheduledLarkDmChannelAdapter({
+          client: new LarkMessagingClient({
+            appId: env.LARK_APP_ID,
+            appSecret: env.LARK_APP_SECRET,
+            ...(env.LARK_API_BASE_URL ? { apiBaseUrl: env.LARK_API_BASE_URL } : {}),
+            logger: logger.child({ service: 'scheduled-lark-dm-client' }),
+          }),
+          logger: logger.child({ service: 'scheduled-lark-dm-channel' }),
+        }),
         desktop: new ScheduledDesktopChannelAdapter({
           prisma,
           logger: logger.child({ service: 'scheduled-desktop-channel' }),

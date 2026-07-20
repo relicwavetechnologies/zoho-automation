@@ -50,6 +50,8 @@ import { resolveToolLabel } from '@/lib/pi/tool-label'
 import { PiTraceTimeline } from '@/components/pi/PiTraceTimeline'
 import { SubagentRunCard } from '@/components/pi/SubagentRunCard'
 import { isDivoSubagentTool } from '@/lib/pi/subagent'
+import { DivoApprovalStatusCard } from '@/components/pi/DivoApprovalStatusCard'
+import { isDivoGatewayApprovalTool } from '@/lib/pi/gateway-approval'
 
 const CHAT_STATUS = {
   STREAMING: 'streaming',
@@ -462,6 +464,15 @@ export const MessageItem = memo(
         )
       }
 
+      if (isDivoGatewayApprovalTool(part)) {
+        return (
+          <DivoApprovalStatusCard
+            key={`${message.id}-${partIndex}`}
+            part={part}
+          />
+        )
+      }
+
       const toolName = resolveToolLabel(part)
       return (
         <Tool
@@ -513,11 +524,14 @@ export const MessageItem = memo(
       const groupIsStreaming =
         isStreaming && lastEntryIndex === message.parts.length - 1
 
-      // Force the trace open only when a tool is awaiting the user's approval
-      // (its controls must be visible) or a full timeline is requested. A
-      // normally-executing tool must NOT force it open, or the trace flickers
-      // open/closed on every tool step while streaming.
-      const keepOpen = awaitingApproval || showFullTimeline
+      // Force the trace open when local approval controls must stay reachable,
+      // when the backend reports a pending/rejected company approval, or when
+      // a full timeline is requested. Ordinary tool calls must NOT force it
+      // open, or the trace would flicker on every streaming step.
+      const hasBackendApproval = entries.some(
+        ({ part }) => isDivoGatewayApprovalTool(part)
+      )
+      const keepOpen = awaitingApproval || showFullTimeline || hasBackendApproval
 
       // While streaming, keep the group open and show the model's talking
       // (interstitial text) and tool runs live, but fold away the raw reasoning —

@@ -7,6 +7,7 @@ import {
 	callDivoGateway,
 	clearDivoGatewaySkillCache,
 	formatGatewayResponse,
+	isGatewayApprovalStatus,
 	prepareDivoGatewayRequest,
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
@@ -114,6 +115,13 @@ describe("formatGatewayResponse", () => {
 		assert.match(result.text, /ap-1/);
 		assert.match(result.text, /exact same divo_gateway tools\.invoke request/i);
 		assert.match(result.text, /changed args require a fresh approval/i);
+	});
+
+	it("classifies only backend HITL terminal statuses for structured tool results", () => {
+		assert.equal(isGatewayApprovalStatus("approval_required"), true);
+		assert.equal(isGatewayApprovalStatus("approval_rejected"), true);
+		assert.equal(isGatewayApprovalStatus("approval_misconfigured"), false);
+		assert.equal(isGatewayApprovalStatus("tool_error"), false);
 	});
 
 	it("renders approval_misconfigured", () => {

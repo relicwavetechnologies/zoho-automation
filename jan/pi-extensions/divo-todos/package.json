@@ -1,0 +1,15 @@
+{
+  "name": "pi-divo-todos",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.80.3",
+    "typebox": "1.1.38"
+  },
+  "scripts": {
+    "test": "node --import tsx --test board.test.ts index.test.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.4"
+  }
+}

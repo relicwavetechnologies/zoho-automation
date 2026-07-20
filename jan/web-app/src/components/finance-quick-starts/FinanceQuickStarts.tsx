@@ -80,7 +80,14 @@ export type FinanceQuickStartRequest = {
 
 type Props = {
   onSubmit: (request: FinanceQuickStartRequest) => void
-  variant?: 'home' | 'launcher'
+  /**
+   * `home` — the expandable panel on the empty-thread landing.
+   * `launcher` — a single button living inside the composer toolbar.
+   * `bubbles` — pills sitting ABOVE the composer, the way Cursor floats its
+   *   suggested actions. Each group gets one pill; the detail dialog is the
+   *   same one the other variants open.
+   */
+  variant?: 'home' | 'launcher' | 'bubbles'
 }
 
 const GROUP_ICONS: Record<string, typeof ReceiptText> = {
@@ -200,11 +207,69 @@ export function FinanceQuickStarts({ onSubmit, variant = 'home' }: Props) {
 
   return (
     <section
-      className={cn(variant === 'home' ? 'mt-6' : 'inline-flex')}
+      className={cn(
+        variant === 'home' && 'mt-6',
+        variant === 'launcher' && 'inline-flex',
+        // `inline-flex` so the caller decides where the pill sits — left-aligned
+        // above the composer in a thread, centred under the greeting on home.
+        variant === 'bubbles' && 'inline-flex flex-wrap items-center gap-1.5'
+      )}
       data-testid="finance-quick-starts"
       data-variant={variant}
     >
-      {variant === 'launcher' ? (
+      {variant === 'bubbles' ? (
+        // No connection, no pill. A dead-end suggestion above the composer is
+        // worse than no suggestion at all.
+        connections.length === 0 ? null : (
+          <Popover open={launcherOpen} onOpenChange={setLauncherOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Open Finance quick starts"
+                // One pill, not one per group. Eight pills wrapped onto two
+                // rows and read as a toolbar competing with the composer;
+                // a single chip that opens the full grid keeps the area quiet.
+                className="h-8 shrink-0 gap-1.5 rounded-full border-border/60 bg-transparent px-3 text-[13px] font-normal text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+              >
+                <ZohoIcon className="size-3.5" />
+                Finance quick starts
+                <ChevronDown
+                  className={cn(
+                    'size-3.5 transition-transform',
+                    launcherOpen && 'rotate-180'
+                  )}
+                />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[30rem] p-3">
+              <div className="flex items-start justify-between gap-3 px-1 pb-3">
+                <div className="flex items-start gap-2.5">
+                  <span className="flex size-9 items-center justify-center rounded-xl border bg-background">
+                    <ZohoIcon className="size-5" />
+                  </span>
+                  <div>
+                    <p className="text-sm font-medium">Finance quick starts</p>
+                    <p className="text-xs text-muted-foreground">
+                      Add a precise Zoho request to this chat
+                    </p>
+                  </div>
+                </div>
+                {connection && connections.length > 1 ? (
+                  <AccountMenu
+                    connections={connections}
+                    selected={connection}
+                    onSelect={setSelectedConnectionId}
+                  />
+                ) : null}
+              </div>
+              <Separator className="mb-3" />
+              <QuickStartGrid groups={groups} onOpen={open} compact />
+            </PopoverContent>
+          </Popover>
+        )
+      ) : variant === 'launcher' ? (
         <Popover open={launcherOpen} onOpenChange={setLauncherOpen}>
           <PopoverTrigger asChild>
             <Button

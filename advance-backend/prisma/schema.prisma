@@ -230,6 +230,7 @@ model User {
   ownedIntegrationConnections        IntegrationConnection[]      @relation("IntegrationConnectionOwner")
   createdIntegrationConnections      IntegrationConnection[]      @relation("IntegrationConnectionCreatedBy")
   createdSerperConnections           CompanySerperConnection[]    @relation("CompanySerperConnectionCreatedBy")
+  createdOmsConnections              CompanyOmsConnection[]       @relation("CompanyOmsConnectionCreatedBy")
   grantedIntegrationConnectionGrants IntegrationConnectionGrant[] @relation("IntegrationConnectionGrantGrantedBy")
   memoryItems                        UserMemoryItem[]
   memoryProfiles                     UserMemoryProfile[]
@@ -288,6 +289,7 @@ model Company {
   integrationConnections      IntegrationConnection[]
   integrationConnectionGrants IntegrationConnectionGrant[]
   serperConnections           CompanySerperConnection[]
+  omsConnections              CompanyOmsConnection[]
   fileAssets                  FileAsset[]
   outboundArtifacts           OutboundArtifact[]
   userMemoryItems             UserMemoryItem[]
@@ -1394,6 +1396,32 @@ model CompanySerperConnection {
 
   @@unique([companyId, keyFingerprint])
   @@index([companyId, status, priority])
+  @@index([companyId, status, unavailableUntil])
+}
+
+/// Company-owned OMS Site Data webhook keys. The key is AES-GCM encrypted and
+/// never returned to the desktop, Pi, gateway, logs, or audit records.
+model CompanyOmsConnection {
+  id               String    @id @default(uuid())
+  companyId        String
+  company          Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  label            String
+  apiKeyEncrypted  String
+  keyFingerprint   String
+  status           String    @default("connected")
+  lastTestedAt     DateTime?
+  lastSucceededAt  DateTime?
+  lastFailureAt    DateTime?
+  lastFailureCode  String?
+  lastUsedAt       DateTime?
+  unavailableUntil DateTime?
+  revokedAt        DateTime?
+  createdBy        String?
+  createdByUser    User?     @relation("CompanyOmsConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([companyId, keyFingerprint])
   @@index([companyId, status, unavailableUntil])
 }
 

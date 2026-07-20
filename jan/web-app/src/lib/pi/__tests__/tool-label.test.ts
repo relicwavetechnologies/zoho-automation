@@ -45,6 +45,10 @@ describe('resolveToolLabel', () => {
     expect(resolveToolLabel({ type: 'tool-divo_subagents' })).toBe('subagents')
   })
 
+  it('uses a user-facing label for the Pi-owned task board', () => {
+    expect(resolveToolLabel({ type: 'tool-divo_todos' })).toBe('task plan')
+  })
+
   it('scrapes op from partial JSON still streaming in', () => {
     // op is the first key on the wire, so it resolves before the payload closes.
     expect(
@@ -119,8 +123,27 @@ describe('resolveToolLabel', () => {
     }
 
     expect(label('teach.learning.apply')).toBe('teach learning update')
-    expect(label('media.image_ocr')).toBe('image OCR')
+    // The act, not the technique: the user attached an image and Divo read it.
+    expect(label('media.image_ocr')).toBe('read image')
     expect(label('some.brand_new.op')).toBe('some brand new op')
+  })
+
+  it('shows the attached filename for an image read, not its normalised path', () => {
+    // The desktop rewrites attachments to a long absolute path that fills the
+    // row and names nothing the user recognises.
+    const identity = resolveToolIdentity({
+      type: 'tool-divo_gateway',
+      input: {
+        op: 'media.image_ocr',
+        payload: {
+          filePath: '/Users/x/Library/Application Support/divo/att/9f2c/receipt.png',
+          mimeType: 'image/png',
+        },
+      },
+    })
+
+    expect(identity.label).toBe('read image')
+    expect(identity.detail).toBe('receipt.png')
   })
 
   it('returns empty only when nothing is known yet', () => {

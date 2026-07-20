@@ -215,6 +215,54 @@ export class LlmProxyService {
   }
 
   /**
+   * Record a small backend-owned auxiliary completion that deliberately has no
+   * user-visible execution run (for example, a desktop chat title). It still
+   * contributes to the member's budget and token reporting, without adding a
+   * misleading agent trace to the conversation timeline.
+   */
+  async recordAuxiliaryUsage(input: {
+    companyId: string;
+    userId: string;
+    model: string;
+    provider: string;
+    usage: DeepSeekUsage;
+    agentTarget: string;
+    channel: string;
+    threadId?: string;
+    mode?: string;
+  }): Promise<void> {
+    const cacheHit = input.usage.prompt_cache_hit_tokens
+      ?? input.usage.prompt_tokens_details?.cached_tokens
+      ?? 0;
+    const cacheMiss = input.usage.prompt_cache_miss_tokens
+      ?? Math.max(0, (input.usage.prompt_tokens ?? 0) - cacheHit);
+    const output = input.usage.completion_tokens ?? 0;
+
+    try {
+      await this.prisma.aiTokenUsage.create({
+        data: {
+          companyId: input.companyId,
+          userId: input.userId,
+          agentTarget: input.agentTarget,
+          modelId: input.model,
+          provider: input.provider,
+          channel: input.channel,
+          mode: input.mode ?? 'fast',
+          actualInputTokens: cacheMiss,
+          actualOutputTokens: output,
+          cacheReadInputTokens: cacheHit,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+        },
+      });
+    } catch (e) {
+      this.logger.warn('proxy.auxiliary_usage.record_failed', {
+        agentTarget: input.agentTarget,
+        error: String(e),
+      });
+    }
+  }
+
+  /**
    * Append one audit row for a proxied request (the Guardrails feed + metrics).
    * Best-effort — a logging failure must never affect the caller's response.
    */

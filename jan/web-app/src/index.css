@@ -61,6 +61,11 @@
      Windows. Inter stays as the packaged fallback for Linux webviews. */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
     sans-serif;
+  /* Codex's code stack, read off its Appearance panel — its exported theme
+     JSON carries `fonts: null`, meaning "defaults", so the values come from
+     the settings UI rather than the export. */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
 
   /* Font scale based on --font-size-base */
   --text-xs: calc(var(--font-size-base) * 0.75); /* ~12px */
@@ -79,40 +84,61 @@
 
 }
 
+/* Light surfaces follow the Codex palette, reconstructed from the two anchors
+   Codex exports: `surface` #ffffff and `ink` #1a1c1f. Every intermediate grey
+   here is ink mixed into surface at a fixed percentage (4% / 5% / 12% / 55%),
+   which is what makes the ramp read as one system.
+
+   That derivation is the whole fix. The old light theme had `--background`,
+   `--card` and `--popover` all at pure white with a single hairline border, so
+   nothing had depth — the dark theme got a stepped ramp and light never did.
+
+   `--primary` stays OUT of this. Codex's accent is #339cff, but ours is the
+   user's chosen accent (see `useInterfaceSettings`); adopting the blue would
+   silently overwrite their pick. */
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
+  --background: #ffffff;
+  --foreground: #1a1c1f;
+  --card: #ffffff;
+  --card-foreground: #1a1c1f;
+  --popover: #ffffff;
+  --popover-foreground: #1a1c1f;
   --primary: oklch(0.7003 0.1611 35.09);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --secondary: #f4f4f5;
+  --secondary-foreground: #2b2d31;
+  --muted: #f4f4f5;
+  --muted-foreground: #818284;
+  --accent: #f0f0f1;
+  --accent-foreground: #1a1c1f;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --border: #e4e4e5;
+  --input: #dcdcde;
+  --ring: #b4b5b8;
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  /* Neutral grey sidebar surface — flat, no tint. */
-  --sidebar: #f6f6f6;
-  --sidebar-foreground: oklch(0.28 0 0);
+  /* The rail is the OFFSET surface in both themes: a step darker than the
+     white content pane here, a step lighter than the near-black one in dark.
+     Same relationship, mirrored — don't flatten it to match `--background`. */
+  --sidebar: #f6f6f7;
+  --sidebar-foreground: #3f4145;
   --sidebar-primary: oklch(0.205 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: #e6e6e6;
-  --sidebar-accent-foreground: oklch(0.18 0 0);
-  --sidebar-border: oklch(0.9 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar-accent: #e9e9eb;
+  --sidebar-accent-foreground: #1a1c1f;
+  --sidebar-border: #e4e4e5;
+  --sidebar-ring: #b4b5b8;
+
+  /* Codex's semantic colours, exported per variant. Not yet consumed by any
+     component — recorded here so diffs and skill chips have one source when
+     they are built, instead of a fresh guess at each call site. */
+  --diff-added: #00a240;
+  --diff-removed: #ba2623;
+  --skill: #924ff7;
 }
 
 /* Dark surfaces follow the Codex palette: flat neutral greys, no tint, and a
@@ -158,6 +184,12 @@
   --sidebar-accent-foreground: #ededed;
   --sidebar-border: oklch(1 0 0 / 6%);
   --sidebar-ring: #4d4d4d;
+
+  /* Codex ships brighter semantics for dark — a light-mode diff green on a
+     #181818 surface is close to unreadable. */
+  --diff-added: #40c977;
+  --diff-removed: #fa423e;
+  --skill: #ad7bf9;
 }
 
 /* Running-state text: a highlight sweeps left-to-right across the label instead

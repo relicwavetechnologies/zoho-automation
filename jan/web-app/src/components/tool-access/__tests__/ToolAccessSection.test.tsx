@@ -183,8 +183,25 @@ describe('ToolAccessSection lifecycle and presentation', () => {
 
     // The snapshot must not be reloaded (no blank/flash), and the grid stays rendered.
     await waitFor(() => expect(screen.getByText('Company role access')).toBeInTheDocument())
-    expect(screen.queryByText('Loading current access')).not.toBeInTheDocument()
+    expect(screen.queryByText('Loading access settings')).not.toBeInTheDocument()
     expect(h.getSnapshot).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * A scope being read is drawn as the shape it will become — role rows with
+   * their toggle column — not as a dashed "nothing here" box with a spinner.
+   */
+  it('shows an access skeleton while the scope snapshot is in flight', async () => {
+    const pending = deferred<GlobalToolManageSnapshot>()
+    h.getSnapshot.mockReturnValueOnce(pending.promise)
+    render(<ToolAccessSection items={[item]} onUpdated={h.onUpdated} />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Loading access settings')
+    expect(screen.queryByText('Company role access')).not.toBeInTheDocument()
+
+    await act(async () => pending.resolve(globalSnapshot))
+    await waitFor(() => expect(screen.getByText('Company role access')).toBeInTheDocument())
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
   it('does not refresh a stale global scope after its mutation is rejected', async () => {

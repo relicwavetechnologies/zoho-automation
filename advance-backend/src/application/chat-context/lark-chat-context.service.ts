@@ -375,7 +375,8 @@ async function refreshSummaryWithLLM(
 export class LarkChatContextService {
   constructor(private readonly deps: {
     repo: LarkChatContextRepoPort;
-    model: LanguageModel;
+    /** Optional because group compaction must not bypass Lark's pinned model policy. */
+    model?: LanguageModel;
     logger: Logger;
   }) {}
 
@@ -455,13 +456,15 @@ export class LarkChatContextService {
 
     if (compactedChunk.length > 0) {
       const existingSummary = ctx.summaryJson as GroupChatSummary | null;
-      const shouldUseLLM =
+      const summaryModel = this.deps.model;
+      const shouldUseLLM = Boolean(summaryModel)
+        &&
         newCount >= GROUP_CONTEXT_POLICY.MIN_MESSAGES_FOR_LLM_SUMMARY &&
         compactedChunk.length >= GROUP_CONTEXT_POLICY.SUMMARY_REFRESH_DELTA;
 
-      if (shouldUseLLM) {
+      if (shouldUseLLM && summaryModel) {
         const summary = await refreshSummaryWithLLM(
-          compactedChunk, existingSummary, this.deps.model, log,
+          compactedChunk, existingSummary, summaryModel, log,
         );
         summaryJson = { ...summary, sourceMessageCount: newCount };
       } else {

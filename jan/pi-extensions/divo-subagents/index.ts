@@ -123,7 +123,7 @@ function readStopReason(event: Record<string, unknown>): string | undefined {
 	return typeof result?.stopReason === "string" ? result.stopReason : undefined;
 }
 
-function applyChildEvent(child: SubagentChild, event: Record<string, unknown>): void {
+export function applyChildEvent(child: SubagentChild, event: Record<string, unknown>): string | undefined {
 	switch (event.type) {
 		case "agent_start":
 			setThinking(child, "Preparing");
@@ -158,8 +158,9 @@ function applyChildEvent(child: SubagentChild, event: Record<string, unknown>): 
 		case "message_end": {
 			const message = event.message;
 			readUsage(child, message);
-			addAssistantOutput(child, textFromMessage(message));
-			break;
+			const assistantOutput = textFromMessage(message);
+			addAssistantOutput(child, assistantOutput);
+			return assistantOutput || undefined;
 		}
 		case "agent_end": {
 			const stopReason = readStopReason(event);
@@ -278,6 +279,7 @@ async function runChild(
 	let promptDir: string | undefined;
 	let promptPath: string | undefined;
 	let stderr = "";
+	let finalAssistantOutput = "";
 	let wasAborted = false;
 
 	try {
@@ -323,7 +325,8 @@ async function runChild(
 				}
 				const record = asRecord(event);
 				if (!record) return;
-				applyChildEvent(child, record);
+				const assistantOutput = applyChildEvent(child, record);
+				if (assistantOutput) finalAssistantOutput = assistantOutput;
 				emit();
 			};
 
@@ -373,7 +376,10 @@ async function runChild(
 			});
 		});
 
-		const output = child.outputPreview || stderr || "(no output)";
+		// `outputPreview` is intentionally capped for live UI updates. Persist the
+		// full final assistant message instead so the parent and completed card do
+		// not lose the rest of a successful child report.
+		const output = finalAssistantOutput || child.outputPreview || stderr || "(no output)";
 		completeChild(child, output, exitCode, wasAborted ? "aborted" : child.stopReason);
 		emit();
 		return child;
@@ -437,9 +443,10 @@ export default function divoSubagentsExtension(pi: ExtensionAPI) {
 		promptSnippet: "Use divo_subagents selectively when substantial independent company workstreams can proceed in parallel, when a focused investigation protects the main context, or when an independent review materially improves reliability.",
 		promptGuidelines: [
 			"Roles: scout for rapid source and system reconnaissance, planner for business workflows, reviewer for independent quality checks, and worker for detailed read-only analysis or preparation.",
-			"Each child starts in an isolated context and does not receive the parent conversation. Make every task self-contained with its objective, relevant context, scope, exclusions, sources, permitted actions, deliverable, acceptance criteria, and required evidence.",
+			"Each child starts in an isolated context and does not receive the parent conversation. Make every task self-contained with its objective, relevant context, scope, exclusions, sources, permitted actions, deliverable, acceptance criteria, required evidence, and the decision its result must support.",
 			"Child agents have divo_gateway and divo_skill_resolve plus read-only local tools. They may research, inspect, analyze, compare, plan, draft, or review; do not delegate approvals, external mutations, messages, schedule activation, Teach writes, or irreversible actions.",
 			"Use tasks for substantial independent work only, normally with two to four non-overlapping assignments. Do not delegate simple requests or duplicate work unless independent verification is intentional.",
+			"Every child returns the shared final handoff: verdict, key findings, evidence, gaps and confidence, and exactly one recommended next step. Do not ask a child for an open-ended essay or a user-facing final answer.",
 			"Use chain for dependent steps and {previous} only where the next role genuinely needs the prior final result.",
 			"The parent remains responsible for user interaction, permissions and approvals, checking evidence, reconciling conflicts, taking final actions, and giving the user one synthesized answer.",
 		],

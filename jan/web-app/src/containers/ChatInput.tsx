@@ -96,11 +96,12 @@ import {
   type DivoSkillReferenceSubmitOptions,
 } from '@/lib/divo-skill-reference-context'
 import { LiveApprovalComposer } from '@/components/approval-preview/LiveApprovalComposer'
-import { PermissionRulesPopover } from '@/components/approval-preview/PermissionRulesPopover'
 import { usePiApproval } from '@/hooks/usePiApproval'
 import type { PiApprovalRequest } from '@/lib/pi/approval'
 import type { DivoQuickStartPlan } from '@/lib/divo-finance-quick-start'
 import { FinanceQuickStarts } from '@/components/finance-quick-starts/FinanceQuickStarts'
+import { RotatingPlaceholder } from '@/containers/RotatingPlaceholder'
+import { TodoBubble } from '@/components/pi/TodoBubble'
 
 type ChatInputProps = {
   className?: string
@@ -357,7 +358,6 @@ const ChatInput = memo(function ChatInput({
   quickStartRequest,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const skillReferenceSearchRef = useRef<HTMLInputElement>(null)
   const skillReferenceSearchRequestRef = useRef(0)
   const [isFocused, setIsFocused] = useState(false)
   const [rows, setRows] = useState(1)
@@ -391,6 +391,10 @@ const ChatInput = memo(function ChatInput({
   const currentThread = useThreads((state) =>
     displayedThreadId ? state.threads[displayedThreadId] : undefined
   )
+  const activeBranchRootId =
+    typeof (currentThread?.metadata as Record<string, unknown> | undefined)?.activeRootId === 'string'
+      ? (currentThread?.metadata as Record<string, unknown>).activeRootId as string
+      : undefined
   const isThreadBusy = useAppState((state) => {
     if (!displayedThreadId) return false
     return (
@@ -781,7 +785,7 @@ const ChatInput = memo(function ChatInput({
 
         const newThread = await createThread(
           { ...DIVO_THREAD_MODEL },
-          prompt, // Use prompt as thread title
+          undefined,
           assistant,
           projectMetadata
         )
@@ -838,19 +842,13 @@ const ChatInput = memo(function ChatInput({
 
   useEffect(() => {
     const handleFocusIn = () => {
-      if (
-        document.activeElement === textareaRef.current ||
-        document.activeElement === skillReferenceSearchRef.current
-      ) {
+      if (document.activeElement === textareaRef.current) {
         setIsFocused(true)
       }
     }
 
     const handleFocusOut = () => {
-      if (
-        document.activeElement !== textareaRef.current &&
-        document.activeElement !== skillReferenceSearchRef.current
-      ) {
+      if (document.activeElement !== textareaRef.current) {
         setIsFocused(false)
       }
     }
@@ -864,15 +862,9 @@ const ChatInput = memo(function ChatInput({
     }
   }, [])
 
-  useEffect(() => {
-    if (!skillReferenceDrawerOpen) return
-
-    const frame = window.requestAnimationFrame(() => {
-      skillReferenceSearchRef.current?.focus()
-    })
-
-    return () => window.cancelAnimationFrame(frame)
-  }, [skillReferenceDrawerOpen])
+  // NOTE: opening the `/` menu deliberately does NOT move focus. The query is
+  // the text already being typed in the composer, so pulling focus into the
+  // menu interrupted the user mid-word and left them typing in a second box.
 
   useEffect(() => {
     if (!skillReferenceDrawerOpen) {
@@ -2158,6 +2150,27 @@ const ChatInput = memo(function ChatInput({
   const isStreaming = chatStatus === 'submitted' || chatStatus === 'streaming'
   const isComposerBusy = isStreaming || isThreadBusy
 
+  /**
+   * Whether this composer already sits under a conversation.
+   *
+   * The rolling suggestions are an EMPTY-STATE affordance: they teach what Divo
+   * is for when there is nothing on screen to infer it from. Once a thread has
+   * messages that job is done — the answer above the composer is the context,
+   * and a carousel of unrelated starters ("Reconcile last month's payments")
+   * animating under a finished Google Workspace run reads as the app changing
+   * the subject. A follow-up prompt is the honest label there.
+   */
+  const hasConversation = (threadMessages?.length ?? 0) > 0
+
+  /**
+   * The rolling placeholder is for an EMPTY, idle composer on a FRESH thread.
+   * It stops the moment there is anything to send — text or an attachment — so
+   * suggestions never animate underneath real content, and it stays out of the
+   * way while a turn is streaming.
+   */
+  const showRotatingPlaceholder =
+    !prompt && !hasSendableAttachments && !isComposerBusy && !hasConversation
+
   const activeApproval = visibleApprovalQueue[approvalQueueIndex]
   if (
     activeApproval &&
@@ -2224,10 +2237,80 @@ const ChatInput = memo(function ChatInput({
 
   return (
     <div className="relative">
+      {/* Suggested actions and the current work status share one row above the
+          composer. The status flexes down first, keeping both controls
+          visible rather than pushing the live work indicator onto a new row. */}
+      <div
+        className="mb-1.5 flex min-w-0 items-center gap-2 px-0.5 empty:hidden"
+        data-testid="composer-status-row"
+      >
+        {!initialMessage && threadId && !isComposerBusy && (
+          <FinanceQuickStarts
+            variant="bubbles"
+            onSubmit={(request) =>
+              void handleSendMessage(request.prompt, request.plan)
+            }
+          />
+        )}
+        <TodoBubble
+          threadId={displayedThreadId}
+          messages={threadMessages ?? []}
+          activeRootId={activeBranchRootId}
+        />
+      </div>
+      {/* The `/` menu floats ABOVE the composer rather than growing inside it.
+          It has to live out here: the composer shell is `overflow-hidden` for
+          the MovingBorder effect, which would clip a popover rendered within. */}
+      {skillReferenceDrawerOpen && (
+        <div className="absolute bottom-full left-0 z-50 mb-2">
+          <SkillReferenceDrawer
+            search={skillReferenceSearch}
+            loading={skillReferenceLoading}
+            error={skillReferenceError}
+            results={skillReferenceResults}
+            commands={
+              matchesShareMemoryCommand(skillReferenceSearch) ? (
+                <>
+                  <div className="px-3 pt-2.5 pb-1 text-[11px] font-normal text-muted-foreground/70">
+                    Commands
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="share-memory-command"
+                    className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                    onClick={activateShareMemoryCommand}
+                  >
+                    <IconBrain size={16} className="shrink-0 text-muted-foreground/70" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {SHARE_MEMORY_COMMAND}
+                    </span>
+                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground/60">
+                      Enter
+                    </span>
+                  </button>
+                </>
+              ) : null
+            }
+            onSelect={(skill) => {
+              setSelectedSkillReferences((current) =>
+                current.some((item) => item.id === skill.id)
+                  ? current
+                  : [...current, skill]
+              )
+              setSkillReferenceDrawerOpen(false)
+              setSkillReferenceSearch('')
+              setSkillReferenceError(null)
+              setSkillReferenceResults([])
+              setPrompt('')
+              textareaRef.current?.focus()
+            }}
+          />
+        </div>
+      )}
       <div className="relative">
         <div
           className={cn(
-            'relative overflow-hidden p-0.5 rounded-2xl'
+            'relative overflow-hidden p-0.5 rounded-[22px]'
           )}
         >
           {isComposerBusy && (
@@ -2247,7 +2330,21 @@ const ChatInput = memo(function ChatInput({
               // Flat, low-contrast shell: a hairline border over a barely-lifted
               // fill, so the composer reads as part of the page rather than a
               // card stuck on top of it.
-              'relative z-20 px-0 pb-10 rounded-2xl border border-border/50 bg-card dark:bg-white/[0.02] transition-colors',
+              // One row when idle: the toolbar is a flex sibling of the
+              // textarea rather than an absolute strip under it, so an empty
+              // composer is a single stadium-shaped line — `+`, prompt,
+              // model, send — and only grows when the text does.
+              // Attachment previews and approval cards sit above the row as
+              // extra children, which is why this stays a column.
+              // Padding and radius are kept concentric with the round send
+              // button in the bottom-right corner: shell radius - inset must
+              // equal the button's radius (24 - 8 = 16 = size-8 / 2), otherwise
+              // the button reads as crammed into the corner curve.
+              // Padding is SYMMETRIC. `pb-2` with no top padding pinned the row
+              // against the top border and left 8px of dead space underneath,
+              // which is what made the placeholder read as sitting high in the
+              // pill. p-2 + the 32px row = a 48px stadium, centred.
+              'relative z-20 flex flex-col rounded-[24px] border border-border/50 bg-card p-2 dark:bg-white/[0.02] transition-colors',
               isFocused && 'border-border/80 dark:bg-white/[0.04]',
               isDragOver && 'ring-2 ring-ring/50 border-primary'
             )}
@@ -2430,80 +2527,6 @@ const ChatInput = memo(function ChatInput({
                 ))}
               </div>
             )}
-            {skillReferenceDrawerOpen && (
-              <div
-                onKeyDownCapture={(event) => {
-                  if (
-                    event.key !== 'Enter' ||
-                    event.shiftKey ||
-                    event.nativeEvent.isComposing ||
-                    !matchesShareMemoryCommand(skillReferenceSearch)
-                  ) {
-                    return
-                  }
-
-                  event.preventDefault()
-                  event.stopPropagation()
-                  activateShareMemoryCommand()
-                }}
-              >
-                {matchesShareMemoryCommand(skillReferenceSearch) && (
-                  <div className="mx-3 mt-3 overflow-hidden rounded-2xl border border-border bg-background shadow-lg">
-                    <button
-                      type="button"
-                      data-testid="share-memory-command"
-                      className="flex w-full items-start gap-3 px-3 py-3 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      onClick={activateShareMemoryCommand}
-                    >
-                      <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-violet-500/10 text-violet-700 dark:text-violet-300">
-                        <IconBrain size={17} />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-sm font-medium text-foreground">
-                            {SHARE_MEMORY_COMMAND}
-                          </span>
-                          <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Enter
-                          </span>
-                        </div>
-                        <div className="mt-0.5 text-xs text-muted-foreground">
-                          Fetch the Share Memory skill and prepare a review. Nothing is saved before approval.
-                        </div>
-                      </div>
-                    </button>
-                  </div>
-                )}
-                <SkillReferenceDrawer
-                  searchInputRef={skillReferenceSearchRef}
-                  search={skillReferenceSearch}
-                  loading={skillReferenceLoading}
-                  error={skillReferenceError}
-                  results={skillReferenceResults}
-                  onSearchChange={setSkillReferenceSearch}
-                  onClose={() => {
-                    setSkillReferenceDrawerOpen(false)
-                    setSkillReferenceSearch('')
-                    setSkillReferenceError(null)
-                    setSkillReferenceResults([])
-                    textareaRef.current?.focus()
-                  }}
-                  onSelect={(skill) => {
-                    setSelectedSkillReferences((current) =>
-                      current.some((item) => item.id === skill.id)
-                        ? current
-                        : [...current, skill]
-                    )
-                    setSkillReferenceDrawerOpen(false)
-                    setSkillReferenceSearch('')
-                    setSkillReferenceError(null)
-                    setSkillReferenceResults([])
-                    setPrompt('')
-                    textareaRef.current?.focus()
-                  }}
-                />
-              </div>
-            )}
             <SkillReferenceChips
               skills={selectedSkillReferences}
               onRemove={(skillId) =>
@@ -2512,85 +2535,22 @@ const ChatInput = memo(function ChatInput({
                 )
               }
             />
-            <TextareaAutosize
-              dir="auto"
-              ref={textareaRef}
-              minRows={2}
-              rows={1}
-              maxRows={10}
-              value={prompt}
-              data-testid={'chat-input'}
-              onChange={(e) => {
-                const nextPrompt = e.target.value
-                setPrompt(nextPrompt)
-                const slashSearch = nextPrompt.match(/^\/([^\n]*)$/)
-                if (slashSearch) {
-                  setSkillReferenceDrawerOpen(true)
-                  setSkillReferenceSearch(slashSearch[1] ?? '')
-                } else if (skillReferenceDrawerOpen) {
-                  setSkillReferenceDrawerOpen(false)
-                  setSkillReferenceSearch('')
-                  setSkillReferenceError(null)
-                  setSkillReferenceResults([])
-                }
-                // Count the number of newlines to estimate rows
-                const newRows = (nextPrompt.match(/\n/g) || []).length + 1
-                setRows(Math.min(newRows, maxRows))
-              }}
-              onKeyDown={(e) => {
-                // e.keyCode 229 is for IME input with Safari
-                const isComposing =
-                  e.nativeEvent.isComposing || e.keyCode === 229
-                if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
-                  e.preventDefault()
-                  // Submit prompt when Enter is pressed without Shift and prompt is not empty.
-                  // If streaming, handleSendMessage will queue the message automatically.
-                  if ((prompt.trim() || hasSendableAttachments) && !ingestingAny) {
-                    handleSendMessage(prompt)
-                  }
-                  // When Shift+Enter is pressed, a new line is added (default behavior)
-                }
-                // Navigate prompt history with Up/Down arrow keys
-                if (e.key === 'ArrowUp' && !isComposing) {
-                  const textarea = e.currentTarget
-                  const cursorAtStart =
-                    textarea.selectionStart === 0 &&
-                    textarea.selectionEnd === 0
-                  if (cursorAtStart || !prompt) {
-                    e.preventDefault()
-                    navigateHistory('up')
-                  }
-                }
-                if (e.key === 'ArrowDown' && !isComposing) {
-                  const textarea = e.currentTarget
-                  const cursorAtEnd =
-                    textarea.selectionStart === prompt.length &&
-                    textarea.selectionEnd === prompt.length
-                  if (cursorAtEnd) {
-                    e.preventDefault()
-                    navigateHistory('down')
-                  }
-                }
-              }}
-              onPaste={handlePaste}
-              placeholder={t('common:placeholder.chatInput')}
-              autoFocus
-              spellCheck={spellCheckChatInput}
-              data-gramm={spellCheckChatInput}
-              data-gramm_editor={spellCheckChatInput}
-              data-gramm_grammarly={spellCheckChatInput}
-              className={cn(
-                'bg-transparent pt-4 w-full shrink-0 border-none resize-none outline-0 px-4',
-                rows < maxRows && 'scrollbar-hide',
-                className
-              )}
-            />
-          </div>
-        </div>
 
-        <div className="absolute z-20 bg-transparent bottom-0 w-full px-2.5 pb-2">
-          <div className="flex w-full items-center justify-between gap-2">
-            <div className="flex min-w-0 flex-1 items-center gap-0.5">
+          {/* The composer's single line: input tools, the prompt itself, then
+              the model name and send. `items-end` keeps the controls pinned to
+              the LAST line once the prompt wraps, instead of floating to the
+              vertical middle of a grown textarea. */}
+          <div
+            className={cn(
+              'flex w-full gap-1',
+              // One line: centre everything against the prompt, so the text sits
+              // on the same optical line as the round buttons. Once the prompt
+              // wraps, pin the controls to the LAST line instead — centring a
+              // grown textarea would float them into its middle.
+              rows > 1 ? 'items-end' : 'items-center'
+            )}
+          >
+            <div className="flex shrink-0 items-center gap-0.5">
               <div
                 className={cn(
                   'flex items-center gap-1',
@@ -2676,25 +2636,12 @@ const ChatInput = memo(function ChatInput({
                     </DropdownMenuContent>
                   </DropdownMenu>
               </div>
-              <PermissionRulesPopover />
-              {/* Splits the icon-only actions from the labelled ones, so the
-                  bar reads as two groups instead of one mixed run. */}
-              <span className="mx-1 h-4 w-px shrink-0 bg-border/60" aria-hidden />
               <div
                 className={cn(
                   'flex min-w-0 flex-1 items-center gap-0.5',
                   isComposerBusy && 'opacity-50 pointer-events-none'
                 )}
               >
-                {!initialMessage && threadId && (
-                  <FinanceQuickStarts
-                    variant="launcher"
-                    onSubmit={(request) =>
-                      void handleSendMessage(request.prompt, request.plan)
-                    }
-                  />
-                )}
-                <DivoModelToggle disabled={isComposerBusy} />
                 {!effectiveAgentMode && hasJanBrowserMCPConfig && modelSupportsBrowser && (
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -2887,7 +2834,134 @@ const ChatInput = memo(function ChatInput({
               </div>
             </div>
 
+            {/* The prompt shares the row with the controls, so the model
+                name and send sit on the SAME line as the placeholder
+                rather than on a strip beneath it. */}
+            <div className="relative min-w-0 flex-1">
+            <TextareaAutosize
+              dir="auto"
+              ref={textareaRef}
+              // One line at rest. The composer is a single stadium row when
+              // idle and grows from there; `minRows={2}` forced it two lines
+              // tall even when empty.
+              minRows={1}
+              rows={1}
+              maxRows={10}
+              value={prompt}
+              data-testid={'chat-input'}
+              onChange={(e) => {
+                const nextPrompt = e.target.value
+                setPrompt(nextPrompt)
+                const slashSearch = nextPrompt.match(/^\/([^\n]*)$/)
+                if (slashSearch) {
+                  setSkillReferenceDrawerOpen(true)
+                  setSkillReferenceSearch(slashSearch[1] ?? '')
+                } else if (skillReferenceDrawerOpen) {
+                  setSkillReferenceDrawerOpen(false)
+                  setSkillReferenceSearch('')
+                  setSkillReferenceError(null)
+                  setSkillReferenceResults([])
+                }
+                // Count the number of newlines to estimate rows
+                const newRows = (nextPrompt.match(/\n/g) || []).length + 1
+                setRows(Math.min(newRows, maxRows))
+              }}
+              onKeyDown={(e) => {
+                // e.keyCode 229 is for IME input with Safari
+                const isComposing =
+                  e.nativeEvent.isComposing || e.keyCode === 229
+
+                // The `/` menu is driven from this textarea, so its keys are
+                // handled here — it never takes focus of its own.
+                if (skillReferenceDrawerOpen && !isComposing) {
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setSkillReferenceDrawerOpen(false)
+                    setSkillReferenceSearch('')
+                    setSkillReferenceError(null)
+                    setSkillReferenceResults([])
+                    return
+                  }
+                  if (
+                    e.key === 'Enter' &&
+                    !e.shiftKey &&
+                    matchesShareMemoryCommand(skillReferenceSearch)
+                  ) {
+                    e.preventDefault()
+                    activateShareMemoryCommand()
+                    return
+                  }
+                }
+
+                if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
+                  e.preventDefault()
+                  // Submit prompt when Enter is pressed without Shift and prompt is not empty.
+                  // If streaming, handleSendMessage will queue the message automatically.
+                  if ((prompt.trim() || hasSendableAttachments) && !ingestingAny) {
+                    handleSendMessage(prompt)
+                  }
+                  // When Shift+Enter is pressed, a new line is added (default behavior)
+                }
+                // Navigate prompt history with Up/Down arrow keys
+                if (e.key === 'ArrowUp' && !isComposing) {
+                  const textarea = e.currentTarget
+                  const cursorAtStart =
+                    textarea.selectionStart === 0 &&
+                    textarea.selectionEnd === 0
+                  if (cursorAtStart || !prompt) {
+                    e.preventDefault()
+                    navigateHistory('up')
+                  }
+                }
+                if (e.key === 'ArrowDown' && !isComposing) {
+                  const textarea = e.currentTarget
+                  const cursorAtEnd =
+                    textarea.selectionStart === prompt.length &&
+                    textarea.selectionEnd === prompt.length
+                  if (cursorAtEnd) {
+                    e.preventDefault()
+                    navigateHistory('down')
+                  }
+                }
+              }}
+              onPaste={handlePaste}
+              placeholder={t(
+                hasConversation
+                  ? 'common:placeholder.chatFollowUp'
+                  : 'common:placeholder.chatInput'
+              )}
+              autoFocus
+              spellCheck={spellCheckChatInput}
+              data-gramm={spellCheckChatInput}
+              data-gramm_editor={spellCheckChatInput}
+              data-gramm_grammarly={spellCheckChatInput}
+              className={cn(
+                // py-1.5 + the 20px line box = 32px, exactly the height of the
+                // round buttons beside it, so `items-end` puts the prompt text
+                // on the same optical line as the icons instead of ~4px above.
+                'bg-transparent w-full border-none resize-none outline-0 px-1.5 py-1.5',
+                // The animated placeholder overlays this one; hiding the native
+                // string avoids two placeholders stacked on top of each other,
+                // while keeping it in the DOM for screen readers.
+                showRotatingPlaceholder && 'placeholder:text-transparent',
+                rows < maxRows && 'scrollbar-hide',
+                className
+              )}
+            />
+              {showRotatingPlaceholder && (
+                <RotatingPlaceholder className="px-1.5 text-sm" />
+              )}
+            </div>
+
             <div className="flex items-center gap-2">
+              {/* The model name sits on the RIGHT, immediately before send —
+                  Cursor's arrangement. It reads as "which model will answer
+                  this", which belongs next to the send affordance rather than
+                  grouped with the input tools on the far left. */}
+              <div className={cn(isComposerBusy && 'opacity-50 pointer-events-none')}>
+                <DivoModelToggle disabled={isComposerBusy} />
+              </div>
+
               {selectedProvider === 'llamacpp' &&
                 tokenCounterCompact &&
                 !effectiveAgentMode &&
@@ -2935,6 +3009,7 @@ const ChatInput = memo(function ChatInput({
                 </Button>
               )}
             </div>
+          </div>
           </div>
         </div>
       </div>

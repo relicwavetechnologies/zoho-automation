@@ -75,14 +75,14 @@ export class PermissionServiceImpl implements PermissionService {
 
     // ── No department: pure company-axis ──────────────────────────────
     if (!departmentId) {
-      return this.resolveCompanyOnly(companyId, companyRole);
+      return this.applyOmsCompanyAdminAccess(companyRole, await this.resolveCompanyOnly(companyId, companyRole));
     }
 
     // ── With department: check dept cache first ────────────────────────
     const cached = await this.permCache.getDept(companyId, departmentId, userId, companyRole);
     if (cached.ok && cached.value !== null) {
       this.deps.logger.debug('perm.cache.hit.dept', { companyId, departmentId, userId });
-      return ok(deserializePermissionResult(cached.value));
+      return this.applyOmsCompanyAdminAccess(companyRole, ok(deserializePermissionResult(cached.value)));
     }
 
     // ── Company axis (the ceiling) ─────────────────────────────────────
@@ -224,7 +224,7 @@ export class PermissionServiceImpl implements PermissionService {
     // Cache the result
     await this.permCache.setDept(companyId, departmentId, userId, companyRole, serializePermissionResult(result));
 
-    return ok(result);
+    return this.applyOmsCompanyAdminAccess(companyRole, ok(result));
   }
 
   // ── Public: canInvoke ────────────────────────────────────────────────
@@ -382,9 +382,43 @@ export class PermissionServiceImpl implements PermissionService {
       decisions,
     };
 
-    // Cache before returning
-    await this.permCache.setCompany(companyId, companyRole, serializePermissionResult(result));
+    const safeResult = stripOmsAccess(result);
 
-    return ok(result);
+    // Cache before returning
+    await this.permCache.setCompany(companyId, companyRole, serializePermissionResult(safeResult));
+
+    return ok(safeResult);
   }
+
+  /** OMS inventory access is fixed to live company administrators, even when a department is selected. */
+  private applyOmsCompanyAdminAccess(
+    companyRole: CompanyRoleSlug,
+    result: Result<PermissionResult, PermissionError>,
+  ): Result<PermissionResult, PermissionError> {
+    if (!result.ok) return result;
+    const base = stripOmsAccess(result.value);
+    if (!['COMPANY_ADMIN', 'SUPER_ADMIN'].includes(companyRole)) return ok(base);
+    const allowedActionsByTool = new Map(base.allowedActionsByTool);
+    allowedActionsByTool.set(asToolId('omsSiteData'), new Set<ToolActionGroup>(['read']));
+    return ok({
+      ...base,
+      allowedToolIds: new Set([...base.allowedToolIds, asToolId('omsSiteData')]),
+      allowedActionsByTool,
+      decisions: [...base.decisions, { toolId: 'omsSiteData', actionGroup: 'read', allowed: true, source: 'company_default' }],
+    });
+  }
+}
+
+function stripOmsAccess(result: PermissionResult): PermissionResult {
+  if (!result.allowedToolIds.has(asToolId('omsSiteData'))) return result;
+  const allowedToolIds = new Set(result.allowedToolIds);
+  allowedToolIds.delete(asToolId('omsSiteData'));
+  const allowedActionsByTool = new Map(result.allowedActionsByTool);
+  allowedActionsByTool.delete(asToolId('omsSiteData'));
+  return {
+    ...result,
+    allowedToolIds,
+    allowedActionsByTool,
+    decisions: result.decisions.filter(decision => decision.toolId !== 'omsSiteData'),
+  };
 }

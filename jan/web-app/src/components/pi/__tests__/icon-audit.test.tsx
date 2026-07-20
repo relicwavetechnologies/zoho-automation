@@ -14,6 +14,7 @@ const CANONICAL_TOOL_IDS = [
   'canvaDesign', 'zohoCrm', 'zohoBooks',
   'contextSearch', 'webSearch', 'skillPublishing', 'memoryPublishing',
   'memoryRecall', 'documentRag', 'dataProcessor', 'scheduledWorkflows',
+  'semrush',
   'runCommand',
 ]
 

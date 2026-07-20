@@ -9,6 +9,12 @@ const fixedNow = new Date('2026-07-19T05:00:00.000Z');
 function makePrisma() {
   let created: Record<string, unknown> | null = null;
   const prisma = {
+    integrationConnection: {
+      findFirst: async () => ({ externalAccountId: 'ou_creator' }),
+    },
+    channelIdentity: {
+      findFirst: async () => ({ id: 'identity-1' }),
+    },
     desktopThread: {
       findFirst: async ({ where }: any) => where.id === 'thread-1' ? { id: 'thread-1' } : null,
     },
@@ -42,6 +48,7 @@ describe('scheduledWorkflows tool', () => {
       intent: 'Review new finance mail and summarize exceptions.',
       scheduleType: 'daily',
       timezone: 'Asia/Kolkata',
+      delivery: 'current_conversation',
     }).success, false);
 
     assert.equal(tool.argsSchema.safeParse({
@@ -50,6 +57,17 @@ describe('scheduledWorkflows tool', () => {
       intent: 'Review new finance mail and summarize exceptions.',
       scheduleType: 'daily',
       timezone: 'Asia/Kolkata',
+      hour: 10,
+      timeMinute: 0,
+    }).success, false);
+
+    assert.equal(tool.argsSchema.safeParse({
+      operation: 'create',
+      name: 'Daily inbox review',
+      intent: 'Review new finance mail and summarize exceptions.',
+      scheduleType: 'daily',
+      timezone: 'Asia/Kolkata',
+      delivery: 'current_conversation',
       hour: 10,
       timeMinute: 0,
     }).success, true);
@@ -64,6 +82,7 @@ describe('scheduledWorkflows tool', () => {
       intent: 'Read the last 24 hours of finance email, summarize exceptions, and return the result here.',
       scheduleType: 'daily' as const,
       timezone: 'Asia/Kolkata',
+      delivery: 'current_conversation' as const,
       hour: 10,
       timeMinute: 0,
     };
@@ -81,6 +100,7 @@ describe('scheduledWorkflows tool', () => {
 
     assert.equal(result.ok, true);
     assert.equal((result as any).value.schedule.deliveryChannel, 'desktop');
+    assert.equal((result as any).value.schedule.deliveryTarget, 'origin_chat');
     assert.match((result as any).value.nextRunLabel, /20 Jul 2026, 10:00 am/i);
     assert.deepEqual(getCreated(), {
       companyId: 'co-test',
@@ -98,7 +118,7 @@ describe('scheduledWorkflows tool', () => {
       timezone: 'Asia/Kolkata',
       workflowSpecJson: {},
       capabilitySummaryJson: {},
-      outputConfigJson: { deliveryChannel: 'desktop' },
+      outputConfigJson: { deliveryChannel: 'desktop', deliveryTarget: 'origin_chat' },
       status: 'scheduled_active',
       scheduleEnabled: true,
       nextRunAt: new Date('2026-07-20T04:30:00.000Z'),
@@ -115,6 +135,7 @@ describe('scheduledWorkflows tool', () => {
       intent: 'Summarize finance mail.',
       scheduleType: 'daily',
       timezone: 'Asia/Kolkata',
+      delivery: 'current_conversation',
       hour: 10,
       timeMinute: 0,
     }, makeCtx('scheduledWorkflows', ['create'], {
@@ -124,5 +145,54 @@ describe('scheduledWorkflows tool', () => {
 
     assert.equal(result.ok, false);
     assert.match((result as any).error.message, /conversation is not persisted/i);
+  });
+
+  it('creates creator Lark DM delivery without requiring a persisted desktop conversation', async () => {
+    const { prisma, getCreated } = makePrisma();
+    const tool = createScheduledWorkflowsTool({ prisma });
+    const result = await tool.execute({
+      operation: 'create',
+      name: 'Daily inbox review',
+      intent: 'Summarize finance mail and produce the summary as the final answer.',
+      scheduleType: 'daily',
+      timezone: 'Asia/Kolkata',
+      delivery: 'creator_lark_dm',
+      hour: 10,
+      timeMinute: 0,
+    }, makeCtx('scheduledWorkflows', ['create'], {
+      channel: 'desktop',
+      chatId: 'missing-thread',
+    }));
+
+    assert.equal(result.ok, true);
+    assert.equal((result as any).value.schedule.deliveryChannel, 'lark');
+    assert.equal((result as any).value.schedule.deliveryTarget, 'creator_dm');
+    assert.deepEqual((getCreated() as any).outputConfigJson, {
+      deliveryChannel: 'lark',
+      deliveryTarget: 'creator_dm',
+    });
+    assert.equal((getCreated() as any).originChatId, null);
+  });
+
+  it('refuses creator Lark DM delivery when the authenticated creator has no Lark identity', async () => {
+    const { prisma } = makePrisma();
+    (prisma as any).integrationConnection.findFirst = async () => null;
+    const tool = createScheduledWorkflowsTool({ prisma });
+    const result = await tool.execute({
+      operation: 'create',
+      name: 'Daily inbox review',
+      intent: 'Summarize finance mail and produce the summary as the final answer.',
+      scheduleType: 'daily',
+      timezone: 'Asia/Kolkata',
+      delivery: 'creator_lark_dm',
+      hour: 10,
+      timeMinute: 0,
+    }, makeCtx('scheduledWorkflows', ['create'], {
+      channel: 'desktop',
+      chatId: 'missing-thread',
+    }));
+
+    assert.equal(result.ok, false);
+    assert.match((result as any).error.message, /connect your Lark account/i);
   });
 });

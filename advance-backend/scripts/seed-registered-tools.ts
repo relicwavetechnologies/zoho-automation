@@ -78,6 +78,31 @@ const TOOLS: ToolSeed[] = [
   { toolId: 'documentRag', name: 'Document RAG', description: 'Ingest and retrieve uploaded documents.', category: 'knowledge', domain: 'rag' },
   { toolId: 'dataProcessor', name: 'Data Processor', description: 'Transform and process datasets in a sandbox.', category: 'data', domain: 'data' },
   {
+    toolId: 'semrush',
+    name: 'Semrush SEO Research',
+    description: 'Run read-only Semrush domain and organic-search research through official APIs.',
+    category: 'analytics',
+    domain: 'semrush',
+    guardrails: [
+      'Uses only the backend-configured Semrush API key',
+      'Uses fixed official API operations with ordinary Divo RBAC',
+      'Supports a fixed operation allow-list; arbitrary endpoints, exports, and headers are rejected',
+    ],
+  },
+  {
+    toolId: 'omsSiteData',
+    name: 'OMS Site Inventory',
+    description: 'Search the governed, read-only OMS website inventory for site shortlists, profiles, and catalog values.',
+    category: 'analytics',
+    domain: 'oms',
+    guardrails: [
+      'Uses only a company-owned server-side OMS Site Data API key',
+      'Available only to active company administrators',
+      'Supports fixed operations; SQL, raw webhook requests, headers, and provider filters are rejected',
+      'OMS responses are capped at 100 rows and have no pagination',
+    ],
+  },
+  {
     toolId: 'runCommand',
     name: 'Terminal',
     description:

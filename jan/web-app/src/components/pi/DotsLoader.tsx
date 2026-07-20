@@ -65,8 +65,8 @@ const DELAYS: Record<'wave' | 'scatter', number[]> = {
  * stop being a glyph and start looking like six loose specks.
  */
 const SIZES = {
-  md: { box: 'h-5 w-4', dot: 2.5, gap: 1 },
-  sm: { box: 'h-4 w-3', dot: 2, gap: 1 },
+  md: { box: 'h-5 w-4', dot: 2.5, gap: 1.5 },
+  sm: { box: 'h-4 w-3', dot: 2, gap: 1.25 },
 } as const
 
 export function DotsLoader({
@@ -86,12 +86,17 @@ export function DotsLoader({
     <span
       aria-hidden
       data-dots-loader={variant}
-      className={cn(
-        'grid shrink-0 grid-cols-2 grid-rows-3 place-content-center',
-        box,
-        className
-      )}
-      style={{ gap: `${gap}px` }}
+      className={cn('grid shrink-0 place-content-center', box, className)}
+      // Tracks are sized in px, NOT with Tailwind's `grid-cols-2`/`grid-rows-3`
+      // — those expand to `repeat(n, minmax(0, 1fr))`, which stretches the
+      // tracks across the whole box and scatters the dots into its corners no
+      // matter what `gap` says. Explicit tracks make them hug the dots, so the
+      // gap is the only thing setting the spacing.
+      style={{
+        gridTemplateColumns: `repeat(2, ${dot}px)`,
+        gridTemplateRows: `repeat(3, ${dot}px)`,
+        gap: `${gap}px`,
+      }}
     >
       {DELAYS[variant].map((delay, i) => (
         <span

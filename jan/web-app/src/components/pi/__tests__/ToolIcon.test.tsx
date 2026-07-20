@@ -13,10 +13,19 @@ import { describe, expect, it } from 'vitest'
 import {
   CanvaIcon,
   GmailIcon,
+  GoogleAppsScriptIcon,
+  GoogleChatIcon,
+  GoogleContactsIcon,
+  GoogleDocsIcon,
+  GoogleFormsIcon,
+  GoogleSheetsIcon,
+  GoogleSlidesIcon,
+  GoogleTasksIcon,
   GoogleCalendarIcon,
   GoogleDriveIcon,
   GoogleIcon,
   LarkIcon,
+  SemrushIcon,
   ZohoIcon,
 } from '@/components/brand-icons'
 import { DivoDexMark } from '@/components/DivoDexBrand'
@@ -96,19 +105,30 @@ describe('resolveToolIconComponent', () => {
     )
   })
 
-  it('falls back to the plain Google glyph for surfaces without their own mark', () => {
-    for (const id of [
-      'googleDocs',
-      'googleSheets',
-      'googleSlides',
-      'googleChat',
-      'googleTasks',
-      'googleForms',
-      'googleContacts',
-      'googleAppsScript',
-    ]) {
-      expect(resolveToolIconComponent(invoke(id))).toBe(GoogleIcon)
+  it('gives every Workspace surface its own product mark', () => {
+    // A shared generic G made a Docs call and a Sheets call look identical in
+    // the work log, which is the one thing the mark is there to prevent.
+    const marks: Array<[string, unknown]> = [
+      ['googleDocs', GoogleDocsIcon],
+      ['googleSheets', GoogleSheetsIcon],
+      ['googleSlides', GoogleSlidesIcon],
+      ['googleChat', GoogleChatIcon],
+      ['googleTasks', GoogleTasksIcon],
+      ['googleForms', GoogleFormsIcon],
+      ['googleContacts', GoogleContactsIcon],
+      ['googleAppsScript', GoogleAppsScriptIcon],
+    ]
+    for (const [id, mark] of marks) {
+      expect(resolveToolIconComponent(invoke(id))).toBe(mark)
     }
+    // Distinct components, not the same one eight times.
+    expect(new Set(marks.map(([, mark]) => mark)).size).toBe(marks.length)
+  })
+
+  it('still falls back to the plain Google glyph for an unmapped surface', () => {
+    // Honest generic beats a borrowed mark: a surface we have no art for must
+    // not inherit whichever product happens to sort nearby.
+    expect(resolveToolIconComponent(invoke('googleVault'))).toBe(GoogleIcon)
   })
 
   it("marks Divo's own capabilities with the Divo mark", () => {
@@ -182,6 +202,16 @@ describe('resolveToolIconComponent', () => {
     )
     expect(resolveToolIconComponent(invoke('somethingNew'))).not.toBe(
       DivoDexMark
+    )
+  })
+
+  it('keeps the Semrush mark on research calls instead of the magnifier', () => {
+    // Semrush IS search, so the lookup heuristic is the thing most likely to
+    // steal it back. Both the bare tool and a future search-shaped op must
+    // stay branded.
+    expect(resolveToolIconComponent(invoke('semrush'))).toBe(SemrushIcon)
+    expect(resolveToolIconComponent(invoke('semrushKeywordSearch'))).toBe(
+      SemrushIcon
     )
   })
 

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cleanTitle, generateThreadTitle } from '../thread-title-summarizer'
 
+const modelProviderState = vi.hoisted(() => ({
+  selectedModel: { id: 'test-model' },
+  selectedProvider: 'test-provider',
+}))
+
 // Mock AI SDK generateText
 const mockGenerateText = vi.fn()
 vi.mock('ai', () => ({
@@ -20,11 +25,16 @@ const mockGetProviderByName = vi.fn()
 vi.mock('@/hooks/useModelProvider', () => ({
   useModelProvider: {
     getState: () => ({
-      selectedModel: { id: 'test-model' },
-      selectedProvider: 'test-provider',
+      selectedModel: modelProviderState.selectedModel,
+      selectedProvider: modelProviderState.selectedProvider,
       getProviderByName: mockGetProviderByName,
     }),
   },
+}))
+
+const mockInvoke = vi.fn()
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => mockInvoke(...args),
 }))
 
 describe('cleanTitle', () => {
@@ -104,6 +114,8 @@ describe('generateThreadTitle', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    modelProviderState.selectedProvider = 'test-provider'
+    modelProviderState.selectedModel = { id: 'test-model' }
     mockGetProviderByName.mockReturnValue(mockProvider)
     mockCreateModel.mockResolvedValue(mockModel)
   })
@@ -190,5 +202,29 @@ describe('generateThreadTitle', () => {
         abortSignal: controller.signal,
       })
     )
+  })
+
+  it('uses the governed Divo title command for a Divo thread even with stale provider state', async () => {
+    // The runtime is Pi-only, but this persisted selector may still hold an
+    // old Jan provider while it hydrates. The thread id must select the Divo
+    // route independently of that stale client preference.
+    modelProviderState.selectedProvider = 'test-provider'
+    modelProviderState.selectedModel = { id: 'test-model' }
+    mockInvoke.mockResolvedValue('Razorpay Account Health')
+
+    const controller = new AbortController()
+    const result = await generateThreadTitle(
+      'Review the current Razorpay account health and outstanding deals.',
+      controller.signal,
+      'thread-123'
+    )
+
+    expect(result).toBe('Razorpay Account Health')
+    expect(mockInvoke).toHaveBeenCalledWith('divo_generate_thread_title', {
+      threadId: 'thread-123',
+      thread_id: 'thread-123',
+      transcript: 'Review the current Razorpay account health and outstanding deals.',
+    })
+    expect(mockCreateModel).not.toHaveBeenCalled()
   })
 })

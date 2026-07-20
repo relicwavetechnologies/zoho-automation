@@ -24,7 +24,9 @@ vi.mock('streamdown', () => ({
 
 // Stub ChainOfThought
 vi.mock('@/components/ai-elements/chain-of-thought', () => ({
-  ChainOfThought: ({ children }: any) => <div data-testid="cot">{children}</div>,
+  ChainOfThought: ({ children, forceOpen }: any) => (
+    <div data-testid="cot" data-force-open={String(Boolean(forceOpen))}>{children}</div>
+  ),
   ChainOfThoughtContent: ({ children }: any) => <div>{children}</div>,
   ChainOfThoughtHeader: ({ streamingLabel }: any) => (
     <div>CoT Header{streamingLabel ? `: ${streamingLabel}` : ''}</div>
@@ -235,6 +237,73 @@ describe('MessageItem', () => {
     )
     expect(screen.getByText('Inspect the Pi runtime')).toBeInTheDocument()
     expect(screen.getByText('Review the stream mapper')).toBeInTheDocument()
+  })
+
+  it('renders a backend approval as an inline gateway status, not a generic tool error', () => {
+    render(
+      <MessageItem
+        message={
+          makeMsg({
+            parts: [
+              {
+                type: 'tool-divo_gateway',
+                state: 'output-error',
+                input: { op: 'tools.invoke', payload: { toolId: 'zohoBooks' } },
+                errorText: JSON.stringify({
+                  details: {
+                    status: 'approval_required',
+                    approval: {
+                      approvalId: 'approval-99',
+                      message: 'Sent to Finance for review.',
+                    },
+                  },
+                }),
+              },
+            ],
+          }) as any
+        }
+        isFirstMessage
+        isLastMessage
+        status={'ready' as any}
+      />
+    )
+
+    expect(screen.getByTestId('divo-approval-status')).toHaveAttribute(
+      'data-status',
+      'pending'
+    )
+    expect(screen.getByText('Approval approval-99')).toBeInTheDocument()
+    expect(screen.queryByText(/did not run this zoho books/i)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('tool')).not.toBeInTheDocument()
+  })
+
+  it('keeps a completed Pi trace open while backend approval is pending', () => {
+    render(
+      <MessageItem
+        message={
+          makeMsg({
+            metadata: { createdAt: new Date(), piTraceTimeline: true },
+            parts: [
+              {
+                type: 'tool-divo_gateway',
+                state: 'output-error',
+                errorText: JSON.stringify({
+                  details: {
+                    status: 'approval_required',
+                    approval: { approvalId: 'approval-100' },
+                  },
+                }),
+              },
+            ],
+          }) as any
+        }
+        isFirstMessage
+        isLastMessage
+        status={'ready' as any}
+      />
+    )
+
+    expect(screen.getByTestId('cot')).toHaveAttribute('data-force-open', 'true')
   })
 
   it('fires onRegenerate when regenerate button clicked (assistant, last)', () => {

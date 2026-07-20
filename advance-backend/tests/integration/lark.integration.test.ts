@@ -228,18 +228,14 @@ describe('larkMessaging — integration', { skip: !process.env['LARK_CHAT_ID'] |
     assert.ok(Array.isArray((r as any).value.data));
   });
 
-  it('send + get: sends a test message and reads it back', async () => {
+  it('send: sends a test message', async () => {
     const r = await tool.execute({
       op:     'send',
       chatId,
       text:   '[DIVO-INT-TEST] Integration test message — sent by advance-backend tests.',
     }, ctx);
     assert.equal(r.ok, true, `send failed: ${!r.ok ? JSON.stringify((r as any).error) : ''}`);
-    const messageId = (r as any).value.messageId as string;
-    assert.ok(messageId);
-
-    const g = await tool.execute({ op: 'get', messageId }, ctx);
-    assert.equal(g.ok, true);
+    assert.ok((r as any).value.messageId as string);
   });
 });
 

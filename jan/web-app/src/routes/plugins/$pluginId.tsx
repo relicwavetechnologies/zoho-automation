@@ -25,6 +25,7 @@ import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { ToolAccessSection } from '@/components/tool-access/ToolAccessSection'
+import { AccessScopeSkeleton, ConnectionRowsSkeleton } from '@/components/tool-catalogue/ToolSkeletons'
 import {
   Dialog,
   DialogContent,
@@ -681,9 +682,8 @@ export function PluginDetailRoute() {
                 />
               ) : null}
               {divoSession.status === 'connected' && connectionState.status === 'loading' && connections.length === 0 ? (
-                <ConnectionListState
-                  title={`Loading ${cloudProvider.connectionLabel} connections`}
-                  description="Checking the Divo backend for accounts available to this desktop session."
+                <ConnectionRowsSkeleton
+                  label={`Loading ${cloudProvider.connectionLabel} connections`}
                 />
               ) : null}
               {divoSession.status === 'connected' && connectionState.status === 'error' ? (
@@ -1086,10 +1086,7 @@ function ZohoPluginDetail({
                 action={<Button size="sm" onClick={onReconnectDivo}>Open Divo Settings</Button>}
               />
             ) : isLoading ? (
-              <ConnectionListState
-                title="Checking Zoho"
-                description="Reading the company Zoho connection from Divo backend."
-              />
+              <ConnectionRowsSkeleton rows={1} label="Checking Zoho" />
             ) : error ? (
               <ConnectionListState
                 title="Could not load Zoho"
@@ -1575,12 +1572,7 @@ function ManageAccessDialog({
               </div>
             </div>
 
-            {isLoading ? (
-              <ConnectionListState
-                title="Loading access settings"
-                description="Reading current grants and company members from Divo backend."
-              />
-            ) : null}
+            {isLoading ? <AccessScopeSkeleton /> : null}
             {error ? (
               <ConnectionListState
                 title="Could not load access"

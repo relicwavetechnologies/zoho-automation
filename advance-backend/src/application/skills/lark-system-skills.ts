@@ -150,6 +150,7 @@ Use this skill for direct messages, group messages, replies, message search, and
 - For a direct message, use recipient-name resolution and ask when the match is ambiguous.
 - For a group, list chats first to resolve the chat. If Divo is absent, tell the member it must be added.
 - Resolve mention names before sending. Do not guess IDs.
+- Outbound messages use a Divo Card 2.0 by default, so provide clean Markdown. Use plain-text delivery only when the member explicitly needs plain text.
 - Preserve approval state: pending is not sent, rejected is not sent.
 - Never run lark-cli, call Lark with curl, or expose connection tokens.
 

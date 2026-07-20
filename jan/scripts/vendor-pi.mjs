@@ -7,7 +7,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { pruneBundledPiNonRuntimeFiles } from './pi-vendor-utils.mjs'
+import {
+  pruneBundledPiNonRuntimeFiles,
+  writePiExtensionsBundleId,
+} from './pi-vendor-utils.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const janRoot = path.resolve(__dirname, '..')
@@ -212,6 +215,8 @@ for (const name of fs.readdirSync(resourcesExtensions)) {
     stdio: 'inherit',
   })
 }
+const extensionsBundleId = writePiExtensionsBundleId(resourcesExtensions)
+console.log(`Bundled extension identity: ${extensionsBundleId}`)
 
 // Copy Jan-owned Pi skills. Runtime loads only the bundled divo-gateway router
 // skill; company skills are fetched from the authenticated backend registry.

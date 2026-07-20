@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use tauri::{AppHandle, Manager};
 
@@ -18,16 +20,28 @@ const BUNDLED_EXTENSIONS_REL: &str = "resources/pi-extensions";
 const BUNDLED_SKILLS_REL: &str = "resources/pi-skills";
 const BUNDLED_AGENT_NPM_REL: &str = "resources/pi/agent-npm";
 const BUNDLED_BRIDGE_REL: &str = "resources/pi/pi-chrome-devtools-bridge.mjs";
+const EXTENSIONS_BUNDLE_ID_FILE: &str = ".divo-bundle-id";
 
 const CHROME_DEVTOOLS_MCP_REL: &str =
     "resources/pi/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js";
 const DEFAULT_PI_PROVIDER: &str = "deepseek";
 const DEFAULT_PI_MODEL: &str = "deepseek-v4-flash";
 const LEGACY_DEFAULT_PI_MODEL: &str = "deepseek-v4-pro";
-const COMPANY_EXTENSION_NAMES: [&str; 4] =
-    ["divo-llm", "divo-gateway", "divo-memory", "divo-subagents"];
+const COMPANY_EXTENSION_NAMES: [&str; 5] = [
+    "divo-llm",
+    "divo-gateway",
+    "divo-memory",
+    "divo-subagents",
+    "divo-todos",
+];
 const COMPANY_TOOL_ALLOWLIST: &str =
-    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents";
+    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_todos";
+
+/// Every company Pi process has its own lifecycle lock, but its agent-dir
+/// bootstrap is shared by the whole desktop process. Keep all mutation of that
+/// shared directory behind one lock so parallel chats cannot delete or rewrite
+/// the same runtime files concurrently.
+static PI_AGENT_BOOTSTRAP_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PiRuntimeMode {
@@ -258,6 +272,27 @@ fn bootstrap_agent_dir(
     bun: &Path,
     sync_divo_extensions: bool,
 ) -> Result<(), String> {
+    with_pi_agent_bootstrap_lock(|| {
+        bootstrap_agent_dir_locked(resource_dir, agent_dir, bun, sync_divo_extensions)
+    })
+}
+
+fn with_pi_agent_bootstrap_lock<T>(
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let _bootstrap = PI_AGENT_BOOTSTRAP_LOCK.lock().unwrap_or_else(|poisoned| {
+        log::warn!("divo.pi.bootstrap.lock_poisoned recovering=true");
+        poisoned.into_inner()
+    });
+    operation()
+}
+
+fn bootstrap_agent_dir_locked(
+    resource_dir: &Path,
+    agent_dir: &Path,
+    bun: &Path,
+    sync_divo_extensions: bool,
+) -> Result<(), String> {
     fs::create_dir_all(agent_dir).map_err(|e| e.to_string())?;
 
     let template_dir = resource_dir.join(AGENT_TEMPLATE_REL);
@@ -471,15 +506,131 @@ fn resolve_chrome_devtools_mcp(resource_dir: &Path) -> Result<PathBuf, String> {
 }
 
 fn sync_bundled_extensions(src: &Path, dest: &Path) -> Result<(), String> {
-    if dest.exists() {
-        fs::remove_dir_all(dest).map_err(|e| {
+    let parent = dest.parent().ok_or_else(|| {
+        format!(
+            "Bundled Pi extensions destination has no parent: {}",
+            dest.display()
+        )
+    })?;
+    let name = dest
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("Invalid bundled Pi extensions path: {}", dest.display()))?;
+    let staging = parent.join(format!(".{name}.staging"));
+    let previous = parent.join(format!(".{name}.previous"));
+
+    recover_interrupted_extension_sync(dest, &staging, &previous)?;
+    if bundled_extensions_are_current(src, dest) {
+        log::debug!("divo.pi.extensions.bundle_current path={}", dest.display());
+        return Ok(());
+    }
+    let started = Instant::now();
+    log::info!("divo.pi.extensions.sync_started path={}", dest.display());
+
+    remove_path_if_exists(&staging)?;
+    if let Err(error) = sync_dir_contents(src, &staging) {
+        let _ = remove_path_if_exists(&staging);
+        return Err(format!(
+            "Failed to stage bundled Pi extensions from {}: {error}",
+            src.display()
+        ));
+    }
+
+    let had_previous = dest.exists();
+    if had_previous {
+        fs::rename(dest, &previous).map_err(|error| {
+            let _ = remove_path_if_exists(&staging);
             format!(
-                "Failed to clear bundled Pi extensions at {}: {e}",
+                "Failed to preserve current Pi extensions at {}: {error}",
                 dest.display()
             )
         })?;
     }
-    sync_dir_contents(src, dest)
+
+    if let Err(error) = fs::rename(&staging, dest) {
+        let rollback_error = if had_previous {
+            fs::rename(&previous, dest).err()
+        } else {
+            None
+        };
+        let _ = remove_path_if_exists(&staging);
+        return Err(match rollback_error {
+            Some(rollback) => format!(
+                "Failed to activate bundled Pi extensions at {}: {error}; rollback also failed: {rollback}",
+                dest.display()
+            ),
+            None => format!(
+                "Failed to activate bundled Pi extensions at {}: {error}",
+                dest.display()
+            ),
+        });
+    }
+
+    // The new mirror is already complete and active. A failed cleanup is safe
+    // to retry on the next bootstrap and must not fail an otherwise valid run.
+    if let Err(error) = remove_path_if_exists(&previous) {
+        log::warn!(
+            "divo.pi.extensions.previous_cleanup_failed path={} error={error}",
+            previous.display()
+        );
+    }
+    log::info!(
+        "divo.pi.extensions.sync_completed path={} elapsed_ms={}",
+        dest.display(),
+        started.elapsed().as_millis()
+    );
+    Ok(())
+}
+
+fn recover_interrupted_extension_sync(
+    dest: &Path,
+    staging: &Path,
+    previous: &Path,
+) -> Result<(), String> {
+    if !dest.exists() && previous.exists() {
+        fs::rename(previous, dest).map_err(|error| {
+            format!(
+                "Failed to recover previous Pi extensions at {}: {error}",
+                dest.display()
+            )
+        })?;
+    }
+    remove_path_if_exists(staging)?;
+    if dest.exists() {
+        remove_path_if_exists(previous)?;
+    }
+    Ok(())
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Failed to inspect {}: {error}", path.display())),
+    };
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("Failed to remove {}: {error}", path.display()))
+    } else {
+        fs::remove_file(path)
+            .map_err(|error| format!("Failed to remove {}: {error}", path.display()))
+    }
+}
+
+fn bundled_extensions_are_current(src: &Path, dest: &Path) -> bool {
+    let source_id = read_extension_bundle_id(src);
+    source_id.is_some()
+        && source_id == read_extension_bundle_id(dest)
+        && COMPANY_EXTENSION_NAMES
+            .iter()
+            .all(|name| dest.join(name).join("index.ts").is_file())
+}
+
+fn read_extension_bundle_id(root: &Path) -> Option<String> {
+    fs::read_to_string(root.join(EXTENSIONS_BUNDLE_ID_FILE))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// Copy missing / updated files from src into dest (recursive). Never deletes extra files in dest.
@@ -529,6 +680,19 @@ fn copy_file(src: &Path, dest: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn write_test_extension_bundle(root: &Path, bundle_id: &str, content: &str) {
+        for name in COMPANY_EXTENSION_NAMES {
+            let extension = root.join(name);
+            fs::create_dir_all(&extension).unwrap();
+            fs::write(extension.join("index.ts"), format!("{content}:{name}")).unwrap();
+        }
+        fs::write(
+            root.join(EXTENSIONS_BUNDLE_ID_FILE),
+            format!("{bundle_id}\n"),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn bundled_paths_use_expected_suffixes() {
         assert!(BUNDLED_CLI_REL.contains("pi-coding-agent"));
@@ -559,6 +723,7 @@ mod tests {
                 PathBuf::from("/bundle/pi-extensions/divo-gateway/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-memory/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-subagents/index.ts"),
+                PathBuf::from("/bundle/pi-extensions/divo-todos/index.ts"),
             ],
             browser_cdp_fingerprint: None,
         };
@@ -577,10 +742,10 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair == [
                 "--tools",
-                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents",
+                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_todos",
             ]
         }));
-        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 4);
+        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 5);
         assert_eq!(args.iter().filter(|arg| *arg == "--skill").count(), 1);
     }
 
@@ -700,5 +865,77 @@ mod tests {
         assert!(!dest.join("old-managed").exists());
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bundled_extension_identity_detects_current_and_changed_bundles() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("dest");
+        write_test_extension_bundle(&src, "bundle-a", "source");
+        write_test_extension_bundle(&dest, "bundle-a", "source");
+
+        assert!(bundled_extensions_are_current(&src, &dest));
+
+        fs::write(src.join(EXTENSIONS_BUNDLE_ID_FILE), b"bundle-b\n").unwrap();
+        assert!(!bundled_extensions_are_current(&src, &dest));
+    }
+
+    #[test]
+    fn bundled_extension_sync_recovers_an_interrupted_swap() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        let dest = temp.path().join("extensions");
+        let staging = temp.path().join(".extensions.staging");
+        let previous = temp.path().join(".extensions.previous");
+        write_test_extension_bundle(&src, "bundle-new", "new");
+        write_test_extension_bundle(&previous, "bundle-old", "old");
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("partial.ts"), b"partial").unwrap();
+
+        sync_bundled_extensions(&src, &dest).unwrap();
+
+        assert!(bundled_extensions_are_current(&src, &dest));
+        assert_eq!(
+            fs::read_to_string(dest.join("divo-gateway/index.ts")).unwrap(),
+            "new:divo-gateway"
+        );
+        assert!(!staging.exists());
+        assert!(!previous.exists());
+    }
+
+    #[test]
+    fn shared_agent_bootstrap_is_serialized_across_parallel_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        use std::time::Duration;
+
+        let barrier = Arc::new(Barrier::new(3));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+
+        for _ in 0..2 {
+            let barrier = barrier.clone();
+            let active = active.clone();
+            let peak = peak.clone();
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                with_pi_agent_bootstrap_lock(|| {
+                    let concurrent = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(concurrent, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(25));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .unwrap();
+            }));
+        }
+
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
     }
 }

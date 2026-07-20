@@ -104,12 +104,17 @@ describe('useTheme', () => {
       expect(typeof result.current.setIsDark).toBe('function')
     })
 
-    it('should initialize with auto theme', async () => {
+    it('resolves the OS preference into a concrete theme on first run', async () => {
+      // The switcher offers light/dark only, so the store must never rest on
+      // 'auto' — it would keep flipping the app with no on-screen control that
+      // explains why.
       const { useTheme } = await import('../useTheme')
       const { result } = renderHook(() => useTheme())
 
-      expect(result.current.activeTheme).toBe('auto')
-      expect(typeof result.current.isDark).toBe('boolean')
+      expect(['light', 'dark']).toContain(result.current.activeTheme)
+      expect(result.current.activeTheme).toBe(
+        result.current.isDark ? 'dark' : 'light'
+      )
     })
 
     it('should allow setting isDark directly', async () => {

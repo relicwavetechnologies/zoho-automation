@@ -148,7 +148,8 @@
   "apiKeyRequired": "API Key is required",
   "enterTrustedHosts": "Enter trusted hosts",
   "placeholder": {
-    "chatInput": "Ask me anything..."
+    "chatInput": "Ask me anything...",
+    "chatFollowUp": "Ask a follow up"
   },
   "confirm": "Confirm",
   "continue": "Continue",

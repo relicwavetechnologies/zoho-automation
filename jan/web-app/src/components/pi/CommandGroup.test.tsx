@@ -126,10 +126,10 @@ describe('CommandGroup', () => {
     expect(screen.getByTestId('tool-card-2')).toHaveTextContent('tc-2')
   })
 
-  it('keeps the tool own icon on a running row, not a generic loader', () => {
-    // A running Gmail call should look like Gmail. The shimmer carries "in
-    // flight"; the dot loader is only for rows with no identity of their own,
-    // which here is the burst header alone.
+  it('renders a lone running call as its own row, with no loader header', () => {
+    // A burst of one is not a burst: the "Running 1 command" header said less
+    // than the row beneath it and buried the tool's own mark under a generic
+    // loader. A running Gmail call should just look like Gmail, shimmering.
     const { container } = render(
       <CommandGroup
         messageId="m1"
@@ -149,10 +149,116 @@ describe('CommandGroup', () => {
       />
     )
 
-    expect(container.querySelectorAll('[data-dots-loader]')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-dots-loader]')).toHaveLength(0)
+    expect(screen.queryByText(/^Using /)).not.toBeInTheDocument()
     const row = screen.getByText('google gmail').closest('div')
     expect(row?.querySelector('svg')).not.toBeNull()
-    expect(row?.querySelector('[data-dots-loader]')).toBeNull()
+    expect(screen.getByText('google gmail')).toHaveClass('text-shimmer')
+  })
+
+  describe('folded burst icon stack', () => {
+    const settled = (toolId: string, partIndex: number) => ({
+      partIndex,
+      part: {
+        type: 'tool-divo_gateway',
+        state: 'output-available',
+        toolCallId: `tc-${partIndex}`,
+        input: { op: 'tools.invoke', payload: { toolId } },
+      },
+    })
+
+    const stack = (container: HTMLElement) =>
+      container.querySelector('[data-testid="tool-icon-stack"]')
+
+    it('shows one mark per distinct tool, however many times it was called', () => {
+      // Three Gmail calls are still one Gmail mark — presence is the signal,
+      // not volume.
+      const { container } = render(
+        <CommandGroup
+          messageId="m1"
+          active={false}
+          awaitingApproval={false}
+          renderTool={renderTool}
+          tools={[
+            settled('googleGmail', 0),
+            settled('googleGmail', 1),
+            settled('googleGmail', 2),
+          ]}
+        />
+      )
+      expect(stack(container)?.querySelectorAll('svg')).toHaveLength(1)
+    })
+
+    it('shows a mark for each different tool', () => {
+      const { container } = render(
+        <CommandGroup
+          messageId="m1"
+          active={false}
+          awaitingApproval={false}
+          renderTool={renderTool}
+          tools={[
+            settled('googleGmail', 0),
+            settled('googleGmail', 1),
+            settled('larkDocs', 2),
+          ]}
+        />
+      )
+      expect(stack(container)?.querySelectorAll('svg')).toHaveLength(2)
+    })
+
+    it('caps the row and counts the remainder', () => {
+      const { container } = render(
+        <CommandGroup
+          messageId="m1"
+          active={false}
+          awaitingApproval={false}
+          renderTool={renderTool}
+          tools={[
+            settled('googleGmail', 0),
+            settled('larkDocs', 1),
+            settled('zohoBooks', 2),
+            settled('canvaDesign', 3),
+            settled('googleDrive', 4),
+            settled('googleCalendar', 5),
+          ]}
+        />
+      )
+      expect(stack(container)?.querySelectorAll('svg')).toHaveLength(4)
+      expect(screen.getByText('+2')).toBeInTheDocument()
+    })
+
+    it('keeps the stack leading the row once the burst is expanded', async () => {
+      // The stack is the row's left anchor, not decoration — dropping it on
+      // open would shunt the label sideways as the burst folds.
+      const user = userEvent.setup()
+      const { container } = render(
+        <CommandGroup
+          messageId="m1"
+          active={false}
+          awaitingApproval={false}
+          renderTool={renderTool}
+          tools={[settled('googleGmail', 0), settled('larkDocs', 1)]}
+        />
+      )
+      expect(stack(container)).not.toBeNull()
+      await user.click(screen.getByRole('button', { expanded: false }))
+      expect(stack(container)).not.toBeNull()
+    })
+
+    it('gives a lone call its own mark instead of a one-item stack', () => {
+      // No summary line at all, so no stack — the row's own ToolIcon leads.
+      const { container } = render(
+        <CommandGroup
+          messageId="m1"
+          active={false}
+          awaitingApproval={false}
+          renderTool={renderTool}
+          tools={[settled('googleGmail', 0)]}
+        />
+      )
+      expect(stack(container)).toBeNull()
+      expect(screen.getByText('google gmail')).toBeInTheDocument()
+    })
   })
 
   it('folds mid-turn once every tool in the burst has landed', () => {
@@ -174,11 +280,19 @@ describe('CommandGroup', () => {
               input: { op: 'skills.search' },
             },
           },
+          {
+            partIndex: 1,
+            part: {
+              type: 'tool-bash',
+              state: 'output-available',
+              input: { op: 'connections.list' },
+            },
+          },
         ]}
       />
     )
 
-    expect(screen.getByText('Explored 1 search')).toBeInTheDocument()
+    expect(screen.getByText('Explored 2 searches')).toBeInTheDocument()
     expect(screen.queryByText('skill search')).not.toBeInTheDocument()
   })
 
@@ -223,7 +337,7 @@ describe('CommandGroup', () => {
         ]}
       />
     )
-    expect(screen.getByText('Explored 1 search')).not.toHaveClass('text-shimmer')
+    expect(screen.getByText('skill search')).not.toHaveClass('text-shimmer')
   })
 
   it('renders real tool cards while awaiting approval', () => {
@@ -248,5 +362,35 @@ describe('CommandGroup', () => {
 
     expect(screen.getByTestId('tool-card-0')).toHaveTextContent('tc-bash')
     expect(screen.queryByText(/^Exploring /)).not.toBeInTheDocument()
+  })
+
+  it('keeps a backend approval status visible instead of folding it into the burst', () => {
+    render(
+      <CommandGroup
+        messageId="m1"
+        active={false}
+        awaitingApproval={false}
+        renderTool={renderTool}
+        tools={[
+          {
+            partIndex: 4,
+            part: {
+              type: 'tool-divo_gateway',
+              state: 'output-error',
+              toolCallId: 'tc-approval',
+              errorText: JSON.stringify({
+                details: {
+                  status: 'approval_required',
+                  approval: { approvalId: 'approval-1', message: 'Waiting for Finance.' },
+                },
+              }),
+            },
+          },
+        ]}
+      />
+    )
+
+    expect(screen.getByTestId('tool-card-4')).toHaveTextContent('tc-approval')
+    expect(screen.queryByText(/^Explored /)).not.toBeInTheDocument()
   })
 })

@@ -11,6 +11,7 @@ import type { Clock } from '../../shared/clock';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
+import { randomUUID } from 'node:crypto';
 import type {
   GatewayExecutionContext,
   GatewayMemberContext,
@@ -115,7 +116,7 @@ export class ToolExecutor {
       const checked = await tool.preflight(args, {
         runContext,
         perm,
-        correlationId: tool.id,
+        correlationId: input.requestId ?? input.execution?.actionId ?? randomUUID(),
         logger: this.deps.logger.child({ toolId: tool.id, operation: 'preflight' }),
         clock: this.deps.clock,
       });
@@ -186,7 +187,7 @@ export class ToolExecutor {
     const execCtx: ToolExecutionContext = {
       runContext,
       perm,
-      correlationId: tool.id,
+      correlationId: input.requestId ?? input.execution?.actionId ?? randomUUID(),
       logger: this.deps.logger.child({ toolId: tool.id }),
       clock: this.deps.clock,
     };
@@ -284,7 +285,9 @@ export class ToolExecutor {
     const context: ToolExecutionContext = {
       runContext,
       perm,
-      correlationId: tool.id,
+      // A tool ID is global and would make a per-run provider budget shared by
+      // every conversation. Prefer the channel's durable run identity instead.
+      correlationId: runContext.traceId ?? runContext.requestId ?? runContext.chatId ?? randomUUID(),
       logger: this.deps.logger.child({ toolId: tool.id, channel: runContext.channel }),
       clock: this.deps.clock,
       ...(input.onProgress ? { onProgress: input.onProgress } : {}),

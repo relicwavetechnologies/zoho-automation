@@ -3,6 +3,7 @@ import { createFileRoute, useParams, useSearch } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
 
 import HeaderPage from '@/containers/HeaderPage'
+import { PermissionRulesPopover } from '@/components/approval-preview/PermissionRulesPopover'
 import { useThreads } from '@/hooks/useThreads'
 import ChatInput from '@/containers/ChatInput'
 import { useShallow } from 'zustand/react/shallow'
@@ -23,7 +24,6 @@ import {
   ConversationPinSpacer,
   ConversationScrollButton,
 } from '@/components/ai-elements/conversation'
-import { invoke } from '@tauri-apps/api/core'
 import { generateId, lastAssistantMessageIsCompleteWithToolCalls } from 'ai'
 import type { UIMessage } from '@ai-sdk/react'
 import { useChatSessions } from '@/stores/chat-session-store'
@@ -107,8 +107,6 @@ const CHAT_STATUS = {
   STREAMING: 'streaming',
   SUBMITTED: 'submitted',
 } as const
-
-const TITLE_REFRESH_EVERY_N_ASSISTANT_MESSAGES = 4
 
 class QueuedBranchParentMissingError extends Error {
   constructor() {
@@ -653,68 +651,6 @@ function ThreadDetail() {
         useAppState.getState().setThreadBusy(threadId, false)
       })
 
-      if (!isAbort) {
-        const localMessages = useMessages.getState().getMessages(threadId)
-        const assistantCount = localMessages.filter(
-          (m) => m.role === 'assistant'
-        ).length
-        const isRefreshTick =
-          assistantCount === 1 ||
-          (assistantCount > 0 &&
-            assistantCount % TITLE_REFRESH_EVERY_N_ASSISTANT_MESSAGES === 0)
-        const currentThread = useThreads.getState().threads[threadId]
-        if (isRefreshTick && !currentThread?.metadata?.titleSetManually) {
-          const TITLE_TRANSCRIPT_MAX_TURNS = 8
-          const recent = localMessages.slice(-TITLE_TRANSCRIPT_MAX_TURNS)
-          const inputText =
-            recent
-              .map((m) => {
-                const text = m.content
-                  ?.map((c) => c?.text?.value ?? '')
-                  .join('')
-                  .trim()
-                if (!text) return ''
-                const role = m.role === 'assistant' ? 'Assistant' : 'User'
-                return `${role}: ${text}`
-              })
-              .filter(Boolean)
-              .join('\n\n') ||
-            useThreads.getState().threads[threadId]?.title
-          if (inputText) {
-            const provider = useModelProvider.getState().selectedProvider
-            const modelId = useModelProvider.getState().selectedModel?.id
-            ;(async () => {
-              if (provider === 'llamacpp' && modelId) {
-                let idle = false
-                for (let attempt = 0; attempt < 6; attempt++) {
-                  try {
-                    idle = await invoke<boolean>(
-                      'plugin:llamacpp|router_slots_idle',
-                      { modelId }
-                    )
-                  } catch {
-                    idle = true
-                    break
-                  }
-                  if (idle) break
-                  await new Promise((r) => setTimeout(r, 150))
-                }
-                if (!idle) return
-              }
-              titleAbortRef.current?.abort()
-              const controller = new AbortController()
-              titleAbortRef.current = controller
-              const title = await generateThreadTitle(
-                inputText,
-                controller.signal
-              )
-              if (!title || controller.signal.aborted) return
-              useThreads.getState().updateThread(threadId, { title })
-              titleAbortRef.current = null
-            })()
-          }
-        }
-      }
     },
     onToolCall: ({ toolCall }) => {
       if (selectedProvider === 'pi') return
@@ -1071,6 +1007,59 @@ function ThreadDetail() {
     setContextLimitError(ctx ? new Error(ctx) : null)
   }, [threadId, threadMessagesForBanner])
 
+  // A long-running Pi task may take minutes. Name the chat from its first user
+  // turn immediately, rather than waiting for the terminal agent event.
+  const generateTitleForInitialTurn = useCallback(
+    (userText: string) => {
+      const transcript = userText.trim()
+      if (!transcript || titleAbortRef.current) return
+
+      const currentThread = useThreads.getState().threads[threadId]
+      const metadata = (currentThread?.metadata as
+        | Record<string, unknown>
+        | undefined) ?? {}
+      const isPlaceholderTitle =
+        currentThread?.title === 'New Thread' || currentThread?.title === 'New Chat'
+      if (
+        !isPlaceholderTitle ||
+        metadata.titleSetManually ||
+        metadata.titleGenerated
+      ) {
+        return
+      }
+
+      const controller = new AbortController()
+      titleAbortRef.current = controller
+      void (async () => {
+        try {
+          const title = await generateThreadTitle(
+            transcript,
+            controller.signal,
+            threadId
+          )
+          if (!title || controller.signal.aborted) return
+
+          // A manual rename can occur while the background request is in
+          // flight. Re-read current state before writing the automatic title.
+          const latestThread = useThreads.getState().threads[threadId]
+          const latestMetadata = (latestThread?.metadata as
+            | Record<string, unknown>
+            | undefined) ?? {}
+          if (latestMetadata.titleSetManually) return
+          useThreads.getState().updateThread(threadId, {
+            title,
+            metadata: { ...latestMetadata, titleGenerated: true },
+          })
+        } finally {
+          if (titleAbortRef.current === controller) {
+            titleAbortRef.current = null
+          }
+        }
+      })()
+    },
+    [threadId]
+  )
+
   // Consolidated function to process and send a message
   const processAndSendMessage = useCallback(
     async (
@@ -1108,10 +1097,6 @@ function ThreadDetail() {
         ? { [DIVO_QUICK_START_METADATA_KEY]: options.quickStartPlan }
         : {}
       const callerMessageMetadata = options?.messageMetadata ?? {}
-
-      // Cancel any in-flight title summarization so it doesn't compete with this request
-      titleAbortRef.current?.abort()
-      titleAbortRef.current = null
 
       // Get all attachments from the store (media transferred from the
       // new-thread key, plus documents).
@@ -1305,6 +1290,9 @@ function ThreadDetail() {
         pendingAssistantParentId.current = messageId
       }
       addMessage(userMessage)
+      generateTitleForInitialTurn(
+        userMessage.content[0].text?.value ?? text
+      )
 
       if (queuedMessage?.parentId) {
         const messagesWithQueuedTurn = useMessages
@@ -1419,6 +1407,7 @@ function ThreadDetail() {
       selectedProvider,
       deleteMessage,
       updateMessage,
+      generateTitleForInitialTurn,
     ]
   )
 
@@ -2025,7 +2014,12 @@ function ThreadDetail() {
                 : thread.title
               : 'New chat'}
           </span>
-          <DivoWorkspaceSelector />
+          <div className="flex items-center gap-2">
+            {/* Approval rules live in the titlebar, not the composer — a
+                settings affordance you set once, kept out of the prompt row. */}
+            <PermissionRulesPopover />
+            <DivoWorkspaceSelector />
+          </div>
         </div>
       </HeaderPage>
       <div className="flex flex-1 flex-col h-full overflow-hidden">

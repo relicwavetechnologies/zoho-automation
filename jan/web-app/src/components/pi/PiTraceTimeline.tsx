@@ -1,6 +1,6 @@
 import { memo, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ChevronRightIcon } from 'lucide-react'
+import { ChevronRightIcon, WaypointsIcon } from 'lucide-react'
 import {
   ChainOfThought,
   ChainOfThoughtHeader,
@@ -12,6 +12,7 @@ import type { CommandGroupTool } from './CommandGroup'
 import { Streamdown } from 'streamdown'
 import { cn } from '@/lib/utils'
 import type { PiTraceStep } from '@/lib/pi/split-trace-parts'
+import { isDivoGatewayApprovalTool } from '@/lib/pi/gateway-approval'
 
 /** Distance from bottom (px) at which we keep auto-following the live head. */
 const STICK_BOTTOM_THRESHOLD_PX = 48
@@ -102,20 +103,33 @@ const ThoughtStep = memo(
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="group flex w-full items-center gap-1.5 py-0.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="group flex w-full items-center gap-2.5 py-0.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
         >
-          <ChevronRightIcon
-            className={cn(
-              'size-3.5 shrink-0 text-muted-foreground/50 transition-transform',
-              open && 'rotate-90'
-            )}
+          {/* Reasoning gets a mark in the same leading slot the tool rows use.
+              A settled thought is a step like any other, and leading it with a
+              bare arrow made every folded line in the log start with a chevron
+              — structure the eye has to decode instead of read. */}
+          {/* Branching nodes, not a brain: at 16px the brain is a blot of path
+              beside the magnifier and terminal marks below it, and a lightbulb
+              reads "idea" rather than "thinking". This one is symmetric, so it
+              centres cleanly in the same leading column as the tool marks.
+              Thinner than the lucide default to match their optical weight. */}
+          <WaypointsIcon
+            strokeWidth={1.5}
+            className="size-4 shrink-0 text-muted-foreground/70 transition-colors group-hover:text-muted-foreground"
           />
           <span className="text-[13px]">Thought</span>
+          <ChevronRightIcon
+            className={cn(
+              'size-3.5 shrink-0 text-muted-foreground/50 opacity-0 transition-all group-hover:opacity-100',
+              open && 'rotate-90 opacity-100'
+            )}
+          />
         </button>
         {open && (
           <div
             dir="auto"
-            className="my-1 ml-[6px] max-w-[70ch] border-l border-border pl-4 text-[13px] leading-relaxed text-muted-foreground/80"
+            className="my-1 ml-2 max-w-[70ch] border-l border-border pl-4 text-[13px] leading-relaxed text-muted-foreground/80"
           >
             <Streamdown>{text}</Streamdown>
           </div>
@@ -149,10 +163,15 @@ export const PiTraceTimeline = memo(
     const scrollRef = useRef<HTMLDivElement>(null)
     const stickToBottomRef = useRef(true)
     const segments = coalesceSegments(steps)
-    const shouldFollow = isStreaming || awaitingApproval
+    const hasBackendApproval = steps.some(
+      (step) => step.kind === 'tool' && isDivoGatewayApprovalTool(step.part)
+    )
+    const keepOpen = awaitingApproval || hasBackendApproval
+    const shouldFollow = isStreaming || keepOpen
 
     // Keep the live head in view while working, unless the user scrolled up.
-    // Approval always pins to the bottom so HITL controls stay reachable.
+    // Local approval resets that choice so its controls remain reachable;
+    // backend approval status only keeps its completed trace open.
     useLayoutEffect(() => {
       const el = scrollRef.current
       if (!el || !shouldFollow) return
@@ -165,7 +184,6 @@ export const PiTraceTimeline = memo(
 
     const hasTools = steps.some((s) => s.kind === 'tool')
     const lastSegmentIndex = segments.length - 1
-    const keepOpen = awaitingApproval
 
     return (
       <ChainOfThought

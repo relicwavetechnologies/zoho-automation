@@ -522,38 +522,6 @@ describe('Lark family clients through the official SDK boundary', () => {
     }]);
   });
 
-  it('reads localized rich-post text when fetching one message', async () => {
-    const { sdkClient } = sdkStub(() => ({
-      items: [{
-        message_id: 'msg-2',
-        msg_type: 'post',
-        body: {
-          content: JSON.stringify({
-            en_us: {
-              title: 'Launch update',
-              content: [[
-                { tag: 'text', text: 'The ' },
-                { tag: 'a', text: 'release notes', href: 'https://example.test/release-notes' },
-                { tag: 'text', text: ' are live.' },
-              ]],
-            },
-          }),
-        },
-        sender: { id: 'ou_sender' },
-        create_time: '1784113200001',
-      }],
-    }));
-
-    const message = await new LarkToolMessagingClient(deps(sdkClient)).getMessage('msg-2');
-
-    assert.deepEqual(message, {
-      messageId: 'msg-2',
-      text: 'Launch update\nThe release notes are live.',
-      senderId: 'ou_sender',
-      timestamp: '1784113200001',
-    });
-  });
-
   it('renders readable Card 2.0 content through bounded history search rather than returning empty text', async () => {
     const { sdkClient, requests } = sdkStub(() => ({
       items: [{
@@ -606,17 +574,4 @@ describe('Lark family clients through the official SDK boundary', () => {
     }]);
   });
 
-  it('returns a useful attachment label instead of silently dropping non-text messages', async () => {
-    const { sdkClient } = sdkStub(() => ({
-      items: [{
-        message_id: 'msg-4',
-        msg_type: 'file',
-        body: { content: '{"file_name":"Q3-plan.pdf"}' },
-      }],
-    }));
-
-    const message = await new LarkToolMessagingClient(deps(sdkClient)).getMessage('msg-4');
-
-    assert.equal(message.text, '[File: Q3-plan.pdf]');
-  });
 });

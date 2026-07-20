@@ -97,12 +97,23 @@ export class AuditService {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const AUDIT_REDACT_KEYS = new Set(['password', 'token', 'secret', 'apiKey', 'api_key', 'authorization']);
+const AUDIT_REDACT_KEYS = new Set([
+  'password', 'token', 'secret', 'apikey', 'api_key', 'authorization',
+  'cookie', 'set-cookie', 'session', 'accesstoken', 'refreshtoken',
+]);
 
 function sanitizeMeta(meta: Record<string, unknown>): Record<string, unknown> {
+  return sanitizeValue(meta) as Record<string, unknown>;
+}
+
+/** Keep audit metadata safe even when a caller accidentally nests transport data. */
+function sanitizeValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeValue);
+  if (value instanceof Date) return value.toISOString();
+  if (!value || typeof value !== 'object') return value;
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(meta)) {
-    out[k] = AUDIT_REDACT_KEYS.has(k) ? '[REDACTED]' : v;
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = AUDIT_REDACT_KEYS.has(key.toLowerCase()) ? '[REDACTED]' : sanitizeValue(nested);
   }
   return out;
 }

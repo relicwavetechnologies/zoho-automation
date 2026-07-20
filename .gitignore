@@ -29,3 +29,11 @@ research/graphiti/
 # Local desktop release output and updater signing material.
 jan/local-dmg/
 jan/release-output/
+.scratch/
+
+# Local runtime, downloaded evidence, and planning artifacts.
+.commandcode/
+advance-backend/.data/
+lark-im-resources/
+lark-search-message-auth.png
+plan-divo-*.html

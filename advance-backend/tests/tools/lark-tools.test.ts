@@ -205,7 +205,6 @@ describe('larkMessaging tool', () => {
     sendMessage:  async (_chatId: string, _text: string) => ({ messageId: 'msg-1' }),
     replyMessage: async (_msgId: string, _text: string) => ({ messageId: 'msg-2' }),
     listMessages: async () => [{ messageId: 'msg-1', text: 'hi', senderId: 'u1', timestamp: 'ts' }],
-    getMessage:   async () => ({ messageId: 'msg-1', text: 'hi', senderId: 'u1', timestamp: 'ts' }),
   };
 
   describe('permissionCheck', () => {
@@ -238,6 +237,36 @@ describe('larkMessaging tool', () => {
       const r = await tool.execute({ op: 'send', chatId: 'chat-1', text: 'hello' }, ctx);
       assert.equal(r.ok, true);
       assert.equal((r as any).value.messageId, 'msg-1');
+    });
+
+    it('authorizes against the selected connection but sends through the Divo app client as a Card 2.0 message', async () => {
+      const sent: Array<{ chatId: string; rendering?: string }> = [];
+      let userClientSendCalls = 0;
+      const appClient = {
+        ...fakeClient,
+        sendMessage: async (chatId: string, _text: string, options?: { rendering?: string }) => {
+          sent.push({ chatId, rendering: options?.rendering });
+          return { messageId: 'bot-msg-1' };
+        },
+      };
+      const selectedUserClient = {
+        ...fakeClient,
+        sendMessage: async () => {
+          userClientSendCalls += 1;
+          return { messageId: 'user-msg-1' };
+        },
+      };
+      const tool = createLarkMessagingTool({
+        client: appClient,
+        userTokenResolver: { resolve: async () => 'managed-user-token' },
+        createUserClient: () => selectedUserClient,
+      });
+
+      const r = await tool.execute({ op: 'send', chatId: 'chat-1', text: '**Release update**' }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.messageId, 'bot-msg-1');
+      assert.deepEqual(sent, [{ chatId: 'chat-1', rendering: 'card' }]);
+      assert.equal(userClientSendCalls, 0);
     });
 
     it('send: bad_args when chatId missing', async () => {
@@ -304,10 +333,9 @@ describe('larkMessaging tool', () => {
       assert.ok(Array.isArray((r as any).value.data));
     });
 
-    it('get: bad_args when messageId missing', async () => {
+    it('rejects the removed arbitrary message lookup operation', () => {
       const tool = createLarkMessagingTool({ client: fakeClient });
-      const r = await tool.execute({ op: 'get' }, ctx);
-      assert.equal(r.ok, false);
+      assert.equal(tool.argsSchema.safeParse({ op: 'get', messageId: 'om_123' }).success, false);
     });
 
     it('infra throws → upstream_failure', async () => {

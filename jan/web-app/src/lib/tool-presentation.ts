@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import type { ComponentType } from 'react'
 
-import { CanvaIcon, GoogleIcon, LarkIcon, ZohoIcon } from '@/components/brand-icons'
+import { CanvaIcon, GoogleIcon, LarkIcon, SemrushIcon, ZohoIcon } from '@/components/brand-icons'
 import type { DivoToolInventoryItem } from './divo-tools'
 
 export type ToolPresentationGroup = {
@@ -48,6 +48,7 @@ const toolIcons: Record<string, ComponentType<{ className?: string }>> = {
   skillPublishing: Share2,
   webSearch: Globe,
   contextSearch: ScanSearch,
+  semrush: SemrushIcon,
   memoryRecall: Brain,
   memoryPublishing: Brain,
 }

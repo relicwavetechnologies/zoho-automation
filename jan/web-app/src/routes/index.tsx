@@ -27,6 +27,7 @@ import { HomeGreeting } from '@/components/home/HomeGreeting'
 import { ConsistencyHeatmap } from '@/components/home/ConsistencyHeatmap'
 import { Button } from '@/components/ui/button'
 import { GraduationCap, MessageCircle } from 'lucide-react'
+import { PermissionRulesPopover } from '@/components/approval-preview/PermissionRulesPopover'
 
 export const Route = createFileRoute(route.home as any)({
   component: Index,
@@ -60,6 +61,11 @@ function Index() {
       <HeaderPage>
         <div className="flex w-full items-center justify-between gap-3 pr-4">
           <DivoWorkspaceSelector />
+          <div className="flex items-center gap-2">
+          {/* Approval rules live in the titlebar, not the composer: it is a
+              settings affordance you set once, not something you reach for
+              while writing a prompt. */}
+          <PermissionRulesPopover />
           <div className="relative z-30 flex items-center rounded-full border bg-muted/50 p-0.5" aria-label="Workspace mode">
             <Button
               type="button"
@@ -83,6 +89,7 @@ function Index() {
               <GraduationCap /> Teach
             </Button>
           </div>
+          </div>
         </div>
       </HeaderPage>
       {mode === 'teach' ? (
@@ -97,15 +104,21 @@ function Index() {
           <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center pt-12 pb-28">
             <HomeGreeting />
 
-            <div className="mt-10">
-              <ChatInput
-                model={threadModel}
-                initialMessage={true}
-                quickStartRequest={quickStartRequest}
+            {/* Above the composer, the same pill as in-thread — one affordance
+                the user learns once, in one place, rather than two that look
+                unrelated and sit on opposite sides of the input. */}
+            <div className="mt-10 mb-2 flex justify-center">
+              <FinanceQuickStarts
+                variant="bubbles"
+                onSubmit={setQuickStartRequest}
               />
             </div>
 
-            <FinanceQuickStarts onSubmit={setQuickStartRequest} />
+            <ChatInput
+              model={threadModel}
+              initialMessage={true}
+              quickStartRequest={quickStartRequest}
+            />
 
             <ConsistencyHeatmap />
           </div>

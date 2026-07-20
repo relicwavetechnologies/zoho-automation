@@ -4,6 +4,8 @@ import {
 	addAssistantOutput,
 	completeChild,
 	createChild,
+	MAX_FINAL_OUTPUT_CHARS,
+	MAX_OUTPUT_PREVIEW_CHARS,
 	makeDetails,
 	setToolActivity,
 	startChild,
@@ -54,4 +56,18 @@ test("snapshot details are immutable copies of the live child state", () => {
 	startChild(child);
 	assert.equal(snapshot.children[0].state, "queued");
 	assert.equal(child.state, "running");
+});
+
+test("completed reports retain more text than their live preview", () => {
+	const child = createChild(0, "reviewer", "Review the escalation rules");
+	const report = "r".repeat(MAX_OUTPUT_PREVIEW_CHARS + 500);
+
+	startChild(child);
+	addAssistantOutput(child, report);
+	completeChild(child, report, 0, "stop");
+
+	assert.equal(child.finalOutput, report);
+	assert.equal(child.outputPreview, `${report.slice(0, MAX_OUTPUT_PREVIEW_CHARS)}…`);
+	assert.ok((child.finalOutput?.length ?? 0) > (child.outputPreview?.length ?? 0));
+	assert.ok((child.finalOutput?.length ?? 0) < MAX_FINAL_OUTPUT_CHARS);
 });

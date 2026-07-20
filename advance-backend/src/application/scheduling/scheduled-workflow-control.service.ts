@@ -16,6 +16,7 @@ export type ScheduleCreateInput = {
   readonly timeMinute?: number | undefined;
   readonly daysOfWeek?: readonly string[] | undefined;
   readonly dayOfMonth?: number | undefined;
+  readonly delivery: 'current_conversation' | 'creator_lark_dm';
 };
 
 export type ScheduledWorkflowSummary = {
@@ -27,6 +28,7 @@ export type ScheduledWorkflowSummary = {
   readonly nextRunAt: string | null;
   readonly lastRunAt: string | null;
   readonly deliveryChannel: 'lark' | 'desktop';
+  readonly deliveryTarget: 'origin_chat' | 'creator_dm';
 };
 
 export class ScheduledWorkflowControlError extends Error {
@@ -55,12 +57,6 @@ export class ScheduledWorkflowControlService {
     nextRunLabel: string;
   }> {
     const originChatId = String(runContext.chatId ?? '').trim();
-    if (!originChatId) {
-      throw new ScheduledWorkflowControlError(
-        'bad_args',
-        'A persistent conversation is required before a schedule can be created.',
-      );
-    }
     if (runContext.channel !== 'desktop' && runContext.channel !== 'lark') {
       throw new ScheduledWorkflowControlError(
         'unavailable',
@@ -68,7 +64,15 @@ export class ScheduledWorkflowControlService {
       );
     }
 
-    if (runContext.channel === 'desktop') {
+    const returnsToOrigin = input.delivery === 'current_conversation';
+    if (returnsToOrigin && !originChatId) {
+      throw new ScheduledWorkflowControlError(
+        'bad_args',
+        'A persistent conversation is required for current-conversation delivery.',
+      );
+    }
+
+    if (returnsToOrigin && runContext.channel === 'desktop') {
       const thread = await this.prisma.desktopThread.findFirst({
         where: {
           id: originChatId,
@@ -81,6 +85,35 @@ export class ScheduledWorkflowControlService {
         throw new ScheduledWorkflowControlError(
           'bad_args',
           'The current desktop conversation is not persisted, so it cannot receive scheduled results.',
+        );
+      }
+    }
+
+    if (!returnsToOrigin) {
+      const larkConnection = await this.prisma.integrationConnection.findFirst({
+        where: {
+          ownerUserId: String(runContext.userId),
+          provider: 'lark',
+          status: 'connected',
+          revokedAt: null,
+        },
+        select: { externalAccountId: true },
+        orderBy: { updatedAt: 'desc' },
+      });
+      const larkIdentity = larkConnection?.externalAccountId
+        ? await this.prisma.channelIdentity.findFirst({
+            where: {
+              companyId: String(runContext.companyId),
+              channel: 'lark',
+              larkOpenId: larkConnection.externalAccountId,
+            },
+            select: { id: true },
+          })
+        : null;
+      if (!larkIdentity) {
+        throw new ScheduledWorkflowControlError(
+          'unavailable',
+          'Connect your Lark account before scheduling delivery to your Lark DM.',
         );
       }
     }
@@ -107,11 +140,13 @@ export class ScheduledWorkflowControlService {
         timezone: input.timezone,
         workflowSpecJson: {},
         capabilitySummaryJson: {},
-        outputConfigJson: { deliveryChannel: runContext.channel },
+        outputConfigJson: returnsToOrigin
+          ? { deliveryChannel: runContext.channel, deliveryTarget: 'origin_chat' }
+          : { deliveryChannel: 'lark', deliveryTarget: 'creator_dm' },
         status: 'scheduled_active',
         scheduleEnabled: true,
         nextRunAt,
-        originChatId,
+        originChatId: returnsToOrigin ? originChatId : null,
       },
       select: scheduledWorkflowSummarySelect,
     });
@@ -306,6 +341,7 @@ function toSummary(row: {
     nextRunAt: row.nextRunAt?.toISOString() ?? null,
     lastRunAt: row.lastRunAt?.toISOString() ?? null,
     deliveryChannel: readDeliveryChannel(row.outputConfigJson),
+    deliveryTarget: readDeliveryTarget(row.outputConfigJson),
   };
 }
 
@@ -315,4 +351,12 @@ export function readDeliveryChannel(value: unknown): 'lark' | 'desktop' {
     if (channel === 'desktop') return 'desktop';
   }
   return 'lark';
+}
+
+export function readDeliveryTarget(value: unknown): 'origin_chat' | 'creator_dm' {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const target = (value as { deliveryTarget?: unknown }).deliveryTarget;
+    if (target === 'creator_dm') return 'creator_dm';
+  }
+  return 'origin_chat';
 }

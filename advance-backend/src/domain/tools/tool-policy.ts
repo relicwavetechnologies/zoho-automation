@@ -16,6 +16,9 @@ export function getDesktopToolPolicy(toolId: string): DesktopToolPolicy | null {
   if (toolId === 'memoryRecall') {
     return { kind: 'system', supportedActions: ['read'], reason: 'System memory recall is available to authenticated members.' };
   }
+  if (toolId === 'omsSiteData') {
+    return { kind: 'system', supportedActions: ['read'], reason: 'OMS Site Data is a company-owned, read-only capability available only to active company administrators.' };
+  }
   if (!CANONICAL_TOOL_IDS.includes(toolId as CanonicalToolId)) return null;
   return {
     kind: 'configurable',

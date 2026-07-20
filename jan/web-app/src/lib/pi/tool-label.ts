@@ -78,7 +78,7 @@ function extractGatewayCall(input: unknown): { op?: string; toolId?: string } {
 }
 
 /** camelCase → spaced words, so the header's capitalize reads them cleanly. */
-function humanizeToolId(id: string): string {
+export function humanizeToolId(id: string): string {
   return id
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_-]+/g, ' ')
@@ -108,7 +108,10 @@ const OP_LABELS: Record<string, string> = {
   'teach.learning.apply': 'teach learning update',
   'google.plan': 'google plan',
   'connections.list': 'connection list',
-  'media.image_ocr': 'image OCR',
+  // What the user did was attach an image; what Divo does is read it. "Image
+  // OCR" is the implementation's name for that, and naming the technique
+  // instead of the act made the log read like a stack trace.
+  'media.image_ocr': 'read image',
 }
 
 /** Dotted/underscored op → spaced words, for ops with no explicit phrase. */
@@ -141,6 +144,11 @@ const DETAIL_KEYS = [
   'cmd',
   'pattern',
   'url',
+  // Semrush's subject. Every one of its operations is "this research, about
+  // THIS site", so without the domain the row is just "Ran semrush" — true and
+  // useless. Last in priority: a call carrying both a query and a domain is a
+  // search first.
+  'domain',
 ]
 
 /** Longest detail we'll put in a row before the CSS truncation takes over. */
@@ -221,6 +229,16 @@ function basename(value: string): string {
 const PATH_KEY_TOOLS = /^(read|write|edit|multiedit|applypatch)$/
 
 /**
+ * Gateway ops whose headline argument is a local path rather than a query.
+ *
+ * These arrive as `divo_gateway`, so the tool-name check above can't see them,
+ * and their `filePath` is the desktop's normalised attachment location — a long
+ * absolute path that fills the row and identifies nothing. The basename is the
+ * filename the user actually attached.
+ */
+const PATH_ARG_OPS = new Set(['media.image_ocr'])
+
+/**
  * Everything known about a tool call: the display label plus the raw
  * identifiers behind it. Icon resolution needs the identifiers — by the time a
  * call has been humanised to "Zoho Books" the vendor is only recoverable by
@@ -241,6 +259,39 @@ export type ToolIdentity = {
    * argument worth naming.
    */
   detail?: string
+  /**
+   * The vendor-side operation a `tools.invoke` dispatch actually performs,
+   * from `payload.args.nativeTool` / `payload.args.op` — e.g. `search_drive`,
+   * `describe`.
+   *
+   * This is what makes a Google call describable as "Searching Google Drive"
+   * rather than the useless "Ran 1 command": the toolId names WHO is being
+   * called, and this names WHAT is being asked of them.
+   */
+  action?: string
+}
+
+/** The vendor-side verb inside a `tools.invoke` payload, if there is one. */
+function extractAction(input: unknown): string | undefined {
+  const fromArgs = (args: Record<string, unknown> | null) =>
+    str(args, 'nativeTool') ?? str(args, 'action') ?? str(args, 'op')
+
+  const obj = asObject(input)
+  if (obj) return fromArgs(asObject(asObject(obj['payload'])?.['args']))
+
+  if (typeof input === 'string') {
+    try {
+      const rec = asObject(JSON.parse(input) as unknown)
+      return fromArgs(asObject(asObject(rec?.['payload'])?.['args']))
+    } catch {
+      // Partial JSON. Only `nativeTool` is safe to scrape flat — a bare "op"
+      // key would match the OUTER gateway op (`tools.invoke`) and mislabel
+      // every call as an invoke.
+      return scrape(input, 'nativeTool')
+    }
+  }
+
+  return undefined
 }
 
 export function resolveToolIdentity(part: ToolLikePart): ToolIdentity {
@@ -255,6 +306,11 @@ export function resolveToolIdentity(part: ToolLikePart): ToolIdentity {
   if (name === 'divo_subagents') {
     label = 'subagents'
   }
+  if (name === 'divo_todos') {
+    // The composer owns the rich task-plan view. Keep the expandable Pi trace
+    // legible without repeating the internal extension name.
+    label = 'task plan'
+  }
   if (name === 'divo_gateway' || op || toolId) {
     if (op === 'tools.invoke' && toolId) label = humanizeToolId(toolId)
     else if (op) label = OP_LABELS[op] ?? humanizeOp(op)
@@ -264,10 +320,15 @@ export function resolveToolIdentity(part: ToolLikePart): ToolIdentity {
   // File tools show only the basename — a row is too narrow for a full path,
   // and the tail is what identifies the file.
   const raw = extractDetail(part.input)
+  const action = extractAction(part.input)
   const detail =
-    raw && PATH_KEY_TOOLS.test(name) ? basename(raw) : raw
+    raw && (PATH_KEY_TOOLS.test(name) || (op && PATH_ARG_OPS.has(op)))
+      ? basename(raw)
+      : // With no better argument to show, the vendor verb is still more
+        // informative than a bare vendor name.
+        (raw ?? (action ? humanizeToolId(action) : undefined))
 
-  return { name, op, toolId, label, detail }
+  return { name, op, toolId, label, detail, action }
 }
 
 export function resolveToolLabel(part: ToolLikePart): string {

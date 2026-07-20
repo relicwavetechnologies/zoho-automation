@@ -406,23 +406,74 @@ describe('ChatInput', () => {
     ).toBeTruthy()
   })
 
-  it('opens real permission rules instead of the mock approval preview', async () => {
-    tauriCoreMock.invoke.mockImplementation((command: string) => {
-      if (command === 'pi_get_permission_rules') {
-        return Promise.resolve({ bashAlwaysAllow: false })
-      }
-      return Promise.resolve(undefined)
+  /**
+   * The rolling starters are an empty-state affordance. Under a live thread the
+   * answer above the composer already supplies the context, so a carousel of
+   * unrelated suggestions animating there reads as the app changing the
+   * subject — it becomes a plain follow-up prompt instead.
+   */
+  describe('composer placeholder', () => {
+    it('rolls suggestions on a fresh thread', () => {
+      renderInput()
+      expect(screen.getByTestId('rotating-placeholder')).toBeInTheDocument()
     })
+
+    it('drops to a static follow-up prompt once the thread has messages', () => {
+      threadMessagesState = [
+        { id: 'm1', role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      ]
+      renderInput()
+
+      expect(screen.queryByTestId('rotating-placeholder')).not.toBeInTheDocument()
+      expect(getTextarea()).toHaveAttribute(
+        'placeholder',
+        'common:placeholder.chatFollowUp'
+      )
+    })
+  })
+
+  it('surfaces the active Pi task as a compact composer bubble', () => {
+    threadMessagesState = [
+      {
+        id: 'assistant-todo',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_call',
+            tool_name: 'divo_todos',
+            tool_call_id: 'todo-1',
+            input: {},
+            output: {
+              details: {
+                version: 1,
+                boardId: 'board-1',
+                revision: 1,
+                items: [
+                  {
+                    id: 'task-1',
+                    content: 'Compare TTS vendors',
+                    activeForm: 'Comparing TTS vendors',
+                    status: 'in_progress',
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    ]
+
     renderInput()
 
-    fireEvent.click(screen.getByTestId('permission-rules-trigger'))
-
-    expect(await screen.findByText('Permission rules')).toBeInTheDocument()
-    expect(screen.getByText('Bash commands')).toBeInTheDocument()
-    expect(screen.getByTestId('chat-input')).toBeInTheDocument()
+    const bubble = screen.getByTestId('todo-bubble-trigger')
+    expect(bubble).toHaveTextContent(
+      'Comparing TTS vendors'
+    )
+    expect(screen.getByTestId('composer-status-row')).toContainElement(bubble)
     expect(
-      screen.queryByText('Review email before sending')
-    ).not.toBeInTheDocument()
+      bubble.compareDocumentPosition(getTextarea()) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
   })
 
   it('replaces the composer with a live Pi approval and resumes after approval', async () => {
@@ -736,19 +787,20 @@ describe('ChatInput', () => {
     expect(setPromptMock).toHaveBeenCalledWith('abc')
   })
 
-  it('opens the skill reference drawer and focuses search on slash command', async () => {
+  it('opens the slash menu without stealing focus from the composer', async () => {
+    // The menu has no input of its own — the `/query` in the composer IS the
+    // search, so focus must stay put or the user ends up typing in two places.
     renderInput()
-    fireEvent.change(getTextarea(), { target: { value: '/' } })
+    const textarea = getTextarea()
+    textarea.focus()
+    fireEvent.change(textarea, { target: { value: '/' } })
 
     expect(setPromptMock).toHaveBeenCalledWith('/')
     expect(
       await screen.findByTestId('skill-reference-drawer')
     ).toBeInTheDocument()
-
-    const search = screen.getByTestId(
-      'skill-reference-search'
-    ) as HTMLInputElement
-    await waitFor(() => expect(document.activeElement).toBe(search))
+    expect(screen.queryByTestId('skill-reference-search')).toBeNull()
+    expect(document.activeElement).toBe(textarea)
   })
 
   it('discovers the share-memory command alongside backend skill search', async () => {
@@ -757,15 +809,12 @@ describe('ChatInput', () => {
 
     const command = await screen.findByTestId('share-memory-command')
     expect(command).toHaveTextContent('/share-memory')
-    expect(command).toHaveTextContent('Nothing is saved before approval')
-    expect(screen.getByTestId('skill-reference-search')).toBeInTheDocument()
 
-    fireEvent.change(screen.getByTestId('skill-reference-search'), {
-      target: { value: 'google' },
-    })
+    // Narrowing the query happens in the composer, not in a second box.
+    fireEvent.change(getTextarea(), { target: { value: '/google' } })
 
     expect(screen.queryByTestId('share-memory-command')).toBeNull()
-    expect(screen.getByTestId('skill-reference-search')).toHaveValue('google')
+    expect(screen.getByTestId('skill-reference-drawer')).toBeInTheDocument()
   })
 
   it('activates share-memory by mouse with a deterministic review-only request', async () => {
@@ -789,9 +838,10 @@ describe('ChatInput', () => {
     renderInput({ onSubmit })
     fireEvent.change(getTextarea(), { target: { value: '/' } })
 
-    const search = await screen.findByTestId('skill-reference-search')
-    fireEvent.change(search, { target: { value: 'share-mem' } })
-    fireEvent.keyDown(search, { key: 'Enter' })
+    await screen.findByTestId('skill-reference-drawer')
+    // Enter is handled on the textarea now — the menu never holds focus.
+    fireEvent.change(getTextarea(), { target: { value: '/share-mem' } })
+    fireEvent.keyDown(getTextarea(), { key: 'Enter' })
 
     expect(onSubmit).toHaveBeenCalledWith(
       'Resolve and fetch the backend Share Memory skill, then call memoryPublishing.check_authority. Propose bounded durable memory bullets and call the local divo_memory_review tool with only proposalId and bullets. Do not pass departmentId or allowedTargets and do not call memoryPublishing.publish directly; the local review tool uses the desktop-configured selected department context, independently fetches canonical allowed targets, and owns the review card and final prepare/commit.',
@@ -840,10 +890,8 @@ describe('ChatInput', () => {
     renderInput()
     fireEvent.change(getTextarea(), { target: { value: '/' } })
 
-    const search = (await screen.findByTestId(
-      'skill-reference-search'
-    )) as HTMLInputElement
-    fireEvent.change(search, { target: { value: 'google' } })
+    await screen.findByTestId('skill-reference-drawer')
+    fireEvent.change(getTextarea(), { target: { value: '/google' } })
 
     const result = await screen.findByTestId(
       'skill-reference-result-google-workspace'
@@ -897,10 +945,8 @@ describe('ChatInput', () => {
     const view = renderInput({ onSubmit })
     fireEvent.change(getTextarea(), { target: { value: '/' } })
 
-    const search = (await screen.findByTestId(
-      'skill-reference-search'
-    )) as HTMLInputElement
-    fireEvent.change(search, { target: { value: 'google' } })
+    await screen.findByTestId('skill-reference-drawer')
+    fireEvent.change(getTextarea(), { target: { value: '/google' } })
     fireEvent.click(await screen.findByTestId('skill-reference-result-google'))
 
     promptState = 'list my unread mails'
@@ -1042,25 +1088,6 @@ describe('ChatInput', () => {
     // The stop button has variant destructive; simply ensure some button is in the stop region.
     const btns = document.querySelectorAll('button')
     expect(btns.length).toBeGreaterThan(0)
-  })
-
-  it('keeps Bash permission rules interactive while streaming', async () => {
-    tauriCoreMock.invoke.mockImplementation((command: string) => {
-      if (command === 'pi_get_permission_rules') {
-        return Promise.resolve({ bashAlwaysAllow: false })
-      }
-      return Promise.resolve(undefined)
-    })
-
-    renderInput({ chatStatus: 'streaming' })
-
-    const trigger = screen.getByTestId('permission-rules-trigger')
-    expect(trigger.closest('.pointer-events-none')).toBeNull()
-
-    fireEvent.click(trigger)
-
-    expect(await screen.findByText('Permission rules')).toBeInTheDocument()
-    expect(screen.getByText('Bash commands')).toBeInTheDocument()
   })
 
   it('calls onStop when stop button clicked during streaming', () => {

@@ -54,9 +54,10 @@ export interface RunContext {
    */
   readonly chatId?: string;
   /**
-   * When set, outbound delivery must stay locked to the current conversation.
-   * Used by scheduled workflows so "deliver to current chat" cannot be rerouted
-   * by an LLM to another chat or group.
+   * Marks headless scheduled execution so conversation history and background
+   * memory work are skipped. current_chat_only additionally locks messaging
+   * tools to the originating chat; scheduled_runtime_delivery delegates the
+   * final response to a dedicated runtime adapter such as creator Lark DM.
    */
-  readonly deliveryMode?: 'current_chat_only';
+  readonly deliveryMode?: 'current_chat_only' | 'scheduled_runtime_delivery';
 }

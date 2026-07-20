@@ -45,6 +45,18 @@ export interface GatewayResponseBody {
 	approval?: GatewayApprovalBody;
 }
 
+export type GatewayApprovalStatus = "approval_required" | "approval_rejected";
+
+/**
+ * These are terminal, backend-owned HITL states. They are errors from the
+ * agent's perspective because the requested action did not run, but unlike a
+ * transport failure they carry durable approval metadata the desktop can show
+ * in the owning tool trace.
+ */
+export function isGatewayApprovalStatus(status: string): status is GatewayApprovalStatus {
+	return status === "approval_required" || status === "approval_rejected";
+}
+
 const MAX_INLINE_IMAGE_BYTES = 1_250_000;
 // Registry responses are company policy, not a local source of truth. Keep a
 // tiny read-through cache only to avoid repeated calls in one agent turn.

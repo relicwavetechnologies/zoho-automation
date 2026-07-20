@@ -19,6 +19,7 @@ import {
 import { registerMemoryReviewTool } from "./memory-review.ts";
 import {
 	formatGatewayResponse,
+	isGatewayApprovalStatus,
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
@@ -380,25 +381,39 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				}, toolCallId, ctx);
 
 				const formatted = formatGatewayResponse(body);
+				const details = {
+					configured: true,
+					httpStatus,
+					status: body.status,
+					ok: body.ok,
+					approval: body.approval,
+					error: body.error,
+					data: body.data,
+				};
+
+				// Preserve backend HITL responses as structured errors. The action has
+				// not run, so Pi must still mark the call failed; preserving details lets
+				// the desktop render its status in this exact trace row without creating
+				// a second local approval path or retrying on the user's behalf.
+				if (isGatewayApprovalStatus(body.status)) {
+					return {
+						content: [{ type: "text", text: formatted.text }],
+						details,
+						isError: true,
+					};
+				}
+
 				if (formatted.isError) {
 					throw new Error(formatted.text);
 				}
 
 				return {
 					content: [{ type: "text", text: formatted.text }],
-					details: {
-						configured: true,
-						httpStatus,
-						status: body.status,
-						ok: body.ok,
-						approval: body.approval,
-						error: body.error,
-						data: body.data,
-					},
+					details,
 				};
 			} catch (error) {
-				// Pi marks thrown executions as isError=true. Returning an error-shaped
-				// value would incorrectly record a successful tool result.
+				// Non-HITL failures have no desktop status model, so Pi's normal thrown
+				// error handling remains the single representation for those failures.
 				throw error instanceof Error ? error : new Error(String(error));
 			}
 		},

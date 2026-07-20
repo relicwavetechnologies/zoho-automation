@@ -20,10 +20,14 @@ export function ThemeSwitcher({
 }) {
   const { t } = useTranslation()
 
+  // Two modes only. Codex ships a light and a dark variant and nothing else;
+  // "system" meant a third state whose appearance we never actually designed,
+  // and which silently flipped the app mid-session. `setTheme('auto')` is still
+  // supported by the store for anyone rehydrating an old preference — it just
+  // isn't offered here.
   const themeOptions = [
     { value: 'dark', label: t('common:dark') },
     { value: 'light', label: t('common:light') },
-    { value: 'auto', label: t('common:system') },
   ]
 
   const { setTheme, activeTheme } = useTheme()

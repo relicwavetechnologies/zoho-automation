@@ -3,6 +3,7 @@ import { AlertTriangle, Building2, MoreHorizontal, RefreshCw, Search, ShieldChec
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ToolCatalogueCard } from '@/components/tool-catalogue/ToolCatalogueCard'
+import { PeopleTableSkeleton, RoleCardGridSkeleton, ToolCardGridSkeleton } from '@/components/tool-catalogue/ToolSkeletons'
 import { DepartmentAccessMatrix } from '@/components/tool-access/DepartmentAccessMatrix'
 import { DepartmentTeamDialog, type DepartmentTeamDialogFocus } from '@/components/tool-access/DepartmentTeamDialog'
 import { ToolAccessSection } from '@/components/tool-access/ToolAccessSection'
@@ -182,7 +183,19 @@ export function PluginsRoute() {
           </Tabs> : <PersonalToolsView groups={personalGroups} onOpenDetails={group => navigate({ to: route.plugins.detail, params: { pluginId: group.id } } as never)} />
         ) : null}
 
-        {inventory === null && !error ? <ToolsState title="Checking your tool access" description="Divo is loading current company and department policy." loading /> : null}
+        {/* The catalogue grid, drawn before it has content. A dashed "Checking
+            your tool access" box used to stand in here — it reported the page
+            as empty rather than as arriving, and collapsed the layout so the
+            whole view jumped when the inventory landed. */}
+        {inventory === null && !error ? (
+          <section className="flex flex-col gap-3" aria-label="Available tools">
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-5 w-40" />
+              <Skeleton className="h-3 w-96 max-w-full" />
+            </div>
+            <ToolCardGridSkeleton label="Checking your tool access" />
+          </section>
+        ) : null}
         {error ? <ToolsState title="Could not load tools" description="Your tool catalogue could not be checked against current access." action={<Button onClick={() => void loadInventory()}>Try again</Button>} /> : null}
       </main>
 
@@ -245,7 +258,7 @@ function ToolFilters({ value, onChange, count }: { value: ToolFilter; onChange: 
 }
 
 function PeopleView({ loading, members, onManage }: { loading: boolean; members: DepartmentManagementMember[]; onManage: () => void }) {
-  if (loading) return <ViewSkeleton />
+  if (loading) return <PeopleTableSkeleton />
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-end justify-between gap-3"><div><h2 className="text-base font-medium">Department people</h2><p className="mt-1 text-xs text-muted-foreground">Role assignment and effective team structure. Manager assignments remain company-admin managed.</p></div><Button variant="ghost" size="sm" onClick={onManage}>Manage team</Button></div>
@@ -255,7 +268,7 @@ function PeopleView({ loading, members, onManage }: { loading: boolean; members:
 }
 
 function RolesView({ loading, roles, members, onManage }: { loading: boolean; roles: DepartmentManagementRole[]; members: DepartmentManagementMember[]; onManage: () => void }) {
-  if (loading) return <ViewSkeleton />
+  if (loading) return <RoleCardGridSkeleton />
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-end justify-between gap-3"><div><h2 className="text-base font-medium">Department roles</h2><p className="mt-1 text-xs text-muted-foreground">Roles are the default access bundle; individual member exceptions stay exceptional.</p></div><Button variant="ghost" size="sm" onClick={onManage}>Manage roles</Button></div>
@@ -272,12 +285,13 @@ function CountBadge({ children }: { children: ReactNode }) {
   return <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{children}</span>
 }
 
-function ViewSkeleton() {
-  return <div className="flex flex-col gap-3"><Skeleton className="h-7 w-48" /><Skeleton className="h-56 w-full" /></div>
-}
-
-function ToolsState({ title, description, action, loading = false, compact = false }: { title: string; description: string; action?: ReactNode; loading?: boolean; compact?: boolean }) {
-  return <div className={cn('rounded-lg border border-dashed border-border/70 text-center', compact ? 'p-4' : 'p-8')}><div className="flex justify-center">{loading ? <RefreshCw className="size-5 animate-spin text-muted-foreground" /> : null}</div><h2 className={cn('font-medium', loading && 'mt-2')}>{title}</h2><p className="mt-1 text-sm text-muted-foreground">{description}</p>{action ? <div className="mt-4">{action}</div> : null}</div>
+/**
+ * The dashed box is now for genuine dead ends only — no results, no access, a
+ * failed load. Loading has its own shapes in `ToolSkeletons`, because "nothing
+ * here" and "not here yet" are different things to say.
+ */
+function ToolsState({ title, description, action, compact = false }: { title: string; description: string; action?: ReactNode; compact?: boolean }) {
+  return <div className={cn('rounded-lg border border-dashed border-border/70 text-center', compact ? 'p-4' : 'p-8')}><h2 className="font-medium">{title}</h2><p className="mt-1 text-sm text-muted-foreground">{description}</p>{action ? <div className="mt-4">{action}</div> : null}</div>
 }
 
 function managedDepartments(items: DivoToolInventoryItem[]): Array<{ id: string; name: string }> {
