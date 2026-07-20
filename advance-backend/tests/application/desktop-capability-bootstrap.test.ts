@@ -30,6 +30,7 @@ describe('desktop capability bootstrap', () => {
           description: 'Finance summaries.',
           instructions: 'Hidden full recipe.',
           toolIds: ['zohoBooks'],
+          aliases: [], tags: [], revision: 2,
         },
         {
           id: 'crm-only-id',
@@ -38,6 +39,7 @@ describe('desktop capability bootstrap', () => {
           description: 'CRM workflow.',
           instructions: 'Hidden full recipe.',
           toolIds: ['zohoCrm'],
+          aliases: [], tags: [], revision: 1,
         },
         {
           id: 'bill-write-id',
@@ -46,8 +48,10 @@ describe('desktop capability bootstrap', () => {
           description: 'Create a vendor bill.',
           instructions: 'Hidden full recipe.',
           toolIds: ['zohoBooks'],
+          aliases: [], tags: [], revision: 1,
         },
       ],
+      registryRevision: 12,
       zohoConnections: [],
     });
 
@@ -62,15 +66,44 @@ describe('desktop capability bootstrap', () => {
     assert.deepEqual(bootstrap.zohoConnection, { accessibleCount: 0 });
   });
 
-  it('does not generate Finance assumptions for another department', () => {
+  it('builds a generic RBAC-filtered catalogue without Finance assumptions for another department', () => {
     const bootstrap = buildDesktopCapabilityBootstrap({
       departmentName: 'Engineering',
       departmentSlug: 'engineering',
       companyRole: 'MEMBER',
-      permission: permission([['zohoBooks', ['read']]]),
-      visibleSkills: [],
+      permission: permission([
+        ['zohoBooks', ['read']],
+        ['larkMessaging', ['send']],
+        ['scheduledWorkflows', ['execute']],
+      ]),
+      visibleSkills: [{
+        id: 'engineering-runbook-id',
+        slug: 'engineering-runbook',
+        name: 'Engineering Runbook',
+        description: 'Handle engineering incidents.',
+        instructions: 'Hidden full recipe.',
+        toolIds: ['zohoBooks'],
+        aliases: [], tags: [], revision: 4,
+      }],
+      registryRevision: 13,
     });
 
-    assert.equal(bootstrap, null);
+    assert.equal(bootstrap.version, 2);
+    assert.equal(bootstrap.departmentFunction, 'general');
+    assert.equal(bootstrap.registryRevision, 13);
+    assert.deepEqual(bootstrap.availableSkills, [{
+      id: 'engineering-runbook-id',
+      slug: 'engineering-runbook',
+      name: 'Engineering Runbook',
+      description: 'Handle engineering incidents.',
+      revision: 4,
+    }]);
+    assert.deepEqual(bootstrap.availableTools, [
+      { toolId: 'larkMessaging', actions: ['send'] },
+      { toolId: 'scheduledWorkflows', actions: ['execute'] },
+      { toolId: 'zohoBooks', actions: ['read'] },
+    ]);
+    assert.deepEqual(bootstrap.preferredSkills, []);
+    assert.deepEqual(bootstrap.routingHints, []);
   });
 });

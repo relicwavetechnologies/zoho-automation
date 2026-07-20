@@ -409,6 +409,7 @@ export const createServer = (c: Container) => {
       connectionRepo:         c.integrationConnectionRepo,
       permissions:            c.permissions,
       skillCatalog:           c.skillCatalog,
+      skillAccessEnforcement: c.skillAccessEnforcement,
       managerPersonaRuntime:  c.managerPersonaRuntimeService,
       logger:                 c.logger,
       env:                    c.env,

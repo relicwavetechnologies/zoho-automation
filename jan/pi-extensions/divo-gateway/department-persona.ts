@@ -35,10 +35,22 @@ export interface DivoDepartmentPersonaContext {
 }
 
 export interface DivoCapabilityBootstrap {
-	version: 1;
-	departmentFunction: "finance";
+	version: 1 | 2;
+	registryRevision?: number;
+	departmentFunction: "finance" | "general";
 	companyRole: string;
 	departmentRole: string;
+	availableSkills: Array<{
+		id: string;
+		slug: string;
+		name: string;
+		description: string;
+		revision: number;
+	}>;
+	availableTools: Array<{
+		toolId: string;
+		actions: string[];
+	}>;
 	preferredSkills: Array<{
 		id: string;
 		slug: string;
@@ -111,11 +123,29 @@ function formatCapabilityBootstrap(bootstrap: DivoCapabilityBootstrap | null | u
 
 	const lines = [
 		CAPABILITY_BOOTSTRAP_OPEN_TAG,
-		"This is a compact backend-generated, RBAC-filtered routing cache. It is guidance, not a permission grant; the backend must still validate every invocation.",
+		"This is a compact backend-generated, RBAC-filtered runtime catalogue. It is guidance, not a permission grant; the backend validates every invocation against current policy.",
 		`Department function: ${safeInline(bootstrap.departmentFunction)}`,
 		`Company role: ${safeInline(bootstrap.companyRole)}`,
 		`Department role: ${safeInline(bootstrap.departmentRole)}`,
 	];
+
+	if (bootstrap.registryRevision !== undefined) {
+		lines.push(`Skill registry revision: ${bootstrap.registryRevision}`);
+	}
+
+	if (bootstrap.availableSkills.length > 0) {
+		lines.push("", "Available company skills (compact index):");
+		for (const skill of bootstrap.availableSkills) {
+			lines.push(`- ${safeInline(skill.name)} [skillId=${safeInline(skill.id)}; revision=${skill.revision}]: ${safeInline(skill.description)}`);
+		}
+	}
+
+	if (bootstrap.availableTools.length > 0) {
+		lines.push("", "Available governed tool families:");
+		for (const tool of bootstrap.availableTools) {
+			lines.push(`- ${safeInline(tool.toolId)}: ${tool.actions.map(safeInline).join(", ")}`);
+		}
+	}
 
 	if (bootstrap.preferredSkills.length > 0) {
 		lines.push("", "Preferred skill fast paths:");
@@ -151,9 +181,10 @@ function formatCapabilityBootstrap(bootstrap: DivoCapabilityBootstrap | null | u
 	lines.push(
 		"",
 		"Routing policy:",
-		"- For every meaningful company task, call divo_skill_resolve once before planning; it combines fresh persona and skill resolution.",
-		"- Treat fast routes and specialist IDs above as additional hints, not replacements for unified resolution.",
-		"- Use the exact tool or specialist returned by the unified resolver; backend validation remains authoritative.",
+		"- Scan the compact index before acting. If one exact skill is relevant, load it once with divo_skill_view using the listed skillId.",
+		"- No skill is a valid outcome for ordinary conversation or a simple direct capability call. Do not run fuzzy skill search merely to prove that no skill exists.",
+		"- Use divo_skill_resolve only as a fallback when a specialized company workflow is likely but no indexed skill clearly matches.",
+		"- A successful skill load or catalogue entry never grants tool permission; backend validation remains authoritative.",
 		CAPABILITY_BOOTSTRAP_CLOSE_TAG,
 	);
 	return lines.join("\n");
@@ -206,7 +237,9 @@ ${MEMBER_DEPARTMENTS_CLOSE_TAG}`;
 function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap | null {
 	if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
 	const raw = candidate as Record<string, unknown>;
-	if (raw.version !== 1 || raw.departmentFunction !== "finance") return null;
+	if (raw.version !== 1 && raw.version !== 2) return null;
+	if (raw.departmentFunction !== "finance" && raw.departmentFunction !== "general") return null;
+	if (raw.version === 1 && raw.departmentFunction !== "finance") return null;
 	const companyRole = boundedString(raw.companyRole, 120);
 	const departmentRole = boundedString(raw.departmentRole, 120);
 	if (!companyRole || !departmentRole) return null;
@@ -235,6 +268,33 @@ function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap |
 		})
 		: [];
 
+	const availableSkills = Array.isArray(raw.availableSkills)
+		? raw.availableSkills.slice(0, 50).flatMap((item) => {
+			if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+			const skill = item as Record<string, unknown>;
+			const id = boundedString(skill.id, 200);
+			const slug = boundedString(skill.slug, 160);
+			const name = boundedString(skill.name, 160);
+			const description = boundedString(skill.description, 500);
+			const revision = Number(skill.revision);
+			return id && slug && name && description && Number.isInteger(revision) && revision >= 1
+				? [{ id, slug, name, description, revision }]
+				: [];
+		})
+		: preferredSkills.map(skill => ({ ...skill, revision: 1 }));
+
+	const availableTools = Array.isArray(raw.availableTools)
+		? raw.availableTools.slice(0, 50).flatMap((item) => {
+			if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+			const tool = item as Record<string, unknown>;
+			const toolId = boundedString(tool.toolId, 120);
+			const actions = Array.isArray(tool.actions)
+				? tool.actions.slice(0, 8).flatMap(action => boundedString(action, 40) ?? [])
+				: [];
+			return toolId && actions.length > 0 ? [{ toolId, actions }] : [];
+		})
+		: preferredTools;
+
 	const routingHints = Array.isArray(raw.routingHints)
 		? raw.routingHints.slice(0, 12).flatMap(hint => boundedString(hint, 500) ?? [])
 		: [];
@@ -253,10 +313,15 @@ function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap |
 	}
 
 	return {
-		version: 1,
-		departmentFunction: "finance",
+		version: raw.version,
+		...(Number.isInteger(raw.registryRevision) && Number(raw.registryRevision) >= 1
+			? { registryRevision: Number(raw.registryRevision) }
+			: {}),
+		departmentFunction: raw.departmentFunction,
 		companyRole,
 		departmentRole,
+		availableSkills,
+		availableTools,
 		preferredSkills,
 		preferredTools,
 		routingHints,

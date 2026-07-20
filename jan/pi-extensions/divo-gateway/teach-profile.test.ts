@@ -15,7 +15,7 @@ describe('interactive Teach Pi profile', () => {
 	it('teaches normal Divo conversations the direct scheduling route', () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Scheduling is a direct core capability/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /scheduledWorkflows/);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /refuses scheduledWorkflows invocation unless that exact recipe was returned/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /refuses scheduledWorkflows invocation unless the recipe was loaded/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /list, pause, resume, cancel, and run_now/);
 	});
 
@@ -76,7 +76,8 @@ describe('interactive Teach Pi profile', () => {
 		assert.match(prompt, /unresolvedMaterialQuestions must be \[\]/);
 		assert.match(prompt, /same conversation/);
 		assert.match(prompt, /scheduledWorkflows/);
-		assert.match(prompt, /Before scheduling, call divo_skill_resolve/i);
+		assert.match(prompt, /Before scheduling, load Schedule Divo Work/i);
+		assert.match(prompt, /divo_skill_view/);
 		assert.match(prompt, /explicitly requested activation/i);
 		assert.match(prompt, /never silently activate inferred automation/i);
 		assert.match(prompt, /sole coordinator and writer for this Teach session/i);

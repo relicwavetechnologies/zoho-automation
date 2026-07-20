@@ -2,7 +2,7 @@ import type { CatalogSkill } from '../skills/skill-catalog.service';
 import type { PermissionResult } from '../permissions/permission.types';
 
 const FINANCE_TOOL_PRIORITY = ['zohoBooks', 'zohoCrm', 'webSearch'] as const;
-const ACTION_PRIORITY = ['read', 'create', 'update', 'delete'] as const;
+const ACTION_PRIORITY = ['read', 'create', 'update', 'delete', 'send', 'execute'] as const;
 const FINANCE_SKILL_PRIORITY = [
   'finance-ops-core',
   'zoho-books-bill',
@@ -10,10 +10,22 @@ const FINANCE_SKILL_PRIORITY = [
 ] as const;
 
 export interface DesktopCapabilityBootstrap {
-  readonly version: 1;
-  readonly departmentFunction: 'finance';
+  readonly version: 2;
+  readonly registryRevision: number;
+  readonly departmentFunction: 'finance' | 'general';
   readonly companyRole: string;
   readonly departmentRole: string;
+  readonly availableSkills: readonly {
+    readonly id: string;
+    readonly slug: string;
+    readonly name: string;
+    readonly description: string;
+    readonly revision: number;
+  }[];
+  readonly availableTools: readonly {
+    readonly toolId: string;
+    readonly actions: readonly string[];
+  }[];
   readonly preferredSkills: readonly {
     readonly id: string;
     readonly slug: string;
@@ -45,18 +57,41 @@ export function buildDesktopCapabilityBootstrap(input: {
   readonly companyRole: string;
   readonly permission: PermissionResult;
   readonly visibleSkills: readonly CatalogSkill[];
+  readonly registryRevision: number;
   readonly zohoConnections?: readonly DesktopCapabilityConnection[];
-}): DesktopCapabilityBootstrap | null {
-  if (!isFinanceDepartment(input.departmentName, input.departmentSlug)) return null;
+}): DesktopCapabilityBootstrap {
+  const finance = isFinanceDepartment(input.departmentName, input.departmentSlug);
 
-  const preferredTools = FINANCE_TOOL_PRIORITY.flatMap((toolId) => {
+  const availableTools = [...input.permission.allowedToolIds]
+    .map(toolId => ({
+      toolId: String(toolId),
+      actions: ACTION_PRIORITY.filter(action =>
+        input.permission.allowedActionsByTool.get(toolId)?.has(action)
+      ),
+    }))
+    .filter(tool => tool.actions.length > 0)
+    .sort((left, right) => left.toolId.localeCompare(right.toolId));
+
+  const availableSkills = input.visibleSkills
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .slice(0, 50)
+    .map(skill => ({
+      id: skill.id,
+      slug: skill.slug,
+      name: skill.name,
+      description: skill.description,
+      revision: skill.revision,
+    }));
+
+  const preferredTools = finance ? FINANCE_TOOL_PRIORITY.flatMap((toolId) => {
     const actions = input.permission.allowedActionsByTool.get(toolId as never);
     if (!actions?.size) return [];
     return [{
       toolId,
       actions: ACTION_PRIORITY.filter(action => actions.has(action)),
     }];
-  });
+  }) : [];
   const preferredToolIds = new Set<string>(preferredTools.map(tool => tool.toolId));
   const booksActions = new Set(
     preferredTools.find(tool => tool.toolId === 'zohoBooks')?.actions ?? [],
@@ -65,7 +100,7 @@ export function buildDesktopCapabilityBootstrap(input: {
   const skillPriority = new Map<string, number>(
     FINANCE_SKILL_PRIORITY.map((slug, index) => [slug, index]),
   );
-  const preferredSkills = input.visibleSkills
+  const preferredSkills = finance ? input.visibleSkills
     .filter(skill => {
       if (!skill.toolIds.some(toolId => preferredToolIds.has(toolId))) return false;
       if (skill.slug === 'zoho-books-bill') return booksActions.has('create');
@@ -85,7 +120,7 @@ export function buildDesktopCapabilityBootstrap(input: {
       slug: skill.slug,
       name: skill.name,
       description: skill.description,
-    }));
+    })) : [];
 
   const routingHints: string[] = [];
   if (booksActions.has('read')) {
@@ -111,14 +146,17 @@ export function buildDesktopCapabilityBootstrap(input: {
     );
   }
 
-  const connections = input.zohoConnections;
+  const connections = finance ? input.zohoConnections : undefined;
   const soleConnection = connections?.length === 1 ? connections[0] : undefined;
 
   return {
-    version: 1,
-    departmentFunction: 'finance',
+    version: 2,
+    registryRevision: input.registryRevision,
+    departmentFunction: finance ? 'finance' : 'general',
     companyRole: input.companyRole,
     departmentRole: String(input.permission.department?.roleSlug ?? 'member'),
+    availableSkills,
+    availableTools,
     preferredSkills,
     preferredTools,
     routingHints,

@@ -243,7 +243,8 @@ describe("memory recall extension", () => {
 		assert.match(String(registered[0]?.promptGuidelines), /distinct from the local memory tool/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /must call divo_memory_recall/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Personal memory is local and is injected/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /unified work resolver owns fresh department-persona/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /backend-generated persona and catalogue provide current/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /using no skill is correct/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /LARK IS STRICTLY GATEWAY-ONLY/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never use Bash, lark-cli, curl/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /there is no local Lark fallback/i);

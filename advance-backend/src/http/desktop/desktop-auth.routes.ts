@@ -13,6 +13,7 @@ import type { TypedEnv } from '../../config/env';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import type { PermissionService } from '../../application/permissions/permission.service';
 import type { SkillCatalogService } from '../../application/skills/skill-catalog.service';
+import type { SkillAccessEnforcementPort } from '../../application/skills/skill-access.port';
 import type { ManagerPersonaRuntimeService } from '../../application/persona-learning/manager-persona-runtime.service';
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
@@ -28,6 +29,7 @@ export interface DesktopAuthRoutesDeps {
   connectionRepo:         IntegrationConnectionRepository;
   permissions:            PermissionService;
   skillCatalog:           SkillCatalogService;
+  skillAccessEnforcement: SkillAccessEnforcementPort;
   managerPersonaRuntime:  ManagerPersonaRuntimeService;
   logger:                 Logger;
   env:                    TypedEnv;
@@ -858,45 +860,51 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         });
       }
       let capabilityBootstrap;
-      if (isFinanceDepartment(membership.department.name, membership.department.slug)) {
-        try {
-          const companyRole = String(res.locals['aiRole'] ?? 'MEMBER');
-          const permissionResult = await deps.permissions.resolve({
-            companyId: asCompanyId(companyId),
-            userId: asUserId(userId),
-            companyRole: asCompanyRoleSlug(companyRole),
-            departmentId: asDepartmentId(membership.department.id),
-            channel: 'desktop',
+      try {
+        const companyRole = String(res.locals['aiRole'] ?? 'MEMBER');
+        const permissionResult = await deps.permissions.resolve({
+          companyId: asCompanyId(companyId),
+          userId: asUserId(userId),
+          companyRole: asCompanyRoleSlug(companyRole),
+          departmentId: asDepartmentId(membership.department.id),
+          channel: 'desktop',
+        });
+        if (permissionResult.ok) {
+          const finance = isFinanceDepartment(membership.department.name, membership.department.slug);
+          const [grantedSkillIds, registryRevision, zohoConnectionsResult] = await Promise.all([
+            deps.skillAccessEnforcement.listGrantedSkillIds(companyId, userId),
+            deps.skillCatalog.registryRevision(companyId),
+            finance
+              ? deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId })
+              : Promise.resolve(null),
+          ]);
+          const visibleSkills = await deps.skillCatalog.listVisible({
+            companyId,
+            departmentId: membership.department.id,
+            permission: permissionResult.value,
+            grantedSkillIds,
+            limit: 50,
           });
-          if (permissionResult.ok) {
-            const [visibleSkills, zohoConnectionsResult] = await Promise.all([
-              deps.skillCatalog.listVisible({
-                companyId,
-                departmentId: membership.department.id,
-                permission: permissionResult.value,
-              }),
-              deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId }),
-            ]);
-            capabilityBootstrap = buildDesktopCapabilityBootstrap({
-              departmentName: membership.department.name,
-              departmentSlug: membership.department.slug,
-              companyRole,
-              permission: permissionResult.value,
-              visibleSkills,
-              ...(zohoConnectionsResult.ok ? {
-                zohoConnections: zohoConnectionsResult.value.map(connection => ({
-                  connectionId: connection.connectionId,
-                  label: connection.label,
-                  access: connection.access,
-                })),
-              } : {}),
-            });
-          }
-        } catch (error) {
-          log.warn('runtime_context.capability_bootstrap_failed', {
-            error: String(error), userId, companyId, departmentId,
+          capabilityBootstrap = buildDesktopCapabilityBootstrap({
+            departmentName: membership.department.name,
+            departmentSlug: membership.department.slug,
+            companyRole,
+            permission: permissionResult.value,
+            visibleSkills,
+            registryRevision,
+            ...(zohoConnectionsResult?.ok ? {
+              zohoConnections: zohoConnectionsResult.value.map(connection => ({
+                connectionId: connection.connectionId,
+                label: connection.label,
+                access: connection.access,
+              })),
+            } : {}),
           });
         }
+      } catch (error) {
+        log.warn('runtime_context.capability_bootstrap_failed', {
+          error: String(error), userId, companyId, departmentId,
+        });
       }
       res.json({
         success: true,

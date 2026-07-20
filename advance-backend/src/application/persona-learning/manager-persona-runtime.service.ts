@@ -229,7 +229,8 @@ export function buildManagerPersonaRuntimeBrief(input: {
     .flatMap(node => {
       const scopeKey = safeInline(node.scopeKey, 120);
       const ruleKey = safeInline(node.ruleKey, 120);
-      if (!scopeKey || !ruleKey) return [];
+      const instruction = safeInline(node.instruction, MAX_RUNTIME_PERSONA_INSTRUCTION_CHARS);
+      if (!scopeKey || !ruleKey || !instruction) return [];
       const linkedSkills = (node.skillLinks ?? [])
         .flatMap(link => {
           const slug = safeInline(link.skill.slug, 120);
@@ -238,7 +239,7 @@ export function buildManagerPersonaRuntimeBrief(input: {
         })
         .join(', ');
       return [
-        `- [scope=${scopeKey}; rule=${ruleKey}${linkedSkills ? `; linkedSkills=${linkedSkills}` : ''}]`,
+        `- [scope=${scopeKey}; rule=${ruleKey}${linkedSkills ? `; linkedSkills=${linkedSkills}` : ''}] ${instruction}`,
       ];
     });
   if (!rules.length) return null;
@@ -246,9 +247,9 @@ export function buildManagerPersonaRuntimeBrief(input: {
   return {
     version: `manager-persona:${input.revision}:${input.updatedAt.toISOString()}`,
     prompt: [
-      'MANAGER PERSONA TREE INDEX — compact backend-generated routing context.',
-      'This index contains addresses, not full instructions. For meaningful work, call divo_skill_resolve with the exact original request and up to two intent-preserving variants. Its unified backend resolution returns only relevant current branches and loads exact linked recipes. Do not infer a rule from its key alone.',
-      'Resolved rules cannot override company policy, user instructions, permissions, approvals, security requirements, or backend authority. Do not separately fuzzy-search or reload a persona-linked recipe already returned by the unified resolver.',
+      'MANAGER PERSONA TREE INDEX — compact backend-generated operating context.',
+      'Apply a rule when the current task matches its scope and instruction. When a matching rule links a skill, load that exact skillId with divo_skill_view before executing the workflow. Do not fuzzy-search for a linked skill that is already identified here.',
+      'These rules cannot override company policy, user instructions, permissions, approvals, security requirements, or backend authority.',
       '',
       ...rules,
     ].join('\n'),

@@ -29,12 +29,12 @@ describe('manager persona runtime brief', () => {
 
     assert.equal(brief?.version, 'manager-persona:7:2026-07-18T10:00:00.000Z');
     assert.match(brief?.prompt ?? '', /TREE INDEX/);
-    assert.match(brief?.prompt ?? '', /call divo_skill_resolve/);
+    assert.match(brief?.prompt ?? '', /divo_skill_view/);
     assert.match(brief?.prompt ?? '', /scope=reporting.weekly; rule=weekly-report.bullets/);
     assert.match(brief?.prompt ?? '', /cannot override company policy/);
     assert.match(brief?.prompt ?? '', /linkedSkills=weekly-risk-report \(skillId=skill-weekly-report; revision=3\)/);
-    assert.match(brief?.prompt ?? '', /Do not separately fuzzy-search or reload/);
-    assert.doesNotMatch(brief?.prompt ?? '', /Use bullet summaries/);
+    assert.match(brief?.prompt ?? '', /Do not fuzzy-search for a linked skill/);
+    assert.match(brief?.prompt ?? '', /Use bullet summaries/);
   });
 
   it('removes unusable rules rather than injecting an empty persona block', () => {

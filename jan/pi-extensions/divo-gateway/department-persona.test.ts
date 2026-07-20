@@ -122,7 +122,8 @@ describe("department persona", () => {
 		assert.match(first, /Department function: finance/);
 		assert.match(first, /Finance Ops Core \[skillId=skill-finance\]/);
 		assert.match(first, /connectionId=connection-1/);
-		assert.match(first, /call divo_skill_resolve once before planning/);
+		assert.match(first, /load it once with divo_skill_view/);
+		assert.match(first, /fuzzy skill search merely to prove/);
 
 		const refreshed = composeDivoSystemPrompt(first, COMPANY_PROMPT, {
 			departmentName: "Engineering",
@@ -130,6 +131,42 @@ describe("department persona", () => {
 		});
 		assert.doesNotMatch(refreshed, /<divo_capability_bootstrap>/);
 		assert.doesNotMatch(refreshed, /connection-1/);
+	});
+
+	it("injects a generic v2 exact-skill catalogue for non-Finance departments", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "divo-capability-v2-"));
+		const path = join(directory, "runtime-context.json");
+		await writeFile(path, JSON.stringify({
+			departmentName: "Operations",
+			capabilityBootstrap: {
+				version: 2,
+				registryRevision: 14,
+				departmentFunction: "general",
+				companyRole: "MEMBER",
+				departmentRole: "MANAGER",
+				availableSkills: [{
+					id: "skill-daily-report",
+					slug: "daily-report",
+					name: "Daily Report",
+					description: "Prepare the operating report.",
+					revision: 3,
+				}],
+				availableTools: [{ toolId: "googleSheets", actions: ["read", "update"] }],
+				preferredSkills: [],
+				preferredTools: [],
+				routingHints: [],
+			},
+		}));
+
+		const prompt = composeDivoSystemPrompt(
+			"Base prompt",
+			COMPANY_PROMPT,
+			await readDepartmentPersonaContext(path),
+		);
+		assert.match(prompt, /Skill registry revision: 14/);
+		assert.match(prompt, /Daily Report \[skillId=skill-daily-report; revision=3\]/);
+		assert.match(prompt, /googleSheets: read, update/);
+		assert.match(prompt, /Use divo_skill_resolve only as a fallback/);
 	});
 
 	it("rejects malformed capability bootstrap data", async () => {

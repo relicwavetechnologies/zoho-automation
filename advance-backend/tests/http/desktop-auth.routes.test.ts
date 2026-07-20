@@ -32,6 +32,10 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     } as any,
     skillCatalog: {
       listVisible: async () => [],
+      registryRevision: async () => 1,
+    } as any,
+    skillAccessEnforcement: {
+      listGrantedSkillIds: async () => new Set<string>(),
     } as any,
     managerPersonaRuntime: {
       getDepartmentBrief: async () => null,
@@ -541,7 +545,14 @@ describe('desktop auth routes', () => {
           description: 'Route broad finance questions.',
           instructions: 'Backend recipe',
           toolIds: ['zohoBooks', 'zohoCrm'],
+          aliases: [],
+          tags: [],
+          revision: 3,
         }],
+        registryRevision: async () => 9,
+      },
+      skillAccessEnforcement: {
+        listGrantedSkillIds: async () => new Set(['skill-finance']),
       },
       connectionRepo: {
         listAccessibleZohoConnections: async () => ({
@@ -566,7 +577,16 @@ describe('desktop auth routes', () => {
 
     assert.equal(result.status, 200);
     assert.equal(result.body.data.capabilityBootstrap.departmentFunction, 'finance');
+    assert.equal(result.body.data.capabilityBootstrap.version, 2);
+    assert.equal(result.body.data.capabilityBootstrap.registryRevision, 9);
     assert.equal(result.body.data.capabilityBootstrap.departmentRole, 'FINANCE_MANAGER');
+    assert.deepEqual(result.body.data.capabilityBootstrap.availableSkills, [{
+      id: 'skill-finance',
+      slug: 'finance-ops-core',
+      name: 'Finance Ops Core',
+      description: 'Route broad finance questions.',
+      revision: 3,
+    }]);
     assert.deepEqual(result.body.data.capabilityBootstrap.preferredTools, [
       { toolId: 'zohoBooks', actions: ['read', 'create'] },
       { toolId: 'zohoCrm', actions: ['read'] },
