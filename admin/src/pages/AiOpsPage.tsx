@@ -26,14 +26,13 @@ const TABS: { id: Tab; label: string }[] = [
 
 export function AiOpsPage() {
   const navigate = useNavigate()
-  const { token, session } = useAdminAuth()
+  const { token } = useAdminAuth()
   const [tab, setTab] = useState<Tab>("runs")
   const [channel, setChannel] = useState("")
   const [status, setStatus] = useState("")
   const [search, setSearch] = useState("")
 
   const companyId = useCompanyScope()
-  const isSuperAdmin = session?.role === "SUPER_ADMIN"
   const kpis = useAiOpsKpis(token, companyId)
   const runs = useRuns(token, { channel: channel || undefined, status: status || undefined })
   const byModel = useSpendByModel(token, 30, companyId, channel || undefined)
@@ -241,10 +240,7 @@ export function AiOpsPage() {
       ) : null}
 
       {tab === "models" ? (
-        !isSuperAdmin ? (
-          <div className="stub">Model routing is visible to Super Admins only.</div>
-        ) : (
-          <div className="section">
+        <div className="section">
             <div className="card" style={{ marginBottom: "14px", padding: "14px 16px" }}>
               <b>Lark channel model</b>
               <div className="muted" style={{ marginTop: "4px" }}>DeepSeek V4 Flash · pinned by backend policy · not changed by routing targets below</div>
@@ -273,8 +269,7 @@ export function AiOpsPage() {
                 )}
               </tbody>
             </table>
-          </div>
-        )
+        </div>
       ) : null}
 
       {tab === "runtime" ? (

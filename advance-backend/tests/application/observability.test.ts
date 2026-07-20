@@ -5,7 +5,7 @@
  *   - TokenUsageService.record() (skips zeros, fire-and-forget)
  *   - TokenUsageService.summariseByModel()
  *   - ExecutionQueryService.listRuns(), getRun(), getEvents()
- *     (including isSuperAdmin payload redaction)
+ *     (including raw execution-data payload redaction)
  */
 
 import { describe, it } from 'node:test';
@@ -294,7 +294,7 @@ describe('ExecutionQueryService', () => {
         listEvents:    async () => [],
       } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      const runs = await svc.listRuns({ companyId: 'co-1', isSuperAdmin: false });
+      const runs = await svc.listRuns({ companyId: 'co-1' });
       assert.equal(runs.length, 1);
       assert.equal(runs[0]!.id, 'run-1');
       assert.equal(runs[0]!.durationMs, 300_000);
@@ -308,7 +308,7 @@ describe('ExecutionQueryService', () => {
         listByCompany: async () => [{ ...fakeRun, finishedAt: null }],
       } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      const runs = await svc.listRuns({ companyId: 'co-1', isSuperAdmin: false });
+      const runs = await svc.listRuns({ companyId: 'co-1' });
       assert.equal(runs[0]!.durationMs, null);
     });
 
@@ -319,7 +319,7 @@ describe('ExecutionQueryService', () => {
         listByCompany: async (args: any) => { capturedLimit = args.limit; return []; },
       } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      await svc.listRuns({ companyId: 'co-1', isSuperAdmin: false, limit: 9999 });
+      await svc.listRuns({ companyId: 'co-1', limit: 9999 });
       assert.equal(capturedLimit, 200);
     });
   });
@@ -328,14 +328,14 @@ describe('ExecutionQueryService', () => {
     it('returns null when run not found', async () => {
       const repo = { findById: async () => null } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      const result = await svc.getRun({ id: 'x', companyId: 'co-1', isSuperAdmin: false });
+      const result = await svc.getRun({ id: 'x', companyId: 'co-1' });
       assert.equal(result, null);
     });
 
     it('includes userId, threadId, chatId, agentTarget', async () => {
       const repo = { ...queryRepoDefaults, findById: async () => fakeRun } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      const result = await svc.getRun({ id: 'run-1', companyId: 'co-1', isSuperAdmin: false });
+      const result = await svc.getRun({ id: 'run-1', companyId: 'co-1' });
       assert.equal(result!.userId, 'u-1');
       assert.equal(result!.threadId, 'th-1');
       assert.equal(result!.agentTarget, 'supervisor');
@@ -343,19 +343,19 @@ describe('ExecutionQueryService', () => {
   });
 
   describe('getEvents() — payload redaction', () => {
-    it('SUPER_ADMIN sees full payload including prompt and toolCall', async () => {
+    it('a caller with raw execution-data access sees the full payload including prompt and toolCall', async () => {
       const repo = { listEvents: async () => [fakeEvent] } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', isSuperAdmin: true });
+      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', canViewRawExecutionData: true });
       const payload = events[0]!.payload as any;
       assert.equal(payload.prompt, 'secret system prompt');
       assert.ok('toolCall' in payload);
     });
 
-    it('non-SUPER_ADMIN has prompt and toolCall redacted', async () => {
+    it('a caller without raw execution-data access has prompt and toolCall redacted', async () => {
       const repo = { listEvents: async () => [fakeEvent] } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', isSuperAdmin: false });
+      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', canViewRawExecutionData: false });
       const payload = events[0]!.payload as any;
       assert.equal('prompt' in payload, false);
       assert.equal('toolCall' in payload, false);
@@ -365,7 +365,7 @@ describe('ExecutionQueryService', () => {
     it('keeps non-sensitive payload fields for all roles', async () => {
       const repo = { listEvents: async () => [fakeEvent] } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', isSuperAdmin: false });
+      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', canViewRawExecutionData: false });
       assert.equal((events[0]!.payload as any).steps, 2);
     });
 
@@ -373,7 +373,7 @@ describe('ExecutionQueryService', () => {
       const nullPayloadEvent = { ...fakeEvent, payload: null };
       const repo = { listEvents: async () => [nullPayloadEvent] } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', isSuperAdmin: false });
+      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', canViewRawExecutionData: false });
       assert.equal(events[0]!.payload, null);
     });
 
@@ -383,14 +383,14 @@ describe('ExecutionQueryService', () => {
         listEvents: async (args: any) => { capturedLimit = args.limit; return []; },
       } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', isSuperAdmin: false, limit: 9999 });
+      await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', canViewRawExecutionData: false, limit: 9999 });
       assert.equal(capturedLimit, 1000);
     });
 
     it('maps event to EventDto with ISO createdAt', async () => {
       const repo = { listEvents: async () => [fakeEvent] } as any;
       const svc = new ExecutionQueryService({ repo, logger: noopLogger });
-      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', isSuperAdmin: true });
+      const events = await svc.getEvents({ executionId: 'run-1', companyId: 'co-1', canViewRawExecutionData: true });
       assert.equal(events[0]!.id, 'ev-1');
       assert.equal(events[0]!.sequence, 1);
       assert.equal(events[0]!.createdAt, now.toISOString());

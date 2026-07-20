@@ -112,7 +112,7 @@ function TurnBlock({ turn, index }: { turn: RunTurnView; index: number }) {
 }
 
 function ToolStep({ tool }: { tool: TraceTool }) {
-  const { isSuper } = useRole()
+  const { canViewRawExecutionData } = useRole()
   const [open, setOpen] = useState(false)
   const subtitle = tool._subtitle ?? ((tool.i.op ?? tool.i.query) as string | undefined)
 
@@ -131,12 +131,12 @@ function ToolStep({ tool }: { tool: TraceTool }) {
         <div className="meta">
           <span className="muted">{subtitle}</span>
           <span className={`expand${open ? " open" : ""}`} onClick={() => setOpen((v) => !v)}>
-            {isSuper ? "expand raw I/O" : "expand"}<ChevronDown size={12} />
+            {canViewRawExecutionData ? "expand raw I/O" : "expand"}<ChevronDown size={12} />
           </span>
         </div>
         {open ? (
           <div className="raw">
-            {isSuper ? (
+            {canViewRawExecutionData ? (
               <>
                 <div className="lbl">Input</div>
                 <pre>{json(tool.i)}</pre>
@@ -144,7 +144,7 @@ function ToolStep({ tool }: { tool: TraceTool }) {
                 <pre>{json(tool.o)}</pre>
               </>
             ) : (
-              <div className="gate"><Lock size={14} /> Raw tool input/output is visible to Super Admins only. The summary above is available to all admins.</div>
+              <div className="gate"><Lock size={14} /> Raw tool input/output is available to company and super admins. The summary above is available to all admins.</div>
             )}
           </div>
         ) : null}

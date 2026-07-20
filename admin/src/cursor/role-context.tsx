@@ -7,6 +7,7 @@ import { useAdminAuth } from "@/auth/AdminAuthProvider"
  */
 type RoleContextValue = {
   isSuper: boolean
+  canViewRawExecutionData: boolean
   label: string
 }
 
@@ -15,9 +16,10 @@ const RoleContext = createContext<RoleContextValue | null>(null)
 export function RoleProvider({ children }: { children: ReactNode }) {
   const { session } = useAdminAuth()
   const isSuper = session?.role === "SUPER_ADMIN"
+  const canViewRawExecutionData = session?.role === "SUPER_ADMIN" || session?.role === "COMPANY_ADMIN"
   const value = useMemo<RoleContextValue>(
-    () => ({ isSuper, label: isSuper ? "Super Admin" : "Company Admin" }),
-    [isSuper],
+    () => ({ isSuper, canViewRawExecutionData, label: isSuper ? "Super Admin" : "Company Admin" }),
+    [canViewRawExecutionData, isSuper],
   )
   return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>
 }

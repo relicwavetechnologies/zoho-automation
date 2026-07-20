@@ -10,6 +10,7 @@
  * On success sets:
  *   res.locals.companyId    (string — required for company-scoped routes)
  *   res.locals.isSuperAdmin (boolean)
+ *   res.locals.canViewRawExecutionData (boolean — company and super admins)
  *   res.locals.userId       (string | null)
  */
 
@@ -79,6 +80,7 @@ export function createAdminAuthMiddleware(deps: AdminAuthMiddlewareDeps) {
       const companyId = req.headers['x-company-id'] as string | undefined;
       res.locals['companyId']    = companyId ?? '';
       res.locals['isSuperAdmin'] = true;
+      res.locals['canViewRawExecutionData'] = true;
       res.locals['userId']       = null;
       return next();
     }
@@ -114,6 +116,8 @@ export function createAdminAuthMiddleware(deps: AdminAuthMiddlewareDeps) {
 
       res.locals['companyId']    = session.companyId ?? '';
       res.locals['isSuperAdmin'] = session.role === 'SUPER_ADMIN';
+      res.locals['canViewRawExecutionData'] =
+        session.role === 'SUPER_ADMIN' || session.role === 'COMPANY_ADMIN';
       res.locals['userId']       = session.userId;
     } catch (e) {
       log.error('admin-auth.session_lookup_failed', { error: String(e) });

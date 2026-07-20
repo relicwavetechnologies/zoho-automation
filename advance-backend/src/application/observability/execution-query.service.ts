@@ -1,10 +1,11 @@
 /**
  * ExecutionQueryService — role-scoped read access to execution run data.
  *
- * Visibility rules (mirrored from old backend):
- *   SUPER_ADMIN  → sees full payload (everything except NEVER_PERSIST_KEYS
- *                  already stripped at write time)
- *   Other roles  → payload key subset (REDACTED_VIEW_KEYS removed from events)
+ * Visibility rules:
+ *   COMPANY_ADMIN and SUPER_ADMIN → see full payload (everything except
+ *                                    NEVER_PERSIST_KEYS already stripped at write time)
+ *   Other roles                   → payload key subset (REDACTED_VIEW_KEYS
+ *                                    removed from events)
  *
  * All queries are company-scoped: a caller can only read runs for their own
  * companyId. The service never returns data across company boundaries.
@@ -17,8 +18,9 @@ import { costUsd } from './pricing';
 // ─── Redaction ────────────────────────────────────────────────────────────────
 
 /**
- * Keys inside `ExecutionEvent.payload` that are hidden from non-SUPER_ADMIN
- * callers. These may contain prompts, history, or other LLM internals.
+ * Keys inside `ExecutionEvent.payload` that are hidden from callers without
+ * raw execution-data access. These may contain prompts, history, or other LLM
+ * internals.
  */
 const REDACTED_VIEW_KEYS = new Set([
   'prompt', 'systemPrompt', 'history', 'historyContext', 'memoryContext',
@@ -26,8 +28,8 @@ const REDACTED_VIEW_KEYS = new Set([
   'modelInput', 'toolCall',
 ]);
 
-function redactPayload(payload: unknown, isSuperAdmin: boolean): unknown {
-  if (isSuperAdmin) return payload;
+function redactPayload(payload: unknown, canViewRawExecutionData: boolean): unknown {
+  if (canViewRawExecutionData) return payload;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
 
   const out: Record<string, unknown> = {};
@@ -94,7 +96,6 @@ export class ExecutionQueryService {
   /** List recent runs for the caller's company. */
   async listRuns(input: {
     companyId:    string;
-    isSuperAdmin: boolean;
     limit?:       number;
     offset?:      number;
     userId?:      string;
@@ -122,7 +123,6 @@ export class ExecutionQueryService {
   async getRun(input: {
     id:           string;
     companyId:    string;
-    isSuperAdmin: boolean;
   }): Promise<RunDetailDto | null> {
     const run = await this.deps.repo.findById(input.id, input.companyId);
     if (!run) return null;
@@ -144,7 +144,7 @@ export class ExecutionQueryService {
   async getEvents(input: {
     executionId:  string;
     companyId:    string;
-    isSuperAdmin: boolean;
+    canViewRawExecutionData: boolean;
     phase?:       string;
     limit?:       number;
   }): Promise<EventDto[]> {
@@ -155,7 +155,7 @@ export class ExecutionQueryService {
       ...(input.phase ? { phase: input.phase } : {}),
     });
 
-    return events.map(e => this.toEventDto(e, input.isSuperAdmin));
+    return events.map(e => this.toEventDto(e, input.canViewRawExecutionData));
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────
@@ -203,7 +203,7 @@ export class ExecutionQueryService {
     };
   }
 
-  private toEventDto(event: ExecutionEventView, isSuperAdmin: boolean): EventDto {
+  private toEventDto(event: ExecutionEventView, canViewRawExecutionData: boolean): EventDto {
     return {
       id:        event.id,
       sequence:  event.sequence,
@@ -214,7 +214,7 @@ export class ExecutionQueryService {
       title:     event.title,
       summary:   event.summary,
       status:    event.status,
-      payload:   redactPayload(event.payload, isSuperAdmin),
+      payload:   redactPayload(event.payload, canViewRawExecutionData),
       createdAt: event.createdAt.toISOString(),
     };
   }
