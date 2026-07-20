@@ -17,6 +17,9 @@ export const SCHEDULE_DIVO_WORK_SKILL_ALIASES = [
   'weekly automation',
   'monitor regularly',
   'one-time reminder',
+  'change schedule time',
+  'make schedule recurring',
+  'convert one-time to recurring',
 ] as const;
 
 export const SCHEDULE_DIVO_WORK_SKILL_MARKDOWN = `# Schedule Divo Work
@@ -30,9 +33,35 @@ Use this skill to make Divo perform work once in the future or on an hourly, dai
 - If the user only says "schedule something" and the target is unclear, ask one question: "Do you want to schedule a calendar event, or have Divo run some work later or repeatedly?"
 - Scheduling the work and performing the work are different. Include the skills and tools needed by the future task in its self-contained intent; never run the business task immediately unless the user also asks for that.
 
+## Non-negotiable execution contract
+
+Before creating or replacing a schedule, resolve the user's complete request and load this recipe. Resolve any separate business recipe needed by the future task as part of the same work resolution.
+
+Build two distinct contracts:
+
+1. **Work contract** — what a fresh agent must actually do at run time: objective, source/account, scope and time window, filters, required business skills and tools, output format, delivery boundary, prohibited side effects, and failure behavior.
+2. **Timing contract** — when it runs: schedule type, timezone, and operation-specific timing fields.
+
+Store only the work contract in **intent**. Store recurrence only in the timing fields. A schedule name is a label, never an executable instruction.
+
+Reject these patterns:
+
+- "Run the HDFC research workflow every day at 2 PM."
+- "Execute the existing report schedule."
+- "Do the same task as before."
+
+They depend on chat history or another schedule. Instead, copy the complete operational instructions into **intent**. Before invoking creation, mentally remove the schedule name and timing: if a fresh agent could not perform the work from **intent** alone, ask one concise clarification and do not schedule.
+
+When changing an existing schedule:
+
+- Preserve the complete existing work contract exactly unless the user changes the work itself.
+- Never cancel the old schedule before the replacement is successfully created and verified.
+- Never reconstruct the work contract from only the schedule name or recurrence.
+- If the available list result does not contain the full work contract and it is not present in the conversation, ask the user for it instead of guessing.
+
 ## Required gateway sequence
 
-1. Resolve the task normally so the intent uses the correct company skills, accounts, filters, output, and safety rules.
+1. Resolve the exact user request with a scheduling-focused variant so this recipe and any required business recipe are loaded. Do not call the create operation before resolution succeeds.
 2. Before the first scheduler invocation, call:
 
 ~~~json
@@ -63,6 +92,9 @@ Every create requires:
 - **name**: short label, at most 120 characters.
 - **intent**: complete instructions that can run without this chat history. State the task, source/account, time window, filters, required skills/tools, output format, delivery expectation, external-action boundary, and what to do when data is missing or a tool fails.
 - **timezone**: exact IANA timezone such as **Asia/Kolkata**.
+- **delivery**: exactly one of:
+  - **current_conversation** — return the final result to the exact persisted conversation where the schedule is created.
+  - **creator_lark_dm** — let the runtime deliver the final result to the authenticated schedule creator's own Lark DM. Use this for a desktop-created schedule whose result should go to that manager's Lark DM. Do not add a separate **larkMessaging** delivery step for the same final result.
 - **scheduleType** and only the timing fields for that type.
 
 Do not guess a material task, time, timezone, recurrence, monitoring scope, recipient, external side effect, or failure behavior. Ask only for missing material details.
@@ -76,6 +108,7 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "intent": "At run time, send a concise reminder in the originating conversation that the launch review begins in 30 minutes. Do not contact anyone elsewhere. If delivery fails, report the failure in the originating conversation.",
   "scheduleType": "one_time",
   "timezone": "Asia/Kolkata",
+  "delivery": "current_conversation",
   "runAt": "2026-07-20T09:30:00+05:30"
 }
 ~~~
@@ -89,6 +122,7 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "intent": "Using the approved Gmail skill and account, inspect mail received since the previous run for urgent support incidents. Return only new incidents to the originating conversation. Do not reply to or modify mail. If Gmail is unavailable, report the failure without retrying another account.",
   "scheduleType": "hourly",
   "timezone": "Asia/Kolkata",
+  "delivery": "current_conversation",
   "intervalHours": 2,
   "minute": 15
 }
@@ -101,9 +135,10 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
 {
   "operation": "create",
   "name": "Daily inbox summary",
-  "intent": "Using the approved Gmail skill and selected work account, summarize messages received in the last 24 hours, grouped by sender. Return the summary to the originating conversation. Read only; do not reply, archive, label, or forward mail. If the account is unavailable, report the failure and do not use another account.",
+  "intent": "Using the approved Gmail skill and selected work account, summarize messages received in the last 24 hours, grouped by sender. Produce the completed summary as the final answer; runtime delivery is handled separately. Read only; do not reply, archive, label, or forward mail. If the account is unavailable, report the failure and do not use another account.",
   "scheduleType": "daily",
   "timezone": "Asia/Kolkata",
+  "delivery": "creator_lark_dm",
   "hour": 10,
   "timeMinute": 0
 }
@@ -118,6 +153,7 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "intent": "Using the approved CRM reporting skill, summarize open pipeline changes since the previous run and return the report to the originating conversation. Read only. If the CRM query fails, report the error and do not fabricate totals.",
   "scheduleType": "weekly",
   "timezone": "Asia/Kolkata",
+  "delivery": "current_conversation",
   "daysOfWeek": ["MO"],
   "hour": 9,
   "timeMinute": 30
@@ -133,6 +169,7 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
   "intent": "Using the approved finance reporting skill, prepare the previous calendar month's summary and return it to the originating conversation. Read only. Call out missing data explicitly and do not estimate unavailable values.",
   "scheduleType": "monthly",
   "timezone": "Asia/Kolkata",
+  "delivery": "current_conversation",
   "dayOfMonth": 1,
   "hour": 10,
   "timeMinute": 0

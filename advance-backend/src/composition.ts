@@ -155,6 +155,7 @@ import { createScheduledWorkflowsTool } from './application/orchestration/tools/
 import { ScheduledDesktopChannelAdapter } from './infrastructure/channels/desktop/scheduled-desktop.adapter';
 import { ToolExecutor } from './application/gateway/tool-executor';
 import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
+import { WorkResolutionService } from './application/gateway/work-resolution.service';
 import {
   InMemoryApprovalIntentRepository,
   LocalApprovalIntentService,
@@ -1202,6 +1203,20 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'desktop-department-management' }),
   });
   const todoRepo      = new SupervisorTodoRepository(prisma);
+  const workResolution = new WorkResolutionService({
+    skillCatalog,
+    skillAccessEnforcement,
+    managerPersonaRuntime: managerPersonaRuntimeService,
+  });
+  // The Lark supervisor passes its freshly resolved permission snapshot into
+  // this executor; the approval gate is supplied per invocation after the
+  // channel adapter is available below.
+  const larkRuntimeToolExecutor = new ToolExecutor({
+    toolRegistry,
+    permissions,
+    logger: logger.child({ service: 'lark-runtime-tool-executor' }),
+    clock: systemClock,
+  });
 
   const supervisor = new SupervisorAgent({
     model,
@@ -1220,6 +1235,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     toolRegistry,
     skillCatalog,
     skillAccessEnforcement,
+    workResolution,
+    toolExecutor: larkRuntimeToolExecutor,
     auditService,
     ...(mem0Service ? { mem0: mem0Service } : {}),
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),

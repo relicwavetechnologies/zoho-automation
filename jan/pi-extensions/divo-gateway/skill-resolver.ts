@@ -12,6 +12,7 @@ export const DIVO_SKILL_POLICY = "cloud_only" as const;
 
 export interface ResolvedSkill {
 	id: string;
+	slug?: string;
 	name: string;
 	description: string;
 	score: number;
@@ -476,6 +477,7 @@ function readResolvedSkills(value: unknown, source: "persona_link" | "skill_sear
 		if (!rawSkill || typeof rawSkill !== "object") return [];
 		const skill = rawSkill as Record<string, unknown>;
 		const id = readString(skill.id);
+		const slug = readString(skill.slug);
 		const name = readString(skill.name);
 		const description = readString(skill.description);
 		const instructions = readString(skill.instructions);
@@ -495,6 +497,7 @@ function readResolvedSkills(value: unknown, source: "persona_link" | "skill_sear
 			: undefined;
 		return [{
 			id,
+			slug,
 			name,
 			description,
 			score,

@@ -32,6 +32,9 @@ describe('Schedule Divo Work system skill', () => {
       assert(SCHEDULE_DIVO_WORK_SKILL_MARKDOWN.includes(timingField), `missing ${timingField}`);
     }
     assert.match(SCHEDULE_DIVO_WORK_SKILL_MARKDOWN, /not scheduled when.*approval is pending/is);
+    assert.match(SCHEDULE_DIVO_WORK_SKILL_MARKDOWN, /fresh agent could not perform the work/i);
+    assert.match(SCHEDULE_DIVO_WORK_SKILL_MARKDOWN, /Never cancel the old schedule before the replacement/i);
+    assert.match(SCHEDULE_DIVO_WORK_SKILL_MARKDOWN, /schedule name is a label, never an executable instruction/i);
   });
 
   it('creates and company-grants the skill with searchable aliases', async () => {

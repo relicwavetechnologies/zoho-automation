@@ -30,6 +30,22 @@ import { registerTraceCapture } from "./trace.ts";
 import { readDivoRunCorrelation } from "./run-correlation.ts";
 import { registerTeachClarificationTool } from "./teach-clarification.ts";
 
+const SCHEDULE_DIVO_WORK_SKILL_SLUG = "schedule-divo-work";
+
+export function resolvedScheduleDivoWork(result: {
+	results: Array<{ slug?: string }>;
+}): boolean {
+	return result.results.some((skill) => skill.slug === SCHEDULE_DIVO_WORK_SKILL_SLUG);
+}
+
+export function isScheduledWorkflowInvocation(request: {
+	op: string;
+	payload?: Record<string, unknown>;
+}): boolean {
+	return request.op === "tools.invoke"
+		&& request.payload?.toolId === "scheduledWorkflows";
+}
+
 /**
  * Model-facing representation of the backend gateway envelope. Pi recommends
  * StringEnum instead of literal unions so the same schema works across model
@@ -173,7 +189,7 @@ Personal memory is local and is injected into the system prompt by the Divo memo
 
 For connections.list provider ids, use exact backend enums: google_workspace for Gmail, Drive, and Calendar; zoho for Zoho CRM and Books; lark for Lark. Never use google.
 
-Scheduling is a direct core capability in both normal and Teach conversations. Resolve scheduling requests with divo_skill_resolve so the Schedule Divo Work system skill and any task-specific skills are loaded together. Use scheduledWorkflows for agent work, reminders, reports, or monitoring that must run later or repeatedly. Use a calendar skill for meetings, invitations, free/busy checks, or reserving time. If "schedule" is ambiguous, ask whether the user means a calendar event or Divo work. Follow the scheduling skill's exact tools.list then tools.invoke envelopes; keep every scheduler field inside payload.args. The future intent must be self-contained. Use list, pause, resume, cancel, and run_now to manage existing schedules, and never call a pending approval or drafted payload completed.
+Scheduling is a direct core capability in both normal and Teach conversations. Resolve scheduling requests with divo_skill_resolve so the Schedule Divo Work system skill and any task-specific skills are loaded together. The gateway refuses scheduledWorkflows invocation unless that exact recipe was returned during the current run. Use scheduledWorkflows for agent work, reminders, reports, or monitoring that must run later or repeatedly. Use a calendar skill for meetings, invitations, free/busy checks, or reserving time. If "schedule" is ambiguous, ask whether the user means a calendar event or Divo work. Follow the scheduling skill's exact tools.list then tools.invoke envelopes; keep every scheduler field inside payload.args. The future intent must be self-contained. Use list, pause, resume, cancel, and run_now to manage existing schedules, and never call a pending approval or drafted payload completed.
 
 After resolving a meaningful company task and before executing it, silently evaluate whether subagents would create a clear advantage. Think in company-wide workstreams such as research, retrieval from separate systems, document or record analysis, comparison, workflow planning, preparation, and independent verification. Use subagents when two or more substantial workstreams are independent, when a bounded investigation would add large irrelevant context to the main conversation, or when an independent specialist materially improves reliability. Do not delegate a simple or one-step request, work that needs frequent user clarification, tightly coupled steps that share evolving context, or parallel work against the same mutable record or external destination. Use the minimum useful number of subagents, normally two to four; parallelize only dependency-free work and chain genuinely dependent work.
 
@@ -236,7 +252,7 @@ Record intentionally skipped duplicates or non-durable observations in ignored a
 
 Use the baseRevision and exact evidence refs returned by teach.context.get. Use a stable mutationKey so retries are idempotent. Finish a sufficiently understood teaching pass with teach.learning.apply, even when both skills and changes are empty, so the session records an honest no-learning result. Do not call it after cancelled clarification or while a material question remains. The manager intentionally started Teach, so high-confidence internal persona and department-skill writes do not need another approval after readiness passes. Never invent evidence refs, inflate confidence to bypass validation, write memory, change permissions, or claim success before the tool confirms it. If a non-empty patch returns fewer applied items than requested, report the exact response and stop; never guess that a persona kind or backend feature is unsupported.
 
-For an automation candidate, include "scheduledWorkflows" in the reusable skill's toolIds when that skill is intended to create or manage schedules. After teach.learning.apply succeeds, scheduling is a separate explicit side effect: call tools.list with payload { "toolId": "scheduledWorkflows" }, then tools.invoke with payload { "toolId": "scheduledWorkflows", "args": { "operation": "create", ... } }. Do not ask the same scheduling question again in chat when the manager explicitly requested activation and the trigger, timezone, monitoring scope, autonomy boundary, and failure handling are all resolved; the standard action-review card may still appear before activation. Otherwise clarify or present the candidate without activation. Report the persona/skill write and schedule outcome separately so one cannot bluff success for the other.
+For an automation candidate, include "scheduledWorkflows" in the reusable skill's toolIds when that skill is intended to create or manage schedules. After teach.learning.apply succeeds, scheduling is a separate explicit side effect. Before scheduling, call divo_skill_resolve with the manager's exact scheduling request and a scheduling-focused variant; continue only when the returned recipes include Schedule Divo Work. Then call tools.list with payload { "toolId": "scheduledWorkflows" }, followed by tools.invoke with payload { "toolId": "scheduledWorkflows", "args": { "operation": "create", ... } }. Do not ask the same scheduling question again in chat when the manager explicitly requested activation and the trigger, timezone, monitoring scope, autonomy boundary, and failure handling are all resolved; the standard action-review card may still appear before activation. Otherwise clarify or present the candidate without activation. Report the persona/skill write and schedule outcome separately so one cannot bluff success for the other.
 
 Immediately before APPLY, run the writeContract.preflight checklist against the exact payload. In particular: never use add or upsert; a skill merge requires targetSkillId copied from existingSkills; a persona merge, replace, or retire requires the full exact target object copied from existingPersona; include every readiness key and use null—not omission or an empty string—for a non-applicable nullable field. Do not use a validation failure as schema discovery.
 
@@ -247,6 +263,7 @@ Stay in this same conversation after the first write. When the manager corrects 
 }
 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
+	let schedulingSkillResolvedForRun = false;
 	registerApprovalGate(pi);
 	registerMemoryReviewTool(pi);
 	registerTeachClarificationTool(pi);
@@ -280,6 +297,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				departmentId: params.departmentId,
 				limit: params.limit,
 			});
+			schedulingSkillResolvedForRun = resolvedScheduleDivoWork(result);
 
 			return {
 				content: [{ type: "text", text: formatSkillResolveResult(result) }],
@@ -328,6 +346,20 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				departmentId?: string;
 				payload?: Record<string, unknown>;
 			};
+			if (isScheduledWorkflowInvocation(request) && !schedulingSkillResolvedForRun) {
+				return {
+					content: [{
+						type: "text",
+						text: "Scheduling recipe required. Call divo_skill_resolve with the exact user request and a scheduling-focused variant, then retry only if Schedule Divo Work is returned.",
+					}],
+					details: {
+						configured: true,
+						status: "skill_required",
+						ok: false,
+					},
+					isError: true,
+				};
+			}
 			const resolved = resolveDivoGatewayConfig();
 			if ("error" in resolved) {
 				throw new Error(resolved.error);
@@ -373,6 +405,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event) => {
+		schedulingSkillResolvedForRun = false;
 		let systemPrompt = composeDivoSystemPrompt(
 			event.systemPrompt,
 			DIVO_COMPANY_PERSONA_PROMPT,

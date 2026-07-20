@@ -6,7 +6,9 @@ import { ScheduledWorkflowControlService } from '../../../scheduling/scheduled-w
 
 const schema = z.object({
   name: z.string().describe('Short display name for the scheduled task'),
-  intent: z.string().describe('Natural-language description of what should happen when this runs'),
+  intent: z.string().describe(
+    'Complete self-contained execution instructions for a fresh agent. Describe the actual work, sources, scope, output, safety boundaries, and failure behavior. Do not restate the schedule or say only "run workflow X".',
+  ),
   scheduleType: z.enum(['one_time', 'hourly', 'daily', 'weekly', 'monthly']).describe('Recurrence type'),
   timezone: z.string().default('Asia/Kolkata').describe('IANA timezone (default: Asia/Kolkata)'),
   runAt: z.string().optional().describe('ISO 8601 datetime for one_time schedules'),
@@ -16,17 +18,26 @@ const schema = z.object({
   timeMinute: z.number().int().min(0).max(59).optional().describe('Minute of hour (0-59) for daily/weekly/monthly'),
   daysOfWeek: z.array(z.string()).optional().describe('For weekly: days like ["MO","WE","FR"]'),
   dayOfMonth: z.number().int().min(1).max(31).optional().describe('For monthly: day of month (1-31)'),
+  delivery: z.enum(['current_conversation', 'creator_lark_dm'])
+    .default('current_conversation')
+    .describe('Deliver to this conversation, or directly to the authenticated creator\'s Lark DM'),
 });
 
 export function createScheduleTaskTool(
   prisma: PrismaClient,
   runContext: RunContext,
+  options: {
+    readonly isSchedulingSkillResolved?: () => boolean;
+  } = {},
 ) {
   return dynamicTool({
     description:
-      'Create a recurring or one-time scheduled task. Use for "remind me every Monday", "send daily report at 9am", "check invoices on the 1st of each month", etc.',
+      'Create a recurring or one-time scheduled task after resolve_work has loaded the Schedule Divo Work recipe. The intent must be a complete executable task, not a workflow name or timing description.',
     inputSchema: schema as never,
     execute: async (input: unknown): Promise<string> => {
+      if (options.isSchedulingSkillResolved && !options.isSchedulingSkillResolved()) {
+        return 'skill_required: Before creating a schedule, call resolve_work with the exact original user request and a scheduling-focused variant. Continue only after the approved Schedule Divo Work recipe is returned.';
+      }
       const args = schema.parse(input);
       try {
         const created = await new ScheduledWorkflowControlService(prisma).create(runContext, args);

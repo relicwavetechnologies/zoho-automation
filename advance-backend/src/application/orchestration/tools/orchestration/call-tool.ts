@@ -15,6 +15,7 @@ import type { ToolRegistry } from '../tool-registry';
 import type { AdapterContext } from '../ai-sdk-adapter';
 import { buildArgsSummary } from '../ai-sdk-adapter';
 import type { ToolExecutionContext } from '../tool.contract';
+import type { ToolExecutor } from '../../../gateway/tool-executor';
 
 const inputSchema = z.object({
   toolId: z.string().describe('The ID of the tool to execute (e.g. larkTask, googleGmail, zohoCrm)'),
@@ -31,6 +32,7 @@ export function createCallToolTool(
     status: string;
     action?: string;
   }) => void,
+  runtimeExecutor?: ToolExecutor,
 ) {
   const availableIds = registry.ids()
     .filter((toolId) => !allowedToolIds || allowedToolIds.has(String(toolId)))
@@ -50,6 +52,30 @@ export function createCallToolTool(
       const { toolId, args } = parsed.data;
 
       adapterCtx.logger.info('call_tool.invoke', { toolId });
+
+      // Backend-hosted channels supply the governed executor so they share
+      // desktop-grade schema validation, approval matching, and tool runtime
+      // behavior instead of maintaining a parallel implementation here.
+      if (runtimeExecutor) {
+        const outcome = await runtimeExecutor.executeForRuntime({
+          toolId,
+          args,
+          runContext: adapterCtx.runContext,
+          perm: adapterCtx.perm,
+          ...(allowedToolIds ? { allowedToolIds } : {}),
+          ...(adapterCtx.approvalGate ? { approvalGate: adapterCtx.approvalGate } : {}),
+          ...(adapterCtx.chatId ? { chatId: adapterCtx.chatId } : {}),
+          ...(adapterCtx.onProgress ? { onProgress: adapterCtx.onProgress } : {}),
+        });
+        const outcomeResult = formatRuntimeOutcome(outcome);
+        onDecision?.({
+          toolId,
+          outcome: outcome.status === 'success' || outcome.status === 'approval_required' ? 'success' : 'failure',
+          status: outcome.status === 'approval_required' ? 'approval_pending' : outcome.status,
+          ...(outcome.action ? { action: outcome.action } : {}),
+        });
+        return outcomeResult;
+      }
 
       if (allowedToolIds && !allowedToolIds.has(toolId)) {
         adapterCtx.logger.warn('call_tool.permission_denied', {
@@ -168,4 +194,18 @@ export function createCallToolTool(
       return typeof val === 'string' ? val : JSON.stringify(val);
     },
   });
+}
+
+function formatRuntimeOutcome(outcome: Awaited<ReturnType<ToolExecutor['executeForRuntime']>>): string {
+  if (outcome.status === 'success') {
+    return typeof outcome.result === 'string' ? outcome.result : JSON.stringify(outcome.result);
+  }
+  const message = outcome.message ?? 'The tool could not complete.';
+  switch (outcome.status) {
+    case 'permission_denied': return `permission_denied: ${message}`;
+    case 'approval_required': return `approval_pending: ${message}`;
+    case 'approval_rejected': return `approval_rejected: ${message}`;
+    case 'approval_misconfigured': return `approval_misconfigured: ${message}`;
+    default: return `error: ${message}`;
+  }
 }

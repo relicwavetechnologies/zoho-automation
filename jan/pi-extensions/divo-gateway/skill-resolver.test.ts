@@ -110,6 +110,7 @@ describe("resolveDivoSkills", () => {
 		assert.deepEqual(requests[0]?.payload?.variants, variants);
 		assert.equal(first.policy, DIVO_SKILL_POLICY);
 		assert.equal(first.selected?.id, "cursor-dashboard");
+		assert.equal(first.selected?.slug, "cursor-dashboard");
 		assert.equal(cached.selected?.id, "cursor-dashboard");
 		assert.deepEqual(first.results.map(skill => skill.id), ["cursor-dashboard", "web-search"]);
 		assert.equal(first.personaRules[0]?.learningSources[0]?.sourceId, "teach-1");

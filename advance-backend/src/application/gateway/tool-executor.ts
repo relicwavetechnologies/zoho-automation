@@ -39,6 +39,35 @@ export interface ToolExecutorDeps {
   readonly clock: Clock;
 }
 
+/**
+ * A channel has already resolved the authenticated member and permission
+ * snapshot, but still needs to execute through the same validation, approval,
+ * and tool-runtime path as the desktop gateway. This prevents Lark's agent
+ * tool from becoming a second policy implementation.
+ */
+export interface RuntimeToolExecutionInput {
+  readonly toolId: string;
+  readonly args: Record<string, unknown>;
+  readonly runContext: RunContext;
+  readonly perm: PermissionResult;
+  readonly allowedToolIds?: ReadonlySet<string>;
+  readonly approvalGate?: ApprovalGateService;
+  readonly chatId?: string;
+  readonly onProgress?: (message: string) => void;
+  readonly expectedAction?: ToolActionGroup;
+}
+
+export interface RuntimeToolExecutionOutcome {
+  readonly status: Extract<GatewayResponse['status'],
+    'success' | 'unknown_tool' | 'invalid_args' | 'permission_denied'
+    | 'approval_required' | 'approval_rejected' | 'approval_misconfigured' | 'tool_error'>;
+  readonly toolId: string;
+  readonly action?: ToolActionGroup;
+  readonly result?: unknown;
+  readonly message?: string;
+  readonly approvalId?: string;
+}
+
 export interface PreparedToolInvocation {
   readonly toolId: string;
   readonly action: ToolActionGroup;
@@ -187,6 +216,113 @@ export class ToolExecutor {
     });
   }
 
+  /**
+   * Executes a request-scoped tool call for a backend-hosted channel. The
+   * caller must supply the permission snapshot that the orchestration engine
+   * just resolved; this method does not create an alternate identity or RBAC
+   * decision path.
+   */
+  async executeForRuntime(input: RuntimeToolExecutionInput): Promise<RuntimeToolExecutionOutcome> {
+    const { toolId, args, runContext, perm } = input;
+
+    if (toolId === 'runCommand') {
+      return runtimeFailure(toolId, 'permission_denied', 'runCommand is not available through backend-hosted channels.');
+    }
+    if (input.allowedToolIds && !input.allowedToolIds.has(toolId)) {
+      return runtimeFailure(toolId, 'permission_denied', 'This tool is not available for the current member.');
+    }
+
+    const tool = this.deps.toolRegistry.byId(toolId as never);
+    if (!tool) return runtimeFailure(toolId, 'unknown_tool', `Unknown toolId "${toolId}"`);
+
+    const parsed = tool.argsSchema.safeParse(args);
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+        .join('; ');
+      return runtimeFailure(toolId, 'invalid_args', `Invalid args for "${toolId}" — ${issues}`);
+    }
+
+    const validatedArgs = parsed.data as Record<string, unknown>;
+    const permissionCheck = tool.permissionCheck(validatedArgs, perm);
+    if (!permissionCheck.ok) {
+      return runtimeFailure(toolId, 'permission_denied', permissionCheck.error.message);
+    }
+    const action = permissionCheck.value;
+    if (input.expectedAction && action !== input.expectedAction) {
+      return runtimeFailure(
+        toolId,
+        'invalid_args',
+        `Tool action changed from "${input.expectedAction}" to "${action}" after approval.`,
+        action,
+      );
+    }
+
+    let executionGrant: { approvalId: string } | undefined;
+    if (input.approvalGate && input.chatId && tool.id !== asToolId('memoryRecall')) {
+      const decision = await input.approvalGate.check({
+        toolId: tool.id,
+        action,
+        args: validatedArgs,
+        perm,
+        runContext,
+        chatId: input.chatId,
+        argsSummary: buildArgsSummary(tool.id, action, validatedArgs),
+      });
+      if (decision.kind === 'pending') {
+        return runtimeFailure(toolId, 'approval_required', decision.message, action, decision.approvalId);
+      }
+      if (decision.kind === 'rejected') {
+        return runtimeFailure(toolId, 'approval_rejected', decision.message, action, decision.approvalId);
+      }
+      if (decision.kind === 'misconfigured') {
+        return runtimeFailure(toolId, 'approval_misconfigured', decision.message, action);
+      }
+      executionGrant = decision.executionGrant;
+    }
+
+    const context: ToolExecutionContext = {
+      runContext,
+      perm,
+      correlationId: tool.id,
+      logger: this.deps.logger.child({ toolId: tool.id, channel: runContext.channel }),
+      clock: this.deps.clock,
+      ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+    };
+
+    try {
+      const result = await tool.execute(validatedArgs, context);
+      if (!result.ok) {
+        if (executionGrant) {
+          await input.approvalGate?.failExecution(executionGrant, {
+            status: 'tool_error',
+            message: result.error.message,
+          });
+        }
+        return runtimeFailure(toolId, 'tool_error', result.error.message, action);
+      }
+
+      if (executionGrant) {
+        await input.approvalGate?.completeExecution(executionGrant, {
+          status: 'success',
+          result: result.value,
+        });
+      }
+      return {
+        status: 'success',
+        toolId,
+        action,
+        result: limitModelFacingResult(result.value),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (executionGrant) {
+        await input.approvalGate?.failExecution(executionGrant, { status: 'tool_error', message });
+      }
+      return runtimeFailure(toolId, 'tool_error', message, action);
+    }
+  }
+
   private async resolve(input: ToolExecutorInput): Promise<ResolveToolInvocationResult> {
     const { member, departmentId, toolId, args } = input;
 
@@ -322,6 +458,22 @@ export class ToolExecutor {
       chatId: execution?.threadId ?? `gateway:${member.sessionId}`,
     };
   }
+}
+
+function runtimeFailure(
+  toolId: string,
+  status: Exclude<RuntimeToolExecutionOutcome['status'], 'success'>,
+  message: string,
+  action?: ToolActionGroup,
+  approvalId?: string,
+): RuntimeToolExecutionOutcome {
+  return {
+    status,
+    toolId,
+    ...(action ? { action } : {}),
+    message,
+    ...(approvalId ? { approvalId } : {}),
+  };
 }
 
 /**

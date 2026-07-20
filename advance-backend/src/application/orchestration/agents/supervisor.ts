@@ -71,10 +71,14 @@ import type { GroupContextContentPart } from '../../../domain/conversation/group
 import { isInternalHistoryMarker } from '../../../domain/conversation/internal-history-marker';
 import type { SkillCatalogService, CatalogSkill } from '../../skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../../skills/skill-access.port';
+import { WorkResolutionService } from '../../gateway/work-resolution.service';
+import type { ToolExecutor } from '../../gateway/tool-executor';
 import { buildBrainSystemPrompt } from '../brain-prompt';
 import { createGovernedDiscoverSkillTool } from '../tools/orchestration/discover-governed-skill';
 import { createCallToolTool } from '../tools/orchestration/call-tool';
+import { createResolveGovernedWorkTool } from '../tools/orchestration/resolve-governed-work';
 import type { AuditService } from '../../observability/audit.service';
+import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from '../../skills/scheduled-work-system-skill';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -169,6 +173,10 @@ export interface SupervisorDeps {
   skillCatalog?: SkillCatalogService;
   /** Explicit company/user/department/role skill grant resolver. */
   skillAccessEnforcement?: SkillAccessEnforcementPort;
+  /** Shared desktop/Lark resolver for persona rules and company skill recipes. */
+  workResolution?: WorkResolutionService;
+  /** Shared governed executor used by backend-hosted channel tool calls. */
+  toolExecutor?: ToolExecutor;
   auditService?: Pick<AuditService, 'record'>;
 }
 
@@ -409,9 +417,14 @@ export class SupervisorAgent {
       }),
     } as unknown as ToolSet;
 
+    const schedulingSkillResolution = { loaded: false };
     const orchestrationTools = {
       manageTodos: createManageTodosTool(todoRepo, runContext),
-      scheduleTask: createScheduleTaskTool(prisma, runContext),
+      scheduleTask: createScheduleTaskTool(prisma, runContext, {
+        ...(useGovernedLarkRuntime
+          ? { isSchedulingSkillResolved: () => schedulingSkillResolution.loaded }
+          : {}),
+      }),
       listScheduledTasks: createListScheduledTasksTool(prisma, runContext),
       cancelScheduledTask: createCancelScheduledTaskTool(prisma, runContext),
       runScheduledTaskNow: createRunScheduledNowTool(prisma, runContext),
@@ -419,8 +432,51 @@ export class SupervisorAgent {
     } as unknown as ToolSet;
 
     const allowedToolIds = governedPermittedToolIds;
+    const workResolver = useGovernedLarkRuntime
+      ? this.deps.workResolution ?? new WorkResolutionService({
+        skillCatalog: this.deps.skillCatalog!,
+        ...(this.deps.skillAccessEnforcement
+          ? { skillAccessEnforcement: this.deps.skillAccessEnforcement }
+          : {}),
+      })
+      : undefined;
     const governedSkillTools = useGovernedLarkRuntime
       ? {
+        resolve_work: createResolveGovernedWorkTool({
+          resolver: workResolver!,
+          companyId: String(runContext.companyId),
+          userId: String(runContext.userId),
+          ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
+          permission: perm,
+          onResolution: (event) => {
+            const selectedSkills = event.resolution
+              ? [
+                ...event.resolution.persona.linkedSkills.map(item => item.skill),
+                ...event.resolution.additionalSkills.map(item => item.skill),
+              ]
+              : [];
+            schedulingSkillResolution.loaded = selectedSkills.some(
+              skill => skill.slug === SCHEDULE_DIVO_WORK_SKILL_SLUG,
+            );
+            if (this.deps.auditService) {
+              void this.deps.auditService.record({
+                actorId: String(runContext.userId),
+                companyId: String(runContext.companyId),
+                action: 'lark.work.resolve',
+                outcome: event.outcome,
+                metadata: {
+                  departmentId: runContext.departmentId ? String(runContext.departmentId) : null,
+                  queryCount: event.resolution?.queries.length ?? 0,
+                  personaRuleCount: event.resolution?.persona.rules.length ?? 0,
+                  personaSkillIds: event.resolution?.persona.linkedSkills.map((item) => item.skill.id) ?? [],
+                  searchedSkillIds: event.resolution?.additionalSkills.map((item) => item.skill.id) ?? [],
+                  rejectedSkillIds: event.resolution?.rejectedSkills.map((item) => item.id) ?? [],
+                  registryRevision: event.resolution?.registryRevision ?? null,
+                },
+              });
+            }
+          },
+        }),
         discover_skill: createGovernedDiscoverSkillTool({
           skillCatalog: this.deps.skillCatalog!,
           companyId: String(runContext.companyId),
@@ -461,7 +517,7 @@ export class SupervisorAgent {
             status: event.status,
             departmentId: runContext.departmentId ? String(runContext.departmentId) : null,
           },
-        }) : undefined),
+        }) : undefined, this.deps.toolExecutor),
       } as unknown as ToolSet
       : {} as ToolSet;
 
