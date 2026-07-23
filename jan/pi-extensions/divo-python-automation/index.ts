@@ -74,9 +74,20 @@ export type PythonGatewayHandler = (
 export type DivoPythonProgramResult = {
 	result: unknown;
 	gatewayCallCount: number;
-	calls: Array<{ op: string; toolId?: string; status: string; ok: boolean }>;
+	calls: Array<{ op: string; toolId?: string; action?: string; status: string; ok: boolean }>;
 	stdout?: string;
 	stderr?: string;
+};
+
+export type DivoWorkflowStatus = "completed" | "partial" | "failed";
+
+export type DivoWorkflowAssessment = {
+	status: DivoWorkflowStatus;
+	phase: "Completed" | "Partial" | "Failed";
+	valid: boolean;
+	message: string;
+	errors: string[];
+	contract?: Record<string, unknown>;
 };
 
 type ToolUpdate = {
@@ -98,11 +109,13 @@ export default function divoPythonAutomationExtension(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"One coherent outcome equals one divo_python_automation call. Put source reads, pagination, transformations, grouping, deduplication, and related destination writes in the same run(input_data, divo) program. Loop inside Python; never start separate Python runs per page, row, tab, domain, tool call, or small phase.",
 			"Use divo_python_automation only when Python adds real value. For one straightforward read or one create/update/send, call divo_gateway directly.",
-			"The supplied divo client provides divo.connections(provider), divo.tool(tool_id), divo.invoke(tool_id, args), divo.require(op, payload), and divo.gateway(op, payload). divo.invoke returns { toolId, action, result }; native tool data is at response['result']['data']. Convenience methods raise an exact DivoGatewayError on gateway rejection; gateway returns the full structured response when deliberate branching is required.",
+			"The supplied divo client provides divo.connections(provider), divo.tool(tool_id), divo.invoke(tool_id, args), divo.require(op, payload), divo.gateway(op, payload), and divo.normalize_email_date(value, timezone_name). divo.invoke returns { toolId, action, result }; native tool data is at response['result']['data']. Convenience methods raise an exact DivoGatewayError on gateway rejection; gateway returns the full structured response when deliberate branching is required.",
 			"Write ordinary Python. Standard imports, installed packages, print, local files, subprocesses, and direct networking are available. Use divo—not raw backend HTTP—for connected company tools because Python does not receive Divo member tokens or SaaS credentials.",
-			"Read and validate all required source data first, transform it in memory, then perform writes. This reduces partial completion. Return a concise JSON result describing counts, destinations, and created identifiers.",
+			"Read and validate all required source data first, transform it in memory, then perform writes. This reduces partial completion. Return the required Divo workflow result contract with status; reconciled source, transformation, and destination counts; destination IDs; verification checks; issues; and safe_retry. Process exit alone is never completion.",
 			"Never execute a create, send, update, or delete merely to discover its response shape. Use divo.tool or a read/describe operation first. Once a mutation reports success, retain its returned identifier and never repeat it because downstream parsing failed; verify the created resource with a read operation instead.",
 			"After destination writes, read back the important destination range or records in the same Python run. Report success only after verification; otherwise report partial completion with the already-created identifier so a retry cannot silently duplicate it.",
+			"The reconciliation equations are exact: source parsed + skipped = structured; transformation filtered_out + duplicates_removed + prepared + skipped = input; destination written + skipped = attempted. completed writes additionally require attempted = written = verified and verification.status = 'verified'.",
+			"For Gmail dates, call divo.normalize_email_date(raw_date, the user's IANA timezone), sort by iso_utc, and group by local_date. Never group or compare provider display strings. Preserve invalid raw dates and count them as source or transformation skips.",
 			"Every connection-backed call must use an exact connectionId obtained through divo.connections. Never guess an account, credential, backend URL, member token, or OAuth token.",
 			"Do not blindly retry permission_denied, approval_required, approval_rejected, local approval denial, invalid_args, or rate_limited. Stop and return or surface the exact status. Retry only an unmistakably transient upstream/network failure, at most once.",
 			"Split into another Python run only when the current run must stop for material user clarification or an external approval, or when the user requested genuinely independent workflows. Do not fragment a simple workflow for narration or progress reporting.",
@@ -162,21 +175,29 @@ export default function divoPythonAutomationExtension(pi: ExtensionAPI) {
 					},
 				);
 
-				update(`Completed ${params.title}`, `${program.gatewayCallCount} governed gateway call${program.gatewayCallCount === 1 ? "" : "s"}`);
+				const assessment = assessDivoPythonWorkflow(program);
+				update(`${assessment.phase} ${params.title}`, assessment.message, {
+					workflowStatus: assessment.status,
+					reconciliationValid: assessment.valid,
+				});
 				return {
 					content: [{
 						type: "text" as const,
-						text: formatProgramResult(params.title, program),
+						text: formatProgramResult(params.title, program, assessment),
 					}],
 					details: {
 						title: params.title,
-						phase: "Completed",
+						phase: assessment.phase,
+						workflowStatus: assessment.status,
+						reconciliationValid: assessment.valid,
+						reconciliationErrors: assessment.errors,
 						gatewayCallCount: program.gatewayCallCount,
 						calls: program.calls,
 						result: program.result,
 						...(program.stdout ? { stdout: program.stdout } : {}),
 						...(program.stderr ? { stderr: program.stderr } : {}),
 					},
+					...(assessment.status === "failed" ? { isError: true } : {}),
 				};
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -219,7 +240,7 @@ export async function runDivoPythonProgram(
 }
 
 function buildRunner(userCode: string): string {
-	return `import json\nimport os\nimport sys\nimport traceback\n\nUSER_CODE = ${JSON.stringify(userCode)}\nPROTOCOL = os.fdopen(3, 'w', encoding='utf-8', buffering=1)\n\ndef emit(message):\n  PROTOCOL.write(json.dumps(message, ensure_ascii=False) + '\\n')\n  PROTOCOL.flush()\n\nclass DivoGatewayError(RuntimeError):\n  def __init__(self, response):\n    self.response = response\n    status = str(response.get('status') or 'tool_error')\n    error = response.get('error') if isinstance(response.get('error'), dict) else {}\n    approval = response.get('approval') if isinstance(response.get('approval'), dict) else {}\n    message = error.get('message') or approval.get('message') or 'The gateway rejected this call.'\n    super().__init__(status + ': ' + str(message))\n\nclass DivoClient:\n  def gateway(self, op, payload=None):\n    if not isinstance(op, str) or not op.strip():\n      raise ValueError('divo.gateway requires a non-empty op.')\n    if payload is None:\n      payload = {}\n    if not isinstance(payload, dict):\n      raise ValueError('divo.gateway payload must be a dict.')\n    emit({'type': 'gateway_call', 'op': op, 'payload': payload})\n    line = sys.stdin.readline()\n    if not line:\n      raise RuntimeError('The Divo gateway bridge closed before returning a response.')\n    envelope = json.loads(line)\n    response = envelope.get('body') if isinstance(envelope, dict) else None\n    if not isinstance(response, dict):\n      raise RuntimeError('The Divo gateway bridge returned an invalid response.')\n    return response\n\n  def require(self, op, payload=None):\n    response = self.gateway(op, payload)\n    if not response.get('ok') or response.get('status') != 'success':\n      raise DivoGatewayError(response)\n    return response.get('data')\n\n  def connections(self, provider):\n    return self.require('connections.list', {'provider': provider})\n\n  def tool(self, tool_id):\n    return self.require('tools.list', {'toolId': tool_id})\n\n  def invoke(self, tool_id, args):\n    if not isinstance(tool_id, str) or not tool_id.strip():\n      raise ValueError('divo.invoke requires a non-empty tool_id.')\n    if not isinstance(args, dict):\n      raise ValueError('divo.invoke args must be a dict.')\n    return self.require('tools.invoke', {'toolId': tool_id, 'args': args})\n\ntry:\n  with open('input.json', 'r', encoding='utf-8') as handle:\n    input_data = json.load(handle)\n  program_scope = {'__name__': '__divo_workflow__', '__file__': '<divo-python-workflow>'}\n  exec(compile(USER_CODE, '<divo-python-workflow>', 'exec'), program_scope, program_scope)\n  run = program_scope.get('run')\n  if not callable(run):\n    raise ValueError('Define run(input_data, divo) in the Python code.')\n  result = run(input_data, DivoClient())\n  json.dumps(result, ensure_ascii=False)\n  emit({'type': 'result', 'result': result})\nexcept Exception as exc:\n  traceback.print_exc(file=sys.stderr)\n  emit({'type': 'failure', 'errorType': type(exc).__name__, 'message': str(exc)})\n  sys.exit(1)\n`;
+	return `import json\nimport os\nimport sys\nimport traceback\nfrom datetime import datetime, timezone\nfrom email.utils import parsedate_to_datetime\nfrom zoneinfo import ZoneInfo\n\nUSER_CODE = ${JSON.stringify(userCode)}\nPROTOCOL = os.fdopen(3, 'w', encoding='utf-8', buffering=1)\n\ndef emit(message):\n  PROTOCOL.write(json.dumps(message, ensure_ascii=False) + '\\n')\n  PROTOCOL.flush()\n\nclass DivoGatewayError(RuntimeError):\n  def __init__(self, response):\n    self.response = response\n    status = str(response.get('status') or 'tool_error')\n    error = response.get('error') if isinstance(response.get('error'), dict) else {}\n    approval = response.get('approval') if isinstance(response.get('approval'), dict) else {}\n    message = error.get('message') or approval.get('message') or 'The gateway rejected this call.'\n    super().__init__(status + ': ' + str(message))\n\nclass DivoClient:\n  def gateway(self, op, payload=None):\n    if not isinstance(op, str) or not op.strip():\n      raise ValueError('divo.gateway requires a non-empty op.')\n    if payload is None:\n      payload = {}\n    if not isinstance(payload, dict):\n      raise ValueError('divo.gateway payload must be a dict.')\n    emit({'type': 'gateway_call', 'op': op, 'payload': payload})\n    line = sys.stdin.readline()\n    if not line:\n      raise RuntimeError('The Divo gateway bridge closed before returning a response.')\n    envelope = json.loads(line)\n    response = envelope.get('body') if isinstance(envelope, dict) else None\n    if not isinstance(response, dict):\n      raise RuntimeError('The Divo gateway bridge returned an invalid response.')\n    return response\n\n  def require(self, op, payload=None):\n    response = self.gateway(op, payload)\n    if not response.get('ok') or response.get('status') != 'success':\n      raise DivoGatewayError(response)\n    return response.get('data')\n\n  def connections(self, provider):\n    return self.require('connections.list', {'provider': provider})\n\n  def tool(self, tool_id):\n    return self.require('tools.list', {'toolId': tool_id})\n\n  def invoke(self, tool_id, args):\n    if not isinstance(tool_id, str) or not tool_id.strip():\n      raise ValueError('divo.invoke requires a non-empty tool_id.')\n    if not isinstance(args, dict):\n      raise ValueError('divo.invoke args must be a dict.')\n    return self.require('tools.invoke', {'toolId': tool_id, 'args': args})\n\n  def normalize_email_date(self, value, timezone_name='UTC'):\n    raw = '' if value is None else str(value).strip()\n    try:\n      target_timezone = ZoneInfo(timezone_name)\n      assumed_utc = False\n      parsed = None\n      if isinstance(value, (int, float)) or (raw.isdigit() and len(raw) >= 10):\n        timestamp = float(value)\n        if timestamp > 100000000000:\n          timestamp = timestamp / 1000.0\n        parsed = datetime.fromtimestamp(timestamp, timezone.utc)\n      else:\n        try:\n          parsed = parsedate_to_datetime(raw)\n        except (TypeError, ValueError, OverflowError):\n          parsed = None\n        if parsed is None:\n          parsed = datetime.fromisoformat(raw.replace('Z', '+00:00'))\n      if parsed.tzinfo is None:\n        parsed = parsed.replace(tzinfo=timezone.utc)\n        assumed_utc = True\n      utc_value = parsed.astimezone(timezone.utc)\n      local_value = utc_value.astimezone(target_timezone)\n      return {\n        'ok': True,\n        'raw': raw,\n        'iso_utc': utc_value.isoformat().replace('+00:00', 'Z'),\n        'local_iso': local_value.isoformat(),\n        'local_date': local_value.date().isoformat(),\n        'timezone': timezone_name,\n        'assumed_utc': assumed_utc,\n      }\n    except Exception as exc:\n      return {\n        'ok': False,\n        'raw': raw,\n        'timezone': timezone_name,\n        'error': type(exc).__name__ + ': ' + str(exc),\n      }\n\ntry:\n  with open('input.json', 'r', encoding='utf-8') as handle:\n    input_data = json.load(handle)\n  program_scope = {'__name__': '__divo_workflow__', '__file__': '<divo-python-workflow>'}\n  exec(compile(USER_CODE, '<divo-python-workflow>', 'exec'), program_scope, program_scope)\n  run = program_scope.get('run')\n  if not callable(run):\n    raise ValueError('Define run(input_data, divo) in the Python code.')\n  result = run(input_data, DivoClient())\n  json.dumps(result, ensure_ascii=False)\n  emit({'type': 'result', 'result': result})\nexcept Exception as exc:\n  traceback.print_exc(file=sys.stderr)\n  emit({'type': 'failure', 'errorType': type(exc).__name__, 'message': str(exc)})\n  sys.exit(1)\n`;
 }
 
 async function runDirectPython(
@@ -280,9 +301,11 @@ async function runDirectPython(
 				const request: GatewayRequestBody = { op: message.op, payload: message.payload };
 				const body = await handleGateway(request, gatewayCallCount);
 				const toolId = readToolId(message.payload);
+				const action = readGatewayAction(body);
 				calls.push({
 					op: message.op,
 					...(toolId ? { toolId } : {}),
+					...(action ? { action } : {}),
 					status: body.status,
 					ok: body.ok,
 				});
@@ -351,6 +374,12 @@ function readToolId(payload: Record<string, unknown>): string | undefined {
 	return typeof payload.toolId === "string" && payload.toolId.trim() ? payload.toolId : undefined;
 }
 
+function readGatewayAction(body: GatewayResponseBody): string | undefined {
+	if (!body.data || typeof body.data !== "object" || Array.isArray(body.data)) return undefined;
+	const action = (body.data as Record<string, unknown>).action;
+	return typeof action === "string" && action.trim() ? action : undefined;
+}
+
 function describeGatewayRequest(request: GatewayRequestBody): string {
 	const payload = request.payload && typeof request.payload === "object" && !Array.isArray(request.payload)
 		? request.payload as Record<string, unknown>
@@ -367,7 +396,191 @@ function describeGatewayRequest(request: GatewayRequestBody): string {
 	return [toolId ?? request.op, operation].filter(Boolean).join(" · ");
 }
 
-function formatProgramResult(title: string, program: DivoPythonProgramResult): string {
+const WORKFLOW_STATUSES = new Set<DivoWorkflowStatus>(["completed", "partial", "failed"]);
+const VERIFICATION_STATUSES = new Set(["verified", "not_required", "partial", "failed", "not_run"]);
+const RETRY_MODES = new Set(["none", "resume_existing", "retry_read_only", "manual_review"]);
+
+/**
+ * A successful Python process is not proof that a data workflow completed.
+ * This assessment is deliberately local and deterministic: the model reports
+ * stage counts, while the extension decides whether those counts reconcile and
+ * whether the visible worklog is allowed to say "Completed".
+ */
+export function assessDivoPythonWorkflow(program: DivoPythonProgramResult): DivoWorkflowAssessment {
+	const errors: string[] = [];
+	if (!isRecord(program.result)) {
+		return invalidWorkflowAssessment(["Return a JSON object using the Divo workflow result contract."]);
+	}
+
+	const contract = program.result;
+	const requestedStatus = typeof contract.status === "string" && WORKFLOW_STATUSES.has(contract.status as DivoWorkflowStatus)
+		? contract.status as DivoWorkflowStatus
+		: undefined;
+	if (!requestedStatus) errors.push("status must be completed, partial, or failed");
+
+	const reconciliation = readRecord(contract.reconciliation, "reconciliation", errors);
+	const source = readRecord(reconciliation?.source, "reconciliation.source", errors);
+	const transformation = readRecord(reconciliation?.transformation, "reconciliation.transformation", errors);
+	const destinationCounts = readRecord(reconciliation?.destination, "reconciliation.destination", errors);
+
+	const providerReturned = readCount(source, "provider_returned", "reconciliation.source", errors);
+	const structured = readCount(source, "structured", "reconciliation.source", errors);
+	const parsed = readCount(source, "parsed", "reconciliation.source", errors);
+	const sourceSkipped = readCount(source, "skipped", "reconciliation.source", errors);
+	const transformInput = readCount(transformation, "input", "reconciliation.transformation", errors);
+	const filteredOut = readCount(transformation, "filtered_out", "reconciliation.transformation", errors);
+	const duplicatesRemoved = readCount(transformation, "duplicates_removed", "reconciliation.transformation", errors);
+	const prepared = readCount(transformation, "prepared", "reconciliation.transformation", errors);
+	const transformSkipped = readCount(transformation, "skipped", "reconciliation.transformation", errors);
+	const attempted = readCount(destinationCounts, "attempted", "reconciliation.destination", errors);
+	const written = readCount(destinationCounts, "written", "reconciliation.destination", errors);
+	const verified = readCount(destinationCounts, "verified", "reconciliation.destination", errors);
+	const destinationSkipped = readCount(destinationCounts, "skipped", "reconciliation.destination", errors);
+
+	if (allCountsPresent(providerReturned, structured) && structured > providerReturned) {
+		errors.push("reconciliation.source.structured cannot exceed provider_returned");
+	}
+	if (allCountsPresent(structured, parsed, sourceSkipped) && parsed + sourceSkipped !== structured) {
+		errors.push("source counts must reconcile: parsed + skipped = structured");
+	}
+	if (allCountsPresent(transformInput, parsed) && transformInput !== parsed) {
+		errors.push("reconciliation.transformation.input must equal reconciliation.source.parsed");
+	}
+	if (allCountsPresent(transformInput, filteredOut, duplicatesRemoved, prepared, transformSkipped)
+		&& filteredOut + duplicatesRemoved + prepared + transformSkipped !== transformInput) {
+		errors.push("transformation counts must reconcile: filtered_out + duplicates_removed + prepared + skipped = input");
+	}
+	if (allCountsPresent(attempted, prepared) && attempted !== prepared) {
+		errors.push("reconciliation.destination.attempted must equal reconciliation.transformation.prepared");
+	}
+	if (allCountsPresent(attempted, written, destinationSkipped) && written + destinationSkipped !== attempted) {
+		errors.push("destination counts must reconcile: written + skipped = attempted");
+	}
+	if (allCountsPresent(written, verified) && verified > written) {
+		errors.push("reconciliation.destination.verified cannot exceed written");
+	}
+
+	const verification = readRecord(contract.verification, "verification", errors);
+	const verificationStatus = typeof verification?.status === "string" && VERIFICATION_STATUSES.has(verification.status)
+		? verification.status
+		: undefined;
+	if (!verificationStatus) errors.push("verification.status must be verified, not_required, partial, failed, or not_run");
+	const verificationChecks = Array.isArray(verification?.checks) ? verification.checks : [];
+	if (!Array.isArray(verification?.checks)) {
+		errors.push("verification.checks must be an array");
+	} else {
+		verificationChecks.forEach((check, index) => {
+			if (!isRecord(check)) {
+				errors.push(`verification.checks[${index}] must be an object`);
+				return;
+			}
+			if (typeof check.name !== "string" || !check.name.trim()) {
+				errors.push(`verification.checks[${index}].name must be a non-empty string`);
+			}
+			if (typeof check.passed !== "boolean") {
+				errors.push(`verification.checks[${index}].passed must be a boolean`);
+			}
+		});
+	}
+
+	const retry = readRecord(contract.safe_retry, "safe_retry", errors);
+	const retryMode = typeof retry?.mode === "string" && RETRY_MODES.has(retry.mode) ? retry.mode : undefined;
+	if (!retryMode) errors.push("safe_retry.mode must be none, resume_existing, retry_read_only, or manual_review");
+	if (typeof retry?.reason !== "string" || !retry.reason.trim()) errors.push("safe_retry.reason must be a non-empty string");
+
+	const destination = contract.destination === undefined ? undefined : readRecord(contract.destination, "destination", errors);
+	const resourceIds = destination ? readStringArray(destination.resource_ids, "destination.resource_ids", errors) : [];
+	if (destination?.urls !== undefined) readStringArray(destination.urls, "destination.urls", errors);
+	if (destination?.ranges !== undefined) readStringArray(destination.ranges, "destination.ranges", errors);
+	if (contract.issues !== undefined && !Array.isArray(contract.issues)) errors.push("issues must be an array when present");
+
+	const rejectedCalls = program.calls.filter(call => !call.ok || call.status !== "success");
+	if (requestedStatus === "completed") {
+		if (rejectedCalls.length > 0) errors.push("a completed workflow cannot contain rejected gateway calls");
+		if (allCountsPresent(attempted, written, verified) && attempted > 0 && (written !== attempted || verified !== written)) {
+			errors.push("completed writes require attempted = written = verified");
+		}
+		if (allCountsPresent(attempted) && attempted > 0 && verificationStatus !== "verified") {
+			errors.push("completed writes require verification.status = verified");
+		}
+		if (allCountsPresent(attempted) && attempted > 0 && verificationChecks.length === 0) {
+			errors.push("completed writes require at least one explicit verification check");
+		}
+		if (verificationChecks.some(check => isRecord(check) && check.passed !== true)) {
+			errors.push("a completed workflow cannot contain a failed verification check");
+		}
+		if (allCountsPresent(attempted) && attempted === 0 && verificationStatus !== "verified" && verificationStatus !== "not_required") {
+			errors.push("a completed read-only workflow requires verification.status = not_required or verified");
+		}
+		if (retryMode && retryMode !== "none") errors.push("a completed workflow requires safe_retry.mode = none");
+	}
+	if ((requestedStatus === "partial" || requestedStatus === "failed") && retryMode === "none") {
+		errors.push(`${requestedStatus} workflows must explain a safe retry or manual-review mode`);
+	}
+	if (typeof written === "number" && written > 0 && resourceIds.length === 0) {
+		errors.push("workflows that wrote records must return destination.resource_ids for provenance and duplicate-safe recovery");
+	}
+
+	if (errors.length > 0) return invalidWorkflowAssessment(errors, contract);
+
+	const status = requestedStatus as DivoWorkflowStatus;
+	const phase = status === "completed" ? "Completed" : status === "partial" ? "Partial" : "Failed";
+	const message = status === "completed"
+		? `Reconciled ${prepared} prepared, ${written} written, and ${verified} verified record${verified === 1 ? "" : "s"} across ${program.gatewayCallCount} governed call${program.gatewayCallCount === 1 ? "" : "s"}.`
+		: `${status === "partial" ? "Partial completion" : "Workflow failure"}: ${written} record${written === 1 ? "" : "s"} written and ${verified} verified. ${String(retry?.reason)}`;
+	return { status, phase, valid: true, message, errors: [], contract };
+}
+
+function invalidWorkflowAssessment(errors: string[], contract?: Record<string, unknown>): DivoWorkflowAssessment {
+	return {
+		status: "partial",
+		phase: "Partial",
+		valid: false,
+		message: `Completion is unverified. ${errors.join("; ")}. Do not claim success; preserve any returned destination IDs and reconcile before retrying.`,
+		errors,
+		...(contract ? { contract } : {}),
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function readRecord(value: unknown, path: string, errors: string[]): Record<string, unknown> | undefined {
+	if (isRecord(value)) return value;
+	errors.push(`${path} must be an object`);
+	return undefined;
+}
+
+function readCount(
+	record: Record<string, unknown> | undefined,
+	key: string,
+	path: string,
+	errors: string[],
+): number | undefined {
+	const value = record?.[key];
+	if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+	errors.push(`${path}.${key} must be a non-negative integer`);
+	return undefined;
+}
+
+function allCountsPresent(...values: Array<number | undefined>): values is number[] {
+	return values.every(value => typeof value === "number");
+}
+
+function readStringArray(value: unknown, path: string, errors: string[]): string[] {
+	if (!Array.isArray(value) || value.some(item => typeof item !== "string" || !item.trim())) {
+		errors.push(`${path} must be an array of non-empty strings`);
+		return [];
+	}
+	return value;
+}
+
+function formatProgramResult(
+	title: string,
+	program: DivoPythonProgramResult,
+	assessment: DivoWorkflowAssessment,
+): string {
 	let serialized: string;
 	try {
 		serialized = JSON.stringify(program.result, null, 2);
@@ -378,7 +591,8 @@ function formatProgramResult(title: string, program: DivoPythonProgramResult): s
 		serialized = `${serialized.slice(0, MAX_RESULT_TEXT_CHARS)}\n… result truncated in chat`;
 	}
 	const lines = [
-		`Completed ${title}.`,
+		`${assessment.phase} ${title}.`,
+		assessment.message,
 		`Gateway calls: ${program.gatewayCallCount}`,
 		"",
 		serialized,

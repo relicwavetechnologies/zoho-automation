@@ -222,13 +222,16 @@ advisories.
 - [x] Move Gmail normalization before compaction and preserve pagination truth.
 - [x] Add structured Sheets read results and required verification advisories.
 
-### Wave 3 — honest workflow completion (two related issues)
+### Wave 3 — honest workflow completion (complete)
 
-**Next:** reconcile source, transformed, written, and verified counts before a
-workflow can claim completion; then normalize dates before grouping.
+**Completed:** Python process exit no longer decides the visible completion
+state. The desktop validates an exact source/transformation/destination
+reconciliation contract, destination provenance, verification checks, and safe
+retry mode before it can say completed. Gmail workflow dates now use one
+runtime-provided RFC/ISO/epoch normalizer with explicit UTC and local-day values.
 
-- [ ] Add reconciliation helpers/counts and partial-completion contracts.
-- [ ] Correct date normalization and daily grouping in the data-movement recipe.
+- [x] Add reconciliation helpers/counts and partial-completion contracts.
+- [x] Correct date normalization and daily grouping in the data-movement recipe.
 
 ### Wave 4 — normal Bash + broker vertical slice (large)
 

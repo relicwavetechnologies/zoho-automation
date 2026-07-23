@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import extension, { runDivoPythonProgram } from "./index.ts";
+import extension, {
+	assessDivoPythonWorkflow,
+	runDivoPythonProgram,
+	type DivoPythonProgramResult,
+} from "./index.ts";
 
 describe("Divo Python workflow tool", () => {
 	it("teaches one coherent Python run instead of fragmented executions", () => {
@@ -25,6 +29,8 @@ describe("Divo Python workflow tool", () => {
 		assert.ok(tools[0]?.promptGuidelines?.some(line => /response\['result'\]\['data'\]/i.test(line)));
 		assert.ok(tools[0]?.promptGuidelines?.some(line => /never repeat it because downstream parsing failed/i.test(line)));
 		assert.ok(tools[0]?.promptGuidelines?.some(line => /read back the important destination/i.test(line)));
+		assert.ok(tools[0]?.promptGuidelines?.some(line => /reconciliation equations are exact/i.test(line)));
+		assert.ok(tools[0]?.promptGuidelines?.some(line => /normalize_email_date/i.test(line)));
 	});
 
 	it("fetches, transforms, and writes through multiple gateway calls in one process", async () => {
@@ -127,4 +133,122 @@ def run(input_data, divo):
 		);
 		assert.equal(calls, 1);
 	});
+
+	it("allows completion only when stage counts and verification reconcile", () => {
+		const program = programWithResult(completedWorkflowResult());
+		const assessment = assessDivoPythonWorkflow(program);
+
+		assert.equal(assessment.valid, true);
+		assert.equal(assessment.status, "completed");
+		assert.equal(assessment.phase, "Completed");
+		assert.match(assessment.message, /2 prepared, 2 written, and 2 verified/i);
+	});
+
+	it("downgrades an inconsistent completion claim to unverified partial work", () => {
+		const result = completedWorkflowResult();
+		result.reconciliation.destination.verified = 1;
+		result.verification.status = "partial";
+		const assessment = assessDivoPythonWorkflow(programWithResult(result));
+
+		assert.equal(assessment.valid, false);
+		assert.equal(assessment.status, "partial");
+		assert.equal(assessment.phase, "Partial");
+		assert.ok(assessment.errors.some(error => /attempted = written = verified/i.test(error)));
+		assert.ok(assessment.errors.some(error => /verification\.status = verified/i.test(error)));
+	});
+
+	it("requires partial writes to retain a destination ID for safe resume", () => {
+		const result = completedWorkflowResult();
+		result.status = "partial";
+		result.reconciliation.destination.written = 1;
+		result.reconciliation.destination.verified = 0;
+		result.reconciliation.destination.skipped = 1;
+		result.destination.resource_ids = [];
+		result.verification.status = "partial";
+		result.safe_retry = {
+			mode: "resume_existing",
+			reason: "Continue writing into the existing spreadsheet.",
+		};
+		const assessment = assessDivoPythonWorkflow(programWithResult(result));
+
+		assert.equal(assessment.valid, false);
+		assert.ok(assessment.errors.some(error => /destination\.resource_ids/i.test(error)));
+	});
+
+	it("normalizes Gmail dates before timezone-aware sorting and daily grouping", async () => {
+		const result = await runDivoPythonProgram({
+			title: "Normalize Gmail dates",
+			summary: "Normalize RFC, ISO, and invalid Gmail dates for an IST daily report.",
+			input: {},
+			code: `def run(input_data, divo):
+    return {
+        'rfc': divo.normalize_email_date('Wed, 22 Jul 2026 23:45:00 -0400', 'Asia/Kolkata'),
+        'iso': divo.normalize_email_date('2026-07-22T20:00:00Z', 'Asia/Kolkata'),
+        'invalid': divo.normalize_email_date('not-a-date', 'Asia/Kolkata'),
+    }
+`,
+		}, new AbortController().signal, async () => {
+			throw new Error("This test does not make gateway calls.");
+		});
+
+		assert.deepEqual(result.result, {
+			rfc: {
+				ok: true,
+				raw: "Wed, 22 Jul 2026 23:45:00 -0400",
+				iso_utc: "2026-07-23T03:45:00Z",
+				local_iso: "2026-07-23T09:15:00+05:30",
+				local_date: "2026-07-23",
+				timezone: "Asia/Kolkata",
+				assumed_utc: false,
+			},
+			iso: {
+				ok: true,
+				raw: "2026-07-22T20:00:00Z",
+				iso_utc: "2026-07-22T20:00:00Z",
+				local_iso: "2026-07-23T01:30:00+05:30",
+				local_date: "2026-07-23",
+				timezone: "Asia/Kolkata",
+				assumed_utc: false,
+			},
+			invalid: {
+				ok: false,
+				raw: "not-a-date",
+				timezone: "Asia/Kolkata",
+				error: "ValueError: Invalid isoformat string: 'not-a-date'",
+			},
+		});
+	});
 });
+
+function completedWorkflowResult() {
+	return {
+		status: "completed",
+		reconciliation: {
+			source: { provider_returned: 3, structured: 3, parsed: 3, skipped: 0 },
+			transformation: { input: 3, filtered_out: 1, duplicates_removed: 0, prepared: 2, skipped: 0 },
+			destination: { attempted: 2, written: 2, verified: 2, skipped: 0 },
+		},
+		destination: {
+			resource_ids: ["sheet-1"],
+			urls: ["https://docs.google.com/spreadsheets/d/sheet-1"],
+			ranges: ["Records!A1:C3"],
+		},
+		verification: {
+			status: "verified",
+			checks: [{ name: "row count", passed: true, expected: 2, actual: 2 }],
+		},
+		issues: [],
+		safe_retry: { mode: "none", reason: "All rows were read back." },
+	};
+}
+
+function programWithResult(result: unknown): DivoPythonProgramResult {
+	return {
+		result,
+		gatewayCallCount: 2,
+		calls: [
+			{ op: "tools.invoke", toolId: "googleGmail", action: "read", status: "success", ok: true },
+			{ op: "tools.invoke", toolId: "googleSheets", action: "create", status: "success", ok: true },
+		],
+	};
+}
