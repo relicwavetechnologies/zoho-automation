@@ -79,13 +79,42 @@ type CachedGatewayResponse = {
 };
 
 const skillResponseCache = new Map<string, CachedGatewayResponse>();
+let capturedGatewayConfig: DivoGatewayConfig | undefined;
 
 export function clearDivoGatewaySkillCache(): void {
 	skillResponseCache.clear();
 }
 
+/**
+ * Capture desktop-provided gateway credentials inside the Pi process before
+ * local shell tools are allowed to inherit the environment. Divo extensions
+ * share this module instance, while spawned Bash/Python processes do not.
+ */
+export function captureDivoGatewayConfig(
+	env?: NodeJS.ProcessEnv,
+): DivoGatewayConfig | { error: string } {
+	if (!env && capturedGatewayConfig) return capturedGatewayConfig;
+	const resolved = readDivoGatewayConfig(env ?? process.env);
+	if ("error" in resolved) return resolved;
+	capturedGatewayConfig = resolved;
+	return resolved;
+}
+
+/** Test/lifecycle helper. Never use this to rotate a live desktop session. */
+export function clearCapturedDivoGatewayConfig(): void {
+	capturedGatewayConfig = undefined;
+}
+
 export function resolveDivoGatewayConfig(
-	env: NodeJS.ProcessEnv = process.env,
+	env?: NodeJS.ProcessEnv,
+): DivoGatewayConfig | { error: string } {
+	if (env) return readDivoGatewayConfig(env);
+	if (capturedGatewayConfig) return capturedGatewayConfig;
+	return readDivoGatewayConfig(process.env);
+}
+
+function readDivoGatewayConfig(
+	env: NodeJS.ProcessEnv,
 ): DivoGatewayConfig | { error: string } {
 	const backendUrl = env.DIVO_BACKEND_URL?.trim().replace(/\/$/, "");
 	const memberToken = env.DIVO_MEMBER_TOKEN?.trim();
@@ -271,6 +300,7 @@ export async function callDivoGateway(
 	config: DivoGatewayConfig,
 	request: GatewayRequestBody,
 	fetchImpl: typeof fetch = fetch,
+	options: { signal?: AbortSignal } = {},
 ): Promise<{ body: GatewayResponseBody; httpStatus: number }> {
 	const preparedRequest = await prepareDivoGatewayRequest(request);
 	const departmentId = request.departmentId ?? config.defaultDepartmentId;
@@ -291,6 +321,10 @@ export async function callDivoGateway(
 		payload.execution = request.execution;
 	}
 
+	const timeoutSignal = AbortSignal.timeout(120_000);
+	const signal = options.signal
+		? AbortSignal.any([options.signal, timeoutSignal])
+		: timeoutSignal;
 	const response = await fetchImpl(`${config.backendUrl}/api/gateway`, {
 		method: "POST",
 		headers: {
@@ -299,7 +333,7 @@ export async function callDivoGateway(
 			Accept: "application/json",
 		},
 		body: JSON.stringify(payload),
-		signal: AbortSignal.timeout(120_000),
+		signal,
 	});
 
 	const raw = await response.text();

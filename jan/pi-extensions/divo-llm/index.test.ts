@@ -4,8 +4,10 @@ import divoLlmExtension, {
 	DIVO_REQUEST_TOO_LARGE_ERROR,
 	normalizeDivoLlmRequestError,
 } from "./index.ts";
+import { clearCapturedDivoGatewayConfig } from "../divo-gateway/gateway-client.ts";
 
 afterEach(() => {
+	clearCapturedDivoGatewayConfig();
 	delete process.env.DIVO_BACKEND_URL;
 	delete process.env.DIVO_MEMBER_TOKEN;
 	delete process.env.DIVO_LLM_PROXY_ACTIVE;
@@ -62,6 +64,16 @@ describe("Divo LLM proxy failure normalization", () => {
 		} as never);
 
 		assert.ok(providerConfig);
+		assert.equal((providerConfig as { apiKey?: string }).apiKey, "member-token");
+		assert.equal(process.env.DIVO_MEMBER_TOKEN, undefined);
+		providerConfig = undefined;
+		divoLlmExtension({
+			registerProvider: (_provider: string, config: unknown) => {
+				providerConfig = config;
+			},
+			on: () => undefined,
+		} as never);
+		assert.equal((providerConfig as { apiKey?: string }).apiKey, "member-token");
 		assert.equal(process.env.DIVO_LLM_PROXY_ACTIVE, "1");
 		const original = {
 			role: "assistant",

@@ -12,6 +12,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { captureDivoGatewayConfig } from "../divo-gateway/gateway-client.ts";
 
 export const DIVO_REQUEST_TOO_LARGE_ERROR =
 	"request_too_large (HTTP 413, payload_too_large): Divo could not start the model continuation because the request body was too large. Retry with narrower, paginated, or truncated tool results.";
@@ -34,9 +35,8 @@ export function normalizeDivoLlmRequestError<T>(message: T): T {
 }
 
 export default function divoLlmExtension(pi: ExtensionAPI) {
-	const backendUrl = process.env.DIVO_BACKEND_URL;
-	const memberToken = process.env.DIVO_MEMBER_TOKEN;
-	if (!backendUrl || !memberToken) return; // unconfigured → fall back to direct DeepSeek
+	const config = captureDivoGatewayConfig();
+	if ("error" in config) return; // unconfigured → fall back to direct DeepSeek
 	// The trace extension uses this process-local marker to add Divo correlation
 	// fields only when DeepSeek is actually repointed to our proxy. It prevents
 	// proxy-only fields from leaking into direct provider requests.
@@ -44,13 +44,15 @@ export default function divoLlmExtension(pi: ExtensionAPI) {
 
 	pi.registerProvider("deepseek", {
 		// Our OpenAI-compatible proxy. The SDK appends /chat/completions.
-		baseUrl: `${backendUrl.replace(/\/$/, "")}/api/llm/v1`,
-		// Send the member token as the bearer key ($ENV resolved by pi-ai).
-		apiKey: "$DIVO_MEMBER_TOKEN",
+		baseUrl: `${config.backendUrl}/api/llm/v1`,
+		// Pi keeps this value in provider memory. Remove it from process.env below
+		// so ordinary Bash/Python children cannot inherit the member credential.
+		apiKey: config.memberToken,
 		authHeader: true,
 		// Emit the session id header so the backend can group calls into a run.
 		compat: { sendSessionAffinityHeaders: true },
 	});
+	delete process.env.DIVO_MEMBER_TOKEN;
 
 	// A request rejected by Express never reaches the LLM proxy or emits model
 	// tokens. Keep the provider failure concise and machine-recognisable so Pi

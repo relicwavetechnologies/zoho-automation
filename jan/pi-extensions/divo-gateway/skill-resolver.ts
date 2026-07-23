@@ -105,9 +105,10 @@ export async function resolveDivoSkills(options: {
 }): Promise<SkillResolveResult> {
 	const query = options.query.trim();
 	const limit = clampLimit(options.limit);
-	const env = options.env ?? process.env;
 	const notes: string[] = [];
-	const config = resolveDivoGatewayConfig(env);
+	const config = options.env
+		? resolveDivoGatewayConfig(options.env)
+		: resolveDivoGatewayConfig();
 	if ("error" in config) {
 		notes.push("Company skill registry is unavailable because the Divo gateway is not configured.");
 		return {

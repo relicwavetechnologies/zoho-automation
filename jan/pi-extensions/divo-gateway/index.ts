@@ -1,8 +1,9 @@
 /**
  * Divo gateway — single Pi tool for backend-owned company capabilities.
  *
- * Config comes from desktop-managed env (DIVO_BACKEND_URL, DIVO_MEMBER_TOKEN,
- * optional DIVO_DEPARTMENT_ID). Pi never receives SaaS credentials directly.
+ * Config is captured from the desktop at process startup, then the member
+ * token is removed from the environment before local shells can inherit it.
+ * Pi never receives SaaS credentials directly.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -23,6 +24,7 @@ import {
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
+import { registerLocalDivoBroker } from "./local-broker.ts";
 import {
 	formatSkillResolveResult,
 	resolveDivoSkills,
@@ -277,6 +279,7 @@ Stay in this same conversation after the first write. When the manager corrects 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
 	let schedulingSkillLoadedForRun = false;
 	registerApprovalGate(pi);
+	registerLocalDivoBroker(pi);
 	registerMemoryReviewTool(pi);
 	registerTeachClarificationTool(pi);
 	registerDivoSkillView(pi, {
@@ -449,6 +452,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			DIVO_COMPANY_PERSONA_PROMPT,
 			await readDepartmentPersonaContext(),
 		);
+		systemPrompt = `${systemPrompt}\n\n<divo_local_execution>\nFor substantial local data transformation, use ordinary Bash/Python. When that program needs company data or a connected SaaS action, call the credential-free local client instead of curl or embedding tokens: divo-local invoke --tool <toolId> --args-file <json-path> --label <short action>. Use divo-local request --op connections.list or tools.list only when the contract is genuinely unknown. The client returns structured JSON and the backend still enforces RBAC, connection policy, rate limits, manager approval, and audit. Prefer one coherent transformation/write program followed by bounded read-back verification; do not force unrelated discovery, transformation, and verification into repeated scripts. Never inspect or print DIVO_MEMBER_TOKEN.\n</divo_local_execution>`;
 		const correlation = await readDivoRunCorrelation().catch(() => undefined);
 		if (correlation?.profile === "teach") {
 			if (!correlation.teachSessionId || !correlation.departmentId) {

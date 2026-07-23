@@ -143,7 +143,7 @@ tools precise reminders without continuously enlarging the system prompt.
 
 ### P0 — approval reliability
 
-- [ ] Separate local Bash approval, local gateway-mutation approval, and
+- [x] Separate local Bash approval, local gateway-mutation approval, and
   backend/Lark approval in protocol, UI copy, state, and audit.
 - [x] Add chat-scoped local grants without bypassing backend RBAC, rate limits,
   shared-connection policy, or manager approval.
@@ -151,16 +151,16 @@ tools precise reminders without continuously enlarging the system prompt.
   on the exact action card and expire when the desktop app stops.
 - [ ] Deduplicate identical pending approvals and tell the agent whether it
   should continue, retry the exact action, change it, or stop.
-- [ ] Ensure the agent receives backend actions and decisions as structured tool
+- [x] Ensure the agent receives backend actions and decisions as structured tool
   results rather than learning about them only from UI cards.
 
 ### P1 — execution model
 
-- [ ] Build a small local Divo broker/CLI vertical slice callable from ordinary
+- [x] Build a small local Divo broker/CLI vertical slice callable from ordinary
   Bash/Python without putting bearer or SaaS tokens in generated scripts.
-- [ ] Make ordinary Bash the execution surface for local Python, files,
+- [x] Make ordinary Bash the execution surface for local Python, files,
   subprocesses, and packages; reserve the broker for governed company calls.
-- [ ] Preserve worklog labels for the script and each governed operation.
+- [x] Preserve worklog labels for the script and each governed operation.
 - [ ] Support cancellation and a durable checkpoint containing the existing
   destination ID before any retry.
 - [ ] After parity tests, remove the specialized Python tool and stale prompt,
@@ -235,10 +235,11 @@ runtime-provided RFC/ISO/epoch normalizer with explicit UTC and local-day values
 
 ### Wave 4 — normal Bash + broker vertical slice (large)
 
-- [ ] Implement one read and one mutation through the local broker/CLI.
-- [ ] Prove local approval, backend approval, RBAC, rate limits, audit,
+- [x] Implement one read and one mutation through the local broker/CLI.
+- [x] Prove local approval, backend approval, RBAC, rate limits, audit,
   cancellation, and trace labels end to end.
-- [ ] Decide whether to migrate all Python workflows based on this parity test;
+- [ ] Run one live desktop parity task, then decide whether to migrate all
+  Python workflows based on this vertical slice;
   do not run a broad benchmark project.
 
 ### Wave 5 — agent efficiency and cleanup (two related issues)
@@ -291,4 +292,8 @@ runtime-provided RFC/ISO/epoch normalizer with explicit UTC and local-day values
 - [x] Existing Bash, Python bridge, local approval, and backend approval paths mapped.
 - [x] Target architecture and phased acceptance criteria recorded.
 - [x] Wave 1 approval semantics implemented and covered by focused tests.
-- [ ] Wave 2 Google structured correctness is next.
+- [x] Wave 2 Google structured correctness implemented.
+- [x] Wave 3 honest workflow completion implemented.
+- [x] Wave 4 local broker/CLI implementation and process-level tests completed.
+- [ ] Wave 4 live desktop parity task is next; the specialized Python tool stays
+  registered until that result is reviewed.

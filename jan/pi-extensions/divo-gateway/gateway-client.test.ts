@@ -2,15 +2,19 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import {
+	captureDivoGatewayConfig,
 	callDivoGateway,
+	clearCapturedDivoGatewayConfig,
 	clearDivoGatewaySkillCache,
 	formatGatewayResponse,
 	isGatewayApprovalStatus,
 	prepareDivoGatewayRequest,
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
+
+afterEach(() => clearCapturedDivoGatewayConfig());
 
 describe("resolveDivoGatewayConfig", () => {
 	it("requires backend URL and member token", () => {
@@ -28,6 +32,27 @@ describe("resolveDivoGatewayConfig", () => {
 			assert.equal(ok.memberToken, "jwt-test");
 			assert.equal(ok.defaultDepartmentId, "dept-1");
 		}
+	});
+
+	it("keeps captured desktop credentials available after the shell environment is scrubbed", () => {
+		const env = {
+			DIVO_BACKEND_URL: "http://localhost:4000/",
+			DIVO_MEMBER_TOKEN: "member-token",
+			DIVO_DEPARTMENT_ID: "dept-1",
+		};
+		assert.deepEqual(captureDivoGatewayConfig(env), {
+			backendUrl: "http://localhost:4000",
+			memberToken: "member-token",
+			defaultDepartmentId: "dept-1",
+		});
+		assert.deepEqual(resolveDivoGatewayConfig(), {
+			backendUrl: "http://localhost:4000",
+			memberToken: "member-token",
+			defaultDepartmentId: "dept-1",
+		});
+		assert.deepEqual(resolveDivoGatewayConfig({}), {
+			error: "Divo gateway is not configured: DIVO_BACKEND_URL is missing. Sign in through Jan/Desktop first.",
+		});
 	});
 });
 

@@ -31,7 +31,8 @@ export async function executeGatewayRequest(
 	ctx: ApprovalContext,
 	dependencies: GatewayExecutionDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<{ body: GatewayResponseBody; httpStatus: number }> {
-	let result = await dependencies.callGateway(config, request);
+	if (ctx.signal?.aborted) throw new DOMException("The Divo action was cancelled.", "AbortError");
+	let result = await dependencies.callGateway(config, request, fetch, { signal: ctx.signal });
 	if (result.body.status !== "local_approval_required") return result;
 
 	if (request.op !== "tools.invoke") {
@@ -45,11 +46,12 @@ export async function executeGatewayRequest(
 		result.body.data,
 		ctx,
 	);
+	if (ctx.signal?.aborted) throw new DOMException("The Divo action was cancelled.", "AbortError");
 	result = await dependencies.callGateway(config, {
 		op: "tools.commit",
 		departmentId: request.departmentId,
 		payload: { intentId },
 		...(request.execution ? { execution: request.execution } : {}),
-	});
+	}, fetch, { signal: ctx.signal });
 	return result;
 }
