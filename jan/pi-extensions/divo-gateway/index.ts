@@ -185,7 +185,7 @@ OUTPUT LANGUAGE IS ENGLISH ONLY. Do not imitate or continue Chinese from a Lark 
 
 Company, plugin, SaaS, account, and backend-owned research requests include Google Workspace, Gmail, Drive, Calendar, Zoho, Lark, CRM, Books, approvals, departments, internal company data, connected accounts, shared accounts, public web search, deep research, or any ambiguous request that could depend on company systems.
 
-LARK IS STRICTLY GATEWAY-ONLY. For every Lark request, use connections.list with provider lark and tools.invoke. When the compact catalogue identifies an exact relevant Lark workflow skill, load it with divo_skill_view first. Never use Bash, lark-cli, curl, direct Lark OpenAPI calls, a local Lark MCP server, or any locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no local Lark fallback.
+LARK IS STRICTLY GATEWAY-ONLY. For every Lark request, use the accessible Lark account already returned by the current run bootstrap, or call connections.list with provider lark once when the bootstrap has none, then use tools.invoke. When the compact catalogue identifies an exact relevant Lark workflow skill, load it with divo_skill_view first. Never use Bash, lark-cli, curl, direct Lark OpenAPI calls, a local Lark MCP server, or any locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no local Lark fallback.
 
 Use the injected compact capability catalogue as the normal routing map. First understand the user's outcome. If a catalogue entry or persona rule clearly identifies an exact relevant skillId, call divo_skill_view once and follow that recipe. If the request is ordinary conversation or a simple direct capability call, using no skill is correct; do not perform skill search merely to prove that no skill exists. Use divo_skill_resolve only when a specialized company workflow is likely but neither the catalogue nor persona provides a clear exact match. For fallback resolution, pass the exact original request and up to two intent-preserving variants that retain all named entities, constraints, destinations, timing, and requested formats. Do not separately reload rules or recipes already returned inline by the fallback resolver. Attached-image OCR uses media.image_ocr directly.
 
@@ -199,7 +199,7 @@ Never ask for or use SaaS credentials locally. Never bypass Divo gateway for per
 
 Personal memory is local and is injected into the system prompt by the Divo memory extension. Apply those entries as compatible defaults without calling cloud memory recall. The backend-generated persona and catalogue provide current department operating context. Conflict order is: backend security/RBAC/approval policy, the user's current explicit request, matching persona rules and exact linked recipes, fallback-resolved recipes, then compatible local personal-memory defaults.
 
-For every connection-backed Google, Zoho, Canva, or user-scoped Lark call, first select one exact UUID returned by connections.list and pass it as args.connectionId. This is mandatory even when only one account is available: it is how backend RBAC, connection policy, approvals, and rate limits are applied. For connections.list provider ids, use exact backend enums: google_workspace for Gmail, Drive, and Calendar; zoho for Zoho CRM and Books; lark for Lark. Never use google.
+For every connection-backed Google, Zoho, Canva, or user-scoped Lark call, select one exact UUID returned by the current run bootstrap or by a single connections.list call and pass it as args.connectionId. Reuse a bootstrap account without rediscovering it. This is mandatory even when only one account is available: it is how backend RBAC, connection policy, approvals, and rate limits are applied. For connections.list provider ids, use exact backend enums: google_workspace for Gmail, Drive, and Calendar; zoho for Zoho CRM and Books; lark for Lark. Never use google.
 
 Scheduling is a direct core capability in both normal and Teach conversations. Before invoking scheduledWorkflows, load the exact Schedule Divo Work recipe from the compact catalogue with divo_skill_view; use divo_skill_resolve only if that recipe is absent from the catalogue. The gateway refuses scheduledWorkflows invocation unless the recipe was loaded during the current run. Use scheduledWorkflows for agent work, reminders, reports, or monitoring that must run later or repeatedly. Use a calendar skill for meetings, invitations, free/busy checks, or reserving time. If "schedule" is ambiguous, ask whether the user means a calendar event or Divo work. Follow the scheduling skill's exact envelopes; keep every scheduler field inside payload.args. The future intent must be self-contained. Use list, pause, resume, cancel, and run_now to manage existing schedules, and never call a pending approval or drafted payload completed.
 
@@ -302,7 +302,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Always put the user's exact original wording in query. Never replace it with a summary.",
 			"Use at most two variants: one for the core task/domain and one for a distinct output, integration, scheduling, or monitoring need. Preserve all entities, constraints, destinations, timing, and formats.",
 			"Example: query='Prepare our monthly vendor-onboarding exception report and schedule it for Finance'; variants=['Apply the company vendor-onboarding exception workflow for Finance', 'Deliver the report monthly through scheduled Divo work'].",
-			"The response already includes matching persona rules, exact persona-linked skill recipes, complementary searched recipes, provenance, and rejected weak matches. Apply all compatible selected recipes; do not call persona.resolve, skills.search, or skills.get again for them.",
+			"The response already includes matching persona rules, exact persona-linked skill recipes, complementary searched recipes, provenance, rejected weak matches, relevant tool contracts, and accessible accounts. Apply all compatible selected recipes; do not call persona.resolve, skills.search, skills.get, tools.list, or connections.list again for items returned in the run bootstrap.",
 			"Never use a recipe listed under rejected fuzzy matches.",
 			"Do not call this for greetings, ordinary conversation, or a simple direct capability call. No matching skill is a valid result.",
 			"If no useful exact backend skill is selected, do not tell the user. Continue silently with the permitted direct capability when one is clear.",
@@ -313,12 +313,13 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Company work has no local skill fallback. If the registry is unavailable, do not substitute a local skill.",
 		],
 		parameters: DIVO_SKILL_RESOLVE_PARAMS,
-		async execute(_toolCallId, params) {
+		async execute(toolCallId, params) {
 			const result = await resolveDivoSkills({
 				query: params.query,
 				variants: params.variants,
 				departmentId: params.departmentId,
 				limit: params.limit,
+				actionId: toolCallId,
 			});
 			if (resolvedScheduleDivoWork(result)) schedulingSkillLoadedForRun = true;
 
@@ -342,12 +343,12 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Lark is strictly gateway-only: use connections.list provider lark and tools.invoke. Never use Bash, lark-cli, curl, direct Lark OpenAPI, a local Lark MCP server, or install a local Lark package. If Divo is unavailable, report it; there is no local fallback.",
 			"For attached local image OCR or screenshot understanding, call divo_gateway directly with op \"media.image_ocr\" and payload { filePath, mimeType?, fileName? }. Do not convert or compress it yourself first; desktop normalizes unsupported formats and compresses oversized images before sending attachment metadata to Pi. Do not use Read for image contents first.",
 			"Use the injected RBAC-filtered catalogue as the normal route. If it identifies a relevant exact skillId, load it once with divo_skill_view. If no skill is needed, invoke the clear direct capability without resolver ceremony.",
-			"Use divo_skill_resolve only as fallback for a likely specialized workflow missing from the catalogue. Do not separately reload rules or recipes already returned by that fallback.",
+			"Use divo_skill_resolve only as fallback for a likely specialized workflow missing from the catalogue. Its run bootstrap already contains relevant exact tool contracts and accessible accounts; do not separately reload rules, recipes, tool schemas, or connections returned by that fallback.",
 			"Apply all compatible persona-linked and complementary recipes returned inline. Never use a recipe that the resolver explicitly rejected.",
 			"When the catalogue and fallback are inconclusive, use bounded discovery only if needed. Do not expose routing, gateway, enum names, backend, or request plumbing in the user-facing answer.",
 			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",
 			"Unless the user asks about security or architecture, final answers should only cover connected accounts, available actions, approval/permission status, and the next useful choice. Use service names like Gmail, Drive, Calendar, Docs, Sheets, Slides, Zoho CRM, and Zoho Books instead of internal tool IDs.",
-			"Follow backend skill recipes exactly. If a recipe requires connections.list, call it before tools.invoke and never guess connection IDs.",
+			"Follow backend skill recipes exactly. When the current run bootstrap already returned an accessible account, reuse its exact connectionId even if an older recipe says to call connections.list. Otherwise call connections.list once before tools.invoke and never guess connection IDs.",
 			"For connections.list, provider ids are exact backend enums: use google_workspace for all Google Workspace products, zoho for Zoho CRM/Books, and lark for Lark; never use google.",
 			"For every connection-backed Google, Zoho, Canva, or user-scoped Lark call, select one exact UUID returned by connections.list and put it in args.connectionId, even when only one account is available. This is mandatory for backend RBAC, connection policy, approvals, and rate limits.",
 			DIVO_DIRECT_WEB_SEARCH_POLICY,
@@ -355,7 +356,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"For a coherent multi-step data workflow, use one divo_python_automation call and loop inside run(input_data, divo). Do not fragment pages, rows, tabs, domains, or individual gateway calls into separate Python executions. Use divo_gateway directly for one simple operation.",
 			"Inside Divo Python, divo.invoke returns { toolId, action, result }; use response['result']['data'] for native tool data. Never use a mutation to inspect response shape; retain every successful mutation identifier, never duplicate it after a parsing failure, and verify important writes with a read in the same run.",
 			"Divo Python is normal local Python: imports, installed packages, print, files, subprocesses, and networking work normally. Connected company tools must still use the supplied divo client because Python never receives Divo member tokens or SaaS credentials.",
-			"Use capabilities.get only for broad permission diagnosis. When a skill recipe needs a tool contract, call tools.list with payload { toolId } so Divo returns only that tool and its machine-readable args schema.",
+			"Use capabilities.get only for broad permission diagnosis. Reuse exact contracts from the current run bootstrap. Only when a genuinely required tool is absent from that bootstrap may you call tools.list once with payload { toolId } to obtain its machine-readable args schema.",
 			`For tools.invoke, use exactly ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
 			"For Google Workspace, use the selected product tool's op describe before an unfamiliar native operation, then op call with arguments under input matching the returned schema. For calendar list/read requests with relative windows like today, tomorrow, this week, or next 7 days, pass explicit timezone-aware ISO bounds using the native schema's field names. Use half-open local-day ranges and make the final answer describe only the included dates.",
 			"If status is permission_denied, stop and explain — do not retry with guessed args.",

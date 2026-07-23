@@ -176,7 +176,7 @@ describe("formatGatewayResponse", () => {
 });
 
 describe("callDivoGateway", () => {
-	it("caches successful skills.get responses by backend, token, department, and skill", async () => {
+	it("caches successful skills.get bootstrap by backend, token, department, skill, and run", async () => {
 		clearDivoGatewaySkillCache();
 		let calls = 0;
 		const fetchImpl = async () => {
@@ -199,6 +199,12 @@ describe("callDivoGateway", () => {
 		const request = {
 			op: "skills.get",
 			payload: { skillId: "google" },
+			execution: {
+				version: 1 as const,
+				threadId: "thread-1",
+				runId: "run-1",
+				actionId: "skill-view-1",
+			},
 		};
 
 		const first = await callDivoGateway(config, request, fetchImpl as typeof fetch);
@@ -232,6 +238,45 @@ describe("callDivoGateway", () => {
 		await callDivoGateway(config, request, fetchImpl as typeof fetch);
 
 		assert.equal(calls, 2);
+	});
+
+	it("caches work bootstrap only within the exact desktop run", async () => {
+		clearDivoGatewaySkillCache();
+		let calls = 0;
+		const fetchImpl = async () => {
+			calls += 1;
+			return new Response(
+				JSON.stringify({ ok: true, status: "success", data: { call: calls } }),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		};
+		const config = { backendUrl: "http://localhost:4000", memberToken: "member-jwt" };
+		const request = (runId: string) => ({
+			op: "work.resolve",
+			payload: { query: "Prepare the monthly Finance report" },
+			execution: {
+				version: 1 as const,
+				threadId: "thread-1",
+				runId,
+				actionId: "resolve-1",
+			},
+		});
+
+		const first = await callDivoGateway(config, request("run-1"), fetchImpl as typeof fetch);
+		const cached = await callDivoGateway(config, request("run-1"), fetchImpl as typeof fetch);
+		const nextRun = await callDivoGateway(config, request("run-2"), fetchImpl as typeof fetch);
+
+		assert.equal(calls, 2);
+		assert.deepEqual(cached, first);
+		assert.notDeepEqual(nextRun, first);
+
+		await callDivoGateway(config, {
+			op: "tools.commit",
+			payload: { intentId: "00000000-0000-4000-8000-000000000001" },
+		}, fetchImpl as typeof fetch);
+		const afterMutation = await callDivoGateway(config, request("run-2"), fetchImpl as typeof fetch);
+		assert.equal(calls, 4);
+		assert.notDeepEqual(afterMutation, nextRun);
 	});
 
 	it("caches a Google plan by user-selected connection without caching preflight", async () => {

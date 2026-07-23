@@ -5,8 +5,15 @@ import {
 	formatGatewayResponse,
 	resolveDivoGatewayConfig,
 	type DivoGatewayConfig,
+	type GatewayExecutionContext,
 	type GatewayResponseBody,
 } from "./gateway-client.ts";
+import { readDivoRunCorrelation } from "./run-correlation.ts";
+import {
+	formatWorkBootstrap,
+	parseWorkBootstrap,
+	type WorkBootstrap,
+} from "./work-bootstrap.ts";
 
 const DIVO_SKILL_VIEW_PARAMS = Type.Object({
 	skillId: Type.String({
@@ -26,6 +33,7 @@ export interface DivoLoadedSkill {
 	toolIds: string[];
 	revision: number;
 	registryRevision?: number;
+	bootstrap?: WorkBootstrap;
 }
 
 interface SkillViewDependencies {
@@ -64,6 +72,7 @@ export function parseLoadedSkill(body: GatewayResponseBody): DivoLoadedSkill {
 	if (!Number.isInteger(skill.revision) || Number(skill.revision) < 1) {
 		throw new Error("Divo returned an invalid skill response: invalid revision.");
 	}
+	const bootstrap = parseWorkBootstrap(data?.bootstrap);
 
 	return {
 		id: skill.id as string,
@@ -76,11 +85,12 @@ export function parseLoadedSkill(body: GatewayResponseBody): DivoLoadedSkill {
 		...(Number.isInteger(data?.registryRevision) ? {
 			registryRevision: Number(data?.registryRevision),
 		} : {}),
+		...(bootstrap ? { bootstrap } : {}),
 	};
 }
 
 export async function loadDivoSkill(
-	params: { skillId: string; departmentId?: string },
+	params: { skillId: string; departmentId?: string; execution?: GatewayExecutionContext },
 	dependencies: SkillViewDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<DivoLoadedSkill> {
 	const resolved = dependencies.resolveConfig();
@@ -89,6 +99,7 @@ export async function loadDivoSkill(
 		op: "skills.get",
 		departmentId: params.departmentId,
 		payload: { skillId: params.skillId },
+		...(params.execution ? { execution: params.execution } : {}),
 	});
 	return parseLoadedSkill(body);
 }
@@ -108,10 +119,22 @@ export function registerDivoSkillView(
 			"Use only an exact skillId present in the injected Divo catalogue, a persona-linked rule, or a backend resolution result. Never guess an ID.",
 			"Do not load a skill for greetings, ordinary conversation, or a simple direct capability call that needs no reusable procedure.",
 			"Follow the returned recipe exactly, but remember that it does not grant tool permission; each invocation is still enforced by the backend.",
+			"The response also preloads exact contracts and accessible accounts required by this recipe. Do not call tools.list or connections.list again for bootstrap items during the current run.",
 		],
 		parameters: DIVO_SKILL_VIEW_PARAMS,
-		async execute(_toolCallId, params) {
-			const skill = await loadDivoSkill(params);
+		async execute(toolCallId, params) {
+			const correlation = await readDivoRunCorrelation().catch(() => undefined);
+			const skill = await loadDivoSkill({
+				...params,
+				...(correlation ? {
+					execution: {
+						version: 1,
+						threadId: correlation.threadId,
+						runId: correlation.runId,
+						actionId: toolCallId,
+					},
+				} : {}),
+			});
 			options.onSkillLoaded?.(skill);
 			return {
 				content: [{
@@ -122,6 +145,7 @@ export function registerDivoSkillView(
 						`Required governed tools: ${skill.toolIds.length ? skill.toolIds.join(", ") : "none"}`,
 						"",
 						skill.instructions,
+						...(skill.bootstrap ? ["", ...formatWorkBootstrap(skill.bootstrap)] : []),
 					].join("\n"),
 				}],
 				details: skill,

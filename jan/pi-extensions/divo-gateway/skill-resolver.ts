@@ -3,6 +3,12 @@ import {
 	type DivoGatewayConfig,
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
+import { readDivoRunCorrelation } from "./run-correlation.ts";
+import {
+	formatWorkBootstrap,
+	parseWorkBootstrap,
+	type WorkBootstrap,
+} from "./work-bootstrap.ts";
 
 /**
  * Company skill policy: Divo Dex resolves company work only through the
@@ -59,6 +65,7 @@ export interface SkillResolveResult {
 		matchedQueries: string[];
 		reason: string;
 	}>;
+	bootstrap?: WorkBootstrap;
 	notes: string[];
 }
 
@@ -102,6 +109,7 @@ export async function resolveDivoSkills(options: {
 	departmentId?: string;
 	env?: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
+	actionId?: string;
 }): Promise<SkillResolveResult> {
 	const query = options.query.trim();
 	const limit = clampLimit(options.limit);
@@ -130,6 +138,7 @@ export async function resolveDivoSkills(options: {
 		departmentId: options.departmentId,
 		config,
 		fetchImpl: options.fetchImpl,
+		actionId: options.actionId,
 		notes,
 	});
 	const requestedGooglePhases = deriveVendorOnboardingGooglePhases(query);
@@ -175,6 +184,7 @@ export async function resolveDivoSkills(options: {
 			results,
 			personaRules: work?.personaRules ?? [],
 			rejected: work?.rejected ?? [],
+			...(work?.bootstrap ? { bootstrap: work.bootstrap } : {}),
 			notes,
 		};
 	}
@@ -190,6 +200,7 @@ export async function resolveDivoSkills(options: {
 			results: work?.results.filter(skill => skill.source === "persona_link") ?? [],
 			personaRules: work?.personaRules ?? [],
 			rejected: work?.rejected ?? [],
+			...(work?.bootstrap ? { bootstrap: work.bootstrap } : {}),
 			notes,
 		};
 	}
@@ -257,6 +268,10 @@ export function formatSkillResolveResult(result: SkillResolveResult): string {
 		for (const skill of result.rejected) {
 			lines.push(`- ${skill.name} score=${skill.bestScore.toFixed(2)} — ${skill.reason}`);
 		}
+	}
+
+	if (result.bootstrap) {
+		lines.push("", ...formatWorkBootstrap(result.bootstrap));
 	}
 
 	if (result.notes.length) {
@@ -398,6 +413,7 @@ interface BackendWorkResolution {
 	results: ResolvedSkill[];
 	personaRules: ResolvedPersonaRule[];
 	rejected: SkillResolveResult["rejected"];
+	bootstrap?: WorkBootstrap;
 }
 
 async function resolveBackendWork(options: {
@@ -407,9 +423,11 @@ async function resolveBackendWork(options: {
 	departmentId?: string;
 	config: DivoGatewayConfig;
 	fetchImpl?: typeof fetch;
+	actionId?: string;
 	notes: string[];
 }): Promise<BackendWorkResolution | null> {
 	try {
+		const correlation = await readDivoRunCorrelation().catch(() => undefined);
 		const response = await callDivoGateway(
 			options.config,
 			{
@@ -420,6 +438,14 @@ async function resolveBackendWork(options: {
 					...(options.variants.length ? { variants: options.variants } : {}),
 					limit: options.limit,
 				},
+				...(correlation ? {
+					execution: {
+						version: 1 as const,
+						threadId: correlation.threadId,
+						runId: correlation.runId,
+						actionId: options.actionId ?? "divo-skill-resolve",
+					},
+				} : {}),
 			},
 			options.fetchImpl ?? fetch,
 		);
@@ -465,8 +491,15 @@ function readBackendWorkResolution(data: unknown): BackendWorkResolution | null 
 	const personaSkills = readResolvedSkills(persona.linkedSkills, "persona_link");
 	const additionalSkills = readResolvedSkills(raw.additionalSkills, "skill_search");
 	const rejected = readRejectedSkills(raw.rejectedSkills);
+	const bootstrap = parseWorkBootstrap(raw.bootstrap);
 	if (!queries.length) return null;
-	return { queries, results: [...personaSkills, ...additionalSkills], personaRules, rejected };
+	return {
+		queries,
+		results: [...personaSkills, ...additionalSkills],
+		personaRules,
+		rejected,
+		...(bootstrap ? { bootstrap } : {}),
+	};
 }
 
 function readResolvedSkills(value: unknown, source: "persona_link" | "skill_search"): ResolvedSkill[] {

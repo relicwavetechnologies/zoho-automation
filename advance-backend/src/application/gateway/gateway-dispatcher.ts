@@ -9,7 +9,11 @@ import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { ToolExecutor } from './tool-executor';
 import type { LocalApprovalIntentService } from './local-approval-intent.service';
 import { mediaImageOcrPayloadSchema, type MediaOcrService } from './media-ocr.service';
-import type { ConnectionRegistryPort } from '../connections/connection-registry.port';
+import type {
+  AccessibleConnection,
+  ConnectionProvider,
+  ConnectionRegistryPort,
+} from '../connections/connection-registry.port';
 import type { AuditService } from '../observability/audit.service';
 import type { ManagerPersonaRuntimeService } from '../persona-learning/manager-persona-runtime.service';
 import type { ManagerTeachService } from '../persona-learning/manager-teach.service';
@@ -56,6 +60,24 @@ const serializeToolArgsSchema = zodToJsonSchema as unknown as (
   schema: unknown,
   options: { $refStrategy: 'none' },
 ) => unknown;
+
+const LARK_CONNECTION_TOOL_IDS = new Set([
+  'larkTask',
+  'larkMessaging',
+  'larkContacts',
+  'larkCalendar',
+  'larkMeeting',
+  'larkDoc',
+  'larkBase',
+  'larkApproval',
+]);
+
+type WorkBootstrapAdvisory = {
+  readonly code: 'contracts_loaded' | 'connections_loaded' | 'connection_required' | 'connection_registry_unavailable';
+  readonly level: 'required' | 'info';
+  readonly instruction: string;
+  readonly provider?: ConnectionProvider;
+};
 
 /**
  * Per-skill RBAC. Skill discovery is deny-by-default: a member sees/uses only
@@ -407,6 +429,12 @@ export class GatewayDispatcher {
       skillRevision: skill.revision,
       registryRevision,
     });
+    const bootstrap = await this.buildWorkBootstrap({
+      member,
+      permission: perm,
+      registryRevision,
+      toolIds: skill.toolIds,
+    });
     return gatewaySuccess({
       registryRevision,
       skill: {
@@ -418,6 +446,7 @@ export class GatewayDispatcher {
         toolIds: [...skill.toolIds],
         revision: skill.revision,
       },
+      bootstrap,
     });
   }
 
@@ -497,7 +526,156 @@ export class GatewayDispatcher {
       rejectedSkillIds: resolution.rejectedSkills.map(candidate => candidate.id),
       registryRevision: resolution.registryRevision,
     });
-    return gatewaySuccess(resolution);
+    const bootstrap = await this.buildWorkBootstrap({
+      member,
+      permission,
+      registryRevision: resolution.registryRevision,
+      toolIds: [
+        ...resolution.persona.linkedSkills.flatMap(candidate => candidate.skill.toolIds),
+        ...resolution.additionalSkills.flatMap(candidate => candidate.skill.toolIds),
+      ],
+    });
+    return gatewaySuccess({ ...resolution, bootstrap });
+  }
+
+  /**
+   * Adds only the contracts and accessible accounts needed by the recipes
+   * selected above. This is discovery context, not execution authority: each
+   * later invocation still resolves RBAC, connection policy, approval, and
+   * rate limits through ToolExecutor.
+   */
+  private async buildWorkBootstrap(input: {
+    member: GatewayMemberContext;
+    permission: PermissionResult;
+    registryRevision: number;
+    toolIds: readonly string[];
+  }): Promise<{
+    version: 1;
+    scope: 'run';
+    registryRevision: number;
+    tools: Array<Record<string, unknown>>;
+    connections: Array<Record<string, unknown>>;
+    advisories: WorkBootstrapAdvisory[];
+  }> {
+    const discoveryPerm = withGatewayDiscoveryPermissions(input.permission);
+    const requestedToolIds = new Set(input.toolIds);
+    const tools = this.deps.toolRegistry
+      .forRuntime(discoveryPerm)
+      .filter(tool => tool.id !== 'runCommand' && requestedToolIds.has(tool.id))
+      .map(tool => ({
+        id: tool.id,
+        family: tool.family,
+        description: tool.description,
+        allowedActions: [...(discoveryPerm.allowedActionsByTool.get(asToolId(tool.id)) ?? [])],
+        parameterDocs: tool.parameterDocs,
+        argsSchema: serializeToolArgsSchema(tool.argsSchema, { $refStrategy: 'none' }),
+      }));
+
+    const providers = this.connectionProvidersForToolIds(tools.map(tool => String(tool.id)));
+    const advisories: WorkBootstrapAdvisory[] = [];
+    if (tools.length > 0) {
+      advisories.push({
+        code: 'contracts_loaded',
+        level: 'required',
+        instruction: 'Exact tool contracts for this work are already loaded below. Do not call tools.list again for these tools during this run.',
+      });
+    }
+
+    let connections: AccessibleConnection[] = [];
+    if (providers.length > 0 && !this.deps.connectionRegistry) {
+      advisories.push({
+        code: 'connection_registry_unavailable',
+        level: 'required',
+        instruction: 'Connected-account discovery is unavailable. Do not guess a connection ID.',
+      });
+    } else if (this.deps.connectionRegistry) {
+      const results = await Promise.all(providers.map(async provider => ({
+        provider,
+        result: await this.listAccessibleConnections(input.member, provider),
+      })));
+      for (const { provider, result } of results) {
+        if (!result.ok) {
+          advisories.push({
+            code: 'connection_registry_unavailable',
+            level: 'required',
+            provider,
+            instruction: `${provider} account discovery failed. Do not guess a connection ID; report the connection problem if this provider is required.`,
+          });
+          continue;
+        }
+        connections.push(...result.value);
+        if (result.value.length === 0) {
+          advisories.push({
+            code: 'connection_required',
+            level: 'required',
+            provider,
+            instruction: `No accessible ${provider} account is available for the selected workflow. Ask the user to connect or share one instead of guessing credentials.`,
+          });
+        }
+      }
+      if (connections.length > 0) {
+        advisories.push({
+          code: 'connections_loaded',
+          level: 'required',
+          instruction: 'Accessible accounts required by this work are already loaded below. Reuse the selected exact connectionId and do not call connections.list again during this run.',
+        });
+      }
+    }
+
+    return {
+      version: 1,
+      scope: 'run',
+      registryRevision: input.registryRevision,
+      tools,
+      connections: connections.map(connection => this.serializeAccessibleConnection(connection)),
+      advisories,
+    };
+  }
+
+  private connectionProvidersForToolIds(toolIds: readonly string[]): ConnectionProvider[] {
+    const providers = new Set<ConnectionProvider>();
+    for (const toolId of toolIds) {
+      if (GOOGLE_WORKSPACE_TOOL_IDS.includes(toolId as (typeof GOOGLE_WORKSPACE_TOOL_IDS)[number])) {
+        providers.add('google_workspace');
+      } else if (toolId === 'zohoCrm' || toolId === 'zohoBooks') {
+        providers.add('zoho');
+      } else if (toolId === 'canvaDesign') {
+        providers.add('canva');
+      } else if (LARK_CONNECTION_TOOL_IDS.has(toolId)) {
+        providers.add('lark');
+      }
+    }
+    return [...providers];
+  }
+
+  private listAccessibleConnections(member: GatewayMemberContext, provider: ConnectionProvider) {
+    const input = { companyId: member.companyId, userId: member.userId };
+    switch (provider) {
+      case 'google_workspace':
+        return this.deps.connectionRegistry!.listAccessibleGoogleConnections(input);
+      case 'zoho':
+        return this.deps.connectionRegistry!.listAccessibleZohoConnections(input);
+      case 'canva':
+        return this.deps.connectionRegistry!.listAccessibleCanvaConnections(input);
+      case 'lark':
+        return this.deps.connectionRegistry!.listAccessibleLarkConnections(input);
+    }
+  }
+
+  private serializeAccessibleConnection(connection: AccessibleConnection): Record<string, unknown> {
+    return {
+      connectionId: connection.connectionId,
+      provider: connection.provider,
+      label: connection.label,
+      accountEmail: connection.accountEmail ?? null,
+      accountName: connection.accountName ?? null,
+      ownerType: connection.ownerType,
+      ownerUserId: connection.ownerUserId ?? null,
+      access: connection.access,
+      scopes: connection.scopes,
+      connectedAt: connection.connectedAt.toISOString(),
+      lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+    };
   }
 
   private async handleTeachContextGet(
@@ -818,16 +996,8 @@ export class GatewayDispatcher {
       perm.allowedToolIds.has(asToolId(toolId)),
     );
     const canUseCanva = perm.allowedToolIds.has(asToolId('canvaDesign'));
-    const canUseLark = [
-      'larkTask',
-      'larkMessaging',
-      'larkContacts',
-      'larkCalendar',
-      'larkMeeting',
-      'larkDoc',
-      'larkBase',
-      'larkApproval',
-    ].some((toolId) => perm.allowedToolIds.has(asToolId(toolId)));
+    const canUseLark = [...LARK_CONNECTION_TOOL_IDS]
+      .some((toolId) => perm.allowedToolIds.has(asToolId(toolId)));
     if (provider === 'google_workspace' && !canUseGoogle) {
       return gatewaySuccess({ connections: [] });
     }
@@ -865,19 +1035,7 @@ export class GatewayDispatcher {
     }
 
     return gatewaySuccess({
-      connections: result.value.map(connection => ({
-        connectionId: connection.connectionId,
-        provider:     connection.provider,
-        label:        connection.label,
-        accountEmail: connection.accountEmail ?? null,
-        accountName:  connection.accountName ?? null,
-        ownerType:    connection.ownerType,
-        ownerUserId:  connection.ownerUserId ?? null,
-        access:       connection.access,
-        scopes:       connection.scopes,
-        connectedAt:  connection.connectedAt.toISOString(),
-        lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
-      })),
+      connections: result.value.map(connection => this.serializeAccessibleConnection(connection)),
     });
   }
 

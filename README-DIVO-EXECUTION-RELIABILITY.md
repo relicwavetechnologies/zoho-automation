@@ -171,9 +171,9 @@ tools precise reminders without continuously enlarging the system prompt.
 - [ ] Prefer one coherent program, but do not impose a rigid one-run rule. A
   natural workflow may inspect/clarify, run one transformation/write program,
   then perform a bounded read-back verification.
-- [ ] Prevent mutations used only to discover response shape. Tool contracts
+- [x] Prevent mutations used only to discover response shape. Tool contracts
   must be available before execution.
-- [ ] Avoid repeated `tools.list`, connection discovery, and schema probes in
+- [x] Avoid repeated `tools.list`, connection discovery, and schema probes in
   the same run by returning the needed contract once and caching it locally.
 - [ ] Keep todos tied to actual evidence; source fetching is not complete after
   a debug sample, and verification is not complete before read-back checks pass.
@@ -244,8 +244,13 @@ runtime-provided RFC/ISO/epoch normalizer with explicit UTC and local-day values
 
 ### Wave 5 — agent efficiency and cleanup (two related issues)
 
-- [ ] Replace repeated discovery with one contract/bootstrap response and typed
-  advisories.
+- [x] Replace repeated discovery with one contract/bootstrap response and typed
+  advisories. `work.resolve` and exact `skills.get` now return selected recipes,
+  relevant permitted tool schemas, only the required accessible
+  providers/accounts, and typed no-rediscovery/missing-connection guidance. The
+  desktop caches that exact response by trusted thread/run ID and invalidates
+  it when the run changes; execution permissions, approvals, connection
+  policy, and rate limits are still resolved fresh for every invocation.
 - [ ] Remove the old Python tool only after Wave 4 parity and regression tests.
 
 ## Acceptance tests
@@ -295,5 +300,7 @@ runtime-provided RFC/ISO/epoch normalizer with explicit UTC and local-day values
 - [x] Wave 2 Google structured correctness implemented.
 - [x] Wave 3 honest workflow completion implemented.
 - [x] Wave 4 local broker/CLI implementation and process-level tests completed.
+- [x] Wave 5A unified work bootstrap and run-scoped cache implemented with
+  backend and desktop contract regressions.
 - [ ] Wave 4 live desktop parity task is next; the specialized Python tool stays
   registered until that result is reviewed.

@@ -28,6 +28,21 @@ describe("Divo exact skill view", () => {
 								toolIds: ["googleSheets"],
 								revision: 3,
 							},
+							bootstrap: {
+								version: 1,
+								scope: "run",
+								registryRevision: 11,
+								tools: [{
+									id: "googleSheets",
+									family: "google",
+									description: "Read and write Google Sheets.",
+									allowedActions: ["read", "create"],
+									parameterDocs: "connectionId, op, input",
+									argsSchema: { type: "object" },
+								}],
+								connections: [],
+								advisories: [],
+							},
 						},
 					},
 				};
@@ -41,6 +56,7 @@ describe("Divo exact skill view", () => {
 		});
 		assert.equal(skill.slug, "daily-report");
 		assert.equal(skill.registryRevision, 11);
+		assert.equal(skill.bootstrap?.tools[0]?.id, "googleSheets");
 	});
 
 	it("rejects denied and malformed responses instead of treating them as recipes", () => {

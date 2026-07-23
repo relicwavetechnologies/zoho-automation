@@ -71,11 +71,30 @@ function workResolutionData() {
 			matchedQueries: ["Research the best TTS models and write an HTML document"],
 			reason: "Below the strong relevance threshold; do not apply this recipe automatically.",
 		}],
+		bootstrap: {
+			version: 1,
+			scope: "run",
+			registryRevision: 9,
+			tools: [{
+				id: "webSearch",
+				family: "context",
+				description: "Search current public web sources.",
+				allowedActions: ["read"],
+				parameterDocs: "query: focused search text",
+				argsSchema: { type: "object", properties: { query: { type: "string" } } },
+			}],
+			connections: [],
+			advisories: [{
+				code: "contracts_loaded",
+				level: "required",
+				instruction: "Do not call tools.list again for these tools during this run.",
+			}],
+		},
 	};
 }
 
 describe("resolveDivoSkills", () => {
-	it("uses one unified work.resolve response with persona provenance and full recipes", async () => {
+	it("uses a unified work.resolve response with persona provenance, full recipes, and bootstrap", async () => {
 		clearDivoGatewaySkillCache();
 		const requests: Array<{ op: string; payload?: Record<string, unknown> }> = [];
 		const env = {
@@ -104,7 +123,10 @@ describe("resolveDivoSkills", () => {
 			fetchImpl,
 		});
 
-		assert.equal(requests.length, 1);
+		// Without trusted desktop run correlation the result is deliberately not
+		// cached across calls; normal desktop runs carry a runId and are covered by
+		// the gateway-client run-cache test.
+		assert.equal(requests.length, 2);
 		assert.equal(requests[0]?.op, "work.resolve");
 		assert.equal(requests[0]?.payload?.query, "Research the best TTS models and write an HTML document");
 		assert.deepEqual(requests[0]?.payload?.variants, variants);
@@ -114,12 +136,15 @@ describe("resolveDivoSkills", () => {
 		assert.equal(cached.selected?.id, "cursor-dashboard");
 		assert.deepEqual(first.results.map(skill => skill.id), ["cursor-dashboard", "web-search"]);
 		assert.equal(first.personaRules[0]?.learningSources[0]?.sourceId, "teach-1");
+		assert.equal(first.bootstrap?.tools[0]?.id, "webSearch");
 		const formatted = formatSkillResolveResult(first);
 		assert.match(formatted, /Manager persona matches/);
 		assert.match(formatted, /exact manager-persona link/);
 		assert.match(formatted, /multi-query skill search/);
 		assert.match(formatted, /Rejected fuzzy matches/);
 		assert.match(formatted, /Use Cursor tokens, tabs, and state transitions/);
+		assert.match(formatted, /Run bootstrap \(already loaded/);
+		assert.match(formatted, /Do not call tools\.list again/);
 		assert.doesNotMatch(formatted, /call .*skills\.get/i);
 	});
 

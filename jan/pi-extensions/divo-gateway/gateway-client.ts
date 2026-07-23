@@ -79,10 +79,21 @@ type CachedGatewayResponse = {
 };
 
 const skillResponseCache = new Map<string, CachedGatewayResponse>();
+let activeBootstrapRunKey: string | undefined;
 let capturedGatewayConfig: DivoGatewayConfig | undefined;
 
 export function clearDivoGatewaySkillCache(): void {
 	skillResponseCache.clear();
+	activeBootstrapRunKey = undefined;
+}
+
+function clearRunBootstrapCache(): void {
+	for (const key of skillResponseCache.keys()) {
+		if (key.startsWith("work.resolve|") || key.startsWith("skills.get|")) {
+			skillResponseCache.delete(key);
+		}
+	}
+	activeBootstrapRunKey = undefined;
 }
 
 /**
@@ -365,6 +376,13 @@ export async function callDivoGateway(
 	if (cacheKey && body.ok && body.status === "success") {
 		writeSkillResponseCache(cacheKey, { body, httpStatus: response.status });
 	}
+	if (body.ok && body.status === "success" && (
+		request.op === "teach.learning.apply" || request.op === "tools.commit"
+	)) {
+		// These operations may change persona/skill routing. Never serve a
+		// pre-mutation bootstrap afterward, even inside the same desktop run.
+		clearRunBootstrapCache();
+	}
 
 	return { body, httpStatus: response.status };
 }
@@ -389,7 +407,12 @@ function writeSkillResponseCache(
 ): void {
 	skillResponseCache.set(key, {
 		...value,
-		expiresAt: now + SKILL_CACHE_TTL_MS,
+		// Bootstrap responses are explicitly scoped and invalidated by desktop run ID,
+		// so it can remain stable for a long-running turn. Other registry reads
+		// retain the short policy cache and never become execution authority.
+		expiresAt: key.startsWith("work.resolve|") || key.startsWith("skills.get|")
+			? Number.POSITIVE_INFINITY
+			: now + SKILL_CACHE_TTL_MS,
 	});
 }
 
@@ -410,11 +433,11 @@ function skillCacheKey(
 	if (request.op === "skills.get") {
 		const payload = asRecord(request.payload);
 		const skillId = getString(payload?.skillId);
-		if (!skillId) return null;
+		const runKey = activateBootstrapRun(config, request.execution);
+		if (!skillId || !runKey) return null;
 		return [
 			"skills.get",
-			config.backendUrl,
-			tokenCacheKey(config.memberToken),
+			runKey,
 			departmentId ?? "",
 			skillId,
 		].join("|");
@@ -437,11 +460,11 @@ function skillCacheKey(
 	if (request.op === "work.resolve") {
 		const payload = asRecord(request.payload);
 		const query = getString(payload?.query);
-		if (!query) return null;
+		const runKey = activateBootstrapRun(config, request.execution);
+		if (!query || !runKey) return null;
 		return [
 			"work.resolve",
-			config.backendUrl,
-			tokenCacheKey(config.memberToken),
+			runKey,
 			departmentId ?? "",
 			query,
 			Array.isArray(payload?.variants) ? payload.variants.join("\u001f") : "",
@@ -463,6 +486,24 @@ function skillCacheKey(
 	}
 
 	return null;
+}
+
+function activateBootstrapRun(
+	config: DivoGatewayConfig,
+	execution: GatewayExecutionContext | undefined,
+): string | null {
+	if (!execution?.runId) return null;
+	const runKey = [
+		config.backendUrl,
+		tokenCacheKey(config.memberToken),
+		execution.threadId,
+		execution.runId,
+	].join("|");
+	if (activeBootstrapRunKey !== runKey) {
+		clearRunBootstrapCache();
+		activeBootstrapRunKey = runKey;
+	}
+	return runKey;
 }
 
 function tokenCacheKey(token: string): string {
