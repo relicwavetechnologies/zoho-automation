@@ -519,7 +519,7 @@ fn test_default_mcp_config_parses_as_valid_json() {
     // Spot-check known servers
     assert!(value["mcpServers"]["fetch"].is_object());
     assert_eq!(value["mcpServers"]["fetch"]["command"], "uvx");
-    assert_eq!(value["mcpServers"]["exa"]["type"], "http");
+    assert!(value["mcpServers"].get("exa").is_none());
     assert_eq!(
         value["mcpSettings"]["toolCallTimeoutSeconds"],
         super::constants::DEFAULT_MCP_TOOL_CALL_TIMEOUT_SECS
@@ -754,13 +754,7 @@ fn test_extract_command_args_parses_default_mcp_config_servers() {
     for (name, cfg) in value["mcpServers"].as_object().unwrap() {
         let parsed = extract_command_args(cfg)
             .unwrap_or_else(|| panic!("default config server '{name}' should parse"));
-        // command may be empty for HTTP transports
-        if name == "exa" {
-            assert_eq!(parsed.transport_type.as_deref(), Some("http"));
-            assert!(parsed.url.is_some());
-        } else {
-            assert!(!parsed.command.is_empty(), "{name} should have a command");
-        }
+        assert!(!parsed.command.is_empty(), "{name} should have a command");
     }
 }
 

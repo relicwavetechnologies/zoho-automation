@@ -1,7 +1,7 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router'
 // import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { motion, useReducedMotion, type Variants } from 'framer-motion'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -30,20 +30,23 @@ import { GlobalEventHandler } from '@/providers/GlobalEventHandler'
 import { ServiceHubProvider } from '@/providers/ServiceHubProvider'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { LeftSidebar } from '@/components/left-sidebar'
+import { AuxiliaryWorkspace } from '@/components/auxiliary'
 import { WindowControls } from '@/components/WindowControls'
+import { WindowDragRegion } from '@/components/WindowDragRegion'
 import { WindowResizeGrips } from '@/components/WindowResizeGrips'
 import ErrorDialog from '@/containers/dialogs/ErrorDialog'
 import LlamacppBusyOnExitDialog from '@/containers/dialogs/LlamacppBusyOnExitDialog'
 import LlamacppOomListener from '@/containers/dialogs/LlamacppOomListener'
 import MissingDependenciesDialog from '@/containers/dialogs/MissingDependenciesDialog'
 import { DivoDexMark } from '@/components/DivoDexBrand'
-import { Button as AstryxButton } from '@astryxdesign/core/Button'
-import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 
 import { DivoRunReplay } from '@/components/sign-in/DivoRunReplay'
 import {
   type DivoSessionStatus,
   getStoredDivoBackendUrl,
+  isDivoAuthCancelled,
   normalizeDivoBackendUrl,
   signInDivoWithLark,
   storeDivoBackendUrl,
@@ -80,20 +83,15 @@ const AppLayout = () => {
         {/* Fake absolute panel top to enable window drag */}
         {(IS_WINDOWS || IS_LINUX) && <WindowControls />}
         {IS_LINUX && <WindowResizeGrips />}
-        {IS_TAURI && (
-          <div
-            className="fixed w-full h-12 z-20 top-0 cursor-grab active:cursor-grabbing"
-            title="Drag window"
-            aria-label="Window drag area"
-            data-tauri-drag-region
-          />
-        )}
+        <WindowDragRegion />
         <DialogAppUpdater />
         <BackendUpdater />
         <LeftSidebar />
-        <SidebarInset>
-          <div className="bg-neutral-50 dark:bg-background size-full">
-            <Outlet />
+        <SidebarInset className="h-svh min-h-0 overflow-hidden">
+          <div className="bg-neutral-50 dark:bg-background size-full min-h-0 min-w-0 overflow-hidden">
+            <AuxiliaryWorkspace>
+              <Outlet />
+            </AuxiliaryWorkspace>
           </div>
         </SidebarInset>
 
@@ -130,6 +128,7 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
   const [isBooting, setIsBooting] = useState(true)
   const [isSigningIn, setIsSigningIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const signInAbortRef = useRef<AbortController | null>(null)
 
   const refreshSession = useCallback(async () => {
     try {
@@ -176,21 +175,38 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
       unlisten?.()
+      signInAbortRef.current?.abort()
     }
   }, [refreshSession])
 
+  const cancelSignIn = () => {
+    signInAbortRef.current?.abort()
+  }
+
   const signIn = async () => {
+    const controller = new AbortController()
+    signInAbortRef.current = controller
     setIsSigningIn(true)
     setError(null)
     try {
       const normalized = normalizeDivoBackendUrl(backendUrl)
       setBackendUrl(normalized)
-      const next = await signInDivoWithLark(normalized)
+      const next = await signInDivoWithLark(normalized, {
+        signal: controller.signal,
+      })
       setSession(next.configured ? next : null)
     } catch (err) {
-      setError(String(err))
-      setSession(null)
+      if (isDivoAuthCancelled(err)) {
+        setError(null)
+        setSession(null)
+      } else {
+        setError(String(err))
+        setSession(null)
+      }
     } finally {
+      if (signInAbortRef.current === controller) {
+        signInAbortRef.current = null
+      }
       setIsSigningIn(false)
     }
   }
@@ -282,20 +298,37 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
               </motion.div>
             ) : null}
 
-            {/* Astryx owns the pending state: `clickAction` keeps the spinner,
-                the disabled window, and the aria-busy announcement tied to the
-                actual promise, so they cannot drift out of sync the way a
-                hand-held `isSigningIn` flag can. */}
-            <AstryxButton
-              label={isSigningIn ? 'Waiting for Lark…' : 'Sign in with Lark'}
-              variant="primary"
-              size="lg"
-              // Full-width via the Tailwind bridge rather than `xstyle`:
-              // xstyle takes authored StyleX, which is the one thing in this
-              // setup that would drag in the StyleX compiler.
-              className="w-full"
-              clickAction={signIn}
-            />
+            <Button
+              className={cn(
+                'group relative h-11 w-full overflow-hidden text-sm font-medium'
+              )}
+              onClick={() => void signIn()}
+              disabled={isSigningIn}
+            >
+              {/* Sheen sweep on hover */}
+              <span className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 ease-out group-hover:translate-x-full" />
+              <span className="relative flex items-center justify-center gap-2">
+                {isSigningIn ? (
+                  <>
+                    <span className="size-3.5 animate-spin rounded-full border-[1.5px] border-current border-t-transparent" />
+                    Waiting for Lark…
+                  </>
+                ) : (
+                  'Sign in with Lark'
+                )}
+              </span>
+            </Button>
+
+            {isSigningIn ? (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-10 w-full text-sm text-muted-foreground hover:text-foreground"
+                onClick={cancelSignIn}
+              >
+                Cancel
+              </Button>
+            ) : null}
           </motion.div>
 
           <motion.details
@@ -318,18 +351,15 @@ function DivoSignInGate({ children }: { children: ReactNode }) {
                 />
               </svg>
             </summary>
-            <div className="mt-3">
-              {/* Label hidden, not dropped: Astryx renders it at the full form
-                  type scale, which on a tucked-away advanced field out-shouted
-                  the page's own greeting. The disclosure summary above already
-                  names it for sighted users; screen readers still get it. */}
-              <AstryxTextInput
-                label="Backend URL"
-                isLabelHidden
+            <div className="mt-3 space-y-1.5">
+              <label className="block text-xs font-medium text-muted-foreground">
+                Backend URL
+              </label>
+              <Input
                 value={backendUrl}
-                onChange={(value) => setBackendUrl(value)}
-                isDisabled={isSigningIn}
-                size="sm"
+                onChange={(event) => setBackendUrl(event.target.value)}
+                disabled={isSigningIn}
+                className="h-10 text-sm"
               />
             </div>
           </motion.details>

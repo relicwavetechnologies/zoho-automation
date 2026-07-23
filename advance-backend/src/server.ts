@@ -470,6 +470,7 @@ export const createServer = (c: Container) => {
         store:   c.proxyKeyStore,
         service: c.llmProxyService,
         baseUrl: c.env.DEEPSEEK_BASE_URL,
+        apiKeyExhaustion: c.apiKeyExhaustionNotifier,
       }),
     );
     c.logger.info('llm-proxy.enabled', { baseUrl: c.env.DEEPSEEK_BASE_URL, canEncrypt: c.proxyKeyStore.canEncrypt() });

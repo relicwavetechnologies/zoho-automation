@@ -64,6 +64,13 @@ pub fn workspace_status<R: Runtime>(app: &AppHandle<R>) -> Result<DivoWorkspaceS
             .map(|path| path.to_string_lossy().to_string()),
     )?;
     let divo_layout = ensure_workspace_internal_layout(&effective)?;
+    let workspace_artifacts_dir = effective.join(ARTIFACTS_DIR_NAME);
+    fs::create_dir_all(&workspace_artifacts_dir).map_err(|e| {
+        format!(
+            "Failed to create workspace artifacts directory {}: {e}",
+            workspace_artifacts_dir.display()
+        )
+    })?;
 
     Ok(DivoWorkspaceStatus {
         home_path: layout.home_dir.to_string_lossy().to_string(),
@@ -73,7 +80,7 @@ pub fn workspace_status<R: Runtime>(app: &AppHandle<R>) -> Result<DivoWorkspaceS
         divo_path: divo_layout.divo_dir.to_string_lossy().to_string(),
         divo_tmp_path: divo_layout.tmp_dir.to_string_lossy().to_string(),
         divo_scripts_path: divo_layout.scripts_dir.to_string_lossy().to_string(),
-        divo_artifacts_path: divo_layout.artifacts_dir.to_string_lossy().to_string(),
+        divo_artifacts_path: workspace_artifacts_dir.to_string_lossy().to_string(),
         divo_logs_path: divo_layout.logs_dir.to_string_lossy().to_string(),
         company_skills_path: layout.company_skills_dir.to_string_lossy().to_string(),
         user_skills_path: layout.user_skills_dir.to_string_lossy().to_string(),
@@ -161,14 +168,16 @@ pub fn prepare_workspace_run_layout(
     let run_dir = thread_dir.join(RUNS_DIR_NAME).join(&run_id);
     let run_tmp_dir = run_dir.join(TMP_DIR_NAME);
     let run_scripts_dir = run_dir.join(SCRIPTS_DIR_NAME);
-    let run_artifacts_dir = run_dir.join(ARTIFACTS_DIR_NAME);
     let run_logs_dir = run_dir.join(LOGS_DIR_NAME);
+    // Durable, user-visible deliverables live at {workspace}/artifacts — not
+    // under the ephemeral per-run tree.
+    let workspace_artifacts_dir = workspace_dir.join(ARTIFACTS_DIR_NAME);
     for dir in [
         &run_dir,
         &run_tmp_dir,
         &run_scripts_dir,
-        &run_artifacts_dir,
         &run_logs_dir,
+        &workspace_artifacts_dir,
     ] {
         fs::create_dir_all(dir)
             .map_err(|e| format!("Failed to create Divo run directory {}: {e}", dir.display()))?;
@@ -182,7 +191,7 @@ pub fn prepare_workspace_run_layout(
         run_dir,
         tmp_dir: run_tmp_dir,
         scripts_dir: run_scripts_dir,
-        artifacts_dir: run_artifacts_dir,
+        artifacts_dir: workspace_artifacts_dir,
         logs_dir: run_logs_dir,
     })
 }
@@ -426,8 +435,10 @@ mod tests {
         assert!(layout.logs_dir.is_dir());
         assert!(layout.tmp_dir.starts_with(&layout.run_dir));
         assert!(layout.scripts_dir.starts_with(&layout.run_dir));
-        assert!(layout.artifacts_dir.starts_with(&layout.run_dir));
         assert!(layout.logs_dir.starts_with(&layout.run_dir));
+        // Deliverables are durable at the workspace root, not under the run tree.
+        assert_eq!(layout.artifacts_dir, workspace.join("artifacts"));
+        assert!(!layout.artifacts_dir.starts_with(&layout.run_dir));
 
         let exclude = std::fs::read_to_string(git_info.join("exclude")).unwrap();
         assert!(exclude.lines().any(|line| line.trim() == ".divo/"));

@@ -34,6 +34,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { route } from '@/constants/routes'
 import {
   getPlugin,
@@ -107,6 +114,7 @@ type GoogleManageData = {
     accountEmail: string | null
     accountName: string | null
     ownerType: 'user' | 'company'
+    ownerUser: { id: string; email: string; name: string | null } | null
     access: DivoConnectionAccess
     scopes: string[]
     connectedAt: string
@@ -119,6 +127,53 @@ type GoogleManageData = {
     company: { id: string; name: string } | null
   }
   accessLevels: Array<{ value: DivoConnectionAccess; label: string; description: string }>
+  governance: {
+    managerPolicy: ConnectionGovernancePolicy
+    managerConfiguredAt: string | null
+    adminOverride: ConnectionGovernancePolicy | null
+    adminOverriddenAt: string | null
+    source: 'platform_default' | 'manager_policy' | 'company_admin_override'
+    version: number
+  }
+}
+
+type ConnectionPerson = {
+  userId: string
+  name: string
+  email: string
+  companyRole: string | null
+  access: DivoConnectionAccess
+  source: 'owner' | 'direct_grant'
+  grant: GoogleManageGrant | null
+}
+
+type ConnectionAction = 'read' | 'create' | 'update' | 'delete' | 'send' | 'execute'
+type ConnectionApprovalMode = 'none' | 'connection_owner' | 'company_admin'
+type ConnectionActionPolicy = {
+  mode: 'inherit' | 'enforced'
+  requestsPerMinute?: number | null
+  requestsPerDay?: number | null
+  approval?: ConnectionApprovalMode
+}
+type ConnectionGovernancePolicy = {
+  version: 1
+  actions: Partial<Record<ConnectionAction, ConnectionActionPolicy>>
+}
+
+const connectionActions: Array<{ id: ConnectionAction; label: string }> = [
+  { id: 'read', label: 'Read' },
+  { id: 'create', label: 'Create' },
+  { id: 'update', label: 'Update' },
+  { id: 'delete', label: 'Delete' },
+  { id: 'send', label: 'Send' },
+  { id: 'execute', label: 'Execute' },
+]
+
+function defaultConnectionGovernancePolicy(): ConnectionGovernancePolicy {
+  return {
+    version: 1,
+    actions: Object.fromEntries(connectionActions.map(({ id }) => [id, { mode: 'inherit' }])) as ConnectionGovernancePolicy['actions'],
+  }
 }
 
 type GoogleManageResponse = {
@@ -757,7 +812,7 @@ export function PluginDetailRoute() {
         onReconnect={openDivoSettings}
         onOpenChange={setAddOpen}
       />
-      <ManageAccessDialog
+      <ConnectionManagementSheet
         provider={cloudProvider.provider}
         connection={manageConnection}
         onOpenChange={(open) => {
@@ -1179,7 +1234,7 @@ function ZohoPluginDetail({
 	        {accessContent}
 	      </main>
 
-	      <ManageAccessDialog
+      <ConnectionManagementSheet
 	        provider="zoho"
 	        connection={manageConnection}
 	        onOpenChange={(open) => {
@@ -1401,7 +1456,7 @@ function PiContextCard({ connections }: { connections: DivoConnection[] }) {
   )
 }
 
-function ManageAccessDialog({
+function ConnectionManagementSheet({
   provider = 'google',
   connection,
   onOpenChange,
@@ -1420,6 +1475,8 @@ function ManageAccessDialog({
   const [granteeId, setGranteeId] = useState('')
   const [access, setAccess] = useState<DivoConnectionAccess>('read_only')
   const [query, setQuery] = useState('')
+  const [managerPolicy, setManagerPolicy] = useState<ConnectionGovernancePolicy>(defaultConnectionGovernancePolicy)
+  const [selectedPerson, setSelectedPerson] = useState<ConnectionPerson | null>(null)
   const open = Boolean(connection)
   const providerLabel = provider === 'zoho' ? 'Zoho' : provider === 'canva' ? 'Canva' : provider === 'lark' ? 'Lark' : 'Google'
   const commandNames = provider === 'zoho'
@@ -1459,6 +1516,7 @@ function ManageAccessDialog({
         throw new Error(response.message ?? 'Could not load access settings')
       }
       setData(response.data)
+      setManagerPolicy(response.data.governance.managerPolicy)
       setGranteeId('')
     } catch (loadError) {
       setError(String(loadError))
@@ -1469,6 +1527,7 @@ function ManageAccessDialog({
 
   useEffect(() => {
     if (connection) {
+      setSelectedPerson(null)
       void loadManageData()
     } else {
       setData(null)
@@ -1477,6 +1536,8 @@ function ManageAccessDialog({
       setGranteeType('user')
       setGranteeId('')
       setAccess('read_only')
+      setManagerPolicy(defaultConnectionGovernancePolicy())
+      setSelectedPerson(null)
     }
   }, [connection, loadManageData])
 
@@ -1546,185 +1607,441 @@ function ManageAccessDialog({
     }
   }
 
+  const updateActionPolicy = (action: ConnectionAction, update: Partial<ConnectionActionPolicy>) => {
+    setManagerPolicy((current) => ({
+      ...current,
+      actions: {
+        ...current.actions,
+        [action]: {
+          ...(current.actions[action] ?? { mode: 'inherit' }),
+          ...update,
+        },
+      },
+    }))
+  }
+
+  const saveOperatingControls = async () => {
+    if (!connection) return
+    setIsSaving(true)
+    try {
+      const response = await invoke<GoogleManageResponse>('divo_connection_update_governance', {
+        connectionId: connection.id,
+        connection_id: connection.id,
+        managerPolicy,
+        manager_policy: managerPolicy,
+      })
+      if (!response.success) throw new Error(response.message ?? 'Could not save operating controls')
+      await loadManageData()
+      toast.success('Operating controls saved')
+    } catch (saveError) {
+      toast.error('Could not save operating controls', { description: String(saveError) })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const closeSheet = () => {
+    setSelectedPerson(null)
+    onOpenChange(false)
+  }
+
+  const people = data ? getPeopleWithDirectConnectionAccess(data) : []
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100svh-64px)] overflow-y-auto sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>Manage {providerLabel} access</DialogTitle>
-          <DialogDescription>
-            Share this connection with users, departments, roles, or the whole company.
-          </DialogDescription>
-        </DialogHeader>
+    <Sheet open={open} onOpenChange={(nextOpen) => nextOpen ? onOpenChange(true) : closeSheet()}>
+      <SheetContent
+        resizable
+        className="w-[min(42rem,50vw)] max-w-[50vw] gap-0 p-0"
+      >
+        <SheetHeader className="shrink-0 border-b border-border/70 pr-12">
+          {selectedPerson ? (
+            <>
+              <Button variant="ghost" size="sm" className="-ml-2 w-fit" onClick={() => setSelectedPerson(null)}>
+                <ArrowLeft className="size-4" />
+                People using this connection
+              </Button>
+              <SheetTitle>{selectedPerson.name}</SheetTitle>
+              <SheetDescription>Access and safety rules for this connection only.</SheetDescription>
+            </>
+          ) : (
+            <>
+              <SheetTitle>Manage {providerLabel} access</SheetTitle>
+              <SheetDescription>Manage this connection, its shared access, and its operating controls.</SheetDescription>
+            </>
+          )}
+        </SheetHeader>
 
-        {connection ? (
-          <div className="space-y-4 py-2">
-            <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{connection.label}</p>
-                  <p className="mt-1 truncate text-xs text-muted-foreground">
-                    {connection.accountEmail}
-                  </p>
-                </div>
-                <Badge tone={connection.access === 'admin' ? 'green' : 'amber'}>
-                  {formatAccessLabel(connection.access)}
-                </Badge>
-              </div>
-            </div>
-
-            {isLoading ? <AccessScopeSkeleton /> : null}
-            {error ? (
-              <ConnectionListState
-                title="Could not load access"
-                description={error}
-                action={<Button size="sm" onClick={() => void loadManageData()}>Retry</Button>}
-              />
-            ) : null}
-
-            {data && !error ? (
-              <>
-                <section className="rounded-lg border border-border/70 bg-card/30 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-medium">Grant access</h3>
-                      <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                        Read-only maps to read tools. Read/write maps to send, create, update, and delete tools. Admin can manage sharing.
-                      </p>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {connection ? (
+            <div className="min-w-0 space-y-4 p-4">
+              {selectedPerson && data ? (
+                <ConnectionPersonProfile person={selectedPerson} data={data} />
+              ) : (
+                <>
+                  <div className="rounded-lg border border-border/70 bg-muted/20 p-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{connection.label}</p>
+                        <p className="mt-1 truncate text-xs text-muted-foreground">{connection.accountEmail}</p>
+                      </div>
+                      <Badge tone={connection.access === 'admin' ? 'green' : 'amber'}>{formatAccessLabel(connection.access)}</Badge>
                     </div>
                   </div>
 
-                  <div className="mt-4 grid gap-3 md:grid-cols-[160px_minmax(0,1fr)_160px]">
-                    <select
-                      className="h-9 rounded-md border border-border bg-background px-3 text-sm"
-                      value={granteeType}
-                      onChange={(event) => {
-                        const nextType = event.target.value as GoogleManageGranteeType
-                        setGranteeType(nextType)
-                        setQuery('')
-                        setGranteeId(nextType === 'company' ? data.candidates.company?.id ?? '' : '')
-                      }}
-                    >
-                      <option value="user">User</option>
-                      <option value="department">Department</option>
-                      <option value="role">Role</option>
-                      <option value="company">Company</option>
-                    </select>
+                  {isLoading ? <AccessScopeSkeleton /> : null}
+                  {error ? <ConnectionListState title="Could not load access" description={error} action={<Button size="sm" onClick={() => void loadManageData()}>Retry</Button>} /> : null}
 
-                    <div className="relative">
-                      <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
-                      <input
-                        className="h-9 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm outline-none"
-                        value={query}
-                        onChange={(event) => setQuery(event.target.value)}
-                        placeholder={`Search ${granteeType}`}
-                        disabled={granteeType === 'company'}
+                  {data && !error ? (
+                    <>
+                      <ConnectionOperatingControls
+                        governance={data.governance}
+                        policy={managerPolicy}
+                        isSaving={isSaving}
+                        onPolicyChange={updateActionPolicy}
+                        onSave={() => void saveOperatingControls()}
                       />
-                    </div>
 
-                    <select
-                      className="h-9 rounded-md border border-border bg-background px-3 text-sm"
-                      value={access}
-                      onChange={(event) => setAccess(event.target.value as DivoConnectionAccess)}
-                    >
-                      {data.accessLevels.map((level) => (
-                        <option key={level.value} value={level.value}>
-                          {level.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                      <ConnectionPeopleList people={people} onSelect={setSelectedPerson} />
 
-                  <div className="mt-3 max-h-44 overflow-y-auto rounded-md border border-border/70">
-                    {filteredCandidates.length ? (
-                      filteredCandidates.map((candidate) => (
-                        <button
-                          key={`${granteeType}:${candidate.id}`}
-                          type="button"
-                          className={cn(
-                            'flex w-full items-center justify-between gap-3 border-b border-border/70 px-3 py-2 text-left last:border-b-0 hover:bg-muted/40',
-                            granteeId === candidate.id && 'bg-muted/50'
-                          )}
-                          onClick={() => setGranteeId(candidate.id)}
-                        >
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-medium">
-                              {candidateLabel(candidate)}
-                            </span>
-                            <span className="block truncate text-xs text-muted-foreground">
-                              {candidateDetail(candidate, granteeType)}
-                            </span>
-                          </span>
-                          {granteeId === candidate.id ? <Check className="size-4 shrink-0" /> : null}
-                        </button>
-                      ))
-                    ) : (
-                      <p className="p-3 text-sm text-muted-foreground">No matches found.</p>
-                    )}
-                  </div>
+                      <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+                        <h3 className="text-sm font-medium">Grant access</h3>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">Read-only maps to read tools. Read/write maps to send, create, update, and delete tools. Admin can manage sharing.</p>
 
-                  <div className="mt-3 flex justify-end">
-                    <Button size="sm" onClick={() => void grantAccess()} disabled={isSaving || !granteeId}>
-                      <ShieldCheck className="size-4" />
-                      Grant access
-                    </Button>
-                  </div>
-                </section>
-
-                <section className="rounded-lg border border-border/70 bg-card/30 p-4">
-                  <h3 className="text-sm font-medium">Current access</h3>
-                  <div className="mt-3 space-y-2">
-                    {data.grants.length ? (
-                      data.grants.map((grant) => (
-                        <div
-                          key={grant.id}
-                          className="flex flex-col gap-3 rounded-md border border-border/70 bg-background/40 p-3 sm:flex-row sm:items-center sm:justify-between"
-                        >
-                          <div className="flex min-w-0 items-center gap-3">
-                            <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
-                              <GrantIcon type={grant.granteeType} />
-                            </span>
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium">{grant.granteeLabel}</p>
-                              <p className="truncate text-xs text-muted-foreground">
-                                {grant.granteeType} · {grant.granteeDetail ?? 'Direct grant'}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Badge tone={grant.access === 'admin' ? 'green' : grant.access === 'read_only' ? 'amber' : 'blue'}>
-                              {formatAccessLabel(grant.access)}
-                            </Badge>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => void revokeGrant(grant)}
-                              disabled={isSaving}
-                            >
-                              <Trash2 className="size-4" />
-                            </Button>
-                          </div>
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                          <select className="h-9 rounded-md border border-border bg-background px-3 text-sm" value={granteeType} onChange={(event) => {
+                            const nextType = event.target.value as GoogleManageGranteeType
+                            setGranteeType(nextType)
+                            setQuery('')
+                            setGranteeId(nextType === 'company' ? data.candidates.company?.id ?? '' : '')
+                          }}>
+                            <option value="user">User</option>
+                            <option value="department">Department</option>
+                            <option value="role">Role</option>
+                            <option value="company">Company</option>
+                          </select>
+                          <select className="h-9 rounded-md border border-border bg-background px-3 text-sm" value={access} onChange={(event) => setAccess(event.target.value as DivoConnectionAccess)}>
+                            {data.accessLevels.map((level) => <option key={level.value} value={level.value}>{level.label}</option>)}
+                          </select>
                         </div>
-                      ))
-                    ) : (
-                      <p className="rounded-md border border-border/70 bg-background/40 p-3 text-sm text-muted-foreground">
-                        No shared grants yet.
-                      </p>
-                    )}
-                  </div>
-                </section>
-              </>
-            ) : null}
-          </div>
-        ) : null}
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+                        <div className="relative mt-3">
+                          <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" />
+                          <input className="h-9 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm outline-none" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Search ${granteeType}`} disabled={granteeType === 'company'} />
+                        </div>
+
+                        <div className="mt-3 max-h-44 overflow-y-auto rounded-md border border-border/70">
+                          {filteredCandidates.length ? filteredCandidates.map((candidate) => (
+                            <button key={`${granteeType}:${candidate.id}`} type="button" className={cn('flex w-full items-center justify-between gap-3 border-b border-border/70 px-3 py-2 text-left last:border-b-0 hover:bg-muted/40', granteeId === candidate.id && 'bg-muted/50')} onClick={() => setGranteeId(candidate.id)}>
+                              <span className="min-w-0"><span className="block truncate text-sm font-medium">{candidateLabel(candidate)}</span><span className="block truncate text-xs text-muted-foreground">{candidateDetail(candidate, granteeType)}</span></span>
+                              {granteeId === candidate.id ? <Check className="size-4 shrink-0" /> : null}
+                            </button>
+                          )) : <p className="p-3 text-sm text-muted-foreground">No matches found.</p>}
+                        </div>
+
+                        <div className="mt-3 flex justify-end"><Button size="sm" onClick={() => void grantAccess()} disabled={isSaving || !granteeId}><ShieldCheck className="size-4" />Grant access</Button></div>
+                      </section>
+
+                      <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+                        <h3 className="text-sm font-medium">All access grants</h3>
+                        <p className="mt-1 text-xs leading-5 text-muted-foreground">User, department, role, and company grants. Select a person above to inspect their direct connection access.</p>
+                        <div className="mt-3 space-y-2">
+                          {data.grants.length ? data.grants.map((grant) => (
+                            <div key={grant.id} className="flex flex-col gap-3 rounded-md border border-border/70 bg-background/40 p-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="flex min-w-0 items-center gap-3"><span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40"><GrantIcon type={grant.granteeType} /></span><div className="min-w-0"><p className="truncate text-sm font-medium">{grant.granteeLabel}</p><p className="truncate text-xs text-muted-foreground">{grant.granteeType} · {grant.granteeDetail ?? 'Direct grant'}</p></div></div>
+                              <div className="flex items-center gap-2"><Badge tone={grant.access === 'admin' ? 'green' : grant.access === 'read_only' ? 'amber' : 'blue'}>{formatAccessLabel(grant.access)}</Badge><Button variant="ghost" size="icon" onClick={() => void revokeGrant(grant)} disabled={isSaving} aria-label={`Revoke access for ${grant.granteeLabel}`}><Trash2 className="size-4" /></Button></div>
+                            </div>
+                          )) : <p className="rounded-md border border-border/70 bg-background/40 p-3 text-sm text-muted-foreground">No shared grants yet.</p>}
+                        </div>
+                      </section>
+                    </>
+                  ) : null}
+                </>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </SheetContent>
+    </Sheet>
   )
+}
+
+function ConnectionOperatingControls({
+  governance,
+  policy,
+  isSaving,
+  onPolicyChange,
+  onSave,
+}: {
+  governance: GoogleManageData['governance']
+  policy: ConnectionGovernancePolicy
+  isSaving: boolean
+  onPolicyChange: (action: ConnectionAction, update: Partial<ConnectionActionPolicy>) => void
+  onSave: () => void
+}) {
+  return (
+    <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-sm font-medium">Connection-wide controls</h3>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Rate budgets and approvals for everyone using this connection. They do not grant access, and company-admin overrides take precedence.
+          </p>
+        </div>
+        {governance.adminOverride ? <Badge tone="amber">Company override active</Badge> : null}
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        {connectionActions.map(({ id, label }) => (
+          <ConnectionActionControl
+            key={id}
+            action={id}
+            label={label}
+            policy={policy.actions[id] ?? { mode: 'inherit' }}
+            isSaving={isSaving}
+            onPolicyChange={onPolicyChange}
+          />
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          {governance.adminOverride
+            ? 'Your baseline is saved, but the company-admin policy is currently effective.'
+            : 'Leave an action at platform default to keep its existing behaviour.'}
+        </p>
+        <Button size="sm" onClick={onSave} disabled={isSaving}>{isSaving ? 'Saving…' : 'Save controls'}</Button>
+      </div>
+    </section>
+  )
+}
+
+function ConnectionActionControl({
+  action,
+  label,
+  policy,
+  isSaving,
+  onPolicyChange,
+}: {
+  action: ConnectionAction
+  label: string
+  policy: ConnectionActionPolicy
+  isSaving: boolean
+  onPolicyChange: (action: ConnectionAction, update: Partial<ConnectionActionPolicy>) => void
+}) {
+  const enforced = policy.mode === 'enforced'
+  return (
+    <div className="rounded-md border border-border/70 bg-background/40 p-3">
+      <p className="text-sm font-medium">{label}</p>
+      <label className="mt-3 grid gap-1 text-xs text-muted-foreground">
+        Policy
+        <select
+          className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground"
+          value={policy.mode}
+          onChange={(event) => onPolicyChange(action, {
+            mode: event.target.value as ConnectionActionPolicy['mode'],
+            ...(event.target.value === 'enforced' && !policy.approval ? { approval: 'none' } : {}),
+          })}
+          disabled={isSaving}
+        >
+          <option value="inherit">Platform default</option>
+          <option value="enforced">Control this action</option>
+        </select>
+      </label>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <label className="grid gap-1 text-xs text-muted-foreground">
+          Per minute
+          <input
+            className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:opacity-50"
+            type="number"
+            min="1"
+            placeholder="No cap"
+            value={policy.requestsPerMinute ?? ''}
+            onChange={(event) => onPolicyChange(action, { requestsPerMinute: positiveIntegerOrNull(event.target.value) })}
+            disabled={!enforced || isSaving}
+          />
+        </label>
+        <label className="grid gap-1 text-xs text-muted-foreground">
+          Per day
+          <input
+            className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:opacity-50"
+            type="number"
+            min="1"
+            placeholder="No cap"
+            value={policy.requestsPerDay ?? ''}
+            onChange={(event) => onPolicyChange(action, { requestsPerDay: positiveIntegerOrNull(event.target.value) })}
+            disabled={!enforced || isSaving}
+          />
+        </label>
+      </div>
+      <label className="mt-3 grid gap-1 text-xs text-muted-foreground">
+        Approval
+        <select
+          className="h-9 rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:opacity-50"
+          value={policy.approval ?? 'none'}
+          onChange={(event) => onPolicyChange(action, { approval: event.target.value as ConnectionApprovalMode })}
+          disabled={!enforced || isSaving}
+        >
+          <option value="none">No extra approval</option>
+          <option value="connection_owner">Connection owner on Lark</option>
+          <option value="company_admin">Company admin on Lark</option>
+        </select>
+      </label>
+    </div>
+  )
+}
+
+function ConnectionPeopleList({ people, onSelect }: { people: ConnectionPerson[]; onSelect: (person: ConnectionPerson) => void }) {
+  return (
+    <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+      <div>
+        <h3 className="text-sm font-medium">People using this connection</h3>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          The owner and people with direct user grants. Department, role, and company grants remain in all access grants below.
+        </p>
+      </div>
+      <div className="mt-3 divide-y divide-border/70 overflow-hidden rounded-md border border-border/70">
+        {people.length ? people.map((person) => (
+          <button key={person.userId} type="button" className="flex w-full items-center gap-3 bg-background/40 px-3 py-3 text-left hover:bg-muted/40" onClick={() => onSelect(person)}>
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium">{initialsForPerson(person)}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium">{person.name}</span>
+              <span className="block truncate text-xs text-muted-foreground">{person.email} · {person.source === 'owner' ? 'Connection owner' : 'Direct access'}</span>
+            </span>
+            <Badge tone={person.access === 'admin' ? 'green' : person.access === 'read_only' ? 'amber' : 'blue'}>{formatAccessLabel(person.access)}</Badge>
+            <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+          </button>
+        )) : <p className="p-3 text-sm text-muted-foreground">No direct user access has been granted yet.</p>}
+      </div>
+    </section>
+  )
+}
+
+function ConnectionPersonProfile({ person, data }: { person: ConnectionPerson; data: GoogleManageData }) {
+  const actions = actionsForConnectionAccess(person.access)
+  const policySource = data.governance.source === 'company_admin_override' ? 'Company admin override' : data.governance.source === 'manager_policy' ? 'Connection-wide manager policy' : 'Platform default'
+  const rateLimits = connectionActions
+    .filter(({ label }) => actions.includes(label))
+    .map(({ id, label }) => ({ action: id, label, effective: effectiveConnectionActionPolicy(data.governance, id) }))
+  return (
+    <div className="space-y-4">
+      <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+        <div className="flex items-start gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted font-medium">{initialsForPerson(person)}</span>
+          <div className="min-w-0">
+            <h3 className="truncate text-base font-medium">{person.name}</h3>
+            <p className="mt-1 truncate text-sm text-muted-foreground">{person.email}</p>
+            {person.companyRole ? <p className="mt-1 text-xs text-muted-foreground">Company role: {person.companyRole}</p> : null}
+          </div>
+        </div>
+      </section>
+      <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+        <h3 className="text-sm font-medium">Current connection access</h3>
+        <p className="mt-1 text-sm text-muted-foreground">{person.source === 'owner' ? 'Connection owner' : 'Direct user grant'} · {formatAccessLabel(person.access)}</p>
+        <div className="mt-3 flex flex-wrap gap-2">{actions.map((action) => <Badge key={action} tone="blue">{action}</Badge>)}</div>
+        <p className="mt-3 text-xs leading-5 text-muted-foreground">This describes the connection grant. Divo still enforces company and department RBAC before any tool runs.</p>
+      </section>
+      <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+        <h3 className="text-sm font-medium">Safety rules this person inherits</h3>
+        <dl className="mt-3 grid gap-3 text-sm">
+          <div><dt className="text-xs text-muted-foreground">Policy source</dt><dd className="mt-1">{policySource}</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Individual override</dt><dd className="mt-1">None — connection-wide limits and approval rules apply.</dd></div>
+        </dl>
+      </section>
+      <section className="rounded-lg border border-border/70 bg-card/30 p-4">
+        <h3 className="text-sm font-medium">Rate limits and personal allowance</h3>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          The connection cap is shared across everyone using it. A personal allowance appears here only when this person has an explicit exception.
+        </p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          {rateLimits.map(({ action, label, effective }) => (
+            <article key={action} className="rounded-md border border-border/70 bg-background/40 p-3">
+              <h4 className="text-sm font-medium">{label}</h4>
+              <dl className="mt-3 grid gap-2 text-sm">
+                <div><dt className="text-xs text-muted-foreground">Shared connection cap</dt><dd className="mt-1">{formatConnectionRateLimit(effective.policy)}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Approval</dt><dd className="mt-1">{formatConnectionApproval(effective.policy)}</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Personal allowance</dt><dd className="mt-1">None — no extra or lower individual allowance.</dd></div>
+                <div><dt className="text-xs text-muted-foreground">Policy source</dt><dd className="mt-1">{effective.source}</dd></div>
+              </dl>
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function effectiveConnectionActionPolicy(
+  governance: GoogleManageData['governance'],
+  action: ConnectionAction,
+): { source: 'Company admin override' | 'Manager policy' | 'Platform default'; policy: ConnectionActionPolicy | null } {
+  const adminPolicy = governance.adminOverride?.actions[action]
+  if (adminPolicy?.mode === 'enforced') return { source: 'Company admin override', policy: adminPolicy }
+  const managerPolicy = governance.managerPolicy.actions[action]
+  if (managerPolicy?.mode === 'enforced') return { source: 'Manager policy', policy: managerPolicy }
+  return { source: 'Platform default', policy: null }
+}
+
+function formatConnectionRateLimit(policy: ConnectionActionPolicy | null): string {
+  if (!policy) return 'Platform default'
+  const limits = [
+    policy.requestsPerMinute ? `${policy.requestsPerMinute}/minute` : null,
+    policy.requestsPerDay ? `${policy.requestsPerDay}/day` : null,
+  ].filter(Boolean)
+  return limits.length ? limits.join(' · ') : 'No explicit connection cap'
+}
+
+function formatConnectionApproval(policy: ConnectionActionPolicy | null): string {
+  if (!policy || policy.approval === 'none' || !policy.approval) return 'No extra approval'
+  return policy.approval === 'connection_owner' ? 'Connection owner on Lark' : 'Company admin on Lark'
+}
+
+function getPeopleWithDirectConnectionAccess(data: GoogleManageData): ConnectionPerson[] {
+  const people = new Map<string, ConnectionPerson>()
+  const usersById = new Map(data.candidates.users.map((user) => [user.id, user]))
+  const owner = data.connection.ownerUser
+  if (owner) {
+    const candidate = usersById.get(owner.id)
+    people.set(owner.id, {
+      userId: owner.id,
+      name: owner.name ?? owner.email,
+      email: owner.email,
+      companyRole: candidate?.role ?? null,
+      access: 'admin',
+      source: 'owner',
+      grant: null,
+    })
+  }
+
+  for (const grant of data.grants) {
+    if (grant.granteeType !== 'user' || people.has(grant.granteeId)) continue
+    const candidate = usersById.get(grant.granteeId)
+    people.set(grant.granteeId, {
+      userId: grant.granteeId,
+      name: candidate?.name ?? grant.granteeLabel,
+      email: candidate?.email ?? grant.granteeDetail ?? 'No email available',
+      companyRole: candidate?.role ?? null,
+      access: grant.access,
+      source: 'direct_grant',
+      grant,
+    })
+  }
+
+  return [...people.values()]
+}
+
+function actionsForConnectionAccess(access: DivoConnectionAccess): string[] {
+  if (access === 'read_only') return ['Read']
+  if (access === 'read_write') return ['Read', 'Create', 'Update', 'Delete', 'Send']
+  return ['Read', 'Create', 'Update', 'Delete', 'Send', 'Execute', 'Manage sharing']
+}
+
+function initialsForPerson(person: Pick<ConnectionPerson, 'name' | 'email'>): string {
+  const initials = person.name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase() ?? '').join('')
+  return initials || person.email.slice(0, 1).toUpperCase()
+}
+
+function positiveIntegerOrNull(value: string): number | null {
+  if (!value.trim()) return null
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
 function getCandidatesForType(data: GoogleManageData, type: GoogleManageGranteeType): GoogleManageCandidate[] {

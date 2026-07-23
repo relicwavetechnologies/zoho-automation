@@ -30,6 +30,7 @@ const GATEWAY_OPS = [
 const DESKTOP_TOOLS = [
   'read', 'write', 'edit', 'bash', 'divo_gateway', 'divo_skill_resolve',
   'divo_memory_recall', 'divo_memory_review', 'divo_teach_clarify', 'memory',
+  'divo_todos', 'divo_python_automation', 'divo_artifact',
 ]
 
 describe('tool icon coverage', () => {

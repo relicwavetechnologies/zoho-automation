@@ -1,37 +1,16 @@
-/* Astryx + Tailwind coexistence.
-   Tailwind's all-in-one `@import 'tailwindcss'` is split into its three real
-   layers so Astryx's system CSS can sit between the theme and the utilities,
-   which is the order its Tailwind bridge documents and requires.
+@import 'tailwindcss';
+/* HeroUI v3. Must follow `tailwindcss` — its own entry re-imports tailwind and
+   tw-animate-css, and layers its base/components/theme on top of them.
 
-   ORDER IS LOAD-BEARING. Astryx's bridge aliases seven names Jan already
-   defines — primary, secondary, accent, card, popover, muted, border — and
-   three of them mean the OPPOSITE thing: Astryx maps --color-primary to
-   text-primary, whereas shadcn means a brand FILL you put behind
-   -primary-foreground. Left to Astryx, every `bg-primary` button in the app
-   would quietly render as a near-black text colour: no error, no build
-   failure, just ~1,300 utilities changing meaning at once.
-
-   So the bridge lands here, and Jan's own `@theme inline` block below wins by
-   coming later. Astryx components are unaffected — they read their own
-   unaliased system tokens (--color-text-primary, --color-background-card),
-   which collide with nothing. That lets Astryx pages look truly Astryx while
-   existing screens keep rendering exactly as before, so the design system
-   migrates page by page instead of in one breaking commit. */
-@layer reset, theme, base, astryx-base, astryx-theme, components, utilities;
-
-@import 'tailwindcss/theme.css' layer(theme);
-@import 'tailwindcss/preflight.css' layer(base);
-@import '@astryxdesign/core/reset.css';
-@import '@astryxdesign/core/astryx.css';
-@import '@astryxdesign/theme-neutral/theme.css';
-/* Divo's accent, overriding the stock theme. Astryx components colour
-   themselves from these tokens rather than Jan's Tailwind ones, so without
-   this an Astryx button renders in Astryx blue next to Divo's coral.
-   Regenerate with: yarn astryx theme build src/styles/divo.theme.ts */
-@import '@/styles/divo.css';
-@import '@astryxdesign/core/tailwind-theme.css';
-@import 'tailwindcss/utilities.css' layer(utilities);
-
+   NOTE ON TOKENS: HeroUI declares bare `--background`, `--foreground`,
+   `--border`, `--muted` and `--accent` in a @layer, and Jan declares all five
+   UNLAYERED in :root — so Jan wins the cascade. Three of them agree in meaning;
+   two do NOT. Jan's `--accent` is a near-white hover fill and its `--muted` is
+   a surface, whereas HeroUI means a vivid brand colour and a mid-grey text
+   colour. Left alone, HeroUI's own components inherit Jan's greys and render
+   nearly invisible — no error, no build failure. See the scoped override
+   below, which hands HeroUI its own values back wherever HeroUI is used. */
+@import '@heroui/styles';
 @import 'tw-animate-css';
 @import 'katex/dist/katex.min.css';
 /* Linked from 'self' so CSP keeps it: WebView2 drops sonner's runtime <style>
@@ -223,6 +202,36 @@
   --diff-added: #40c977;
   --diff-removed: #fa423e;
   --skill: #ad7bf9;
+}
+
+/* HeroUI token bridge.
+ *
+ * HeroUI and Jan both declare six bare tokens. Three agree — --background,
+ * --foreground and --border mean the same thing in both — and Jan wins those by
+ * being unlayered, which is exactly what we want: HeroUI components inherit
+ * Jan's surfaces and look native rather than pasted in.
+ *
+ * The other three mean OPPOSITE things:
+ *
+ *   --accent             Jan: near-white hover FILL   HeroUI: vivid brand colour
+ *   --accent-foreground  Jan: dark text on that fill  HeroUI: text ON the brand
+ *   --muted              Jan: near-white SURFACE      HeroUI: mid-grey TEXT
+ *
+ * Jan wins those too, so an unbridged HeroUI button paints its brand fill in
+ * #f0f0f1 and its label in near-white — invisible, with no error to explain it.
+ *
+ * This CANNOT be fixed at :root. Jan's `@theme inline` maps --color-accent and
+ * --color-muted onto these names, so redefining them globally would turn every
+ * `bg-accent` hover and `bg-muted` surface in the app into the brand colour.
+ * So the bridge is scoped: anything under [data-heroui] gets HeroUI's meaning,
+ * everything else keeps Jan's. Values point at Jan's own equivalents rather
+ * than HeroUI's defaults, so HeroUI renders in Divo's coral instead of its
+ * stock blue, and follows light/dark for free.
+ */
+[data-heroui] {
+  --accent: var(--primary);
+  --accent-foreground: var(--primary-foreground);
+  --muted: var(--muted-foreground);
 }
 
 /* Running-state text: a highlight sweeps left-to-right across the label instead

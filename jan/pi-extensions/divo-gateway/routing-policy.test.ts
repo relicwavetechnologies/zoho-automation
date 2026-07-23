@@ -41,4 +41,29 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(schema, /only for explicit registry inspection/i);
 		assert.match(schema, /do not use them as a routing loop/i);
 	});
+
+	it("mentions durable deliverables once without stacking an artifacts mega-block or restating web-search policy", () => {
+		assert.match(
+			DIVO_COMPANY_PERSONA_PROMPT,
+			/durable multi-section deliverable/i,
+		);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /artifact surface/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /ordinary short answers stay in chat/i);
+		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /<divo_artifacts>/i);
+		// Decision detail lives on the tool; persona must not restate the full when-to-use list.
+		assert.doesNotMatch(
+			DIVO_COMPANY_PERSONA_PROMPT,
+			/Reuse the same artifactId/i,
+		);
+		assert.doesNotMatch(
+			DIVO_COMPANY_PERSONA_PROMPT,
+			/summaryForChat/i,
+		);
+		// Searching remains a direct capability; research words alone do not force an artifact.
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /call webSearch directly/i);
+		assert.match(
+			DIVO_DIRECT_WEB_SEARCH_POLICY,
+			/do not by themselves make a request a specialized workflow/i,
+		);
+	});
 });

@@ -72,7 +72,12 @@ function TaskRow({ item, subdued = false }: { item: DivoTodoItem; subdued?: bool
     <div className={cn('flex gap-2 rounded-md px-1 py-1.5', subdued && 'opacity-65')}>
       <ItemStatusIcon status={item.status} />
       <div className="min-w-0 flex-1">
-        <p className={cn('truncate text-[13px] leading-5', item.status === 'completed' && 'line-through')}>
+        <p
+          className={cn(
+            'truncate text-[13px] leading-5 text-muted-foreground',
+            item.status === 'completed' && 'line-through',
+          )}
+        >
           {item.status === 'in_progress' && item.activeForm ? item.activeForm : item.content}
         </p>
         {item.description ? (
@@ -152,10 +157,7 @@ export function TodoBubble({ threadId, messages, activeRootId }: TodoBubbleProps
                 size="sm"
                 data-testid="todo-bubble-trigger"
                 aria-label={`Open task plan: ${label}`}
-                className={cn(
-                  'h-7 min-w-0 max-w-full gap-1.5 rounded-full px-2 text-muted-foreground hover:bg-muted hover:text-foreground',
-                  current.status === 'in_progress' && 'text-foreground'
-                )}
+                className="h-7 min-w-0 max-w-full gap-1.5 rounded-full px-2 text-muted-foreground hover:bg-muted hover:text-foreground"
               >
                 <ListChecksIcon className={cn('size-3.5 shrink-0', current.status === 'in_progress' && 'text-primary')} />
                 <span className="min-w-0 truncate text-xs">{label}</span>

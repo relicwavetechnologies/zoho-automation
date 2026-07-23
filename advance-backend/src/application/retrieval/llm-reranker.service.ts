@@ -6,6 +6,8 @@
 import Groq from 'groq-sdk';
 import type { VectorSearchResult } from '../../infrastructure/ai/vector/types';
 import type { Logger } from '../../shared/logger';
+import type { ApiKeyExhaustionNotifierPort } from '../governance/api-key-exhaustion.notifier';
+import { isApiKeyExhausted } from '../governance/api-key-exhaustion.classifier';
 
 export interface RankedChunk {
   chunk:        VectorSearchResult;
@@ -15,6 +17,7 @@ export interface RankedChunk {
 export class LlmRerankerService {
   private readonly client: Groq | null;
   private readonly model = 'llama-3.1-8b-instant';
+  private exhaustionNotifier: ApiKeyExhaustionNotifierPort | undefined;
 
   constructor(
     private readonly apiKey: string | undefined,
@@ -24,7 +27,15 @@ export class LlmRerankerService {
     this.client = apiKey ? new Groq({ apiKey }) : null;
   }
 
-  async rerank(query: string, chunks: VectorSearchResult[]): Promise<RankedChunk[]> {
+  bindExhaustionNotifier(notifier: ApiKeyExhaustionNotifierPort): void {
+    this.exhaustionNotifier = notifier;
+  }
+
+  async rerank(
+    query: string,
+    chunks: VectorSearchResult[],
+    opts?: { companyId?: string },
+  ): Promise<RankedChunk[]> {
     if (!this.client || chunks.length === 0) {
       return this.scoreSortFallback(chunks);
     }
@@ -61,12 +72,23 @@ export class LlmRerankerService {
         throw new Error('Invalid scores array');
       }
 
+      if (opts?.companyId) void this.exhaustionNotifier?.clear(opts.companyId, 'groq');
+
       return chunks
         .map((chunk, i) => ({ chunk, rerankerScore: scores[i] ?? 0 }))
         .filter(r => r.rerankerScore >= this.threshold)
         .sort((a, b) => b.rerankerScore - a.rerankerScore);
     } catch (e) {
-      this.logger.warn('reranker.groq_failed', { error: String(e) });
+      const message = String(e);
+      this.logger.warn('reranker.groq_failed', { error: message });
+      if (opts?.companyId && isApiKeyExhausted({ message })) {
+        void this.exhaustionNotifier?.notifyIfExhausted({
+          companyId: opts.companyId,
+          provider: 'groq',
+          message,
+          source: 'llm-reranker.groq',
+        });
+      }
       return this.scoreSortFallback(chunks);
     }
   }

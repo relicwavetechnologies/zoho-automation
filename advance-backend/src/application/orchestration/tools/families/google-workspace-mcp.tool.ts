@@ -20,6 +20,17 @@ const ArgsSchema = z.object({
   op: z.enum(['describe', 'call']),
   nativeTool: z.string().min(1),
   input: z.record(z.unknown()).optional(),
+}).superRefine((value, context) => {
+  // Mutating or data-reading calls must identify one account exactly. Besides
+  // avoiding accidental cross-account work, this is what lets the backend
+  // enforce the connection owner's operating policy and live rate budget.
+  if (value.op === 'call' && !value.connectionId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['connectionId'],
+      message: 'is required for Google Workspace calls; first use connections.list to choose an account',
+    });
+  }
 });
 type Args = z.infer<typeof ArgsSchema>;
 
@@ -91,7 +102,7 @@ function createProductTool(
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [
-      'connectionId: optional connected/shared account ID. Omit initially; Divo auto-selects only one eligible account and returns choose_connection when several are available.',
+      'connectionId: required for op=call. First use connections.list to choose the exact connected/shared account. It may be omitted only for op=describe.',
       'op: describe|call. Use describe to fetch the pinned MCP input schema before an unfamiliar call; input may be omitted for describe.',
       `nativeTool: one of ${product.tools.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}`,

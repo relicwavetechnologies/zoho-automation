@@ -1,0 +1,14 @@
+{
+  "name": "pi-divo-python-automation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test index.test.ts"
+  },
+  "dependencies": {
+    "typebox": "1.1.38"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.4"
+  }
+}

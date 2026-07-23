@@ -149,6 +149,25 @@ const fakeActionPerm = {
   enabled:     true,
 };
 
+const fakeGovernedConnection = {
+  id: 'conn-1',
+  provider: 'google_workspace',
+  ownerType: 'user',
+  ownerUserId: 'u-1',
+  label: 'Finance Google',
+  accountEmail: 'finance@example.com',
+  accountName: 'Finance',
+  status: 'connected',
+  scopes: ['gmail.readonly'],
+  connectedAt: new Date('2025-01-01'),
+  lastUsedAt: new Date('2025-01-02'),
+  createdAt: new Date('2025-01-01'),
+  updatedAt: new Date('2025-01-02'),
+  ownerUser: { id: 'u-1', name: 'Alice', email: 'alice@example.com' },
+  grants: [],
+  governance: null,
+};
+
 function makePrisma(overrides: {
   memberships?:       any[];
   identities?:        any[];
@@ -157,6 +176,8 @@ function makePrisma(overrides: {
   zohoConn?:          any;
   larkBinding?:       any;
   googleConnection?:  any;
+  integrationConnections?: any[];
+  capabilityGovernance?: any[];
   user?:              any;
   larkUserAuthLink?:  any;
   channelIdentity?:   any;
@@ -193,8 +214,26 @@ function makePrisma(overrides: {
       findUnique: async () => overrides.larkUserAuthLink ?? null,
     },
     integrationConnection: {
-      findFirst: async () => overrides.googleConnection ?? null,
+      findMany: async () => overrides.integrationConnections ?? [],
+      findFirst: async () => overrides.googleConnection ?? overrides.integrationConnections?.[0] ?? null,
       updateMany: async () => ({ count: 1 }),
+    },
+    integrationConnectionGovernance: {
+      upsert: async (input: any) => ({
+        adminOverrideJson: input.create?.adminOverrideJson ?? input.update?.adminOverrideJson,
+        adminOverriddenAt: new Date('2025-01-03'),
+        adminOverriddenBy: 'u-1',
+        version: 1,
+      }),
+    },
+    companyCapabilityGovernance: {
+      findMany: async () => overrides.capabilityGovernance ?? [],
+      upsert: async (input: any) => ({
+        policyJson: input.create?.policyJson ?? input.update?.policyJson,
+        configuredAt: new Date('2025-01-03'),
+        configuredBy: 'u-1',
+        version: 1,
+      }),
     },
     toolPermission: {
       findMany: async () => overrides.toolPerms ?? [fakeToolPerm],
@@ -707,5 +746,62 @@ describe('GET /tool-permissions', () => {
     const { body } = await callRoute(router, 'GET', '/tool-permissions');
     assert.equal((body as any).data.permissions.length, 0);
     assert.equal((body as any).data.actionPermissions.length, 0);
+  });
+});
+
+// ─── Connection governance ───────────────────────────────────────────────────
+
+describe('connection governance', () => {
+  it('lists governance-safe connection metadata without OAuth credentials', async () => {
+    const { status, body } = await callRoute(makeRouter({ integrationConnections: [fakeGovernedConnection] }), 'GET', '/members/u-1/connections');
+    assert.equal(status, 200);
+    const connection = (body as any).data[0];
+    assert.equal(connection.id, 'conn-1');
+    assert.equal(connection.accountEmail, 'finance@example.com');
+    assert.equal(connection.governance.source, 'platform_default');
+    assert.equal(connection.governance.adminOverride.actions.send.mode, 'inherit');
+    assert.equal('accessTokenEncrypted' in connection, false);
+    assert.equal('tokenMetadata' in connection, false);
+  });
+
+  it('stores a company-admin override for exact connection actions', async () => {
+    const { status, body } = await callRoute(makeRouter({ integrationConnections: [fakeGovernedConnection] }), 'PUT', '/connections/conn-1/governance', {
+      body: {
+        adminOverride: {
+          version: 1,
+          actions: {
+            read: { mode: 'enforced', requestsPerMinute: 60, requestsPerDay: 5000, approval: 'none' },
+            create: { mode: 'inherit' },
+            update: { mode: 'inherit' },
+            delete: { mode: 'enforced', requestsPerMinute: 5, requestsPerDay: 50, approval: 'company_admin' },
+            send: { mode: 'enforced', requestsPerMinute: 10, requestsPerDay: 100, approval: 'connection_owner' },
+            execute: { mode: 'inherit' },
+          },
+        },
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal((body as any).data.adminOverride.actions.delete.approval, 'company_admin');
+    assert.equal((body as any).data.adminOverride.actions.send.requestsPerMinute, 10);
+  });
+
+  it('exposes company capability policies and persists an admin update', async () => {
+    const list = await callRoute(makeRouter(), 'GET', '/capability-governance');
+    assert.equal(list.status, 200);
+    assert.equal((list.body as any).data.find((item: any) => item.id === 'webSearch').source, 'platform_default');
+
+    const update = await callRoute(makeRouter(), 'PUT', '/capability-governance/webSearch', {
+      body: {
+        policy: {
+          version: 1,
+          enabled: true,
+          requestsPerMinute: 30,
+          requestsPerDay: 1000,
+          approval: 'none',
+        },
+      },
+    });
+    assert.equal(update.status, 200);
+    assert.equal((update.body as any).data.policy.requestsPerMinute, 30);
   });
 });

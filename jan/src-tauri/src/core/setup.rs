@@ -174,22 +174,6 @@ pub fn migrate_mcp_servers(
         .get("mcp_version")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    if mcp_version < 1 {
-        log::info!("Migrating MCP schema version 1");
-        let result = add_server_config(
-            app_handle.clone(),
-            "exa".to_string(),
-            serde_json::json!({
-                  "command": "npx",
-                  "args": ["-y", "exa-mcp-server"],
-                  "env": { "EXA_API_KEY": "YOUR_EXA_API_KEY_HERE" },
-                  "active": false
-            }),
-        );
-        if let Err(e) = result {
-            log::error!("Failed to add server config: {e}");
-        }
-    }
     if mcp_version < 2 {
         log::info!("Migrating MCP schema version 2: Adding Jan Browser MCP");
         let result = add_server_config(
@@ -210,19 +194,23 @@ pub fn migrate_mcp_servers(
             log::error!("Failed to add Jan Browser MCP server config: {e}");
         }
     }
-    if mcp_version < 3 {
-        log::info!("Migrating MCP schema version 3: Updating Exa to streamable HTTP");
-        if let Err(e) = migrate_exa_to_http(app_handle) {
-            log::error!("Failed to migrate Exa to HTTP: {e}");
+    if mcp_version < 4 {
+        log::info!("Migrating MCP schema version 4: Removing unused Exa MCP server");
+        if let Err(e) = remove_exa_from_mcp_config(app_handle) {
+            log::error!("Failed to remove Exa MCP server: {e}");
         }
     }
-    store.set("mcp_version", 3);
+    store.set("mcp_version", 4);
     store.save().expect("Failed to save store");
     Ok(())
 }
 
-fn migrate_exa_to_http(app_handle: tauri::AppHandle) -> Result<(), String> {
+fn remove_exa_from_mcp_config(app_handle: tauri::AppHandle) -> Result<(), String> {
     let config_path = get_jan_data_folder_path(app_handle).join("mcp_config.json");
+
+    if !config_path.exists() {
+        return Ok(());
+    }
 
     let config_str =
         fs::read_to_string(&config_path).map_err(|e| format!("Failed to read MCP config: {e}"))?;
@@ -231,17 +219,7 @@ fn migrate_exa_to_http(app_handle: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Failed to parse MCP config: {e}"))?;
 
     if let Some(servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
-        servers.insert(
-            "exa".to_string(),
-            serde_json::json!({
-                "type": "http",
-                "url": "https://mcp.exa.ai/mcp".to_string(),
-                "command": "",
-                "args": [],
-                "env": {},
-                "active": true
-            }),
-        );
+        servers.remove("exa");
     }
 
     fs::write(

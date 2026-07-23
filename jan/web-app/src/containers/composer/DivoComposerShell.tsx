@@ -4,7 +4,8 @@ import { MovingBorder } from '@/containers/MovingBorder'
 import { cn } from '@/lib/utils'
 
 /**
- * The composer's outer chrome, as one component with two looks.
+ * The composer's outer chrome, as one component with two deliberately
+ * different looks.
  *
  * ChatInput renders the same body — attachments, the `/` menu, the input row,
  * approvals — in two places: the landing page (a fresh, empty conversation)
@@ -20,11 +21,10 @@ import { cn } from '@/lib/utils'
  * it did inline.
  *
  * The only real difference between the variants is the `styles` map below.
- * `landing` is deliberately more present — a larger radius, a lifted surface
- * with a soft shadow, and a focus ring in Divo's accent — because it is the
- * hero of an otherwise empty page. `thread` is the restrained shell that has
- * to sit quietly beneath a scrolling transcript, and is byte-for-byte the
- * treatment it always had, so nothing about the in-thread composer moves.
+ * `landing` is a generous, rectangular two-row composition. `thread` is the
+ * compact, pill-shaped follow-up bar that stays visually quiet beneath a
+ * transcript. Behaviour remains shared: both retain the same drag/drop,
+ * focus, and streaming-border ownership.
  */
 export type DivoComposerShellVariant = 'landing' | 'thread'
 
@@ -47,33 +47,21 @@ export type DivoComposerShellProps = {
  * Per-variant chrome. Kept as whole class strings rather than toggled
  * fragments so each variant reads as one coherent surface you can eyeball,
  * instead of a diff you have to assemble in your head.
- *
- * The `thread` strings are lifted verbatim from the original inline shell —
- * same radius, border, fill and focus treatment — so extracting the component
- * changes the in-thread composer by exactly nothing.
  */
 const styles: Record<
   DivoComposerShellVariant,
   { shell: string; focused: string; dragOver: string }
 > = {
   landing: {
-    // The hero surface has to LIFT off a near-black page, and elevation cues
-    // (drop shadow, a few px of radius) are invisible there — the first cut
-    // used exactly those and read as no change at all. So the lift is carried
-    // by contrast instead: a distinctly lighter fill (3× the thread panel), a
-    // border that actually catches light, more generous padding, and a much
-    // rounder frame. Those differences survive on dark; a shadow does not.
     shell:
-      'relative z-20 flex flex-col rounded-[30px] border border-border/70 bg-card p-3 shadow-[0_16px_50px_-20px_rgba(0,0,0,0.7)] transition-colors dark:border-white/12 dark:bg-white/[0.06]',
-    focused: 'border-primary/60 dark:border-primary/60 dark:bg-white/[0.08]',
+      'relative z-20 flex min-h-[96px] flex-col rounded-[18px] border border-border/80 bg-card p-2 transition-colors dark:border-white/15 dark:bg-white/[0.045]',
+    focused: 'border-primary/60 dark:border-primary/60 dark:bg-white/[0.065]',
     dragOver: 'ring-2 ring-primary/50 border-primary',
   },
   thread: {
-    // Verbatim from the original shell: a hairline over a barely-lifted fill,
-    // so it reads as part of the page rather than a card stuck on top of it.
     shell:
-      'relative z-20 flex flex-col rounded-[24px] border border-border/50 bg-card p-2 transition-colors dark:bg-white/[0.02]',
-    focused: 'border-border/80 dark:bg-white/[0.04]',
+      'relative z-20 flex min-h-[40px] flex-col justify-center rounded-[38px] border border-border/80 bg-card px-2.5 py-1 transition-colors dark:border-white/15 dark:bg-white/[0.035]',
+    focused: 'border-border dark:bg-white/[0.055]',
     dragOver: 'ring-2 ring-ring/50 border-primary',
   },
 }
@@ -91,13 +79,14 @@ export function DivoComposerShell({
   children,
 }: DivoComposerShellProps) {
   const s = styles[variant]
+  const frameRadius = variant === 'landing' ? 'rounded-[18px]' : 'rounded-[38px]'
 
   return (
     <div className="relative">
       {/* overflow-hidden clips the MovingBorder to the rounded frame. The `/`
           menu popover deliberately lives OUTSIDE this in ChatInput, since it
           would be clipped here. */}
-      <div className="relative overflow-hidden rounded-[22px] p-0.5">
+      <div className={cn('relative overflow-hidden p-0.5', frameRadius)}>
         {isComposerBusy && (
           <div className="absolute inset-0">
             <MovingBorder rx="10%" ry="10%">

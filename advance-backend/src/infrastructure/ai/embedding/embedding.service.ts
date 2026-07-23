@@ -26,6 +26,9 @@ import type {
 import { FallbackEmbeddingProvider, deterministicVector } from './fallback.provider';
 import { OpenAiEmbeddingProvider } from './openai.provider';
 import { GeminiEmbeddingProvider } from './gemini.provider';
+import type { ApiKeyExhaustionNotifierPort } from '../../../application/governance/api-key-exhaustion.notifier';
+import type { ApiKeyProvider } from '../../../application/governance/api-key-exhaustion.classifier';
+import { isApiKeyExhausted } from '../../../application/governance/api-key-exhaustion.classifier';
 
 // ─── Chunk helper ─────────────────────────────────────────────────────────────
 
@@ -46,12 +49,22 @@ function fallbackTextForInput(input: unknown): string {
   return '';
 }
 
+function embeddingProviderId(name: EmbeddingProvider['provider']): ApiKeyProvider {
+  return name === 'gemini' ? 'gemini' : 'openai';
+}
+
+function statusFromMessage(message: string): number | undefined {
+  const match = message.match(/\b(401|402|403|429)\b/);
+  return match ? Number(match[1]) : undefined;
+}
+
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export class EmbeddingService {
   private readonly provider: EmbeddingProvider;
   private readonly batchSize: number;
   private readonly logger: Logger;
+  private exhaustionNotifier: ApiKeyExhaustionNotifierPort | undefined;
 
   constructor(opts: {
     provider: EmbeddingProvider;
@@ -61,6 +74,10 @@ export class EmbeddingService {
     this.provider  = opts.provider;
     this.logger    = opts.logger.child({ service: 'embedding' });
     this.batchSize = Math.max(1, opts.batchSize ?? 16);
+  }
+
+  bindExhaustionNotifier(notifier: ApiKeyExhaustionNotifierPort): void {
+    this.exhaustionNotifier = notifier;
   }
 
   get providerName(): EmbeddingProvider['provider'] { return this.provider.provider; }
@@ -73,12 +90,14 @@ export class EmbeddingService {
     items: T[],
     embedder: (batch: T[]) => Promise<number[][]>,
     dimensionKey: 'textDimension' | 'multimodalDimension' = 'textDimension',
+    companyId?: string,
   ): Promise<number[][]> {
     if (items.length === 0) return [];
     const dim     = this.provider[dimensionKey];
     const batches = chunk(items, this.batchSize);
     const vectors: number[][] = [];
     const startedAt = Date.now();
+    let sawExhaustion = false;
 
     for (const batch of batches) {
       try {
@@ -91,18 +110,41 @@ export class EmbeddingService {
         vectors.push(...batchVectors);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
+        const classifiedReason = reason.includes('429') ? 'rate_limited' : 'upstream_failure';
         this.logger.warn('embedding.batch.failed', {
           provider: this.provider.provider,
           batchSize: batch.length,
           totalInputs: items.length,
           reason,
-          classifiedReason: reason.includes('429') ? 'rate_limited' : 'upstream_failure',
+          classifiedReason,
         });
+        if (
+          companyId &&
+          isApiKeyExhausted({
+            message: reason,
+            httpStatus: reason.includes('429') ? 429 : statusFromMessage(reason),
+            code: classifiedReason,
+          })
+        ) {
+          sawExhaustion = true;
+          void this.exhaustionNotifier?.notifyIfExhausted({
+            companyId,
+            provider: embeddingProviderId(this.provider.provider),
+            message: reason,
+            httpStatus: reason.includes('429') ? 429 : statusFromMessage(reason),
+            code: classifiedReason,
+            source: 'embedding.batch',
+          });
+        }
         // Deterministic fallback — never blocks the pipeline
         for (const item of batch) {
           vectors.push(deterministicVector(fallbackTextForInput(item), dim));
         }
       }
+    }
+
+    if (companyId && !sawExhaustion) {
+      void this.exhaustionNotifier?.clear(companyId, embeddingProviderId(this.provider.provider));
     }
 
     this.logger.debug('embedding.complete', {
@@ -117,30 +159,34 @@ export class EmbeddingService {
 
   // ── Public API ────────────────────────────────────────────────────────────
 
-  async embedDocuments(inputs: Array<string | EmbeddingDocumentInput>): Promise<number[][]> {
+  async embedDocuments(
+    inputs: Array<string | EmbeddingDocumentInput>,
+    opts?: { companyId?: string },
+  ): Promise<number[][]> {
     const normalized = inputs.map(i => (typeof i === 'string' ? { text: i } : i));
-    return this.embedBatches(normalized, batch => this.provider.embedDocuments(batch));
+    return this.embedBatches(normalized, batch => this.provider.embedDocuments(batch), 'textDimension', opts?.companyId);
   }
 
-  async embedQueries(texts: string[]): Promise<number[][]> {
-    return this.embedBatches(texts, batch => this.provider.embedQueries(batch));
+  async embedQueries(texts: string[], opts?: { companyId?: string }): Promise<number[][]> {
+    return this.embedBatches(texts, batch => this.provider.embedQueries(batch), 'textDimension', opts?.companyId);
   }
 
   /** Embed a single query string — convenience wrapper around embedQueries. */
-  async embedQuery(text: string): Promise<number[]> {
-    const vecs = await this.embedQueries([text]);
+  async embedQuery(text: string, opts?: { companyId?: string }): Promise<number[]> {
+    const vecs = await this.embedQueries([text], opts);
     const vec = vecs[0];
     if (!vec) throw new Error('embedQuery: provider returned no vectors');
     return vec;
   }
 
   /** Alias for embedDocuments — accepts plain strings or structured inputs. */
-  async embedText(texts: string[]): Promise<number[][]> {
-    return this.embedDocuments(texts);
+  async embedText(texts: string[], opts?: { companyId?: string }): Promise<number[][]> {
+    return this.embedDocuments(texts, opts);
   }
 
   async embedMultimodal(
     inputs: Array<string | EmbeddingDocumentInput>,
+    opts?: { companyId?: string },
   ): Promise<number[][]> {
     const normalized = inputs.map(i => (typeof i === 'string' ? { text: i } : i));
 
@@ -150,6 +196,7 @@ export class EmbeddingService {
           normalized,
           batch => this.provider.embedMultimodal!(batch),
           'multimodalDimension',
+          opts?.companyId,
         );
       } catch (error) {
         this.logger.warn('embedding.multimodal.fallback', {
@@ -160,7 +207,7 @@ export class EmbeddingService {
     }
 
     // Fall back to regular text embedding
-    return this.embedDocuments(normalized);
+    return this.embedDocuments(normalized, opts);
   }
 
   async analyzeMedia(input: MediaAnalysisInput): Promise<MediaAnalysisResult> {
@@ -178,7 +225,10 @@ export class EmbeddingService {
    * the image bytes are embedded directly alongside the summary text using
    * gemini-embedding-2-preview so visual semantics are captured natively.
    */
-  async embedMediaSummary(input: MediaAnalysisInput): Promise<EmbeddedMediaSummary> {
+  async embedMediaSummary(
+    input: MediaAnalysisInput,
+    opts?: { companyId?: string },
+  ): Promise<EmbeddedMediaSummary> {
     const analysis = await this.analyzeMedia(input);
 
     if (this.provider.embedMultimodal) {
@@ -191,12 +241,13 @@ export class EmbeddingService {
         inputs,
         batch => this.provider.embedMultimodal!(batch),
         'multimodalDimension',
+        opts?.companyId,
       );
       const embedding = vecs[0];
       if (embedding) return { ...analysis, embedding };
     }
 
-    const vecs = await this.embedDocuments([{ text: analysis.summary, title: input.fileName }]);
+    const vecs = await this.embedDocuments([{ text: analysis.summary, title: input.fileName }], opts);
     const embedding = vecs[0];
     if (!embedding) throw new Error('embedMediaSummary: provider returned no vectors');
     return { ...analysis, embedding };

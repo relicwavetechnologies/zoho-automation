@@ -51,7 +51,7 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
 
     // Rerank
     const ranked = this.env.FILE_RAG_GRADING_ENABLED
-      ? await this.reranker.rerank(input.query, results)
+      ? await this.reranker.rerank(input.query, results, { companyId: input.companyId })
       : results.map(r => ({ chunk: r, rerankerScore: r.score * 10 }));
 
     // If insufficient results after grading, try a broadened query (≤1 retry)
@@ -59,7 +59,7 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
       const broadened = broadenDocumentSearchQuery(input.query);
       if (broadened !== input.query) {
         const retryResults = await this.runSearch([broadened], input.companyId, input.requesterAiRole, input.fileAssetId, limit * 4);
-        const retryRanked = await this.reranker.rerank(broadened, retryResults);
+        const retryRanked = await this.reranker.rerank(broadened, retryResults, { companyId: input.companyId });
         ranked.push(...retryRanked.filter(r => !ranked.find(e => e.chunk.id === r.chunk.id)));
       }
     }
@@ -144,7 +144,7 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
     const allResults: VectorSearchResult[] = [];
 
     for (const q of queries) {
-      const [embedding] = await this.embedding.embedQueries([q]);
+      const [embedding] = await this.embedding.embedQueries([q], { companyId });
       if (!embedding) continue;
 
       const groups = await this.qdrant.search({

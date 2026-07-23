@@ -304,7 +304,7 @@ const Sidebar = React.forwardRef<
 						// Adjust the padding for floating and inset variants.
 						variant === "floating" || variant === "inset"
 							? "p-2 pr-0 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
-							: "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
+								: "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r-[2.5px] group-data-[side=right]:border-l-[2.5px] dark:group-data-[side=left]:border-white/[0.09] dark:group-data-[side=right]:border-white/[0.09]",
 						//* set duration to 0 for all elements when dragging
 						"group-data-[dragging=true]:duration-0! group-data-[dragging=true]_*:duration-0!",
 						className,

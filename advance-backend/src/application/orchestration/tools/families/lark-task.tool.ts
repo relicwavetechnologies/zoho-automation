@@ -56,8 +56,8 @@ const LarkTaskArgsSchema = z.object({
   tasklistId: z.string().optional(),
   // subtask ops
   parentTaskId: z.string().optional(),
-  /** Divo-managed Lark connection. Required when more than one is accessible. */
-  connectionId: z.string().uuid().optional(),
+  /** Exact Divo-managed Lark connection for this governed action. */
+  connectionId: z.string().uuid(),
 });
 type LarkTaskArgs = z.infer<typeof LarkTaskArgsSchema>;
 
@@ -176,7 +176,7 @@ export const createLarkTaskTool = (deps: {
     let client = deps.client;
     try {
       const userConnection = await resolveLarkUserClient(deps, ctx, {
-        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
+        connectionId: args.connectionId,
         minimumAccess: inferAction(args.op) === 'read' ? 'read_only' : 'read_write',
       });
       if (userConnection.status === 'choose_connection') {

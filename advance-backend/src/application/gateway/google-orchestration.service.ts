@@ -186,7 +186,7 @@ export async function buildGoogleVendorOnboardingPlan(input: {
         }
         : {
           status: 'google_workspace_connection_selection_required',
-          message: 'Start the first phase without a connectionId. Divo auto-selects only one eligible account; when more than one is eligible it returns the exact account choices for the user to select. Never choose a model default.',
+          message: 'Before the first executing phase, use connections.list to obtain one exact Google connectionId. Never choose a model default.',
         },
       phases,
     },

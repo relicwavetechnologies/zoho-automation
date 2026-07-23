@@ -52,6 +52,7 @@ import { SubagentRunCard } from '@/components/pi/SubagentRunCard'
 import { isDivoSubagentTool } from '@/lib/pi/subagent'
 import { DivoApprovalStatusCard } from '@/components/pi/DivoApprovalStatusCard'
 import { isDivoGatewayApprovalTool } from '@/lib/pi/gateway-approval'
+import { ArtifactLinks } from '@/components/pi/ArtifactLinks'
 
 const CHAT_STATUS = {
   STREAMING: 'streaming',
@@ -857,6 +858,10 @@ export const MessageItem = memo(
 
         {/* Render message parts */}
         {renderedParts}
+
+        {message.role === 'assistant' && !isStreaming && (
+          <ArtifactLinks message={message} />
+        )}
 
         {wasRecoveredAfterAppClose && (
           <div className="mt-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-muted-foreground">

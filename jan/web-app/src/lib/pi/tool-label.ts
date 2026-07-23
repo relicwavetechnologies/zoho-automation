@@ -112,6 +112,8 @@ const OP_LABELS: Record<string, string> = {
   // OCR" is the implementation's name for that, and naming the technique
   // instead of the act made the log read like a stack trace.
   'media.image_ocr': 'read image',
+  'automation.plan.create': 'prepare approval batch',
+  'automation.plan.status': 'approval batch status',
 }
 
 /** Dotted/underscored op → spaced words, for ops with no explicit phrase. */
@@ -144,6 +146,8 @@ const DETAIL_KEYS = [
   'cmd',
   'pattern',
   'url',
+  // Local automation uses a human work title rather than an opaque command.
+  'title',
   // Semrush's subject. Every one of its operations is "this research, about
   // THIS site", so without the domain the row is just "Ran semrush" — true and
   // useless. Last in priority: a call carrying both a query and a domain is a
@@ -294,6 +298,26 @@ function extractAction(input: unknown): string | undefined {
   return undefined
 }
 
+/** `divo_todos` action from tool input (`create` / `update` / `list` / `clear`). */
+export function extractTodoAction(
+  input: unknown
+): 'create' | 'update' | 'list' | 'clear' | undefined {
+  const raw =
+    str(asObject(input), 'action') ??
+    (typeof input === 'string'
+      ? scrape(input, 'action') ?? scrapeUnterminated(input, 'action')
+      : undefined)
+  if (
+    raw === 'create' ||
+    raw === 'update' ||
+    raw === 'list' ||
+    raw === 'clear'
+  ) {
+    return raw
+  }
+  return undefined
+}
+
 export function resolveToolIdentity(part: ToolLikePart): ToolIdentity {
   const name = toolBaseName(part)
   const { op, toolId } = extractGatewayCall(part.input)
@@ -307,9 +331,20 @@ export function resolveToolIdentity(part: ToolLikePart): ToolIdentity {
     label = 'subagents'
   }
   if (name === 'divo_todos') {
-    // The composer owns the rich task-plan view. Keep the expandable Pi trace
-    // legible without repeating the internal extension name.
-    label = 'task plan'
+    // The composer owns the rich task-plan view. Surface create vs update so
+    // the work log does not read as a generic "command".
+    const action = extractTodoAction(part.input)
+    if (action === 'create') label = 'creating todos'
+    else if (action === 'update') label = 'updating todos'
+    else if (action === 'clear') label = 'clearing todos'
+    else if (action === 'list') label = 'checking todos'
+    else label = 'todos'
+  }
+  if (name === 'divo_artifact') {
+    label = 'artifact'
+  }
+  if (name === 'divo_python_automation') {
+    label = 'Python automation'
   }
   if (name === 'divo_gateway' || op || toolId) {
     if (op === 'tools.invoke' && toolId) label = humanizeToolId(toolId)

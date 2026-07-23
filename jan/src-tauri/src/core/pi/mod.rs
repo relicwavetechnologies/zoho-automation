@@ -12,10 +12,7 @@ use crate::core::divo::workspace::resolve_workspace_dir_for_app;
 use manager::{
     default_runtime_pool_capacity, PiManager, MAX_RUNTIME_POOL_CAPACITY, MIN_RUNTIME_POOL_CAPACITY,
 };
-use permissions::{
-    load_persistent_bash_allow, load_runtime_pool_capacity, save_persistent_bash_allow,
-    save_runtime_pool_capacity,
-};
+use permissions::{load_runtime_pool_capacity, save_runtime_pool_capacity};
 use runtime::PiRuntimeMode;
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -41,11 +38,6 @@ pub async fn pi_start(
     if runtime_mode == PiRuntimeMode::Company {
         divo_sync_pi_env(app.clone()).await?;
     }
-    let persistent_bash_allow = load_persistent_bash_allow(&app)?;
-    state
-        .manager
-        .set_persistent_bash_approval(persistent_bash_allow)
-        .await;
     if let Some(capacity) = load_runtime_pool_capacity(&app)? {
         // A lower saved limit never interrupts a live run. If pi_start is
         // called during active work, it remains pending until a clean restart.
@@ -201,6 +193,7 @@ pub async fn pi_extension_ui_respond(
     value: Option<String>,
     cancelled: Option<bool>,
     always_allow_bash: Option<bool>,
+    always_allow_full_access: Option<bool>,
 ) -> Result<(), String> {
     state
         .manager
@@ -212,64 +205,18 @@ pub async fn pi_extension_ui_respond(
             value,
             cancelled.unwrap_or(false),
             always_allow_bash.unwrap_or(false),
+            always_allow_full_access.unwrap_or(false),
         )
         .await
 }
 
-/// Revoke the memory-only Bash grant when the user leaves or stops a task.
+/// Clear in-memory local approval choices when their owning chat is deleted.
 #[tauri::command]
-pub async fn pi_revoke_bash_approval(
+pub async fn pi_forget_chat_approvals(
     state: State<'_, PiState>,
     thread_id: String,
 ) -> Result<(), String> {
-    state.manager.revoke_bash_approval(&thread_id).await;
-    Ok(())
-}
-
-/// Read the persisted device-level permission rules shown by the desktop composer.
-#[tauri::command]
-pub async fn pi_get_permission_rules(
-    state: State<'_, PiState>,
-    app: AppHandle,
-) -> Result<serde_json::Value, String> {
-    let bash_always_allow = load_persistent_bash_allow(&app)?;
-    state
-        .manager
-        .set_persistent_bash_approval(bash_always_allow)
-        .await;
-    Ok(serde_json::json!({
-        "bashAlwaysAllow": bash_always_allow,
-        "scope": "device"
-    }))
-}
-
-/// Persist the Bash approval mode until the user explicitly changes it.
-#[tauri::command]
-pub async fn pi_set_persistent_bash_approval(
-    state: State<'_, PiState>,
-    app: AppHandle,
-    allowed: bool,
-) -> Result<(), String> {
-    save_persistent_bash_allow(&app, allowed)?;
-    state.manager.set_persistent_bash_approval(allowed).await;
-    Ok(())
-}
-
-/// Update only the temporary active-run Bash rule.
-#[tauri::command]
-pub async fn pi_set_bash_approval_rule(
-    state: State<'_, PiState>,
-    thread_id: String,
-    allowed: bool,
-) -> Result<(), String> {
-    if thread_id.trim().is_empty() {
-        return Err("A task id is required to update permission rules".into());
-    }
-    state
-        .manager
-        .set_bash_approval_rule(&thread_id, allowed)
-        .await;
-    Ok(())
+    state.manager.forget_chat_approvals(&thread_id).await
 }
 
 pub fn init() -> PiState {

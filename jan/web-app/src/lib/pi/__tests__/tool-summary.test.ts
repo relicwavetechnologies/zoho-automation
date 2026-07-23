@@ -137,4 +137,43 @@ describe('summarizeBurst', () => {
       summarizeBurst([gateway('skills.search'), gateway('tools.list')], false)
     ).toBe('Explored 2 searches')
   })
+
+  it('describes todo bursts instead of Ran N commands', () => {
+    const create = {
+      type: 'tool-divo_todos',
+      input: { action: 'create', tasks: [{ content: 'A' }] },
+    }
+    const update = {
+      type: 'tool-divo_todos',
+      input: { action: 'update', id: '#1', status: 'completed' },
+    }
+
+    expect(toolCategory(create)).toBe('todo')
+    expect(summarizeBurst([create, create, create], false)).toBe('Created todos')
+    expect(summarizeBurst([create, create], true)).toBe('Creating todos')
+    expect(summarizeBurst([update, update], false)).toBe('Updated todos')
+    expect(summarizeBurst([create, update], false)).toBe('Updated todos')
+  })
+
+  it('names todos and artifacts in mixed bursts', () => {
+    expect(
+      summarizeBurst(
+        [
+          {
+            type: 'tool-divo_artifact',
+            input: { path: 'artifacts/brief.md' },
+          },
+          {
+            type: 'tool-divo_todos',
+            input: { action: 'update', id: '#1', status: 'completed' },
+          },
+          {
+            type: 'tool-divo_todos',
+            input: { action: 'update', id: '#2', status: 'completed' },
+          },
+        ],
+        false
+      )
+    ).toBe('Updated todos, opened 1 artifact')
+  })
 })

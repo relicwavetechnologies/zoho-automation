@@ -223,6 +223,9 @@ describe('useThreads', () => {
     expect(Object.keys(result.current.threads)).toHaveLength(1)
     expect(result.current.threads['thread1']).toBeUndefined()
     expect(result.current.threads['thread2']).toBeDefined()
+    expect(mockInvoke).toHaveBeenCalledWith('pi_forget_chat_approvals', {
+      threadId: 'thread1',
+    })
   })
 
   it('should rename thread', () => {
@@ -308,6 +311,12 @@ describe('useThreads', () => {
     expect(clearThreadState).toHaveBeenCalledWith('thread2')
     expect(discardApproval).toHaveBeenCalledWith('thread1', undefined)
     expect(discardApproval).toHaveBeenCalledWith('thread2', undefined)
+    expect(mockInvoke).toHaveBeenCalledWith('pi_forget_chat_approvals', {
+      threadId: 'thread1',
+    })
+    expect(mockInvoke).toHaveBeenCalledWith('pi_forget_chat_approvals', {
+      threadId: 'thread2',
+    })
     expect(mockInvoke).toHaveBeenCalledWith('pi_stop')
   })
 

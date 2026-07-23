@@ -6,9 +6,11 @@ import type { RuntimeApprovalRepository, RuntimeApprovalRow } from '../../infras
 import type { ApprovalResolverService } from './approval-resolver.service';
 import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark.adapter';
 import type { ApprovalDecision, ApprovalExecutionGrant } from './approval.types';
+import type { ResolvedManager } from './approval.types';
 import { checkApprovalPolicy, computeArgsHash, computeIdempotencyKey } from './approval-policy';
 import { buildApprovalCard } from './approval-card-builder';
 import { approvalOriginFromChatId } from './approval-origin';
+import type { ConnectionRateLimitService } from '../governance/connection-rate-limit.service';
 
 export interface ApprovalGateInput {
   toolId:         string;
@@ -40,6 +42,7 @@ export class ApprovalGateService {
     private readonly larkAdapter:     LarkChannelAdapter,
     private readonly logger:          Logger,
     private readonly options:         ApprovalGateOptions = {},
+    private readonly connectionRateLimits?: ConnectionRateLimitService,
   ) {}
 
   async check(input: ApprovalGateInput): Promise<ApprovalDecision> {
@@ -47,18 +50,59 @@ export class ApprovalGateService {
 
     const policyResult = checkApprovalPolicy({ toolId, action, args, perm, runContext });
 
-    if (policyResult.misconfigured) {
+    const connectionId = connectionIdFromArgs(args);
+    const connectionPolicy = this.connectionRateLimits
+      ? await this.connectionRateLimits.approval({
+        companyId: String(runContext.companyId),
+        ...(connectionId ? { connectionId } : {}),
+        action,
+      })
+      : { kind: 'not_governed' as const };
+    if (connectionPolicy.kind === 'unavailable') {
+      return { kind: 'misconfigured', message: connectionPolicy.message };
+    }
+
+    const connectionOverridesDepartment = connectionPolicy.kind === 'required' || connectionPolicy.kind === 'not_required';
+    if (policyResult.misconfigured && !connectionOverridesDepartment) {
       this.logger.warn('approval.gate.policy_misconfigured', { toolId, action });
       return { kind: 'misconfigured', message: policyResult.misconfigured };
     }
 
-    if (!policyResult.required) {
+    const connectionApprover = connectionPolicy.kind === 'required'
+      ? await this.resolveConnectionApprover(connectionPolicy.mode, connectionId!, String(runContext.companyId))
+      : null;
+    if (connectionPolicy.kind === 'required' && !connectionApprover) {
+      return {
+        kind: 'misconfigured',
+        message: connectionPolicy.mode === 'connection_owner'
+          ? 'This shared connection requires its owner to approve the action, but the owner has no connected Lark account.'
+          : 'This connection requires company-admin approval, but no company admin has a connected Lark account.',
+      };
+    }
+
+    // A connection policy is narrower than department policy and therefore
+    // wins for the exact shared/personal account being used. The owner never
+    // has to approve their own connection action.
+    const requiresApproval = connectionPolicy.kind === 'required' || (!connectionOverridesDepartment && policyResult.required);
+    if (!requiresApproval) {
+      return { kind: 'allowed' };
+    }
+
+    if (connectionApprover && !this.options.disableManagerSelfBypass && String(runContext.userId) === connectionApprover.userId) {
+      this.logger.info('approval.gate.connection_owner_self_bypass', { userId: runContext.userId, toolId, action });
       return { kind: 'allowed' };
     }
 
     // Approval required. Check idempotency — avoid duplicate cards on agent retry.
     const argsHash      = computeArgsHash(args);
-    const idemKey       = computeIdempotencyKey(chatId, toolId, action, argsHash);
+    // Keep the established department idempotency namespace intact so
+    // existing pending/approved records remain reusable. Connection-scoped
+    // approvals need their own namespace because the same chat can execute
+    // actions through more than one governed account.
+    const scopedChatId = connectionPolicy.kind === 'required'
+      ? `${chatId}:connection:${connectionId}:${connectionPolicy.mode}:${connectionPolicy.policySource}`
+      : chatId;
+    const idemKey       = computeIdempotencyKey(scopedChatId, toolId, action, argsHash);
     const existingResult = await this.approvalRepo.findActiveByIdempotencyKey(idemKey);
 
     if (existingResult.ok && existingResult.value) {
@@ -70,7 +114,7 @@ export class ApprovalGateService {
           action,
           argsHash,
           runContext,
-          chatId,
+          chatId: scopedChatId,
           execution,
         });
       }
@@ -93,14 +137,15 @@ export class ApprovalGateService {
       }
     }
 
-    // Resolve the dept manager
+    // Department resolution is only needed when no narrower connection policy
+    // selected the approver.
     const deptId = perm.department?.id;
-    if (!deptId) {
+    if (!connectionApprover && !deptId) {
       this.logger.warn('approval.gate.no_dept', { toolId, action });
       return { kind: 'misconfigured', message: 'No department context — cannot resolve approver.' };
     }
 
-    const manager = await this.resolver.resolveManager(String(deptId), String(runContext.companyId));
+    const manager = connectionApprover ?? await this.resolver.resolveManager(String(deptId), String(runContext.companyId));
     if (!manager) {
       this.logger.warn('approval.gate.no_manager', { deptId, companyId: runContext.companyId });
       return {
@@ -123,7 +168,7 @@ export class ApprovalGateService {
 
     // Create the approval record
     const createResult = await this.approvalRepo.create({
-      chatId,
+      chatId: scopedChatId,
       companyId:      String(runContext.companyId),
       toolId,
       actionGroup:    action,
@@ -136,7 +181,7 @@ export class ApprovalGateService {
         departmentId:           runContext.departmentId ? String(runContext.departmentId) : null,
         approvalOrigin:         approvalOriginFromChatId(chatId),
         statusMessageId:        statusMessageId ?? null,
-        chatId,
+        chatId: scopedChatId,
         resolvedManagerOpenId:  manager.larkOpenId,
         resolvedManagerUserId:  manager.userId,
         resolvedManagerName:    manager.displayName,
@@ -201,6 +246,16 @@ export class ApprovalGateService {
       approvalId: approval.id,
       message:    `I've sent an approval request to ${manager.displayName}. Waiting on their response (id: ${approval.id}).`,
     };
+  }
+
+  private async resolveConnectionApprover(
+    mode: 'connection_owner' | 'company_admin',
+    connectionId: string,
+    companyId: string,
+  ): Promise<ResolvedManager | null> {
+    return mode === 'connection_owner'
+      ? this.resolver.resolveConnectionOwner(connectionId, companyId)
+      : this.resolver.resolveCompanyAdmin(companyId);
   }
 
   async completeExecution(grant: ApprovalExecutionGrant, resultJson: unknown): Promise<void> {
@@ -307,4 +362,10 @@ function executionMetadataMatches(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function connectionIdFromArgs(args: unknown): string | undefined {
+  if (!isRecord(args)) return undefined;
+  const value = args['connectionId'];
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }

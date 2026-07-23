@@ -2,6 +2,7 @@ import {
   BicepsFlexedIcon,
   BookOpenIcon,
   CalendarClockIcon,
+  FileCode2Icon,
   FilePlusIcon,
   FolderOpenIcon,
   GlobeIcon,
@@ -85,6 +86,8 @@ const ACTION_ICONS: Record<string, IconComponent> = {
   todowrite: ListChecksIcon,
   todo: ListChecksIcon,
   divotodos: ListChecksIcon,
+  divoartifact: FileCode2Icon,
+  divopythonautomation: TableIcon,
 }
 
 /**

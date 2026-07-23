@@ -344,6 +344,34 @@ describe('checkApprovalPolicy (pure)', () => {
 });
 
 describe('ApprovalGateService', () => {
+  it('uses the exact connection owner for a shared-connection policy, including reads', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const owner = { userId: 'connection-owner', larkOpenId: 'ou_connection_owner', displayName: 'Connection Owner' };
+    const resolver = {
+      resolveManager: async () => null,
+      resolveConnectionOwner: async () => owner,
+      resolveCompanyAdmin: async () => null,
+    };
+    const connectionPolicy = {
+      approval: async () => ({ kind: 'required' as const, mode: 'connection_owner' as const, policySource: 'manager_policy' as const }),
+    };
+    const gate = new ApprovalGateService(repo as any, resolver as any, lark as any, makeLogger(), {}, connectionPolicy as any);
+
+    const result = await gate.check({
+      toolId: String(TOOL_ID),
+      action: 'read',
+      args: { op: 'list', connectionId: '00000000-0000-4000-8000-000000000001' },
+      perm: makePermission({ managerApprovalJson: { enabled: false, requiredActionGroups: [], requiredActions: [], requiredToolIds: [], managerDmAuditToolIds: [], managerDmAuditActionGroups: [] } }),
+      runContext: makeRunContext(),
+      chatId: CHAT_ID,
+      argsSummary: 'Read data through the shared connection',
+    });
+
+    assert.equal(result.kind, 'pending');
+    assert.equal(lark.sentCards[0].openId, owner.larkOpenId);
+  });
+
   it('sends approval card to manager for non-read action', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();

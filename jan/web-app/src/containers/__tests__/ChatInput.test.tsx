@@ -432,7 +432,7 @@ describe('ChatInput', () => {
     })
   })
 
-  it('surfaces the active Pi task as a compact composer bubble', () => {
+  it('surfaces the active Pi task in the composer context rail', () => {
     threadMessagesState = [
       {
         id: 'assistant-todo',
@@ -471,7 +471,7 @@ describe('ChatInput', () => {
     )
     expect(screen.getByTestId('composer-status-row')).toContainElement(bubble)
     expect(
-      bubble.compareDocumentPosition(getTextarea()) &
+      getTextarea().compareDocumentPosition(bubble) &
         Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
   })
@@ -505,7 +505,7 @@ describe('ChatInput', () => {
     expect(screen.getByText('Review live email')).toBeInTheDocument()
     expect(screen.getByText('Live subject')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve & send' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Allow only this time' }))
 
     await waitFor(() => {
       expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
@@ -542,7 +542,7 @@ describe('ChatInput', () => {
     view.rerender(<ChatInput threadId="thread-b" />)
     expect(screen.getAllByText('Approve B only')).not.toHaveLength(0)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve & send' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Allow only this time' }))
     await waitFor(() =>
       expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
         'pi_extension_ui_respond',
@@ -579,10 +579,6 @@ describe('ChatInput', () => {
 
     await waitFor(() => {
       expect(onStop).toHaveBeenCalledOnce()
-      expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
-        'pi_revoke_bash_approval',
-        { threadId: 'thread-b' }
-      )
       expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
         'pi_extension_ui_respond',
         expect.objectContaining({
@@ -663,7 +659,7 @@ describe('ChatInput', () => {
     )
   })
 
-  it('can always allow Bash persistently from the active approval', async () => {
+  it('can allow Bash for the active chat without device persistence', async () => {
     usePiApproval.getState().enqueue({
       requestId: 'approval-request-bash-always',
       threadId: 'thread-1',
@@ -685,7 +681,7 @@ describe('ChatInput', () => {
     renderInput()
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Always allow Bash',
+        name: 'Always allow commands in this chat',
       })
     )
 
@@ -700,9 +696,46 @@ describe('ChatInput', () => {
           alwaysAllowBash: true,
         }
       )
+      expect(screen.getByTestId('chat-input')).toBeInTheDocument()
+    })
+  })
+
+  it('can grant full local access to Divo for the active chat', async () => {
+    usePiApproval.getState().enqueue({
+      requestId: 'approval-request-full-access',
+      threadId: 'thread-1',
+      runId: 'run-1',
+      descriptor: {
+        version: 1,
+        toolCallId: 'tool-call-full-access',
+        source: 'divo',
+        kind: 'googleSheets.create',
+        action: 'create',
+        title: 'Create spreadsheet',
+        presentation: { title: 'Test sheet' },
+      },
+      receivedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      status: 'pending',
+    })
+
+    renderInput()
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Give Divo full access to this chat',
+      })
+    )
+
+    await waitFor(() => {
       expect(tauriCoreMock.invoke).toHaveBeenCalledWith(
-        'pi_set_persistent_bash_approval',
-        { allowed: true }
+        'pi_extension_ui_respond',
+        {
+          requestId: 'approval-request-full-access',
+          threadId: 'thread-1',
+          runId: 'run-1',
+          confirmed: true,
+          alwaysAllowFullAccess: true,
+        }
       )
       expect(screen.getByTestId('chat-input')).toBeInTheDocument()
     })

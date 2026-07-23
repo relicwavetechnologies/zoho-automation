@@ -17,6 +17,8 @@ export const GATEWAY_OPS = [
   'tools.prepare',
   'tools.commit',
   'tools.invoke',
+  'automation.plan.create',
+  'automation.plan.status',
 ] as const;
 
 export type GatewayOp = typeof GATEWAY_OPS[number];
@@ -37,6 +39,9 @@ export const GATEWAY_STATUSES = [
   'approval_required',
   'approval_rejected',
   'approval_misconfigured',
+  'rate_limited',
+  'rate_limit_unavailable',
+  'automation_plan_not_found',
   'tool_error',
 ] as const;
 
@@ -82,6 +87,25 @@ export const toolsPreflightPayloadSchema = z.object({
 }).strict();
 
 export type ToolsPreflightPayload = z.infer<typeof toolsPreflightPayloadSchema>;
+
+/**
+ * An immutable, manager-approved batch of gateway mutations. The desktop
+ * runtime can prepare this after it has finished any local/Python transforms;
+ * it never carries a bearer token, SaaS credential, or executable code.
+ */
+export const automationPlanCreatePayloadSchema = z.object({
+  title: z.string().trim().min(3).max(140),
+  summary: z.string().trim().min(3).max(2_000),
+  invocations: z.array(toolsInvokePayloadSchema).min(1).max(100),
+}).strict();
+
+export type AutomationPlanCreatePayload = z.infer<typeof automationPlanCreatePayloadSchema>;
+
+export const automationPlanStatusPayloadSchema = z.object({
+  planId: z.string().uuid(),
+}).strict();
+
+export type AutomationPlanStatusPayload = z.infer<typeof automationPlanStatusPayloadSchema>;
 
 export const GOOGLE_VENDOR_ONBOARDING_PHASE_IDS = [
   'gmail_source',

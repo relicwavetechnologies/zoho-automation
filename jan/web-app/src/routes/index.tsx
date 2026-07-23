@@ -18,16 +18,11 @@ type SearchParams = {
 import { useEffect, useState } from 'react'
 import { useThreads } from '@/hooks/useThreads'
 import DivoWorkspaceSelector from '@/containers/DivoWorkspaceSelector'
-import {
-  FinanceQuickStarts,
-  type FinanceQuickStartRequest,
-} from '@/components/finance-quick-starts/FinanceQuickStarts'
 import { TeachMode } from '@/components/teach/TeachMode'
 import { HomeGreeting } from '@/components/home/HomeGreeting'
 import { ConsistencyHeatmap } from '@/components/home/ConsistencyHeatmap'
 import { Button } from '@/components/ui/button'
 import { GraduationCap, MessageCircle } from 'lucide-react'
-import { PermissionRulesPopover } from '@/components/approval-preview/PermissionRulesPopover'
 
 export const Route = createFileRoute(route.home as any)({
   component: Index,
@@ -44,8 +39,6 @@ function Index() {
   const search = useSearch({ from: route.home as any })
   const threadModel = search.threadModel
   const { setCurrentThreadId } = useThreads()
-  const [quickStartRequest, setQuickStartRequest] =
-    useState<FinanceQuickStartRequest | null>(null)
   const [mode, setMode] = useState<'ask' | 'teach'>('ask')
   useTools()
 
@@ -62,10 +55,6 @@ function Index() {
         <div className="flex w-full items-center justify-between gap-3 pr-4">
           <DivoWorkspaceSelector />
           <div className="flex items-center gap-2">
-          {/* Approval rules live in the titlebar, not the composer: it is a
-              settings affordance you set once, not something you reach for
-              while writing a prompt. */}
-          <PermissionRulesPopover />
           <div className="relative z-30 flex items-center rounded-full border bg-muted/50 p-0.5" aria-label="Workspace mode">
             <Button
               type="button"
@@ -101,24 +90,12 @@ function Index() {
           {/* Centres the block in the viewport, biased slightly above true
               centre by the heavier bottom padding. Grows into a normal scrolling
               column once the recents list makes it taller than the screen. */}
-          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center pt-12 pb-28">
+          <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col justify-center pt-12 pb-28">
             <HomeGreeting />
 
-            {/* Above the composer, the same pill as in-thread — one affordance
-                the user learns once, in one place, rather than two that look
-                unrelated and sit on opposite sides of the input. */}
-            <div className="mt-10 mb-2 flex justify-center">
-              <FinanceQuickStarts
-                variant="bubbles"
-                onSubmit={setQuickStartRequest}
-              />
+            <div className="mx-auto mt-10 w-full max-w-2xl">
+              <ChatInput model={threadModel} initialMessage={true} />
             </div>
-
-            <ChatInput
-              model={threadModel}
-              initialMessage={true}
-              quickStartRequest={quickStartRequest}
-            />
 
             <ConsistencyHeatmap />
           </div>

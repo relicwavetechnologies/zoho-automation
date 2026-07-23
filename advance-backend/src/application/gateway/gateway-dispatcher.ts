@@ -13,6 +13,7 @@ import type { ConnectionRegistryPort } from '../connections/connection-registry.
 import type { AuditService } from '../observability/audit.service';
 import type { ManagerPersonaRuntimeService } from '../persona-learning/manager-persona-runtime.service';
 import type { ManagerTeachService } from '../persona-learning/manager-teach.service';
+import type { AutomationPlanService } from './automation-plan.service';
 import { managerTeachLearningApplySchema } from '../persona-learning/manager-teach-persona.types';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type {
@@ -37,6 +38,8 @@ import {
   toolsCommitPayloadSchema,
   toolsListPayloadSchema,
   workResolvePayloadSchema,
+  automationPlanCreatePayloadSchema,
+  automationPlanStatusPayloadSchema,
 } from './gateway.types';
 import { buildGoogleVendorOnboardingPlan } from './google-orchestration.service';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
@@ -75,6 +78,7 @@ export interface GatewayDispatcherDeps {
   /** Shared with backend-hosted channels so work routing never diverges. */
   readonly workResolution?: WorkResolutionService;
   readonly managerTeachService?: ManagerTeachService;
+  readonly automationPlanService?: AutomationPlanService;
   readonly logger: Logger;
 }
 
@@ -122,6 +126,10 @@ export class GatewayDispatcher {
         return this.handleToolsPreflight(member, departmentId, request.payload, execution);
       case 'tools.commit':
         return this.handleToolsCommit(member, departmentId, request.payload, execution);
+      case 'automation.plan.create':
+        return this.handleAutomationPlanCreate(member, departmentId, request.payload, execution);
+      case 'automation.plan.status':
+        return this.handleAutomationPlanStatus(member, request.payload);
       default:
         return gatewayFailure('unknown_op', `Unknown operation: ${request.op}`);
     }
@@ -743,6 +751,43 @@ export class GatewayDispatcher {
     });
   }
 
+  private async handleAutomationPlanCreate(
+    member: GatewayMemberContext,
+    departmentId: string | undefined,
+    payload: Record<string, unknown> | undefined,
+    execution: GatewayExecutionContext | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = automationPlanCreatePayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors.map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`).join('; ');
+      return gatewayFailure('bad_request', `Invalid automation.plan.create payload — ${issues}`);
+    }
+    if (!this.deps.automationPlanService) {
+      return gatewayFailure('tool_error', 'Automation plan approvals are not configured.');
+    }
+    return this.deps.automationPlanService.create({
+      member,
+      ...(departmentId ? { departmentId } : {}),
+      ...(execution ? { execution } : {}),
+      ...parsed.data,
+    });
+  }
+
+  private async handleAutomationPlanStatus(
+    member: GatewayMemberContext,
+    payload: Record<string, unknown> | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = automationPlanStatusPayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors.map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`).join('; ');
+      return gatewayFailure('bad_request', `Invalid automation.plan.status payload — ${issues}`);
+    }
+    if (!this.deps.automationPlanService) {
+      return gatewayFailure('tool_error', 'Automation plan approvals are not configured.');
+    }
+    return this.deps.automationPlanService.status({ member, planId: parsed.data.planId });
+  }
+
   private async handleConnectionsList(
     member: GatewayMemberContext,
     departmentId: string | undefined,
@@ -866,7 +911,9 @@ export class GatewayDispatcher {
       fileName: parsed.data.fileName ?? null,
     });
 
-    const result = await this.deps.mediaOcr.extractImage(parsed.data);
+    const result = await this.deps.mediaOcr.extractImage(parsed.data, {
+      companyId: member.companyId,
+    });
     return gatewaySuccess({ media: result });
   }
 

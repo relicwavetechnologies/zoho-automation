@@ -306,6 +306,52 @@ describe('desktop auth routes', () => {
     );
   });
 
+  it('keeps Google OAuth on the Desktop-selected local backend through code exchange', async () => {
+    let authorizeRedirectUri: string | undefined;
+    let exchangedRedirectUri: string | undefined;
+    let storedConnection: Record<string, unknown> | undefined;
+    const router = createDesktopAuthRoutes(makeDeps({
+      googleOAuthService: {
+        getAuthorizeUrl: ({ state, redirectUri }: { state: string; redirectUri: string }) => {
+          authorizeRedirectUri = redirectUri;
+          return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+        },
+        exchangeAuthorizationCode: async (_code: string, redirectUri: string) => {
+          exchangedRedirectUri = redirectUri;
+          return { accessToken: 'google-access-token', refreshToken: 'google-refresh-token', expiresIn: 3600, scope: 'openid https://www.googleapis.com/auth/spreadsheets' };
+        },
+        fetchUserInfo: async () => ({ sub: 'google-user-1', email: 'user@example.com', name: 'User' }),
+      },
+      connectionRepo: {
+        upsertGoogleConnection: async (input: Record<string, unknown>) => {
+          storedConnection = input;
+          return { ok: true, value: {} };
+        },
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/google/authorize-url', {
+      headers: { host: 'localhost:8000' },
+      locals: { userId: 'user-1', companyId: 'company-1' },
+    });
+
+    assert.equal(authorize.status, 200);
+    assert.equal(authorizeRedirectUri, 'http://localhost:8000/api/desktop/auth/google/callback');
+    const authorizeUrl = new URL(authorize.body.data.authorizeUrl);
+    assert.equal(authorizeUrl.searchParams.get('redirect_uri'), authorizeRedirectUri);
+    const state = authorizeUrl.searchParams.get('state')!;
+    const payload = JSON.parse(Buffer.from(state.split('.')[1]!, 'base64url').toString('utf8'));
+    assert.equal(payload.redirectUri, authorizeRedirectUri);
+
+    const callback = await callRoute(router, 'GET', '/google/callback', {
+      query: { code: 'google-code', state },
+    });
+
+    assert.equal(callback.status, 200);
+    assert.equal(exchangedRedirectUri, authorizeRedirectUri);
+    assert.equal(storedConnection?.['scope'], 'openid https://www.googleapis.com/auth/spreadsheets');
+  });
+
   it('does not create a separate Desktop user when Lark does not expose an email', async () => {
     let exchangedRedirectUri: string | undefined;
     let createdUser = false;

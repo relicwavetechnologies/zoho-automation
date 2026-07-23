@@ -5,6 +5,7 @@ import { useThreadManagement } from '@/hooks/useThreadManagement'
 import { useThreads } from '@/hooks/useThreads'
 import { useAssistant } from '@/hooks/useAssistant'
 import { useTranslation } from '@/i18n/react-i18next-compat'
+import { useChatColumnClass } from '@/hooks/useChatColumnClass'
 
 import ChatInput from '@/containers/ChatInput'
 import HeaderPage from '@/containers/HeaderPage'
@@ -70,6 +71,8 @@ function ProjectPageContent() {
     deleteAllThreadsByProject(projectId)
   }
 
+  const chatColumnClass = useChatColumnClass()
+
   if (!project) {
     return (
       <div className="flex h-full flex-col items-center justify-center">
@@ -94,7 +97,7 @@ function ProjectPageContent() {
       </HeaderPage>
 
       <div className="h-full relative flex flex-col px-4 md:px-8 py-4 overflow-y-auto">
-        <div className="mx-auto w-full md:w-[58%] xl:w-[48%]">
+        <div className={chatColumnClass}>
           {/* Project Name with Dropdown */}
           <div className="flex items-center justify-between gap-2 mb-4">
             <h1 className="text-2xl font-semibold">

@@ -7,14 +7,17 @@
  * still there, one click away; this is only what the collapsed line says.
  *
  * Phrasing follows the counts, not a fixed template. Reads and searches are
- * things you *explore*; everything else is something you *ran*. A burst with no
- * reads or searches therefore says "Ran 2 commands" rather than the empty
- * "Explored , ran 2 commands".
+ * things you *explore*; todos and artifacts describe themselves; everything
+ * else is something you *ran*.
  */
 
-import { humanizeToolId, resolveToolIdentity } from './tool-label'
+import {
+  extractTodoAction,
+  humanizeToolId,
+  resolveToolIdentity,
+} from './tool-label'
 
-export type ToolCategory = 'file' | 'search' | 'command'
+export type ToolCategory = 'file' | 'search' | 'command' | 'todo' | 'artifact'
 
 type ToolLikePart = {
   type?: string
@@ -54,6 +57,9 @@ const SEARCH_HINTS = ['search', 'grep', 'find', 'lookup', 'query', 'resolve', 'l
  */
 export function toolCategory(part: ToolLikePart): ToolCategory {
   const { op, toolId, name, label } = resolveToolIdentity(part)
+  if (name === 'divo_todos') return 'todo'
+  if (name === 'divo_artifact') return 'artifact'
+
   const key = normalize(toolId || op || name || label || '')
 
   if (SEARCH_HINTS.some((h) => key.includes(h))) return 'search'
@@ -68,7 +74,13 @@ function plural(n: number, one: string, many = `${one}s`): string {
 export type BurstCounts = Record<ToolCategory, number>
 
 export function countByCategory(parts: ToolLikePart[]): BurstCounts {
-  const counts: BurstCounts = { file: 0, search: 0, command: 0 }
+  const counts: BurstCounts = {
+    file: 0,
+    search: 0,
+    command: 0,
+    todo: 0,
+    artifact: 0,
+  }
   for (const part of parts) counts[toolCategory(part)]++
   return counts
 }
@@ -127,36 +139,95 @@ function describeVendorBurst(
   return `${running ? verb.present : verb.past} ${vendor}`
 }
 
+function isTodosPart(part: ToolLikePart): boolean {
+  return resolveToolIdentity(part).name === 'divo_todos'
+}
+
+/**
+ * Pure todo bursts should never read as "Ran N commands".
+ * Create → Creating/Created todos; anything else → Updating/Updated todos.
+ */
+function describeTodosBurst(
+  parts: ToolLikePart[],
+  running: boolean
+): string | undefined {
+  if (parts.length === 0 || !parts.every(isTodosPart)) return undefined
+
+  const actions = parts.map((part) => extractTodoAction(part.input))
+  const onlyCreate =
+    actions.length > 0 && actions.every((action) => action === 'create')
+
+  if (onlyCreate) {
+    return running ? 'Creating todos' : 'Created todos'
+  }
+  return running ? 'Updating todos' : 'Updated todos'
+}
+
+function todoPhrase(parts: ToolLikePart[], running: boolean): string {
+  const todoParts = parts.filter(isTodosPart)
+  return describeTodosBurst(todoParts, running) ?? (running ? 'Updating todos' : 'Updated todos')
+}
+
 /**
  * The collapsed line for a burst.
  *
- * A single-vendor burst describes itself ("Searching Google Drive"); anything
- * mixed falls back to counts ("Explored 8 files, 4 searches, ran 4 commands").
- * `running` switches to the present tense so the same line can head the burst
- * while it's still in flight.
+ * A single-vendor burst describes itself ("Searching Google Drive"); a pure
+ * todos burst says "Created todos" / "Updated todos"; anything mixed falls
+ * back to counts with todos/artifacts called out by name.
  */
 export function summarizeBurst(
   parts: ToolLikePart[],
   running: boolean
 ): string {
-  const described = describeVendorBurst(parts, running)
+  const described = describeVendorBurst(parts, running) ?? describeTodosBurst(parts, running)
   if (described) return described
 
-  const { file, search, command } = countByCategory(parts)
+  const { file, search, command, todo, artifact } = countByCategory(parts)
+  const pieces: string[] = []
+
+  if (todo) pieces.push(todoPhrase(parts, running))
+
   const explored: string[] = []
   if (file) explored.push(plural(file, 'file'))
   if (search) explored.push(plural(search, 'search', 'searches'))
-
   if (explored.length) {
-    const verb = running ? 'Exploring' : 'Explored'
-    const tail = command ? `, ran ${plural(command, 'command')}` : ''
-    return `${verb} ${explored.join(', ')}${tail}`
+    pieces.push(
+      `${running ? 'Exploring' : 'Explored'} ${explored.join(', ')}`
+    )
+  }
+
+  if (artifact) {
+    pieces.push(
+      `${running ? 'Opening' : 'Opened'} ${plural(artifact, 'artifact')}`
+    )
   }
 
   if (command) {
-    return `${running ? 'Running' : 'Ran'} ${plural(command, 'command')}`
+    // Match the historic explore phrasing: the command tail stays "ran"
+    // even while the burst is live ("Exploring 2 files, ran 1 command").
+    pieces.push(`ran ${plural(command, 'command')}`)
   }
 
-  const total = parts.length
-  return `${running ? 'Running' : 'Ran'} ${plural(total, 'step')}`
+  if (pieces.length === 0) {
+    const total = parts.length
+    return `${running ? 'Running' : 'Ran'} ${plural(total, 'step')}`
+  }
+
+  // First piece keeps its capital; later command tails stay lowercase ("ran").
+  if (pieces.length === 1) {
+    const only = pieces[0]!
+    // Solo command piece used lowercase "ran"/"running" — capitalize for lead.
+    if (command && !todo && !explored.length && !artifact) {
+      return `${running ? 'Running' : 'Ran'} ${plural(command, 'command')}`
+    }
+    return only
+  }
+
+  return pieces
+    .map((piece, i) => {
+      if (i === 0) return piece
+      // "Updated todos, Opening 1 artifact" → keep subsequent phrases natural
+      return piece.charAt(0).toLowerCase() + piece.slice(1)
+    })
+    .join(', ')
 }

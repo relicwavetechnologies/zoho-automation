@@ -8,6 +8,7 @@ import type { Tool } from '../orchestration/tools/tool.contract';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import type { Logger } from '../../shared/logger';
 import type { Clock } from '../../shared/clock';
+import type { ConnectionRateLimitService } from '../governance/connection-rate-limit.service';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
@@ -36,6 +37,8 @@ export interface ToolExecutorDeps {
   readonly toolRegistry: ToolRegistry;
   readonly permissions: PermissionService;
   readonly approvalGate?: ApprovalGateService;
+  /** Optional during staged rollout; when configured this is the sole live connection budget authority. */
+  readonly connectionRateLimits?: ConnectionRateLimitService;
   readonly logger: Logger;
   readonly clock: Clock;
 }
@@ -61,7 +64,8 @@ export interface RuntimeToolExecutionInput {
 export interface RuntimeToolExecutionOutcome {
   readonly status: Extract<GatewayResponse['status'],
     'success' | 'unknown_tool' | 'invalid_args' | 'permission_denied'
-    | 'approval_required' | 'approval_rejected' | 'approval_misconfigured' | 'tool_error'>;
+    | 'approval_required' | 'approval_rejected' | 'approval_misconfigured'
+    | 'rate_limited' | 'rate_limit_unavailable' | 'tool_error'>;
   readonly toolId: string;
   readonly action?: ToolActionGroup;
   readonly result?: unknown;
@@ -127,6 +131,13 @@ export class ToolExecutor {
       validation = checked.value;
     }
 
+    const rate = await this.preflightRateLimit({
+      companyId: runContext.companyId,
+      action,
+      args,
+    });
+    if (rate) return rate as GatewayResponse<PreflightedToolInvocation>;
+
     return gatewaySuccess({ toolId, action, args, validation });
   }
 
@@ -150,9 +161,19 @@ export class ToolExecutor {
       effectiveDepartmentId,
     } = resolved.value;
 
+    const ratePreflight = await this.preflightRateLimit({
+      companyId: runContext.companyId,
+      action,
+      args: validatedArgs,
+    });
+    if (ratePreflight) return ratePreflight;
+
     let executionGrant: { approvalId: string } | undefined;
 
-    if (this.deps.approvalGate && effectiveDepartmentId && tool.id !== asToolId('memoryRecall')) {
+    // A connection policy can require its owner even when the caller did not
+    // select a department. The gate itself preserves the old no-department
+    // behaviour for ordinary department-based approval rules.
+    if (this.deps.approvalGate && tool.id !== asToolId('memoryRecall')) {
       const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
       const decision = await this.deps.approvalGate.check({
         toolId: tool.id,
@@ -183,6 +204,13 @@ export class ToolExecutor {
 
       executionGrant = decision.executionGrant;
     }
+
+    const rateConsume = await this.consumeRateLimit({
+      companyId: runContext.companyId,
+      action,
+      args: validatedArgs,
+    });
+    if (rateConsume) return rateConsume;
 
     const execCtx: ToolExecutionContext = {
       runContext,
@@ -259,6 +287,13 @@ export class ToolExecutor {
       );
     }
 
+    const ratePreflight = await this.preflightRateLimit({
+      companyId: runContext.companyId,
+      action,
+      args: validatedArgs,
+    });
+    if (ratePreflight) return runtimeRateLimitFailure(toolId, ratePreflight, action);
+
     let executionGrant: { approvalId: string } | undefined;
     if (input.approvalGate && input.chatId && tool.id !== asToolId('memoryRecall')) {
       const decision = await input.approvalGate.check({
@@ -281,6 +316,13 @@ export class ToolExecutor {
       }
       executionGrant = decision.executionGrant;
     }
+
+    const rateConsume = await this.consumeRateLimit({
+      companyId: runContext.companyId,
+      action,
+      args: validatedArgs,
+    });
+    if (rateConsume) return runtimeRateLimitFailure(toolId, rateConsume, action);
 
     const context: ToolExecutionContext = {
       runContext,
@@ -461,6 +503,36 @@ export class ToolExecutor {
       chatId: execution?.threadId ?? `gateway:${member.sessionId}`,
     };
   }
+
+  private async preflightRateLimit(input: {
+    readonly companyId: string;
+    readonly action: ToolActionGroup;
+    readonly args: Record<string, unknown>;
+  }): Promise<GatewayResponse | null> {
+    if (!this.deps.connectionRateLimits) return null;
+    const connectionId = connectionIdFromArgs(input.args);
+    const decision = await this.deps.connectionRateLimits.preflight({
+      companyId: input.companyId,
+      ...(connectionId ? { connectionId } : {}),
+      action: input.action,
+    });
+    return rateLimitFailure(decision);
+  }
+
+  private async consumeRateLimit(input: {
+    readonly companyId: string;
+    readonly action: ToolActionGroup;
+    readonly args: Record<string, unknown>;
+  }): Promise<GatewayResponse | null> {
+    if (!this.deps.connectionRateLimits) return null;
+    const connectionId = connectionIdFromArgs(input.args);
+    const decision = await this.deps.connectionRateLimits.consume({
+      companyId: input.companyId,
+      ...(connectionId ? { connectionId } : {}),
+      action: input.action,
+    });
+    return rateLimitFailure(decision);
+  }
 }
 
 function runtimeFailure(
@@ -477,6 +549,30 @@ function runtimeFailure(
     message,
     ...(approvalId ? { approvalId } : {}),
   };
+}
+
+function connectionIdFromArgs(args: Record<string, unknown>): string | undefined {
+  const candidate = args['connectionId'];
+  return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
+}
+
+function rateLimitFailure(
+  decision: Awaited<ReturnType<ConnectionRateLimitService['preflight']>>,
+): GatewayResponse | null {
+  if (decision.kind === 'limited') return gatewayFailure('rate_limited', decision.message);
+  if (decision.kind === 'unavailable') return gatewayFailure('rate_limit_unavailable', decision.message);
+  return null;
+}
+
+function runtimeRateLimitFailure(
+  toolId: string,
+  response: GatewayResponse,
+  action: ToolActionGroup,
+): RuntimeToolExecutionOutcome {
+  const status = response.status === 'rate_limited' || response.status === 'rate_limit_unavailable'
+    ? response.status
+    : 'rate_limit_unavailable';
+  return runtimeFailure(toolId, status, response.error?.message ?? 'Connection rate limit check failed.', action);
 }
 
 /**

@@ -5,12 +5,15 @@ import { CompanyOmsConnectionRepository, type SafeOmsConnection } from '../../in
 import { OmsSiteDataClient } from '../../infrastructure/oms/oms-site-data.client';
 import type { OmsFetchedData, OmsSiteDataToolArgs } from './oms-site-data.types';
 import { OmsSiteDataServiceError } from './oms-site-data.types';
+import type { ApiKeyExhaustionNotifierPort } from '../governance/api-key-exhaustion.notifier';
 
 const CONNECTION_PROOF_TTL_SECONDS = 10 * 60;
 type Verification = { companyId: string; userId: string; fingerprint: string };
 
 /** Owns company-scoped OMS connection readiness and provider execution. */
 export class CompanyOmsSiteDataService {
+  private exhaustionNotifier: ApiKeyExhaustionNotifierPort | undefined;
+
   constructor(
     private readonly connections: CompanyOmsConnectionRepository,
     private readonly client: OmsSiteDataClient,
@@ -18,6 +21,10 @@ export class CompanyOmsSiteDataService {
     private readonly logger: Logger,
     private readonly environmentApiKey: string,
   ) {}
+
+  bindExhaustionNotifier(notifier: ApiKeyExhaustionNotifierPort): void {
+    this.exhaustionNotifier = notifier;
+  }
 
   async verify(companyId: string, userId: string, apiKey: string): Promise<{ verificationToken: string }> {
     const key = apiKey.trim();
@@ -59,6 +66,7 @@ export class CompanyOmsSiteDataService {
     try {
       const data = await this.client.fetch(connection.apiKey, input.args);
       if (connection.source === 'company') await this.connections.markSuccess(connection.id);
+      void this.exhaustionNotifier?.clear(input.companyId, 'oms_site_data');
       return data;
     } catch (error) {
       const normalized = error instanceof OmsSiteDataServiceError
@@ -74,6 +82,15 @@ export class CompanyOmsSiteDataService {
           error: markError instanceof Error ? markError.message : String(markError),
         });
       });
+      if (normalized.code === 'provider_auth_failed') {
+        void this.exhaustionNotifier?.notifyIfExhausted({
+          companyId: input.companyId,
+          provider: 'oms_site_data',
+          code: normalized.code,
+          message: normalized.message,
+          source: 'company-oms-site-data.execute',
+        });
+      }
       throw normalized;
     }
   }

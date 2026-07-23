@@ -23,8 +23,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { MermaidError } from '@/components/MermaidError'
-import { CitationLink } from '@/components/CitationLink'
-import { MarkdownTable } from '@/components/MarkdownTable'
+import { elegantMarkdownComponents } from '@/containers/elegant-markdown-components'
 
 interface MarkdownProps {
   content: string
@@ -58,7 +57,7 @@ function StreamingCode({ node, className, children, ...props }: CodeProps) {
     return (
       <code
         className={cn(
-          'rounded bg-muted px-1.5 py-0.5 font-mono text-sm',
+          'rounded-[0.35em] bg-muted/70 px-[0.42em] py-[0.12em] font-mono text-[0.86em] text-foreground/90',
           className
         )}
         {...props}
@@ -68,8 +67,8 @@ function StreamingCode({ node, className, children, ...props }: CodeProps) {
     )
   }
   return (
-    <pre className="my-4 overflow-x-auto rounded-lg border border-border bg-secondary p-4">
-      <code className={cn('font-mono text-sm', className)}>{children}</code>
+    <pre className="my-[1.1em] overflow-x-auto rounded-[0.65em] border border-border/70 bg-secondary/90 px-4 py-3.5">
+      <code className={cn('block font-mono text-sm', className)}>{children}</code>
     </pre>
   )
 }
@@ -209,20 +208,10 @@ function RenderMarkdownComponent({
   )
 
   const mergedComponents = useMemo<Components>(() => {
-    const Anchor = (
-      props: React.AnchorHTMLAttributes<HTMLAnchorElement>
-    ) => {
-      const { href, children, className: aClass } = props
-      if (typeof href === 'string' && href.startsWith('#cite-')) {
-        return (
-          <CitationLink href={href} className={aClass}>
-            {children}
-          </CitationLink>
-        )
-      }
-      return <a {...props}>{children}</a>
-    }
-    return { a: Anchor, table: MarkdownTable, ...(components ?? {}) } as Components
+    return {
+      ...elegantMarkdownComponents,
+      ...(components ?? {}),
+    } as Components
   }, [components])
 
   // Interactive HTML artifacts: only when the user opted in and the stream is

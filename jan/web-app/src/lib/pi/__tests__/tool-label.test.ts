@@ -46,7 +46,20 @@ describe('resolveToolLabel', () => {
   })
 
   it('uses a user-facing label for the Pi-owned task board', () => {
-    expect(resolveToolLabel({ type: 'tool-divo_todos' })).toBe('task plan')
+    expect(resolveToolLabel({ type: 'tool-divo_todos' })).toBe('todos')
+    expect(
+      resolveToolLabel({
+        type: 'tool-divo_todos',
+        input: { action: 'create', tasks: [] },
+      })
+    ).toBe('creating todos')
+    expect(
+      resolveToolLabel({
+        type: 'tool-divo_todos',
+        input: { action: 'update', id: '#1', status: 'completed' },
+      })
+    ).toBe('updating todos')
+    expect(resolveToolLabel({ type: 'tool-divo_artifact' })).toBe('artifact')
   })
 
   it('scrapes op from partial JSON still streaming in', () => {

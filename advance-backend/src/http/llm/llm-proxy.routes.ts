@@ -17,14 +17,16 @@ import type { Logger } from '../../shared/logger';
 import { LlmProxyService, type DeepSeekUsage } from '../../application/proxy/llm-proxy.service';
 import { canonicalModel } from '../../application/observability/pricing';
 import type { ProxyKeyStore } from '../../application/proxy/proxy-key.store';
+import type { ApiKeyExhaustionNotifierPort } from '../../application/governance/api-key-exhaustion.notifier';
+import { isApiKeyExhausted } from '../../application/governance/api-key-exhaustion.classifier';
 
 export interface LlmProxyRoutesDeps {
   logger:  Logger;
   store:   ProxyKeyStore;   // resolves the DeepSeek key server-side (never leaves the backend)
   service: LlmProxyService; // shared with Lark so policy/rate accounting has one authority
   baseUrl: string;          // e.g. https://api.deepseek.com
+  apiKeyExhaustion?: ApiKeyExhaustionNotifierPort;
 }
-
 interface ChatBody {
   model?: string;
   messages?: unknown[];
@@ -172,7 +174,12 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       void svc.recordAudit({ companyId, userId, executionId, model, decision: 'denied', reason: 'upstream', httpStatus: 502, latencyMs: Date.now() - startedAt, keySource: resolved.source, ...auxiliaryAuditTarget });
       return;
     }
-    if (upstream.ok) void deps.store.touch(resolved.source, companyId);
+    if (upstream.ok) {
+      void deps.store.touch(resolved.source, companyId);
+      void deps.apiKeyExhaustion?.clear(companyId, 'deepseek');
+    } else {
+      void maybeNotifyDeepSeekExhaustion(deps, companyId, upstream.status, () => upstream.clone().text());
+    }
 
     const audit = (ok: boolean, usage: DeepSeekUsage | null, responseModel?: string | null, reason?: string) =>
       void svc.recordAudit({
@@ -286,4 +293,36 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
   });
 
   return router;
+}
+
+async function maybeNotifyDeepSeekExhaustion(
+  deps: LlmProxyRoutesDeps,
+  companyId: string,
+  httpStatus: number,
+  readBody: () => Promise<string>,
+): Promise<void> {
+  if (!deps.apiKeyExhaustion) return;
+  let message = '';
+  try {
+    message = await readBody();
+  } catch {
+    message = '';
+  }
+  let code: string | undefined;
+  try {
+    const parsed = JSON.parse(message) as { error?: { code?: string; type?: string; message?: string } };
+    code = parsed.error?.code ?? parsed.error?.type;
+    if (!message && parsed.error?.message) message = parsed.error.message;
+  } catch {
+    /* non-JSON body */
+  }
+  if (!isApiKeyExhausted({ httpStatus, code, message })) return;
+  await deps.apiKeyExhaustion.notifyIfExhausted({
+    companyId,
+    provider: 'deepseek',
+    httpStatus,
+    code,
+    message: message.slice(0, 500) || `DeepSeek upstream HTTP ${httpStatus}`,
+    source: 'llm-proxy.chat.completions',
+  });
 }

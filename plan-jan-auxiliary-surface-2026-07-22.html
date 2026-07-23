@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jan Auxiliary Surface — Architecture Plan</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <style>
+    :root {
+      --font-display: 'Space Grotesk', system-ui, sans-serif;
+      --font-body: 'Plus Jakarta Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --fs-xs: 0.75rem; --fs-sm: 0.875rem; --fs-base: 1rem; --fs-lg: 1.125rem;
+      --fs-xl: 1.375rem; --fs-2xl: 1.75rem; --fs-3xl: 2.25rem; --fs-4xl: 3rem;
+      --lh-tight: 1.15; --lh-snug: 1.35; --lh-normal: 1.55;
+      --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+      --bg-primary: #0a0a0f; --bg-secondary: #11111a; --bg-card: #16161f; --bg-elevated: #1d1d28;
+      --text-primary: #f4f4f8; --text-secondary: #b4b4c2; --text-muted: #6f6f80;
+      --accent-primary: #7c5cff; --accent-secondary: #22d3ee;
+      --accent-success: #34d399; --accent-warning: #fbbf24; --accent-danger: #f87171;
+      --border-subtle: rgba(255,255,255,0.06); --border-soft: rgba(255,255,255,0.10); --border-strong: rgba(255,255,255,0.18);
+      --radius-sm: 6px; --radius-md: 12px; --radius-lg: 20px;
+      --space-xs: 0.25rem; --space-sm: 0.5rem; --space-md: 1rem; --space-lg: 1.5rem; --space-xl: 2.5rem; --space-2xl: 4rem;
+      --ease-smooth: cubic-bezier(0.16, 1, 0.3, 1); --dur-normal: 300ms;
+      --shadow-md: 0 8px 24px rgba(0,0,0,0.35);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--bg-primary); color: var(--text-primary);
+      font-family: var(--font-body); font-size: var(--fs-base); line-height: var(--lh-normal);
+      -webkit-font-smoothing: antialiased;
+    }
+    h1,h2,h3,h4 { font-family: var(--font-display); font-weight: var(--fw-semibold); line-height: var(--lh-tight); letter-spacing: -0.01em; }
+    code, .mono { font-family: var(--font-mono); }
+    a { color: var(--accent-secondary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .nav {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: blur(12px); background: rgba(10,10,15,0.85);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: var(--space-sm) var(--space-lg);
+      display: flex; gap: var(--space-sm); overflow-x: auto;
+    }
+    .nav a {
+      color: var(--text-muted); font-size: var(--fs-sm); white-space: nowrap;
+      padding: 0.35rem 0.7rem; border-radius: 999px; border: 1px solid transparent;
+    }
+    .nav a.active, .nav a:hover {
+      color: var(--text-primary); border-color: var(--border-soft); background: var(--bg-card);
+      text-decoration: none;
+    }
+
+    .wrap { max-width: 1100px; margin: 0 auto; padding: var(--space-xl) var(--space-lg) var(--space-2xl); }
+    .eyebrow { font-size: var(--fs-xs); letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent-secondary); font-weight: var(--fw-semibold); }
+    .muted { color: var(--text-muted); }
+    .secondary { color: var(--text-secondary); }
+
+    .hero { margin-bottom: var(--space-xl); }
+    .hero h1 { font-size: clamp(2rem, 5vw, 3.2rem); margin: 0.4rem 0 0.75rem; max-width: 18ch; }
+    .hero p { max-width: 62ch; color: var(--text-secondary); font-size: var(--fs-lg); margin: 0; }
+
+    .tldr {
+      background: linear-gradient(135deg, rgba(124,92,255,0.14), rgba(34,211,238,0.06));
+      border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
+      padding: var(--space-lg); margin-bottom: var(--space-2xl);
+    }
+    .tldr h2 { margin: 0 0 0.5rem; font-size: var(--fs-xl); }
+    .tldr .rec {
+      font-size: var(--fs-lg); color: var(--text-primary); margin: 0 0 var(--space-md);
+      font-family: var(--font-display); font-weight: var(--fw-medium);
+    }
+    .tldr ul { margin: 0; padding-left: 1.1rem; color: var(--text-secondary); }
+    .tldr li { margin: 0.35rem 0; }
+
+    section { margin-bottom: var(--space-2xl); scroll-margin-top: 4rem; }
+    section > h2 { font-size: var(--fs-2xl); margin: 0 0 var(--space-md); }
+    section > .lede { color: var(--text-secondary); max-width: 70ch; margin: -0.25rem 0 var(--space-lg); }
+
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-md); }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-md); }
+    @media (max-width: 820px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md); padding: var(--space-lg);
+    }
+    .card h3 { margin: 0 0 0.4rem; font-size: var(--fs-lg); }
+    .card p, .card li { color: var(--text-secondary); font-size: var(--fs-sm); }
+    .pill {
+      display: inline-block; font-size: 0.65rem; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 0.15rem 0.45rem; border-radius: 999px; font-weight: var(--fw-semibold);
+      border: 1px solid var(--border-soft); color: var(--text-muted);
+    }
+    .pill.ok { color: var(--accent-success); border-color: rgba(52,211,153,0.35); }
+    .pill.warn { color: var(--accent-warning); border-color: rgba(251,191,36,0.35); }
+    .pill.bad { color: var(--accent-danger); border-color: rgba(248,113,113,0.35); }
+    .pill.plan { color: var(--accent-secondary); border-color: rgba(34,211,238,0.35); }
+
+    /* Architecture flow visual */
+    .flow {
+      background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg); padding: var(--space-lg); overflow: hidden;
+    }
+    .flow-controls { display: flex; gap: var(--space-sm); margin-bottom: var(--space-md); flex-wrap: wrap; }
+    .flow-controls button {
+      background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border-soft);
+      border-radius: 999px; padding: 0.4rem 0.85rem; font: inherit; font-size: var(--fs-sm); cursor: pointer;
+    }
+    .flow-controls button.active {
+      color: var(--text-primary); border-color: rgba(124,92,255,0.5);
+      background: rgba(124,92,255,0.18);
+    }
+    .flow-stage { display: none; }
+    .flow-stage.active { display: block; animation: fadeUp 0.4s var(--ease-smooth); }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .flow-stage.active { animation: none; }
+      html { scroll-behavior: auto; }
+    }
+
+    .layers {
+      display: grid; gap: 0.65rem;
+    }
+    .layer {
+      display: grid; grid-template-columns: 140px 1fr; gap: var(--space-md); align-items: stretch;
+      background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+      overflow: hidden; cursor: pointer; transition: border-color var(--dur-normal) var(--ease-smooth);
+    }
+    .layer:hover, .layer.selected { border-color: rgba(124,92,255,0.45); }
+    .layer-label {
+      background: var(--bg-elevated); padding: var(--space-md); display: flex; flex-direction: column; justify-content: center;
+      border-right: 1px solid var(--border-subtle);
+    }
+    .layer-label strong { font-size: var(--fs-sm); }
+    .layer-label span { font-size: var(--fs-xs); color: var(--text-muted); margin-top: 0.2rem; }
+    .layer-body { padding: var(--space-md); font-size: var(--fs-sm); color: var(--text-secondary); }
+    .layer-body code { font-size: 0.8em; color: var(--accent-secondary); }
+    .layer-detail {
+      margin-top: var(--space-md); padding: var(--space-md); background: var(--bg-card);
+      border: 1px solid var(--border-soft); border-radius: var(--radius-md); display: none;
+    }
+    .layer-detail.show { display: block; }
+
+    .shell-mock {
+      display: grid; grid-template-columns: 56px 1.1fr 0.9fr; gap: 0;
+      height: 280px; border-radius: var(--radius-md); overflow: hidden;
+      border: 1px solid var(--border-strong); background: #0d0d14;
+    }
+    .shell-left { background: #12121a; border-right: 1px solid var(--border-subtle); padding: 0.6rem; }
+    .shell-main { padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; border-right: 1px solid var(--border-subtle); }
+    .shell-aux { padding: 0; display: flex; flex-direction: column; background: #101018; }
+    .fake-row { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.08); }
+    .fake-bubble { align-self: flex-start; width: 72%; padding: 0.55rem; border-radius: 8px; background: rgba(255,255,255,0.05); font-size: 10px; color: var(--text-muted); }
+    .fake-bubble.user { align-self: flex-end; background: rgba(124,92,255,0.15); }
+    .tabstrip {
+      display: flex; gap: 2px; padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--border-subtle);
+      background: #0c0c12; overflow: hidden;
+    }
+    .tabchip {
+      font-size: 10px; padding: 0.25rem 0.45rem; border-radius: 6px 6px 0 0;
+      background: transparent; color: var(--text-muted); border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .tabchip.on { background: #16161f; color: var(--text-primary); border-color: var(--border-subtle); border-bottom-color: #16161f; }
+    .aux-body { flex: 1; padding: 0.75rem; overflow: hidden; }
+    .aux-empty {
+      height: 100%; display: flex; flex-direction: column; justify-content: center; gap: 0.45rem; padding-left: 0.5rem;
+    }
+    .aux-empty .item { font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between; max-width: 160px; }
+    .aux-empty .item span { color: var(--text-secondary); }
+    .k { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); }
+
+    .compare { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-md); }
+    @media (max-width: 820px) { .compare { grid-template-columns: 1fr; } }
+    .compare .card.good { border-color: rgba(52,211,153,0.25); }
+    .compare .card.bad { border-color: rgba(248,113,113,0.25); }
+
+    .typebox {
+      background: #0c0c12; border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+      padding: var(--space-md); overflow-x: auto; font-size: 12px; line-height: 1.55; color: #c8c8d8;
+    }
+    .typebox .kw { color: #c792ea; }
+    .typebox .ty { color: #82aaff; }
+    .typebox .cm { color: #6f6f80; }
+    .typebox .st { color: #c3e88d; }
+
+    .ref {
+      display: flex; flex-direction: column; gap: 0.35rem;
+    }
+    .ref a { font-weight: var(--fw-medium); }
+    .ref .why { font-size: var(--fs-sm); color: var(--text-muted); }
+
+    .risk {
+      border-left: 3px solid var(--accent-warning); padding-left: var(--space-md); margin: var(--space-md) 0;
+    }
+    .risk h4 { margin: 0 0 0.25rem; font-size: var(--fs-base); }
+    .risk p { margin: 0; font-size: var(--fs-sm); color: var(--text-secondary); }
+
+    .steps { counter-reset: step; list-style: none; padding: 0; margin: 0; }
+    .steps li {
+      counter-increment: step; position: relative;
+      padding: var(--space-md) var(--space-md) var(--space-md) 3.2rem;
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+      background: var(--bg-card); margin-bottom: var(--space-sm);
+    }
+    .steps li::before {
+      content: counter(step); position: absolute; left: 0.9rem; top: 1rem;
+      width: 1.5rem; height: 1.5rem; border-radius: 999px; display: grid; place-items: center;
+      background: rgba(124,92,255,0.2); color: var(--accent-primary); font-size: var(--fs-xs); font-weight: 700;
+    }
+    .steps strong { display: block; margin-bottom: 0.2rem; }
+    .steps span { font-size: var(--fs-sm); color: var(--text-secondary); }
+
+    .appendix details {
+      background: var(--bg-card); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md); padding: var(--space-md); margin-bottom: var(--space-sm);
+    }
+    .appendix summary { cursor: pointer; font-weight: var(--fw-semibold); }
+    .appendix ul { color: var(--text-secondary); font-size: var(--fs-sm); }
+
+    .jump {
+      position: fixed; right: 1rem; bottom: 1rem; z-index: 40;
+      background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border-soft);
+      border-radius: 999px; padding: 0.55rem 0.9rem; font: inherit; font-size: var(--fs-sm);
+      box-shadow: var(--shadow-md); cursor: pointer; display: none;
+    }
+    .jump.show { display: inline-flex; }
+
+    @media print {
+      :root {
+        --bg-primary: #fff; --bg-secondary: #f7f7f8; --bg-card: #fff; --bg-elevated: #fff;
+        --text-primary: #111; --text-secondary: #333; --text-muted: #666;
+        --border-subtle: #ddd; --border-soft: #ccc; --border-strong: #bbb;
+      }
+      .nav, .jump, .flow-controls { display: none !important; }
+      .flow-stage { display: block !important; page-break-inside: avoid; }
+      section { page-break-before: auto; }
+      a { color: inherit; text-decoration: underline; }
+    }
+  </style>
+</head>
+<body>
+  <nav class="nav" id="nav">
+    <a href="#tldr">TL;DR</a>
+    <a href="#context">Context</a>
+    <a href="#research">Research</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#model">Tab model</a>
+    <a href="#jan">Jan fit</a>
+    <a href="#phases">Phases</a>
+    <a href="#risks">Risks</a>
+    <a href="#next">Next steps</a>
+    <a href="#appendix">Appendix</a>
+  </nav>
+
+  <div class="wrap">
+    <header class="hero">
+      <div class="eyebrow">System / Architecture · 22 Jul 2026</div>
+      <h1>Jan Auxiliary Surface</h1>
+      <p>
+        Right-rail architecture for Artifacts, Side chats, and future surfaces —
+        designed as a typed tab host from day one, not an artifact-only drawer bolted onto chat.
+      </p>
+    </header>
+
+    <div class="tldr" id="tldr">
+      <h2>TL;DR</h2>
+      <p class="rec">
+        Build a generic <strong>Auxiliary Surface</strong> (VS Code’s secondary side bar pattern):
+        a docked, resizable right rail whose only job is to host typed tabs.
+        Artifact and Side chat are the first two tab kinds — not special-cased panels.
+      </p>
+      <ul>
+        <li><strong>Do not</strong> create <code>useArtifactPanel</code> that later gets forced to also host chats.</li>
+        <li><strong>Do</strong> separate Shell (layout/resize) · Tab Host (open tabs) · Surface Renderers (content).</li>
+        <li>Jan already has <code>react-resizable-panels</code> and a right-aware <code>use-sidebar-resize</code> — reuse those; don’t invent a third resize system.</li>
+      </ul>
+    </div>
+
+    <section id="context">
+      <h2>Context</h2>
+      <p class="lede">What’s decided vs still open for this plan.</p>
+      <div class="grid-2">
+        <div class="card">
+          <span class="pill ok">Decided</span>
+          <h3>Product intent</h3>
+          <ul>
+            <li>AI research / detailed reports render as Artifacts in a right sidebar</li>
+            <li>Users can open chats as tabs in the same rail</li>
+            <li>More kinds will come later (browser, files, terminal, review…)</li>
+            <li>Agent eventually calls a tool like <code>artifact</code> — but this plan is UI/host first</li>
+            <li>No implementation in this pass — architecture only</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="pill warn">Open</span>
+          <h3>Still to choose later</h3>
+          <ul>
+            <li>Whether tabs are URL-backed or ephemeral UI state (recommend ephemeral v1)</li>
+            <li>Thread-scoped vs app-global tab lifetime</li>
+            <li>Auto-open on agent artifact tool vs click-to-open (LibreChat moved to manual for code)</li>
+            <li>Whether side chats share <code>useChatSessions</code> or a sibling store</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="research">
+      <h2>What the ecosystem taught us</h2>
+      <p class="lede">
+        Patterns that hold up, and the failure modes that make sidebars feel “never quite right.”
+      </p>
+
+      <div class="grid-3">
+        <div class="card">
+          <span class="pill ok">Gold standard</span>
+          <h3>VS Code Auxiliary Bar</h3>
+          <p>
+            Secondary side bar is a <em>part of the workbench</em>, not a feature of any one view.
+            Views (chat, timeline, etc.) register into it. Layout owns visibility/size;
+            content is pluggable.
+          </p>
+          <p class="muted" style="margin-top:0.75rem;font-size:0.8rem">
+            <a href="https://github.com/microsoft/vscode/blob/main/src/vs/workbench/browser/parts/auxiliarybar/auxiliaryBarPart.ts" target="_blank" rel="noopener">auxiliaryBarPart.ts</a>
+          </p>
+        </div>
+        <div class="card">
+          <span class="pill ok">Closest product</span>
+          <h3>Cursor / Codex right pane</h3>
+          <p>
+            Empty state = launcher (Review, Terminal, Browser, Files, Side chat).
+            Active state = multi-surface host. Side chats are durable parallel threads,
+            not popovers. Your screenshot is this model.
+          </p>
+          <p class="muted" style="margin-top:0.75rem;font-size:0.8rem">
+            Cursor 3.11 side chats · Codex agents window
+          </p>
+        </div>
+        <div class="card">
+          <span class="pill plan">Open source</span>
+          <h3>HF chat-ui · Artifactuse · Morphic</h3>
+          <p>
+            Sibling flex/resizable panel next to chat; sandboxed preview;
+            multi-tab opt-in; mobile → fullscreen overlay. Morphic: open artifact closes left sidebar to reclaim width.
+          </p>
+        </div>
+      </div>
+
+      <div class="compare" style="margin-top: var(--space-lg);">
+        <div class="card bad">
+          <span class="pill bad">Anti-patterns</span>
+          <h3>What breaks sidebars</h3>
+          <ul>
+            <li><strong>Floating artifact cards</strong> — Codex VS Code issue: detached from layout, fights scrollbar/composer</li>
+            <li><strong>Artifact-first store</strong> — later bolted to host chats; kinds fight each other</li>
+            <li><strong>Register/unregister on mount</strong> — Archestra fixed by deriving canvases from messages instead</li>
+            <li><strong>Auto-open everything while streaming</strong> — LibreChat retreated to manual-open for code artifacts</li>
+            <li><strong>Hard-coded chat column %</strong> — ignores rail open state (Jan today: <code>md:w-[58%]</code>)</li>
+            <li><strong>Dual sources of truth</strong> — Jan left panel already has Zustand + cookie in SidebarProvider</li>
+          </ul>
+        </div>
+        <div class="card good">
+          <span class="pill ok">Winning patterns</span>
+          <h3>What to copy</h3>
+          <ul>
+            <li><strong>PanelGroup sibling layout</strong> — ChatJS / <code>react-resizable-panels</code>: main + handle + secondary</li>
+            <li><strong>min-h-0 + independent scroll</strong> — each column scrolls alone</li>
+            <li><strong>Iframe resize overlay</strong> — portal a full-screen shield while dragging so iframes don’t steal mouse</li>
+            <li><strong>Discriminated tab kinds</strong> — Artifactuse multiTab: openTabs[] + per-tab view mode</li>
+            <li><strong>Empty launcher state</strong> — Codex: tools list until a tab opens</li>
+            <li><strong>Keep content after close briefly</strong> — Morphic clears after exit animation</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>Recommended architecture</h2>
+      <p class="lede">
+        Three layers. Click a layer for detail. This is the root shape — get this wrong and every later surface fights the shell.
+      </p>
+
+      <div class="flow">
+        <div class="flow-controls" id="flow-controls">
+          <button type="button" class="active" data-stage="layers">1 · Layers</button>
+          <button type="button" data-stage="shell">2 · Shell mock</button>
+          <button type="button" data-stage="data">3 · Data flow</button>
+        </div>
+
+        <div class="flow-stage active" id="stage-layers">
+          <div class="layers" id="layers">
+            <div class="layer selected" data-detail="shell">
+              <div class="layer-label">
+                <strong>1. Shell</strong>
+                <span>Layout only</span>
+              </div>
+              <div class="layer-body">
+                Owns: open/closed, width, resize, collapse, mobile overlay.
+                Knows nothing about artifacts or chats.
+                <br /><code>AuxiliaryRail</code> + <code>useAuxiliaryShell</code>
+              </div>
+            </div>
+            <div class="layer" data-detail="host">
+              <div class="layer-label">
+                <strong>2. Tab Host</strong>
+                <span>Registry</span>
+              </div>
+              <div class="layer-body">
+                Owns: tabs[], activeTabId, open/close/focus/reorder.
+                Kind-agnostic. Empty state = launcher.
+                <br /><code>useAuxiliaryTabs</code>
+              </div>
+            </div>
+            <div class="layer" data-detail="surface">
+              <div class="layer-label">
+                <strong>3. Surfaces</strong>
+                <span>Renderers</span>
+              </div>
+              <div class="layer-body">
+                Owns: how a tab looks. Artifact preview, Side chat thread, later Browser/Files.
+                <br /><code>ArtifactSurface</code> · <code>SideChatSurface</code> · …
+              </div>
+            </div>
+          </div>
+          <div class="layer-detail show" id="layer-detail">
+            <h3 style="margin:0 0 0.4rem;font-size:1rem">Shell</h3>
+            <p class="secondary" style="margin:0;font-size:0.9rem" id="layer-detail-text">
+              Mount inside <code>SidebarInset</code> as a horizontal <code>ResizablePanelGroup</code>:
+              Main (Outlet / chat) · Handle · AuxiliaryRail.
+              Persist width + open like left panel — separate store, never reuse <code>useLeftPanel</code>.
+              On mobile: rail becomes fullscreen Sheet/overlay (HF chat-ui / Artifactuse pattern).
+            </p>
+          </div>
+        </div>
+
+        <div class="flow-stage" id="stage-shell">
+          <div class="shell-mock" aria-label="Desktop shell mockup">
+            <div class="shell-left">
+              <div class="fake-row" style="width:70%;margin-bottom:0.5rem"></div>
+              <div class="fake-row" style="width:90%;margin-bottom:0.35rem"></div>
+              <div class="fake-row" style="width:60%;margin-bottom:0.35rem"></div>
+              <div class="fake-row" style="width:80%"></div>
+            </div>
+            <div class="shell-main">
+              <div class="fake-row" style="width:40%;margin-bottom:0.4rem"></div>
+              <div class="fake-bubble">Main thread — research request…</div>
+              <div class="fake-bubble user">Write a detailed report on…</div>
+              <div class="fake-bubble">Working… opens Artifact tab →</div>
+              <div style="margin-top:auto" class="fake-row"></div>
+            </div>
+            <div class="shell-aux">
+              <div class="tabstrip">
+                <div class="tabchip on">Research report ×</div>
+                <div class="tabchip">Side chat ×</div>
+                <div class="tabchip">+</div>
+              </div>
+              <div class="aux-body">
+                <div class="fake-row" style="width:55%;margin-bottom:0.5rem"></div>
+                <div class="fake-row" style="width:100%;height:14px;margin-bottom:0.35rem"></div>
+                <div class="fake-row" style="width:92%;height:14px;margin-bottom:0.35rem"></div>
+                <div class="fake-row" style="width:88%;height:14px;margin-bottom:0.35rem"></div>
+                <div class="fake-row" style="width:70%;height:40px;margin-top:0.6rem"></div>
+              </div>
+            </div>
+          </div>
+          <p class="muted" style="margin:0.75rem 0 0;font-size:0.85rem">
+            When tabs.length === 0, replace tab body with Codex-style launcher
+            (Side chat, Artifacts list, future Browser / Files / Terminal).
+          </p>
+          <div class="shell-mock" style="margin-top:1rem;height:200px;grid-template-columns:56px 1fr 0.85fr">
+            <div class="shell-left"></div>
+            <div class="shell-main">
+              <div class="fake-bubble">Empty rail state…</div>
+            </div>
+            <div class="shell-aux">
+              <div class="aux-body">
+                <div class="aux-empty">
+                  <div class="item"><span>Side chat</span><span class="k">⌥S</span></div>
+                  <div class="item"><span>Artifacts</span><span class="k">⌘⇧A</span></div>
+                  <div class="item"><span>Browser</span><span class="k muted">later</span></div>
+                  <div class="item"><span>Files</span><span class="k muted">later</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flow-stage" id="stage-data">
+          <pre class="typebox" style="margin:0">{cm /* UI path — Phase 1 */}
+User opens rail / clicks "Open as Artifact" / "+" Side chat
+  → useAuxiliaryShell.setOpen(true)
+  → useAuxiliaryTabs.openTab({ kind, title, payload })
+  → AuxiliaryRail renders ActiveSurface by kind
+
+{cm /* Agent path — Phase 2+ (no logic now) */}
+Agent tool `artifact.create` (backend/gateway later)
+  → desktop receives structured event
+  → same openTab({ kind: 'artifact', ... })
+  → UI host unchanged</pre>
+          <p class="secondary" style="margin:0.75rem 0 0;font-size:0.9rem">
+            Critical: the agent never “owns” the sidebar. It only emits/opens a tab descriptor.
+            The host decides layout. This matches Divo’s backend-authority rule — UI shell stays desktop-owned.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section id="model">
+      <h2>Tab model (the durable core)</h2>
+      <p class="lede">
+        Discriminated union from day one. Adding Browser later = new kind + renderer, zero shell changes.
+      </p>
+      <pre class="typebox">{span class="kw">type</span> <span class="ty">AuxiliaryTabKind</span> = <span class="st">'artifact'</span> | <span class="st">'sideChat'</span> <span class="cm">// | 'browser' | 'files' | 'terminal' | 'review'</span>
+
+<span class="kw">type</span> <span class="ty">AuxiliaryTabBase</span> = {
+  id: <span class="ty">string</span>
+  title: <span class="ty">string</span>
+  createdAt: <span class="ty">number</span>
+  originThreadId?: <span class="ty">string</span>  <span class="cm">// which main chat opened this</span>
+}
+
+<span class="kw">type</span> <span class="ty">ArtifactTab</span> = <span class="ty">AuxiliaryTabBase</span> &amp; {
+  kind: <span class="st">'artifact'</span>
+  artifactId: <span class="ty">string</span>
+  mime?: <span class="ty">string</span>           <span class="cm">// text/html, text/markdown, …</span>
+  version?: <span class="ty">number</span>
+}
+
+<span class="kw">type</span> <span class="ty">SideChatTab</span> = <span class="ty">AuxiliaryTabBase</span> &amp; {
+  kind: <span class="st">'sideChat'</span>
+  threadId: <span class="ty">string</span>         <span class="cm">// secondary conversation id</span>
+  parentThreadId?: <span class="ty">string</span>
+}
+
+<span class="kw">type</span> <span class="ty">AuxiliaryTab</span> = <span class="ty">ArtifactTab</span> | <span class="ty">SideChatTab</span>
+
+<span class="kw">type</span> <span class="ty">AuxiliaryTabsState</span> = {
+  tabs: <span class="ty">AuxiliaryTab</span>[]
+  activeTabId: <span class="ty">string</span> | <span class="kw">null</span>
+  openTab: (tab: <span class="ty">Omit</span>&lt;<span class="ty">AuxiliaryTab</span>, <span class="st">'id'</span> | <span class="st">'createdAt'</span>&gt; &amp; { id?: <span class="ty">string</span> }) =&gt; <span class="ty">string</span>
+  focusTab: (id: <span class="ty">string</span>) =&gt; <span class="ty">void</span>
+  closeTab: (id: <span class="ty">string</span>) =&gt; <span class="ty">void</span>
+  reorderTabs: (ids: <span class="ty">string</span>[]) =&gt; <span class="ty">void</span>
+}
+
+<span class="kw">type</span> <span class="ty">AuxiliaryShellState</span> = {
+  open: <span class="ty">boolean</span>
+  width: <span class="ty">string</span>              <span class="cm">// e.g. "28rem"</span>
+  setOpen: (v: <span class="ty">boolean</span>) =&gt; <span class="ty">void</span>
+  setWidth: (w: <span class="ty">string</span>) =&gt; <span class="ty">void</span>
+}</pre>
+      <div class="grid-2" style="margin-top: var(--space-lg);">
+        <div class="card">
+          <h3>Focus rules</h3>
+          <ul>
+            <li>Opening a tab → shell opens + that tab focused</li>
+            <li>Re-opening same artifactId / sideChat threadId → focus existing (no duplicate)</li>
+            <li>Closing active → adjacent tab; if none → empty launcher (rail can stay open)</li>
+            <li>Closing rail ≠ destroying tabs (optional: keep tabs in memory while shell closed)</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Lifetime (v1 recommendation)</h3>
+          <ul>
+            <li><strong>Ephemeral UI state</strong> — no URL for tabs yet</li>
+            <li><strong>Thread-scoped cleanup</strong> — leaving a main thread can close orphaned artifact tabs from that origin (configurable)</li>
+            <li>Side chats: durable enough to revisit in-session; persistence = later</li>
+            <li>Don’t sync rail open state into Pi / backend</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="jan">
+      <h2>How this maps onto Jan today</h2>
+      <p class="lede">Greenfield host on a left-only shell — but with reusable pieces already present.</p>
+      <div class="grid-3">
+        <div class="card">
+          <span class="pill ok">Reuse</span>
+          <h3>Already there</h3>
+          <ul>
+            <li><code>react-resizable-panels@3.0.5</code> in package.json (no wrapper yet)</li>
+            <li><code>use-sidebar-resize</code> documents right/artifact panels</li>
+            <li>shadcn <code>Sidebar</code> supports <code>side="right"</code></li>
+            <li><code>HtmlArtifact</code> for inline preview → promote into surface</li>
+            <li><code>Sheet</code> for mobile overlay</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="pill warn">Change</span>
+          <h3>Must rework</h3>
+          <ul>
+            <li>Thread layout hard-coded <code>md:w-[58%] xl:w-[48%]</code> — become flex children of Main panel</li>
+            <li>AppLayout: wrap Outlet in PanelGroup + AuxiliaryRail sibling</li>
+            <li>New Zustand stores — do <em>not</em> extend <code>useLeftPanel</code></li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="pill bad">Avoid</span>
+          <h3>Past smells</h3>
+          <ul>
+            <li><code>useLeftPanel.size</code> leftover vs <code>width</code></li>
+            <li>Zustand + cookie dual truth in SidebarProvider</li>
+            <li>MCP <code>setLeftPanel</code> name collision</li>
+            <li>Building “ArtifactPanel” that Side chat later hacks into</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: var(--space-md);">
+        <h3>Proposed mount point</h3>
+        <pre class="typebox" style="margin:0.5rem 0 0">{span class="cm">// __root.tsx AppLayout — conceptual</span>
+&lt;SidebarProvider …&gt;
+  &lt;LeftSidebar /&gt;
+  &lt;SidebarInset&gt;
+    &lt;ResizablePanelGroup direction=<span class="st">"horizontal"</span>&gt;
+      &lt;ResizablePanel id=<span class="st">"main"</span>&gt;
+        &lt;Outlet /&gt;                 <span class="cm">// chat / settings / etc.</span>
+      &lt;/ResizablePanel&gt;
+      {auxiliaryOpen &amp;&amp; (
+        &lt;&gt;
+          &lt;ResizableHandle /&gt;
+          &lt;ResizablePanel id=<span class="st">"auxiliary"</span> minSize={…}&gt;
+            &lt;AuxiliaryRail /&gt;     <span class="cm">// tabstrip + active surface</span>
+          &lt;/ResizablePanel&gt;
+        &lt;/&gt;
+      )}
+    &lt;/ResizablePanelGroup&gt;
+  &lt;/SidebarInset&gt;
+&lt;/SidebarProvider&gt;</pre>
+      </div>
+    </section>
+
+    <section id="phases">
+      <h2>Phased delivery (UI-first)</h2>
+      <p class="lede">Matches your “no logic change yet” constraint while still rooting the architecture correctly.</p>
+      <ol class="steps">
+        <li>
+          <strong>Phase 0 — Shell + empty host</strong>
+          <span>Mount AuxiliaryRail, resize, persist width/open, empty launcher UI (Side chat / Artifacts stubs). No agent tools. Prove reflow of chat column.</span>
+        </li>
+        <li>
+          <strong>Phase 1 — Artifact tabs (UI only)</strong>
+          <span>Promote / “Open in sidebar” from existing HtmlArtifact or a mock report. Multi-tab, focus, close, preview/code modes. Still no agent tool.</span>
+        </li>
+        <li>
+          <strong>Phase 2 — Side chat tabs</strong>
+          <span>Secondary conversation UI in a tab; inherit parent thread context at spawn (Cursor /side pattern). Decide session store sharing.</span>
+        </li>
+        <li>
+          <strong>Phase 3 — Agent artifact tool</strong>
+          <span>Backend/gateway op emits artifact payload → desktop opens tab via same <code>openTab</code>. Enforcement stays backend; Pi just calls the tool.</span>
+        </li>
+        <li>
+          <strong>Phase 4 — More kinds</strong>
+          <span>Browser / Files / Terminal / Review as new kinds + launchers — shell untouched.</span>
+        </li>
+      </ol>
+    </section>
+
+    <section id="risks">
+      <h2>Risks &amp; open questions</h2>
+      <div class="risk">
+        <h4>Chat column geometry fights the rail</h4>
+        <p>Mitigation: kill percentage-of-viewport composer widths; Main panel content uses <code>max-w</code> relative to its panel, with <code>min-w-0</code>.</p>
+      </div>
+      <div class="risk">
+        <h4>Iframes swallow resize drags</h4>
+        <p>Mitigation: portal a transparent overlay during drag (Archestra / Morphic pattern). Especially important once Artifact HTML previews land.</p>
+      </div>
+      <div class="risk">
+        <h4>Tab explosion / memory</h4>
+        <p>Mitigation: cap open tabs (e.g. 8), LRU close, or thread-scoped cleanup. Don’t keep infinite side chats alive.</p>
+      </div>
+      <div class="risk">
+        <h4>Temptation to special-case Artifact</h4>
+        <p>Mitigation: code review rule — no <code>if (isArtifact) …</code> in Shell. Kind switches only inside Surface router.</p>
+      </div>
+      <div class="risk">
+        <h4>Left + right both open on laptop widths</h4>
+        <p>Mitigation: Morphic-style optional auto-collapse of left nav when auxiliary opens under a breakpoint; or min main column 400px hard clamp.</p>
+      </div>
+    </section>
+
+    <section id="next">
+      <h2>Next steps</h2>
+      <ol class="steps">
+        <li>
+          <strong>Lock the names</strong>
+          <span>Call it Auxiliary Surface / AuxiliaryRail — not ArtifactPanel. Document the three-layer rule in a short ADR.</span>
+        </li>
+        <li>
+          <strong>Spike Phase 0 only</strong>
+          <span>Empty rail + resize + chat reflow on one thread route. Validate feel before tabs.</span>
+        </li>
+        <li>
+          <strong>Add shadcn Resizable wrapper</strong>
+          <span>Wire the already-installed <code>react-resizable-panels</code>; avoid a custom drag system unless PanelGroup can’t meet min-width clamps.</span>
+        </li>
+        <li>
+          <strong>Define tab kind registry</strong>
+          <span>Map kind → icon, launcher label, shortcut, Surface component. Extensibility lives here.</span>
+        </li>
+        <li>
+          <strong>Defer agent tool</strong>
+          <span>Until host is stable. Tool contract should be “emit tab descriptor,” not “render sidebar.”</span>
+        </li>
+      </ol>
+    </section>
+
+    <section id="appendix" class="appendix">
+      <h2>Appendix</h2>
+      <details open>
+        <summary>Primary open-source / product references</summary>
+        <ul class="ref" style="margin-top:0.75rem">
+          <li>
+            <a href="https://github.com/microsoft/vscode/tree/main/src/vs/workbench/browser/parts/auxiliarybar" target="_blank" rel="noopener">VS Code auxiliary bar</a>
+            <span class="why">Workbench part + pluggable views — the mental model to steal</span>
+          </li>
+          <li>
+            <a href="https://github.com/huggingface/chat-ui/commit/89e9b33f5cf772dff52d84b67be57c4ba359c855" target="_blank" rel="noopener">Hugging Face chat-ui Artifacts</a>
+            <span class="why">Sibling aside, drag resize, mobile fullscreen, sandboxed preview</span>
+          </li>
+          <li>
+            <a href="https://artifactuse.mintlify.app/components/panel" target="_blank" rel="noopener">Artifactuse multi-tab panel</a>
+            <span class="why">openTabs[], per-tab view modes, no auto-open on stream</span>
+          </li>
+          <li>
+            <a href="https://chatjs.mintlify.app/cookbook/chat-layout" target="_blank" rel="noopener">ChatJS ChatLayout</a>
+            <span class="why">Composable ResizablePanelGroup main/secondary pattern</span>
+          </li>
+          <li>
+            <a href="https://github.com/miurla/morphic" target="_blank" rel="noopener">Morphic artifact inspector</a>
+            <span class="why">Split pane + drawer on mobile; mutual exclusion with left sidebar</span>
+          </li>
+          <li>
+            <a href="https://github.com/danny-avila/LibreChat/pull/12961" target="_blank" rel="noopener">LibreChat: keep code artifacts manual-open</a>
+            <span class="why">Community lesson — auto-open fights the user</span>
+          </li>
+          <li>
+            <a href="https://github.com/openai/codex/issues/21919" target="_blank" rel="noopener">Codex: floating artifacts panel UX bug</a>
+            <span class="why">Why floating/detached panels feel wrong</span>
+          </li>
+          <li>
+            <a href="https://cursor.com/changelog/side-chat" target="_blank" rel="noopener">Cursor Side Chats</a>
+            <span class="why">Durable parallel chats as first-class surfaces</span>
+          </li>
+          <li>
+            <a href="https://github.com/thesysdev/openui/commit/08dc83e9c2558edfd4318edbd9270f1eeb4ce834" target="_blank" rel="noopener">OpenUI artifact store + portal target</a>
+            <span class="why">Zustand artifact store + thread-switch reset pattern</span>
+          </li>
+        </ul>
+      </details>
+      <details>
+        <summary>Rejected alternatives</summary>
+        <ul>
+          <li><strong>Only extend left Sidebar with right mode</strong> — conflates nav chrome with content surfaces; different lifetime/UX.</li>
+          <li><strong>Sheet-only overlay for artifacts</strong> — fine for mobile, wrong as desktop primary (destroys side-by-side research).</li>
+          <li><strong>Per-feature panels</strong> (ArtifactPanel + SideChatPanel + BrowserPanel) — guaranteed layout wars; pick one host.</li>
+          <li><strong>Editor-area tabs in the main column</strong> — VS Code editor tabs are for files; Jan’s main column is conversation. Keep conversation primary.</li>
+        </ul>
+      </details>
+      <details>
+        <summary>Jan codebase anchors (from exploration)</summary>
+        <ul>
+          <li><code>jan/web-app/src/routes/__root.tsx</code> — AppLayout shell</li>
+          <li><code>jan/web-app/src/hooks/useLeftPanel.ts</code> — do not extend</li>
+          <li><code>jan/web-app/src/hooks/use-sidebar-resize.ts</code> — right-panel ready</li>
+          <li><code>jan/web-app/src/components/HtmlArtifact.tsx</code> — promote into ArtifactSurface</li>
+          <li><code>jan/web-app/src/routes/threads/$threadId.tsx</code> — fixed % widths to fix</li>
+        </ul>
+      </details>
+    </section>
+  </div>
+
+  <button type="button" class="jump" id="jump">Jump to TL;DR</button>
+
+  <script>
+    (function () {
+      const details = {
+        shell: {
+          title: 'Shell',
+          text: 'Mount inside SidebarInset as a horizontal ResizablePanelGroup: Main (Outlet / chat) · Handle · AuxiliaryRail. Persist width + open like left panel — separate store, never reuse useLeftPanel. On mobile: rail becomes fullscreen Sheet/overlay (HF chat-ui / Artifactuse pattern).'
+        },
+        host: {
+          title: 'Tab Host',
+          text: 'Single registry of open tabs. openTab is idempotent by natural key (artifactId / sideChat threadId). Empty launcher is a Host concern, not a fake tab. Host never imports HtmlArtifact or ChatInput.'
+        },
+        surface: {
+          title: 'Surfaces',
+          text: 'A switch on tab.kind renders the active surface. Each surface owns its chrome (preview/code for artifacts; composer for side chat). Future kinds register into a kind→component map — no shell PR required.'
+        }
+      };
+
+      const detailEl = document.getElementById('layer-detail');
+      const detailText = document.getElementById('layer-detail-text');
+      document.querySelectorAll('.layer').forEach((el) => {
+        el.addEventListener('click', () => {
+          document.querySelectorAll('.layer').forEach((l) => l.classList.remove('selected'));
+          el.classList.add('selected');
+          const key = el.getAttribute('data-detail');
+          const d = details[key];
+          detailEl.querySelector('h3').textContent = d.title;
+          detailText.innerHTML = d.text;
+          detailEl.classList.add('show');
+        });
+      });
+
+      const stages = {
+        layers: document.getElementById('stage-layers'),
+        shell: document.getElementById('stage-shell'),
+        data: document.getElementById('stage-data')
+      };
+      document.querySelectorAll('#flow-controls button').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('#flow-controls button').forEach((b) => b.classList.remove('active'));
+          btn.classList.add('active');
+          const id = btn.getAttribute('data-stage');
+          Object.entries(stages).forEach(([k, el]) => {
+            el.classList.toggle('active', k === id);
+          });
+        });
+      });
+
+      const jump = document.getElementById('jump');
+      window.addEventListener('scroll', () => {
+        jump.classList.toggle('show', window.scrollY > 600);
+      });
+      jump.addEventListener('click', () => {
+        document.getElementById('tldr').scrollIntoView({ behavior: 'smooth' });
+      });
+
+      const sections = [...document.querySelectorAll('section[id], #tldr')];
+      const navLinks = [...document.querySelectorAll('.nav a')];
+      const io = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const id = entry.target.id;
+          navLinks.forEach((a) => {
+            a.classList.toggle('active', a.getAttribute('href') === '#' + id);
+          });
+        });
+      }, { rootMargin: '-40% 0px -50% 0px', threshold: 0 });
+      sections.forEach((s) => io.observe(s));
+    })();
+  </script>
+</body>
+</html>

@@ -239,6 +239,58 @@ describe('Sheet Components', () => {
     expect(content).toHaveClass('custom-sheet')
   })
 
+  it('resizes a right sheet with direct pointer capture and caps it at half the viewport', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 })
+    render(
+      <Sheet defaultOpen>
+        <SheetContent resizable>
+          <SheetTitle>Resizable sheet</SheetTitle>
+          <SheetDescription>Resizable description</SheetDescription>
+        </SheetContent>
+      </Sheet>
+    )
+
+    const content = document.querySelector('[data-slot="sheet-content"]') as HTMLDivElement
+    vi.spyOn(content, 'getBoundingClientRect').mockReturnValue({
+      width: 500,
+      height: 800,
+      top: 0,
+      right: 1200,
+      bottom: 800,
+      left: 700,
+      x: 700,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    const handle = screen.getByRole('separator', { name: 'Resize panel' })
+    const pointerEvent = (type: string, pointerId: number, clientX: number) => {
+      const event = new MouseEvent(type, { bubbles: true, clientX })
+      Object.defineProperty(event, 'pointerId', { value: pointerId })
+      return event
+    }
+
+    fireEvent(handle, pointerEvent('pointerdown', 7, 700))
+    fireEvent(handle, pointerEvent('pointermove', 7, 500))
+    expect(content).toHaveStyle({ width: '600px', maxWidth: '50vw' })
+
+    fireEvent(handle, pointerEvent('pointermove', 7, 850))
+    expect(content).toHaveStyle({ width: '420px' })
+    fireEvent(handle, pointerEvent('pointerup', 7, 850))
+  })
+
+  it('does not add a resize handle unless requested', () => {
+    render(
+      <Sheet defaultOpen>
+        <SheetContent>
+          <SheetTitle>Fixed sheet</SheetTitle>
+          <SheetDescription>Fixed description</SheetDescription>
+        </SheetContent>
+      </Sheet>
+    )
+
+    expect(screen.queryByRole('separator', { name: 'Resize panel' })).not.toBeInTheDocument()
+  })
+
   it('renders complete sheet structure', () => {
     render(
       <Sheet defaultOpen>

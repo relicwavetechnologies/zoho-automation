@@ -105,7 +105,7 @@ export function MarkdownTable({
   return (
     <div
       ref={wrapperRef}
-      className="my-4 flex flex-col space-y-2"
+      className="my-4 flex flex-col gap-1.5"
       data-streamdown="table-wrapper"
     >
       <div className="flex items-center justify-end">
@@ -115,7 +115,7 @@ export function MarkdownTable({
               type="button"
               title="Export table"
               aria-label="Export table"
-              className="inline-flex items-center gap-1 rounded-md p-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground/80 transition-colors hover:bg-muted/40 hover:text-foreground"
             >
               {copied ? <Check size={14} /> : <Download size={14} />}
               <span>Export</span>

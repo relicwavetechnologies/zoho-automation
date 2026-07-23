@@ -41,8 +41,8 @@ const Schema = z.object({
   removeNames: z.array(z.string()).optional(),
   // create_recurring
   recurrence: RecurrenceSchema.optional(),
-  /** Divo-managed Lark connection. Required when more than one is accessible. */
-  connectionId: z.string().uuid().optional(),
+  /** Exact Divo-managed Lark connection for this governed action. */
+  connectionId: z.string().uuid(),
 });
 type Args = z.infer<typeof Schema>;
 
@@ -107,7 +107,7 @@ export const createLarkCalendarTool = (deps: {
 - dateFrom, dateTo: ISO date range for free_busy
 - addNames, removeNames: Names to add/remove for update_attendees
 - recurrence: { frequency: daily|weekly|monthly|yearly, days?: MO|TU|WE|TH|FR|SA|SU[], until?: ISO date, count?: N }
-- connectionId: A connected or shared Lark account. Required when more than one is available.
+- connectionId: Exact UUID of the connected or shared Lark account. Required for every action.
   `.trim(),
 
   permissionCheck(args: Args, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -132,7 +132,7 @@ export const createLarkCalendarTool = (deps: {
 
     try {
       const userConnection = await resolveLarkUserClient(deps, ctx, {
-        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
+        connectionId: args.connectionId,
         minimumAccess: inferAction(args.op) === 'read' ? 'read_only' : 'read_write',
       });
       if (userConnection.status === 'choose_connection') {

@@ -11,6 +11,7 @@ import type { AuditService } from '../../../observability/audit.service';
 import { arrayToCsv } from '../shared/sandbox-runner';
 import { SemrushService } from '../../../semrush/semrush.service';
 import { SemrushServiceError, SemrushToolArgsSchema, type SemrushToolArgs } from '../../../semrush/semrush.types';
+import type { ApiKeyExhaustionNotifierPort } from '../../../governance/api-key-exhaustion.notifier';
 
 const MAX_MODEL_ROWS = 200;
 const MAX_TASK_ROWS = 1_000;
@@ -33,6 +34,7 @@ export const createSemrushTool = (deps: {
   cloudinary: CloudinaryAdapter;
   audit?: AuditService;
   csvLinkTtl?: number;
+  apiKeyExhaustion?: ApiKeyExhaustionNotifierPort;
 }): Tool<SemrushToolArgs, Res> => ({
   id: asToolId('semrush'),
   family: 'semrush',
@@ -102,6 +104,7 @@ export const createSemrushTool = (deps: {
           correlationId: ctx.correlationId,
         },
       });
+      void deps.apiKeyExhaustion?.clear(ctx.runContext.companyId, 'semrush');
       return ok(result);
     } catch (error) {
       const normalized = error instanceof SemrushServiceError ? error : new SemrushServiceError('provider_failure', 'Semrush request failed.');
@@ -112,6 +115,15 @@ export const createSemrushTool = (deps: {
         outcome: 'failure',
         metadata: { operation: args.operation, failureCode: normalized.code, latencyMs: Date.now() - startedAt, correlationId: ctx.correlationId },
       });
+      if (normalized.code === 'provider_insufficient_units') {
+        void deps.apiKeyExhaustion?.notifyIfExhausted({
+          companyId: ctx.runContext.companyId,
+          provider: 'semrush',
+          code: normalized.code,
+          message: normalized.message,
+          source: 'semrush.tool',
+        });
+      }
       if (['not_configured', 'capability_unavailable'].includes(normalized.code)) {
         return ok({
           status: 'blocked',

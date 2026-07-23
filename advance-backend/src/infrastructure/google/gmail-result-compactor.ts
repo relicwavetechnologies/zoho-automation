@@ -21,7 +21,7 @@ type GmailCompactionReason =
   | 'character_limit';
 
 export interface GmailResultCompactionMetadata {
-  readonly version: 1;
+  readonly version: 2;
   readonly mode: 'metadata' | 'full';
   readonly truncated: boolean;
   readonly reasons: readonly GmailCompactionReason[];
@@ -30,12 +30,21 @@ export interface GmailResultCompactionMetadata {
   readonly originalMessages: number;
   readonly returnedMessages: number;
   readonly omittedMessages: number;
+  /** Messages returned by Google before Divo changes the model-facing prose. */
+  readonly providerReturnedMessages: number;
+  /** Complete machine-readable records retained next to the compacted prose. */
+  readonly structuredMessages: number;
+  /** Message records still visible in the compacted prose. */
+  readonly modelVisibleMessages: number;
+  readonly requestedPageSize?: number;
   readonly clippedMessages: number;
   readonly clippedThreads: number;
   readonly quotedReplyCharactersRemoved: number;
   readonly limits: typeof GMAIL_RESULT_LIMITS;
   readonly continuation: {
-    readonly available: false;
+    readonly available: boolean;
+    readonly inputField?: 'page_token';
+    readonly token?: string;
   };
 }
 
@@ -70,7 +79,7 @@ export function compactGmailMcpResult(
     return {
       ...result,
       [field]: compacted.text,
-      _divoResult: compacted.metadata,
+      _divoResult: reconcileStructuredMetadata(nativeTool, result, compacted.metadata),
     };
   }
 
@@ -134,7 +143,7 @@ export function compactGmailText(
   return {
     text,
     metadata: {
-      version: 1,
+      version: 2,
       mode: metadataOnly ? 'metadata' : 'full',
       truncated: reasons.size > 0,
       reasons: [...reasons],
@@ -143,12 +152,51 @@ export function compactGmailText(
       originalMessages,
       returnedMessages,
       omittedMessages,
+      providerReturnedMessages: originalMessages,
+      structuredMessages: 0,
+      modelVisibleMessages: returnedMessages,
       clippedMessages: messageCharacterLimited.clippedMessages,
       clippedThreads: threadCharacterLimited.clippedThreads,
       quotedReplyCharactersRemoved,
       limits: GMAIL_RESULT_LIMITS,
       continuation: { available: false },
     },
+  };
+}
+
+function reconcileStructuredMetadata(
+  nativeTool: string,
+  result: Readonly<Record<string, unknown>>,
+  metadata: GmailResultCompactionMetadata,
+): GmailResultCompactionMetadata {
+  const messages = Array.isArray(result['messages']) ? result['messages'] : [];
+  const pagination = isRecord(result['pagination']) ? result['pagination'] : undefined;
+  const paginationCount = readNonNegativeInteger(pagination?.['providerReturnedMessages']);
+  const providerReturnedMessages = paginationCount
+    ?? (messages.length > 0 ? messages.length : metadata.originalMessages);
+  const structuredMessages = messages.length;
+  const modelVisibleMessages = metadata.returnedMessages;
+  const requestedPageSize = readPositiveInteger(pagination?.['requestedPageSize']);
+  const nextPageToken = typeof pagination?.['nextPageToken'] === 'string'
+    && pagination['nextPageToken'].trim()
+    ? pagination['nextPageToken'].trim()
+    : undefined;
+  const hasNextPage = nativeTool === 'search_gmail_messages'
+    && pagination?.['hasNextPage'] === true
+    && Boolean(nextPageToken);
+
+  return {
+    ...metadata,
+    originalMessages: providerReturnedMessages,
+    returnedMessages: modelVisibleMessages,
+    omittedMessages: Math.max(0, providerReturnedMessages - modelVisibleMessages),
+    providerReturnedMessages,
+    structuredMessages,
+    modelVisibleMessages,
+    ...(requestedPageSize ? { requestedPageSize } : {}),
+    continuation: hasNextPage
+      ? { available: true, inputField: 'page_token', token: nextPageToken! }
+      : { available: false },
   };
 }
 
@@ -469,6 +517,14 @@ function countMessages(nativeTool: string, text: string): number {
 
 function messageMarkerCount(text: string): number {
   return [...text.matchAll(/^=== Message \d+ ===\s*$/gm)].length;
+}
+
+function readNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function readPositiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -288,6 +288,8 @@ model Company {
   larkAuthLinks               LarkUserAuthLink[]
   integrationConnections      IntegrationConnection[]
   integrationConnectionGrants IntegrationConnectionGrant[]
+  integrationConnectionGovernance IntegrationConnectionGovernance[]
+  capabilityGovernance        CompanyCapabilityGovernance[]
   serperConnections           CompanySerperConnection[]
   omsConnections              CompanyOmsConnection[]
   fileAssets                  FileAsset[]
@@ -1358,11 +1360,54 @@ model IntegrationConnection {
   createdAt             DateTime                     @default(now())
   updatedAt             DateTime                     @updatedAt
   grants                IntegrationConnectionGrant[]
+  governance            IntegrationConnectionGovernance?
 
   @@unique([companyId, dedupeKey])
   @@index([companyId, provider, status])
   @@index([companyId, provider, accountEmail])
   @@index([companyId, ownerUserId])
+}
+
+/// Connection-scoped operating controls. Access grants answer who may use a
+/// connection; this record answers how safely they may use it. Manager policy
+/// and company-admin overrides are intentionally stored separately so an
+/// override never destroys the manager's original operating preference.
+model IntegrationConnectionGovernance {
+  id                    String                @id @default(uuid())
+  companyId             String
+  company               Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connectionId          String                @unique
+  connection            IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  managerPolicyJson     Json?
+  managerConfiguredBy   String?
+  managerConfiguredAt   DateTime?
+  adminOverrideJson     Json?
+  adminOverriddenBy     String?
+  adminOverriddenAt     DateTime?
+  version               Int                   @default(1)
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+
+  @@index([companyId, updatedAt])
+}
+
+/// Company-wide capability controls for facilities such as web search and
+/// shared knowledge. This remains separate from connection governance because
+/// these capabilities may have no OAuth connection or per-user owner.
+model CompanyCapabilityGovernance {
+  id                    String    @id @default(uuid())
+  companyId             String
+  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  capabilityId          String
+  policyJson            Json
+  configuredBy          String?
+  configuredAt          DateTime  @default(now())
+  version               Int       @default(1)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([companyId, capabilityId])
+  @@index([companyId, updatedAt])
 }
 
 /// Company-owned Serper credentials. The raw key is AES-GCM encrypted and never

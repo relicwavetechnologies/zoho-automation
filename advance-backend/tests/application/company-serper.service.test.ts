@@ -118,6 +118,37 @@ describe('CompanySerperService.search', () => {
     );
     assert.equal(fetchCalled, false);
   });
+
+  it('notifies once when every company Serper key is rate-limited', async () => {
+    const notices: Array<{ companyId: string; provider: string; force?: boolean }> = [];
+    globalThis.fetch = async (): Promise<Response> => ({
+      ok: false,
+      status: 429,
+      headers: new Headers({ 'retry-after': '30' }),
+      text: async () => 'Too many requests',
+    } as Response);
+
+    const service = makeService({
+      activeKeys: async () => [{ id: 'a', apiKey: 'a-key' }, { id: 'b', apiKey: 'b-key' }],
+      hasConnection: async () => true,
+      markSuccess: async () => {},
+      markFailure: async () => {},
+    });
+    service.bindExhaustionNotifier({
+      notifyIfExhausted: async (input) => {
+        notices.push({ companyId: input.companyId, provider: input.provider, force: input.force });
+        return { notified: true };
+      },
+      clear: async () => {},
+    });
+
+    await assert.rejects(
+      () => service.search('company-1', { query: 'Divo' }),
+      (error: SearchIntegrationError) => error.code === 'search_rate_limited',
+    );
+    assert.equal(notices.length, 1);
+    assert.deepEqual(notices[0], { companyId: 'company-1', provider: 'serper', force: true });
+  });
 });
 
 describe('CompanySerperService.saveVerified', () => {

@@ -715,7 +715,10 @@ mod tests {
         assert_eq!(body["thinking"]["type"], "disabled");
         assert_eq!(body["divo_request_kind"], "thread_title");
         assert_eq!(body["divo_thread_id"], "thread-123");
-        assert_eq!(body["messages"][1]["content"], "Review Razorpay account health");
+        assert_eq!(
+            body["messages"][1]["content"],
+            "Review Razorpay account health"
+        );
     }
 
     #[test]
@@ -1064,6 +1067,29 @@ pub async fn divo_google_manage_access<R: Runtime>(
         &format!("/google/connections/{connection_id}/manage"),
         None,
         "Google manage access",
+    )
+    .await
+}
+
+/// Save the operating policy owned by the administrator of one connection.
+/// The backend validates that the caller is the connection owner/admin and
+/// keeps company-admin overrides separate and higher precedence.
+#[tauri::command]
+pub async fn divo_connection_update_governance<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+    manager_policy: Value,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::PUT,
+        &format!("/connections/{connection_id}/governance"),
+        Some(json!({ "managerPolicy": manager_policy })),
+        "Connection operating controls",
     )
     .await
 }
@@ -1706,9 +1732,7 @@ pub async fn divo_generate_thread_title<R: Runtime>(
         .map(str::trim)
         .filter(|title| !title.is_empty())
         .ok_or_else(|| {
-            format!(
-                "Divo title generation returned an empty title (finish_reason={finish_reason})"
-            )
+            format!("Divo title generation returned an empty title (finish_reason={finish_reason})")
         })?;
 
     log::debug!(

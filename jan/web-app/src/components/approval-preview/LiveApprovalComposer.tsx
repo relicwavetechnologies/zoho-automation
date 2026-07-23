@@ -47,7 +47,8 @@ type LiveApprovalComposerProps = {
   total: number
   onMove: (direction: -1 | 1) => void
   onDecision: (confirmed: boolean) => void
-  onAlwaysAllowBash?: () => void
+  onAllowBashForChat?: () => void
+  onAllowFullAccessForChat?: () => void
   onStop: () => void
   now: number
 }
@@ -159,7 +160,8 @@ export function LiveApprovalComposer({
   total,
   onMove,
   onDecision,
-  onAlwaysAllowBash,
+  onAllowBashForChat,
+  onAllowFullAccessForChat,
   onStop,
   now,
 }: LiveApprovalComposerProps) {
@@ -211,7 +213,10 @@ export function LiveApprovalComposer({
   const submitting = request.status === 'submitting'
   const deliveryFailed = request.status === 'error'
   const expired = request.expiresAt <= now
-  const canAlwaysAllowBash = descriptor.source === 'bash'
+  const canAllowBashForChat = descriptor.source === 'bash'
+  const canAllowFullAccessForChat = ['bash', 'divo', 'edit', 'write'].includes(
+    descriptor.source
+  )
   const scheduleLabel =
     kind === 'schedule'
       ? SCHEDULE_APPROVE_LABEL[
@@ -300,13 +305,24 @@ export function LiveApprovalComposer({
             This request expired and can only be safely denied.
           </p>
         ) : null}
-        {canAlwaysAllowBash ? (
+        {canAllowBashForChat ? (
           <div className="flex gap-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs leading-5 text-muted-foreground">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
             <span>
-              Always allowing Bash lets future terminal commands modify or
-              delete files, access local data, and use the network without
-              another review. Turn it off later from Permission rules.
+              Always allowing commands lets Divo run later Bash commands in
+              this chat without asking again. It does not allow file or gateway
+              actions automatically.
+            </span>
+          </div>
+        ) : null}
+        {canAllowFullAccessForChat ? (
+          <div className="flex gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs leading-5 text-muted-foreground">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <span>
+              Full access lets Divo run commands, edit or write local files,
+              and confirm local gateway actions without asking again in this
+              chat. Backend permissions, rate limits, shared-connection rules,
+              and manager approval still apply to every gateway call.
             </span>
           </div>
         ) : null}
@@ -317,7 +333,7 @@ export function LiveApprovalComposer({
       <CardFooter className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <LockKeyhole />
-          <span>Approve &amp; run applies only to this exact action.</span>
+          <span>Allow only this time applies only to this exact action.</span>
         </div>
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <Button variant="ghost" onClick={onStop}>
@@ -332,13 +348,22 @@ export function LiveApprovalComposer({
             {submitting ? <LoaderCircle data-icon="inline-start" className="animate-spin" /> : null}
             {expired ? 'Deny expired request' : 'Deny'}
           </Button>
-          {canAlwaysAllowBash && onAlwaysAllowBash ? (
+          {canAllowBashForChat && onAllowBashForChat ? (
             <Button
               variant="secondary"
               disabled={submitting || expired || deliveryFailed}
-              onClick={onAlwaysAllowBash}
+              onClick={onAllowBashForChat}
             >
-              Always allow Bash
+              Always allow commands in this chat
+            </Button>
+          ) : null}
+          {canAllowFullAccessForChat && onAllowFullAccessForChat ? (
+            <Button
+              variant="destructive"
+              disabled={submitting || expired || deliveryFailed}
+              onClick={onAllowFullAccessForChat}
+            >
+              Give Divo full access to this chat
             </Button>
           ) : null}
           <Button
@@ -351,7 +376,9 @@ export function LiveApprovalComposer({
             ) : (
               <ShieldCheck data-icon="inline-start" />
             )}
-            {scheduleLabel ?? approveLabel(descriptor.action)}
+            {canAllowFullAccessForChat
+              ? 'Allow only this time'
+              : scheduleLabel ?? approveLabel(descriptor.action)}
           </Button>
         </div>
       </CardFooter>

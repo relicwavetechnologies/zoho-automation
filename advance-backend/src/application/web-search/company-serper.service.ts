@@ -3,6 +3,8 @@ import type { CachePort } from '../../shared/cache';
 import type { Logger } from '../../shared/logger';
 import { SerperClient, SearchIntegrationError, type SerperSearchInput, type SerperSearchResponse } from '../../infrastructure/ai/search/serper.client';
 import { CompanySerperConnectionRepository, serperKeyFingerprint } from '../../infrastructure/persistence/company-serper-connection.repository';
+import type { ApiKeyExhaustionNotifierPort } from '../governance/api-key-exhaustion.notifier';
+import { isSerperPoolExhausted } from '../governance/api-key-exhaustion.classifier';
 
 const TEST_TTL_SECONDS = 10 * 60;
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000;
@@ -22,6 +24,8 @@ const cooldownUntil = (error: unknown): Date => {
 
 /** Owns company Serper credential validation, storage proof, and safe failover. */
 export class CompanySerperService {
+  private exhaustionNotifier: ApiKeyExhaustionNotifierPort | undefined;
+
   constructor(
     private readonly connections: CompanySerperConnectionRepository,
     private readonly cache: CachePort,
@@ -29,6 +33,10 @@ export class CompanySerperService {
     private readonly logger: Logger,
     private readonly legacyApiKey = '',
   ) {}
+
+  bindExhaustionNotifier(notifier: ApiKeyExhaustionNotifierPort): void {
+    this.exhaustionNotifier = notifier;
+  }
 
   async verify(companyId: string, userId: string, apiKey: string): Promise<{ verificationToken: string }> {
     const key = apiKey.trim();
@@ -80,6 +88,7 @@ export class CompanySerperService {
             });
           }
         }
+        void this.exhaustionNotifier?.clear(companyId, 'serper');
         return result;
       } catch (error) {
         lastError = error;
@@ -106,6 +115,21 @@ export class CompanySerperService {
         });
       }
     }
-    throw lastError instanceof Error ? lastError : new SearchIntegrationError('All company Web Search connections are unavailable', 'search_unavailable');
+    const finalError = lastError instanceof SearchIntegrationError
+      ? lastError
+      : lastError instanceof Error
+        ? new SearchIntegrationError(lastError.message, 'search_unavailable')
+        : new SearchIntegrationError('All company Web Search connections are unavailable', 'search_unavailable');
+    if (isSerperPoolExhausted({ code: finalError.code, message: finalError.message })) {
+      void this.exhaustionNotifier?.notifyIfExhausted({
+        companyId,
+        provider: 'serper',
+        code: finalError.code,
+        message: finalError.message,
+        source: 'company-serper.search',
+        force: true,
+      });
+    }
+    throw finalError;
   }
 }

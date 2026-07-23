@@ -25,8 +25,8 @@ const LarkMsgArgsSchema = z.object({
   mentionNames: z.array(z.string()).optional(),
   /** Card 2.0 is the default so Markdown is rendered consistently in outbound Divo messages. */
   rendering: z.enum(['card', 'text']).optional(),
-  /** Divo-managed Lark connection. Required when more than one is accessible. */
-  connectionId: z.string().uuid().optional(),
+  /** Exact Divo-managed Lark connection for this governed action. */
+  connectionId: z.string().uuid(),
 });
 type LarkMsgArgs = z.infer<typeof LarkMsgArgsSchema>;
 
@@ -83,7 +83,7 @@ export const createLarkMessagingTool = (deps: {
 - query: Text to find in the newest 500 messages of a chat (required for search; Lark does not offer server-side full-text history search)
 - mentionNames: Array of names to @-tag in a group message, e.g. ["Anish", "Rahul"] (required for mention)
 - rendering: card|text. Defaults to card, which renders Markdown in a Divo Card 2.0 message. Use text only when plain text is explicitly required.
-- connectionId: A connected or shared Lark account. Required when more than one is available.
+- connectionId: Exact UUID of the connected or shared Lark account. Required for every action.
   `.trim(),
 
   permissionCheck(args: LarkMsgArgs, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -98,7 +98,7 @@ export const createLarkMessagingTool = (deps: {
   async execute(args: LarkMsgArgs, ctx: ToolExecutionContext): Promise<Result<LarkMsgResult, ToolError>> {
     try {
       const userConnection = await resolveLarkUserClient(deps, ctx, {
-        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
+        connectionId: args.connectionId,
         minimumAccess: inferAction(args.op) === 'read' ? 'read_only' : 'read_write',
       });
       if (userConnection.status === 'choose_connection') {

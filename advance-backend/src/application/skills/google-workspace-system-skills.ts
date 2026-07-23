@@ -206,9 +206,9 @@ Use this skill for ${product.description.toLowerCase()}
 
 ## Governed execution
 
-1. Call \`${product.toolId}\` without \`connectionId\` unless the user already chose an exact account. Divo auto-selects only when exactly one eligible connected/shared account can perform the action.
-2. When the tool returns \`google_workspace_connection_selection_required\`, ask one short account-choice question using only those returned options, then retry once with that exact \`connectionId\`. Never rotate through accounts after an error.
-3. Use \`connections.list\` only when the user explicitly asks to inspect or manage available accounts. Never use an email address or label as \`connectionId\`.
+1. Before any \`op: "call"\`, use \`connections.list\` to choose one exact connected/shared Google account, then include that UUID as \`connectionId\`. This is required for RBAC, owner policy, and connection rate limits.
+2. Never choose a model default or rotate through accounts after an error. A text reply is an exact choice only when it uniquely identifies one returned option by number or account email.
+3. \`connectionId\` may be omitted only for an \`op: "describe"\` schema lookup. Never use an email address or label itself as \`connectionId\`.
 4. Use only \`${product.toolId}\`. Never use a local Google CLI, Bash, curl, browser automation, or direct Google API calls.
 5. Call \`op: "describe"\` with the selected \`nativeTool\` before its first unfamiliar use. \`input\` may be omitted for describe; follow the returned MCP input schema exactly.
 6. Call \`op: "call"\` with the same \`nativeTool\` and its arguments under \`input\`.
@@ -216,7 +216,7 @@ Use this skill for ${product.description.toLowerCase()}
 
 ## Canonical governed call shape
 
-Invoke the runtime's governed wrapper with \`toolId: "${product.toolId}"\` and keep all product arguments under its \`args\` object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID when selected>", "input": {} }\`. Never place \`connectionId\` beside the wrapper's payload.
+Invoke the runtime's governed wrapper with \`toolId: "${product.toolId}"\` and keep all product arguments under its \`args\` object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. Never place \`connectionId\` beside the wrapper's payload.
 
 ## Approved operations
 
@@ -229,6 +229,7 @@ ${productWorkflow}
 - Preserve Divo RBAC, sharing, approval, and audit results. Pending or denied is not completed.
 - Never guess Google resource IDs. Discover or read the target before an ambiguous mutation.
 - Verify important content changes with a read operation and return canonical Google URLs from successful responses.
+- Treat every result advisory with \`level: "required"\` as part of the tool contract. Satisfy it before reporting completion; if it cannot be satisfied, report partial completion and the exact missing evidence.
 - Never expose tokens or the private MCP endpoint. Sidecar-local file paths and file URLs are forbidden; use base64 content or HTTPS sources.`;
 }
 
@@ -255,6 +256,7 @@ When the user asks for the single latest or one deduplicated thread, this contra
 4. Make at most one full-content call, using \`get_gmail_thread_content\` for the selected thread. Never call a thread-content batch operation for this task.
 5. If no candidate meets the stated criteria, return a truthful no-match result from the bounded metadata evidence. Do not keep searching merely to produce an answer.
 6. Report \`_divoResult\` truncation and continuation fields exactly. Never turn desktop trace-preview truncation into Gmail content truncation and never invent a continuation handle.
+7. For paginated searches, consume the complete machine-readable \`messages\` array. \`modelVisibleMessages\` counts only prose shown in the trace; it is not the provider page size. Continue only when \`continuation.available\` is true, using its exact \`inputField\` and \`token\`.
 
 ### Draft, send, and organize
 
@@ -328,12 +330,12 @@ A create/edit task is complete only when the final content is verified and the r
 
 For a new structured spreadsheet, use this order:
 
-1. \`create_spreadsheet\` and retain the returned spreadsheet ID and URL.
+1. \`create_spreadsheet\` and retain the returned \`spreadsheetId\` and \`spreadsheetUrl\` fields. Treat a successful create as final even if later parsing or code fails; never create a second spreadsheet to rediscover the first response.
 2. \`modify_sheet_values\` to write headers and rows.
 3. \`format_sheet_range\` for header and cell formatting, following its described flat input schema exactly.
 4. \`resize_sheet_dimensions\` for column sizing and \`frozen_row_count\` / \`frozen_column_count\`.
 5. \`manage_sheet_data_validation\` for dropdowns. Use explicit sheet-qualified ranges such as \`Sheet1!D2:D100\` and either \`one_of_list\` values or a \`one_of_range\` source.
-6. \`read_sheet_values\` to verify the important written range.
+6. \`read_sheet_values\` to verify the important written range. Use its machine-readable \`values\`, \`rowCount\`, \`returnedRowCount\`, \`isEmpty\`, and \`complete\` fields instead of parsing prose. A read with \`complete: false\` exposes only part of the range; read a narrower exact range before claiming verification.
 7. Return the canonical Google Sheets URL from the successful result. A task is partial if requested formatting, freezing, validation, or URL return has not completed.
 
 Example governed operation arguments:
@@ -359,7 +361,7 @@ The runtime's governed wrapper may be \`call_tool\` or \`divo_gateway\`; in both
 
 ### Completion contract
 
-A create or edit task is complete only after the important requested range is read back and the response includes the canonical spreadsheet URL. Preserve the spreadsheet ID, sheet ID/title, and exact A1 ranges across steps. If a write returns an ambiguous failure, read the target range before retrying so rows or values are not duplicated.`;
+A create or edit task is complete only after the important requested range is read back, every required advisory is satisfied, and the response includes the canonical spreadsheet URL. Compare the machine-readable header and final populated row against the intended write. Preserve the spreadsheet ID, sheet ID/title, and exact A1 ranges across steps. If a write returns an ambiguous failure, read the target range before retrying so rows or values are not duplicated.`;
 
     case 'contacts':
       return `

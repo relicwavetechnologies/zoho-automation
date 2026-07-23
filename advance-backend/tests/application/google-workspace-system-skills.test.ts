@@ -17,6 +17,7 @@ describe('Google Workspace system skills', () => {
       assert.match(skill.markdown, /Never use a local Google CLI/);
       assert.doesNotMatch(skill.markdown, /start_google_auth/);
       assert.match(skill.markdown, /OAuth bearer token/);
+      assert.match(skill.markdown, /result advisory.*level: "required"/);
       assert.doesNotMatch(skill.markdown, /Divo (injects|derives) user_google_email/);
     }
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;
@@ -66,6 +67,9 @@ describe('Google Workspace system skills', () => {
         'create_spreadsheet',
         'modify_sheet_values',
         'manage_sheet_data_validation',
+        'machine-readable `values`',
+        '`complete: false`',
+        'every required advisory is satisfied',
         'task is partial',
       ],
       'google-contacts': [

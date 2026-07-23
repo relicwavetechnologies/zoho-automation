@@ -8,6 +8,8 @@ import type { ToolExecutor, RuntimeToolExecutionOutcome } from '../gateway/tool-
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
 import { asChatId, asCompanyId, asCorrelationId, asDepartmentId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
+import { isAutomationPlanApproval } from '../gateway/automation-plan.service';
+import type { AutomationPlanExecutor } from '../gateway/automation-plan.executor';
 
 export interface ApprovalResumerDeps {
   approvalRepo:        RuntimeApprovalRepository;
@@ -16,6 +18,8 @@ export interface ApprovalResumerDeps {
   approvalGate:        ApprovalGateService;
   toolExecutor:        ToolExecutor;
   permissions:         PermissionService;
+  /** Handles immutable multi-call batches that were approved in a Lark DM. */
+  automationPlanExecutor?: AutomationPlanExecutor;
   logger:              Logger;
 }
 
@@ -46,6 +50,15 @@ export class ApprovalResumerService {
         expected: decision,
         actual: approval.status,
       });
+      return;
+    }
+
+    if (isAutomationPlanApproval(approval)) {
+      if (!this.deps.automationPlanExecutor) {
+        this.log.error('resumer.automation_plan_executor_missing', { approvalId });
+        return;
+      }
+      await this.deps.automationPlanExecutor.resume(approval, decision);
       return;
     }
 

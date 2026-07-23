@@ -7,6 +7,21 @@ export const DIVO_BACKEND_URL_STORAGE_KEY = 'divo.backendUrl'
 const AUTH_POLL_INTERVAL_MS = 1500
 const AUTH_POLL_TIMEOUT_MS = 5 * 60 * 1000
 
+export class DivoAuthCancelledError extends Error {
+  constructor(message = 'Sign-in cancelled') {
+    super(message)
+    this.name = 'DivoAuthCancelledError'
+  }
+}
+
+export function isDivoAuthCancelled(error: unknown): boolean {
+  return (
+    error instanceof DivoAuthCancelledError ||
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (error instanceof Error && error.name === 'AbortError')
+  )
+}
+
 export type DivoDepartment = {
   id: string
   name: string
@@ -93,23 +108,31 @@ export async function validateDivoSession(): Promise<DivoSessionStatus> {
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init?.headers,
-    },
-  })
-  const body = await response.json().catch(() => null) as T | null
-  if (!response.ok) {
-    const message = body && typeof body === 'object' && 'message' in body
-      ? String((body as { message?: unknown }).message)
-      : `HTTP ${response.status}`
-    throw new Error(message)
+  try {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+    })
+    const body = (await response.json().catch(() => null)) as T | null
+    if (!response.ok) {
+      const message =
+        body && typeof body === 'object' && 'message' in body
+          ? String((body as { message?: unknown }).message)
+          : `HTTP ${response.status}`
+      throw new Error(message)
+    }
+    if (!body) throw new Error('Backend returned an empty response')
+    return body
+  } catch (error) {
+    if (isDivoAuthCancelled(error) || init?.signal?.aborted) {
+      throw new DivoAuthCancelledError()
+    }
+    throw error
   }
-  if (!body) throw new Error('Backend returned an empty response')
-  return body
 }
 
 async function openAuthorizeUrl(url: string): Promise<void> {
@@ -120,19 +143,36 @@ async function openAuthorizeUrl(url: string): Promise<void> {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DivoAuthCancelledError())
+      return
+    }
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(new DivoAuthCancelledError())
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 async function pollForLarkCallback(
   backendUrl: string,
   nonce: string,
+  signal?: AbortSignal,
 ): Promise<{ code: string; state: string }> {
   const deadline = Date.now() + AUTH_POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
-    await sleep(AUTH_POLL_INTERVAL_MS)
+    if (signal?.aborted) throw new DivoAuthCancelledError()
+    await sleep(AUTH_POLL_INTERVAL_MS, signal)
     const body = await fetchJson<DesktopPollResponse>(
       `${backendUrl}/api/desktop/auth/lark/poll?nonce=${encodeURIComponent(nonce)}`,
+      { signal },
     )
     if (body.success && body.data?.code && body.data.state) {
       return body.data
@@ -144,30 +184,49 @@ async function pollForLarkCallback(
   throw new Error('Lark sign-in timed out')
 }
 
-export async function signInDivoWithLark(backendUrl: string): Promise<DivoSessionStatus> {
+export type SignInDivoOptions = {
+  signal?: AbortSignal
+}
+
+export async function signInDivoWithLark(
+  backendUrl: string,
+  options?: SignInDivoOptions,
+): Promise<DivoSessionStatus> {
+  const signal = options?.signal
+  if (signal?.aborted) throw new DivoAuthCancelledError()
+
   const normalizedBackendUrl = normalizeDivoBackendUrl(backendUrl)
   storeDivoBackendUrl(normalizedBackendUrl)
 
   const authorize = await fetchJson<DesktopAuthorizeUrlResponse>(
     `${normalizedBackendUrl}/api/desktop/auth/lark/authorize-url`,
+    { signal },
   )
   if (!authorize.success || !authorize.data?.authorizeUrl || !authorize.data.nonce) {
     throw new Error(authorize.message ?? 'Failed to start Lark sign-in')
   }
 
+  if (signal?.aborted) throw new DivoAuthCancelledError()
   await openAuthorizeUrl(authorize.data.authorizeUrl)
-  const callback = await pollForLarkCallback(normalizedBackendUrl, authorize.data.nonce)
+  const callback = await pollForLarkCallback(
+    normalizedBackendUrl,
+    authorize.data.nonce,
+    signal,
+  )
   const exchanged = await fetchJson<DesktopExchangeResponse>(
     `${normalizedBackendUrl}/api/desktop/auth/lark/exchange`,
     {
       method: 'POST',
       body: JSON.stringify(callback),
+      signal,
     },
   )
 
   if (!exchanged.success || !exchanged.data?.token) {
     throw new Error(exchanged.message ?? 'Failed to exchange Lark session')
   }
+
+  if (signal?.aborted) throw new DivoAuthCancelledError()
 
   const session = exchanged.data.session
   const departments = session.departments ?? []

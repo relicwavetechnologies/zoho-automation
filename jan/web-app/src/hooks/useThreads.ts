@@ -97,6 +97,12 @@ const cleanupThreadRuntime = (threadId: string) => {
   // authority for the active thread/run pair.
   useChatSessions.getState().removeSession(threadId)
   useAppState.getState().clearThreadState(threadId)
+  void invoke('pi_forget_chat_approvals', { threadId }).catch((error) => {
+    console.warn(
+      `[Threads] Failed to clear local approvals for deleted chat ${threadId}:`,
+      error
+    )
+  })
   // Do not discard an approval card until Rust has accepted the exact abort.
   // If that fails, retain the record for terminal reconciliation instead of
   // silently hiding a live action from an unrelated parallel run.

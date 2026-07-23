@@ -44,7 +44,7 @@ import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } fro
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
 const Schema = z.object({
-  connectionId: z.string().min(1).optional(),
+  connectionId: z.string().uuid(),
   op: z.enum([
     'list', 'get', 'search', 'search_text', 'create', 'update', 'delete',
     'build_pipeline_summary', 'build_lead_report', 'build_deal_forecast',
@@ -149,7 +149,8 @@ async function executeScriptMode(
   try {
     fetchResult = await scriptDeps.crmClient.listAllRecords({
       companyId,
-      ...(args.connectionId ? { connectionId: args.connectionId, userId: ctx.runContext.userId } : {}),
+      connectionId: args.connectionId,
+      userId: ctx.runContext.userId,
       module: moduleName,
       ...(args.sortBy ? { sortBy: args.sortBy } : {}),
       ...(args.sortOrder ? { sortOrder: args.sortOrder } : {}),
@@ -272,6 +273,7 @@ export const createZohoCrmTool = (deps: {
   ].join(' '),
 
   parameterDocs: [
+    'connectionId: exact UUID from connections.list (required for every action)',
     'op: list|get|search|search_text|create|update|delete|build_pipeline_summary|build_lead_report|build_deal_forecast',
     'module: Leads|Contacts|Accounts|Deals|Tasks (required for CRUD ops)',
     'recordId: record ID (required for get/update/delete)',
@@ -316,7 +318,8 @@ export const createZohoCrmTool = (deps: {
   async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     const { companyId, userId } = ctx.runContext;
     const connectionContext = {
-      ...(args.connectionId ? { connectionId: args.connectionId, userId } : {}),
+      connectionId: args.connectionId,
+      userId,
     };
     const personalizedScope = ctx.perm.department?.zohoReadScope === 'personalized';
     const requesterEmail = normalizedEmail(ctx.runContext.requesterEmail);

@@ -49,7 +49,12 @@ type PiApprovalState = {
     response: PiTeachClarificationResponse,
     runId: string
   ) => Promise<boolean>
-  allowBashForTask: (
+  allowBashForChat: (
+    threadId: string,
+    requestId: string,
+    runId: string
+  ) => Promise<boolean>
+  allowFullAccessForChat: (
     threadId: string,
     requestId: string,
     runId: string
@@ -123,14 +128,17 @@ async function sendDecision(
   threadId: string,
   runId: string,
   confirmed: boolean,
-  alwaysAllowBash = false
+  options: { alwaysAllowBash?: boolean; alwaysAllowFullAccess?: boolean } = {}
 ) {
   await invoke(PI_APPROVAL_RESPONSE_COMMAND, {
     requestId,
     threadId,
     runId,
     confirmed,
-    ...(alwaysAllowBash ? { alwaysAllowBash: true } : {}),
+    ...(options.alwaysAllowBash ? { alwaysAllowBash: true } : {}),
+    ...(options.alwaysAllowFullAccess
+      ? { alwaysAllowFullAccess: true }
+      : {}),
   })
 }
 
@@ -414,7 +422,7 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
     }
   },
 
-  allowBashForTask: async (threadId, requestId, runId) => {
+  allowBashForChat: async (threadId, requestId, runId) => {
     const request = get().queues[threadId]?.find(
       (candidate) =>
         candidate.requestId === requestId &&
@@ -443,8 +451,10 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
 
     try {
       // Rust verifies that this exact active request is Bash before recording
-      // the memory-only task grant and confirming the current command.
-      await sendDecision(requestId, threadId, request.runId, true, true)
+      // the in-memory chat grant and confirming the current command.
+      await sendDecision(requestId, threadId, request.runId, true, {
+        alwaysAllowBash: true,
+      })
       set((state) => ({
         queues: removeRequest(state.queues, threadId, requestId, request.runId),
       }))
@@ -462,6 +472,63 @@ export const usePiApproval = create<PiApprovalState>()((set, get) => ({
             error: errorMessage(
               error,
               'Could not enable automatic Bash approval'
+            ),
+          })
+        ),
+      }))
+      return false
+    }
+  },
+
+  allowFullAccessForChat: async (threadId, requestId, runId) => {
+    const request = get().queues[threadId]?.find(
+      (candidate) =>
+        candidate.requestId === requestId && candidate.runId === runId
+    )
+    if (
+      !request ||
+      isPiMemoryReviewRequest(request) ||
+      isPiTeachClarificationRequest(request) ||
+      request.status === 'submitting' ||
+      !['bash', 'divo', 'edit', 'write'].includes(request.descriptor.source) ||
+      request.expiresAt <= Date.now()
+    ) {
+      return false
+    }
+
+    set((state) => ({
+      queues: updateRequest(
+        state.queues,
+        threadId,
+        requestId,
+        request.runId,
+        (entry) => ({ ...entry, status: 'submitting', error: undefined })
+      ),
+    }))
+
+    try {
+      // Rust validates the exact active local request before enabling this
+      // chat-scoped grant. Backend policy still evaluates every gateway call.
+      await sendDecision(requestId, threadId, request.runId, true, {
+        alwaysAllowFullAccess: true,
+      })
+      set((state) => ({
+        queues: removeRequest(state.queues, threadId, requestId, request.runId),
+      }))
+      return true
+    } catch (error) {
+      set((state) => ({
+        queues: updateRequest(
+          state.queues,
+          threadId,
+          requestId,
+          request.runId,
+          (entry) => ({
+            ...entry,
+            status: 'error',
+            error: errorMessage(
+              error,
+              'Could not enable full access for this chat'
             ),
           })
         ),

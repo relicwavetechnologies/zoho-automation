@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import type { PrismaClient } from '../../generated/prisma';
+import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
 import type { GoogleOAuthService } from '../../infrastructure/google/google-oauth.service';
 import type { CanvaMcpOAuthService } from '../../infrastructure/canva/canva-mcp-oauth.service';
@@ -18,6 +18,11 @@ import type { ManagerPersonaRuntimeService } from '../../application/persona-lea
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
+import {
+  connectionGovernancePolicySchema,
+  defaultConnectionGovernancePolicy,
+  parseConnectionGovernancePolicy,
+} from '../../application/governance/connection-governance.policy';
 
 export interface DesktopAuthRoutesDeps {
   prisma:                 PrismaClient;
@@ -66,6 +71,10 @@ const DEFAULT_ZOHO_SCOPES = [
 
 const runtimeContextQuerySchema = z.object({
   departmentId: z.string().uuid().optional(),
+});
+
+const connectionManagerGovernanceUpdateSchema = z.object({
+  managerPolicy: connectionGovernancePolicySchema,
 });
 
 const pendingCallbacks = new Map<string, { code: string; state: string; createdAt: number }>();
@@ -136,7 +145,8 @@ function resolveDesktopCallbackBase(req: Request, configuredPublicUrl: string): 
   return configuredUrl.origin;
 }
 
-function larkRedirectUri(req: Request, configuredPublicUrl: string, callbackPath: string): string {
+/** Build a callback URL for the backend instance the desktop actually selected. */
+function desktopCallbackUri(req: Request, configuredPublicUrl: string, callbackPath: string): string {
   return `${resolveDesktopCallbackBase(req, configuredPublicUrl)}${callbackPath}`;
 }
 
@@ -220,6 +230,17 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           orderBy: { grantedAt: 'desc' },
           include: {
             grantedByUser: { select: { id: true, email: true, name: true } },
+          },
+        },
+        governance: {
+          select: {
+            managerPolicyJson: true,
+            managerConfiguredBy: true,
+            managerConfiguredAt: true,
+            adminOverrideJson: true,
+            adminOverriddenBy: true,
+            adminOverriddenAt: true,
+            version: true,
           },
         },
       },
@@ -354,8 +375,107 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         },
         { value: 'admin', label: 'Admin', description: 'Can use the connection and manage who else has access.' },
       ],
+      governance: {
+        managerPolicy: connection.governance?.managerPolicyJson
+          ? parseConnectionGovernancePolicy(connection.governance.managerPolicyJson)
+          : defaultConnectionGovernancePolicy(),
+        managerConfiguredAt: connection.governance?.managerConfiguredAt?.toISOString() ?? null,
+        adminOverride: connection.governance?.adminOverrideJson
+          ? parseConnectionGovernancePolicy(connection.governance.adminOverrideJson)
+          : null,
+        adminOverriddenAt: connection.governance?.adminOverriddenAt?.toISOString() ?? null,
+        source: connection.governance?.adminOverrideJson
+          ? 'company_admin_override'
+          : connection.governance?.managerPolicyJson
+            ? 'manager_policy'
+            : 'platform_default',
+        version: connection.governance?.version ?? 0,
+      },
     };
   };
+
+  /**
+   * Connection owners and connection admins set the baseline operating policy
+   * for the connection they administer. Company admins retain a separate,
+   * higher-precedence override through the admin API.
+   */
+  router.put('/connections/:connectionId/governance', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const parsed = connectionManagerGovernanceUpdateSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? 'Invalid connection policy' });
+        return;
+      }
+
+      const connection = await deps.prisma.integrationConnection.findFirst({
+        where: { id: connectionId, companyId, revokedAt: null, status: 'connected' },
+        select: { provider: true },
+      });
+      if (!connection || !['google_workspace', 'zoho', 'canva', 'lark'].includes(connection.provider)) {
+        res.status(404).json({ success: false, message: 'Connection not found' });
+        return;
+      }
+
+      const manageable = await buildConnectionManagePayload(
+        connectionId,
+        userId,
+        companyId,
+        role,
+        connection.provider as 'google_workspace' | 'zoho' | 'canva' | 'lark',
+      );
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this connection' });
+        return;
+      }
+
+      const governance = await deps.prisma.integrationConnectionGovernance.upsert({
+        where: { connectionId },
+        create: {
+          companyId,
+          connectionId,
+          managerPolicyJson: parsed.data.managerPolicy as Prisma.InputJsonValue,
+          managerConfiguredBy: userId,
+          managerConfiguredAt: new Date(),
+        },
+        update: {
+          managerPolicyJson: parsed.data.managerPolicy as Prisma.InputJsonValue,
+          managerConfiguredBy: userId,
+          managerConfiguredAt: new Date(),
+          version: { increment: 1 },
+        },
+        select: {
+          managerPolicyJson: true,
+          managerConfiguredAt: true,
+          adminOverrideJson: true,
+          adminOverriddenAt: true,
+          version: true,
+        },
+      });
+      log.info('connection.manager_governance.updated', { companyId, connectionId, userId, version: governance.version });
+      res.json({
+        success: true,
+        data: {
+          managerPolicy: parseConnectionGovernancePolicy(governance.managerPolicyJson),
+          managerConfiguredAt: governance.managerConfiguredAt?.toISOString() ?? null,
+          adminOverride: governance.adminOverrideJson ? parseConnectionGovernancePolicy(governance.adminOverrideJson) : null,
+          adminOverriddenAt: governance.adminOverriddenAt?.toISOString() ?? null,
+          source: governance.adminOverrideJson ? 'company_admin_override' : 'manager_policy',
+          version: governance.version,
+        },
+      });
+    } catch (e) {
+      log.error('connection.manager_governance.error', { error: String(e) });
+      res.status(500).json({ success: false, message: 'Could not save connection operating controls' });
+    }
+  });
 
   const fetchZohoAccountSummary = async (accessToken: string, apiBaseUrl: string) => {
     try {
@@ -394,7 +514,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
 
       const nonce = randomBytes(16).toString('hex');
-      const redirectUri = larkRedirectUri(req, deps.backendPublicUrl, '/api/desktop/auth/lark/callback');
+      const redirectUri = desktopCallbackUri(req, deps.backendPublicUrl, '/api/desktop/auth/lark/callback');
       const state = signJwt(
         { kind: 'desktop_lark_login', nonce, redirectUri },
         deps.memberJwtSecret,
@@ -948,7 +1068,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
       const userId = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
-      const redirectUri = larkRedirectUri(req, deps.backendPublicUrl, '/api/desktop/auth/lark/connections/callback');
+      const redirectUri = desktopCallbackUri(req, deps.backendPublicUrl, '/api/desktop/auth/lark/connections/callback');
       const state = signJwt(
         {
           kind: 'desktop_lark_connect', nonce: randomBytes(16).toString('hex'), userId, companyId, redirectUri,
@@ -1137,21 +1257,27 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     }
   });
 
-  router.get('/google/authorize-url', memberAuth, async (_req: Request, res: Response) => {
+  router.get('/google/authorize-url', memberAuth, async (req: Request, res: Response) => {
     try {
       const userId    = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
+      const redirectUri = desktopCallbackUri(req, deps.backendPublicUrl, '/api/desktop/auth/google/callback');
 
       const state = signJwt(
-        { kind: 'desktop_google_connect', nonce: randomBytes(16).toString('hex'), userId, companyId },
+        {
+          kind: 'desktop_google_connect',
+          nonce: randomBytes(16).toString('hex'),
+          userId,
+          companyId,
+          redirectUri,
+        },
         deps.memberJwtSecret,
         600,
       );
 
-      const redirectUri = `${deps.backendPublicUrl}/api/desktop/auth/google/callback`;
       const authorizeUrl = deps.googleOAuthService.getAuthorizeUrl({ state, redirectUri });
 
-      res.json({ success: true, data: { authorizeUrl } });
+      res.json({ success: true, data: { authorizeUrl, redirectUri } });
     } catch (e) {
       log.error('google.authorize-url.error', { error: String(e) });
       res.status(500).json({ success: false, message: String(e) });
@@ -1177,7 +1303,12 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const redirectUri = `${deps.backendPublicUrl}/api/desktop/auth/google/callback`;
+      // The state was signed when this flow began, so this is the exact same
+      // callback Google used for the authorization code. It lets a locally
+      // selected Desktop backend complete its own OAuth flow instead of being
+      // pulled back to an unrelated BACKEND_PUBLIC_URL deployment.
+      const redirectUri = payload.redirectUri
+        ?? `${deps.backendPublicUrl.replace(/\/+$/, '')}/api/desktop/auth/google/callback`;
       const tokenBundle = await deps.googleOAuthService.exchangeAuthorizationCode(String(code), redirectUri);
       const userInfo = await deps.googleOAuthService.fetchUserInfo(tokenBundle.accessToken);
 

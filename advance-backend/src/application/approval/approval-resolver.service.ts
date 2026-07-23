@@ -90,4 +90,62 @@ export class ApprovalResolverService {
 
     return null;
   }
+
+  /** Resolve the human owner of one governed connection to their Lark identity. */
+  async resolveConnectionOwner(connectionId: string, companyId: string): Promise<ResolvedManager | null> {
+    const connection = await this.prisma.integrationConnection.findFirst({
+      where: { id: connectionId, companyId, status: 'connected', revokedAt: null, ownerUserId: { not: null } },
+      select: { ownerUserId: true, ownerUser: { select: { name: true } } },
+    });
+    if (!connection?.ownerUserId) return null;
+    const larkConnection = await this.prisma.integrationConnection.findFirst({
+      where: {
+        companyId,
+        provider: 'lark',
+        ownerUserId: connection.ownerUserId,
+        status: 'connected',
+        revokedAt: null,
+        externalAccountId: { not: null },
+      },
+      select: { externalAccountId: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (!larkConnection?.externalAccountId) return null;
+    return {
+      userId: connection.ownerUserId,
+      larkOpenId: larkConnection.externalAccountId,
+      displayName: connection.ownerUser?.name ?? connection.ownerUserId,
+    };
+  }
+
+  /** Resolve one active company admin with a Divo-managed Lark identity. */
+  async resolveCompanyAdmin(companyId: string): Promise<ResolvedManager | null> {
+    const admins = await this.prisma.adminMembership.findMany({
+      where: { companyId, isActive: true, role: { in: ['COMPANY_ADMIN', 'SUPER_ADMIN'] } },
+      select: { userId: true, user: { select: { name: true } } },
+      orderBy: { updatedAt: 'desc' },
+    });
+    for (const admin of admins) {
+      const larkConnection = await this.prisma.integrationConnection.findFirst({
+        where: {
+          companyId,
+          provider: 'lark',
+          ownerUserId: admin.userId,
+          status: 'connected',
+          revokedAt: null,
+          externalAccountId: { not: null },
+        },
+        select: { externalAccountId: true },
+        orderBy: { updatedAt: 'desc' },
+      });
+      if (larkConnection?.externalAccountId) {
+        return {
+          userId: admin.userId,
+          larkOpenId: larkConnection.externalAccountId,
+          displayName: admin.user?.name ?? admin.userId,
+        };
+      }
+    }
+    return null;
+  }
 }

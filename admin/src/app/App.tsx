@@ -11,6 +11,8 @@ import { LoginPage } from "@/pages/LoginPage"
 import { MemberInviteAcceptPage } from "@/pages/MemberInviteAcceptPage"
 import { MemberLoginPage } from "@/pages/MemberLoginPage"
 import { MemberDetailPage } from "@/pages/MemberDetailPage"
+import { ConnectionGovernancePage } from "@/pages/ConnectionGovernancePage"
+import { CompanyControlsPage } from "@/pages/CompanyControlsPage"
 import { MembersPage } from "@/pages/MembersPage"
 import { OAuthCallbackPage } from "@/pages/OAuthCallbackPage"
 import { OverviewPage } from "@/pages/OverviewPage"
@@ -84,6 +86,7 @@ export function App() {
           <Route path="workspaces" element={<Legacy><SettingsPage /></Legacy>} />
           <Route path="people" element={<MembersPage />} />
           <Route path="people/:userId" element={<MemberDetailPage />} />
+          <Route path="people/:userId/connections/:connectionId" element={<ConnectionGovernancePage />} />
           <Route path="members" element={<Navigate to="/people" replace />} />
           <Route path="departments" element={<Legacy><DepartmentsPage /></Legacy>} />
           <Route path="ai-ops" element={<AiOpsPage />} />
@@ -100,7 +103,7 @@ export function App() {
           <Route path="token-usage" element={<Navigate to="/ai-ops" replace />} />
           <Route path="integrations" element={<Navigate to="/settings" replace />} />
           <Route path="audit" element={<Navigate to="/settings" replace />} />
-          <Route path="controls" element={<Navigate to="/settings" replace />} />
+          <Route path="controls" element={<CompanyControlsPage />} />
           <Route path="vector-requests" element={<Navigate to="/settings" replace />} />
           <Route path="ai-models" element={<Navigate to="/ai-ops?tab=models" replace />} />
         </Route>

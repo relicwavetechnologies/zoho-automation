@@ -6,6 +6,8 @@ import { RuntimeApprovalRepository } from './infrastructure/persistence/runtime-
 import { ApprovalResolverService } from './application/approval/approval-resolver.service';
 import { ApprovalGateService } from './application/approval/approval-gate.service';
 import { ApprovalResumerService } from './application/approval/approval-resumer.service';
+import { AutomationPlanService } from './application/gateway/automation-plan.service';
+import { AutomationPlanExecutor } from './application/gateway/automation-plan.executor';
 import { LarkApprovalCardHandler } from './infrastructure/channels/lark/lark-approval-card.handler';
 import { ConsoleLogger } from './shared/logger';
 import { createPinoLogger } from './shared/pino-logger';
@@ -15,6 +17,8 @@ import { systemClock } from './shared/clock';
 import { getPrismaClient } from './infrastructure/persistence/prisma.client';
 import { getRedisClient } from './infrastructure/cache/redis.client';
 import { RedisCache } from './infrastructure/cache/redis-cache';
+import { RedisRateLimitStore } from './infrastructure/governance/redis-rate-limit.store';
+import { PrismaConnectionGovernanceRepository } from './infrastructure/persistence/connection-governance.repository';
 import { CompanyRoleRepository } from './infrastructure/persistence/company-role.repository';
 import { ToolPermissionRepository } from './infrastructure/persistence/tool-permission.repository';
 import { ToolActionPermissionRepository } from './infrastructure/persistence/tool-action-permission.repository';
@@ -170,12 +174,17 @@ import {
   LocalApprovalIntentService,
 } from './application/gateway/local-approval-intent.service';
 import { MediaOcrService } from './application/gateway/media-ocr.service';
+import { ConnectionRateLimitService } from './application/governance/connection-rate-limit.service';
+import { ApiKeyExhaustionNotifier } from './application/governance/api-key-exhaustion.notifier';
+import type { ApiKeyExhaustionNotifierPort } from './application/governance/api-key-exhaustion.notifier';
+import { isApiKeyExhausted } from './application/governance/api-key-exhaustion.classifier';
+import type { ApiKeyProvider } from './application/governance/api-key-exhaustion.classifier';
 
 // AI model
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createDeepSeek } from '@ai-sdk/deepseek';
-import type { LanguageModel } from 'ai';
+import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { withFallback } from './shared/model-fallback';
 import { withGeminiSignatures, createGeminiFetch } from './shared/gemini-thought-signatures';
 import { decryptToken, TokenCryptoError } from './infrastructure/shared/token.crypto';
@@ -255,6 +264,7 @@ export interface Container {
   tokenUsageService: TokenUsageService;
   proxyKeyStore: ProxyKeyStore;
   llmProxyService: LlmProxyService;
+  apiKeyExhaustionNotifier: ApiKeyExhaustionNotifierPort;
   // HITL approval
   approvalGate: ApprovalGateService;
   approvalCardHandler: LarkApprovalCardHandler;
@@ -309,6 +319,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const cache       = new RedisCache(getRedisClient(cacheRedisUrl));
   const memoryCache = new RedisCache(getRedisClient(memoryRedisUrl));
+  const connectionRateLimits = new ConnectionRateLimitService({
+    repository: new PrismaConnectionGovernanceRepository(prisma),
+    store: new RedisRateLimitStore(getRedisClient(cacheRedisUrl)),
+    clock: systemClock,
+  });
 
   // ── Observability ──────────────────────────────────────────────────────
   const executionRepo      = new ExecutionRepository(prisma);
@@ -506,10 +521,14 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         gatewayProviderCache.set(input.companyId, {
           apiKey,
           gatewayBaseUrl: companyGatewayBaseUrl,
-          chatModel: (modelId: string) => gatewayProvider.chat(modelId),
+          chatModel: (modelId: string) => watchModelExhaustion(
+            gatewayProvider.chat(modelId) as LanguageModel,
+            input.companyId,
+            'openai_gateway',
+          ),
           expiresAtMs: nowMs + GATEWAY_PROVIDER_CACHE_TTL_MS,
         });
-        return gatewayProvider.chat(input.modelId);
+        return gatewayProviderCache.get(input.companyId)!.chatModel(input.modelId);
       } catch (error) {
         if (error instanceof TokenCryptoError) {
           gatewayProviderCache.delete(input.companyId);
@@ -524,8 +543,66 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       }
     }
 
-    return directOpenAi(input.modelId);
+    return watchModelExhaustion(directOpenAi(input.modelId) as LanguageModel, input.companyId, 'openai');
   };
+
+  // Late-bound: concrete notifier is created after Lark/approval wiring.
+  let apiKeyExhaustionNotifier: ApiKeyExhaustionNotifier | undefined;
+  const apiKeyExhaustionFacade: ApiKeyExhaustionNotifierPort = {
+    notifyIfExhausted: (input) =>
+      apiKeyExhaustionNotifier?.notifyIfExhausted(input) ?? Promise.resolve({ notified: false }),
+    clear: (companyId, provider) =>
+      apiKeyExhaustionNotifier?.clear(companyId, provider) ?? Promise.resolve(),
+  };
+
+  function watchModelExhaustion(
+    model: LanguageModel,
+    companyId: string,
+    provider: ApiKeyProvider,
+  ): LanguageModel {
+    return wrapLanguageModel({
+      model: model as Parameters<typeof wrapLanguageModel>[0]['model'],
+      middleware: {
+        specificationVersion: 'v3',
+        wrapGenerate: async ({ doGenerate }) => {
+          try {
+            const result = await doGenerate();
+            void apiKeyExhaustionFacade.clear(companyId, provider);
+            return result;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (isApiKeyExhausted({ message })) {
+              void apiKeyExhaustionFacade.notifyIfExhausted({
+                companyId,
+                provider,
+                message,
+                source: 'resolveModel.generate',
+              });
+            }
+            throw error;
+          }
+        },
+        wrapStream: async ({ doStream }) => {
+          try {
+            const result = await doStream();
+            void apiKeyExhaustionFacade.clear(companyId, provider);
+            return result;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (isApiKeyExhausted({ message })) {
+              void apiKeyExhaustionFacade.notifyIfExhausted({
+                companyId,
+                provider,
+                message,
+                source: 'resolveModel.stream',
+              });
+            }
+            throw error;
+          }
+        },
+      },
+    }) as LanguageModel;
+  }
 
   // ── Lark tool clients ──────────────────────────────────────────────────
   const larkClientDeps = {
@@ -1195,6 +1272,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     cloudinary: cloudinaryAdapter,
     audit: auditService,
     csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+    apiKeyExhaustion: apiKeyExhaustionFacade,
   }));
   toolRegistry.register(createOmsSiteDataTool({
     service: companyOmsSiteDataService,
@@ -1254,6 +1332,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const larkRuntimeToolExecutor = new ToolExecutor({
     toolRegistry,
     permissions,
+    connectionRateLimits,
     logger: logger.child({ service: 'lark-runtime-tool-executor' }),
     clock: systemClock,
   });
@@ -1325,6 +1404,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // ── HITL Approval ─────────────────────────────────────────────────────
   const approvalRepo     = new RuntimeApprovalRepository(prisma);
   const approvalResolver = new ApprovalResolverService(prisma);
+  apiKeyExhaustionNotifier = new ApiKeyExhaustionNotifier({
+    cache,
+    approvalResolver,
+    larkAdapter,
+    logger: logger.child({ service: 'api-key-exhaustion' }),
+  });
+  companySerperService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
+  companyOmsSiteDataService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
+  embeddingService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
+  llmReranker.bindExhaustionNotifier(apiKeyExhaustionNotifier);
   const disableManagerSelfBypass = env.NODE_ENV !== 'production' && env.DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS;
   if (disableManagerSelfBypass) {
     logger.warn('approval.gate.manager_self_bypass_disabled_for_test');
@@ -1335,13 +1424,22 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     larkAdapter,
     logger.child({ service: 'approval-gate' }),
     { disableManagerSelfBypass },
+    connectionRateLimits,
   );
   const gatewayToolExecutor = new ToolExecutor({
     toolRegistry,
     permissions,
     approvalGate,
+    connectionRateLimits,
     logger: logger.child({ service: 'gateway-tool-executor' }),
     clock:  systemClock,
+  });
+  const automationPlanExecutor = new AutomationPlanExecutor({
+    approvalRepo,
+    channelIdentityRepo,
+    permissions,
+    toolExecutor: gatewayToolExecutor,
+    logger: logger.child({ service: 'automation-plan-executor' }),
   });
   const approvalResumer  = new ApprovalResumerService({
     approvalRepo,
@@ -1350,6 +1448,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalGate,
     toolExecutor: gatewayToolExecutor,
     permissions,
+    automationPlanExecutor,
     logger: logger.child({ service: 'approval-resumer' }),
   });
   const approvalCardHandler = new LarkApprovalCardHandler(
@@ -1365,7 +1464,16 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     clock: systemClock,
     logger: logger.child({ service: 'gateway-local-approval' }),
   });
+  const automationPlanService = new AutomationPlanService({
+    toolExecutor: gatewayToolExecutor,
+    permissions,
+    approvalRepo,
+    approvalResolver,
+    larkAdapter,
+    logger: logger.child({ service: 'automation-plan' }),
+  });
   const mediaOcr = new MediaOcrService(env, logger);
+  mediaOcr.bindExhaustionNotifier(apiKeyExhaustionNotifier);
   const gatewayDispatcher = new GatewayDispatcher({
     permissions,
     toolRegistry,
@@ -1377,6 +1485,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     managerPersonaRuntime: managerPersonaRuntimeService,
     workResolution,
     managerTeachService,
+    automationPlanService,
     skillAccessEnforcement,
     auditService,
     logger: logger.child({ service: 'gateway-dispatcher' }),
@@ -1447,10 +1556,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     executionQueryService,
     auditService,
     tokenUsageService,
-    proxyKeyStore,
-    llmProxyService,
-    // HITL approval
-    approvalGate,
+  proxyKeyStore,
+  llmProxyService,
+  apiKeyExhaustionNotifier: apiKeyExhaustionFacade,
+  // HITL approval
+  approvalGate,
     approvalCardHandler,
     approvalResumer,
     // Document RAG

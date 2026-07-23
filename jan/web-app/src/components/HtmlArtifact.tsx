@@ -1,9 +1,17 @@
 import { memo, useMemo, useState } from 'react'
 import { useTranslation } from '@/i18n/react-i18next-compat'
-import { CodeIcon, EyeIcon } from 'lucide-react'
+import { CodeIcon, EyeIcon, PanelRightOpenIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CodeBlock } from '@/components/ai-elements/code-block'
 import type { BundledLanguage } from 'shiki'
+import { useAuxiliaryTabs } from '@/hooks/useAuxiliaryTabs'
+import type { ArtifactMime } from '@/lib/auxiliary/types'
+import { Button } from '@/components/ui/button'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 
 interface HtmlArtifactProps {
   code: string
@@ -15,6 +23,7 @@ interface HtmlArtifactProps {
   // Off (SVG static mode) forbids scripts via CSP and drops iframe allow-scripts.
   allowScripts?: boolean
   language?: string
+  title?: string
 }
 
 type View = 'code' | 'preview'
@@ -70,9 +79,11 @@ function HtmlArtifactComponent({
   allowNetwork = false,
   allowScripts = true,
   language = 'html',
+  title,
 }: HtmlArtifactProps) {
   const { t } = useTranslation()
   const [view, setView] = useState<View>('preview')
+  const openArtifact = useAuxiliaryTabs((s) => s.openArtifact)
 
   const srcDoc = useMemo(
     () =>
@@ -90,6 +101,19 @@ function HtmlArtifactComponent({
         ? 'text-foreground border-b-2 border-primary'
         : 'text-muted-foreground hover:text-foreground border-b-2 border-transparent'
     )
+
+  const openInSidebar = () => {
+    const mime: ArtifactMime =
+      allowScripts === false || language === 'xml'
+        ? 'image/svg+xml'
+        : 'text/html'
+    openArtifact({
+      title: title?.trim() || (mime === 'image/svg+xml' ? 'SVG' : 'HTML artifact'),
+      content: code,
+      mime,
+      language,
+    })
+  }
 
   return (
     <div
@@ -130,6 +154,23 @@ function HtmlArtifactComponent({
           <EyeIcon size={14} />
           {t('htmlArtifact.preview')}
         </button>
+        <div className="ml-auto flex items-center pr-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="text-muted-foreground"
+                aria-label="Open in sidebar"
+                onClick={openInSidebar}
+              >
+                <PanelRightOpenIcon className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Open in sidebar</TooltipContent>
+          </Tooltip>
+        </div>
       </div>
 
       {activeView === 'preview' ? (

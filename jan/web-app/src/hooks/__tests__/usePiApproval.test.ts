@@ -123,7 +123,7 @@ describe('usePiApproval', () => {
     })
   })
 
-  it('enables Rust-owned always allow only for an active Bash request', async () => {
+  it('enables chat-scoped Bash approval only for an active Bash request', async () => {
     usePiApproval.getState().enqueue(
       request('request-bash', {
         descriptor: {
@@ -141,7 +141,7 @@ describe('usePiApproval', () => {
 
     const allowed = await usePiApproval
       .getState()
-      .allowBashForTask('thread-1', 'request-bash', 'run-1')
+      .allowBashForChat('thread-1', 'request-bash', 'run-1')
 
     expect(allowed).toBe(true)
     expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
@@ -173,7 +173,7 @@ describe('usePiApproval', () => {
 
     const allowed = await usePiApproval
       .getState()
-      .allowBashForTask('thread-1', 'request-bash', 'run-1')
+      .allowBashForChat('thread-1', 'request-bash', 'run-1')
 
     expect(allowed).toBe(false)
     expect(usePiApproval.getState().queues['thread-1']?.[0]).toMatchObject({
@@ -187,11 +187,60 @@ describe('usePiApproval', () => {
 
     const allowed = await usePiApproval
       .getState()
-      .allowBashForTask('thread-1', 'request-divo', 'run-1')
+      .allowBashForChat('thread-1', 'request-divo', 'run-1')
 
     expect(allowed).toBe(false)
     expect(mocks.invoke).not.toHaveBeenCalled()
     expect(usePiApproval.getState().queues['thread-1']).toHaveLength(1)
+  })
+
+  it('enables full local access for the active chat', async () => {
+    usePiApproval.getState().enqueue(request('request-divo'))
+
+    const allowed = await usePiApproval
+      .getState()
+      .allowFullAccessForChat('thread-1', 'request-divo', 'run-1')
+
+    expect(allowed).toBe(true)
+    expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
+      requestId: 'request-divo',
+      threadId: 'thread-1',
+      runId: 'run-1',
+      confirmed: true,
+      alwaysAllowFullAccess: true,
+    })
+    expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
+  })
+
+  it('can enable full local access from a Bash approval', async () => {
+    usePiApproval.getState().enqueue(
+      request('request-bash', {
+        descriptor: {
+          version: 1,
+          toolCallId: 'tool-bash',
+          source: 'bash',
+          kind: 'bash.execute',
+          action: 'execute',
+          title: 'Run terminal command',
+          presentation: { command: 'pwd' },
+          runCorrelation: { version: 1, threadId: 'thread-1', runId: 'run-1' },
+        },
+      })
+    )
+
+    const allowed = await usePiApproval
+      .getState()
+      .allowFullAccessForChat('thread-1', 'request-bash', 'run-1')
+
+    expect(allowed).toBe(true)
+    expect(mocks.invoke).toHaveBeenCalledWith(PI_APPROVAL_RESPONSE_COMMAND, {
+      requestId: 'request-bash',
+      threadId: 'thread-1',
+      runId: 'run-1',
+      confirmed: true,
+      alwaysAllowFullAccess: true,
+    })
+    expect(usePiApproval.getState().queues['thread-1']).toBeUndefined()
   })
 
   it('forces stale approvals to denial even when approve is requested', async () => {

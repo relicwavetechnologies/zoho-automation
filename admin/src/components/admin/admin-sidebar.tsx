@@ -10,6 +10,7 @@ import {
   Search,
   Settings,
   Shield,
+  SlidersHorizontal,
   Users,
   type LucideIcon,
 } from "lucide-react"
@@ -38,7 +39,10 @@ const NAV: { label: string; items: { to: string; icon: LucideIcon; label: string
   },
   {
     label: "System",
-    items: [{ to: "/settings", icon: Settings, label: "Settings" }],
+    items: [
+      { to: "/controls", icon: SlidersHorizontal, label: "Company controls" },
+      { to: "/settings", icon: Settings, label: "Settings" },
+    ],
   },
 ]
 

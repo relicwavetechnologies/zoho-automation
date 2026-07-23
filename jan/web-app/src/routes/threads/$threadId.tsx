@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createFileRoute, useParams, useSearch } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
+import { useChatColumnClass } from '@/hooks/useChatColumnClass'
 
 import HeaderPage from '@/containers/HeaderPage'
-import { PermissionRulesPopover } from '@/components/approval-preview/PermissionRulesPopover'
 import { useThreads } from '@/hooks/useThreads'
 import ChatInput from '@/containers/ChatInput'
 import { useShallow } from 'zustand/react/shallow'
@@ -1998,12 +1998,14 @@ function ThreadDetail() {
     return map
   }, [localThreadMessages])
 
+  const chatColumnClass = useChatColumnClass()
+
   return (
     <div className="flex flex-col h-[calc(100dvh-(env(safe-area-inset-bottom)+env(safe-area-inset-top)))]">
       <HeaderPage>
         {/* Codex titlebar structure: thread title anchored left, workspace
             control on the right. */}
-        <div className="flex w-full items-center justify-between gap-3 pr-2">
+        <div className="flex w-full items-center justify-between gap-3 pr-1">
           <span
             className="min-w-0 truncate text-sm font-medium"
             title={thread?.title}
@@ -2015,19 +2017,16 @@ function ThreadDetail() {
               : 'New chat'}
           </span>
           <div className="flex items-center gap-2">
-            {/* Approval rules live in the titlebar, not the composer — a
-                settings affordance you set once, kept out of the prompt row. */}
-            <PermissionRulesPopover />
             <DivoWorkspaceSelector />
           </div>
         </div>
       </HeaderPage>
       <div className="flex flex-1 flex-col h-full overflow-hidden">
         {/* Messages Area */}
-        <div className="flex-1 relative">
+        <div className="flex-1 relative min-h-0">
           <Conversation className="absolute inset-0 text-start">
             <ConversationContent
-              className={cn('mx-auto w-full md:w-[58%] xl:w-[48%]')}
+              className={chatColumnClass}
             >
               {chatMessages.map((message, index) => {
                 const isLastMessage = index === chatMessages.length - 1
@@ -2187,7 +2186,7 @@ function ThreadDetail() {
         </div>
 
         {/* Chat Input - Fixed at bottom */}
-        <div className="py-4 mx-auto w-full md:w-[58%] xl:w-[48%]">
+        <div className={cn('py-4', chatColumnClass)}>
           <ChatInput
             threadId={threadId}
             model={threadModel}

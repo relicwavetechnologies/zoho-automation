@@ -50,10 +50,18 @@ function SheetContent({
   children,
   side = "right",
   showCloseButton = true,
+  resizable = false,
+  resizeMinWidth = 420,
+  resizeMaxViewportRatio = 0.5,
+  ref,
+  style,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left"
   showCloseButton?: boolean
+  resizable?: boolean
+  resizeMinWidth?: number
+  resizeMaxViewportRatio?: number
 }) {
   // On Windows/Linux the native window controls are an in-app overlay pinned to
   // the top-right (z-[60]); a right-side sheet only collides when the DE places
@@ -61,10 +69,88 @@ function SheetContent({
   const controlsOnRight = useTitlebarLayout((s) => s.layout.right.length > 0)
   const offsetForTitlebar =
     side === "right" && (IS_WINDOWS || IS_LINUX) && controlsOnRight
+  const contentRef = React.useRef<HTMLDivElement | null>(null)
+  const resizeStartRef = React.useRef<{
+    pointerId: number
+    startX: number
+    startWidth: number
+  } | null>(null)
+  const [resizedWidth, setResizedWidth] = React.useState<number | null>(null)
+
+  const setContentRef = React.useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node
+    if (typeof ref === "function") {
+      ref(node)
+    } else if (ref) {
+      ref.current = node
+    }
+  }, [ref])
+
+  const widthLimits = React.useCallback(() => {
+    const maximum = Math.floor(window.innerWidth * resizeMaxViewportRatio)
+    return {
+      minimum: Math.min(resizeMinWidth, maximum),
+      maximum,
+    }
+  }, [resizeMaxViewportRatio, resizeMinWidth])
+
+  React.useEffect(() => {
+    if (!resizable) return
+    const clampToViewport = () => {
+      setResizedWidth((current) => {
+        if (current === null) return current
+        const { minimum, maximum } = widthLimits()
+        return Math.max(minimum, Math.min(maximum, current))
+      })
+    }
+    window.addEventListener("resize", clampToViewport)
+    return () => window.removeEventListener("resize", clampToViewport)
+  }, [resizable, widthLimits])
+
+  const beginResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!contentRef.current || (side !== "right" && side !== "left")) return
+    event.preventDefault()
+    resizeStartRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: contentRef.current.getBoundingClientRect().width,
+    }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    document.documentElement.style.cursor = "col-resize"
+    document.documentElement.style.userSelect = "none"
+  }
+
+  const continueResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = resizeStartRef.current
+    if (!start || start.pointerId !== event.pointerId) return
+    const direction = side === "right" ? 1 : -1
+    const proposedWidth = start.startWidth + direction * (start.startX - event.clientX)
+    const { minimum, maximum } = widthLimits()
+    setResizedWidth(Math.max(minimum, Math.min(maximum, proposedWidth)))
+  }
+
+  const finishResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = resizeStartRef.current
+    if (!start || start.pointerId !== event.pointerId) return
+    resizeStartRef.current = null
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    document.documentElement.style.cursor = ""
+    document.documentElement.style.userSelect = ""
+  }
+
+  React.useEffect(() => () => {
+    document.documentElement.style.cursor = ""
+    document.documentElement.style.userSelect = ""
+  }, [])
+
+  const canResize = resizable && (side === "right" || side === "left")
   return (
     <SheetPortal>
       <SheetOverlay />
       <SheetPrimitive.Content
+        ref={setContentRef}
         data-slot="sheet-content"
         className={cn(
           "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 shadow-lg transition ease-in-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
@@ -79,8 +165,32 @@ function SheetContent({
           offsetForTitlebar && "pt-15",
           className
         )}
+        style={{
+          ...style,
+          ...(canResize ? { maxWidth: `${resizeMaxViewportRatio * 100}vw` } : null),
+          ...(resizedWidth === null ? null : { width: `${resizedWidth}px` }),
+        }}
         {...props}
       >
+        {canResize && (
+          <div
+            role="separator"
+            aria-label="Resize panel"
+            aria-orientation="vertical"
+            title="Drag to resize"
+            className={cn(
+              "group absolute inset-y-0 z-[70] flex w-3 touch-none cursor-col-resize items-center justify-center bg-background/70 hover:bg-primary/20",
+              side === "right" ? "left-0 border-r border-border" : "right-0 border-l border-border"
+            )}
+            onPointerDown={beginResize}
+            onPointerMove={continueResize}
+            onPointerUp={finishResize}
+            onPointerCancel={finishResize}
+            onLostPointerCapture={finishResize}
+          >
+            <span className="h-16 w-1 rounded-full bg-primary/70 transition-colors group-hover:bg-primary group-active:bg-primary" />
+          </div>
+        )}
         {children}
         {showCloseButton && (
           <SheetPrimitive.Close className={cn(

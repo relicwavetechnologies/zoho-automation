@@ -144,7 +144,7 @@ describe('LiveApprovalComposer', () => {
     expect(screen.getByText(/Here is the plan/)).toBeInTheDocument()
     expect(screen.getByText('plan.pdf')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve & send' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Allow only this time' }))
     expect(onDecision).toHaveBeenCalledWith(true)
   })
 
@@ -187,7 +187,7 @@ describe('LiveApprovalComposer', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: 'Approve & send' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Allow only this time' })).toBeDisabled()
     fireEvent.click(
       screen.getByRole('button', { name: 'Deny expired request' })
     )
@@ -208,8 +208,9 @@ describe('LiveApprovalComposer', () => {
     expect(onStop).toHaveBeenCalledOnce()
   })
 
-  it('offers persistent always allow only for Bash requests', () => {
-    const onAlwaysAllowBash = vi.fn()
+  it('offers chat-scoped Bash approval only for Bash requests', () => {
+    const onAllowBashForChat = vi.fn()
+    const onAllowFullAccessForChat = vi.fn()
     const bashRequest = request(
       'bash.execute',
       { command: 'npm test' },
@@ -229,32 +230,63 @@ describe('LiveApprovalComposer', () => {
     const { rerender } = render(
       <LiveApprovalComposer
         {...baseProps}
-        onAlwaysAllowBash={onAlwaysAllowBash}
+        onAllowBashForChat={onAllowBashForChat}
+        onAllowFullAccessForChat={onAllowFullAccessForChat}
         request={bashRequest}
       />
     )
 
     expect(
-      screen.getByText(/future terminal commands modify or delete files/i)
+      screen.getByText(/run later Bash commands in this chat/i)
     ).toBeInTheDocument()
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'Always allow Bash',
+        name: 'Always allow commands in this chat',
       })
     )
-    expect(onAlwaysAllowBash).toHaveBeenCalledOnce()
+    expect(onAllowBashForChat).toHaveBeenCalledOnce()
+    expect(
+      screen.getByRole('button', { name: 'Give Divo full access to this chat' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Allow only this time' })
+    ).toBeInTheDocument()
 
     rerender(
       <LiveApprovalComposer
         {...baseProps}
-        onAlwaysAllowBash={onAlwaysAllowBash}
+        onAllowBashForChat={onAllowBashForChat}
+        onAllowFullAccessForChat={onAllowFullAccessForChat}
         request={request('gmail.send', { subject: 'Still gated' })}
       />
     )
     expect(
       screen.queryByRole('button', {
-        name: 'Always allow Bash',
+        name: 'Always allow commands in this chat',
       })
+    ).not.toBeInTheDocument()
+  })
+
+  it('offers full chat access without weakening backend policy', () => {
+    const onAllowFullAccessForChat = vi.fn()
+
+    render(
+      <LiveApprovalComposer
+        {...baseProps}
+        onAllowFullAccessForChat={onAllowFullAccessForChat}
+        request={request('gmail.send', { subject: 'Still backend-gated' })}
+      />
+    )
+
+    expect(
+      screen.getByText(/backend permissions, rate limits, shared-connection rules/i)
+    ).toBeInTheDocument()
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Give Divo full access to this chat' })
+    )
+    expect(onAllowFullAccessForChat).toHaveBeenCalledOnce()
+    expect(
+      screen.queryByRole('button', { name: 'Always allow commands in this chat' })
     ).not.toBeInTheDocument()
   })
 
@@ -281,7 +313,8 @@ describe('LiveApprovalComposer', () => {
     render(
       <LiveApprovalComposer
         {...baseProps}
-        onAlwaysAllowBash={vi.fn()}
+        onAllowBashForChat={vi.fn()}
+        onAllowFullAccessForChat={vi.fn()}
         request={bashRequest}
       />
     )
@@ -290,9 +323,12 @@ describe('LiveApprovalComposer', () => {
     expect(screen.getByRole('button', { name: 'Stop run' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Deny' })).toBeDisabled()
     expect(
-      screen.getByRole('button', { name: 'Always allow Bash' })
+      screen.getByRole('button', { name: 'Always allow commands in this chat' })
     ).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Approve & run' })).toBeDisabled()
+    expect(
+      screen.getByRole('button', { name: 'Give Divo full access to this chat' })
+    ).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Allow only this time' })).toBeDisabled()
   })
 
   function scheduleRequest(

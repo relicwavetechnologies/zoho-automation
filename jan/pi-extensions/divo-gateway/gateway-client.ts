@@ -112,6 +112,25 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 	isError: boolean;
 } {
 	if (body.ok && body.status === "success") {
+		const automationPlan = readAutomationPlan(body.data);
+		if (automationPlan) {
+			const lines = [
+				`Automation batch: ${automationPlan.title ?? "Untitled batch"}`,
+				`Status: ${automationPlan.status}`,
+				...(automationPlan.planId ? [`Plan ID: ${automationPlan.planId}`] : []),
+				...(automationPlan.invocationCount !== undefined ? [`Exact calls: ${automationPlan.invocationCount}`] : []),
+			];
+			if (automationPlan.status === "waiting_for_manager_approval") {
+				lines.push("The exact batch is waiting in the department manager's Lark DM. Do not claim it ran and do not retry its individual writes. Check automation.plan.status later using this plan ID.");
+			}
+			if (automationPlan.status === "completed") {
+				lines.push("The backend completed the manager-approved exact batch.");
+			}
+			if (automationPlan.status === "failed") {
+				lines.push("The batch paused or failed. Inspect execution details before proposing any correction; changed or new actions require a new plan and approval.");
+			}
+			return { text: lines.join("\n"), isError: false };
+		}
 		const plan = readGooglePlan(body.data);
 		if (plan) {
 			const first = plan.phases[0];
@@ -224,6 +243,27 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 	return {
 		text: `Request returned status "${body.status}".\n\n${JSON.stringify(body, null, 2)}`,
 		isError: true,
+	};
+}
+
+function readAutomationPlan(value: unknown): {
+	planId?: string;
+	status: string;
+	title?: string;
+	invocationCount?: number;
+} | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	const isPlanStatus = typeof record.status === "string" && (
+		record.status.includes("approval")
+		|| ["approved", "executing", "completed", "rejected", "failed", "expired"].includes(record.status)
+	);
+	if (!isPlanStatus) return null;
+	return {
+		status: record.status,
+		...(typeof record.planId === "string" ? { planId: record.planId } : {}),
+		...(typeof record.title === "string" ? { title: record.title } : {}),
+		...(typeof record.invocationCount === "number" ? { invocationCount: record.invocationCount } : {}),
 	};
 }
 

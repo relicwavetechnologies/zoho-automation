@@ -54,10 +54,6 @@ vi.mock('@/containers/DivoWorkspaceSelector', () => ({
   default: () => <div data-testid="workspace-selector" />,
 }))
 
-vi.mock('@/components/finance-quick-starts/FinanceQuickStarts', () => ({
-  FinanceQuickStarts: () => <div data-testid="finance-quick-starts" />,
-}))
-
 vi.mock('@/components/home/HomeGreeting', () => ({
   HomeGreeting: () => <div data-testid="home-greeting" />,
 }))
@@ -114,6 +110,7 @@ describe('Index route', () => {
     expect(screen.getByTestId('workspace-selector')).toBeInTheDocument()
     expect(screen.getByTestId('home-greeting')).toBeInTheDocument()
     expect(screen.getByTestId('consistency-heatmap')).toBeInTheDocument()
+    expect(screen.queryByTestId('finance-quick-starts')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Recruit' })).not.toBeInTheDocument()
   })
 

@@ -53,7 +53,7 @@ import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } fro
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
 const Schema = z.object({
-  connectionId: z.string().min(1).optional(),
+  connectionId: z.string().uuid(),
   op: z.enum([
     // CRUD
     'list_invoices',
@@ -356,7 +356,8 @@ async function executeScriptMode(
   try {
     fetchResult = await scriptDeps.booksClient.listAllRecords({
       companyId,
-      ...(args.connectionId ? { connectionId: args.connectionId, userId: ctx.runContext.userId } : {}),
+      connectionId: args.connectionId,
+      userId: ctx.runContext.userId,
       moduleName,
       ...(Object.keys(rawFilters).length > 0 ? { filters: rawFilters } : {}),
     });
@@ -514,6 +515,7 @@ export const createZohoBooksTool = (deps: {
   ].join(' '),
 
   parameterDocs: [
+    'connectionId: exact UUID from connections.list (required for every action)',
     'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
     'read params: accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100)',
     'write params: invoiceId, email, fields',
@@ -542,7 +544,8 @@ export const createZohoBooksTool = (deps: {
   async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     const { companyId, userId } = ctx.runContext;
     const connectionContext = {
-      ...(args.connectionId ? { connectionId: args.connectionId, userId } : {}),
+      connectionId: args.connectionId,
+      userId,
     };
 
     const zohoReadScope = ctx.perm.department?.zohoReadScope ?? 'show_all';

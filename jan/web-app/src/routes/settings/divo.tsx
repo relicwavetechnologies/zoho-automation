@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { invoke } from '@tauri-apps/api/core'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { IconExternalLink, IconFolderOpen, IconRefresh, IconTrash } from '@tabler/icons-react'
 
@@ -16,6 +16,7 @@ import {
   DEFAULT_DIVO_BACKEND_URL,
   type DivoSessionStatus,
   getStoredDivoBackendUrl,
+  isDivoAuthCancelled,
   normalizeDivoBackendUrl,
   normalizeDivoSessionStatus,
   signInDivoWithLark,
@@ -56,6 +57,7 @@ function DivoSettings() {
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [isChangingDepartment, setIsChangingDepartment] = useState(false)
   const [isChangingParallelism, setIsChangingParallelism] = useState(false)
+  const connectAbortRef = useRef<AbortController | null>(null)
 
   const refreshStatus = async () => {
     setIsLoadingStatus(true)
@@ -86,19 +88,32 @@ function DivoSettings() {
     void refreshStatus()
   }, [])
 
+  const cancelConnect = () => {
+    connectAbortRef.current?.abort()
+  }
+
   const handleConnect = async () => {
+    const controller = new AbortController()
+    connectAbortRef.current = controller
     setIsConnecting(true)
     try {
       const normalizedBackendUrl = normalizeDivoBackendUrl(backendUrl)
       setBackendUrl(normalizedBackendUrl)
       storeDivoBackendUrl(normalizedBackendUrl)
 
-      const next = await signInDivoWithLark(normalizedBackendUrl)
+      const next = await signInDivoWithLark(normalizedBackendUrl, {
+        signal: controller.signal,
+      })
       setStatus(normalizeDivoSessionStatus(next))
       toast.success('Divo Dex connected')
     } catch (error) {
-      toast.error('Divo Dex connection failed', { description: String(error) })
+      if (!isDivoAuthCancelled(error)) {
+        toast.error('Divo Dex connection failed', { description: String(error) })
+      }
     } finally {
+      if (connectAbortRef.current === controller) {
+        connectAbortRef.current = null
+      }
       setIsConnecting(false)
     }
   }
@@ -256,15 +271,22 @@ function DivoSettings() {
                       {isDisconnecting ? 'Disconnecting' : 'Disconnect'}
                     </Button>
                   ) : (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={handleConnect}
-                      disabled={isConnecting}
-                    >
-                      <IconExternalLink size={14} />
-                      {isConnecting ? 'Waiting for Lark' : 'Connect with Lark'}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void handleConnect()}
+                        disabled={isConnecting}
+                      >
+                        <IconExternalLink size={14} />
+                        {isConnecting ? 'Waiting for Lark' : 'Connect with Lark'}
+                      </Button>
+                      {isConnecting ? (
+                        <Button variant="ghost" size="sm" onClick={cancelConnect}>
+                          Cancel
+                        </Button>
+                      ) : null}
+                    </div>
                   )
                 }
               />

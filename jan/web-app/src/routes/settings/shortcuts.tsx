@@ -102,6 +102,16 @@ function Shortcuts() {
                 actions={<ShortcutLabel action={ShortcutAction.TOGGLE_SIDEBAR} />}
               />
               <CardItem
+                title={t('settings:shortcuts.toggleAuxiliary')}
+                description={t('settings:shortcuts.toggleAuxiliaryDesc')}
+                actions={<ShortcutLabel action={ShortcutAction.TOGGLE_AUXILIARY} />}
+              />
+              <CardItem
+                title={t('settings:shortcuts.newSideChat')}
+                description={t('settings:shortcuts.newSideChatDesc')}
+                actions={<ShortcutLabel action={ShortcutAction.NEW_SIDE_CHAT} />}
+              />
+              <CardItem
                 title={t('settings:shortcuts.zoomIn')}
                 description={t('settings:shortcuts.zoomInDesc')}
                 actions={<ShortcutLabel action={ShortcutAction.ZOOM_IN} />}

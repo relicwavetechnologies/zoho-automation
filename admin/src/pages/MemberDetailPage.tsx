@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { MemberConnectionsPanel } from "@/components/governance/MemberConnectionsPanel"
 
 export function MemberDetailPage() {
   const { userId } = useParams()
@@ -205,6 +206,8 @@ export function MemberDetailPage() {
           </div>
         ) : null}
       </div>
+
+      <MemberConnectionsPanel token={token} userId={userId} companyId={companyId} />
 
       <Dialog open={manageOpen} onOpenChange={setManageOpen}>
         <DialogContent className="border-border/40 bg-mat sm:max-w-md">

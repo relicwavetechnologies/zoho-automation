@@ -395,9 +395,7 @@ mod tests {
 
         let configured = cmd
             .get_envs()
-            .find_map(|(key, value)| {
-                (key == "DIVO_BUNDLED_SKILLS_DIR").then_some(value.unwrap())
-            })
+            .find_map(|(key, value)| (key == "DIVO_BUNDLED_SKILLS_DIR").then_some(value.unwrap()))
             .unwrap();
         assert_eq!(configured, Path::new("/bundle/pi-skills").as_os_str());
         assert!(cmd.get_args().next().is_none());

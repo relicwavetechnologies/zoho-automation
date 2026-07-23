@@ -8,6 +8,8 @@ export enum ShortcutAction {
   NEW_AGENT_CHAT = 'newAgentChat',
   NEW_PROJECT = 'newProject',
   TOGGLE_SIDEBAR = 'toggleSidebar',
+  TOGGLE_AUXILIARY = 'toggleAuxiliary',
+  NEW_SIDE_CHAT = 'newSideChat',
   GO_TO_SETTINGS = 'goSettings',
   SEARCH = 'search',
   SWITCH_ASSISTANT = 'switchAssistant',

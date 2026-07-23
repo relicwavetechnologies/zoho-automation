@@ -30,9 +30,9 @@ Use this skill for Lark documents, meeting notes, reports, plans, briefs, SOPs, 
 ## Connection
 
 1. List accessible connections with provider \`lark\`.
-2. If exactly one connection is available, use its \`connectionId\`.
+2. Select one exact returned \`connectionId\`, even when only one account is available.
 3. If several are available and the member did not identify one, ask which account to use.
-4. Send \`connectionId\` with every user-scoped Lark document action. Never use local credentials, Bash, curl, or lark-cli.
+4. Send \`connectionId\` with every user-scoped Lark document action. It is required for RBAC, owner policy, approval, and rate limits. Never use local credentials, Bash, curl, or lark-cli.
 
 ## Create a polished document
 

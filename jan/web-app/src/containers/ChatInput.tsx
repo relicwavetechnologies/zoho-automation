@@ -16,7 +16,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { ArrowUp, PlusIcon } from 'lucide-react'
+import { ArrowUp, GitBranch, Laptop, LoaderCircle, PlusIcon } from 'lucide-react'
 import {
   IconPhoto,
   IconMusic,
@@ -41,10 +41,7 @@ import { useModelProvider } from '@/hooks/useModelProvider'
 import { useReconcileVideoCapability } from '@/hooks/useReconcileVideoCapability'
 
 import { useAppState } from '@/hooks/useAppState'
-import { Token as AstryxToken } from '@astryxdesign/core/Token'
-import { ChatComposerDrawer as AstryxComposerDrawer } from '@astryxdesign/core/Chat'
 import { DivoComposerShell } from './composer/DivoComposerShell'
-import { DivoComposerFrame } from './composer/DivoComposerFrame'
 import type { ChatStatus } from 'ai'
 import { useRouter } from '@tanstack/react-router'
 import { route } from '@/constants/routes'
@@ -102,9 +99,10 @@ import { LiveApprovalComposer } from '@/components/approval-preview/LiveApproval
 import { usePiApproval } from '@/hooks/usePiApproval'
 import type { PiApprovalRequest } from '@/lib/pi/approval'
 import type { DivoQuickStartPlan } from '@/lib/divo-finance-quick-start'
-import { FinanceQuickStarts } from '@/components/finance-quick-starts/FinanceQuickStarts'
 import { RotatingPlaceholder } from '@/containers/RotatingPlaceholder'
 import { TodoBubble } from '@/components/pi/TodoBubble'
+import { ArtifactOpener } from '@/components/pi/ArtifactOpener'
+import { ArtifactFileRefresh } from '@/components/pi/ArtifactFileRefresh'
 
 type ChatInputProps = {
   className?: string
@@ -125,11 +123,6 @@ type ChatInputProps = {
   ) => void
   onStop?: () => void
   chatStatus?: ChatStatus
-  quickStartRequest?: {
-    id: string
-    prompt: string
-    plan: DivoQuickStartPlan
-  } | null
 }
 
 type TauriDragDropPayload = {
@@ -358,7 +351,6 @@ const ChatInput = memo(function ChatInput({
   onSubmit,
   onStop,
   chatStatus,
-  quickStartRequest,
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const skillReferenceSearchRequestRef = useRef(0)
@@ -426,8 +418,11 @@ const ChatInput = memo(function ChatInput({
     [activePiRunId, approvalQueue]
   )
   const resolvePiApproval = usePiApproval((state) => state.resolve)
-  const allowBashForTask = usePiApproval(
-    (state) => state.allowBashForTask
+  const allowBashForChat = usePiApproval(
+    (state) => state.allowBashForChat
+  )
+  const allowFullAccessForChat = usePiApproval(
+    (state) => state.allowFullAccessForChat
   )
   const denyExpiredPiApprovals = usePiApproval((state) => state.denyExpired)
   const { t } = useTranslation()
@@ -820,19 +815,6 @@ const ChatInput = memo(function ChatInput({
       // processing is complete.
     }
   }
-
-  const lastQuickStartRequestRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (
-      !quickStartRequest ||
-      lastQuickStartRequestRef.current === quickStartRequest.id
-    ) return
-    lastQuickStartRequestRef.current = quickStartRequest.id
-    void handleSendMessage(quickStartRequest.prompt, quickStartRequest.plan)
-    // The request id is the one-shot ownership boundary. Ordinary composer
-    // renders must not replay a compiled request.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quickStartRequest?.id])
 
   const activateShareMemoryCommand = () => {
     setSkillReferenceDrawerOpen(false)
@@ -2204,31 +2186,27 @@ const ChatInput = memo(function ChatInput({
             activeApproval.runId
           )
         }
-        onAlwaysAllowBash={() => {
-          void allowBashForTask(
+        onAllowBashForChat={() => {
+          void allowBashForChat(
             activeApproval.threadId,
             activeApproval.requestId,
             activeApproval.runId
-          ).then(async (allowed) => {
+          ).then((allowed) => {
             if (!allowed) return
-            try {
-              await invoke('pi_set_persistent_bash_approval', { allowed: true })
-              toast.success(
-                'Bash is always allowed on this device until you turn it off.'
-              )
-            } catch (error) {
-              toast.error(
-                error instanceof Error
-                  ? error.message
-                  : 'The persistent Bash permission could not be saved.'
-              )
-            }
+            toast.success('Bash commands are allowed for this chat.')
+          })
+        }}
+        onAllowFullAccessForChat={() => {
+          void allowFullAccessForChat(
+            activeApproval.threadId,
+            activeApproval.requestId,
+            activeApproval.runId
+          ).then((allowed) => {
+            if (!allowed) return
+            toast.success('Divo has full local access for this chat.')
           })
         }}
         onStop={() => {
-          void invoke('pi_revoke_bash_approval', {
-            threadId: activeApproval.threadId,
-          })
           void usePiApproval
             .getState()
             .denyThread(activeApproval.threadId, activeApproval.runId)
@@ -2253,9 +2231,9 @@ const ChatInput = memo(function ChatInput({
           variant="ghost"
           size="icon-sm"
           aria-label="Add attachment"
-          className="rounded-full text-muted-foreground hover:text-foreground"
+          className="size-[29px] rounded-full text-muted-foreground hover:text-foreground"
         >
-          <PlusIcon size={18} />
+          <PlusIcon size={16} />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
@@ -2417,21 +2395,27 @@ const ChatInput = memo(function ChatInput({
         data-gramm_editor={spellCheckChatInput}
         data-gramm_grammarly={spellCheckChatInput}
         className={cn(
-          'bg-transparent w-full border-none resize-none outline-0 px-1.5 py-1.5',
+          'w-full resize-none border-none bg-transparent px-1.5 py-1 text-[14px] leading-5 outline-0',
+          !initialMessage && 'translate-y-[3px]',
           showRotatingPlaceholder && 'placeholder:text-transparent',
           rows < maxRows && 'scrollbar-hide',
           className
         )}
       />
       {showRotatingPlaceholder && (
-        <RotatingPlaceholder className="px-1.5 text-sm" />
+        <RotatingPlaceholder className="px-1.5 text-[13px]" />
       )}
     </div>
   )
 
   // Model selector.
   const composerModelToggle = (
-    <div className={cn(isComposerBusy && 'opacity-50 pointer-events-none')}>
+    <div
+      className={cn(
+        '[&_button]:h-6 [&_button]:gap-0.5 [&_button]:px-1.5 [&_button]:text-[11px]',
+        isComposerBusy && 'opacity-50 pointer-events-none'
+      )}
+    >
       <DivoModelToggle disabled={isComposerBusy} />
     </div>
   )
@@ -2444,7 +2428,7 @@ const ChatInput = memo(function ChatInput({
           variant="destructive"
           size="icon-sm"
           aria-label="Stop generating"
-          className="rounded-full"
+          className="size-[29px] rounded-full"
           onClick={() => {
             if (displayedThreadId) stopStreaming(displayedThreadId)
           }}
@@ -2465,63 +2449,14 @@ const ChatInput = memo(function ChatInput({
       }
       data-test-id="send-message-button"
       onClick={() => handleSendMessage(prompt)}
-      className="rounded-full"
+      className="size-[29px] rounded-full"
     >
-      <ArrowUp className="text-primary-fg" />
+      <ArrowUp className="size-[15px] text-primary-fg" />
     </Button>
   )
 
-  // Attachments and skill references as chips, for the landing composer's
-  // drawer. The thread composer keeps its richer thumbnail previews; here the
-  // template's compact token row is the better fit and matches its look.
-  const landingChipCount = attachments.length + selectedSkillReferences.length
-  const composerLandingDrawer =
-    landingChipCount > 0 ? (
-      <AstryxComposerDrawer count={landingChipCount}>
-        {attachments.map((att, idx) => (
-          <AstryxToken
-            key={`att-${idx}-${att.name}`}
-            label={att.name}
-            onRemove={() => handleRemoveAttachment(idx)}
-          />
-        ))}
-        {selectedSkillReferences.map((skill) => (
-          <AstryxToken
-            key={`skill-${skill.id}`}
-            label={skill.name}
-            onRemove={() =>
-              setSelectedSkillReferences((current) =>
-                current.filter((item) => item.id !== skill.id)
-              )
-            }
-          />
-        ))}
-      </AstryxComposerDrawer>
-    ) : undefined
-
   return (
     <div className="relative">
-      {/* Suggested actions and the current work status share one row above the
-          composer. The status flexes down first, keeping both controls
-          visible rather than pushing the live work indicator onto a new row. */}
-      <div
-        className="mb-1.5 flex min-w-0 items-center gap-2 px-0.5 empty:hidden"
-        data-testid="composer-status-row"
-      >
-        {!initialMessage && threadId && !isComposerBusy && (
-          <FinanceQuickStarts
-            variant="bubbles"
-            onSubmit={(request) =>
-              void handleSendMessage(request.prompt, request.plan)
-            }
-          />
-        )}
-        <TodoBubble
-          threadId={displayedThreadId}
-          messages={threadMessages ?? []}
-          activeRootId={activeBranchRootId}
-        />
-      </div>
       {/* The `/` menu floats ABOVE the composer rather than growing inside it.
           It has to live out here: the composer shell is `overflow-hidden` for
           the MovingBorder effect, which would clip a popover rendered within. */}
@@ -2571,37 +2506,10 @@ const ChatInput = memo(function ChatInput({
           />
         </div>
       )}
-      {/* Two composers, one behaviour set. The LANDING is the Astryx
-          ChatComposer — a drawer of attachment chips, a tall input, and a
-          separated footer row (model · send) — fed the very same extracted
-          pieces the in-thread composer uses, so nothing about how it works
-          diverges. The IN-THREAD composer stays our single-row shell, which
-          has to sit quietly under a scrolling transcript. `initialMessage`
-          is the landing marker the component has always carried. */}
-      {initialMessage ? (
-        <DivoComposerFrame
-          value={prompt}
-          onChange={setPrompt}
-          onSubmit={(value) => void handleSendMessage(value || prompt)}
-          onStop={() => {
-            if (displayedThreadId) stopStreaming(displayedThreadId)
-          }}
-          isStopShown={isComposerBusy}
-          placeholder={t('common:placeholder.chatInput')}
-          drawer={composerLandingDrawer}
-          headerActions={composerAttachMenu}
-          input={composerPromptField}
-          footerActions={composerModelToggle}
-          sendButton={composerSendControl}
-          status={
-            skillReferenceError
-              ? { type: 'error', message: skillReferenceError }
-              : undefined
-          }
-        />
-      ) : (
+      {/* The composer shell owns MovingBorder, drag-drop and focus; the body
+          below is the same either way. `initialMessage` marks the landing. */}
       <DivoComposerShell
-        variant="thread"
+        variant={initialMessage ? 'landing' : 'thread'}
         isComposerBusy={isComposerBusy}
         isFocused={isFocused}
         isDragOver={isDragOver}
@@ -2793,21 +2701,23 @@ const ChatInput = memo(function ChatInput({
               }
             />
 
-          {/* The composer's single line: input tools, the prompt itself, then
-              the model name and send. `items-end` keeps the controls pinned to
-              the LAST line once the prompt wraps, instead of floating to the
-              vertical middle of a grown textarea. */}
+          {/* A follow-up stays a compact single row. The landing composer uses
+              the same controls in a two-row grid: the prompt gets the upper
+              canvas and controls remain pinned to its lower edge. */}
           <div
             className={cn(
-              'flex w-full gap-1',
-              // One line: centre everything against the prompt, so the text sits
-              // on the same optical line as the round buttons. Once the prompt
-              // wraps, pin the controls to the LAST line instead — centring a
-              // grown textarea would float them into its middle.
-              rows > 1 ? 'items-end' : 'items-center'
+              initialMessage
+                ? 'grid min-h-[92px] w-full grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[minmax(44px,1fr)_auto] gap-x-2 gap-y-1'
+                : 'flex w-full gap-1',
+              !initialMessage && (rows > 1 ? 'items-end' : 'items-center')
             )}
           >
-            <div className="flex shrink-0 items-center gap-0.5">
+            <div
+              className={cn(
+                'flex shrink-0 items-center gap-0.5',
+                initialMessage && 'col-start-1 row-start-2'
+              )}
+            >
               <div
                 className={cn(
                   'flex items-center gap-1',
@@ -3018,9 +2928,21 @@ const ChatInput = memo(function ChatInput({
             {/* The prompt shares the row with the controls, so the model
                 name and send sit on the SAME line as the placeholder
                 rather than on a strip beneath it. */}
-            {composerPromptField}
+            <div
+              className={cn(
+                'min-w-0 flex-1',
+                initialMessage && 'col-span-3 col-start-1 row-start-1 self-stretch'
+              )}
+            >
+              {composerPromptField}
+            </div>
 
-            <div className="flex items-center gap-2">
+            <div
+              className={cn(
+                'flex items-center gap-2',
+                initialMessage && 'col-start-3 row-start-2'
+              )}
+            >
               {/* The model name sits on the RIGHT, immediately before send —
                   Cursor's arrangement. It reads as "which model will answer
                   this", which belongs next to the send affordance rather than
@@ -3044,6 +2966,39 @@ const ChatInput = memo(function ChatInput({
             </div>
           </div>
       </DivoComposerShell>
+
+      <ArtifactOpener
+        messages={threadMessages ?? []}
+        activeRootId={activeBranchRootId}
+      />
+      <ArtifactFileRefresh
+        messages={threadMessages ?? []}
+        activeRootId={activeBranchRootId}
+      />
+
+      {!initialMessage && (
+        <div
+          className="mt-2 flex min-w-0 items-center gap-2.5 px-4.5 text-[13px] text-muted-foreground/80"
+          data-testid="composer-status-row"
+        >
+          <div className="flex shrink-0 items-center gap-1.5">
+            <GitBranch className="size-3.5" aria-hidden="true" />
+            <span>Divo</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Laptop className="size-3.5" aria-hidden="true" />
+            <span>This Mac</span>
+          </div>
+          <TodoBubble
+            threadId={displayedThreadId}
+            messages={threadMessages ?? []}
+            activeRootId={activeBranchRootId}
+          />
+          <LoaderCircle
+            className={cn('ml-auto size-[18px] text-muted-foreground/75', isComposerBusy && 'animate-spin')}
+            aria-label={isComposerBusy ? 'Divo is working' : 'Divo ready'}
+          />
+        </div>
       )}
 
       {message && (

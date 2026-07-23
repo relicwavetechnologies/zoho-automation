@@ -28,6 +28,15 @@ import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.serv
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
 import {
+  COMPANY_CAPABILITIES,
+  companyCapabilityPolicySchema,
+  connectionGovernancePolicySchema,
+  defaultCompanyCapabilityPolicy,
+  defaultConnectionGovernancePolicy,
+  parseCompanyCapabilityPolicy,
+  parseConnectionGovernancePolicy,
+} from '../../application/governance/connection-governance.policy';
+import {
   LARK_OAUTH_NONCE_TTL_SECONDS,
   encodeLarkOAuthState,
   larkOAuthNonceKey,
@@ -85,6 +94,98 @@ function resolveCompanyId(res: Response, providedId?: string): string {
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
+// Select only governance-safe connection data. In particular, this must never
+// grow to include encrypted OAuth fields or provider token metadata.
+const connectionGovernanceSelect = {
+  id: true,
+  provider: true,
+  ownerType: true,
+  ownerUserId: true,
+  createdBy: true,
+  label: true,
+  accountEmail: true,
+  accountName: true,
+  status: true,
+  scopes: true,
+  connectedAt: true,
+  lastUsedAt: true,
+  createdAt: true,
+  updatedAt: true,
+  ownerUser: { select: { id: true, name: true, email: true } },
+  grants: {
+    where: { revokedAt: null },
+    select: {
+      id: true,
+      granteeType: true,
+      granteeId: true,
+      access: true,
+      grantedAt: true,
+      grantedByUser: { select: { id: true, name: true, email: true } },
+    },
+    orderBy: { grantedAt: 'asc' as const },
+  },
+  governance: {
+    select: {
+      managerPolicyJson: true,
+      managerConfiguredBy: true,
+      managerConfiguredAt: true,
+      adminOverrideJson: true,
+      adminOverriddenBy: true,
+      adminOverriddenAt: true,
+      version: true,
+    },
+  },
+} as const;
+
+function presentConnectionGovernance(connection: any) {
+  const governance = connection.governance;
+  const managerPolicy = governance?.managerPolicyJson
+    ? parseConnectionGovernancePolicy(governance.managerPolicyJson)
+    : null;
+  const adminOverride = governance?.adminOverrideJson
+    ? parseConnectionGovernancePolicy(governance.adminOverrideJson)
+    : defaultConnectionGovernancePolicy();
+  return {
+    id: connection.id,
+    provider: connection.provider,
+    ownerType: connection.ownerType,
+    ownerUserId: connection.ownerUserId,
+    createdBy: connection.createdBy,
+    label: connection.label,
+    accountEmail: connection.accountEmail,
+    accountName: connection.accountName,
+    status: connection.status,
+    scopes: connection.scopes,
+    connectedAt: connection.connectedAt.toISOString(),
+    lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+    createdAt: connection.createdAt.toISOString(),
+    updatedAt: connection.updatedAt.toISOString(),
+    owner: connection.ownerUser
+      ? { id: connection.ownerUser.id, name: connection.ownerUser.name, email: connection.ownerUser.email }
+      : null,
+    grants: connection.grants.map((grant: any) => ({
+      id: grant.id,
+      granteeType: grant.granteeType,
+      granteeId: grant.granteeId,
+      access: grant.access,
+      grantedAt: grant.grantedAt.toISOString(),
+      grantedBy: grant.grantedByUser
+        ? { id: grant.grantedByUser.id, name: grant.grantedByUser.name, email: grant.grantedByUser.email }
+        : null,
+    })),
+    governance: {
+      managerPolicy,
+      managerConfiguredBy: governance?.managerConfiguredBy ?? null,
+      managerConfiguredAt: governance?.managerConfiguredAt?.toISOString() ?? null,
+      adminOverride,
+      adminOverriddenBy: governance?.adminOverriddenBy ?? null,
+      adminOverriddenAt: governance?.adminOverriddenAt?.toISOString() ?? null,
+      source: governance?.adminOverrideJson ? 'company_admin_override' : governance?.managerPolicyJson ? 'manager_policy' : 'platform_default',
+      version: governance?.version ?? 0,
+    },
+  };
+}
+
 const createInviteSchema = z.object({
   email:     z.string().email().max(200),
   roleId:    z.string().min(1).max(50),
@@ -98,6 +199,18 @@ const updateMemberRoleSchema = z.object({
   role: z.enum(['MEMBER', 'COMPANY_ADMIN']),
   companyId: z.string().uuid().optional(),
 });
+
+const connectionGovernanceUpdateSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  adminOverride: connectionGovernancePolicySchema,
+});
+
+const capabilityGovernanceUpdateSchema = z.object({
+  companyId: z.string().uuid().optional(),
+  policy: companyCapabilityPolicySchema,
+});
+
+const companyCapabilityIds = new Set(COMPANY_CAPABILITIES.map(capability => capability.id));
 
 const ZOHO_SCOPE_LEVELS = ['read_only', 'read_write', 'full'] as const;
 type ZohoScopeLevel = typeof ZOHO_SCOPE_LEVELS[number];
@@ -210,6 +323,150 @@ function buildZohoAuthorizeUrl(opts: {
 export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
   const router = Router();
   const { prisma } = deps;
+
+  // ── Connection governance ────────────────────────────────────────────────
+  // These endpoints intentionally return connection metadata and policy only.
+  // OAuth credentials and provider token metadata never leave the backend.
+  router.get('/members/:userId/connections', asyncRoute(async (req, res) => {
+    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    const userId = String(req.params.userId ?? '');
+    const membership = await prisma.adminMembership.findFirst({
+      where: { companyId, userId, isActive: true },
+      select: { id: true },
+    });
+    if (!membership) throw routeError(404, 'Member not found in this company');
+
+    const connections = await prisma.integrationConnection.findMany({
+      where: {
+        companyId,
+        revokedAt: null,
+        OR: [
+          { ownerUserId: userId },
+          { createdBy: userId },
+          { grants: { some: { granteeType: 'user', granteeId: userId, revokedAt: null } } },
+        ],
+      },
+      select: connectionGovernanceSelect,
+      orderBy: [{ updatedAt: 'desc' }, { connectedAt: 'desc' }],
+    });
+
+    success(res, connections.map(presentConnectionGovernance), 'Connection governance loaded');
+  }));
+
+  router.get('/members/:userId/connections/:connectionId', asyncRoute(async (req, res) => {
+    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    const userId = String(req.params.userId ?? '');
+    const connectionId = String(req.params.connectionId ?? '');
+    const connection = await prisma.integrationConnection.findFirst({
+      where: {
+        id: connectionId,
+        companyId,
+        revokedAt: null,
+        OR: [
+          { ownerUserId: userId },
+          { createdBy: userId },
+          { grants: { some: { granteeType: 'user', granteeId: userId, revokedAt: null } } },
+        ],
+      },
+      select: connectionGovernanceSelect,
+    });
+    if (!connection) throw routeError(404, 'Connection not found for this member');
+    success(res, presentConnectionGovernance(connection), 'Connection governance loaded');
+  }));
+
+  router.put('/connections/:connectionId/governance', asyncRoute(async (req, res) => {
+    const payload = connectionGovernanceUpdateSchema.parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, payload.companyId);
+    const connectionId = String(req.params.connectionId ?? '');
+    const actorId = res.locals['userId'] as string | null | undefined;
+    const connection = await prisma.integrationConnection.findFirst({
+      where: { id: connectionId, companyId, revokedAt: null },
+      select: { id: true },
+    });
+    if (!connection) throw routeError(404, 'Connection not found');
+
+    const governance = await prisma.integrationConnectionGovernance.upsert({
+      where: { connectionId },
+      create: {
+        companyId,
+        connectionId,
+        adminOverrideJson: payload.adminOverride as Prisma.InputJsonValue,
+        adminOverriddenBy: actorId ?? null,
+        adminOverriddenAt: new Date(),
+      },
+      update: {
+        adminOverrideJson: payload.adminOverride as Prisma.InputJsonValue,
+        adminOverriddenBy: actorId ?? null,
+        adminOverriddenAt: new Date(),
+        version: { increment: 1 },
+      },
+      select: { adminOverrideJson: true, adminOverriddenAt: true, adminOverriddenBy: true, version: true },
+    });
+    deps.logger.info('company.connection_governance.updated', { companyId, connectionId, actorId: actorId ?? 'platform', version: governance.version });
+    success(res, {
+      adminOverride: parseConnectionGovernancePolicy(governance.adminOverrideJson),
+      adminOverriddenAt: governance.adminOverriddenAt?.toISOString() ?? null,
+      adminOverriddenBy: governance.adminOverriddenBy ?? null,
+      version: governance.version,
+    }, 'Connection governance updated');
+  }));
+
+  // ── Company capability governance ────────────────────────────────────────
+  router.get('/capability-governance', asyncRoute(async (req, res) => {
+    const companyId = resolveCompanyId(res, typeof req.query.companyId === 'string' ? req.query.companyId : undefined);
+    const rows = await prisma.companyCapabilityGovernance.findMany({
+      where: { companyId },
+      select: { capabilityId: true, policyJson: true, configuredAt: true, configuredBy: true, version: true },
+    });
+    const rowByCapability = new Map(rows.map(row => [row.capabilityId, row]));
+    const capabilities = COMPANY_CAPABILITIES.map(capability => {
+      const row = rowByCapability.get(capability.id);
+      return {
+        ...capability,
+        policy: row ? parseCompanyCapabilityPolicy(row.policyJson) : defaultCompanyCapabilityPolicy(),
+        source: row ? 'company_admin' : 'platform_default',
+        configuredAt: row?.configuredAt.toISOString() ?? null,
+        configuredBy: row?.configuredBy ?? null,
+        version: row?.version ?? 0,
+      };
+    });
+    success(res, capabilities, 'Company capability governance loaded');
+  }));
+
+  router.put('/capability-governance/:capabilityId', asyncRoute(async (req, res) => {
+    const payload = capabilityGovernanceUpdateSchema.parse(req.body ?? {});
+    const companyId = resolveCompanyId(res, payload.companyId);
+    const capabilityId = String(req.params.capabilityId ?? '');
+    if (!companyCapabilityIds.has(capabilityId as typeof COMPANY_CAPABILITIES[number]['id'])) {
+      throw routeError(404, 'Unknown company capability');
+    }
+    const actorId = res.locals['userId'] as string | null | undefined;
+    const row = await prisma.companyCapabilityGovernance.upsert({
+      where: { companyId_capabilityId: { companyId, capabilityId } },
+      create: {
+        companyId,
+        capabilityId,
+        policyJson: payload.policy as Prisma.InputJsonValue,
+        configuredBy: actorId ?? null,
+        configuredAt: new Date(),
+      },
+      update: {
+        policyJson: payload.policy as Prisma.InputJsonValue,
+        configuredBy: actorId ?? null,
+        configuredAt: new Date(),
+        version: { increment: 1 },
+      },
+      select: { policyJson: true, configuredAt: true, configuredBy: true, version: true },
+    });
+    deps.logger.info('company.capability_governance.updated', { companyId, capabilityId, actorId: actorId ?? 'platform', version: row.version });
+    success(res, {
+      capabilityId,
+      policy: parseCompanyCapabilityPolicy(row.policyJson),
+      configuredAt: row.configuredAt.toISOString(),
+      configuredBy: row.configuredBy,
+      version: row.version,
+    }, 'Company capability governance updated');
+  }));
 
   // ── List members ──────────────────────────────────────────────────────────
   router.get('/members', asyncRoute(async (req, res) => {

@@ -16,6 +16,18 @@ export const PlatformShortcuts: ShortcutMap = {
     usePlatformMetaKey: true,
   },
 
+  // Toggle auxiliary (right) sidebar
+  [ShortcutAction.TOGGLE_AUXILIARY]: {
+    key: '.',
+    usePlatformMetaKey: true,
+  },
+
+  // Open a new side chat tab in the auxiliary rail
+  [ShortcutAction.NEW_SIDE_CHAT]: {
+    key: 's',
+    altKey: true,
+  },
+
   // New chat - different per platform to avoid browser "new window" conflict
   [ShortcutAction.NEW_CHAT]: { key: 'n', usePlatformMetaKey: true },
 

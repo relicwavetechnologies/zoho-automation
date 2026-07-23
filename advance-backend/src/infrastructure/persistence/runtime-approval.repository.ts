@@ -194,6 +194,23 @@ export class RuntimeApprovalRepository {
     }
   }
 
+  /**
+   * Stores a durable checkpoint while an approved multi-call batch is running.
+   * This deliberately cannot change a pending/approved record, so a progress
+   * write can never manufacture an execution grant.
+   */
+  async persistExecutingResult(id: string, resultJson: unknown): Promise<Result<void, Error>> {
+    try {
+      await this.prisma.runtimeApproval.updateMany({
+        where: { id, status: 'executing' },
+        data: { executionResultJson: resultJson as any },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.persistExecutingResult', e));
+    }
+  }
+
   async failApprovedExecution(id: string, resultJson: unknown): Promise<Result<void, Error>> {
     try {
       await this.prisma.runtimeApproval.updateMany({

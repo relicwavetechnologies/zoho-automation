@@ -27,15 +27,17 @@ const CHROME_DEVTOOLS_MCP_REL: &str =
 const DEFAULT_PI_PROVIDER: &str = "deepseek";
 const DEFAULT_PI_MODEL: &str = "deepseek-v4-flash";
 const LEGACY_DEFAULT_PI_MODEL: &str = "deepseek-v4-pro";
-const COMPANY_EXTENSION_NAMES: [&str; 5] = [
+const COMPANY_EXTENSION_NAMES: [&str; 7] = [
     "divo-llm",
     "divo-gateway",
     "divo-memory",
     "divo-subagents",
     "divo-todos",
+    "divo-python-automation",
+    "divo-artifact",
 ];
 const COMPANY_TOOL_ALLOWLIST: &str =
-    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_todos";
+    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_todos,divo_python_automation,divo_artifact";
 
 /// Every company Pi process has its own lifecycle lock, but its agent-dir
 /// bootstrap is shared by the whole desktop process. Keep all mutation of that
@@ -724,6 +726,8 @@ mod tests {
                 PathBuf::from("/bundle/pi-extensions/divo-memory/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-subagents/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-todos/index.ts"),
+                PathBuf::from("/bundle/pi-extensions/divo-python-automation/index.ts"),
+                PathBuf::from("/bundle/pi-extensions/divo-artifact/index.ts"),
             ],
             browser_cdp_fingerprint: None,
         };
@@ -742,10 +746,10 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair == [
                 "--tools",
-                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_todos",
+                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_todos,divo_python_automation,divo_artifact",
             ]
         }));
-        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 5);
+        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 7);
         assert_eq!(args.iter().filter(|arg| *arg == "--skill").count(), 1);
     }
 

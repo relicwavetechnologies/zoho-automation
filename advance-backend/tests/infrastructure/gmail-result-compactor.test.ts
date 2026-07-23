@@ -173,7 +173,7 @@ describe('Gmail model-facing result compaction', () => {
     assert.equal(result.metadata.quotedReplyCharactersRemoved, 0);
   });
 
-  it('wires compaction after the MCP call while forwarding metadata-only input unchanged', async () => {
+  it('normalizes before compaction while forwarding metadata-only input unchanged', async () => {
     const calls: Array<{ name: string; input: Readonly<Record<string, unknown>> }> = [];
     const input = { message_ids: ['message-1'], format: 'metadata' } as const;
     const client = new GoogleWorkspaceGatewayClient(
@@ -194,10 +194,82 @@ describe('Gmail model-facing result compaction', () => {
     const result = await client.callTool('get_gmail_messages_content_batch', input) as {
       text: string;
       _divoResult: { mode: string; truncated: boolean };
+      messages: Array<{ messageId: string; subject: string }>;
     };
 
     assert.deepEqual(calls, [{ name: 'get_gmail_messages_content_batch', input }]);
     assert.equal(result._divoResult.mode, 'metadata');
     assert.equal(result._divoResult.truncated, false);
+    assert.deepEqual(result.messages, [{ messageId: 'message-1', subject: 'Metadata only' }]);
+  });
+
+  it('retains every provider-returned Gmail ID while compacting only model-facing prose', async () => {
+    const messages = Array.from({ length: 35 }, (_, index) => [
+      `  ${index + 1}. Message ID: message-${index + 1}`,
+      `     Web Link: https://mail.google.com/mail/u/0/#all/message-${index + 1}`,
+      `     Thread ID: thread-${index + 1}`,
+      `     Thread Link: https://mail.google.com/mail/u/0/#all/thread-${index + 1}`,
+      '',
+    ].join('\n')).join('');
+    const providerText = [
+      "Found 35 messages matching 'newer_than:60d':",
+      '',
+      '📧 MESSAGES:',
+      messages,
+      '💡 USAGE:',
+      '  • Pass the Message IDs as a list to get_gmail_messages_content_batch()',
+      '',
+      "📄 PAGINATION: To get the next page, call search_gmail_messages again with page_token='provider-page-2'",
+    ].join('\n');
+    const client = new GoogleWorkspaceGatewayClient(
+      'access-token',
+      {
+        describeTool: async () => null,
+        callTool: async () => ({ result: providerText }),
+      } as never,
+      {
+        describeTool: () => null,
+        callTool: async () => { throw new Error('unexpected Sheets adapter call'); },
+      } as never,
+    );
+
+    const result = await client.callTool(
+      'search_gmail_messages',
+      { query: 'newer_than:60d', page_size: 100 },
+    ) as {
+      result: string;
+      messages: Array<{ messageId: string }>;
+      messageIds: string[];
+      pagination: Record<string, unknown>;
+      _divoResult: Record<string, unknown> & {
+        continuation: Record<string, unknown>;
+      };
+    };
+
+    assert.equal((result.result.match(/^\s{2}\d+\. Message ID:/gm) ?? []).length, 20);
+    assert.equal(result.messages.length, 35);
+    assert.deepEqual(result.messageIds, Array.from({ length: 35 }, (_, index) => `message-${index + 1}`));
+    assert.deepEqual(result.pagination, {
+      providerReturnedMessages: 35,
+      structuredMessages: 35,
+      unstructuredMessages: 0,
+      requestedPageSize: 100,
+      hasNextPage: true,
+      nextPageToken: 'provider-page-2',
+      nextPageInputField: 'page_token',
+    });
+    assert.equal(result._divoResult['version'], 2);
+    assert.equal(result._divoResult['providerReturnedMessages'], 35);
+    assert.equal(result._divoResult['structuredMessages'], 35);
+    assert.equal(result._divoResult['modelVisibleMessages'], 20);
+    assert.equal(result._divoResult['originalMessages'], 35);
+    assert.equal(result._divoResult['returnedMessages'], 20);
+    assert.equal(result._divoResult['omittedMessages'], 15);
+    assert.equal(result._divoResult['requestedPageSize'], 100);
+    assert.deepEqual(result._divoResult.continuation, {
+      available: true,
+      inputField: 'page_token',
+      token: 'provider-page-2',
+    });
   });
 });
