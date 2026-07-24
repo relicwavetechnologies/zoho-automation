@@ -245,9 +245,9 @@ describe("memory recall extension", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Personal memory is local and is injected/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /backend-generated persona and catalogue provide current/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /using no skill is correct/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /LARK IS STRICTLY GATEWAY-ONLY/);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never use Bash, lark-cli, curl/);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /there is no local Lark fallback/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /LARK IS STRICTLY GOVERNED/);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never call Lark directly from Bash/);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /there is no direct local Lark fallback/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /OUTPUT LANGUAGE IS ENGLISH ONLY/);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Non-English source values are data/);
 	});

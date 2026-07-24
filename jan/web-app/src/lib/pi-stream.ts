@@ -19,6 +19,11 @@ export interface PiTeachProfile {
   departmentId: string
 }
 
+type PiPromptAdmission = {
+  activeRunId: string
+  queuedBehindActive: boolean
+}
+
 // Approval dialogs must outlive the stream that happened to create them. A
 // tool can wait on an editor after the stream is replaced or otherwise marked
 // stale; tying this listener to that stream leaves Pi blocked without a card.
@@ -81,6 +86,25 @@ export function createPiMessageStream(options: {
   // Rust treats this caller-generated id as part of the active-run owner.
   // Keep one identity for this whole stream, including every cancellation path.
   const runId = crypto.randomUUID()
+  // A recovered client can be attached to a still-live Pi turn. Rust returns
+  // that authoritative owner after accepting our message as a follow-up.
+  // A recovered continuation can be admitted under the already-live run id,
+  // which is a backend string rather than this call's newly generated UUID.
+  let eventRunId: string = runId
+  // Until prompt admission returns, a recovery can be switching from this
+  // provisional id to an already-live owner. Buffer same-thread events and
+  // defer cancellation so neither path drops or targets the wrong run.
+  let admissionSettled = false
+  let resolveAdmission: (() => void) | undefined
+  const admissionReady = new Promise<void>((resolve) => {
+    resolveAdmission = resolve
+  })
+  const bufferedAdmissionEvents: PiRawEvent[] = []
+  const settleAdmission = () => {
+    if (admissionSettled) return
+    admissionSettled = true
+    resolveAdmission?.()
+  }
 
   let unlisten: UnlistenFn | undefined
   let finished = false
@@ -102,10 +126,16 @@ export function createPiMessageStream(options: {
       const state = createPiStreamState()
 
       const denyThenAbort = async () => {
-        await usePiApproval.getState().denyThread(threadId, runId)
+        await admissionReady
+        await usePiApproval.getState().denyThread(threadId, eventRunId)
         try {
-          await invoke('pi_abort', { threadId, thread_id: threadId, runId, run_id: runId })
-          usePiApproval.getState().discardThreadAfterAbort(threadId, runId)
+          await invoke('pi_abort', {
+            threadId,
+            thread_id: threadId,
+            runId: eventRunId,
+            run_id: eventRunId,
+          })
+          usePiApproval.getState().discardThreadAfterAbort(threadId, eventRunId)
         } catch {
           // If abort itself fails, retain any failed denial in the UI. This is
           // the only state where we cannot prove the Pi request was cancelled.
@@ -124,7 +154,7 @@ export function createPiMessageStream(options: {
           return
         }
         finished = true
-        onTerminal?.(runId)
+        onTerminal?.(eventRunId)
         try {
           if (reason === 'stop') {
             controller.enqueue({ type: 'finish', finishReason: 'stop' })
@@ -178,9 +208,23 @@ export function createPiMessageStream(options: {
 
       if (abortSignal?.aborted) {
         onAbort()
+        settleAdmission()
         return
       }
       abortSignal?.addEventListener('abort', onAbort, { once: true })
+
+      const dispatchPiEvent = (payload: PiRawEvent) => {
+        if (finished || isStale()) return
+        if (payload.thread_id !== threadId || payload.run_id !== eventRunId) return
+
+        if (payload.type === 'pi_runtime_waiting') {
+          onRunStateChange?.(eventRunId, 'capacity_waiting')
+        } else if (payload.type === 'prompt_accepted') {
+          onRunStateChange?.(eventRunId, 'active')
+        }
+        onPiEvent?.(payload)
+        mapPiEventToUiChunks(payload, controller, state, finishCurrentStream)
+      }
 
       try {
         await ensureApprovalEventListener()
@@ -190,17 +234,13 @@ export function createPiMessageStream(options: {
         if (startupWasCancelledOrStale()) return
 
         unlisten = await listen<PiRawEvent>('pi-event', (event) => {
-          if (finished || isStale()) return
           const payload = event.payload
-          if (payload.thread_id !== threadId || payload.run_id !== runId) return
-
-          if (payload.type === 'pi_runtime_waiting') {
-            onRunStateChange?.(runId, 'capacity_waiting')
-          } else if (payload.type === 'prompt_accepted') {
-            onRunStateChange?.(runId, 'active')
+          if (payload.thread_id !== threadId) return
+          if (!admissionSettled) {
+            bufferedAdmissionEvents.push(payload)
+            return
           }
-          onPiEvent?.(payload)
-          mapPiEventToUiChunks(payload, controller, state, finishCurrentStream)
+          dispatchPiEvent(payload)
         })
         if (startupWasCancelledOrStale()) {
           void unlisten?.()
@@ -214,7 +254,7 @@ export function createPiMessageStream(options: {
         const promptModel = profile?.kind === 'teach'
           ? 'deepseek-v4-pro'
           : selectedModel
-        await invoke('pi_prompt', {
+        const admission = await invoke<PiPromptAdmission | undefined>('pi_prompt', {
           threadId,
           thread_id: threadId,
           runId,
@@ -237,7 +277,16 @@ export function createPiMessageStream(options: {
             department_id: profile.departmentId,
           } : {}),
         })
+        if (admission?.activeRunId) {
+          eventRunId = admission.activeRunId
+          if (admission.queuedBehindActive) {
+            onRunStateChange?.(eventRunId, 'active')
+          }
+        }
+        settleAdmission()
+        bufferedAdmissionEvents.splice(0).forEach(dispatchPiEvent)
       } catch (error) {
+        settleAdmission()
         if (!startupWasCancelledOrStale()) {
           controller.enqueue({
             type: 'error',
@@ -246,6 +295,8 @@ export function createPiMessageStream(options: {
           })
         }
         finishCurrentStream('error')
+      } finally {
+        settleAdmission()
       }
     },
     async cancel() {
@@ -257,7 +308,7 @@ export function createPiMessageStream(options: {
         // no prompt to abort in that case, but the transport still needs its
         // terminal notification to release the busy marker.
         if (finishCancelledStream) finishCancelledStream()
-        else onTerminal?.(runId)
+        else onTerminal?.(eventRunId)
       }
     },
   })

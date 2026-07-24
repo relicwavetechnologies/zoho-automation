@@ -69,6 +69,32 @@ describe('normalizeGoogleWorkspaceResult', () => {
     });
   });
 
+  it('blocks zero-skip success when Gmail reports more records than it can normalize', () => {
+    const result = normalizeGoogleWorkspaceResult(
+      'search_gmail_messages',
+      {
+        result: [
+          'Found 2 messages:',
+          '',
+          '1. Message ID: message-1',
+          'Web Link: https://mail.google.com/mail/u/0/#all/message-1',
+        ].join('\n'),
+      },
+      { page_size: 100 },
+    ) as Record<string, unknown>;
+
+    assert.deepEqual(result.pagination, {
+      providerReturnedMessages: 2,
+      structuredMessages: 1,
+      unstructuredMessages: 1,
+      requestedPageSize: 100,
+      hasNextPage: false,
+    });
+    assert.deepEqual((result.advisories as Array<Record<string, unknown>>).map(({ code }) => code), [
+      'gmail_search_records_unstructured',
+    ]);
+  });
+
   it('adds structured metadata for Gmail message batches', () => {
     const result = normalizeGoogleWorkspaceResult('get_gmail_messages_content_batch', {
       result: [
@@ -86,7 +112,7 @@ describe('normalizeGoogleWorkspaceResult', () => {
         'From: Bob <bob@example.org>',
         'Date: Tue, 21 Jul 2026 10:00:00 +0000',
       ].join('\n'),
-    }) as Record<string, unknown>;
+    }, { message_ids: ['message-1', 'message-2'] }) as Record<string, unknown>;
 
     assert.deepEqual(result.messages, [
       {
@@ -103,6 +129,41 @@ describe('normalizeGoogleWorkspaceResult', () => {
         from: 'Bob <bob@example.org>',
         date: 'Tue, 21 Jul 2026 10:00:00 +0000',
       },
+    ]);
+    assert.deepEqual(result.batch, {
+      requestedMessages: 2,
+      structuredMessages: 2,
+      missingMessages: 0,
+      missingMessageIds: [],
+      complete: true,
+    });
+  });
+
+  it('makes missing Gmail batch records explicit and completion-blocking', () => {
+    const result = normalizeGoogleWorkspaceResult(
+      'get_gmail_messages_content_batch',
+      {
+        result: [
+          'Retrieved 1 message:',
+          '',
+          'Message ID: message-1',
+          'Subject: First lead',
+          'From: Alice <alice@example.com>',
+          'Date: Tue, 21 Jul 2026 09:00:00 +0000',
+        ].join('\n'),
+      },
+      { message_ids: ['message-1', 'message-2'] },
+    ) as Record<string, unknown>;
+
+    assert.deepEqual(result.batch, {
+      requestedMessages: 2,
+      structuredMessages: 1,
+      missingMessages: 1,
+      missingMessageIds: ['message-2'],
+      complete: false,
+    });
+    assert.deepEqual((result.advisories as Array<Record<string, unknown>>).map(({ code }) => code), [
+      'gmail_batch_records_missing',
     ]);
   });
 

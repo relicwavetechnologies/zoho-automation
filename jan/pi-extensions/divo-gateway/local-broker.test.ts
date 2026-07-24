@@ -200,6 +200,30 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(controller.signal)), /cancelled/);
 	});
 
+	it("aborts an in-flight gateway request when its broker client disconnects", async () => {
+		const disconnected = new AbortController();
+		let observedSignal: AbortSignal | undefined;
+		const pending = executeLocalBrokerRequest({
+			version: 1,
+			request: { op: "tools.invoke", payload: { toolId: "googleSheets", args: { operation: "create" } } },
+		}, activeCalls(), {
+			resolveConfig: () => config,
+			readCorrelation: async () => correlation,
+			executeGateway: async (_config, _request, _toolCallId, ctx) => {
+				observedSignal = ctx.signal;
+				if (ctx.signal?.aborted) throw new DOMException("cancelled", "AbortError");
+				await new Promise<void>((_resolve, reject) => {
+					ctx.signal?.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true });
+				});
+				throw new Error("unreachable");
+			},
+		}, disconnected.signal);
+
+		disconnected.abort();
+		await assert.rejects(pending, /cancelled/);
+		assert.equal(observedSignal?.aborted, true);
+	});
+
 	it("installs a credential-free CLI, serves one active Bash call, and cleans up its process state", async () => {
 		const originalPath = process.env.PATH;
 		const originalSocket = process.env.DIVO_LOCAL_BROKER_SOCKET;

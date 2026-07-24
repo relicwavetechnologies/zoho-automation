@@ -36,6 +36,10 @@ export function normalizeDivoLlmRequestError<T>(message: T): T {
 
 export default function divoLlmExtension(pi: ExtensionAPI) {
 	const config = captureDivoGatewayConfig();
+	// Scrub the credential even when the remaining proxy configuration is
+	// incomplete. A partial/misconfigured desktop launch must fail without
+	// leaving member auth available to later Bash or Python children.
+	delete process.env.DIVO_MEMBER_TOKEN;
 	if ("error" in config) return; // unconfigured → fall back to direct DeepSeek
 	// The trace extension uses this process-local marker to add Divo correlation
 	// fields only when DeepSeek is actually repointed to our proxy. It prevents
@@ -52,8 +56,6 @@ export default function divoLlmExtension(pi: ExtensionAPI) {
 		// Emit the session id header so the backend can group calls into a run.
 		compat: { sendSessionAffinityHeaders: true },
 	});
-	delete process.env.DIVO_MEMBER_TOKEN;
-
 	// A request rejected by Express never reaches the LLM proxy or emits model
 	// tokens. Keep the provider failure concise and machine-recognisable so Pi
 	// can surface it and apply its normal oversized-context recovery path.

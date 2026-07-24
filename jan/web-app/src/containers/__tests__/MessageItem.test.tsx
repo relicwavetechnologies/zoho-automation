@@ -255,6 +255,9 @@ describe('MessageItem', () => {
                     approval: {
                       approvalId: 'approval-99',
                       message: 'Sent to Finance for review.',
+                      approverName: 'Finance Manager',
+                      requestState: 'reused',
+                      nextAction: 'wait',
                     },
                   },
                 }),
@@ -273,8 +276,50 @@ describe('MessageItem', () => {
       'pending'
     )
     expect(screen.getByText('Approval approval-99')).toBeInTheDocument()
+    expect(screen.getByText(/waiting for Finance Manager/i)).toBeInTheDocument()
+    expect(screen.getByText(/No duplicate approval was sent/i)).toBeInTheDocument()
     expect(screen.queryByText(/did not run this zoho books/i)).not.toBeInTheDocument()
     expect(screen.queryByTestId('tool')).not.toBeInTheDocument()
+  })
+
+  it('shows an uncertain approved execution failure and tells the user to inspect the destination', () => {
+    render(
+      <MessageItem
+        message={
+          makeMsg({
+            parts: [
+              {
+                type: 'tool-divo_gateway',
+                state: 'output-error',
+                input: { op: 'tools.invoke', payload: { toolId: 'googleGmail' } },
+                errorText: JSON.stringify({
+                  details: {
+                    status: 'approval_execution_failed',
+                    approval: {
+                      approvalId: 'approval-uncertain',
+                      message: 'Provider timed out after execution began.',
+                      requestState: 'reused',
+                      nextAction: 'change_request',
+                    },
+                  },
+                }),
+              },
+            ],
+          }) as any
+        }
+        isFirstMessage
+        isLastMessage
+        status={'ready' as any}
+      />
+    )
+
+    expect(screen.getByTestId('divo-approval-status')).toHaveAttribute(
+      'data-status',
+      'failed'
+    )
+    expect(screen.getByText('Approved action failed')).toBeInTheDocument()
+    expect(screen.getByText(/check the destination/i)).toBeInTheDocument()
+    expect(screen.getByText('Approval approval-uncertain')).toBeInTheDocument()
   })
 
   it('keeps a completed Pi trace open while backend approval is pending', () => {

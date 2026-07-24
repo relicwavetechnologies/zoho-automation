@@ -116,7 +116,11 @@ export class LarkApprovalCardHandler {
     }
 
     const approval = approvalResult.value;
-    if (approval.status !== 'pending') {
+    // A card can be delivered even when persisting its Lark message ID fails.
+    // That row deliberately remains `dispatching` as a duplicate-delivery
+    // barrier, but the approval ID embedded in the delivered card is still
+    // authoritative and atomicResolve accepts either live delivery state.
+    if (!['dispatching', 'pending'].includes(approval.status)) {
       this.log.info('approval_card.already_resolved', { approvalId, status: approval.status });
       return {
         handled: true,

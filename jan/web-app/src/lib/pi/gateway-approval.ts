@@ -1,9 +1,13 @@
-export type DivoGatewayApprovalState = 'pending' | 'rejected'
+export type DivoGatewayApprovalState = 'pending' | 'rejected' | 'failed'
 
 export type DivoGatewayApproval = {
   state: DivoGatewayApprovalState
   approvalId?: string
   message: string
+  authority?: 'connection_owner' | 'company_admin' | 'department_manager'
+  approverName?: string
+  requestState?: 'dispatching' | 'created' | 'reused' | 'replaced_expired'
+  nextAction?: 'wait' | 'change_request'
 }
 
 type ToolLikePart = {
@@ -72,6 +76,8 @@ export function readDivoGatewayApproval(
       ? 'pending'
       : details.status === 'approval_rejected'
         ? 'rejected'
+        : details.status === 'approval_execution_failed'
+          ? 'failed'
         : undefined
   if (!state) return undefined
 
@@ -80,12 +86,37 @@ export function readDivoGatewayApproval(
     boundedText(approval?.message, MAX_APPROVAL_MESSAGE_CHARS) ??
     (state === 'pending'
       ? 'Manager approval is required before this action can run.'
-      : 'This action was not approved.')
+      : state === 'failed'
+        ? 'The approved action failed after execution began. Its outcome may be uncertain.'
+        : 'This action was not approved.')
 
   return {
     state,
     approvalId: boundedText(approval?.approvalId, MAX_APPROVAL_ID_CHARS),
     message,
+    ...(approval?.authority === 'connection_owner' ||
+    approval?.authority === 'company_admin' ||
+    approval?.authority === 'department_manager'
+      ? { authority: approval.authority }
+      : {}),
+    ...(boundedText(approval?.approverName, MAX_APPROVAL_MESSAGE_CHARS)
+      ? {
+          approverName: boundedText(
+            approval?.approverName,
+            MAX_APPROVAL_MESSAGE_CHARS
+          ),
+        }
+      : {}),
+    ...(approval?.requestState === 'dispatching' ||
+    approval?.requestState === 'created' ||
+    approval?.requestState === 'reused' ||
+    approval?.requestState === 'replaced_expired'
+      ? { requestState: approval.requestState }
+      : {}),
+    ...(approval?.nextAction === 'wait' ||
+    approval?.nextAction === 'change_request'
+      ? { nextAction: approval.nextAction }
+      : {}),
   }
 }
 

@@ -25,7 +25,9 @@ function approvedRow(status: 'approved' | 'rejected' = 'approved') {
       argsHash: 'exact-args-hash',
     },
     metadataJson: {
-      chatId: 'chat-1',
+      chatId: 'chat-1:approval:department:dept-1:manager:user-manager',
+      sourceChatId: 'chat-1',
+      approvalOrigin: 'lark',
       requesterId: 'user-1',
       requesterLarkOpenId: 'ou-user-1',
       statusMessageId: 'status-1',
@@ -61,10 +63,11 @@ describe('ApprovalResumerService', () => {
 
     const completions: unknown[] = [];
     const finalTexts: string[] = [];
+    let resumedChatId: string | undefined;
     const service = new ApprovalResumerService({
       approvalRepo: {
         findById: async () => ok(approvedRow()),
-        failApprovedExecution: async () => ok(undefined),
+        failApprovedExecution: async () => ok(true),
         persistResult: async () => ok(undefined),
       } as any,
       larkAdapter: {
@@ -82,9 +85,12 @@ describe('ApprovalResumerService', () => {
         }),
       } as any,
       approvalGate: {
-        check: async () => ({ kind: 'allowed', executionGrant: { approvalId: 'approval-1' } }),
-        completeExecution: async (_grant: unknown, result: unknown) => { completions.push(result); },
-        failExecution: async () => {},
+        check: async (input: { chatId: string }) => {
+          resumedChatId = input.chatId;
+          return { kind: 'allowed', executionGrant: { approvalId: 'approval-1' } };
+        },
+        completeExecution: async (_grant: unknown, result: unknown) => { completions.push(result); return true; },
+        failExecution: async () => true,
       } as any,
       toolExecutor: executor,
       permissions: {
@@ -102,6 +108,7 @@ describe('ApprovalResumerService', () => {
 
     assert.deepEqual(executed, [{ title: 'Approved document' }]);
     assert.equal(completions.length, 1);
+    assert.equal(resumedChatId, 'chat-1');
     assert.match(finalTexts[0] ?? '', /Approved action completed/);
     assert.match(finalTexts[0] ?? '', /documentUrl/);
   });

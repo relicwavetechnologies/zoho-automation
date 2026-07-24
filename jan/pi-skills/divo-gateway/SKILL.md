@@ -5,7 +5,7 @@ description: Use when the user asks for Divo/company capabilities, Zoho, Lark, G
 
 # Divo Gateway
 
-Use the injected department persona and compact capability catalogue as the normal routing map. When they identify one exact relevant skill, load it once with `divo_skill_view`. When the request is an ordinary conversation or a simple direct capability call, using no skill is correct. Use `divo_skill_resolve` only as a bounded fallback for a likely specialized company workflow that has no clear exact catalogue or persona match. Local skill files are never company-skill candidates. Use `divo_gateway` for every company-owned capability and backend-owned web search. Do not call SaaS APIs directly, invent company data, ask the user for backend tokens, use local Serper credentials, or bypass approval/RBAC decisions.
+Use the injected department persona and compact capability catalogue as the normal routing map. When they identify one exact relevant skill, load it once with `divo_skill_view`. When the request is an ordinary conversation or a simple direct capability call, using no skill is correct. Use `divo_skill_resolve` only as a bounded fallback for a likely specialized company workflow that has no clear exact catalogue or persona match. Local skill files are never company-skill candidates. Use Divo's governed route for every company-owned capability and backend-owned web search: call `divo_gateway` directly for one straightforward, independently meaningful action. Use credential-free `divo-local` from one persistent Python file only when the work has pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product. Do not call SaaS APIs directly, invent company data, ask the user for backend tokens, use local Serper credentials, or bypass approval/RBAC decisions.
 
 The backend is the authority for identity, departments, RBAC, approvals, audit, SaaS credentials, and tool execution. Pi is only the local reasoning/runtime layer.
 
@@ -62,9 +62,9 @@ For `connections.list`, provider ids are exact backend enums:
 - Use `lark` for Lark Tasks, Messaging, Contacts, Calendar, Docs, Base, and Approvals.
 - Never use `google` as a provider id.
 
-## Lark Is Backend-Only
+## Lark Is Governed
 
-Every Lark request must use `divo_gateway`, including document creation and editing. Never run `lark-cli`, install a Lark CLI/package, call Lark OpenAPI over Bash/curl, use an MCP server that holds Lark credentials locally, or ask the member for a Lark token. The desktop intentionally ships no Lark CLI. Divo resolves the selected personal/shared Lark connection and enforces RBAC, approvals, token refresh, and audit on the server.
+Every Lark request must use Divo's governed route, including document creation and editing. Use `divo_gateway` directly for one straightforward, independently meaningful action. Use credential-free `divo-local` from one persistent Python file only when the work has pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product; it invokes the same governed Divo route. Never run `lark-cli`, install a Lark CLI/package, call Lark OpenAPI over Bash/curl, use an MCP server that holds Lark credentials locally, or ask the member for a Lark token. The desktop intentionally ships no Lark CLI. Divo resolves the selected personal/shared Lark connection and enforces RBAC, approvals, token refresh, and audit on the server.
 
 For a Lark document create result, preserve the returned `url` and present it as a clickable link. Do not derive a URL from `docToken`, search for the document after creation, or use Bash to recover a link. If a successful response is missing `url`, report the incomplete result instead of inventing a host.
 
@@ -82,6 +82,21 @@ Skill publishing is backend-owned:
 - Do not use admin routes from Pi. Do not create a local skill as a fallback for company work.
 
 Use the department id only when the user has selected or implied a department context. Otherwise omit it and let desktop/backend defaults apply.
+
+## Local Python Workflows
+
+Use `divo_gateway` directly for one straightforward, independently meaningful connected-service action. Use one persistent Python workflow only when work has pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product. Gmail/CRM → Sheets is always this local-workflow path:
+
+1. Call `divo_skill_resolve` once with the user's complete original request, plus at most one source-oriented and one destination-oriented intent-preserving variant. Do not load the local Python recipe alone: the unified result must preload it together with relevant source/destination recipes, exact governed contracts, and accessible accounts. Resolve anything separately only when that bootstrap explicitly says it is missing. Never mutate data to discover a response shape.
+2. Create one descriptive `.py` file under the exact `DIVO_RUN_DIR` with `write`. Keep non-secret inputs, outputs, and `checkpoint.json` beside it.
+3. Run the file with `bash` and `python3`. Connected company calls inside the program must use the credential-free `divo-local` command through `subprocess`, normally with `--args-file` for generated payloads.
+4. If the program or provider contract fails, inspect the structured result, patch the same `.py` file with `edit`, and rerun the same Bash command. Do not rewrite the complete source, generate source inside a tool argument, or create a new retry script.
+5. Persist every successful create/send/update identifier before the next operation. A resumed run must reuse and verify existing resources instead of repeating successful mutations.
+6. Stop on permission, approval, invalid-argument, or rate-limit rejection. Preserve the checkpoint and surface the exact reason.
+7. Read important destination records back and reconcile counts before claiming completion.
+8. Once this path is selected, keep all connected reads, writes, and verification inside the same file through `divo-local`. Direct gateway calls before writing the file are allowed only for a genuinely unknown account or tool schema; never manually carry a record set through model context.
+
+The retired `divo_python_automation` tool is unavailable. Ignore any older retrieved recipe or conversation that asks for it. Never embed backend URLs, member tokens, OAuth tokens, or SaaS credentials in the script.
 
 ## Workflow
 
@@ -104,7 +119,7 @@ Use the department id only when the user has selected or implied a department co
    - If multiple connections are plausible and the user did not specify, ask one short account-choice question.
    - Never guess connection IDs, tool IDs, permissions, or SaaS credentials.
 8. For execution, call `tools.invoke` with the exact `toolId` and args contract described by the backend skill/tool docs.
-   - Tool args must match the backend docs exactly. For Google Workspace, first use the selected product tool's `op: "describe"` for an unfamiliar native operation, then use `op: "call"` with the returned schema under `input`.
+   - Tool args must match the backend docs exactly. For Google Workspace, use an exact schema already returned in `bootstrap.nativeContracts` and do not describe it again. Describe only a genuinely required missing native operation, reusing the same exact `connectionId`, then use `op: "call"` with arguments under `input`.
    - For calendar list/read requests with relative windows like "today", "tomorrow", "this week", or "next 7 days", pass explicit ISO start and end bounds using the field names returned by the native operation schema.
    - Use half-open local-day ranges: `startTime` is the local start of the first included day; `endTime` is the local start after the last included day. For "next 7 days", include today plus the following 6 local days.
    - Calendar `startTime` and `endTime` must include a timezone offset or `Z`; do not send timezone-less timestamps like `2026-07-09T00:00:00`.

@@ -121,6 +121,7 @@ export async function executeLocalBrokerRequest(
 	value: unknown,
 	activeCalls: ReadonlyMap<string, ActiveBashCall>,
 	dependencies: LocalBrokerExecutionDependencies = DEFAULT_EXECUTION_DEPENDENCIES,
+	requestSignal?: AbortSignal,
 ): Promise<LocalBrokerResponseV1> {
 	const input = parseLocalBrokerRequest(value);
 	if (activeCalls.size !== 1) {
@@ -129,47 +130,74 @@ export async function executeLocalBrokerRequest(
 			: "Concurrent Bash commands cannot share one Divo broker authorization context.");
 	}
 	const active = activeCalls.values().next().value as ActiveBashCall;
-	if (active.context.signal?.aborted) {
+	const combinedSignal = combineAbortSignals(active.context.signal, requestSignal);
+	if (combinedSignal.signal?.aborted) {
+		combinedSignal.dispose();
 		throw new DOMException("The Divo broker request was cancelled.", "AbortError");
 	}
-	const config = dependencies.resolveConfig();
-	if ("error" in config) throw new Error(config.error);
-	const correlation = await dependencies.readCorrelation();
-	active.nextBrokerCall += 1;
-	const actionId = `${active.toolCallId}:broker:${active.nextBrokerCall}`;
-	const label = brokerLabel(input);
-	const request: GatewayRequestBody = {
-		op: input.request.op,
-		...(input.request.departmentId || correlation.departmentId
-			? { departmentId: input.request.departmentId ?? correlation.departmentId }
-			: {}),
-		...(Object.hasOwn(input.request, "payload") ? { payload: input.request.payload } : {}),
-		execution: {
+	try {
+		const config = dependencies.resolveConfig();
+		if ("error" in config) throw new Error(config.error);
+		const correlation = await dependencies.readCorrelation();
+		active.nextBrokerCall += 1;
+		const actionId = `${active.toolCallId}:broker:${active.nextBrokerCall}`;
+		const label = brokerLabel(input);
+		const request: GatewayRequestBody = {
+			op: input.request.op,
+			...(input.request.departmentId || correlation.departmentId
+				? { departmentId: input.request.departmentId ?? correlation.departmentId }
+				: {}),
+			...(Object.hasOwn(input.request, "payload") ? { payload: input.request.payload } : {}),
+			execution: {
+				version: 1,
+				threadId: correlation.threadId,
+				runId: correlation.runId,
+				actionId,
+			},
+		};
+		const result = await dependencies.executeGateway(
+			config,
+			request,
+			actionId,
+			{ ...active.context, ...(combinedSignal.signal ? { signal: combinedSignal.signal } : {}) },
+		);
+		return {
 			version: 1,
-			threadId: correlation.threadId,
-			runId: correlation.runId,
-			actionId,
-		},
-	};
-	const result = await dependencies.executeGateway(
-		config,
-		request,
-		actionId,
-		active.context,
-	);
+			ok: result.body.ok && result.body.status === "success",
+			status: result.body.status,
+			httpStatus: result.httpStatus,
+			...(Object.hasOwn(result.body, "data") ? { data: result.body.data } : {}),
+			...(result.body.error ? { error: result.body.error } : {}),
+			...(result.body.approval ? { approval: result.body.approval } : {}),
+			trace: {
+				threadId: correlation.threadId,
+				runId: correlation.runId,
+				actionId,
+				label,
+			},
+		};
+	} finally {
+		combinedSignal.dispose();
+	}
+}
+
+function combineAbortSignals(...signals: Array<AbortSignal | undefined>): {
+	signal?: AbortSignal;
+	dispose: () => void;
+} {
+	const present = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+	if (present.length === 0) return { dispose: () => undefined };
+	if (present.length === 1) return { signal: present[0], dispose: () => undefined };
+	const controller = new AbortController();
+	const abort = () => controller.abort();
+	for (const signal of present) {
+		if (signal.aborted) controller.abort();
+		else signal.addEventListener("abort", abort, { once: true });
+	}
 	return {
-		version: 1,
-		ok: result.body.ok && result.body.status === "success",
-		status: result.body.status,
-		httpStatus: result.httpStatus,
-		...(Object.hasOwn(result.body, "data") ? { data: result.body.data } : {}),
-		...(result.body.error ? { error: result.body.error } : {}),
-		...(result.body.approval ? { approval: result.body.approval } : {}),
-		trace: {
-			threadId: correlation.threadId,
-			runId: correlation.runId,
-			actionId,
-			label,
+		signal: controller.signal,
+		dispose: () => {
+			for (const signal of present) signal.removeEventListener("abort", abort);
 		},
 	};
 }
@@ -272,7 +300,13 @@ export function registerLocalDivoBroker(
 			server = createServer((socket) => {
 				let input = "";
 				let handled = false;
-				socket.on("error", () => undefined);
+				let completed = false;
+				const requestAbort = new AbortController();
+				const abortDisconnectedRequest = () => {
+					if (!completed) requestAbort.abort();
+				};
+				socket.on("error", abortDisconnectedRequest);
+				socket.on("close", abortDisconnectedRequest);
 				socket.setEncoding("utf8");
 				socket.on("data", async (chunk) => {
 					input += chunk;
@@ -286,12 +320,16 @@ export function registerLocalDivoBroker(
 					try {
 						const line = input.slice(0, input.indexOf("\n")).trim();
 						if (!line) throw new Error("Divo broker request was empty.");
-						writeJsonLine(socket, await executeLocalBrokerRequest(
+						const response = await executeLocalBrokerRequest(
 							JSON.parse(line),
 							activeCalls,
 							dependencies,
-						));
+							requestAbort.signal,
+						);
+						completed = true;
+						writeJsonLine(socket, response);
 					} catch (error) {
+						completed = true;
 						writeJsonLine(socket, errorResponse(error));
 					}
 				});

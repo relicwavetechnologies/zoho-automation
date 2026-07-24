@@ -814,10 +814,24 @@ function ThreadDetail() {
 
   // Reset pinning when switching threads so a freshly opened thread shows its
   // latest answer at the bottom rather than pinning a historical turn.
+  //
+  // Crucially, adopt the thread's EXISTING last user message as already-seen
+  // rather than clearing to null. Otherwise reopening a thread that is mid-
+  // stream reads its current user turn as a brand-new send, re-pins it, and
+  // yanks the scroll on every visit. Only a user message appended AFTER this
+  // point — a real send while the thread is open — should trigger a pin.
   useEffect(() => {
     setPinId(null)
     setPinNonce(0)
-    seenUserMessageRef.current = null
+    const existing = useMessages.getState().getMessages(threadId)
+    let lastUser: string | null = null
+    for (let i = (existing?.length ?? 0) - 1; i >= 0; i--) {
+      if (existing[i]?.role === 'user') {
+        lastUser = existing[i].id
+        break
+      }
+    }
+    seenUserMessageRef.current = lastUser
   }, [threadId])
 
   useEffect(() => {

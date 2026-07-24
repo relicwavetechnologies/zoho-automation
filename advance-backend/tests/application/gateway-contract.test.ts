@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   connectionsListPayloadSchema,
-  googlePlanPayloadSchema,
   gatewayRequestSchema,
   skillsSearchPayloadSchema,
   teachContextGetPayloadSchema,
@@ -109,16 +108,7 @@ describe('public gateway request contract', () => {
     assert.equal(toolsListPayloadSchema.safeParse({ family: 'google' }).success, false);
   });
 
-  it('accepts only the bounded Google plan and batch preflight contracts', () => {
-    assert.equal(googlePlanPayloadSchema.safeParse({ workflow: 'vendor_onboarding' }).success, true);
-    assert.equal(googlePlanPayloadSchema.safeParse({
-      workflow: 'vendor_onboarding',
-      phaseIds: ['gmail_source', 'calendar_availability', 'google_doc', 'calendar_event'],
-    }).success, true);
-    assert.equal(googlePlanPayloadSchema.safeParse({
-      workflow: 'vendor_onboarding', phaseIds: ['gmail_source', 'lark_contact'],
-    }).success, false);
-    assert.equal(googlePlanPayloadSchema.safeParse({ workflow: 'vendor_onboarding', unexpected: true }).success, false);
+  it('keeps Google onboarding planning internal to bounded work resolution', () => {
     assert.equal(toolsPreflightPayloadSchema.safeParse({
       invocations: [{ toolId: 'googleGmail', args: { op: 'describe', nativeTool: 'search_gmail_messages' } }],
     }).success, true);

@@ -4,9 +4,17 @@ import { asToolId } from '../../shared/ids';
 import type { PermissionResult } from '../permissions/permission.types';
 import type { CatalogSkill, SkillCatalogService } from '../skills/skill-catalog.service';
 import { googleSkill } from '../skills/google.skill';
-import {
-  type GoogleVendorOnboardingPhaseId,
-} from './gateway.types';
+
+export const GOOGLE_VENDOR_ONBOARDING_PHASE_IDS = [
+  'gmail_source',
+  'google_contact',
+  'calendar_availability',
+  'google_doc',
+  'google_sheet',
+  'calendar_event',
+] as const;
+
+export type GoogleVendorOnboardingPhaseId = (typeof GOOGLE_VENDOR_ONBOARDING_PHASE_IDS)[number];
 
 type VendorOnboardingPhaseDefinition = {
   readonly key: GoogleVendorOnboardingPhaseId;
@@ -104,8 +112,7 @@ export interface GoogleVendorOnboardingPlan {
   };
   readonly workflow: 'vendor_onboarding';
   readonly connection: {
-    readonly status: 'requested' | 'google_workspace_connection_selection_required';
-    readonly connectionId?: string;
+    readonly status: 'google_workspace_connection_selection_required';
     readonly message: string;
   };
   readonly phases: readonly {
@@ -119,6 +126,43 @@ export interface GoogleVendorOnboardingPlan {
   }[];
 }
 
+export type GoogleVendorOnboardingResolution =
+  | { readonly status: 'ready'; readonly plan: GoogleVendorOnboardingPlan }
+  | { readonly status: 'unavailable'; readonly missing: readonly string[] };
+
+/**
+ * Returns true only for the narrow onboarding workflow that has a bounded,
+ * backend-owned Google phase planner. Every other Google request remains a
+ * normal work-resolution and execution problem.
+ */
+export function isGoogleVendorOnboardingRequest(query: string): boolean {
+  return /\bvendor\b/i.test(query) && /\bonboard(?:ing)?\b/i.test(query);
+}
+
+/**
+ * Derives only the Google phases explicitly requested by the user. Lark and
+ * other providers remain separate governed phases and are never added here.
+ */
+export function deriveGoogleVendorOnboardingPhaseIds(query: string): GoogleVendorOnboardingPhaseId[] {
+  const phases: GoogleVendorOnboardingPhaseId[] = [];
+  const add = (phase: GoogleVendorOnboardingPhaseId) => {
+    if (!phases.includes(phase)) phases.push(phase);
+  };
+
+  if (/\b(?:gmail|email|mail|thread|message)\b/i.test(query)) add('gmail_source');
+  if (/\bgoogle\s+contacts?\b|\bgoogle\s+address\s*book\b/i.test(query)) add('google_contact');
+  if (/\b(?:availability|free[ -]?busy|time\s+slots?)\b|\bcheck\b[^.\n]{0,60}\bcalendar\b/i.test(query)) {
+    add('calendar_availability');
+  }
+  if (/\bgoogle\s+docs?\b|\bdoc(?:ument)?\s+(?:agenda|brief|summary)\b/i.test(query)) add('google_doc');
+  if (/\bgoogle\s+sheets?\b|\bspreadsheet\b|\bsheet\s+tracker\b/i.test(query)) add('google_sheet');
+  if (/\b(?:create|schedule|approve)\b[^.\n]{0,80}\bcalendar\s+event\b|\bcalendar\s+event\b/i.test(query)) {
+    add('calendar_event');
+  }
+
+  return phases;
+}
+
 /**
  * Builds a virtual Google parent plan from the live, RBAC-filtered specialist
  * registry. The source-controlled parent is never materialized as a database
@@ -130,7 +174,6 @@ export async function buildGoogleVendorOnboardingPlan(input: {
   readonly departmentId?: string;
   readonly permission: PermissionResult;
   readonly grantedSkillIds?: ReadonlySet<string>;
-  readonly connectionId?: string;
   readonly phaseIds?: readonly GoogleVendorOnboardingPhaseId[];
 }): Promise<{ ok: true; value: GoogleVendorOnboardingPlan } | { ok: false; missing: readonly string[] }> {
   const visible = await input.catalog.listVisible({
@@ -178,16 +221,10 @@ export async function buildGoogleVendorOnboardingPlan(input: {
         instructions: googleSkill.instructions,
       },
       workflow: 'vendor_onboarding',
-      connection: input.connectionId
-        ? {
-          status: 'requested',
-          connectionId: input.connectionId,
-          message: 'Use this explicitly selected Google Workspace connection for every phase. Eligibility and scopes are checked at execution time.',
-        }
-        : {
-          status: 'google_workspace_connection_selection_required',
-          message: 'Before the first executing phase, use connections.list to obtain one exact Google connectionId. Never choose a model default.',
-        },
+      connection: {
+        status: 'google_workspace_connection_selection_required',
+        message: 'Before the first executing phase, use connections.list to obtain one exact Google connectionId. Never choose a model default.',
+      },
       phases,
     },
   };

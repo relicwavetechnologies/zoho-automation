@@ -64,13 +64,22 @@ export interface RuntimeToolExecutionInput {
 export interface RuntimeToolExecutionOutcome {
   readonly status: Extract<GatewayResponse['status'],
     'success' | 'unknown_tool' | 'invalid_args' | 'permission_denied'
-    | 'approval_required' | 'approval_rejected' | 'approval_misconfigured'
+    | 'approval_required' | 'approval_rejected' | 'approval_execution_failed'
+    | 'approval_misconfigured'
     | 'rate_limited' | 'rate_limit_unavailable' | 'tool_error'>;
   readonly toolId: string;
   readonly action?: ToolActionGroup;
   readonly result?: unknown;
   readonly message?: string;
   readonly approvalId?: string;
+}
+
+export interface RuntimeToolPreflightOutcome {
+  readonly status: RuntimeToolExecutionOutcome['status'];
+  readonly toolId: string;
+  readonly action?: ToolActionGroup;
+  readonly validation?: Record<string, unknown>;
+  readonly message?: string;
 }
 
 export interface PreparedToolInvocation {
@@ -90,9 +99,20 @@ interface ResolvedToolInvocation extends PreparedToolInvocation {
   readonly effectiveDepartmentId?: string;
 }
 
+interface ResolvedRuntimeToolInvocation {
+  readonly tool: Tool<unknown, unknown>;
+  readonly toolId: string;
+  readonly action: ToolActionGroup;
+  readonly args: Record<string, unknown>;
+}
+
 type ResolveToolInvocationResult =
   | { readonly ok: true; readonly value: ResolvedToolInvocation }
   | { readonly ok: false; readonly response: GatewayResponse };
+
+type ResolveRuntimeToolInvocationResult =
+  | { readonly ok: true; readonly value: ResolvedRuntimeToolInvocation }
+  | { readonly ok: false; readonly outcome: RuntimeToolExecutionOutcome };
 
 export class ToolExecutor {
   constructor(private readonly deps: ToolExecutorDeps) {}
@@ -173,7 +193,11 @@ export class ToolExecutor {
     // A connection policy can require its owner even when the caller did not
     // select a department. The gate itself preserves the old no-department
     // behaviour for ordinary department-based approval rules.
-    if (this.deps.approvalGate && tool.id !== asToolId('memoryRecall')) {
+    if (
+      this.deps.approvalGate
+      && tool.id !== asToolId('memoryRecall')
+      && !isCompanyAxisPublishingInvocation(tool.id, validatedArgs)
+    ) {
       const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
       const decision = await this.deps.approvalGate.check({
         toolId: tool.id,
@@ -188,18 +212,66 @@ export class ToolExecutor {
 
       if (decision.kind === 'pending') {
         return gatewayFailure('approval_required', decision.message, {
-          approval: { approvalId: decision.approvalId, message: decision.message },
+          approval: {
+            approvalId: decision.approvalId,
+            message: decision.message,
+            status: 'pending',
+            authority: decision.authority,
+            approverName: decision.approverName,
+            scope: 'once',
+            requestState: decision.requestState,
+            nextAction: decision.nextAction,
+            retry: decision.retry,
+          },
         });
       }
 
       if (decision.kind === 'rejected') {
         return gatewayFailure('approval_rejected', decision.message, {
-          approval: { approvalId: decision.approvalId, message: decision.message },
+          approval: {
+            approvalId: decision.approvalId,
+            message: decision.message,
+            status: 'rejected',
+            authority: decision.authority,
+            approverName: decision.approverName,
+            scope: 'once',
+            requestState: decision.requestState,
+            nextAction: decision.nextAction,
+            retry: decision.retry,
+          },
+        });
+      }
+
+      if (decision.kind === 'execution_failed') {
+        return gatewayFailure('approval_execution_failed', decision.message, {
+          approval: {
+            approvalId: decision.approvalId,
+            message: decision.message,
+            status: 'failed',
+            authority: decision.authority,
+            approverName: decision.approverName,
+            scope: 'once',
+            requestState: decision.requestState,
+            nextAction: decision.nextAction,
+            retry: decision.retry,
+          },
         });
       }
 
       if (decision.kind === 'misconfigured') {
         return gatewayFailure('approval_misconfigured', decision.message);
+      }
+
+      if (decision.kind === 'completed') {
+        return gatewaySuccess({
+          toolId: tool.id,
+          action,
+          result: limitModelFacingResult(decision.result),
+          replayedApproval: {
+            approvalId: decision.approvalId,
+            status: 'completed',
+          },
+        });
       }
 
       executionGrant = decision.executionGrant;
@@ -210,7 +282,13 @@ export class ToolExecutor {
       action,
       args: validatedArgs,
     });
-    if (rateConsume) return rateConsume;
+    if (rateConsume) {
+      if (executionGrant) {
+        const released = await this.releaseExecutionGrant(this.deps.approvalGate, executionGrant);
+        if (!released) return approvalReleaseFailure(executionGrant.approvalId);
+      }
+      return rateConsume;
+    }
 
     const execCtx: ToolExecutionContext = {
       runContext,
@@ -220,29 +298,82 @@ export class ToolExecutor {
       clock: this.deps.clock,
     };
 
-    const result = await tool.execute(validatedArgs, execCtx);
-    if (!result.ok) {
-      if (executionGrant) {
-        await this.deps.approvalGate?.failExecution(executionGrant, {
-          status: 'tool_error',
-          message: result.error.message,
-        });
+    try {
+      const result = await tool.execute(validatedArgs, execCtx);
+      if (!result.ok) {
+        if (executionGrant) {
+          const finalized = await this.deps.approvalGate?.failExecution(executionGrant, {
+            status: 'tool_error',
+            message: result.error.message,
+          });
+          if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
+        }
+        return gatewayFailure('tool_error', result.error.message);
       }
-      return gatewayFailure('tool_error', result.error.message);
-    }
 
-    if (executionGrant) {
-      await this.deps.approvalGate?.completeExecution(executionGrant, {
-        status: 'success',
-        result: result.value,
+      if (executionGrant) {
+        const finalized = await this.deps.approvalGate?.completeExecution(executionGrant, {
+          status: 'success',
+          result: result.value,
+        });
+        if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
+      }
+
+      return gatewaySuccess({
+        toolId: tool.id,
+        action,
+        result: limitModelFacingResult(result.value),
       });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (executionGrant) {
+        const finalized = await this.deps.approvalGate?.failExecution(executionGrant, {
+          status: 'tool_error',
+          message,
+        });
+        if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
+      }
+      return gatewayFailure('tool_error', message);
+    }
+  }
+
+  /**
+   * Revalidates a backend-hosted invocation without consuming a rate budget or
+   * running tool code. Automation batches use this for an all-calls preflight
+   * before the first approved mutation.
+   */
+  async preflightForRuntime(input: RuntimeToolExecutionInput): Promise<RuntimeToolPreflightOutcome> {
+    const resolved = this.resolveRuntimeInvocation(input);
+    if (!resolved.ok) return resolved.outcome;
+
+    const { tool, toolId, action, args } = resolved.value;
+    let validation: Record<string, unknown> = { level: 'permission_only' };
+    if (tool.preflight) {
+      const checked = await tool.preflight(args, {
+        runContext: input.runContext,
+        perm: input.perm,
+        correlationId: input.runContext.traceId
+          ?? input.runContext.requestId
+          ?? input.runContext.chatId
+          ?? randomUUID(),
+        logger: this.deps.logger.child({ toolId: tool.id, operation: 'runtime_preflight' }),
+        clock: this.deps.clock,
+      });
+      if (!checked.ok) {
+        const status = checked.error.payload.reason === 'bad_args' ? 'invalid_args' : 'tool_error';
+        return runtimeFailure(toolId, status, checked.error.message, action);
+      }
+      validation = checked.value;
     }
 
-    return gatewaySuccess({
-      toolId: tool.id,
+    const ratePreflight = await this.preflightRateLimit({
+      companyId: input.runContext.companyId,
       action,
-      result: limitModelFacingResult(result.value),
+      args,
     });
+    if (ratePreflight) return runtimeRateLimitFailure(toolId, ratePreflight, action);
+
+    return { status: 'success', toolId, action, validation };
   }
 
   /**
@@ -252,40 +383,10 @@ export class ToolExecutor {
    * decision path.
    */
   async executeForRuntime(input: RuntimeToolExecutionInput): Promise<RuntimeToolExecutionOutcome> {
-    const { toolId, args, runContext, perm } = input;
-
-    if (toolId === 'runCommand') {
-      return runtimeFailure(toolId, 'permission_denied', 'runCommand is not available through backend-hosted channels.');
-    }
-    if (input.allowedToolIds && !input.allowedToolIds.has(toolId)) {
-      return runtimeFailure(toolId, 'permission_denied', 'This tool is not available for the current member.');
-    }
-
-    const tool = this.deps.toolRegistry.byId(toolId as never);
-    if (!tool) return runtimeFailure(toolId, 'unknown_tool', `Unknown toolId "${toolId}"`);
-
-    const parsed = tool.argsSchema.safeParse(args);
-    if (!parsed.success) {
-      const issues = parsed.error.errors
-        .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
-        .join('; ');
-      return runtimeFailure(toolId, 'invalid_args', `Invalid args for "${toolId}" — ${issues}`);
-    }
-
-    const validatedArgs = parsed.data as Record<string, unknown>;
-    const permissionCheck = tool.permissionCheck(validatedArgs, perm);
-    if (!permissionCheck.ok) {
-      return runtimeFailure(toolId, 'permission_denied', permissionCheck.error.message);
-    }
-    const action = permissionCheck.value;
-    if (input.expectedAction && action !== input.expectedAction) {
-      return runtimeFailure(
-        toolId,
-        'invalid_args',
-        `Tool action changed from "${input.expectedAction}" to "${action}" after approval.`,
-        action,
-      );
-    }
+    const resolved = this.resolveRuntimeInvocation(input);
+    if (!resolved.ok) return resolved.outcome;
+    const { toolId, tool, args: validatedArgs, action } = resolved.value;
+    const { runContext, perm } = input;
 
     const ratePreflight = await this.preflightRateLimit({
       companyId: runContext.companyId,
@@ -311,8 +412,25 @@ export class ToolExecutor {
       if (decision.kind === 'rejected') {
         return runtimeFailure(toolId, 'approval_rejected', decision.message, action, decision.approvalId);
       }
+      if (decision.kind === 'execution_failed') {
+        return runtimeFailure(
+          toolId,
+          'approval_execution_failed',
+          decision.message,
+          action,
+          decision.approvalId,
+        );
+      }
       if (decision.kind === 'misconfigured') {
         return runtimeFailure(toolId, 'approval_misconfigured', decision.message, action);
+      }
+      if (decision.kind === 'completed') {
+        return {
+          status: 'success',
+          toolId,
+          action,
+          result: decision.result,
+        };
       }
       executionGrant = decision.executionGrant;
     }
@@ -322,7 +440,21 @@ export class ToolExecutor {
       action,
       args: validatedArgs,
     });
-    if (rateConsume) return runtimeRateLimitFailure(toolId, rateConsume, action);
+    if (rateConsume) {
+      if (executionGrant) {
+        const released = await this.releaseExecutionGrant(input.approvalGate, executionGrant);
+        if (!released) {
+          return runtimeFailure(
+            toolId,
+            'approval_misconfigured',
+            approvalReleaseFailureMessage(executionGrant.approvalId),
+            action,
+            executionGrant.approvalId,
+          );
+        }
+      }
+      return runtimeRateLimitFailure(toolId, rateConsume, action);
+    }
 
     const context: ToolExecutionContext = {
       runContext,
@@ -339,19 +471,25 @@ export class ToolExecutor {
       const result = await tool.execute(validatedArgs, context);
       if (!result.ok) {
         if (executionGrant) {
-          await input.approvalGate?.failExecution(executionGrant, {
+          const finalized = await input.approvalGate?.failExecution(executionGrant, {
             status: 'tool_error',
             message: result.error.message,
           });
+          if (!finalized) {
+            return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
+          }
         }
         return runtimeFailure(toolId, 'tool_error', result.error.message, action);
       }
 
       if (executionGrant) {
-        await input.approvalGate?.completeExecution(executionGrant, {
+        const finalized = await input.approvalGate?.completeExecution(executionGrant, {
           status: 'success',
           result: result.value,
         });
+        if (!finalized) {
+          return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
+        }
       }
       return {
         status: 'success',
@@ -362,10 +500,78 @@ export class ToolExecutor {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (executionGrant) {
-        await input.approvalGate?.failExecution(executionGrant, { status: 'tool_error', message });
+        const finalized = await input.approvalGate?.failExecution(executionGrant, {
+          status: 'tool_error',
+          message,
+        });
+        if (!finalized) {
+          return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
+        }
       }
       return runtimeFailure(toolId, 'tool_error', message, action);
     }
+  }
+
+  private resolveRuntimeInvocation(input: RuntimeToolExecutionInput): ResolveRuntimeToolInvocationResult {
+    const { toolId, args, perm } = input;
+    if (toolId === 'runCommand') {
+      return {
+        ok: false,
+        outcome: runtimeFailure(
+          toolId,
+          'permission_denied',
+          'runCommand is not available through backend-hosted channels.',
+        ),
+      };
+    }
+    if (input.allowedToolIds && !input.allowedToolIds.has(toolId)) {
+      return {
+        ok: false,
+        outcome: runtimeFailure(toolId, 'permission_denied', 'This tool is not available for the current member.'),
+      };
+    }
+
+    const tool = this.deps.toolRegistry.byId(toolId as never);
+    if (!tool) {
+      return { ok: false, outcome: runtimeFailure(toolId, 'unknown_tool', `Unknown toolId "${toolId}"`) };
+    }
+
+    const parsed = tool.argsSchema.safeParse(args);
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+        .join('; ');
+      return {
+        ok: false,
+        outcome: runtimeFailure(toolId, 'invalid_args', `Invalid args for "${toolId}" — ${issues}`),
+      };
+    }
+
+    const validatedArgs = parsed.data as Record<string, unknown>;
+    const permissionCheck = tool.permissionCheck(validatedArgs, perm);
+    if (!permissionCheck.ok) {
+      return {
+        ok: false,
+        outcome: runtimeFailure(toolId, 'permission_denied', permissionCheck.error.message),
+      };
+    }
+    const action = permissionCheck.value;
+    if (input.expectedAction && action !== input.expectedAction) {
+      return {
+        ok: false,
+        outcome: runtimeFailure(
+          toolId,
+          'invalid_args',
+          `Tool action changed from "${input.expectedAction}" to "${action}" after approval.`,
+          action,
+        ),
+      };
+    }
+
+    return {
+      ok: true,
+      value: { tool, toolId, action, args: validatedArgs },
+    };
   }
 
   private async resolve(input: ToolExecutorInput): Promise<ResolveToolInvocationResult> {
@@ -533,6 +739,14 @@ export class ToolExecutor {
     });
     return rateLimitFailure(decision);
   }
+
+  private async releaseExecutionGrant(
+    approvalGate: ApprovalGateService | undefined,
+    grant: { readonly approvalId: string },
+  ): Promise<boolean> {
+    if (!approvalGate) return false;
+    return approvalGate.releaseExecution(grant);
+  }
 }
 
 function runtimeFailure(
@@ -549,6 +763,36 @@ function runtimeFailure(
     message,
     ...(approvalId ? { approvalId } : {}),
   };
+}
+
+function approvalReleaseFailure(approvalId: string): GatewayResponse {
+  return gatewayFailure('approval_misconfigured', approvalReleaseFailureMessage(approvalId));
+}
+
+function approvalCheckpointFailure(approvalId: string): GatewayResponse {
+  return gatewayFailure('approval_execution_failed', approvalCheckpointFailureMessage(approvalId));
+}
+
+function runtimeApprovalCheckpointFailure(
+  toolId: string,
+  action: ToolActionGroup,
+  approvalId: string,
+): RuntimeToolExecutionOutcome {
+  return runtimeFailure(
+    toolId,
+    'approval_execution_failed',
+    approvalCheckpointFailureMessage(approvalId),
+    action,
+    approvalId,
+  );
+}
+
+function approvalCheckpointFailureMessage(approvalId: string): string {
+  return `The provider action may have completed, but Divo could not durably store its final state for approval ${approvalId}. Do not retry the exact action. Inspect the destination, then contact your administrator.`;
+}
+
+function approvalReleaseFailureMessage(approvalId: string): string {
+  return `The action did not run because its final rate-budget check failed, but Divo could not release approval ${approvalId}. Nothing was executed. Contact your administrator before retrying this exact action.`;
 }
 
 function connectionIdFromArgs(args: Record<string, unknown>): string | undefined {
@@ -579,14 +823,26 @@ function runtimeRateLimitFailure(
  * A manager approval may be retried within one run, but must never be shared
  * by two independent desktop chats or two separate user turns. The execution
  * context is not trusted for authorization; it only partitions an already
- * authenticated member session's approval/idempotency namespace.
+ * authenticated requester's approval/idempotency namespace. Session IDs are
+ * deliberately excluded so re-authentication cannot manufacture a second
+ * approval for the same requester/thread/run/action.
  */
 function gatewayApprovalChatId(
   member: GatewayMemberContext,
   execution: GatewayExecutionContext | undefined,
 ): string {
   if (!execution) return `gateway:${member.sessionId}`;
-  return `gateway:${member.sessionId}:thread:${execution.threadId}:run:${execution.runId}`;
+  return [
+    'gateway',
+    'company',
+    member.companyId,
+    'requester',
+    member.userId,
+    'thread',
+    execution.threadId,
+    'run',
+    execution.runId,
+  ].join(':');
 }
 
 function isPublishingAuthorityCheck(toolId: string, args: unknown): boolean {

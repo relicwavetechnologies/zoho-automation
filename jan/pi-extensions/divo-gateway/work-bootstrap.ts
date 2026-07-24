@@ -10,6 +10,12 @@ export interface WorkBootstrap {
 		parameterDocs: string;
 		argsSchema: unknown;
 	}>;
+	nativeContracts: Array<{
+		toolId: string;
+		nativeTool: string;
+		description?: string;
+		inputSchema: unknown;
+	}>;
 	connections: Array<{
 		connectionId: string;
 		provider: string;
@@ -60,6 +66,21 @@ export function parseWorkBootstrap(value: unknown): WorkBootstrap | undefined {
 			argsSchema: tool.argsSchema,
 		}];
 	}) : [];
+	const nativeContracts = Array.isArray(raw.nativeContracts)
+		? raw.nativeContracts.flatMap((value): WorkBootstrap["nativeContracts"] => {
+			const contract = record(value);
+			const toolId = string(contract?.toolId);
+			const nativeTool = string(contract?.nativeTool);
+			if (!contract || !toolId || !nativeTool || !("inputSchema" in contract)) return [];
+			const description = string(contract.description);
+			return [{
+				toolId,
+				nativeTool,
+				...(description ? { description } : {}),
+				inputSchema: contract.inputSchema,
+			}];
+		})
+		: [];
 	const connections = Array.isArray(raw.connections) ? raw.connections.flatMap((value): WorkBootstrap["connections"] => {
 		const connection = record(value);
 		const connectionId = string(connection?.connectionId);
@@ -97,6 +118,7 @@ export function parseWorkBootstrap(value: unknown): WorkBootstrap | undefined {
 		scope: "run",
 		registryRevision: raw.registryRevision,
 		tools,
+		nativeContracts,
 		connections,
 		advisories,
 	};
@@ -109,6 +131,11 @@ export function formatWorkBootstrap(bootstrap: WorkBootstrap): string[] {
 		lines.push(`  ${tool.description}`);
 		lines.push(`  parameters: ${tool.parameterDocs}`);
 		lines.push(`  args schema: ${JSON.stringify(tool.argsSchema)}`);
+	}
+	for (const contract of bootstrap.nativeContracts) {
+		lines.push(`- Native contract ${contract.toolId}.${contract.nativeTool}`);
+		if (contract.description) lines.push(`  ${contract.description}`);
+		lines.push(`  input schema: ${JSON.stringify(contract.inputSchema)}`);
 	}
 	for (const connection of bootstrap.connections) {
 		const account = connection.accountEmail ?? connection.accountName ?? connection.label;

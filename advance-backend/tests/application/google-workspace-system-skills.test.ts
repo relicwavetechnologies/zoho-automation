@@ -5,6 +5,10 @@ import {
   provisionGoogleWorkspaceSystemSkills,
 } from '../../src/application/skills/google-workspace-system-skills';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../../src/application/google/google-workspace-mcp-manifest';
+import {
+  GOVERNED_DIRECT_ACTION_CRITERION,
+  GOVERNED_LOCAL_WORKFLOW_CRITERION,
+} from '../../src/application/skills/governed-local-routing';
 
 describe('Google Workspace system skills', () => {
   it('keeps product skills and gateway tools in exact sync', () => {
@@ -14,7 +18,11 @@ describe('Google Workspace system skills', () => {
     );
     assert.equal(GOOGLE_WORKSPACE_SYSTEM_SKILLS.length, 11);
     for (const skill of GOOGLE_WORKSPACE_SYSTEM_SKILLS) {
-      assert.match(skill.markdown, /Never use a local Google CLI/);
+      assert.match(skill.markdown, /Never call Google directly from Bash/);
+      assert.match(skill.markdown, /credential-free `divo-local`/);
+      assert.match(skill.markdown, new RegExp(GOVERNED_DIRECT_ACTION_CRITERION));
+      assert.match(skill.markdown, new RegExp(GOVERNED_LOCAL_WORKFLOW_CRITERION));
+      assert.match(skill.markdown, /governed Divo wrapper, not a Google client/);
       assert.doesNotMatch(skill.markdown, /start_google_auth/);
       assert.match(skill.markdown, /OAuth bearer token/);
       assert.match(skill.markdown, /result advisory.*level: "required"/);
@@ -106,7 +114,7 @@ describe('Google Workspace system skills', () => {
   it('contains no Hermes-local auth, CLI, or filesystem instructions', () => {
     for (const skill of GOOGLE_WORKSPACE_SYSTEM_SKILLS) {
       assert.doesNotMatch(skill.markdown, /gws_bridge|google_api\.py|start_google_auth|GOOGLE_TOKEN|file:\/\/|\/Users\//i);
-      assert.match(skill.markdown, /Use only `google[A-Z][A-Za-z]+`/);
+      assert.match(skill.markdown, /Use only Divo's governed `google[A-Z][A-Za-z]+` route/);
       assert.match(skill.markdown, /Divo RBAC, sharing, approval, and audit/);
     }
   });

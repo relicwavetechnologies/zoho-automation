@@ -94,14 +94,6 @@ interface GoogleVendorOnboardingPlan {
 	}>;
 }
 
-type GoogleVendorOnboardingPhaseId =
-	| "gmail_source"
-	| "google_contact"
-	| "calendar_availability"
-	| "google_doc"
-	| "google_sheet"
-	| "calendar_event";
-
 export async function resolveDivoSkills(options: {
 	query: string;
 	variants?: string[];
@@ -141,17 +133,8 @@ export async function resolveDivoSkills(options: {
 		actionId: options.actionId,
 		notes,
 	});
-	const requestedGooglePhases = deriveVendorOnboardingGooglePhases(query);
-	const vendorOnboarding = isVendorOnboardingRequest(query) && requestedGooglePhases.length > 1;
-	const googlePlan = vendorOnboarding
-		? await planVendorOnboarding({
-			phaseIds: requestedGooglePhases,
-			departmentId: options.departmentId,
-			config,
-			fetchImpl: options.fetchImpl,
-			notes,
-		})
-		: null;
+	const vendorOnboarding = work?.googleVendorOnboarding;
+	const googlePlan = vendorOnboarding?.status === "ready" ? vendorOnboarding.plan : null;
 	if (googlePlan) {
 		const first = googlePlan.phases[0]?.skill;
 		const selected: ResolvedSkill = {
@@ -188,10 +171,11 @@ export async function resolveDivoSkills(options: {
 			notes,
 		};
 	}
-	if (vendorOnboarding) {
-		// A partial specialist match is not a usable substitute for the requested
-		// multi-phase workflow. The plan endpoint already recorded the precise
-		// RBAC or contract reason in notes, so fail closed instead of reranking.
+	if (vendorOnboarding?.status === "unavailable") {
+		// A partial specialist match is not a usable substitute for a backend-
+		// recognized multi-phase onboarding workflow. Fail closed instead of
+		// reranking; the missing specialist/action detail is authoritative.
+		notes.push(`Vendor onboarding is unavailable because these governed Google phases are not executable: ${vendorOnboarding.missing.join(", ")}.`);
 		return {
 			policy: DIVO_SKILL_POLICY,
 			query,
@@ -294,36 +278,6 @@ function appendSkill(lines: string[], skill: ResolvedSkill): void {
 	if (skill.instructions) lines.push("", `  Loaded recipe for ${skill.name}:`, skill.instructions, "");
 }
 
-function isVendorOnboardingRequest(query: string): boolean {
-	return /\bvendor\b/i.test(query) && /\bonboard(?:ing)?\b/i.test(query);
-}
-
-async function planVendorOnboarding(options: {
-	phaseIds: GoogleVendorOnboardingPhaseId[];
-	departmentId?: string;
-	config: DivoGatewayConfig;
-	fetchImpl?: typeof fetch;
-	notes: string[];
-}): Promise<GoogleVendorOnboardingPlan | null> {
-	try {
-		const response = await callDivoGateway(options.config, {
-			op: "google.plan",
-			departmentId: options.departmentId,
-			payload: { workflow: "vendor_onboarding", phaseIds: options.phaseIds },
-		}, options.fetchImpl ?? fetch);
-		if (!response.body.ok || response.body.status !== "success") {
-			options.notes.push(`Backend google.plan returned ${response.body.status}.`);
-			return null;
-		}
-		const plan = readGoogleVendorOnboardingPlan(response.body.data);
-		if (!plan) options.notes.push("Backend google.plan returned an invalid workflow contract.");
-		return plan;
-	} catch (error) {
-		options.notes.push(`Google workflow planning failed: ${error instanceof Error ? error.message : String(error)}`);
-		return null;
-	}
-}
-
 function readGoogleVendorOnboardingPlan(data: unknown): GoogleVendorOnboardingPlan | null {
 	if (!data || typeof data !== "object") return null;
 	const raw = data as Record<string, unknown>;
@@ -377,31 +331,6 @@ function readGoogleVendorOnboardingPlan(data: unknown): GoogleVendorOnboardingPl
 	};
 }
 
-/**
- * Select only Google phases explicitly required by the request. Lark remains
- * a separate governed provider phase and is intentionally not smuggled into
- * the Google plan.
- */
-function deriveVendorOnboardingGooglePhases(query: string): GoogleVendorOnboardingPhaseId[] {
-	const phases: GoogleVendorOnboardingPhaseId[] = [];
-	const add = (phase: GoogleVendorOnboardingPhaseId) => {
-		if (!phases.includes(phase)) phases.push(phase);
-	};
-
-	if (/\b(?:gmail|email|mail|thread|message)\b/i.test(query)) add("gmail_source");
-	if (/\bgoogle\s+contacts?\b|\bgoogle\s+address\s*book\b/i.test(query)) add("google_contact");
-	if (/\b(?:availability|free[ -]?busy|time\s+slots?)\b|\bcheck\b[^.\n]{0,60}\bcalendar\b/i.test(query)) {
-		add("calendar_availability");
-	}
-	if (/\bgoogle\s+docs?\b|\bdoc(?:ument)?\s+(?:agenda|brief|summary)\b/i.test(query)) add("google_doc");
-	if (/\bgoogle\s+sheets?\b|\bspreadsheet\b|\bsheet\s+tracker\b/i.test(query)) add("google_sheet");
-	if (/\b(?:create|schedule|approve)\b[^.\n]{0,80}\bcalendar\s+event\b|\bcalendar\s+event\b/i.test(query)) {
-		add("calendar_event");
-	}
-
-	return phases;
-}
-
 function confidenceForScore(score: number): "high" | "medium" | "low" {
 	if (score >= 8) return "high";
 	if (score >= 4) return "medium";
@@ -414,6 +343,9 @@ interface BackendWorkResolution {
 	personaRules: ResolvedPersonaRule[];
 	rejected: SkillResolveResult["rejected"];
 	bootstrap?: WorkBootstrap;
+	googleVendorOnboarding?:
+		| { status: "ready"; plan: GoogleVendorOnboardingPlan }
+		| { status: "unavailable"; missing: string[] };
 }
 
 async function resolveBackendWork(options: {
@@ -492,6 +424,8 @@ function readBackendWorkResolution(data: unknown): BackendWorkResolution | null 
 	const additionalSkills = readResolvedSkills(raw.additionalSkills, "skill_search");
 	const rejected = readRejectedSkills(raw.rejectedSkills);
 	const bootstrap = parseWorkBootstrap(raw.bootstrap);
+	const googleVendorOnboarding = readGoogleVendorOnboardingResolution(raw.googleVendorOnboarding);
+	if (raw.googleVendorOnboarding !== undefined && !googleVendorOnboarding) return null;
 	if (!queries.length) return null;
 	return {
 		queries,
@@ -499,7 +433,22 @@ function readBackendWorkResolution(data: unknown): BackendWorkResolution | null 
 		personaRules,
 		rejected,
 		...(bootstrap ? { bootstrap } : {}),
+		...(googleVendorOnboarding ? { googleVendorOnboarding } : {}),
 	};
+}
+
+function readGoogleVendorOnboardingResolution(value: unknown): BackendWorkResolution["googleVendorOnboarding"] | null {
+	if (!value || typeof value !== "object") return null;
+	const raw = value as Record<string, unknown>;
+	if (raw.status === "ready") {
+		const plan = readGoogleVendorOnboardingPlan(raw.plan);
+		return plan ? { status: "ready", plan } : null;
+	}
+	if (raw.status === "unavailable" && Array.isArray(raw.missing)) {
+		const missing = raw.missing.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+		return missing.length ? { status: "unavailable", missing } : null;
+	}
+	return null;
 }
 
 function readResolvedSkills(value: unknown, source: "persona_link" | "skill_search"): ResolvedSkill[] {

@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
-import { CodeIcon, EyeIcon } from 'lucide-react'
+import { CheckIcon, CodeIcon, CopyIcon, EyeIcon } from 'lucide-react'
 import type { ArtifactTab } from '@/lib/auxiliary/types'
 import { CodeBlock } from '@/components/ai-elements/code-block'
 import type { BundledLanguage } from 'shiki'
 import { cn } from '@/lib/utils'
+import { enhanceArtifactMarkdown } from '@/lib/artifact-markdown'
 import { RenderMarkdown } from '@/containers/RenderMarkdown'
 
 type View = 'preview' | 'code'
@@ -40,12 +41,18 @@ function isHtmlLike(tab: ArtifactTab): boolean {
 export function ArtifactSurface({ tab }: { tab: ArtifactTab }) {
   const htmlLike = isHtmlLike(tab)
   const [view, setView] = useState<View>(htmlLike ? 'preview' : 'preview')
+  const [copied, setCopied] = useState(false)
   const allowScripts = tab.mime !== 'image/svg+xml'
 
   const srcDoc = useMemo(() => {
     if (!htmlLike || view !== 'preview') return ''
     return buildSrcDoc(tab.content, allowScripts)
   }, [htmlLike, view, tab.content, allowScripts])
+
+  const previewMarkdown = useMemo(() => {
+    if (htmlLike || tab.mime !== 'text/markdown') return tab.content
+    return enhanceArtifactMarkdown(tab.content)
+  }, [htmlLike, tab.mime, tab.content])
 
   const language = (tab.language ??
     (tab.mime === 'text/html'
@@ -63,6 +70,16 @@ export function ArtifactSurface({ tab }: { tab: ArtifactTab }) {
         ? 'text-foreground border-b-2 border-primary'
         : 'text-muted-foreground hover:text-foreground border-b-2 border-transparent'
     )
+
+  const copyArtifact = async () => {
+    try {
+      await navigator.clipboard.writeText(tab.content)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1600)
+    } catch {
+      setCopied(false)
+    }
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -90,10 +107,27 @@ export function ArtifactSurface({ tab }: { tab: ArtifactTab }) {
           <CodeIcon size={12} />
           Source
         </button>
-        <span className="ml-auto pr-2 font-mono text-[10px] text-muted-foreground/70">
-          {tab.mime}
-          {tab.version ? ` · v${tab.version}` : ''}
-        </span>
+        <div className="ml-auto flex items-center gap-1 pr-1">
+          <span className="pr-1 font-mono text-[10px] text-muted-foreground/70">
+            {tab.mime}
+            {tab.version ? ` · v${tab.version}` : ''}
+          </span>
+          <button
+            type="button"
+            className={cn(
+              'inline-flex size-7 items-center justify-center rounded-md',
+              'text-muted-foreground transition-colors',
+              'hover:bg-muted/70 hover:text-foreground'
+            )}
+            aria-label={copied ? 'Copied artifact' : 'Copy artifact'}
+            title={copied ? 'Copied' : 'Copy'}
+            onClick={() => {
+              void copyArtifact()
+            }}
+          >
+            {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+          </button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -108,7 +142,7 @@ export function ArtifactSurface({ tab }: { tab: ArtifactTab }) {
             />
           ) : (
             <div className="px-5 py-5 text-sm leading-relaxed">
-              <RenderMarkdown content={tab.content} />
+              <RenderMarkdown content={previewMarkdown} />
             </div>
           )
         ) : (

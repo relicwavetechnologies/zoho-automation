@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import type { Prisma } from '../../generated/prisma';
 import { recordSkillRegistryMutation } from './skill-registry-versioning';
 import { larkSkillEnglishOnlyError } from './lark-skill-language-policy';
+import {
+  GOVERNED_DIRECT_ACTION_CRITERION,
+  GOVERNED_LOCAL_WORKFLOW_ROUTE,
+} from './governed-local-routing';
 
 export interface LarkSystemSkillDefinition {
   readonly slug: string;
@@ -14,6 +18,8 @@ export interface LarkSystemSkillDefinition {
   readonly aliases?: readonly string[];
   readonly sortOrder: number;
 }
+
+const LARK_GOVERNED_ROUTING = `For ${GOVERNED_DIRECT_ACTION_CRITERION}, use the governed Divo route directly. ${GOVERNED_LOCAL_WORKFLOW_ROUTE} Never call Lark directly from Bash: no lark-cli, curl, local credentials, or direct Lark API calls.`;
 
 export const LARK_SYSTEM_SKILLS: readonly LarkSystemSkillDefinition[] = [
   {
@@ -32,7 +38,7 @@ Use this skill for Lark documents, meeting notes, reports, plans, briefs, SOPs, 
 1. List accessible connections with provider \`lark\`.
 2. Select one exact returned \`connectionId\`, even when only one account is available.
 3. If several are available and the member did not identify one, ask which account to use.
-4. Send \`connectionId\` with every user-scoped Lark document action. It is required for RBAC, owner policy, approval, and rate limits. Never use local credentials, Bash, curl, or lark-cli.
+4. Send \`connectionId\` with every user-scoped Lark document action. It is required for RBAC, owner policy, approval, and rate limits. ${LARK_GOVERNED_ROUTING}
 
 ## Create a polished document
 
@@ -74,7 +80,7 @@ Use this skill for todos, follow-ups, reminders, assignments, subtasks, and task
 ## Connection
 
 - Resolve an accessible \`lark\` connection and pass its \`connectionId\` to every task action.
-- Never run lark-cli, call Lark directly, or ask for an access token.
+- ${LARK_GOVERNED_ROUTING}
 
 ## Operating rules
 
@@ -104,7 +110,7 @@ Use this skill for meetings, events, schedules, attendees, recurring events, and
 - Use \`free_busy\` for availability; a person's open ID is not a calendar ID.
 - Use recurring-event operations with an explicit recurrence rule for repeating meetings.
 - Use attendee update operations for additions/removals instead of recreating an event.
-- Never run lark-cli or call Lark outside Divo.
+- ${LARK_GOVERNED_ROUTING}
 
 Confirm the event title, local date/time, timezone, and attendees. Never claim creation or update without tool success.`,
   },
@@ -122,7 +128,7 @@ Use this skill to find Lark video meetings, inspect a known meeting, or retrieve
 ## Connection
 
 - Resolve an accessible \`lark\` connection and include its \`connectionId\` on every action.
-- If several accounts are available, ask the member which connection to use. Never guess and never use lark-cli, Bash, curl, or a local token.
+- If several accounts are available, ask the member which connection to use. Never guess. ${LARK_GOVERNED_ROUTING}
 
 ## Operating rules
 
@@ -152,7 +158,7 @@ Use this skill for direct messages, group messages, replies, message search, and
 - Resolve mention names before sending. Do not guess IDs.
 - Outbound messages use a Divo Card 2.0 by default, so provide clean Markdown. Use plain-text delivery only when the member explicitly needs plain text.
 - Preserve approval state: pending is not sent, rejected is not sent.
-- Never run lark-cli, call Lark with curl, or expose connection tokens.
+- ${LARK_GOVERNED_ROUTING}
 
 Confirm the destination and a short description of what was sent without exposing raw IDs.`,
   },
@@ -180,7 +186,7 @@ Use this skill to resolve people before messaging, assigning tasks, or inviting 
 - Request only the directory detail needed for the member's task.
 - Contacts may be an installed-company capability; Divo still enforces company policy and audit.
 - Use internalRouting only to pass a resolved person into another Lark action. Never include that block or any Lark ID in user-facing output.
-- Never use lark-cli, local credentials, or direct Lark API requests.
+- ${LARK_GOVERNED_ROUTING}
 
 In user-facing output, prefer the person's name, email, job title, department names, and organization when available. Omit fields the governed directory did not return.`,
   },
@@ -201,7 +207,7 @@ Use this skill for Lark Base record lookup and mutation.
 - Read before updating when the target record is unclear. Never guess field names or record IDs.
 - Preserve typed field values and structured results returned by Lark.
 - Confirm the exact record-level mutation; never claim completion while approval is pending.
-- Never use local Lark credentials, Bash, curl, or lark-cli.`,
+- ${LARK_GOVERNED_ROUTING}`,
   },
   {
     slug: 'lark-approvals',
@@ -219,7 +225,7 @@ Use this skill for native Lark approval definitions, instances, and submissions.
 - Submit only form values explicitly supplied or confirmed by the member.
 - Preserve instance codes internally for follow-up reads, but present human-readable status and definition names.
 - Pending, rejected, denied, or misconfigured actions are not successful submissions.
-- Never use lark-cli, local credentials, or direct Lark API calls.
+- ${LARK_GOVERNED_ROUTING}
 
 Return the approval name, current status, and next required action.`,
   },

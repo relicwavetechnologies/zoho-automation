@@ -10,7 +10,8 @@ use crate::core::app::commands::get_jan_data_folder_path;
 use crate::core::divo::commands::divo_sync_pi_env;
 use crate::core::divo::workspace::resolve_workspace_dir_for_app;
 use manager::{
-    default_runtime_pool_capacity, PiManager, MAX_RUNTIME_POOL_CAPACITY, MIN_RUNTIME_POOL_CAPACITY,
+    default_runtime_pool_capacity, PiManager, PiPromptAdmission, MAX_RUNTIME_POOL_CAPACITY,
+    MIN_RUNTIME_POOL_CAPACITY,
 };
 use permissions::{load_runtime_pool_capacity, save_runtime_pool_capacity};
 use runtime::PiRuntimeMode;
@@ -67,8 +68,10 @@ pub async fn pi_ensure_thread(state: State<'_, PiState>, thread_id: String) -> R
 
 /// Send a user prompt to Pi for a thread/run pair.
 ///
-/// `run_id` is the caller-generated identity for this invocation. Abort and
-/// extension-UI responses must reuse the same pair; Rust rejects stale pairs.
+/// `run_id` is the caller-generated identity for this invocation. If Pi is
+/// still genuinely processing the same chat, the returned admission identifies
+/// that existing owner so the desktop can safely follow it instead of starting
+/// a second concurrent turn.
 #[tauri::command]
 pub async fn pi_prompt(
     state: State<'_, PiState>,
@@ -81,7 +84,7 @@ pub async fn pi_prompt(
     profile: Option<String>,
     teach_session_id: Option<String>,
     department_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<PiPromptAdmission, String> {
     state
         .manager
         .prompt_with_model(

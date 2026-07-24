@@ -10,7 +10,6 @@ export const GATEWAY_OPS = [
   'persona.resolve',
   'teach.context.get',
   'teach.learning.apply',
-  'google.plan',
   'connections.list',
   'media.image_ocr',
   'tools.preflight',
@@ -38,6 +37,7 @@ export const GATEWAY_STATUSES = [
   'approval_intent_busy',
   'approval_required',
   'approval_rejected',
+  'approval_execution_failed',
   'approval_misconfigured',
   'rate_limited',
   'rate_limit_unavailable',
@@ -107,27 +107,6 @@ export const automationPlanStatusPayloadSchema = z.object({
 
 export type AutomationPlanStatusPayload = z.infer<typeof automationPlanStatusPayloadSchema>;
 
-export const GOOGLE_VENDOR_ONBOARDING_PHASE_IDS = [
-  'gmail_source',
-  'google_contact',
-  'calendar_availability',
-  'google_doc',
-  'google_sheet',
-  'calendar_event',
-] as const;
-export type GoogleVendorOnboardingPhaseId = (typeof GOOGLE_VENDOR_ONBOARDING_PHASE_IDS)[number];
-
-export const googlePlanPayloadSchema = z.object({
-  workflow: z.literal('vendor_onboarding'),
-  phaseIds: z.array(z.enum(GOOGLE_VENDOR_ONBOARDING_PHASE_IDS)).min(1).max(8).optional(),
-  // A connection ID is propagated as an explicit user/desktop choice only.
-  // Its scopes and eligibility are deliberately resolved when each native
-  // operation executes, not during planning.
-  connectionId: z.string().uuid().optional(),
-}).strict();
-
-export type GooglePlanPayload = z.infer<typeof googlePlanPayloadSchema>;
-
 export const toolsCommitPayloadSchema = z.object({
   intentId: z.string().uuid(),
 }).strict();
@@ -183,6 +162,13 @@ export interface GatewayErrorBody {
 export interface GatewayApprovalBody {
   readonly approvalId: string;
   readonly message: string;
+  readonly status: 'pending' | 'rejected' | 'failed';
+  readonly authority: 'connection_owner' | 'company_admin' | 'department_manager';
+  readonly approverName: string;
+  readonly scope: 'once';
+  readonly requestState: 'dispatching' | 'created' | 'reused' | 'replaced_expired';
+  readonly nextAction: 'wait' | 'change_request';
+  readonly retry: 'retry_exact' | 'change_request';
 }
 
 export interface GatewayResponse<T = unknown> {

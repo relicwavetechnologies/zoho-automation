@@ -64,7 +64,9 @@ export class ApprovalResumerService {
 
     const meta = asRecord(approval.metadataJson);
     const payload = asRecord(approval.payloadJson);
-    const chatId = asNonEmptyString(meta['chatId']);
+    const storedChatId = asNonEmptyString(meta['chatId']);
+    const chatId = asNonEmptyString(meta['sourceChatId'])
+      ?? legacySourceChatId(storedChatId, meta['approvalOrigin']);
     const requesterId = asNonEmptyString(meta['requesterId']);
     const requesterLarkOpenId = asNonEmptyString(meta['requesterLarkOpenId']);
     const statusMessageId = asNonEmptyString(meta['statusMessageId']);
@@ -95,7 +97,7 @@ export class ApprovalResumerService {
     if (!toolId || toolId !== approval.toolId || !args) {
       const message = 'The approved action record is incomplete or no longer matches the requested action.';
       this.log.error('resumer.invalid_approved_payload', { approvalId, storedToolId: approval.toolId, payloadToolId: toolId });
-      await this.deps.approvalRepo.failApprovedExecution(approvalId, { status: 'invalid_payload', message });
+      await this.persistFailure(approvalId, { status: 'invalid_payload', message });
       await this.deliverFinal(conversation, message);
       return;
     }
@@ -106,7 +108,7 @@ export class ApprovalResumerService {
     if (!identityResult.ok || !identityResult.value) {
       const message = 'I could not verify the requester for this approved action, so it was not executed.';
       this.log.warn('resumer.identity_not_found', { approvalId, requesterId, requesterLarkOpenId });
-      await this.deps.approvalRepo.failApprovedExecution(approvalId, { status: 'identity_not_found', message });
+      await this.persistFailure(approvalId, { status: 'identity_not_found', message });
       await this.deliverFinal(conversation, message);
       return;
     }
@@ -122,7 +124,7 @@ export class ApprovalResumerService {
     if (!permissionResult.ok) {
       const message = `The approved action can no longer be run: ${permissionResult.error.message}`;
       this.log.warn('resumer.permission_denied', { approvalId, reason: permissionResult.error.message });
-      await this.deps.approvalRepo.failApprovedExecution(approvalId, { status: 'permission_denied', message });
+      await this.persistFailure(approvalId, { status: 'permission_denied', message });
       await this.deliverFinal(conversation, message);
       return;
     }
@@ -188,7 +190,7 @@ export class ApprovalResumerService {
       status: outcome.status,
       message,
     });
-    await this.deps.approvalRepo.failApprovedExecution(approvalId, {
+    await this.persistFailure(approvalId, {
       status: outcome.status,
       message,
     });
@@ -207,6 +209,16 @@ export class ApprovalResumerService {
     if (!delivered.ok) {
       this.log.error('resumer.delivery_failed', { error: delivered.error.message });
     }
+  }
+
+  private async persistFailure(approvalId: string, result: Record<string, unknown>): Promise<boolean> {
+    const persisted = await this.deps.approvalRepo.failApprovedExecution(approvalId, result);
+    if (persisted.ok && persisted.value) return true;
+    this.log.error('resumer.failure_checkpoint_failed', {
+      approvalId,
+      error: persisted.ok ? 'approval_not_approved_or_executing' : persisted.error.message,
+    });
+    return false;
   }
 }
 
@@ -232,4 +244,11 @@ function renderResult(value: unknown): string {
   const serialized = JSON.stringify(value, null, 2);
   if (!serialized) return '';
   return `Result:\n\n\`\`\`json\n${serialized.slice(0, 3_500)}\n\`\`\``;
+}
+
+function legacySourceChatId(chatId: string | undefined, origin: unknown): string | undefined {
+  if (!chatId || origin !== 'lark') return chatId;
+  const scopeMarker = ':approval:';
+  const markerIndex = chatId.indexOf(scopeMarker);
+  return markerIndex > 0 ? chatId.slice(0, markerIndex) : chatId;
 }

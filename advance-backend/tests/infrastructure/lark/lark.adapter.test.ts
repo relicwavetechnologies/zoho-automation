@@ -6,6 +6,7 @@ import { planFinalCards } from '../../../src/infrastructure/channels/lark/lark-c
 import type { Logger } from '../../../src/shared/logger.ts';
 import type { ConversationHandle } from '../../../src/application/channels/channel.adapter.ts';
 import type { FinalReply } from '../../../src/domain/channel/outbound.ts';
+import { LarkApiError } from '../../../src/infrastructure/channels/lark/clients/lark-http.client.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -455,6 +456,38 @@ describe('LarkChannelAdapter.parseIncoming', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.value.text, '');
+  });
+});
+
+describe('LarkChannelAdapter.sendDirectCard', () => {
+  it('classifies a provider rejection as definite non-delivery', async () => {
+    const adapter = makeAdapter();
+    (adapter as any).messagingClient = {
+      sendCardToOpenId: async () => {
+        throw new LarkApiError('recipient is invalid', 400, 230001);
+      },
+    };
+
+    const result = await adapter.sendDirectCard('ou_invalid', '{}');
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.error.payload.reason, 'upstream_4xx');
+  });
+
+  it('keeps a transport failure ambiguous because the provider may have accepted the card', async () => {
+    const adapter = makeAdapter();
+    (adapter as any).messagingClient = {
+      sendCardToOpenId: async () => {
+        throw new LarkApiError('connection closed before response', 0);
+      },
+    };
+
+    const result = await adapter.sendDirectCard('ou_manager', '{}');
+
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.error.payload.reason, 'upstream_5xx');
   });
 });
 

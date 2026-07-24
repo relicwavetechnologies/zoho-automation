@@ -235,8 +235,8 @@ describe('ToolExecutor', () => {
           approvalChecks++;
           return { kind: 'pending', approvalId: 'unexpected', message: 'Unexpected approval' };
         },
-        completeExecution: async () => {},
-        failExecution: async () => {},
+        completeExecution: async () => true,
+        failExecution: async () => true,
       } as never,
       logger: noopLogger,
       clock: { now: () => new Date(), nowMs: () => Date.now() },
@@ -453,8 +453,8 @@ describe('ToolExecutor', () => {
           approvalChecks++;
           return { kind: 'allowed' };
         },
-        completeExecution: async () => {},
-        failExecution: async () => {},
+        completeExecution: async () => true,
+        failExecution: async () => true,
       } as never,
       logger: noopLogger,
       clock: { now: () => new Date(), nowMs: () => Date.now() },
@@ -504,8 +504,8 @@ describe('ToolExecutor', () => {
           approvalId: 'approval-1',
           message: 'This action was rejected by the manager.',
         }),
-        completeExecution: async () => {},
-        failExecution: async () => {},
+        completeExecution: async () => true,
+        failExecution: async () => true,
       } as never,
       logger: noopLogger,
       clock: { now: () => new Date(), nowMs: () => Date.now() },
@@ -547,6 +547,64 @@ describe('ToolExecutor', () => {
     assert.match(result.error?.message ?? '', /upstream down/);
   });
 
+  it('persists a thrown approved mutation as uncertain and blocks the exact retry', async () => {
+    let executions = 0;
+    let failedExecution = false;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['send']),
+      permissionCheck: () => ok('send'),
+      execute: async () => {
+        executions++;
+        throw new Error('provider disconnected after accepting the request');
+      },
+    }));
+    const approvalGate = {
+      check: async () => failedExecution
+        ? {
+            kind: 'execution_failed',
+            approvalId: 'approval-thrown',
+            message: 'Provider outcome is uncertain. Do not run the exact action again.',
+            authority: 'department_manager',
+            approverName: 'Finance Manager',
+            requestState: 'reused',
+            nextAction: 'change_request',
+            retry: 'change_request',
+          }
+        : {
+            kind: 'allowed',
+            executionGrant: { approvalId: 'approval-thrown' },
+          },
+      completeExecution: async () => true,
+      failExecution: async () => {
+        failedExecution = true;
+        return true;
+      },
+    };
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+      approvalGate: approvalGate as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const input = {
+      member,
+      departmentId: 'dept-1',
+      toolId: 'fakeTool',
+      args: { query: 'one exact send' },
+    };
+
+    const first = await executor.invoke(input);
+    const retry = await executor.invoke(input);
+
+    assert.equal(first.status, 'tool_error');
+    assert.match(first.error?.message ?? '', /provider disconnected/i);
+    assert.equal(retry.status, 'approval_execution_failed');
+    assert.equal(retry.approval?.status, 'failed');
+    assert.equal(executions, 1);
+  });
+
   it('completes an approved execution grant after successful tool invocation', async () => {
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({
@@ -562,8 +620,9 @@ describe('ToolExecutor', () => {
       }),
       completeExecution: async (_grant: { approvalId: string }, resultJson: unknown) => {
         completed.push(resultJson);
+        return true;
       },
-      failExecution: async () => {},
+      failExecution: async () => true,
     };
     const executor = new ToolExecutor({
       toolRegistry: registry,
@@ -582,6 +641,259 @@ describe('ToolExecutor', () => {
 
     assert.equal(result.ok, true);
     assert.deepEqual(completed, [{ status: 'success', result: { result: 'echo:hello' } }]);
+  });
+
+  it('does not report success when an approved mutation has no durable terminal checkpoint', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['send']),
+      permissionCheck: () => ok('send'),
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+      approvalGate: {
+        check: async () => ({
+          kind: 'allowed',
+          executionGrant: { approvalId: 'approval-checkpoint-failed' },
+        }),
+        completeExecution: async () => false,
+        failExecution: async () => false,
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member,
+      departmentId: 'dept-1',
+      toolId: 'fakeTool',
+      args: { query: 'one exact send' },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'approval_execution_failed');
+    assert.match(result.error?.message ?? '', /durably store its final state/i);
+  });
+
+  for (const blocked of [
+    {
+      decision: {
+        kind: 'limited',
+        policySource: 'manager_policy',
+        check: { allowed: false, windows: [] },
+        message: 'Connection budget reached.',
+      },
+      status: 'rate_limited',
+    },
+    {
+      decision: { kind: 'unavailable', message: 'Connection budget unavailable.' },
+      status: 'rate_limit_unavailable',
+    },
+  ] as const) {
+    it(`releases a claimed gateway approval when final rate consumption returns ${blocked.status}`, async () => {
+      let executions = 0;
+      let releases = 0;
+      const registry = new ToolRegistry();
+      registry.register(makeFakeTool({
+        actionGroups: new Set(['send']),
+        permissionCheck: () => ok('send'),
+        execute: async () => {
+          executions++;
+          return ok({ result: 'unexpected' });
+        },
+      }));
+      const approvalGate = {
+        check: async () => ({
+          kind: 'allowed',
+          executionGrant: { approvalId: 'approval-rate-gateway' },
+        }),
+        releaseExecution: async () => {
+          releases++;
+          return true;
+        },
+        completeExecution: async () => true,
+        failExecution: async () => true,
+      };
+      const executor = new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+        approvalGate: approvalGate as never,
+        connectionRateLimits: {
+          preflight: async () => ({ kind: 'not_governed' }),
+          consume: async () => blocked.decision,
+        } as never,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      });
+
+      const result = await executor.invoke({
+        member,
+        departmentId: 'dept-1',
+        toolId: 'fakeTool',
+        args: { query: 'hello' },
+      });
+
+      assert.equal(result.status, blocked.status);
+      assert.equal(executions, 0);
+      assert.equal(releases, 1);
+    });
+
+    it(`releases a claimed runtime approval when final rate consumption returns ${blocked.status}`, async () => {
+      let executions = 0;
+      let releases = 0;
+      const registry = new ToolRegistry();
+      registry.register(makeFakeTool({
+        actionGroups: new Set(['send']),
+        permissionCheck: () => ok('send'),
+        execute: async () => {
+          executions++;
+          return ok({ result: 'unexpected' });
+        },
+      }));
+      const approvalGate = {
+        check: async () => ({
+          kind: 'allowed',
+          executionGrant: { approvalId: 'approval-rate-runtime' },
+        }),
+        releaseExecution: async () => {
+          releases++;
+          return true;
+        },
+        completeExecution: async () => true,
+        failExecution: async () => true,
+      };
+      const executor = new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+        connectionRateLimits: {
+          preflight: async () => ({ kind: 'not_governed' }),
+          consume: async () => blocked.decision,
+        } as never,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      });
+
+      const result = await executor.executeForRuntime({
+        toolId: 'fakeTool',
+        args: { query: 'hello' },
+        runContext: {
+          companyId: 'co-test',
+          userId: 'user-test',
+          companyRole: 'MEMBER',
+          channel: 'desktop',
+          chatId: 'thread-1',
+        } as never,
+        perm: makeAllowedPerm('fakeTool', ['send']),
+        approvalGate: approvalGate as never,
+        chatId: 'thread-1',
+      });
+
+      assert.equal(result.status, blocked.status);
+      assert.equal(executions, 0);
+      assert.equal(releases, 1);
+    });
+  }
+
+  it('keeps manager-approval scope stable when the same requester and run renews its session', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['send']),
+      permissionCheck: () => ok('send'),
+    }));
+    const approvalChatIds: string[] = [];
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+      approvalGate: {
+        check: async (input: { chatId: string }) => {
+          approvalChatIds.push(input.chatId);
+          return {
+            kind: 'pending',
+            approvalId: 'approval-1',
+            message: 'Waiting for the exact approver.',
+            authority: 'department_manager',
+            approverName: 'Finance Manager',
+            requestState: 'reused',
+            nextAction: 'wait',
+            retry: 'retry_exact',
+          };
+        },
+        completeExecution: async () => true,
+        failExecution: async () => true,
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const execution = {
+      version: 1 as const,
+      threadId: 'thread-stable',
+      runId: 'run-stable',
+      actionId: 'action-retried',
+    };
+
+    await executor.invoke({
+      member,
+      departmentId: 'dept-1',
+      toolId: 'fakeTool',
+      args: { query: 'hello' },
+      execution,
+    });
+    await executor.invoke({
+      member: { ...member, sessionId: 'renewed-session' },
+      departmentId: 'dept-1',
+      toolId: 'fakeTool',
+      args: { query: 'hello' },
+      execution,
+    });
+
+    assert.equal(approvalChatIds.length, 2);
+    assert.equal(approvalChatIds[0], approvalChatIds[1]);
+    assert.match(approvalChatIds[0]!, /requester:user-test/);
+    assert.doesNotMatch(approvalChatIds[0]!, /sess-test|renewed-session/);
+  });
+
+  it('returns a stored completed approval result without executing the tool again', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['send']),
+      permissionCheck: () => ok('send'),
+      execute: async () => {
+        executions++;
+        return ok({ result: 'unexpected' });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
+      approvalGate: {
+        check: async () => ({
+          kind: 'completed',
+          approvalId: 'approval-1',
+          result: { messageId: 'gmail-message-1' },
+        }),
+        completeExecution: async () => true,
+        failExecution: async () => true,
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member,
+      departmentId: 'dept-1',
+      toolId: 'fakeTool',
+      args: { query: 'hello' },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(executions, 0);
+    assert.deepEqual((result.data as any).result, { messageId: 'gmail-message-1' });
+    assert.deepEqual((result.data as any).replayedApproval, {
+      approvalId: 'approval-1',
+      status: 'completed',
+    });
   });
 });
 
@@ -923,8 +1235,8 @@ describe('LocalApprovalIntentService', () => {
         check: async () => ++checks === 1
           ? { kind: 'pending', approvalId: 'manager-1', message: 'Waiting for manager' }
           : { kind: 'allowed' },
-        completeExecution: async () => {},
-        failExecution: async () => {},
+        completeExecution: async () => true,
+        failExecution: async () => true,
       } as never,
       logger: noopLogger,
       clock: { now: () => new Date(), nowMs: () => Date.now() },
@@ -1149,6 +1461,10 @@ describe('GatewayDispatcher', () => {
     const result = await dispatcher.dispatch({ op: 'nope.op' }, member);
     assert.equal(result.ok, false);
     assert.equal(result.status, 'unknown_op');
+
+    const retiredGooglePlan = await dispatcher.dispatch({ op: 'google.plan' }, member);
+    assert.equal(retiredGooglePlan.ok, false);
+    assert.equal(retiredGooglePlan.status, 'unknown_op');
   });
 
   it('returns capabilities with RBAC-filtered tools and skills', async () => {
@@ -1795,7 +2111,7 @@ describe('GatewayDispatcher', () => {
     assert.equal(result.status, 'bad_request');
   });
 
-  it('plans vendor onboarding from only granted executable Google specialists and loads just Gmail inline', async () => {
+  it('returns the internal vendor-onboarding plan through unified work resolution', async () => {
     const googlePermission = {
       allowedToolIds: new Set([
         asToolId('googleGmail'), asToolId('googleContacts'), asToolId('googleDocs'), asToolId('googleSheets'),
@@ -1830,24 +2146,25 @@ describe('GatewayDispatcher', () => {
     });
 
     const result = await dispatcher.dispatch({
-      op: 'google.plan',
-      payload: { workflow: 'vendor_onboarding', connectionId: '00000000-0000-4000-8000-000000000001' },
+      op: 'work.resolve',
+      payload: {
+        query: 'Vendor onboarding from a Gmail thread through Google Contacts into a Google Doc and Google Sheet tracker',
+      },
     }, member);
 
     assert.equal(result.ok, true);
-    const plan = result.data as { connection: { status: string; connectionId: string }; phases: Array<{ skillId: string; requiredActions: string[]; skill?: { instructions: string } }> };
+    const plan = (result.data as { googleVendorOnboarding: { status: 'ready'; plan: { connection: { status: string }; phases: Array<{ skillId: string; requiredActions: string[]; skill?: { instructions: string } }> } } }).googleVendorOnboarding.plan;
     assert.deepEqual(plan.phases.map((phase) => phase.skillId), ['gmail-id', 'contacts-id', 'docs-id', 'sheets-id']);
     assert.deepEqual(plan.phases.map((phase) => phase.requiredActions), [['read'], ['read'], ['create'], ['create', 'update']]);
     assert.equal(plan.phases[0]?.skill?.instructions, 'Gmail recipe');
     assert.equal(plan.phases.slice(1).every((phase) => phase.skill === undefined), true);
     assert.deepEqual(plan.connection, {
-      status: 'requested',
-      connectionId: '00000000-0000-4000-8000-000000000001',
-      message: 'Use this explicitly selected Google Workspace connection for every phase. Eligibility and scopes are checked at execution time.',
+      status: 'google_workspace_connection_selection_required',
+      message: 'Before the first executing phase, use connections.list to obtain one exact Google connectionId. Never choose a model default.',
     });
   });
 
-  it('rejects a vendor plan before execution when a required Docs action is not granted', async () => {
+  it('reports unavailable vendor-onboarding phases without exposing a partial plan', async () => {
     const insufficient = {
       allowedToolIds: new Set([
         asToolId('googleGmail'), asToolId('googleContacts'), asToolId('googleDocs'), asToolId('googleSheets'),
@@ -1869,13 +2186,19 @@ describe('GatewayDispatcher', () => {
       toolExecutor: new ToolExecutor({ toolRegistry: new ToolRegistry(), permissions: makePermissionService(insufficient), logger: noopLogger, clock: { now: () => new Date(), nowMs: () => Date.now() } }),
       logger: noopLogger,
     });
-    const result = await dispatcher.dispatch({ op: 'google.plan', payload: { workflow: 'vendor_onboarding' } }, member);
-    assert.equal(result.ok, false);
-    assert.equal(result.status, 'permission_denied');
-    assert.match(result.error?.message ?? '', /Google Doc brief/);
+    const result = await dispatcher.dispatch({
+      op: 'work.resolve',
+      payload: {
+        query: 'Vendor onboarding from a Gmail thread through Google Contacts into a Google Doc and Google Sheet tracker',
+      },
+    }, member);
+    assert.equal(result.ok, true);
+    const onboarding = (result.data as { googleVendorOnboarding: { status: string; missing?: string[] } }).googleVendorOnboarding;
+    assert.equal(onboarding.status, 'unavailable');
+    assert.ok(onboarding.missing?.includes('Google Doc brief'));
   });
 
-  it('plans only requested vendor phases in their requested order', async () => {
+  it('derives only the Google vendor phases explicitly requested in work resolution', async () => {
     const googlePermission = {
       allowedToolIds: new Set([asToolId('googleGmail'), asToolId('googleCalendar'), asToolId('googleDocs')]),
       allowedActionsByTool: new Map([
@@ -1906,15 +2229,14 @@ describe('GatewayDispatcher', () => {
     });
 
     const result = await dispatcher.dispatch({
-      op: 'google.plan',
+      op: 'work.resolve',
       payload: {
-        workflow: 'vendor_onboarding',
-        phaseIds: ['gmail_source', 'calendar_availability', 'google_doc', 'calendar_event'],
+        query: 'Vendor onboarding: find the Gmail thread, check calendar availability, write a Google Doc brief, then create a calendar event',
       },
     }, member);
 
     assert.equal(result.ok, true);
-    const plan = result.data as { phases: Array<{ id: string; skillId: string; requiredActions: string[]; skill?: unknown }> };
+    const plan = (result.data as { googleVendorOnboarding: { status: 'ready'; plan: { phases: Array<{ id: string; skillId: string; requiredActions: string[]; skill?: unknown }> } } }).googleVendorOnboarding.plan;
     assert.deepEqual(plan.phases.map((phase) => phase.id), [
       'gmail_source', 'calendar_availability', 'google_doc', 'calendar_event',
     ]);

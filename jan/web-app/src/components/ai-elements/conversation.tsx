@@ -17,7 +17,12 @@ export type ConversationProps = ComponentProps<typeof StickToBottom>
 export const Conversation = memo(({ className, ...props }: ConversationProps) => (
   <StickToBottom
     className={cn('relative flex-1 overflow-y-hidden', className)}
-    initial="smooth"
+    // Jump to the bottom on (re)mount rather than animating a scroll. The thread
+    // route remounts on every thread switch, so a "smooth" initial scroll played
+    // a visible scroll animation each time a chat was opened — jarring. "instant"
+    // positions at the bottom with no motion; live streaming still animates via
+    // `resize`.
+    initial="instant"
     resize="smooth"
     role="log"
     {...props}

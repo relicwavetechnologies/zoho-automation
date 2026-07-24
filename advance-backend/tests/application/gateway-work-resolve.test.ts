@@ -73,11 +73,35 @@ const gmail: CatalogSkill = {
   tags: ['gmail'],
   revision: 1,
 };
+const sheets: CatalogSkill = {
+  id: 'sheets-write',
+  slug: 'google-sheets',
+  name: 'Google Sheets',
+  description: 'Create, populate, and verify Google Sheets.',
+  instructions: 'Use exact Sheets contracts, write scalar rows, and verify targeted ranges.',
+  toolIds: ['googleSheets'],
+  aliases: [],
+  tags: ['sheets'],
+  revision: 1,
+};
+const localPython: CatalogSkill = {
+  id: 'local-python',
+  slug: 'divo-python-automation',
+  name: 'Divo Local Python Workflows',
+  description: 'Transform and move governed record sets using one persistent local file.',
+  instructions: 'Create, run, edit, and rerun one Python file through divo-local.',
+  toolIds: [],
+  aliases: [],
+  tags: ['python'],
+  revision: 4,
+};
 
 function makeDispatcher() {
   const permission = makeAllowedPerm('webSearch', ['read']);
   permission.allowedToolIds.add(asToolId('googleGmail'));
   permission.allowedActionsByTool.set(asToolId('googleGmail'), new Set(['read']));
+  permission.allowedToolIds.add(asToolId('googleSheets'));
+  permission.allowedActionsByTool.set(asToolId('googleSheets'), new Set(['read', 'create', 'update']));
   const permissions = {
     resolve: async () => ({ ok: true as const, value: permission }),
     canInvoke: async () => ({ ok: true as const, value: true }),
@@ -107,9 +131,29 @@ function makeDispatcher() {
     permissionCheck: () => ok('read'),
     execute: async () => ok({ data: [] }),
   } as any);
+  registry.register({
+    id: 'googleSheets',
+    family: 'google',
+    actionGroups: new Set(['read', 'create', 'update']),
+    argsSchema: z.object({ connectionId: z.string().uuid(), op: z.string(), input: z.record(z.unknown()) }),
+    resultSchema: z.object({ data: z.unknown() }),
+    description: 'Create, write, and read Google Sheets through an accessible Google Workspace account.',
+    parameterDocs: 'connectionId: exact accessible account; op: native operation; input: native arguments',
+    permissionCheck: () => ok('read'),
+    execute: async () => ok({ data: [] }),
+  } as any);
   const catalog = {
     searchVisible: async ({ query }: { query: string }) => {
       if (query.startsWith('Summarize Gmail')) return [{ skill: gmail, score: 14 }];
+      if (query.startsWith('Analyze Gmail records and create')) {
+        return [
+          { skill: localPython, score: 16 },
+          { skill: gmail, score: 12 },
+          { skill: sheets, score: 11 },
+        ];
+      }
+      if (query.startsWith('Read and normalize Gmail')) return [{ skill: gmail, score: 16 }];
+      if (query.startsWith('Create and verify Google Sheets')) return [{ skill: sheets, score: 16 }];
       if (query.startsWith('Research the best TTS')) {
         return [
           { skill: seo, score: 7 },
@@ -123,7 +167,8 @@ function makeDispatcher() {
       return [{ skill: dashboard, score: 16 }, { skill: oldDashboard, score: 12 }];
     },
     getVisible: async ({ skillId }: { skillId: string }) =>
-      [dashboard, oldDashboard, webSearch, seo, gmail].find(skill => skill.id === skillId) ?? null,
+      [dashboard, oldDashboard, webSearch, seo, gmail, sheets, localPython]
+        .find(skill => skill.id === skillId) ?? null,
     registryRevision: async () => 9,
   } as any;
   return new GatewayDispatcher({
@@ -177,6 +222,36 @@ function makeDispatcher() {
       listAccessibleZohoConnections: async () => ok([]),
       listAccessibleCanvaConnections: async () => ok([]),
       listAccessibleLarkConnections: async () => ok([]),
+    },
+    workContractBootstrap: {
+      load: async ({ toolIds }: { toolIds: readonly string[] }) => ({
+        contracts: toolIds.flatMap(toolId => {
+          if (toolId === 'googleGmail') {
+            return [{
+              toolId,
+              nativeTool: 'search_gmail_messages',
+              inputSchema: {
+                type: 'object',
+                properties: { query: { type: 'string' }, page_token: { type: 'string' } },
+                required: ['query'],
+              },
+            }];
+          }
+          if (toolId === 'googleSheets') {
+            return [{
+              toolId,
+              nativeTool: 'modify_sheet_values',
+              inputSchema: {
+                type: 'object',
+                properties: { spreadsheet_id: { type: 'string' }, values: { type: 'array' } },
+                required: ['spreadsheet_id', 'values'],
+              },
+            }];
+          }
+          return [];
+        }),
+        unavailableNativeTools: [],
+      }),
     },
     logger: noopLogger,
   });
@@ -242,5 +317,38 @@ describe('gateway work.resolve', () => {
     assert.deepEqual(data.bootstrap.connections.map((connection: any) => connection.provider), ['google_workspace']);
     assert.equal(data.bootstrap.connections[0].accountEmail, 'member@example.com');
     assert.ok(data.bootstrap.advisories.some((entry: any) => entry.code === 'connections_loaded'));
+  });
+
+  it('resolves the local, source, and destination recipes with contracts in one run bootstrap', async () => {
+    const result = await makeDispatcher().dispatch({
+      op: 'work.resolve',
+      departmentId: 'department-1',
+      payload: {
+        query: 'Analyze Gmail records and create a verified Google Sheet',
+        variants: [
+          'Read and normalize Gmail records with pagination and deduplication',
+          'Create and verify Google Sheets rows with targeted read-back ranges',
+        ],
+      },
+    }, member);
+
+    assert.equal(result.ok, true);
+    const data = result.data as any;
+    assert.deepEqual(
+      new Set(data.additionalSkills.map((entry: any) => entry.skill.id)),
+      new Set([localPython.id, gmail.id, sheets.id]),
+    );
+    assert.deepEqual(
+      new Set(data.bootstrap.tools.map((tool: any) => tool.id)),
+      new Set(['googleGmail', 'googleSheets']),
+    );
+    assert.deepEqual(
+      data.bootstrap.nativeContracts.map((contract: any) => contract.nativeTool),
+      ['search_gmail_messages', 'modify_sheet_values'],
+    );
+    assert.equal(data.bootstrap.connections.length, 1);
+    assert.ok(data.bootstrap.advisories.some((entry: any) =>
+      entry.code === 'native_contracts_loaded'
+      && /do not call describe again/i.test(entry.instruction)));
   });
 });

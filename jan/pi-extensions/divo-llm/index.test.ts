@@ -85,4 +85,19 @@ describe("Divo LLM proxy failure normalization", () => {
 			message: { ...original, errorMessage: DIVO_REQUEST_TOO_LARGE_ERROR },
 		});
 	});
+
+	it("scrubs member auth when partial proxy configuration fails closed", () => {
+		process.env.DIVO_MEMBER_TOKEN = "member-token";
+		let registered = false;
+
+		divoLlmExtension({
+			registerProvider: () => {
+				registered = true;
+			},
+			on: () => undefined,
+		} as never);
+
+		assert.equal(registered, false);
+		assert.equal(process.env.DIVO_MEMBER_TOKEN, undefined);
+	});
 });

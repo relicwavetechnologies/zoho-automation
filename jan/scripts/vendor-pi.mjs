@@ -8,7 +8,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  patchBundledPiPromptLifecycle,
   pruneBundledPiNonRuntimeFiles,
+  syncExecutablePiExtensions,
   writePiExtensionsBundleId,
 } from './pi-vendor-utils.mjs'
 
@@ -160,6 +162,7 @@ if (!fs.existsSync(cliJs)) {
   throw new Error(`Pi CLI missing after install: ${cliJs}`)
 }
 patchBundledPiReadTool(resourcesPi)
+patchBundledPiPromptLifecycle(resourcesPi)
 const prunedPiFiles = pruneBundledPiNonRuntimeFiles(resourcesPi)
 console.log(`Pruned ${prunedPiFiles} non-runtime Pi declaration/source-map files`)
 
@@ -195,14 +198,10 @@ fs.writeFileSync(
 )
 // mcp.json is generated at runtime into ~/Library/.../Jan/pi-agent/mcp.json
 
-// Copy Jan Pi extensions.
-rmrf(resourcesExtensions)
-fs.mkdirSync(resourcesExtensions, { recursive: true })
-if (fs.existsSync(sourceExtensions)) {
-  for (const name of fs.readdirSync(sourceExtensions)) {
-    copyDir(path.join(sourceExtensions, name), path.join(resourcesExtensions, name))
-  }
-}
+// Only source extensions with an executable entrypoint belong in the bundle.
+// Ignored dependency folders left after retiring an extension cannot silently
+// resurrect it because the destination is replaced before eligible copies.
+syncExecutablePiExtensions(sourceExtensions, resourcesExtensions)
 fs.writeFileSync(path.join(resourcesExtensions, '.gitkeep'), '')
 for (const name of fs.readdirSync(resourcesExtensions)) {
   if (name === '.gitkeep') continue
@@ -218,8 +217,9 @@ for (const name of fs.readdirSync(resourcesExtensions)) {
 const extensionsBundleId = writePiExtensionsBundleId(resourcesExtensions)
 console.log(`Bundled extension identity: ${extensionsBundleId}`)
 
-// Copy Jan-owned Pi skills. Runtime loads only the bundled divo-gateway router
-// skill; company skills are fetched from the authenticated backend registry.
+// Copy Jan-owned Pi skills. Runtime loads only the bundled divo-gateway and
+// divo-chat-history skills; company SaaS skills are fetched from the
+// authenticated backend registry.
 rmrf(resourcesSkills)
 fs.mkdirSync(resourcesSkills, { recursive: true })
 if (fs.existsSync(sourceSkills)) {

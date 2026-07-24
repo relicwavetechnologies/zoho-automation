@@ -26,6 +26,8 @@ describe('Lark system skill provisioning', () => {
   it('keeps every system Lark skill free of CJK content', () => {
     for (const skill of LARK_SYSTEM_SKILLS) {
       assert.deepEqual(larkSkillCjkFields(skill), [], skill.slug);
+      assert.match(skill.markdown, /one persistent Python file only when the work has pagination, a record set plus parsing\/transformation\/grouping\/deduplication\/joining, related writes, or more than one connected product/);
+      assert.match(skill.markdown, /Never call Lark directly from Bash/);
     }
   });
 

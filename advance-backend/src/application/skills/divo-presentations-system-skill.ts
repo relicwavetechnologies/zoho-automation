@@ -4,6 +4,10 @@ import {
   provisionDivoProductivitySystemSkill,
   type DivoProductivitySystemSkillDefinition,
 } from './divo-productivity-system-skills';
+import {
+  GOVERNED_DIRECT_ACTION_CRITERION,
+  GOVERNED_LOCAL_WORKFLOW_ROUTE,
+} from './governed-local-routing';
 
 export const DIVO_PRESENTATIONS_SKILL_SLUG = 'divo-presentations';
 
@@ -17,7 +21,7 @@ This is a Divo routing skill. Choose the presentation surface before taking acti
 
 ### Google Slides or a connected Google presentation
 
-Use the existing **Google Slides** Divo skill and its governed \`googleSlides\` tool. Never use a local Google CLI, browser automation, curl, or direct Google API.
+Use the existing **Google Slides** Divo skill and its governed \`googleSlides\` tool. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the governed Divo route directly. ${GOVERNED_LOCAL_WORKFLOW_ROUTE} Never call Google directly from Bash: no local Google CLI, browser automation, curl, or direct Google API.
 
 For an important Google Slides change:
 

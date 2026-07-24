@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import extension, { applyChildEvent } from "./index.ts";
+import extension, {
+	applyChildEvent,
+	buildDivoSubagentArgs,
+	buildDivoSubagentEnvironment,
+} from "./index.ts";
+import { getDivoSubagentRole } from "./agents.ts";
 import { createChild, MAX_OUTPUT_PREVIEW_CHARS } from "./progress.ts";
+import {
+	captureDivoGatewayConfig,
+	clearCapturedDivoGatewayConfig,
+} from "../divo-gateway/gateway-client.ts";
 
 test("registers one Pi-owned subagent tool and a shutdown handler", () => {
 	const tools: Array<{
@@ -44,4 +53,64 @@ test("keeps the full completed assistant message separate from its live preview"
 
 	assert.equal(captured, report);
 	assert.equal(child.outputPreview, `${report.slice(0, MAX_OUTPUT_PREVIEW_CHARS)}…`);
+});
+
+test("passes captured member auth only to the Pi child environment", () => {
+	clearCapturedDivoGatewayConfig();
+	captureDivoGatewayConfig({
+		DIVO_BACKEND_URL: "http://localhost:8000",
+		DIVO_MEMBER_TOKEN: "member-token",
+		DIVO_DEPARTMENT_ID: "finance",
+	});
+	const scrubbedParentEnv = { PATH: "/usr/bin" };
+	const result = buildDivoSubagentEnvironment(scrubbedParentEnv);
+
+	assert.ok("env" in result);
+	if (!("env" in result)) return;
+	assert.equal(scrubbedParentEnv.DIVO_MEMBER_TOKEN, undefined);
+	assert.equal(result.env.DIVO_MEMBER_TOKEN, "member-token");
+	assert.equal(result.env.DIVO_BACKEND_URL, "http://localhost:8000");
+	assert.equal(result.env.DIVO_DEPARTMENT_ID, "finance");
+	assert.equal(result.env.DIVO_SUBAGENT_CHILD, "1");
+	clearCapturedDivoGatewayConfig();
+});
+
+test("fails closed instead of launching a direct-provider child without member auth", () => {
+	clearCapturedDivoGatewayConfig();
+	const previousBackendUrl = process.env.DIVO_BACKEND_URL;
+	const previousMemberToken = process.env.DIVO_MEMBER_TOKEN;
+	delete process.env.DIVO_BACKEND_URL;
+	delete process.env.DIVO_MEMBER_TOKEN;
+	try {
+		const result = buildDivoSubagentEnvironment({ PATH: "/usr/bin" });
+		assert.ok("error" in result);
+		if ("error" in result) assert.match(result.error, /child authentication is unavailable/i);
+	} finally {
+		if (previousBackendUrl === undefined) delete process.env.DIVO_BACKEND_URL;
+		else process.env.DIVO_BACKEND_URL = previousBackendUrl;
+		if (previousMemberToken === undefined) delete process.env.DIVO_MEMBER_TOKEN;
+		else process.env.DIVO_MEMBER_TOKEN = previousMemberToken;
+		clearCapturedDivoGatewayConfig();
+	}
+});
+
+test("pins child inference to the Divo-proxied DeepSeek model", () => {
+	const role = getDivoSubagentRole("scout");
+	assert.ok(role);
+	if (!role) return;
+	const args = buildDivoSubagentArgs(
+		role,
+		"/tmp/scout.md",
+		["/bundle/divo-llm/index.ts", "/bundle/divo-gateway/index.ts"],
+		"Inspect the evidence",
+	);
+
+	assert.deepEqual(args.slice(args.indexOf("--provider"), args.indexOf("--provider") + 4), [
+		"--provider",
+		"deepseek",
+		"--model",
+		"deepseek-v4-flash",
+	]);
+	assert.ok(args.includes("/bundle/divo-llm/index.ts"));
+	assert.ok(args.includes("/bundle/divo-gateway/index.ts"));
 });

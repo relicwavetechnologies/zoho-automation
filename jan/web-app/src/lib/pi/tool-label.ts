@@ -103,10 +103,10 @@ const OP_LABELS: Record<string, string> = {
   'skills.list': 'skill list',
   'skills.search': 'skill search',
   'skills.get': 'skill details',
+  'work.resolve': 'work routing',
   'persona.resolve': 'persona lookup',
   'teach.context.get': 'teach context',
   'teach.learning.apply': 'teach learning update',
-  'google.plan': 'google plan',
   'connections.list': 'connection list',
   // What the user did was attach an image; what Divo does is read it. "Image
   // OCR" is the implementation's name for that, and naming the technique
@@ -342,9 +342,6 @@ export function resolveToolIdentity(part: ToolLikePart): ToolIdentity {
   }
   if (name === 'divo_artifact') {
     label = 'artifact'
-  }
-  if (name === 'divo_python_automation') {
-    label = 'Python automation'
   }
   if (name === 'divo_gateway' || op || toolId) {
     if (op === 'tools.invoke' && toolId) label = humanizeToolId(toolId)

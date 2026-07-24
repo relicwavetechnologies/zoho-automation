@@ -7,6 +7,10 @@ import {
   type GoogleWorkspaceProductDefinition,
 } from '../google/google-workspace-mcp-manifest';
 import { recordSkillRegistryMutation } from './skill-registry-versioning';
+import {
+  GOVERNED_DIRECT_ACTION_CRITERION,
+  GOVERNED_LOCAL_WORKFLOW_CRITERION,
+} from './governed-local-routing';
 
 export interface GoogleWorkspaceSystemSkillDefinition {
   readonly slug: string;
@@ -206,17 +210,17 @@ Use this skill for ${product.description.toLowerCase()}
 
 ## Governed execution
 
-1. Before any \`op: "call"\`, use \`connections.list\` to choose one exact connected/shared Google account, then include that UUID as \`connectionId\`. This is required for RBAC, owner policy, and connection rate limits.
+1. Reuse the exact connected/shared Google account already returned by the current unified run bootstrap. Call \`connections.list\` only when that bootstrap explicitly says Google account discovery is missing. Before any \`op: "call"\`, include the chosen UUID as \`connectionId\`; this is required for RBAC, owner policy, and connection rate limits.
 2. Never choose a model default or rotate through accounts after an error. A text reply is an exact choice only when it uniquely identifies one returned option by number or account email.
-3. \`connectionId\` may be omitted only for an \`op: "describe"\` schema lookup. Never use an email address or label itself as \`connectionId\`.
-4. Use only \`${product.toolId}\`. Never use a local Google CLI, Bash, curl, browser automation, or direct Google API calls.
-5. Call \`op: "describe"\` with the selected \`nativeTool\` before its first unfamiliar use. \`input\` may be omitted for describe; follow the returned MCP input schema exactly.
+3. Reuse the same exact \`connectionId\` for both \`op: "describe"\` and \`op: "call"\` when the bootstrap provides it. It may be omitted for \`describe\` only when there is no selected account and account resolution is unambiguous. Never use an email address or label itself as \`connectionId\`.
+4. Use only Divo's governed \`${product.toolId}\` route. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the runtime's governed wrapper directly. In Divo Desktop only, use one persistent Python file and invoke this same tool through credential-free \`divo-local\` only when the work has ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Never call Google directly from Bash: no Google CLI, curl, browser automation, direct Google API call, local OAuth token, or credential-bearing SDK. \`divo-local\` is a governed Divo wrapper, not a Google client.
+5. If the current run bootstrap already contains the exact \`nativeTool\` input schema, use it and do not call \`describe\` again. Otherwise call \`op: "describe"\` once before that unfamiliar operation. \`input\` may be omitted for describe; follow the returned MCP input schema exactly.
 6. Call \`op: "call"\` with the same \`nativeTool\` and its arguments under \`input\`.
 7. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}
 
 ## Canonical governed call shape
 
-Invoke the runtime's governed wrapper with \`toolId: "${product.toolId}"\` and keep all product arguments under its \`args\` object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. Never place \`connectionId\` beside the wrapper's payload.
+For a direct ${GOVERNED_DIRECT_ACTION_CRITERION}, invoke the runtime's governed wrapper with \`toolId: "${product.toolId}"\` and keep all product arguments under its \`args\` object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. When the local-workflow criterion above applies, put that same \`args\` object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. Never place \`connectionId\` beside the wrapper's payload.
 
 ## Approved operations
 
@@ -230,7 +234,7 @@ ${productWorkflow}
 - Never guess Google resource IDs. Discover or read the target before an ambiguous mutation.
 - Verify important content changes with a read operation and return canonical Google URLs from successful responses.
 - Treat every result advisory with \`level: "required"\` as part of the tool contract. Satisfy it before reporting completion; if it cannot be satisfied, report partial completion and the exact missing evidence.
-- Never expose tokens or the private MCP endpoint. Sidecar-local file paths and file URLs are forbidden; use base64 content or HTTPS sources.`;
+- Never expose tokens or the private MCP endpoint. A local path is forbidden only inside native Google \`input\`; it cannot be used as provider content. A local JSON \`--args-file\` passed to credential-free \`divo-local\` is allowed as Divo transport. Use base64 content or HTTPS sources when the native Google operation requires content.`;
 }
 
 function buildProductWorkflow(service: GoogleWorkspaceProductDefinition['service']): string {

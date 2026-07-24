@@ -112,4 +112,35 @@ describe('desktop capability bootstrap', () => {
     assert.equal(bootstrap.routingHints.length, 1);
     assert.match(bootstrap.routingHints[0] ?? '', /invoke webSearch directly/);
   });
+
+  it('advertises the governed local workflow as the direct route for record-set work', () => {
+    const bootstrap = buildDesktopCapabilityBootstrap({
+      departmentName: 'Finance',
+      departmentSlug: 'finance',
+      companyRole: 'MEMBER',
+      permission: permission([
+        ['googleGmail', ['read']],
+        ['googleSheets', ['create', 'update']],
+      ]),
+      visibleSkills: [{
+        id: 'local-python-id',
+        slug: 'divo-python-automation',
+        name: 'Divo Local Python Workflows',
+        description: 'Transform connected records through the governed local bridge.',
+        instructions: 'Hidden full recipe.',
+        toolIds: [],
+        aliases: [], tags: [], revision: 3,
+      }],
+      registryRevision: 14,
+      zohoConnections: [],
+    });
+
+    assert.deepEqual(bootstrap.preferredSkills.map((skill) => skill.id), ['local-python-id']);
+    assert.ok(bootstrap.routingHints.some((hint) =>
+      hint.includes('Gmail/CRM → Sheets')
+      && hint.includes('unified Divo work resolver')
+      && hint.includes('Do not fetch Divo Local Python Workflows by itself')
+      && hint.includes('persistent Python file')
+      && hint.includes('credential-free divo-local')));
+  });
 });

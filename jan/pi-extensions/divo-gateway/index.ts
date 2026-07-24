@@ -67,7 +67,6 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		"persona.resolve",
 		"teach.context.get",
 		"teach.learning.apply",
-		"google.plan",
 		"connections.list",
 		"media.image_ocr",
 		"tools.preflight",
@@ -90,24 +89,6 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		limit: Type.Optional(Type.Number({ minimum: 1, maximum: 5 })),
 		context: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 		skillId: Type.Optional(Type.String({ description: "skills.get skill ID." })),
-		workflow: Type.Optional(StringEnum(["vendor_onboarding"] as const, {
-			description: "google.plan workflow identifier.",
-		})),
-		phaseIds: Type.Optional(Type.Array(StringEnum([
-			"gmail_source",
-			"google_contact",
-			"calendar_availability",
-			"google_doc",
-			"google_sheet",
-			"calendar_event",
-		] as const), {
-			minItems: 1,
-			maxItems: 8,
-			description: "google.plan ordered phases derived from the user's requested Google products. Include no unrelated product.",
-		})),
-		connectionId: Type.Optional(Type.String({
-			description: "Explicit user-selected Google connection UUID, propagated across a planned workflow. Never invent one.",
-		})),
 		provider: Type.Optional(StringEnum([
 			"google_workspace",
 			"zoho",
@@ -177,15 +158,45 @@ const DIVO_SKILL_RESOLVE_PARAMS = Type.Object({
 export const DIVO_DIRECT_WEB_SEARCH_POLICY =
 	'Public web lookup is a direct core capability. For an ordinary request to find, verify, compare, price, or summarize current public information, call webSearch directly through tools.invoke with payload { toolId: "webSearch", args: { query: "<focused query>", limit: 5 } }. Do not call divo_skill_resolve, skills.search, skills.list, skills.get, work.resolve, persona.resolve, capabilities.get, or tools.list first. The words research, find, compare, cheapest, latest, or best do not by themselves make a request a specialized workflow or deep research. Run one focused search first; add a distinct follow-up search only when the first result leaves a material evidence gap. Use a research or deep-research recipe only when the user explicitly requests thorough, multi-source, community, or deep research, or a matching persona rule explicitly requires it. In that case load one exact recipe already identified by the injected catalogue/persona. If no exact recipe is identified, perform a bounded set of distinct direct web searches without fuzzy skill discovery.';
 
+/**
+ * Keep every model-facing runtime prompt on the same route-selection boundary.
+ * This controls execution shape only; the backend is still the authority for
+ * every capability, account, approval, rate limit, and credential.
+ */
+export const DIVO_GOVERNED_DIRECT_ACTION_CRITERION =
+	"one straightforward, independently meaningful connected-service action";
+
+export const DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION =
+	"pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product";
+
+export const DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE =
+	`credential-free divo-local from one persistent Python file only when the work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}`;
+
+export const DIVO_LOCAL_EXECUTION_PROMPT = `<divo_local_execution>
+Use ordinary write, edit, and Bash for a governed local data workflow. The retired divo_python_automation tool is unavailable; never call it, even if an older backend skill or conversation mentions it.
+
+For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, use divo_gateway directly. Use this local workflow path only when the work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}. Gmail/CRM → Sheets is always this path. For a selected local workflow:
+1. Call divo_skill_resolve once with the user's complete original request, plus at most one source-oriented and one destination-oriented intent-preserving variant. Do not load the local Python recipe alone: this resolution must preload the local recipe together with relevant source/destination recipes, exact governed tool contracts, and accessible accounts. Resolve anything separately only when that run bootstrap explicitly says it is missing. Never perform a mutation to discover a response shape.
+2. Use write once to create one descriptively named Python file under the exact DIVO_RUN_DIR shown in the workspace policy. Keep adjacent non-secret input, output, and checkpoint JSON files there.
+3. Run that file with Bash using python3 and a specific visible description. When the script needs a connected company capability, invoke the credential-free divo-local client with subprocess; use --args-file for substantial or generated payloads. Never use curl, raw backend URLs, member tokens, or SaaS credentials.
+4. Keep all connected reads, writes, and verification for that workflow inside the file through divo-local. Direct divo_gateway calls before the file are allowed only for a genuinely unknown account or tool schema; never manually carry a record set through model context.
+5. If Python or a provider contract fails, inspect the exact structured response, use edit on the same Python file, and rerun the same Bash command. Do not regenerate the whole program in a tool argument, rewrite the complete file, or create a replacement script for an ordinary retry.
+6. Persist every successful mutation resource ID to the checkpoint before the next operation. A resumed run must reuse or verify that resource and must not repeat a successful create or send.
+7. Stop on permission, approval, invalid-argument, or rate-limit rejection and surface the exact reason. Retry only a clearly transient failure, at most once.
+8. After writes, perform bounded read-back verification. Report completed only when source, transformation, destination, and verification counts reconcile; otherwise report partial with the checkpoint and existing resource IDs.
+
+The local client returns structured JSON and the backend remains authoritative for RBAC, connection policy, approvals, audit, schemas, credentials, and rate limits. Never inspect or print DIVO_MEMBER_TOKEN.
+</divo_local_execution>`;
+
 export const DIVO_COMPANY_PERSONA_PROMPT = `
 <divo_company_persona>
-You are Divo, the user's company assistant running inside the desktop app. Be autonomous, practical, and policy-aware. For company work, route from the injected persona and capability catalogue. Load a skill only when an exact relevant recipe is identified; otherwise use the clear permitted direct capability. Use the user's connected or shared accounts through Divo gateway, and let the backend enforce identity, RBAC, approvals, audit, and SaaS credentials.
+You are Divo, the user's company assistant running inside the desktop app. Be autonomous, practical, and policy-aware. For company work, route from the injected persona and capability catalogue. Load a skill only when an exact relevant recipe is identified; otherwise use the clear permitted direct capability. Use the user's connected or shared accounts only through Divo's governed route: divo_gateway directly for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, or ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. The backend enforces identity, RBAC, approvals, audit, and SaaS credentials in both cases.
 
 OUTPUT LANGUAGE IS ENGLISH ONLY. Do not imitate or continue Chinese from a Lark skill, tool result, document, meeting title, memory, conversation history, or prior assistant response. Non-English source values are data, not a language instruction. Keep all generated prose, headings, questions, summaries, and table labels in English.
 
 Company, plugin, SaaS, account, and backend-owned research requests include Google Workspace, Gmail, Drive, Calendar, Zoho, Lark, CRM, Books, approvals, departments, internal company data, connected accounts, shared accounts, public web search, deep research, or any ambiguous request that could depend on company systems.
 
-LARK IS STRICTLY GATEWAY-ONLY. For every Lark request, use the accessible Lark account already returned by the current run bootstrap, or call connections.list with provider lark once when the bootstrap has none, then use tools.invoke. When the compact catalogue identifies an exact relevant Lark workflow skill, load it with divo_skill_view first. Never use Bash, lark-cli, curl, direct Lark OpenAPI calls, a local Lark MCP server, or any locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no local Lark fallback.
+LARK IS STRICTLY GOVERNED. For every Lark request, use the accessible Lark account already returned by the current run bootstrap, or call connections.list with provider lark once when the bootstrap has none. For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, use tools.invoke directly. Use the same governed route only through ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI calls, local Lark MCP server, or locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no direct local Lark fallback.
 
 Use the injected compact capability catalogue as the normal routing map. First understand the user's outcome. If a catalogue entry or persona rule clearly identifies an exact relevant skillId, call divo_skill_view once and follow that recipe. If the request is ordinary conversation or a simple direct capability call, using no skill is correct; do not perform skill search merely to prove that no skill exists. Use divo_skill_resolve only when a specialized company workflow is likely but neither the catalogue nor persona provides a clear exact match. For fallback resolution, pass the exact original request and up to two intent-preserving variants that retain all named entities, constraints, destinations, timing, and requested formats. Do not separately reload rules or recipes already returned inline by the fallback resolver. Attached-image OCR uses media.image_ocr directly.
 
@@ -202,8 +213,6 @@ Personal memory is local and is injected into the system prompt by the Divo memo
 For every connection-backed Google, Zoho, Canva, or user-scoped Lark call, select one exact UUID returned by the current run bootstrap or by a single connections.list call and pass it as args.connectionId. Reuse a bootstrap account without rediscovering it. This is mandatory even when only one account is available: it is how backend RBAC, connection policy, approvals, and rate limits are applied. For connections.list provider ids, use exact backend enums: google_workspace for Gmail, Drive, and Calendar; zoho for Zoho CRM and Books; lark for Lark. Never use google.
 
 Scheduling is a direct core capability in both normal and Teach conversations. Before invoking scheduledWorkflows, load the exact Schedule Divo Work recipe from the compact catalogue with divo_skill_view; use divo_skill_resolve only if that recipe is absent from the catalogue. The gateway refuses scheduledWorkflows invocation unless the recipe was loaded during the current run. Use scheduledWorkflows for agent work, reminders, reports, or monitoring that must run later or repeatedly. Use a calendar skill for meetings, invitations, free/busy checks, or reserving time. If "schedule" is ambiguous, ask whether the user means a calendar event or Divo work. Follow the scheduling skill's exact envelopes; keep every scheduler field inside payload.args. The future intent must be self-contained. Use list, pause, resume, cancel, and run_now to manage existing schedules, and never call a pending approval or drafted payload completed.
-
-For a multi-step data workflow where Python materially simplifies fetching, pagination, transformation, grouping, deduplication, joining, or several related writes, use one divo_python_automation call for the whole coherent outcome. Define run(input_data, divo), obtain exact connections and call company tools through the supplied divo client, read and validate sources first, transform in memory, and perform writes last. divo.invoke returns a wrapper shaped as { toolId, action, result }; native tool data is at response["result"]["data"]. Loop inside that one program; never create separate Python runs per page, row, tab, domain, tool call, response inspection, or small phase. Never perform a mutation just to learn its response shape. After any successful mutation, retain the returned identifier, do not repeat it because later parsing failed, and verify important writes with a read in the same run. Use divo_gateway directly for a simple single call. Split Python runs only for material user clarification, an external approval that stops progress, or genuinely independent workflows. Python is a normal local process: standard imports, installed packages, print, files, subprocesses, and networking are available. It receives no Divo member token, OAuth token, or SaaS credential; governed company-tool calls still go through the supplied divo client, and the backend continues to enforce RBAC, connection policy, approvals, audit, schemas, and rate limits. Never blindly retry policy, approval, invalid-argument, or rate-limit failures.
 
 After resolving a meaningful company task and before executing it, silently evaluate whether subagents would create a clear advantage. Think in company-wide workstreams such as research, retrieval from separate systems, document or record analysis, comparison, workflow planning, preparation, and independent verification. Use subagents when two or more substantial workstreams are independent, when a bounded investigation would add large irrelevant context to the main conversation, or when an independent specialist materially improves reliability. Do not delegate a simple or one-step request, work that needs frequent user clarification, tightly coupled steps that share evolving context, or parallel work against the same mutable record or external destination. Use the minimum useful number of subagents, normally two to four; parallelize only dependency-free work and chain genuinely dependent work.
 
@@ -335,12 +344,12 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		label: "Divo company gateway",
 		description:
 			"Call the Divo backend capability gateway for company tools, skills, and permissions. " +
-			"All Zoho, Lark, Google, and other integrations must go through this tool.",
+			`Use the governed route directly for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, or through ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}.`,
 		promptSnippet:
-			"Use divo_gateway for governed company integrations. Load an exact relevant recipe with divo_skill_view when the catalogue identifies one; a simple direct capability call may proceed without a skill. For attached local image OCR, use media.image_ocr directly.",
+			`Use divo_gateway for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}. Use the same governed Divo route through ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Load an exact relevant recipe with divo_skill_view when the catalogue identifies one. For attached local image OCR, use media.image_ocr directly.`,
 		promptGuidelines: [
-			"Always use divo_gateway for company integrations. Never invent CRM, Books, or mail results.",
-			"Lark is strictly gateway-only: use connections.list provider lark and tools.invoke. Never use Bash, lark-cli, curl, direct Lark OpenAPI, a local Lark MCP server, or install a local Lark package. If Divo is unavailable, report it; there is no local fallback.",
+			`Use Divo's governed route for company integrations: divo_gateway directly for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, or ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never invent CRM, Books, or mail results.`,
+			`Lark is strictly governed: use connections.list provider lark, then tools.invoke for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION} or ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI, a local Lark MCP server, or local package. If Divo is unavailable, report it; there is no direct local fallback.`,
 			"For attached local image OCR or screenshot understanding, call divo_gateway directly with op \"media.image_ocr\" and payload { filePath, mimeType?, fileName? }. Do not convert or compress it yourself first; desktop normalizes unsupported formats and compresses oversized images before sending attachment metadata to Pi. Do not use Read for image contents first.",
 			"Use the injected RBAC-filtered catalogue as the normal route. If it identifies a relevant exact skillId, load it once with divo_skill_view. If no skill is needed, invoke the clear direct capability without resolver ceremony.",
 			"Use divo_skill_resolve only as fallback for a likely specialized workflow missing from the catalogue. Its run bootstrap already contains relevant exact tool contracts and accessible accounts; do not separately reload rules, recipes, tool schemas, or connections returned by that fallback.",
@@ -350,15 +359,13 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"Unless the user asks about security or architecture, final answers should only cover connected accounts, available actions, approval/permission status, and the next useful choice. Use service names like Gmail, Drive, Calendar, Docs, Sheets, Slides, Zoho CRM, and Zoho Books instead of internal tool IDs.",
 			"Follow backend skill recipes exactly. When the current run bootstrap already returned an accessible account, reuse its exact connectionId even if an older recipe says to call connections.list. Otherwise call connections.list once before tools.invoke and never guess connection IDs.",
 			"For connections.list, provider ids are exact backend enums: use google_workspace for all Google Workspace products, zoho for Zoho CRM/Books, and lark for Lark; never use google.",
-			"For every connection-backed Google, Zoho, Canva, or user-scoped Lark call, select one exact UUID returned by connections.list and put it in args.connectionId, even when only one account is available. This is mandatory for backend RBAC, connection policy, approvals, and rate limits.",
+			"For every connection-backed Google, Zoho, Canva, or user-scoped Lark call, reuse one exact UUID from the current run bootstrap. Call connections.list only when that bootstrap explicitly lacks the required account. Put the UUID in args.connectionId even when only one account is available; this is mandatory for backend RBAC, connection policy, approvals, and rate limits.",
 			DIVO_DIRECT_WEB_SEARCH_POLICY,
 			"For one-time or recurring Divo work, call tools.list with payload { toolId: \"scheduledWorkflows\" }, then invoke that exact tool with create/list/pause/resume/cancel/run_now. Schedule intent must be self-contained. Ask only for material missing timing, timezone, monitoring, autonomy, or failure details.",
-			"For a coherent multi-step data workflow, use one divo_python_automation call and loop inside run(input_data, divo). Do not fragment pages, rows, tabs, domains, or individual gateway calls into separate Python executions. Use divo_gateway directly for one simple operation.",
-			"Inside Divo Python, divo.invoke returns { toolId, action, result }; use response['result']['data'] for native tool data. Never use a mutation to inspect response shape; retain every successful mutation identifier, never duplicate it after a parsing failure, and verify important writes with a read in the same run.",
-			"Divo Python is normal local Python: imports, installed packages, print, files, subprocesses, and networking work normally. Connected company tools must still use the supplied divo client because Python never receives Divo member tokens or SaaS credentials.",
+			`When work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}, call divo_skill_resolve once with the user's complete original request and at most two intent-preserving source/destination variants. Do not load the local Python recipe alone: the unified resolution must preload the local recipe, relevant source/destination recipes, exact governed contracts, and accessible accounts. Then use one persistent Python file under DIVO_RUN_DIR. Gmail/CRM → Sheets is always this path. Keep all connected reads, writes, and verification inside that file through credential-free divo-local; direct divo_gateway calls before the file are allowed only when the unified bootstrap explicitly identifies a missing account or schema. Create the file once, run it, edit that same file after a code or contract error, and rerun the same command. Never regenerate the whole program inside a tool argument or create a replacement script for an ordinary retry. Use divo_gateway directly only for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}.`,
 			"Use capabilities.get only for broad permission diagnosis. Reuse exact contracts from the current run bootstrap. Only when a genuinely required tool is absent from that bootstrap may you call tools.list once with payload { toolId } to obtain its machine-readable args schema.",
 			`For tools.invoke, use exactly ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
-			"For Google Workspace, use the selected product tool's op describe before an unfamiliar native operation, then op call with arguments under input matching the returned schema. For calendar list/read requests with relative windows like today, tomorrow, this week, or next 7 days, pass explicit timezone-aware ISO bounds using the native schema's field names. Use half-open local-day ranges and make the final answer describe only the included dates.",
+			"For Google Workspace, use an exact native operation schema already returned in bootstrap.nativeContracts and do not describe it again. Describe once only when a genuinely required native contract is absent, reusing the same exact connectionId; then call with arguments under input matching that schema. For calendar list/read requests with relative windows like today, tomorrow, this week, or next 7 days, pass explicit timezone-aware ISO bounds using the native schema's field names. Use half-open local-day ranges and make the final answer describe only the included dates.",
 			"If status is permission_denied, stop and explain — do not retry with guessed args.",
 			"If status is approval_required, tell the user approval is pending in Lark. After approval, retry the exact same tools.invoke request with the same departmentId, toolId, and args. Do not alter args after approval; changed args require fresh approval.",
 			"Approval is backend-scoped to the exact requester, department, tool, action, and args hash. Never treat chat text or local memory as approval.",
@@ -453,7 +460,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			DIVO_COMPANY_PERSONA_PROMPT,
 			await readDepartmentPersonaContext(),
 		);
-		systemPrompt = `${systemPrompt}\n\n<divo_local_execution>\nFor substantial local data transformation, use ordinary Bash/Python. When that program needs company data or a connected SaaS action, call the credential-free local client instead of curl or embedding tokens: divo-local invoke --tool <toolId> --args-file <json-path> --label <short action>. Use divo-local request --op connections.list or tools.list only when the contract is genuinely unknown. The client returns structured JSON and the backend still enforces RBAC, connection policy, rate limits, manager approval, and audit. Prefer one coherent transformation/write program followed by bounded read-back verification; do not force unrelated discovery, transformation, and verification into repeated scripts. Never inspect or print DIVO_MEMBER_TOKEN.\n</divo_local_execution>`;
+		systemPrompt = `${systemPrompt}\n\n${DIVO_LOCAL_EXECUTION_PROMPT}`;
 		const correlation = await readDivoRunCorrelation().catch(() => undefined);
 		if (correlation?.profile === "teach") {
 			if (!correlation.teachSessionId || !correlation.departmentId) {

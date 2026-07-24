@@ -9,6 +9,7 @@ import { asMessageId, asChatId, asCorrelationId } from '../../../shared/ids';
 import type { Logger } from '../../../shared/logger';
 import type { TypedEnv } from '../../../config/env';
 import { LarkMessagingClient } from './clients/lark-messaging.client';
+import { LarkApiError } from './clients/lark-http.client';
 import { LarkStatusCoordinator } from './lark-status.coordinator';
 import { buildFinalCard, planFinalCards } from './lark-card.builder';
 
@@ -353,7 +354,12 @@ export class LarkChannelAdapter implements ChannelAdapter {
       const result = await this.messagingClient.sendCardToOpenId(openId, cardContent);
       return ok(result);
     } catch (e) {
-      return err(new ChannelError({ channel: 'lark', stage: 'send_status', reason: 'upstream_5xx', cause: e }));
+      return err(new ChannelError({
+        channel: 'lark',
+        stage: 'send_status',
+        reason: directCardFailureReason(e),
+        cause: e,
+      }));
     }
   }
 
@@ -520,6 +526,18 @@ export class LarkChannelAdapter implements ChannelAdapter {
     }
   }
 
+}
+
+function directCardFailureReason(error: unknown): 'upstream_4xx' | 'upstream_5xx' | 'rate_limited' {
+  if (!(error instanceof LarkApiError)) return 'upstream_5xx';
+  if (error.status === 429 || error.code === 99991400) return 'rate_limited';
+  if (
+    (error.status >= 400 && error.status < 500)
+    || (error.status === 200 && error.code !== undefined && error.code !== 0)
+  ) {
+    return 'upstream_4xx';
+  }
+  return 'upstream_5xx';
 }
 
 // ── Module-level helpers ────────────────────────────────────────────────────

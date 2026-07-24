@@ -14,6 +14,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { DIVO_SUBAGENT_ROLES, getDivoSubagentRole } from "./agents.ts";
+import { resolveDivoGatewayConfig } from "../divo-gateway/gateway-client.ts";
 import {
 	addAssistantOutput,
 	addEvent,
@@ -28,6 +29,9 @@ import {
 	type SubagentMode,
 	truncateText,
 } from "./progress.ts";
+
+const DIVO_CHILD_PROVIDER = "deepseek";
+const DIVO_CHILD_MODEL = "deepseek-v4-flash";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -189,12 +193,76 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
-function resolveDivoChildExtensions(): string[] {
+function resolveDivoChildExtensions(): { paths: string[] } | { error: string } {
 	const agentDir = process.env.PI_CODING_AGENT_DIR;
-	if (!agentDir) return [];
-	return ["divo-llm", "divo-gateway"]
-		.map((name) => path.join(agentDir, "extensions", name, "index.ts"))
-		.filter((extensionPath) => fs.existsSync(extensionPath));
+	if (!agentDir) return { error: "PI_CODING_AGENT_DIR is missing; Divo cannot launch an authenticated child agent." };
+	const paths = ["divo-llm", "divo-gateway"]
+		.map((name) => path.join(agentDir, "extensions", name, "index.ts"));
+	const missing = paths.filter((extensionPath) => !fs.existsSync(extensionPath));
+	return missing.length > 0
+		? { error: `Required Divo child extensions are missing: ${missing.map((item) => path.basename(path.dirname(item))).join(", ")}.` }
+		: { paths };
+}
+
+/**
+ * Rehydrate backend member auth only for a Pi child process. The child's
+ * divo-llm extension captures it into provider memory and deletes it before
+ * any Bash/Python tool can start. Ordinary local tool children therefore
+ * continue to inherit the scrubbed parent environment.
+ */
+export function buildDivoSubagentEnvironment(
+	baseEnv: NodeJS.ProcessEnv = process.env,
+): { env: NodeJS.ProcessEnv } | { error: string } {
+	const config = resolveDivoGatewayConfig();
+	if ("error" in config) {
+		return { error: `Divo child authentication is unavailable: ${config.error}` };
+	}
+	return {
+		env: {
+			...baseEnv,
+			DIVO_BACKEND_URL: config.backendUrl,
+			DIVO_MEMBER_TOKEN: config.memberToken,
+			...(config.defaultDepartmentId ? { DIVO_DEPARTMENT_ID: config.defaultDepartmentId } : {}),
+			DIVO_SUBAGENT_CHILD: "1",
+		},
+	};
+}
+
+/**
+ * Company subagents must not inherit a mutable Pi default provider. Pinning the
+ * provider/model keeps every child on the backend-proxied DeepSeek route that
+ * divo-llm registers, even when the shared agent directory contains an older
+ * or user-selected default provider.
+ */
+export function buildDivoSubagentArgs(
+	role: NonNullable<ReturnType<typeof getDivoSubagentRole>>,
+	promptPath: string,
+	extensionPaths: string[],
+	delegatedTask: string,
+): string[] {
+	const args = [
+		"--mode",
+		"json",
+		"-p",
+		"--no-session",
+		"--no-skills",
+		"--no-extensions",
+		"--no-prompt-templates",
+		"--no-context-files",
+		"--provider",
+		DIVO_CHILD_PROVIDER,
+		"--model",
+		DIVO_CHILD_MODEL,
+		"--tools",
+		role.tools.join(","),
+		"--append-system-prompt",
+		promptPath,
+	];
+	for (const extensionPath of extensionPaths) {
+		args.push("--extension", extensionPath);
+	}
+	args.push(`Task: ${delegatedTask}`);
+	return args;
 }
 
 async function writePromptToTempFile(role: string, prompt: string): Promise<{ dir: string; filePath: string }> {
@@ -283,27 +351,19 @@ async function runChild(
 	let wasAborted = false;
 
 	try {
+		const childExtensions = resolveDivoChildExtensions();
+		if ("error" in childExtensions) throw new Error(childExtensions.error);
+		const childEnvironment = buildDivoSubagentEnvironment();
+		if ("error" in childEnvironment) throw new Error(childEnvironment.error);
 		const prompt = await writePromptToTempFile(role.name, role.systemPrompt);
 		promptDir = prompt.dir;
 		promptPath = prompt.filePath;
-		const args = [
-			"--mode",
-			"json",
-			"-p",
-			"--no-session",
-			"--no-skills",
-			"--no-extensions",
-			"--no-prompt-templates",
-			"--no-context-files",
-			"--tools",
-			role.tools.join(","),
-			"--append-system-prompt",
+		const args = buildDivoSubagentArgs(
+			role,
 			promptPath,
-		];
-		for (const extensionPath of resolveDivoChildExtensions()) {
-			args.push("--extension", extensionPath);
-		}
-		args.push(`Task: ${delegatedTask}`);
+			childExtensions.paths,
+			delegatedTask,
+		);
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
@@ -311,7 +371,7 @@ async function runChild(
 				cwd: process.cwd(),
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env, DIVO_SUBAGENT_CHILD: "1" },
+				env: childEnvironment.env,
 			});
 			let buffer = "";
 

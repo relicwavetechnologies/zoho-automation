@@ -280,4 +280,36 @@ describe('Google Workspace MCP product tools', () => {
     assert.equal(result.ok, true);
     assert.deepEqual(calls, [{ name: 'manage_sheet_data_validation', input: args.input }]);
   });
+
+  it('rejects nested Sheet cells before connection lookup or provider mutation', async () => {
+    let connectionLookups = 0;
+    const sheets = createGoogleWorkspaceMcpTools({
+      getConnection: async () => {
+        connectionLookups += 1;
+        return { status: 'unavailable' as const };
+      },
+    }).find((tool) => tool.id === 'googleSheets')!;
+    const args = {
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      op: 'call' as const,
+      nativeTool: 'modify_sheet_values',
+      input: {
+        spreadsheet_id: 'sheet-1',
+        range_name: 'Data!A1:B2',
+        values: [
+          ['Name', 'Metadata'],
+          ['Alice', { source: 'gmail' }],
+        ],
+      },
+    };
+
+    const result = await sheets.execute(args, makeCtx('googleSheets', ['update']));
+
+    assert.equal(result.ok, false);
+    assert.equal(connectionLookups, 0);
+    assert.match(
+      result.ok ? '' : result.error.message,
+      /values\[1\]\[1\].*serialize objects and arrays/i,
+    );
+  });
 });

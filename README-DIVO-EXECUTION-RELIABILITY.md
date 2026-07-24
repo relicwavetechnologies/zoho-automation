@@ -34,8 +34,9 @@ Pi Bash / Python
   -> SaaS connector
 ```
 
-The current `divo_python_automation` tool remains temporarily as the working
-bridge. It must not be removed until the Bash/CLI path has parity for:
+The specialized inline-code Python tool has been retired. Normal `write`,
+`edit`, and `bash` now own the file lifecycle, while the credential-free
+`divo-local` client bridges governed company calls. This path provides:
 
 - structured calls and results;
 - visible progress and audit correlation;
@@ -138,7 +139,7 @@ tools precise reminders without continuously enlarging the system prompt.
   or group daily volume by full timestamps.
 - [ ] Never call omitted records “unparseable.” Distinguish provider omissions,
   Divo truncation, parsing failure, filtering, and deduplication.
-- [ ] Report partial completion with created resource IDs and safe retry advice.
+- [x] Report partial completion with created resource IDs and safe retry advice.
   Never claim “no data loss” without reconciled input/output counts.
 
 ### P0 — approval reliability
@@ -149,7 +150,7 @@ tools precise reminders without continuously enlarging the system prompt.
   shared-connection policy, or manager approval.
 - [x] Remove device-global local permission controls. Approval choices live only
   on the exact action card and expire when the desktop app stops.
-- [ ] Deduplicate identical pending approvals and tell the agent whether it
+- [x] Deduplicate identical pending approvals and tell the agent whether it
   should continue, retry the exact action, change it, or stop.
 - [x] Ensure the agent receives backend actions and decisions as structured tool
   results rather than learning about them only from UI cards.
@@ -161,9 +162,9 @@ tools precise reminders without continuously enlarging the system prompt.
 - [x] Make ordinary Bash the execution surface for local Python, files,
   subprocesses, and packages; reserve the broker for governed company calls.
 - [x] Preserve worklog labels for the script and each governed operation.
-- [ ] Support cancellation and a durable checkpoint containing the existing
+- [x] Support cancellation and a durable checkpoint containing the existing
   destination ID before any retry.
-- [ ] After parity tests, remove the specialized Python tool and stale prompt,
+- [x] After parity tests, remove the specialized Python tool and stale prompt,
   registration, packaging, tests, and comments in one cleanup change.
 
 ### P1 — agent efficiency
@@ -175,8 +176,9 @@ tools precise reminders without continuously enlarging the system prompt.
   must be available before execution.
 - [x] Avoid repeated `tools.list`, connection discovery, and schema probes in
   the same run by returning the needed contract once and caching it locally.
-- [ ] Keep todos tied to actual evidence; source fetching is not complete after
-  a debug sample, and verification is not complete before read-back checks pass.
+- [x] Remove the retired `divo_todos` runtime extension and packaging path.
+  Historical todo parts remain renderable, but new company Pi runs no longer
+  receive or vendor a separate todo tool.
 - [ ] Show semantic progress: fetching page 2, transforming 60 records, writing
   Domain Summary, verifying 46 rows—not generic “running commands.”
 
@@ -251,7 +253,92 @@ runtime-provided RFC/ISO/epoch normalizer with explicit UTC and local-day values
   desktop caches that exact response by trusted thread/run ID and invalidates
   it when the run changes; execution permissions, approvals, connection
   policy, and rate limits are still resolved fresh for every invocation.
-- [ ] Remove the old Python tool only after Wave 4 parity and regression tests.
+- [x] Remove the old Python tool only after Wave 4 parity and regression tests.
+
+### Wave 6 — exact approval authority and batch integrity (complete)
+
+- [x] Bind every approved batch to one exact authority route: authority type,
+  approver, governed connection, approval mode, and policy source.
+- [x] Canonically fingerprint the complete approved batch and every invocation
+  so PostgreSQL JSONB key ordering cannot create false mismatches.
+- [x] Reject legacy, unsigned, internally inconsistent, or modified plans
+  before any mutation.
+- [x] Preflight every call before mutation one, then re-resolve RBAC, the batch
+  approver, invocation policy, schema/action, tool readiness, and rate budget
+  immediately before each mutation.
+- [x] Stop on any authority/readiness/checkpoint change with durable,
+  truthful partial-progress metadata.
+- [x] Independent cold review completed with no verified P0–P3 findings.
+
+### Wave 7 — pending approval lifecycle and exact-once resume (complete)
+
+- [x] Serialize identical approval creation across backend processes with a
+  transaction-scoped PostgreSQL advisory lock; ordinary actions and automation
+  batches now reuse one durable row and send one Lark card.
+- [x] Bind ordinary action idempotency to the exact approval authority and
+  approver, in addition to the requester, run, tool, action, and canonical args.
+  Identical requests from different people in one shared Lark chat remain
+  isolated.
+- [x] Reuse compatible pending approvals created by the two earlier
+  idempotency namespaces during rolling upgrades. All current and legacy keys
+  are locked together, and legacy rows must pass an exact requester,
+  department, authority/approver, tool, action, args, and execution match.
+- [x] Return typed pending/rejected guidance with approver, request state,
+  next action, and retry contract so the agent waits instead of generating
+  duplicate cards or changing approved args.
+- [x] Treat approved execution as exactly once: one retry claims the action,
+  concurrent retries wait, and completed retries replay the stored result
+  instead of executing the mutation twice.
+- [x] Keep claimed execution durable past the human approval TTL. If a provider
+  returns an uncertain failure after execution begins, block the identical
+  action from running again; if the final rate-budget check stops the action
+  before tool code starts, safely release the claim for a later retry.
+- [x] Persist approval delivery separately from manager decision state so a
+  concurrent caller sees “delivering” until the Lark card is durably attached,
+  and never sees a false “waiting for approval” message after delivery fails.
+  A delivered `dispatching` card remains actionable even when its message ID
+  cannot be stored; a failed delivery keeps an explicit recovery checkpoint
+  when the status transition also fails. Timeouts and 5xx/network failures are
+  treated as delivery-unknown barriers because Lark may have accepted the card;
+  only definite provider rejection permits a fresh retry. On that retry the
+  repository retires the checkpoint under the same advisory lock before it
+  creates one replacement, so concurrent callers still cannot duplicate cards.
+- [x] Show reused and expired/replaced approval truth in the desktop worklog.
+- [x] Cover concurrent creation, expiry replacement, rejection, atomic claim,
+  completed replay, uncertain execution failure, final rate-budget rejection,
+  automation-batch reuse, requester isolation, rolling-upgrade reuse,
+  delivery-state recovery, and existing Lark double-click behavior with
+  focused tests.
+
+### Wave 8 — upfront workflow contracts and honest data movement (complete)
+
+- [x] Resolve the local workflow, source recipe, destination recipe, permitted
+  wrapper contracts, accessible accounts, and likely native operation schemas
+  in one bounded `work.resolve` call.
+- [x] Carry native contracts through the Pi parser/formatter so the agent sees
+  exact field names before writing its script instead of rediscovering response
+  shapes at runtime.
+- [x] Reuse the preloaded account and schema across the parent Google recipe,
+  product recipes, wrapper tool docs, runner guidance, and Pi prompt. Discovery
+  occurs once only when a required bootstrap item is actually missing.
+- [x] Normalize `divo-local invoke` into one stable programming envelope and
+  turn provider-level `success: false` into a real process failure.
+- [x] Make contract preload fail open with an explicit advisory; a temporary
+  schema-catalog outage must not fail all of `work.resolve`.
+- [x] Preserve honest Gmail page/batch reconciliation metadata and reject
+  nested Sheet cell values before any provider mutation.
+- [x] Require persistent `write -> bash -> edit -> bash` execution, targeted
+  read-back verification, one destination checkpoint, and partial/failed
+  status for unexplained source loss.
+- [x] Recognize ordinary transfer wording such as “copy Gmail messages to
+  Sheets” and preload the same source/destination contracts without requiring
+  implementation-specific language.
+- [x] Keep local chat recall sandboxed and bounded: canonical file containment,
+  regular-file checks, per-session and corpus byte ceilings, bounded
+  candidates, and explicit skipped-session metadata.
+- [x] Vendor only extension source; ignored `node_modules` and `.yarn`
+  dependency trees are installed cleanly in the destination instead of copied
+  from developer worktrees.
 
 ## Acceptance tests
 
@@ -288,8 +375,9 @@ runtime-provided RFC/ISO/epoch normalizer with explicit UTC and local-day values
   local approval without changing backend policy.
 - Wave 2 can fall back to the existing compact text under a compatibility field,
   but must never silently claim complete pagination.
-- Wave 4 keeps `divo_python_automation` until the broker path passes parity; if
-  the broker fails, revert the CLI registration without losing the current tool.
+- Wave 4 was migrated only after the broker path passed focused parity tests.
+  Rollback is the local broker registration boundary, not a second Python
+  execution surface.
 
 ## Current progress
 
@@ -302,5 +390,22 @@ runtime-provided RFC/ISO/epoch normalizer with explicit UTC and local-day values
 - [x] Wave 4 local broker/CLI implementation and process-level tests completed.
 - [x] Wave 5A unified work bootstrap and run-scoped cache implemented with
   backend and desktop contract regressions.
-- [ ] Wave 4 live desktop parity task is next; the specialized Python tool stays
-  registered until that result is reviewed.
+- [x] Cold-review reliability remediation completed: broker disconnects abort
+  in-flight requests, failed Python workflows retain mutation checkpoints,
+  automation batches checkpoint every successful call, and batch approvals use
+  and revalidate the same connection authority as ordinary gateway calls.
+- [x] Subagent proxy authentication repaired without exposing member auth to
+  Bash/Python: the parent rehydrates its captured credential only into the Pi
+  child launch, pins the child to the proxied DeepSeek provider/model, and the
+  child `divo-llm` extension removes the credential before tools run.
+- [x] Retired `divo_todos` removed from source, company runtime allowlists, and
+  the vendored extension bundle.
+- [x] Wave 6 exact approval authority and full-batch integrity completed,
+  including fail-closed per-mutation revalidation and a clean cold review.
+- [x] Wave 7 approval lifecycle completed: race-safe pending reuse, structured
+  agent/UI guidance, truthful card delivery state, exact-once execution claim,
+  completed-result replay, and safe post-claim rate-limit release.
+- [x] The live desktop trace exposed the specialized tool overriding the new
+  file-based path. The tool, runtime registration, prompt guidance, packaging,
+  UI label, and tests have now been retired together; the existing backend
+  system-skill identity is updated in place with the local file workflow.

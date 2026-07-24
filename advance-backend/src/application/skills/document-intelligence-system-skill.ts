@@ -26,7 +26,7 @@ This is a Divo desktop capability. Resolve this skill before using local documen
 - **Scan, image-only PDF, complex tables, equations, forms, or broken reading order:** use the advanced OCR path only after explaining its download and disk cost and receiving the member's confirmation.
 - **DOCX:** parse document structure directly; do not OCR a normal Word document.
 - **Local PPTX:** extract slide text, speaker notes, and tables structurally. Do not use this skill to create, edit, render, or visually verify a deck.
-- **Google Slides:** use the existing governed Google Slides skill and tool. Do not access a connected Google deck through a local file workflow.
+- **Google Slides:** use the existing governed Google Slides skill and tool. Do not download a connected Google deck into a local file workflow or bypass the governed Google route.
 
 The desktop-controlled asset root is \`DIVO_BUNDLED_SKILLS_DIR\`. If it is missing or does not contain \`ocr-and-documents\`, report that this Divo desktop capability is unavailable. Do not invent a path or substitute a random downloaded script.
 

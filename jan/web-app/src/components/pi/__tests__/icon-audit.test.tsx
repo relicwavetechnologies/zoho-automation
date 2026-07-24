@@ -21,19 +21,24 @@ const CANONICAL_TOOL_IDS = [
 // Mirrors GATEWAY_OPS in advance-backend/src/application/gateway/gateway.types.ts.
 const GATEWAY_OPS = [
   'capabilities.get', 'tools.list', 'skills.list', 'skills.search', 'skills.get',
-  'persona.resolve', 'teach.context.get', 'teach.learning.apply', 'google.plan',
+  'work.resolve', 'persona.resolve', 'teach.context.get', 'teach.learning.apply',
   'connections.list', 'media.image_ocr', 'tools.preflight', 'tools.prepare',
-  'tools.commit', 'tools.invoke',
+  'tools.commit', 'tools.invoke', 'automation.plan.create', 'automation.plan.status',
 ]
 
 // Mirrors COMPANY_TOOL_ALLOWLIST in jan/src-tauri/src/core/pi/runtime.rs.
 const DESKTOP_TOOLS = [
   'read', 'write', 'edit', 'bash', 'divo_gateway', 'divo_skill_resolve',
   'divo_memory_recall', 'divo_memory_review', 'divo_teach_clarify', 'memory',
-  'divo_todos', 'divo_python_automation', 'divo_artifact',
+  'divo_todos', 'divo_artifact',
 ]
 
 describe('tool icon coverage', () => {
+  it('keeps retired gateway operations out of desktop metadata', () => {
+    expect(GATEWAY_OPS).not.toContain('google.plan')
+    expect(GATEWAY_OPS).toContain('work.resolve')
+  })
+
   it.each(CANONICAL_TOOL_IDS)('gives %s a real icon', (toolId) => {
     expect(
       resolveToolIconComponent({

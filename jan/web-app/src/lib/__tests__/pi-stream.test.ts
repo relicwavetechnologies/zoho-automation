@@ -411,6 +411,189 @@ describe('createPiMessageStream run ownership', () => {
     await reader.cancel()
   })
 
+  it('follows the live owner when a recovered chat queues a continuation', async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'pi_prompt') {
+        return Promise.resolve({
+          activeRunId: 'still-live-run',
+          queuedBehindActive: true,
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+    const onRunStateChange = vi.fn()
+    const onTerminal = vi.fn()
+    const stream = createPiMessageStream({
+      threadId: 'thread-recovered',
+      message: 'continue after reconnecting',
+      abortSignal: undefined,
+      isStale: () => false,
+      onRunStateChange,
+      onTerminal,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-recovered' })
+      )
+    )
+    await vi.waitFor(() =>
+      expect(onRunStateChange).toHaveBeenCalledWith('still-live-run', 'active')
+    )
+    const transcriptListener = mocks.listeners.at(-1)
+
+    transcriptListener?.({
+      payload: {
+        type: 'message_update',
+        thread_id: 'thread-recovered',
+        run_id: 'still-live-run',
+        assistantMessageEvent: { type: 'text_delta', delta: 'resumed answer' },
+      },
+    })
+    expect((await reader.read()).value).toMatchObject({ type: 'text-start' })
+    expect((await reader.read()).value).toMatchObject({
+      type: 'text-delta',
+      delta: 'resumed answer',
+    })
+
+    transcriptListener?.({
+      payload: {
+        type: 'agent_end',
+        thread_id: 'thread-recovered',
+        run_id: 'still-live-run',
+      },
+    })
+    await vi.waitFor(() =>
+      expect(onTerminal).toHaveBeenCalledWith('still-live-run')
+    )
+  })
+
+  it('aborts the live owner when a recovered continuation is cancelled', async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'pi_prompt') {
+        return Promise.resolve({
+          activeRunId: 'still-live-run',
+          queuedBehindActive: true,
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+    const stream = createPiMessageStream({
+      threadId: 'thread-recovered',
+      message: 'stop the recovered work',
+      abortSignal: undefined,
+      isStale: () => false,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-recovered' })
+      )
+    )
+    await reader.cancel()
+    expect(mocks.invoke).toHaveBeenCalledWith('pi_abort', {
+      threadId: 'thread-recovered',
+      thread_id: 'thread-recovered',
+      runId: 'still-live-run',
+      run_id: 'still-live-run',
+    })
+  })
+
+  it('waits for recovered admission before stopping the authoritative owner', async () => {
+    let resolvePrompt: ((value: { activeRunId: string; queuedBehindActive: boolean }) => void) | undefined
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'pi_prompt') {
+        return new Promise((resolve) => {
+          resolvePrompt = resolve
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+    const stream = createPiMessageStream({
+      threadId: 'thread-recovered',
+      message: 'stop after reconnecting',
+      abortSignal: undefined,
+      isStale: () => false,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-recovered' })
+      )
+    )
+
+    const cancellation = reader.cancel()
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      'pi_abort',
+      expect.anything()
+    )
+
+    resolvePrompt?.({
+      activeRunId: 'still-live-run',
+      queuedBehindActive: true,
+    })
+    await cancellation
+
+    expect(mocks.invoke).toHaveBeenCalledWith('pi_abort', {
+      threadId: 'thread-recovered',
+      thread_id: 'thread-recovered',
+      runId: 'still-live-run',
+      run_id: 'still-live-run',
+    })
+  })
+
+  it('buffers same-thread events until recovered admission selects the live owner', async () => {
+    let resolvePrompt: ((value: { activeRunId: string; queuedBehindActive: boolean }) => void) | undefined
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === 'pi_prompt') {
+        return new Promise((resolve) => {
+          resolvePrompt = resolve
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+    const onTerminal = vi.fn()
+    const stream = createPiMessageStream({
+      threadId: 'thread-recovered',
+      message: 'continue after reconnecting',
+      abortSignal: undefined,
+      isStale: () => false,
+      onTerminal,
+    })
+    const reader = stream.getReader()
+    await reader.read()
+    await vi.waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        'pi_prompt',
+        expect.objectContaining({ threadId: 'thread-recovered' })
+      )
+    )
+    const transcriptListener = mocks.listeners.at(-1)
+
+    transcriptListener?.({
+      payload: {
+        type: 'agent_end',
+        thread_id: 'thread-recovered',
+        run_id: 'still-live-run',
+      },
+    })
+    expect(onTerminal).not.toHaveBeenCalled()
+
+    resolvePrompt?.({
+      activeRunId: 'still-live-run',
+      queuedBehindActive: true,
+    })
+    await vi.waitFor(() =>
+      expect(onTerminal).toHaveBeenCalledWith('still-live-run')
+    )
+  })
+
   it('stops the exact capacity waiter once and never admits it later', async () => {
     const abortController = new AbortController()
     const onTerminal = vi.fn()

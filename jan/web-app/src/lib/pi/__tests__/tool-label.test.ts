@@ -123,10 +123,10 @@ describe('resolveToolLabel', () => {
       'skills.list',
       'skills.search',
       'skills.get',
+      'work.resolve',
       'persona.resolve',
       'teach.context.get',
       'teach.learning.apply',
-      'google.plan',
       'connections.list',
       'media.image_ocr',
       // Not in the map — the generic fallback still has to clean it up.
@@ -136,6 +136,7 @@ describe('resolveToolLabel', () => {
     }
 
     expect(label('teach.learning.apply')).toBe('teach learning update')
+    expect(label('work.resolve')).toBe('work routing')
     // The act, not the technique: the user attached an image and Divo read it.
     expect(label('media.image_ocr')).toBe('read image')
     expect(label('some.brand_new.op')).toBe('some brand new op')

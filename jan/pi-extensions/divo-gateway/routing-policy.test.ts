@@ -5,6 +5,9 @@ import {
 	DIVO_COMPANY_PERSONA_PROMPT,
 	DIVO_DIRECT_WEB_SEARCH_POLICY,
 	DIVO_GATEWAY_PARAMS,
+	DIVO_GOVERNED_DIRECT_ACTION_CRITERION,
+	DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION,
+	DIVO_LOCAL_EXECUTION_PROMPT,
 } from "./index.ts";
 
 const ROUTER_SKILL = readFileSync(
@@ -40,6 +43,37 @@ describe("Divo normal-session routing policy", () => {
 		const schema = JSON.stringify(DIVO_GATEWAY_PARAMS);
 		assert.match(schema, /only for explicit registry inspection/i);
 		assert.match(schema, /do not use them as a routing loop/i);
+	});
+
+	it("uses one persistent local Python file and never routes through the retired inline-code tool", () => {
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, new RegExp(DIVO_GOVERNED_DIRECT_ACTION_CRITERION));
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, new RegExp(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION));
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, new RegExp(DIVO_GOVERNED_DIRECT_ACTION_CRITERION));
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, new RegExp(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION));
+		assert.match(ROUTER_SKILL, new RegExp(DIVO_GOVERNED_DIRECT_ACTION_CRITERION));
+		assert.match(ROUTER_SKILL, new RegExp(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION));
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /write once/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /edit on the same Python file/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /rerun the same Bash command/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local client/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Gmail\/CRM → Sheets is always this path/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Keep all connected reads, writes, and verification.*inside the file through divo-local/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /retired divo_python_automation tool is unavailable/i);
+		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /use one divo_python_automation call/i);
+		assert.match(ROUTER_SKILL, /Create one descriptive `.py` file/i);
+		assert.match(ROUTER_SKILL, /patch the same `.py` file with `edit`/i);
+		assert.match(ROUTER_SKILL, /Gmail\/CRM → Sheets is always this local-workflow path/i);
+		assert.match(ROUTER_SKILL, /all connected reads, writes, and verification inside the same file through `divo-local`/i);
+		assert.match(ROUTER_SKILL, /retired `divo_python_automation` tool is unavailable/i);
+	});
+
+	it("keeps direct provider access forbidden while permitting the governed local bridge", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never call Lark directly from Bash/i);
+		assert.match(
+			DIVO_COMPANY_PERSONA_PROMPT,
+			/credential-free divo-local from one persistent Python file.*pagination.*record set/s,
+		);
+		assert.doesNotMatch(JSON.stringify(DIVO_GATEWAY_PARAMS), /google\.plan/);
 	});
 
 	it("mentions durable deliverables once without stacking an artifacts mega-block or restating web-search policy", () => {

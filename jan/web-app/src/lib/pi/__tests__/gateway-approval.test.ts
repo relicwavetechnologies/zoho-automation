@@ -12,7 +12,14 @@ describe('Divo gateway approval status', () => {
         content: [{ type: 'text', text: 'Approval required.' }],
         details: {
           status: 'approval_required',
-          approval: { approvalId: 'approval-42', message: 'Sent to Finance.' },
+          approval: {
+            approvalId: 'approval-42',
+            message: 'Sent to Finance.',
+            authority: 'department_manager',
+            approverName: 'Finance Manager',
+            requestState: 'reused',
+            nextAction: 'wait',
+          },
         },
         isError: true,
       }),
@@ -22,6 +29,10 @@ describe('Divo gateway approval status', () => {
       state: 'pending',
       approvalId: 'approval-42',
       message: 'Sent to Finance.',
+      authority: 'department_manager',
+      approverName: 'Finance Manager',
+      requestState: 'reused',
+      nextAction: 'wait',
     })
   })
 
@@ -40,6 +51,31 @@ describe('Divo gateway approval status', () => {
       state: 'rejected',
       approvalId: 'approval-43',
       message: 'This action was not approved.',
+    })
+  })
+
+  it('reads an uncertain failed approved execution as a structured terminal state', () => {
+    const details = readDivoGatewayApproval({
+      type: 'tool-divo_gateway',
+      errorText: JSON.stringify({
+        details: {
+          status: 'approval_execution_failed',
+          approval: {
+            approvalId: 'approval-failed',
+            message: 'Provider outcome may be uncertain.',
+            requestState: 'reused',
+            nextAction: 'change_request',
+          },
+        },
+      }),
+    })
+
+    expect(details).toEqual({
+      state: 'failed',
+      approvalId: 'approval-failed',
+      message: 'Provider outcome may be uncertain.',
+      requestState: 'reused',
+      nextAction: 'change_request',
     })
   })
 

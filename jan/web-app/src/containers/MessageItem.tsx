@@ -53,6 +53,9 @@ import { isDivoSubagentTool } from '@/lib/pi/subagent'
 import { DivoApprovalStatusCard } from '@/components/pi/DivoApprovalStatusCard'
 import { isDivoGatewayApprovalTool } from '@/lib/pi/gateway-approval'
 import { ArtifactLinks } from '@/components/pi/ArtifactLinks'
+import { hasToolCard, isTerminalToolPart } from '@/lib/pi/tool-cards/registry'
+import { ToolCard } from '@/components/pi/tool-cards/ToolCard'
+import { TerminalCard } from '@/components/pi/tool-cards/TerminalCard'
 
 const CHAT_STATUS = {
   STREAMING: 'streaming',
@@ -472,6 +475,18 @@ export const MessageItem = memo(
             part={part}
           />
         )
+      }
+
+      // A shell run renders like a real terminal (command + streams + exit).
+      if (isTerminalToolPart(part)) {
+        return <TerminalCard key={`${message.id}-${partIndex}`} part={part} />
+      }
+
+      // Bespoke vendor cards (Google, Lark, Zoho, web, …) replace the raw JSON
+      // view with a branded, summarized brief; anything without a card falls
+      // through to the generic Tool below, so coverage grows in vendors.ts alone.
+      if (hasToolCard(part)) {
+        return <ToolCard key={`${message.id}-${partIndex}`} part={part} />
       }
 
       const toolName = resolveToolLabel(part)

@@ -1,5 +1,6 @@
 import type { CatalogSkill } from '../skills/skill-catalog.service';
 import type { PermissionResult } from '../permissions/permission.types';
+import { GOVERNED_LOCAL_WORKFLOW_CRITERION } from '../skills/governed-local-routing';
 
 const FINANCE_TOOL_PRIORITY = ['zohoBooks', 'zohoCrm', 'webSearch'] as const;
 const ACTION_PRIORITY = ['read', 'create', 'update', 'delete', 'send', 'execute'] as const;
@@ -122,6 +123,15 @@ export function buildDesktopCapabilityBootstrap(input: {
       name: skill.name,
       description: skill.description,
     })) : [];
+  const localWorkflowSkill = input.visibleSkills.find(skill => skill.slug === 'divo-python-automation');
+  if (localWorkflowSkill && !preferredSkills.some(skill => skill.id === localWorkflowSkill.id)) {
+    preferredSkills.push({
+      id: localWorkflowSkill.id,
+      slug: localWorkflowSkill.slug,
+      name: localWorkflowSkill.name,
+      description: localWorkflowSkill.description,
+    });
+  }
 
   const routingHints: string[] = [];
   if (booksActions.has('read')) {
@@ -138,6 +148,11 @@ export function buildDesktopCapabilityBootstrap(input: {
   if (availableToolIds.has('webSearch')) {
     routingHints.push(
       'Ordinary current external facts, pricing, comparisons, laws, market information, or verification -> invoke webSearch directly with args { query, limit }; do not resolve or search for a research skill first. Use an exact indexed deep-research skill only when the request is explicitly thorough/deep or the persona already links it.',
+    );
+  }
+  if (localWorkflowSkill) {
+    routingHints.push(
+      `Work with ${GOVERNED_LOCAL_WORKFLOW_CRITERION} (for example Gmail/CRM → Sheets) -> call the unified Divo work resolver once with the user's complete original request, plus at most one source-oriented and one destination-oriented intent-preserving variant. Do not fetch ${localWorkflowSkill.name} by itself: the resolver must load that recipe together with the relevant source/destination recipes, exact governed tool contracts, and accessible accounts. Then use one persistent Python file and credential-free divo-local, not model-carried records or direct provider access.`,
     );
   }
 

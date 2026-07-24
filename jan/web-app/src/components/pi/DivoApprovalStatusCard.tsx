@@ -19,7 +19,8 @@ type DivoApprovalStatusCardProps = {
 }
 
 function statusLabel(approval: DivoGatewayApproval): string {
-  return approval.state === 'pending' ? 'Approval pending' : 'Not approved'
+  if (approval.state === 'pending') return 'Approval pending'
+  return approval.state === 'failed' ? 'Approved action failed' : 'Not approved'
 }
 
 /**
@@ -36,6 +37,7 @@ export const DivoApprovalStatusCard = memo(({ part }: DivoApprovalStatusCardProp
   if (!approval) return null
 
   const pending = approval.state === 'pending'
+  const failed = approval.state === 'failed'
   const toolLabel = resolveToolLabel(part) || 'tool call'
 
   return (
@@ -62,14 +64,28 @@ export const DivoApprovalStatusCard = memo(({ part }: DivoApprovalStatusCardProp
                 : 'text-destructive'
             )}
           >
-            {pending ? 'Waiting' : 'Rejected'}
+            {pending ? 'Waiting' : failed ? 'Uncertain' : 'Rejected'}
           </span>
         </div>
         <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
           {pending
-            ? `Divo is waiting for the approval decision before it runs this ${toolLabel}.`
-            : `Divo did not run this ${toolLabel}.`}
+            ? approval.requestState === 'dispatching'
+              ? `Divo is still delivering the approval request for this ${toolLabel}.`
+              : `Divo is waiting${approval.approverName ? ` for ${approval.approverName}` : ''} before it runs this ${toolLabel}.`
+            : failed
+              ? `This ${toolLabel} failed after execution began. Check the destination before changing the request; Divo will not repeat the exact action.`
+              : `Divo did not run this ${toolLabel}. Change the request before trying again.`}
         </p>
+        {pending && approval.requestState === 'reused' && (
+          <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
+            The existing request was reused. No duplicate approval was sent.
+          </p>
+        )}
+        {pending && approval.requestState === 'replaced_expired' && (
+          <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
+            The earlier request expired, so Divo sent one fresh exact approval.
+          </p>
+        )}
         <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground/80">
           {approval.message}
         </p>

@@ -5,10 +5,46 @@ export type { ApprovalGrant } from '../../domain/orchestration/run-context';
 
 // ─── Gate decision returned by ApprovalGateService ────────────────────────────
 
+export type ApprovalAuthority = 'connection_owner' | 'company_admin' | 'department_manager';
+export type ApprovalRequestState = 'dispatching' | 'created' | 'reused' | 'replaced_expired';
+
 export type ApprovalDecision =
   | { readonly kind: 'allowed'; readonly executionGrant?: ApprovalExecutionGrant }
-  | { readonly kind: 'pending';       readonly approvalId: string; readonly message: string }
-  | { readonly kind: 'rejected';      readonly approvalId: string; readonly message: string }
+  | {
+      readonly kind: 'completed';
+      readonly approvalId: string;
+      readonly result: unknown;
+    }
+  | {
+      readonly kind: 'pending';
+      readonly approvalId: string;
+      readonly message: string;
+      readonly authority: ApprovalAuthority;
+      readonly approverName: string;
+      readonly requestState: ApprovalRequestState;
+      readonly nextAction: 'wait';
+      readonly retry: 'retry_exact';
+    }
+  | {
+      readonly kind: 'rejected';
+      readonly approvalId: string;
+      readonly message: string;
+      readonly authority: ApprovalAuthority;
+      readonly approverName: string;
+      readonly requestState: 'reused';
+      readonly nextAction: 'change_request';
+      readonly retry: 'change_request';
+    }
+  | {
+      readonly kind: 'execution_failed';
+      readonly approvalId: string;
+      readonly message: string;
+      readonly authority: ApprovalAuthority;
+      readonly approverName: string;
+      readonly requestState: 'reused';
+      readonly nextAction: 'change_request';
+      readonly retry: 'change_request';
+    }
   | { readonly kind: 'misconfigured'; readonly message: string };
 
 export interface ApprovalExecutionGrant {

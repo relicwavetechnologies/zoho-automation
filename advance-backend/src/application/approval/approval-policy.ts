@@ -2,7 +2,7 @@ import type { ToolActionGroup } from '../../domain/permissions/tool-action-group
 import type { PermissionResult } from '../permissions/permission.types';
 import type { RunContext, ApprovalGrant } from '../../domain/orchestration/run-context';
 import { ManagerApprovalConfigSchema } from './approval.types';
-import { sha256 } from '../../shared/hash';
+import { sha256, sha256CanonicalJson } from '../../shared/hash';
 
 export interface ApprovalCheckInput {
   readonly toolId:     string;
@@ -21,7 +21,7 @@ export interface ApprovalCheckResult {
 }
 
 export function computeArgsHash(args: unknown): string {
-  return sha256(JSON.stringify(args));
+  return sha256CanonicalJson(args);
 }
 
 export function computeIdempotencyKey(

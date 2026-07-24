@@ -28,7 +28,7 @@ const ArgsSchema = z.object({
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['connectionId'],
-      message: 'is required for Google Workspace calls; first use connections.list to choose an account',
+      message: 'is required for Google Workspace calls; reuse the run-bootstrap account or use connections.list once when none was loaded',
     });
   }
 });
@@ -78,6 +78,8 @@ export type ResolveGoogleWorkspaceMcpConnection = (input: {
   readonly connectionId?: string;
   readonly minimumAccess: 'read_only' | 'read_write';
   readonly requiredScopeGroups: readonly (readonly string[])[];
+  /** Discovery-only schema preload must not count as real account usage. */
+  readonly markLastUsed?: boolean;
 }) => Promise<GoogleWorkspaceMcpConnectionResolution>;
 
 export function createGoogleWorkspaceMcpTools(deps: {
@@ -102,8 +104,8 @@ function createProductTool(
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [
-      'connectionId: required for op=call. First use connections.list to choose the exact connected/shared account. It may be omitted only for op=describe.',
-      'op: describe|call. Use describe to fetch the pinned MCP input schema before an unfamiliar call; input may be omitted for describe.',
+      'connectionId: required for op=call. Reuse the exact run-bootstrap account; use connections.list once only when no suitable account was loaded. Reuse the same connectionId for describe.',
+      'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.',
       `nativeTool: one of ${product.tools.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}`,
     ].join(' '),
@@ -128,6 +130,8 @@ function createProductTool(
       if (!product.tools.includes(args.nativeTool)) {
         return badArgs(product.toolId, `${args.nativeTool} is not an approved ${product.name} operation`);
       }
+      const nativeInputIssue = validateDivoNativeInput(product.toolId, args.nativeTool, args.input ?? {});
+      if (nativeInputIssue) return badArgs(product.toolId, nativeInputIssue);
 
       const action = args.op === 'describe'
         ? 'read'
@@ -194,6 +198,8 @@ function createProductTool(
       if (!product.tools.includes(args.nativeTool)) {
         return badArgs(product.toolId, `${args.nativeTool} is not an approved ${product.name} operation`);
       }
+      const nativeInputIssue = validateDivoNativeInput(product.toolId, args.nativeTool, args.input ?? {});
+      if (nativeInputIssue) return badArgs(product.toolId, nativeInputIssue);
 
       const action = args.op === 'describe'
         ? 'read'
@@ -259,6 +265,36 @@ function createProductTool(
       }
     },
   };
+}
+
+function validateDivoNativeInput(
+  toolId: string,
+  nativeTool: string,
+  input: Readonly<Record<string, unknown>>,
+): string | undefined {
+  if (toolId !== 'googleSheets' || nativeTool !== 'modify_sheet_values') return undefined;
+  const values = input['values'];
+  if (!Array.isArray(values)) return undefined;
+
+  for (let rowIndex = 0; rowIndex < values.length; rowIndex++) {
+    const row = values[rowIndex];
+    if (!Array.isArray(row)) {
+      return `Invalid native input for ${nativeTool} — values[${rowIndex}] must be an array of cells`;
+    }
+    for (let columnIndex = 0; columnIndex < row.length; columnIndex++) {
+      if (!isGoogleSheetScalar(row[columnIndex])) {
+        return `Invalid native input for ${nativeTool} — values[${rowIndex}][${columnIndex}] must be string, number, boolean, or null; serialize objects and arrays deliberately before writing`;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isGoogleSheetScalar(value: unknown): value is string | number | boolean | null {
+  return value === null
+    || typeof value === 'string'
+    || typeof value === 'number'
+    || typeof value === 'boolean';
 }
 
 function progressVerb(action: ToolActionGroup): string {

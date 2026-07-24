@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
+import { normalizeLocalInvokeResponse } from "./local-broker-response.mjs";
 
 function usage(message) {
 	if (message) process.stderr.write(`${message}\n\n`);
@@ -86,7 +87,10 @@ socket.on("close", () => {
 	clearTimeout(timeout);
 	if (process.exitCode) return;
 	try {
-		const response = JSON.parse(responseText.trim());
+		const rawResponse = JSON.parse(responseText.trim());
+		const response = command === "invoke"
+			? normalizeLocalInvokeResponse(rawResponse)
+			: rawResponse;
 		process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
 		process.exitCode = response.ok && response.status === "success" ? 0 : 3;
 	} catch (error) {

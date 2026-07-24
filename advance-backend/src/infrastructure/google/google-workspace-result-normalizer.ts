@@ -30,6 +30,7 @@ export function normalizeGoogleWorkspaceResult(
     const providerReturnedMessages = parseGmailReportedCount(text) ?? messages.length;
     const nextPageToken = parseGmailNextPageToken(text);
     const requestedPageSize = readPositiveInteger(input['page_size']);
+    const unstructuredMessages = Math.max(0, providerReturnedMessages - messages.length);
     return {
       ...result,
       messages,
@@ -37,17 +38,47 @@ export function normalizeGoogleWorkspaceResult(
       pagination: {
         providerReturnedMessages,
         structuredMessages: messages.length,
-        unstructuredMessages: Math.max(0, providerReturnedMessages - messages.length),
+        unstructuredMessages,
         ...(requestedPageSize ? { requestedPageSize } : {}),
         hasNextPage: Boolean(nextPageToken),
         ...(nextPageToken ? { nextPageToken, nextPageInputField: 'page_token' } : {}),
       },
+      ...(unstructuredMessages > 0 ? {
+        advisories: mergeAdvisories(result['advisories'], [{
+          code: 'gmail_search_records_unstructured',
+          level: 'required',
+          instruction: `${unstructuredMessages} provider-returned Gmail records could not be normalized. Record them as skipped with a reason and report partial/failed instead of claiming a zero-skip success.`,
+        }]),
+      } : {}),
     };
   }
 
   if (nativeTool === 'get_gmail_messages_content_batch') {
     const messages = parseMessageMetadata(text);
-    return messages.length > 0 ? { ...result, messages } : result;
+    const requestedMessageIds = readStringArray(input['message_ids']);
+    const returnedMessageIds = new Set(messages.map(message => String(message['messageId'])));
+    const missingMessageIds = requestedMessageIds.filter(messageId => !returnedMessageIds.has(messageId));
+    const batch = {
+      requestedMessages: requestedMessageIds.length,
+      structuredMessages: messages.length,
+      missingMessages: missingMessageIds.length,
+      missingMessageIds,
+      complete: requestedMessageIds.length > 0
+        ? missingMessageIds.length === 0
+        : messages.length > 0,
+    };
+    return {
+      ...result,
+      messages,
+      batch,
+      ...(missingMessageIds.length > 0 ? {
+        advisories: mergeAdvisories(result['advisories'], [{
+          code: 'gmail_batch_records_missing',
+          level: 'required',
+          instruction: `${missingMessageIds.length} requested Gmail records are absent from the structured batch result. Record each ID as skipped/error and report partial/failed.`,
+        }]),
+      } : {}),
+    };
   }
 
   if (nativeTool === 'read_sheet_values') {
@@ -250,6 +281,13 @@ function parseSheetRange(text: string): string | undefined {
 
 function readPositiveInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+    .map(item => item.trim());
 }
 
 function readInputString(value: unknown): string | undefined {

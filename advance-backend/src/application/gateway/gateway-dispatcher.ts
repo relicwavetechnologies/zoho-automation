@@ -31,7 +31,6 @@ import {
   gatewayLocalApprovalRequired,
   gatewaySuccess,
   connectionsListPayloadSchema,
-  googlePlanPayloadSchema,
   isGatewayOp,
   personaResolvePayloadSchema,
   teachContextGetPayloadSchema,
@@ -45,13 +44,19 @@ import {
   automationPlanCreatePayloadSchema,
   automationPlanStatusPayloadSchema,
 } from './gateway.types';
-import { buildGoogleVendorOnboardingPlan } from './google-orchestration.service';
+import {
+  buildGoogleVendorOnboardingPlan,
+  deriveGoogleVendorOnboardingPhaseIds,
+  isGoogleVendorOnboardingRequest,
+  type GoogleVendorOnboardingResolution,
+} from './google-orchestration.service';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
 import { TOOL_PERMISSION_POLICY_REVISION } from '../../domain/tools/tool-id';
 import {
   WorkResolutionService,
   withWorkDiscoveryPermissions as withGatewayDiscoveryPermissions,
 } from './work-resolution.service';
+import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
 
 // zod-to-json-schema's recursive generic overflows when the registry erases a
 // concrete tool to Tool<unknown, unknown>. Keep that type mismatch at this
@@ -73,7 +78,13 @@ const LARK_CONNECTION_TOOL_IDS = new Set([
 ]);
 
 type WorkBootstrapAdvisory = {
-  readonly code: 'contracts_loaded' | 'connections_loaded' | 'connection_required' | 'connection_registry_unavailable';
+  readonly code:
+    | 'contracts_loaded'
+    | 'native_contracts_loaded'
+    | 'native_contracts_unavailable'
+    | 'connections_loaded'
+    | 'connection_required'
+    | 'connection_registry_unavailable';
   readonly level: 'required' | 'info';
   readonly instruction: string;
   readonly provider?: ConnectionProvider;
@@ -93,6 +104,7 @@ export interface GatewayDispatcherDeps {
   readonly toolExecutor: ToolExecutor;
   readonly localApprovalIntents?: LocalApprovalIntentService;
   readonly connectionRegistry?: ConnectionRegistryPort;
+  readonly workContractBootstrap?: WorkContractBootstrapPort;
   readonly mediaOcr?: MediaOcrService;
   readonly skillAccessEnforcement?: SkillAccessEnforcementPort;
   readonly auditService?: Pick<AuditService, 'record'>;
@@ -134,8 +146,6 @@ export class GatewayDispatcher {
         return this.handleTeachContextGet(member, departmentId, request.payload);
       case 'teach.learning.apply':
         return this.handleTeachLearningApply(member, departmentId, request.payload);
-      case 'google.plan':
-        return this.handleGooglePlan(member, departmentId, request.payload);
       case 'connections.list':
         return this.handleConnectionsList(member, departmentId, request.payload);
       case 'media.image_ocr':
@@ -530,12 +540,51 @@ export class GatewayDispatcher {
       member,
       permission,
       registryRevision: resolution.registryRevision,
+      query: parsed.data.query,
       toolIds: [
         ...resolution.persona.linkedSkills.flatMap(candidate => candidate.skill.toolIds),
         ...resolution.additionalSkills.flatMap(candidate => candidate.skill.toolIds),
       ],
     });
-    return gatewaySuccess({ ...resolution, bootstrap });
+    const googleVendorOnboarding = await this.resolveGoogleVendorOnboarding({
+      member,
+      ...(departmentId ? { departmentId } : {}),
+      permission,
+      query: parsed.data.query,
+    });
+    return gatewaySuccess({
+      ...resolution,
+      bootstrap,
+      ...(googleVendorOnboarding ? { googleVendorOnboarding } : {}),
+    });
+  }
+
+  /**
+   * The vendor-onboarding planner is intentionally internal to work.resolve.
+   * Pi receives its resulting recipe but never gets a raw planning operation
+   * it could invoke for unrelated Gmail-to-Sheets or report workflows.
+   */
+  private async resolveGoogleVendorOnboarding(input: {
+    member: GatewayMemberContext;
+    departmentId?: string;
+    permission: PermissionResult;
+    query: string;
+  }): Promise<GoogleVendorOnboardingResolution | undefined> {
+    const phaseIds = deriveGoogleVendorOnboardingPhaseIds(input.query);
+    if (!isGoogleVendorOnboardingRequest(input.query) || phaseIds.length < 2) return undefined;
+
+    const grantedSkillIds = await this.grantedSkillIds(input.member);
+    const planned = await buildGoogleVendorOnboardingPlan({
+      catalog: this.deps.skillCatalog,
+      companyId: input.member.companyId,
+      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      permission: withGatewayDiscoveryPermissions(input.permission),
+      ...(grantedSkillIds ? { grantedSkillIds } : {}),
+      phaseIds,
+    });
+    return planned.ok
+      ? { status: 'ready', plan: planned.value }
+      : { status: 'unavailable', missing: planned.missing };
   }
 
   /**
@@ -548,12 +597,14 @@ export class GatewayDispatcher {
     member: GatewayMemberContext;
     permission: PermissionResult;
     registryRevision: number;
+    query?: string;
     toolIds: readonly string[];
   }): Promise<{
     version: 1;
     scope: 'run';
     registryRevision: number;
     tools: Array<Record<string, unknown>>;
+    nativeContracts: Array<Record<string, unknown>>;
     connections: Array<Record<string, unknown>>;
     advisories: WorkBootstrapAdvisory[];
   }> {
@@ -622,11 +673,55 @@ export class GatewayDispatcher {
       }
     }
 
+    let nativeContracts: Array<Record<string, unknown>> = [];
+    if (input.query && this.deps.workContractBootstrap && tools.length > 0) {
+      let loaded;
+      try {
+        loaded = await this.deps.workContractBootstrap.load({
+          member: input.member,
+          query: input.query,
+          toolIds: tools.map(tool => String(tool.id)),
+          connections,
+        });
+      } catch {
+        loaded = {
+          contracts: [],
+          unavailableNativeTools: [],
+        };
+        advisories.push({
+          code: 'native_contracts_unavailable',
+          level: 'required',
+          instruction: 'Native contract preload is temporarily unavailable. Describe only the exact operations the workflow actually requires.',
+        });
+      }
+      nativeContracts = loaded.contracts.map(contract => ({
+        toolId: contract.toolId,
+        nativeTool: contract.nativeTool,
+        ...(contract.description ? { description: contract.description } : {}),
+        inputSchema: contract.inputSchema,
+      }));
+      if (nativeContracts.length > 0) {
+        advisories.push({
+          code: 'native_contracts_loaded',
+          level: 'required',
+          instruction: 'Likely native operation contracts for this workflow are already loaded below. Use their exact field names and do not call describe again for these operations during this run.',
+        });
+      }
+      if (loaded.unavailableNativeTools.length > 0) {
+        advisories.push({
+          code: 'native_contracts_unavailable',
+          level: 'required',
+          instruction: `Native contracts could not be preloaded for: ${loaded.unavailableNativeTools.join(', ')}. Describe only those operations if the workflow actually requires them.`,
+        });
+      }
+    }
+
     return {
       version: 1,
       scope: 'run',
       registryRevision: input.registryRevision,
       tools,
+      nativeContracts,
       connections: connections.map(connection => this.serializeAccessibleConnection(connection)),
       advisories,
     };
@@ -814,35 +909,6 @@ export class GatewayDispatcher {
     const response = await this.deps.toolExecutor.invoke({ ...input, expectedAction: 'read' });
     this.recordToolInvocationAudit(member, departmentId, parsed.data.toolId, response, execution);
     return response;
-  }
-
-  private async handleGooglePlan(
-    member: GatewayMemberContext,
-    departmentId: string | undefined,
-    payload: Record<string, unknown> | undefined,
-  ): Promise<GatewayResponse> {
-    const parsed = googlePlanPayloadSchema.safeParse(payload ?? {});
-    if (!parsed.success) {
-      const issues = parsed.error.errors.map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`).join('; ');
-      return gatewayFailure('bad_request', `Invalid google.plan payload — ${issues}`);
-    }
-    const perm = await this.resolvePerm(member, departmentId);
-    if (!perm) return this.permissionDenied('Permission resolution failed');
-
-    const grantedSkillIds = await this.grantedSkillIds(member);
-    const planned = await buildGoogleVendorOnboardingPlan({
-      catalog: this.deps.skillCatalog,
-      companyId: member.companyId,
-      ...(departmentId ? { departmentId } : {}),
-      permission: withGatewayDiscoveryPermissions(perm),
-      ...(grantedSkillIds ? { grantedSkillIds } : {}),
-      ...(parsed.data.connectionId ? { connectionId: parsed.data.connectionId } : {}),
-      ...(parsed.data.phaseIds ? { phaseIds: parsed.data.phaseIds } : {}),
-    });
-    if (!planned.ok) {
-      return this.permissionDenied(`Vendor onboarding requires executable Google specialist skills for: ${planned.missing.join(', ')}`);
-    }
-    return gatewaySuccess(planned.value);
   }
 
   private async handleToolsPreflight(

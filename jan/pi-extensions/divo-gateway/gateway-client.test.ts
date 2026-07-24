@@ -90,6 +90,81 @@ describe("formatGatewayResponse", () => {
 		assert.match(result.text, /already loaded/i);
 	});
 
+	it("names the exact automation approver instead of assuming a department manager", () => {
+		const result = formatGatewayResponse({
+			ok: true,
+			status: "success",
+			data: {
+				planId: "plan-1",
+				status: "waiting_for_manager_approval",
+				title: "Create governed sheet",
+				invocationCount: 1,
+				approvalAuthority: "connection_owner",
+				approverName: "Connection Owner",
+			},
+		});
+
+		assert.equal(result.isError, false);
+		assert.match(result.text, /waiting for Connection Owner in Lark/i);
+		assert.doesNotMatch(result.text, /department manager/i);
+	});
+
+	it("explains that an expired automation approval was replaced exactly once", () => {
+		const result = formatGatewayResponse({
+			ok: true,
+			status: "success",
+			data: {
+				planId: "replacement-plan",
+				status: "waiting_for_manager_approval",
+				title: "Create governed sheet",
+				invocationCount: 1,
+				approverName: "Connection Owner",
+				requestState: "replaced_expired",
+			},
+		});
+
+		assert.equal(result.isError, false);
+		assert.match(result.text, /previous exact approval expired/i);
+		assert.match(result.text, /one fresh replacement request/i);
+	});
+
+	it("does not claim an approval is waiting while its card is still being delivered", () => {
+		const result = formatGatewayResponse({
+			ok: true,
+			status: "success",
+			data: {
+				planId: "dispatching-plan",
+				status: "delivering_approval_request",
+				title: "Create governed sheet",
+				invocationCount: 1,
+				requestState: "dispatching",
+			},
+		});
+
+		assert.equal(result.isError, false);
+		assert.match(result.text, /still delivering the exact approval card/i);
+		assert.doesNotMatch(result.text, /waiting for .* in Lark/i);
+	});
+
+	it("blocks retry when approval-card delivery lost provider confirmation", () => {
+		const result = formatGatewayResponse({
+			ok: true,
+			status: "success",
+			data: {
+				planId: "delivery-unknown-plan",
+				status: "approval_delivery_unknown",
+				title: "Create governed sheet",
+				invocationCount: 1,
+				requestState: "dispatching",
+			},
+		});
+
+		assert.equal(result.isError, true);
+		assert.match(result.text, /lost confirmation/i);
+		assert.match(result.text, /do not submit this exact batch again/i);
+		assert.match(result.text, /administrator/i);
+	});
+
 	it("renders permission_denied", () => {
 		const result = formatGatewayResponse({
 			ok: false,
@@ -133,18 +208,76 @@ describe("formatGatewayResponse", () => {
 			approval: {
 				approvalId: "ap-1",
 				message: "sent to manager",
+				status: "pending",
+				authority: "department_manager",
+				approverName: "Finance Manager",
+				scope: "once",
+				requestState: "reused",
+				nextAction: "wait",
+				retry: "retry_exact",
 			},
 		});
 		assert.equal(result.isError, true);
-		assert.match(result.text, /approval required/i);
+		assert.match(result.text, /approval pending/i);
 		assert.match(result.text, /ap-1/);
+		assert.match(result.text, /Finance Manager/);
+		assert.match(result.text, /existing request was reused|request state: reused/i);
+		assert.match(result.text, /next action: wait/i);
 		assert.match(result.text, /exact same divo_gateway tools\.invoke request/i);
 		assert.match(result.text, /changed args require a fresh approval/i);
+	});
+
+	it("renders the exact approver and reused state for approval rejection", () => {
+		const result = formatGatewayResponse({
+			ok: false,
+			status: "approval_rejected",
+			approval: {
+				approvalId: "ap-rejected",
+				message: "The exact action was rejected.",
+				status: "rejected",
+				authority: "connection_owner",
+				approverName: "Workspace Owner",
+				scope: "once",
+				requestState: "reused",
+				nextAction: "change_request",
+				retry: "change_request",
+			},
+		});
+
+		assert.equal(result.isError, true);
+		assert.match(result.text, /approval rejected/i);
+		assert.match(result.text, /Workspace Owner/);
+		assert.match(result.text, /request state: reused/i);
+		assert.match(result.text, /change the request or stop/i);
+	});
+
+	it("blocks exact retry after an approved execution fails with uncertain provider outcome", () => {
+		const result = formatGatewayResponse({
+			ok: false,
+			status: "approval_execution_failed",
+			approval: {
+				approvalId: "ap-failed",
+				message: "The provider timed out after execution began.",
+				status: "failed",
+				authority: "department_manager",
+				approverName: "Finance Manager",
+				scope: "once",
+				requestState: "reused",
+				nextAction: "change_request",
+				retry: "change_request",
+			},
+		});
+
+		assert.equal(result.isError, true);
+		assert.match(result.text, /approved execution failed/i);
+		assert.match(result.text, /do not retry the exact same request/i);
+		assert.match(result.text, /provider outcome may be uncertain/i);
 	});
 
 	it("classifies only backend HITL terminal statuses for structured tool results", () => {
 		assert.equal(isGatewayApprovalStatus("approval_required"), true);
 		assert.equal(isGatewayApprovalStatus("approval_rejected"), true);
+		assert.equal(isGatewayApprovalStatus("approval_execution_failed"), true);
 		assert.equal(isGatewayApprovalStatus("approval_misconfigured"), false);
 		assert.equal(isGatewayApprovalStatus("tool_error"), false);
 	});
@@ -277,20 +410,6 @@ describe("callDivoGateway", () => {
 		const afterMutation = await callDivoGateway(config, request("run-2"), fetchImpl as typeof fetch);
 		assert.equal(calls, 4);
 		assert.notDeepEqual(afterMutation, nextRun);
-	});
-
-	it("caches a Google plan by user-selected connection without caching preflight", async () => {
-		clearDivoGatewaySkillCache();
-		let calls = 0;
-		const fetchImpl = async () => {
-			calls += 1;
-			return new Response(JSON.stringify({ ok: true, status: "success", data: { n: calls } }), { status: 200 });
-		};
-		const config = { backendUrl: "http://localhost:4000", memberToken: "member-jwt" };
-		await callDivoGateway(config, { op: "google.plan", payload: { workflow: "vendor_onboarding" } }, fetchImpl as typeof fetch);
-		await callDivoGateway(config, { op: "google.plan", payload: { workflow: "vendor_onboarding" } }, fetchImpl as typeof fetch);
-		await callDivoGateway(config, { op: "tools.preflight", payload: { invocations: [] } }, fetchImpl as typeof fetch);
-		assert.equal(calls, 2);
 	});
 
 	it("POSTs to /api/gateway with bearer auth", async () => {

@@ -1,5 +1,5 @@
 {
-  "name": "pi-divo-todos",
+  "name": "pi-divo-chat-history",
   "private": true,
   "type": "module",
   "dependencies": {
@@ -7,7 +7,7 @@
     "typebox": "1.1.38"
   },
   "scripts": {
-    "test": "node --import tsx --test board.test.ts index.test.ts"
+    "test": "node --import tsx --test index.test.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.4"

@@ -162,6 +162,7 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 			"Prefer paths under artifacts/ (for example artifacts/lark-approvals-brief.md). DIVO_ARTIFACTS_DIR points at that folder when configured.",
 			"After creating or meaningfully editing such a file, call divo_artifact with its path (and optional title/summaryForChat) so the sidebar opens it. This tool does not write content.",
 			"Prefer edit for small revisions; do not rewrite the whole file with write or by pasting the full body into divo_artifact.",
+			"In markdown artifacts, write real links so the sidebar can render them: use [label](https://…) for web sources, [file.ext](relative/path) for repo files, and a ## Sources list with matching numbered URLs when using [1]/[2] citations.",
 			"Stay in chat for short Q&A, status, confirmations, a single next step, mid-task tool chatter, or ordinary web lookups that only need a few bullets.",
 			"After calling, reply with a brief pointer (prefer summaryForChat). Do not paste the full file body into the transcript.",
 			"Reuse the same artifactId (or the same path) when updating a document already shown in the sidebar.",

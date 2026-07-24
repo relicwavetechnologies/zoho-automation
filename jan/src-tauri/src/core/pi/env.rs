@@ -26,7 +26,12 @@ const DIVO_PROCESS_ONLY_ENV_VARS: &[&str] = &[
     "DIVO_SCRIPTS_DIR",
     "DIVO_ARTIFACTS_DIR",
     "DIVO_LOGS_DIR",
+    "DIVO_CHAT_HISTORY_DIR",
 ];
+
+/// Jan data folder root. Pi chat-history tools resolve
+/// `{DIVO_CHAT_HISTORY_DIR}/threads/{uuid}/pi-session.jsonl` under this path only.
+pub const DIVO_CHAT_HISTORY_DIR_ENV: &str = "DIVO_CHAT_HISTORY_DIR";
 
 const DIVO_RUNTIME_CONTEXT_PATH_ENV: &str = "DIVO_RUNTIME_CONTEXT_PATH";
 
@@ -124,6 +129,12 @@ pub fn apply_divo_workspace_env(
         .env("DIVO_SCRIPTS_DIR", &layout.scripts_dir)
         .env("DIVO_ARTIFACTS_DIR", &layout.artifacts_dir)
         .env("DIVO_LOGS_DIR", &layout.logs_dir);
+}
+
+/// Points company Pi at Jan's data folder so chat-history tools can read
+/// `threads/*/pi-session.jsonl` without a generic absolute-path escape hatch.
+pub fn apply_divo_chat_history_env(cmd: &mut Command, data_folder: &Path) {
+    cmd.env(DIVO_CHAT_HISTORY_DIR_ENV, data_folder);
 }
 
 pub fn apply_divo_skill_env(cmd: &mut Command, skill_dirs: &[PathBuf]) {
@@ -386,6 +397,19 @@ mod tests {
         assert!(removed.contains("DIVO_RUN_CONTEXT_PATH"));
         assert!(removed.contains("DIVO_SKILL_DIRS"));
         assert!(removed.contains("DIVO_BUNDLED_SKILLS_DIR"));
+        assert!(removed.contains("DIVO_CHAT_HISTORY_DIR"));
+    }
+
+    #[test]
+    fn company_mode_exposes_chat_history_dir_for_local_recall() {
+        let mut cmd = Command::new("env");
+        apply_divo_chat_history_env(&mut cmd, Path::new("/data/jan"));
+
+        let configured = cmd
+            .get_envs()
+            .find_map(|(key, value)| (key == DIVO_CHAT_HISTORY_DIR_ENV).then_some(value.unwrap()))
+            .unwrap();
+        assert_eq!(configured, Path::new("/data/jan").as_os_str());
     }
 
     #[test]

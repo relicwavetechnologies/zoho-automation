@@ -40,6 +40,7 @@ describe("Divo exact skill view", () => {
 									parameterDocs: "connectionId, op, input",
 									argsSchema: { type: "object" },
 								}],
+								nativeContracts: [],
 								connections: [],
 								advisories: [],
 							},

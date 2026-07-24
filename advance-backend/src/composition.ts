@@ -168,6 +168,7 @@ import { ScheduledLarkDmChannelAdapter } from './infrastructure/channels/lark/sc
 import { LarkMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
 import { ToolExecutor } from './application/gateway/tool-executor';
 import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
+import { GoogleWorkspaceContractBootstrapService } from './application/gateway/google-workspace-contract-bootstrap.service';
 import { WorkResolutionService } from './application/gateway/work-resolution.service';
 import {
   InMemoryApprovalIntentRepository,
@@ -680,6 +681,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     readonly connectionId?: string;
     readonly minimumAccess: 'read_only' | 'read_write';
     readonly requiredScopeGroups: readonly (readonly string[])[];
+    readonly markLastUsed?: boolean;
   }) {
     if (!googleOAuthService.isConfigured()) return { status: 'unavailable' as const };
 
@@ -743,7 +745,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         userId:       `connection:${selectedConnectionId}`,
         refreshToken: connection.value.refreshToken,
       });
-      await integrationConnectionRepo.touchLastUsed(selectedConnectionId);
+      if (input.markLastUsed !== false) {
+        await integrationConnectionRepo.touchLastUsed(selectedConnectionId);
+      }
       return {
         status: 'resolved' as const,
         connection: {
@@ -1438,6 +1442,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalRepo,
     channelIdentityRepo,
     permissions,
+    approvalGate,
+    approvalResolver,
     toolExecutor: gatewayToolExecutor,
     logger: logger.child({ service: 'automation-plan-executor' }),
   });
@@ -1469,6 +1475,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     permissions,
     approvalRepo,
     approvalResolver,
+    approvalGate,
     larkAdapter,
     logger: logger.child({ service: 'automation-plan' }),
   });
@@ -1481,6 +1488,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     toolExecutor: gatewayToolExecutor,
     localApprovalIntents,
     connectionRegistry: integrationConnectionRepo,
+    workContractBootstrap: new GoogleWorkspaceContractBootstrapService(
+      getGoogleWorkspaceMcpConnection,
+    ),
     mediaOcr,
     managerPersonaRuntime: managerPersonaRuntimeService,
     workResolution,

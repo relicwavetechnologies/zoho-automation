@@ -83,6 +83,12 @@ function workResolutionData() {
 				parameterDocs: "query: focused search text",
 				argsSchema: { type: "object", properties: { query: { type: "string" } } },
 			}],
+			nativeContracts: [{
+				toolId: "webSearch",
+				nativeTool: "search",
+				description: "Search current public sources.",
+				inputSchema: { type: "object", properties: { query: { type: "string" } } },
+			}],
 			connections: [],
 			advisories: [{
 				code: "contracts_loaded",
@@ -137,6 +143,7 @@ describe("resolveDivoSkills", () => {
 		assert.deepEqual(first.results.map(skill => skill.id), ["cursor-dashboard", "web-search"]);
 		assert.equal(first.personaRules[0]?.learningSources[0]?.sourceId, "teach-1");
 		assert.equal(first.bootstrap?.tools[0]?.id, "webSearch");
+		assert.equal(first.bootstrap?.nativeContracts[0]?.nativeTool, "search");
 		const formatted = formatSkillResolveResult(first);
 		assert.match(formatted, /Manager persona matches/);
 		assert.match(formatted, /exact manager-persona link/);
@@ -145,6 +152,8 @@ describe("resolveDivoSkills", () => {
 		assert.match(formatted, /Use Cursor tokens, tabs, and state transitions/);
 		assert.match(formatted, /Run bootstrap \(already loaded/);
 		assert.match(formatted, /Do not call tools\.list again/);
+		assert.match(formatted, /Native contract webSearch\.search/);
+		assert.match(formatted, /input schema:/);
 		assert.doesNotMatch(formatted, /call .*skills\.get/i);
 	});
 
@@ -161,7 +170,7 @@ describe("resolveDivoSkills", () => {
 		assert.match(formatSkillResolveResult(result), /No matching company skills found/i);
 	});
 
-	it("resolves work context before adding the governed Google vendor-onboarding plan", async () => {
+	it("receives the governed Google vendor-onboarding plan through work.resolve", async () => {
 		clearDivoGatewaySkillCache();
 		const requests: Array<{ op: string; payload?: Record<string, unknown> }> = [];
 		const result = await resolveDivoSkills({
@@ -170,39 +179,37 @@ describe("resolveDivoSkills", () => {
 			fetchImpl: (async (_url: string, init?: RequestInit) => {
 				const request = JSON.parse(String(init?.body));
 				requests.push(request);
-				if (request.op === "work.resolve") {
-					return new Response(JSON.stringify({
-						ok: true, status: "success", data: {
-							originalQuery: request.payload.query,
-							queries: [request.payload.query],
-							persona: { rules: [], linkedSkills: [] },
-							additionalSkills: [], rejectedSkills: [],
-						},
-					}), { status: 200 });
-				}
 				return new Response(JSON.stringify({
 					ok: true, status: "success", data: {
-						workflow: "vendor_onboarding",
-						parent: { id: "google", name: "Google Workspace", description: "parent", instructions: "Compact parent guidance" },
-						connection: { message: "Selection is execution-time." },
-						phases: [
-							{ id: "source", name: "Gmail source", skillId: "gmail-id", toolId: "googleGmail", skill: { id: "gmail-id", name: "Gmail", description: "mail", instructions: "Gmail recipe", toolIds: ["googleGmail"], revision: 1 } },
-							{ id: "contact", name: "Google Contacts", skillId: "contacts-id", toolId: "googleContacts" },
-							{ id: "brief", name: "Google Docs", skillId: "docs-id", toolId: "googleDocs" },
-							{ id: "tracker", name: "Google Sheets", skillId: "sheets-id", toolId: "googleSheets" },
-						],
+						originalQuery: request.payload.query,
+						queries: [request.payload.query],
+						persona: { rules: [], linkedSkills: [] },
+						additionalSkills: [], rejectedSkills: [],
+						googleVendorOnboarding: {
+							status: "ready",
+							plan: {
+								workflow: "vendor_onboarding",
+								parent: { id: "google", name: "Google Workspace", description: "parent", instructions: "Compact parent guidance" },
+								connection: { message: "Selection is execution-time." },
+								phases: [
+									{ id: "source", name: "Gmail source", skillId: "gmail-id", toolId: "googleGmail", skill: { id: "gmail-id", name: "Gmail", description: "mail", instructions: "Gmail recipe", toolIds: ["googleGmail"], revision: 1 } },
+									{ id: "contact", name: "Google Contacts", skillId: "contacts-id", toolId: "googleContacts" },
+									{ id: "brief", name: "Google Docs", skillId: "docs-id", toolId: "googleDocs" },
+									{ id: "tracker", name: "Google Sheets", skillId: "sheets-id", toolId: "googleSheets" },
+								],
+							},
+						},
 					},
 				}), { status: 200 });
 			}) as typeof fetch,
 		});
 
-		assert.deepEqual(requests.map(request => request.op), ["work.resolve", "google.plan"]);
-		assert.deepEqual(requests[1]?.payload?.phaseIds, ["gmail_source", "google_contact", "google_doc", "google_sheet"]);
+		assert.deepEqual(requests.map(request => request.op), ["work.resolve"]);
 		assert.match(result.selected?.instructions ?? "", /Compact parent guidance/);
 		assert.match(formatSkillResolveResult(result), /Google Contacts — contacts-id/);
 	});
 
-	it("does not expose a partial searched skill when the required Google plan is denied", async () => {
+	it("does not expose a partial searched skill when unified work resolution marks vendor onboarding unavailable", async () => {
 		clearDivoGatewaySkillCache();
 		const operations: string[] = [];
 		const result = await resolveDivoSkills({
@@ -211,29 +218,25 @@ describe("resolveDivoSkills", () => {
 			fetchImpl: (async (_url: string, init?: RequestInit) => {
 				const request = JSON.parse(String(init?.body));
 				operations.push(request.op);
-				if (request.op === "work.resolve") {
-					return new Response(JSON.stringify({
-						ok: true, status: "success", data: {
-							originalQuery: request.payload.query,
-							queries: [request.payload.query],
-							persona: { rules: [], linkedSkills: [] },
-							additionalSkills: [{
-								source: "skill_search", matchedQueries: [request.payload.query], bestScore: 10,
-								reason: "strong", skill: { id: "generic", name: "Generic", description: "generic", instructions: "generic", toolIds: [], revision: 1 },
-							}],
-							rejectedSkills: [],
-						},
-					}), { status: 200 });
-				}
 				return new Response(JSON.stringify({
-					ok: false, status: "permission_denied", error: { message: "Google Docs update is not granted" },
+					ok: true, status: "success", data: {
+						originalQuery: request.payload.query,
+						queries: [request.payload.query],
+						persona: { rules: [], linkedSkills: [] },
+						additionalSkills: [{
+							source: "skill_search", matchedQueries: [request.payload.query], bestScore: 10,
+							reason: "strong", skill: { id: "generic", name: "Generic", description: "generic", instructions: "generic", toolIds: [], revision: 1 },
+						}],
+						rejectedSkills: [],
+						googleVendorOnboarding: { status: "unavailable", missing: ["Google Docs"] },
+					},
 				}), { status: 200 });
 			}) as typeof fetch,
 		});
 
-		assert.deepEqual(operations, ["work.resolve", "google.plan"]);
+		assert.deepEqual(operations, ["work.resolve"]);
 		assert.equal(result.selected, null);
 		assert.deepEqual(result.results, []);
-		assert.ok(result.notes.some(note => /google\.plan returned permission_denied/i.test(note)));
+		assert.ok(result.notes.some(note => /Google Docs/i.test(note)));
 	});
 });

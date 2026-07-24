@@ -27,17 +27,16 @@ const CHROME_DEVTOOLS_MCP_REL: &str =
 const DEFAULT_PI_PROVIDER: &str = "deepseek";
 const DEFAULT_PI_MODEL: &str = "deepseek-v4-flash";
 const LEGACY_DEFAULT_PI_MODEL: &str = "deepseek-v4-pro";
-const COMPANY_EXTENSION_NAMES: [&str; 7] = [
+const COMPANY_EXTENSION_NAMES: [&str; 6] = [
     "divo-llm",
     "divo-gateway",
     "divo-memory",
     "divo-subagents",
-    "divo-todos",
-    "divo-python-automation",
     "divo-artifact",
+    "divo-chat-history",
 ];
 const COMPANY_TOOL_ALLOWLIST: &str =
-    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_todos,divo_python_automation,divo_artifact";
+    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat";
 
 /// Every company Pi process has its own lifecycle lock, but its agent-dir
 /// bootstrap is shared by the whole desktop process. Keep all mutation of that
@@ -352,25 +351,29 @@ fn resolve_trusted_extension_paths(resource_dir: &Path) -> Result<Vec<PathBuf>, 
     Ok(paths)
 }
 
-/// Only the read-only bundled router skill is loaded into Pi. Company skills
-/// themselves are resolved through the authenticated backend registry; no
-/// writable user or local company skill directory is passed to Pi. Other
-/// bundled directories may be exposed as fixed helper assets, never as skills.
+/// Bundled local skills loaded into Pi. Company SaaS skills are resolved
+/// through the authenticated backend registry; no writable user skill
+/// directory is passed to Pi. Other bundled directories may be exposed as
+/// fixed helper assets via DIVO_BUNDLED_SKILLS_DIR, never as discoverable skills.
 fn resolve_trusted_skill_dirs(resource_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let skills_root = resolve_bundled_skills_dir(resource_dir).ok_or_else(|| {
         format!(
-            "Bundled Divo gateway skill directory was not found under {}",
+            "Bundled Divo skills directory was not found under {}",
             resource_dir.display(),
         )
     })?;
-    let gateway_skill_dir = skills_root.join("divo-gateway");
-    if !gateway_skill_dir.join("SKILL.md").is_file() {
-        return Err(format!(
-            "Bundled Divo gateway skill is missing at {}",
-            gateway_skill_dir.display(),
-        ));
+    let mut dirs = Vec::with_capacity(2);
+    for name in ["divo-gateway", "divo-chat-history"] {
+        let skill_dir = skills_root.join(name);
+        if !skill_dir.join("SKILL.md").is_file() {
+            return Err(format!(
+                "Bundled Divo skill is missing at {}",
+                skill_dir.display(),
+            ));
+        }
+        dirs.push(skill_dir);
     }
-    Ok(vec![gateway_skill_dir])
+    Ok(dirs)
 }
 
 fn resolve_bundled_skills_dir(resource_dir: &Path) -> Option<PathBuf> {
@@ -719,15 +722,17 @@ mod tests {
             cli_js: PathBuf::from("/bundle/pi/cli.js"),
             agent_dir: PathBuf::from("/data/pi-agent"),
             bundled_skills_dir: Some(PathBuf::from("/bundle/pi-skills")),
-            trusted_skill_dirs: vec![PathBuf::from("/bundle/pi-skills/divo-gateway")],
+            trusted_skill_dirs: vec![
+                PathBuf::from("/bundle/pi-skills/divo-gateway"),
+                PathBuf::from("/bundle/pi-skills/divo-chat-history"),
+            ],
             trusted_extension_paths: vec![
                 PathBuf::from("/bundle/pi-extensions/divo-llm/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-gateway/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-memory/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-subagents/index.ts"),
-                PathBuf::from("/bundle/pi-extensions/divo-todos/index.ts"),
-                PathBuf::from("/bundle/pi-extensions/divo-python-automation/index.ts"),
                 PathBuf::from("/bundle/pi-extensions/divo-artifact/index.ts"),
+                PathBuf::from("/bundle/pi-extensions/divo-chat-history/index.ts"),
             ],
             browser_cdp_fingerprint: None,
         };
@@ -746,11 +751,11 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair == [
                 "--tools",
-                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_todos,divo_python_automation,divo_artifact",
+                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat",
             ]
         }));
-        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 7);
-        assert_eq!(args.iter().filter(|arg| *arg == "--skill").count(), 1);
+        assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 6);
+        assert_eq!(args.iter().filter(|arg| *arg == "--skill").count(), 2);
     }
 
     #[test]
@@ -792,14 +797,17 @@ mod tests {
     }
 
     #[test]
-    fn trusted_skill_dirs_include_only_the_bundled_gateway_router() {
+    fn trusted_skill_dirs_include_gateway_and_chat_history_only() {
         let tmp =
             std::env::temp_dir().join(format!("jan-pi-trusted-skills-test-{}", std::process::id()));
         let skills_dir = tmp.join(BUNDLED_SKILLS_REL);
         let gateway_dir = skills_dir.join("divo-gateway");
+        let chat_history_dir = skills_dir.join("divo-chat-history");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&gateway_dir).unwrap();
         fs::write(gateway_dir.join("SKILL.md"), b"gateway").unwrap();
+        fs::create_dir_all(&chat_history_dir).unwrap();
+        fs::write(chat_history_dir.join("SKILL.md"), b"chat-history").unwrap();
         fs::create_dir_all(skills_dir.join("untrusted-local-company-skill")).unwrap();
         fs::write(
             skills_dir.join("untrusted-local-company-skill/SKILL.md"),
@@ -808,7 +816,7 @@ mod tests {
         .unwrap();
 
         let trusted = resolve_trusted_skill_dirs(&tmp).unwrap();
-        assert_eq!(trusted, vec![gateway_dir]);
+        assert_eq!(trusted, vec![gateway_dir, chat_history_dir]);
 
         let _ = fs::remove_dir_all(&tmp);
     }

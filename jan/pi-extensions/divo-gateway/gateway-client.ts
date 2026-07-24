@@ -35,6 +35,13 @@ export interface GatewayErrorBody {
 export interface GatewayApprovalBody {
 	approvalId?: string;
 	message?: string;
+	status?: "pending" | "rejected" | "failed";
+	authority?: "connection_owner" | "company_admin" | "department_manager";
+	approverName?: string;
+	scope?: "once";
+	requestState?: "dispatching" | "created" | "reused" | "replaced_expired";
+	nextAction?: "wait" | "change_request";
+	retry?: "retry_exact" | "change_request";
 }
 
 export interface GatewayResponseBody {
@@ -45,7 +52,10 @@ export interface GatewayResponseBody {
 	approval?: GatewayApprovalBody;
 }
 
-export type GatewayApprovalStatus = "approval_required" | "approval_rejected";
+export type GatewayApprovalStatus =
+	| "approval_required"
+	| "approval_rejected"
+	| "approval_execution_failed";
 
 /**
  * These are terminal, backend-owned HITL states. They are errors from the
@@ -54,7 +64,9 @@ export type GatewayApprovalStatus = "approval_required" | "approval_rejected";
  * in the owning tool trace.
  */
 export function isGatewayApprovalStatus(status: string): status is GatewayApprovalStatus {
-	return status === "approval_required" || status === "approval_rejected";
+	return status === "approval_required"
+		|| status === "approval_rejected"
+		|| status === "approval_execution_failed";
 }
 
 const MAX_INLINE_IMAGE_BYTES = 1_250_000;
@@ -161,7 +173,19 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 				...(automationPlan.invocationCount !== undefined ? [`Exact calls: ${automationPlan.invocationCount}`] : []),
 			];
 			if (automationPlan.status === "waiting_for_manager_approval") {
-				lines.push("The exact batch is waiting in the department manager's Lark DM. Do not claim it ran and do not retry its individual writes. Check automation.plan.status later using this plan ID.");
+				const approver = automationPlan.approverName ?? automationPlan.approvalAuthority?.replaceAll("_", " ") ?? "configured approver";
+				if (automationPlan.requestState === "replaced_expired") {
+					lines.push("The previous exact approval expired. The backend created one fresh replacement request; only the new plan ID is active.");
+				} else if (automationPlan.requestState === "reused") {
+					lines.push("The existing exact approval request was reused; no duplicate approval card was sent.");
+				}
+				lines.push(`The exact batch is waiting for ${approver} in Lark. Do not claim it ran and do not retry its individual writes. Check automation.plan.status later using this plan ID.`);
+			}
+			if (automationPlan.status === "delivering_approval_request") {
+				lines.push("Divo is still delivering the exact approval card. Do not submit another request or claim that approval is already waiting in Lark; check this plan again.");
+			}
+			if (automationPlan.status === "approval_delivery_unknown") {
+				lines.push("Divo lost confirmation while delivering the approval card. It may still be actionable, so do not submit this exact batch again. Contact an administrator with the plan ID.");
 			}
 			if (automationPlan.status === "completed") {
 				lines.push("The backend completed the manager-approved exact batch.");
@@ -169,7 +193,10 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 			if (automationPlan.status === "failed") {
 				lines.push("The batch paused or failed. Inspect execution details before proposing any correction; changed or new actions require a new plan and approval.");
 			}
-			return { text: lines.join("\n"), isError: false };
+			return {
+				text: lines.join("\n"),
+				isError: automationPlan.status === "approval_delivery_unknown",
+			};
 		}
 		const plan = readGooglePlan(body.data);
 		if (plan) {
@@ -240,23 +267,66 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 
 	if (body.status === "approval_required") {
 		const approvalId = body.approval?.approvalId ?? "unknown";
+		const approver = body.approval?.approverName ?? "the configured approver";
+		const requestState = body.approval?.requestState ?? "created";
 		const message =
 			body.approval?.message ??
 			"Manager approval is required before this action can run.";
 		return {
-			text: `Approval required.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user approval is pending in Lark. Do not claim the action completed. After the manager approves, retry the exact same divo_gateway tools.invoke request with the same departmentId, toolId, and args. Do not change or enrich the args; changed args require a fresh approval.`,
+			text: [
+				"Approval pending.",
+				"",
+				`Approval ID: ${approvalId}`,
+				`Approver: ${approver}`,
+				`Request state: ${requestState}`,
+				message,
+				"",
+				"Next action: wait. Do not submit another approval request and do not claim the action completed.",
+				"After approval, retry the exact same divo_gateway tools.invoke request once with the same departmentId, toolId, and args.",
+				"Changed args require a fresh approval.",
+			].join("\n"),
 			isError: true,
 		};
 	}
 
 	if (body.status === "approval_rejected") {
 		const approvalId = body.approval?.approvalId ?? "unknown";
+		const approver = body.approval?.approverName ?? "the configured approver";
+		const requestState = body.approval?.requestState ?? "reused";
 		const message =
 			body.approval?.message ??
 			body.error?.message ??
 			"The manager rejected this action.";
 		return {
-			text: `Approval rejected.\n\nApproval ID: ${approvalId}\n${message}\n\nTell the user the manager rejected this exact action. Do not retry the same args; ask what they want to change before trying again.`,
+			text: [
+				"Approval rejected.",
+				"",
+				`Approval ID: ${approvalId}`,
+				`Approver: ${approver}`,
+				`Request state: ${requestState}`,
+				message,
+				"",
+				"Next action: change the request or stop. Do not retry the same args; ask what the user wants to change before trying again.",
+			].join("\n"),
+			isError: true,
+		};
+	}
+
+	if (body.status === "approval_execution_failed") {
+		const approvalId = body.approval?.approvalId ?? "unknown";
+		const message =
+			body.approval?.message ??
+			body.error?.message ??
+			"The approved action failed after execution began.";
+		return {
+			text: [
+				"Approved execution failed.",
+				"",
+				`Approval ID: ${approvalId}`,
+				message,
+				"",
+				"Next action: do not retry the exact same request. Inspect the destination because the provider outcome may be uncertain, then change the request before trying again.",
+			].join("\n"),
 			isError: true,
 		};
 	}
@@ -291,6 +361,9 @@ function readAutomationPlan(value: unknown): {
 	status: string;
 	title?: string;
 	invocationCount?: number;
+	approvalAuthority?: string;
+	approverName?: string;
+	requestState?: "dispatching" | "created" | "reused" | "replaced_expired";
 } | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 	const record = value as Record<string, unknown>;
@@ -304,6 +377,14 @@ function readAutomationPlan(value: unknown): {
 		...(typeof record.planId === "string" ? { planId: record.planId } : {}),
 		...(typeof record.title === "string" ? { title: record.title } : {}),
 		...(typeof record.invocationCount === "number" ? { invocationCount: record.invocationCount } : {}),
+		...(typeof record.approvalAuthority === "string" ? { approvalAuthority: record.approvalAuthority } : {}),
+		...(typeof record.approverName === "string" ? { approverName: record.approverName } : {}),
+		...(record.requestState === "dispatching" ||
+		record.requestState === "created" ||
+		record.requestState === "reused" ||
+		record.requestState === "replaced_expired"
+			? { requestState: record.requestState }
+			: {}),
 	};
 }
 
@@ -469,19 +550,6 @@ function skillCacheKey(
 			query,
 			Array.isArray(payload?.variants) ? payload.variants.join("\u001f") : "",
 			String(payload?.limit ?? ""),
-		].join("|");
-	}
-
-	if (request.op === "google.plan") {
-		const payload = asRecord(request.payload);
-		if (payload?.workflow !== "vendor_onboarding") return null;
-		return [
-			"google.plan",
-			config.backendUrl,
-			tokenCacheKey(config.memberToken),
-			departmentId ?? "",
-			String(payload.connectionId ?? ""),
-			Array.isArray(payload.phaseIds) ? payload.phaseIds.join(",") : "",
 		].join("|");
 	}
 
