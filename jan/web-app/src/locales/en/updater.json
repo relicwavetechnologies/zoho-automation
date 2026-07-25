@@ -6,5 +6,10 @@
   "hideReleaseNotes": "Hide Release Notes",
   "remindMeLater": "Remind Me Later",
   "downloading": "Downloading...",
-  "updateNow": "Update Now"
+  "updateNow": "Update Now",
+  "updateReady": "Update Downloaded",
+  "restartToApply": "Restart Divo Dex to finish installing this update.",
+  "restartNow": "Restart Now",
+  "restarting": "Restarting...",
+  "later": "Later"
 }

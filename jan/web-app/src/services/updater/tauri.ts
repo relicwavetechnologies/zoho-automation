@@ -17,6 +17,10 @@ import { DefaultUpdaterService } from './default'
 const STORE_NAME = 'updater.json'
 const NONCE_SEED_KEY = 'nonce_seed'
 
+// An update that has been downloaded and is waiting for the user to restart.
+// Held in module scope so the handle survives re-renders of the updater UI.
+let pendingUpdate: Update | null = null
+
 // Cache nonce seed in memory to avoid repeated store reads
 let cachedNonceSeed: string | null = null
 // Promise to prevent race conditions when multiple calls happen simultaneously
@@ -160,6 +164,60 @@ export class TauriUpdaterService extends DefaultUpdaterService {
       console.error('Error downloading update with progress in Tauri:', error)
       throw error
     }
+  }
+
+  async downloadWithProgress(
+    progressCallback: (event: UpdateProgressEvent) => void
+  ): Promise<void> {
+    try {
+      const update = await check()
+      if (!update) {
+        throw new Error('No update available')
+      }
+
+      // download() stages the update without touching the installed app, so the
+      // user keeps working until they choose to restart.
+      await update.download((event) => {
+        try {
+          progressCallback(event as UpdateProgressEvent)
+        } catch (callbackError) {
+          console.warn('Error in download progress callback:', callbackError)
+        }
+      })
+
+      pendingUpdate = update
+    } catch (error) {
+      console.error('Error downloading update in Tauri:', error)
+      throw error
+    }
+  }
+
+  async installPendingUpdate(): Promise<void> {
+    try {
+      if (pendingUpdate) {
+        await pendingUpdate.install()
+        pendingUpdate = null
+        return
+      }
+
+      // The handle lives in module scope, so a webview reload loses it while the
+      // staged bytes remain on disk. Re-resolve the update and download again
+      // rather than leaving the user stuck on a restart that cannot proceed.
+      console.warn('No staged update handle; re-checking before install')
+      const update = await check()
+      if (!update) {
+        throw new Error('No update available to install')
+      }
+      await update.download()
+      await update.install()
+    } catch (error) {
+      console.error('Error installing staged update in Tauri:', error)
+      throw error
+    }
+  }
+
+  hasPendingUpdate(): boolean {
+    return pendingUpdate !== null
   }
 }
 

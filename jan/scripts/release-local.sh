@@ -86,12 +86,19 @@ PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 NOTES="Divo Dex $NEXT_VERSION"
 [ -z "$NOTES_FILE" ] || NOTES="$(<"$NOTES_FILE")"
 
-echo "==> Preparing Divo Dex $NEXT_VERSION from $COMMIT"
-node - "$TAURI_CONFIG" "$NEXT_VERSION" <<'NODE'
+echo "==> Preparing Divo Dex $NEXT_VERSION from $COMMIT ($CHANNEL channel)"
+# The bundled updater endpoint must match the channel being published, and the
+# channels must stay mutually exclusive: Tauri walks the endpoint list and takes
+# the first manifest it can fetch, so listing both would let a stable build pick
+# up a dev release whenever stable has no newer version.
+node - "$TAURI_CONFIG" "$NEXT_VERSION" "$RELEASE_BASE_URL" "$CHANNEL" <<'NODE'
 const fs = require('fs')
-const [configPath, version] = process.argv.slice(2)
+const [configPath, version, baseUrl, channel] = process.argv.slice(2)
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
 config.version = version
+config.plugins.updater.endpoints = [
+  `${baseUrl.replace(/\/$/, '')}/${channel}/latest.json`,
+]
 fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
 NODE
 
@@ -176,6 +183,20 @@ mv -f "$release_root/$channel/.latest.json.$$" "$release_root/$channel/latest.js
 mapfile -t old_releases < <(find "$release_root/$channel" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | head -n -"$retention")
 for old_release in "${old_releases[@]:-}"; do rm -rf -- "$release_root/$channel/$old_release"; done
 REMOTE
+
+# The build is done and uploaded, so the channel endpoint has served its
+# purpose. Put the committed default (stable) back so a dev release leaves only
+# the version bump in the working tree, and nobody accidentally commits a config
+# that points every future build at the dev feed.
+node - "$TAURI_CONFIG" "$RELEASE_BASE_URL" <<'NODE'
+const fs = require('fs')
+const [configPath, baseUrl] = process.argv.slice(2)
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+config.plugins.updater.endpoints = [
+  `${baseUrl.replace(/\/$/, '')}/stable/latest.json`,
+]
+fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
+NODE
 
 PUBLISHED=1
 echo "Published Divo Dex $NEXT_VERSION"

@@ -19,4 +19,19 @@ export class DefaultUpdaterService implements UpdaterService {
     console.log('downloadAndInstallWithProgress called with callback:', typeof progressCallback)
     // No-op for non-Tauri platforms
   }
+
+  async downloadWithProgress(
+    progressCallback: (event: UpdateProgressEvent) => void
+  ): Promise<void> {
+    console.log('downloadWithProgress called with callback:', typeof progressCallback)
+    // No-op for non-Tauri platforms
+  }
+
+  async installPendingUpdate(): Promise<void> {
+    // No-op
+  }
+
+  hasPendingUpdate(): boolean {
+    return false
+  }
 }

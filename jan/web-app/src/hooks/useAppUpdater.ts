@@ -1,5 +1,5 @@
 import { isDev } from '@/lib/utils'
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { events, AppEvent } from '@janhq/core'
 import type { UpdateInfo } from '@/services/updater/types'
 import { SystemEvent } from '@/types/events'
@@ -13,6 +13,9 @@ export interface UpdateState {
   downloadedBytes: number
   totalBytes: number
   remindMeLater: boolean
+  /** An update is staged on disk and waiting for the user to restart. */
+  isReadyToRestart: boolean
+  isRestarting: boolean
 }
 
 export const useAppUpdater = () => {
@@ -24,7 +27,16 @@ export const useAppUpdater = () => {
     downloadedBytes: 0,
     totalBytes: 0,
     remindMeLater: false,
+    isReadyToRestart: false,
+    isRestarting: false,
   })
+
+  // Mirrors isReadyToRestart so callbacks can read it without depending on
+  // (and being recreated by) the state they are guarding against.
+  const readyToRestartRef = useRef(false)
+  useEffect(() => {
+    readyToRestartRef.current = updateState.isReadyToRestart
+  }, [updateState.isReadyToRestart])
 
   // Listen for app update state sync events
   useEffect(() => {
@@ -92,17 +104,21 @@ export const useAppUpdater = () => {
             console.log('Update available:', update.version)
             return update
           } else {
-            // No update available - reset state
-            const newState = {
-              isUpdateAvailable: false,
-              updateInfo: null,
+            // No update available - reset state, unless one is already staged
+            // and waiting on a restart. Clearing it there would drop the restart
+            // prompt while the downloaded update still sits on disk.
+            if (!readyToRestartRef.current) {
+              const newState = {
+                isUpdateAvailable: false,
+                updateInfo: null,
+              }
+              setUpdateState((prev) => ({
+                ...prev,
+                ...newState,
+              }))
+              // Sync to other instances
+              syncStateToOtherInstances(newState)
             }
-            setUpdateState((prev) => ({
-              ...prev,
-              ...newState,
-            }))
-            // Sync to other instances
-            syncStateToOtherInstances(newState)
             return null
           }
         } else {
@@ -153,7 +169,7 @@ export const useAppUpdater = () => {
     [syncStateToOtherInstances]
   )
 
-  const downloadAndInstallUpdate = useCallback(async () => {
+  const downloadUpdate = useCallback(async () => {
     if (AUTO_UPDATER_DISABLED) {
       console.log('Auto updater is disabled')
       return
@@ -169,11 +185,11 @@ export const useAppUpdater = () => {
 
       let downloaded = 0
       let contentLength = 0
-      await getServiceHub().models().stopAllModels()
-      getServiceHub().events().emit(SystemEvent.KILL_SIDECAR)
-      await new Promise((resolve) => setTimeout(resolve, 1000))
 
-      await getServiceHub().updater().downloadAndInstallWithProgress((event) => {
+      // Only stage the update here. Models and sidecars keep running: the
+      // installed app is untouched until the user chooses to restart, so there
+      // is no reason to interrupt their work to fetch bytes in the background.
+      await getServiceHub().updater().downloadWithProgress((event) => {
         switch (event.event) {
           case 'Started':
             contentLength = event.data?.contentLength || 0
@@ -208,23 +224,30 @@ export const useAppUpdater = () => {
             })
             break
           }
-          case 'Finished':
+          case 'Finished': {
             console.log('Download finished')
-            setUpdateState((prev) => ({
-              ...prev,
+            const finishedState = {
               isDownloading: false,
               downloadProgress: 1,
+              isReadyToRestart: true,
+              // The staged update is the reason to surface the prompt again,
+              // so an earlier "remind me later" must not keep it hidden.
+              remindMeLater: false,
+            }
+            setUpdateState((prev) => ({
+              ...prev,
+              ...finishedState,
             }))
+            syncStateToOtherInstances(finishedState)
 
             // Emit app update download success event
             events.emit(AppEvent.onAppUpdateDownloadSuccess, {})
             break
+          }
         }
       })
 
-      await window.core?.api?.relaunch()
-
-      console.log('Update installed')
+      console.log('Update staged; waiting for the user to restart')
     } catch (error) {
       console.error('Error downloading update:', error)
       setUpdateState((prev) => ({
@@ -237,13 +260,43 @@ export const useAppUpdater = () => {
         message: error instanceof Error ? error.message : 'Unknown error',
       })
     }
-  }, [updateState.updateInfo])
+  }, [updateState.updateInfo, syncStateToOtherInstances])
 
+  const restartToUpdate = useCallback(async () => {
+    if (AUTO_UPDATER_DISABLED) {
+      console.log('Auto updater is disabled')
+      return
+    }
+
+    try {
+      setUpdateState((prev) => ({ ...prev, isRestarting: true }))
+
+      // Installing swaps the app bundle, so shut inference down first rather
+      // than leaving sidecars pointed at binaries that are about to move.
+      await getServiceHub().models().stopAllModels()
+      getServiceHub().events().emit(SystemEvent.KILL_SIDECAR)
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+
+      await getServiceHub().updater().installPendingUpdate()
+      await window.core?.api?.relaunch()
+
+      console.log('Update installed')
+    } catch (error) {
+      console.error('Error installing update:', error)
+      // Keep the update staged so the user can retry the restart.
+      setUpdateState((prev) => ({ ...prev, isRestarting: false }))
+
+      events.emit(AppEvent.onAppUpdateDownloadError, {
+        message: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  }, [])
 
   return {
     updateState,
     checkForUpdate,
-    downloadAndInstallUpdate,
+    downloadUpdate,
+    restartToUpdate,
     setRemindMeLater,
   }
 }

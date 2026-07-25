@@ -18,6 +18,9 @@ setup-updater-key:
     ./jan/scripts/setup-updater-key.sh
 
 # Build, sign, notarize, validate, and publish a versioned local desktop release.
+# The channel decides which update feed the build polls and where it publishes;
+# stable and dev are independent, so a dev build never sees a stable release.
 # Example: just release patch stable path/to/release-notes.md
+# Example: just release patch dev
 release bump="patch" channel="stable" notes_file="":
     ./jan/scripts/release-local.sh {{channel}} {{bump}} {{notes_file}}

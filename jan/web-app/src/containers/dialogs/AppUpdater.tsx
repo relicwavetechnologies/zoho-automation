@@ -12,13 +12,14 @@ import { useTranslation } from '@/i18n/react-i18next-compat'
 
 const DialogAppUpdater = () => {
   const { t } = useTranslation()
-  const { updateState, downloadAndInstallUpdate, setRemindMeLater } =
+  const { updateState, downloadUpdate, restartToUpdate, setRemindMeLater } =
     useAppUpdater()
   const [showReleaseNotes, setShowReleaseNotes] = useState(false)
 
   const handleUpdate = () => {
-    downloadAndInstallUpdate()
-    setRemindMeLater(true)
+    // Stay visible through the download so the prompt can turn into the
+    // restart request the moment the update is staged.
+    downloadUpdate()
   }
 
   const { release, fetchLatestRelease } = useReleaseNotes()
@@ -32,12 +33,14 @@ const DialogAppUpdater = () => {
   const [appUpdateState, setAppUpdateState] = useState({
     remindMeLater: false,
     isUpdateAvailable: false,
+    isReadyToRestart: false,
   })
 
   useEffect(() => {
     setAppUpdateState({
       remindMeLater: updateState.remindMeLater,
       isUpdateAvailable: updateState.isUpdateAvailable,
+      isReadyToRestart: updateState.isReadyToRestart,
     })
   }, [updateState])
 
@@ -60,12 +63,16 @@ const DialogAppUpdater = () => {
                 />
                 <div>
                   <div className="text-base font-medium">
-                    {t('updater:newVersion', {
-                      version: updateState.updateInfo?.version,
-                    })}
+                    {appUpdateState.isReadyToRestart
+                      ? t('updater:updateReady')
+                      : t('updater:newVersion', {
+                          version: updateState.updateInfo?.version,
+                        })}
                   </div>
                   <div className="mt-1 text-muted-foreground font-normal mb-2">
-                    {t('updater:updateAvailable')}
+                    {appUpdateState.isReadyToRestart
+                      ? t('updater:restartToApply')
+                      : t('updater:updateAvailable')}
                   </div>
                 </div>
               </div>
@@ -112,19 +119,34 @@ const DialogAppUpdater = () => {
                   <Button
                     variant="ghost"
                     size="sm"
+                    disabled={updateState.isRestarting}
                     onClick={() => setRemindMeLater(true)}
                   >
-                    {t('updater:remindMeLater')}
+                    {appUpdateState.isReadyToRestart
+                      ? t('updater:later')
+                      : t('updater:remindMeLater')}
                   </Button>
-                  <Button
-                    onClick={handleUpdate}
-                    disabled={updateState.isDownloading}
-                    size="sm"
-                  >
-                    {updateState.isDownloading
-                      ? t('updater:downloading')
-                      : t('updater:updateNow')}
-                  </Button>
+                  {appUpdateState.isReadyToRestart ? (
+                    <Button
+                      onClick={restartToUpdate}
+                      disabled={updateState.isRestarting}
+                      size="sm"
+                    >
+                      {updateState.isRestarting
+                        ? t('updater:restarting')
+                        : t('updater:restartNow')}
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={handleUpdate}
+                      disabled={updateState.isDownloading}
+                      size="sm"
+                    >
+                      {updateState.isDownloading
+                        ? t('updater:downloading')
+                        : t('updater:updateNow')}
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>
