@@ -2,7 +2,7 @@
 
 > Tracking document for the Lark channel hardening project.
 >
-> Status: **Wave 3A process-local lanes and Wave 2B ingress leases/dead-lettering complete — distributed leases, batching, busy UX, and retry classification still pending; schema push blocked until the local DB tunnel is restored**
+> Status: **Waves 2, 2B, and 3A complete and verified against the development database — distributed leases, batching, busy UX, and retry classification still pending**
 >
 > Last updated: 2026-07-25
 
@@ -58,9 +58,7 @@ sections remain the detailed implementation checklist.
 
 ### Explicitly not implemented yet
 
-- The Wave 2 schema has not yet been pushed. The final cold review is clean,
-  but `127.0.0.1:15432` is not responding, so the authorized development push
-  cannot run until the DB tunnel is restored.
+- Retry classification. See the retry-window backstop note below.
 - Explicit retry classification remains. Receipts are dead-lettered on a time
   backstop (a retry window measured from acceptance), not by recognising which
   errors are permanent, so a poison payload still consumes its whole window.
@@ -69,16 +67,21 @@ sections remain the detailed implementation checklist.
   SQL until the Wave 7B admin view lands.
 - Dead-letter and queue metrics, and a process-restart integration fixture,
   remain before production rollout.
-- `prisma/migrations/` is not a runnable history. There is no
-  `migration_lock.toml`, `LarkTenantBinding` and `IntegrationConnection` are
-  created by no migration, and `package.json` wires only `migrate dev` and
-  `db push` — never `migrate deploy`. Migration apply order is therefore
-  reasoned about by inspection, not proven. Closing this is a prerequisite for
-  the Wave 7 rollout, not for Wave 2.
+- `prisma/migrations/` is not a runnable history, and `divo_dev` confirms it:
+  the database has no `_prisma_migrations` table at all, so no migration has
+  ever been applied there. `LarkTenantBinding` and `IntegrationConnection` are
+  created by no migration, there is no `migration_lock.toml`, and `package.json`
+  wires only `migrate dev` and `db push` — never `migrate deploy`. Both new
+  migration files were executed individually against the live schema and
+  succeed, but their apply *order* is still reasoned about by inspection rather
+  than exercised. Closing this is a Wave 7 rollout prerequisite.
 - The tenant backfill deliberately skips companies holding more than one active
   Lark binding, because no tenant key is authoritative for their connections.
   Those companies must be resolved through the admin 409 path before their
-  legacy connections will resolve.
+  legacy connections will resolve. On `divo_dev` the backfill is a verified
+  no-op: no company has multiple active bindings, and both Lark connections
+  already carry `larkTenantKey`. Its real effect is untested until production,
+  where legacy connections predating the field may exist.
 - `resolveByLarkOpenId` remains declared but is called by nothing. It should be
   deleted once no caller can plausibly reappear; leaving it invites a future
   unscoped lookup.
@@ -95,7 +98,8 @@ sections remain the detailed implementation checklist.
 |---|---|---|
 | Canonical referenced messages | 14 focused tests + typecheck passed | Round 2: ship, no findings |
 | Tenant-scoped Lark identity | 130 focused tests + typecheck + Prisma validation passed after the active-binding, OAuth callback, migration, and approval-resume corrections | Three review rounds completed and all verified Lark findings fixed; final Lark-only review is in progress |
-| Wave 1 identity schema | `prisma db push --accept-data-loss` completed; tenant-scoped unique index verified | No conflicting duplicate identity rows were present before that push; the newer Wave 2 ingress-receipt migration is still pending |
+| Wave 1 identity schema | `prisma db push --accept-data-loss` completed; tenant-scoped unique index verified | No conflicting duplicate identity rows were present before that push |
+| Wave 2/2B schema on `divo_dev` | Pushed 2026-07-26 over the SSH tunnel. `IngressIdempotencyKey` had only `id, channel, messageId, createdAt` and 0 rows beforehand, so the tenant-scoped unique index carried no duplicate risk. `prisma migrate diff --from-url` now reports zero drift, and both new migration files execute cleanly against the live schema | 15/15 live round-trip checks passed against real Postgres: tenant-scoped dedupe, duplicate delivery returning the same receipt, claimed/leased/terminal outcomes, stale-lease re-claim, retry-window recovery and retirement filters, dead-lettering, and refusal to resurrect a `dead` row |
 | Approval and share cards | 108 focused tests + typecheck passed | Fresh review: ship, no findings |
 | Run interruption | 53 focused tests + orchestration tests + typecheck passed | Two fresh reviews; final verdict: ship, no findings |
 | Trigger/thread delivery | 53 focused tests + typecheck passed | Fresh review: ship, no findings |
@@ -123,9 +127,19 @@ What Wave 3 still owes before this is safe on more than one replica:
   lanes are now per-requester, so a busy group can open many parallel runs until
   `maxConcurrent` is set deliberately.
 
-Independently of Wave 3, the local DB tunnel on `127.0.0.1:15432` remains
-unavailable, so the already-authorized development schema push and the real
-Redis/Postgres restart smoke test are still outstanding.
+The development schema push is done. `divo_dev` is reachable over the SSH
+tunnel (`pnpm dev:e2e`, or `bash scripts/db-tunnel.sh start` for the tunnel
+alone), the Wave 2/2B schema is applied, drift is zero, and the receipt
+lifecycle has been exercised end to end against real Postgres.
+
+Still outstanding on the reliability track:
+
+- The real Redis/Postgres process-restart smoke test. The live checks covered
+  the repository's lease and dead-letter semantics directly; they did not kill
+  a worker mid-run and prove the successor picks the receipt up.
+- Retry classification, so a known-permanent failure terminates before its
+  window elapses rather than after.
+- Queue depth, age, attempts, stalled-job, and dead-letter metrics.
 
 ## 1. Decision and Confidence
 
@@ -820,6 +834,7 @@ Initial internal targets to validate during canary:
 | 2026-07-25 | The live serializer orders on the canonical ingress lane key; lane selection is synchronous and authority-free | Implemented |
 | 2026-07-26 | Ingress dead-lettering is bounded by a retry window measured from acceptance, not by an attempt count, so queue-level retries cannot exhaust the budget during a transient outage | Implemented |
 | 2026-07-26 | A worker that cannot win a receipt's lease fails its job rather than completing it, so recovery stays reachable | Implemented and cold-reviewed |
+| 2026-07-26 | Wave 2/2B schema pushed to `divo_dev` over the SSH tunnel; receipt lifecycle verified against real Postgres | Implemented |
 | 2026-07-25 | Lark webhook ACK follows durable receipt persistence, stable queue admission, and receipt/job linkage | Implemented |
 | 2026-07-25 | Failed durable receipts remain recoverable; reconciliation retries retained failed BullMQ jobs | Implemented and cold-reviewed |
 
