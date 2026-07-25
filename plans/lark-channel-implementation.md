@@ -2,9 +2,9 @@
 
 > Tracking document for the Lark channel hardening project.
 >
-> Status: **Waves 2, 2B, and 3A complete and verified against the development database — distributed leases, batching, busy UX, and retry classification still pending**
+> Status: **Wave 2 closed — durable ingress verified end to end against real Redis and Postgres. Next: Wave 4 thread context and per-turn RBAC. Distributed leases, batching, busy UX, retry classification, and queue metrics remain deferred**
 >
-> Last updated: 2026-07-25
+> Last updated: 2026-07-26
 
 ## 0. Current Implementation Status
 
@@ -34,7 +34,10 @@ sections remain the detailed implementation checklist.
   so Lark can retry.
 - The Lark ingress worker claims the persisted payload, records processing,
   completion, and failure lifecycle state, and re-enqueues interrupted
-  `accepted`/`processing` receipts on startup and every 30 seconds.
+  `accepted`/`processing` receipts on startup and every 30 seconds. Recovery is
+  scoped by channel rather than by queue name, which is correct for the single
+  production queue but means two differently-named queues sharing a database
+  will recover each other's receipts.
 - Duplicate Lark deliveries intentionally repair queue admission with the same
   receipt-backed job ID. A completed receipt cannot be overwritten by a stale
   failure attempt.
@@ -58,15 +61,14 @@ sections remain the detailed implementation checklist.
 
 ### Explicitly not implemented yet
 
-- Retry classification. See the retry-window backstop note below.
-- Explicit retry classification remains. Receipts are dead-lettered on a time
-  backstop (a retry window measured from acceptance), not by recognising which
-  errors are permanent, so a poison payload still consumes its whole window.
+- Explicit retry classification. Receipts are dead-lettered on a time backstop
+  (a retry window measured from acceptance), not by recognising which errors are
+  permanent, so a poison payload still consumes its whole window.
 - Operator-facing dead-letter tooling remains. `dead` receipts keep their
   payload and last error and are excluded from recovery, but replay is manual
   SQL until the Wave 7B admin view lands.
-- Dead-letter and queue metrics, and a process-restart integration fixture,
-  remain before production rollout.
+- Dead-letter and queue metrics. Restart recovery itself is now covered by a
+  real Redis/Postgres fixture.
 - `prisma/migrations/` is not a runnable history, and `divo_dev` confirms it:
   the database has no `_prisma_migrations` table at all, so no migration has
   ever been applied there. `LarkTenantBinding` and `IntegrationConnection` are
@@ -106,6 +108,7 @@ sections remain the detailed implementation checklist.
 | Durable ingress acceptance | Prisma validation + 16 focused repository/webhook/scenario tests + typecheck passed | Initial review found two fixed error-boundary/harness gaps; final review found the expected Wave 2B blocker: accepted receipts still need durable recovery before deployment |
 | Durable ingress recovery | 28 focused receipt/queue/worker/webhook/restart-scenario tests passed; Prisma validation passed; full typecheck is temporarily blocked by unrelated in-progress Airtable mappings | Two fresh reviews found and verified the retained-failed-job recovery gap; failed receipts now reach reconciliation and retained failed jobs are explicitly retried. Final review: ship, no findings |
 | Wave 3A process-local lanes | 25 focused routing/webhook/scenario/serializer tests + full typecheck passed | Review found lane telemetry reporting the company-scoped key while the serializer ordered on the ingress key; corrected so `laneKey` is the key actually used and the contract key is recorded separately as `companyLaneKey` |
+| Wave 2 restart recovery | 4 real Redis/Postgres integration tests passed (`tests/integration/lark-ingress-restart.integration.test.ts`) + full typecheck; test rows verified cleaned up afterwards | Fixture initially failed twice from its own test isolation, not a product defect: `listRecoverable` filters on channel alone, so a worker left running from an earlier test recovered a later test's receipt onto its own queue. Tests now run one worker at a time and the constraint is documented |
 | Wave 2B ingress leases and dead-lettering | 170 focused ingress/lark/identity/AirNote/serializer tests + full typecheck + `prisma validate` passed | Two cold-review rounds. Round 1 found five issues, all corrected: the backfill migration sorted before the migration creating the table it altered; an attempt-counted dead-letter budget a 3-minute outage would exhaust; a stale AirNote test left failing by the tenant-scoped auth change; an index name not matching Prisma's derived name; and a widened repository assertion. Round 2 found the lease's own regression — a claim that returned "not yours" for both *finished* and *leased* let the queue complete a job whose work never ran, so a worker restart dropped the message permanently — plus retirement racing a live lease, a retryable failure able to resurrect a `dead` row, a backfill that guessed when a company held two active bindings, and a missed `updatedAt` default. All corrected. Migration apply order and the backfill itself remain unverified — no database was reachable |
 
 ### Immediate next step
@@ -132,15 +135,28 @@ tunnel (`pnpm dev:e2e`, or `bash scripts/db-tunnel.sh start` for the tunnel
 alone), the Wave 2/2B schema is applied, drift is zero, and the receipt
 lifecycle has been exercised end to end against real Postgres.
 
-Still outstanding on the reliability track:
+Wave 2's exit gate is closed. `tests/integration/lark-ingress-restart.integration.test.ts`
+proves against real Redis and Postgres that a receipt orphaned in `processing`
+by a dead worker resumes, that a receipt which never reached the queue is
+recovered by reconciliation alone, that three deliveries of one message produce
+one execution, and that a run dying mid-execution is retried to completion.
 
-- The real Redis/Postgres process-restart smoke test. The live checks covered
-  the repository's lease and dead-letter semantics directly; they did not kill
-  a worker mid-run and prove the successor picks the receipt up. This is the
-  last thing gating the Wave 2 exit gate.
+**Next: Wave 4 — thread context and per-turn RBAC.** This is the security-
+critical wave: shared conversation context must never share authority. Much of
+Phase 4B may already hold — identity is resolved per turn inside execution and
+tools re-authorize through the gateway — so the first task is to establish by
+test which guarantees are real and which are only assumed, rather than assuming
+the boxes are unchecked because the work is missing.
+
+Deferred, with reasons:
+
 - Retry classification, so a known-permanent failure terminates before its
-  window elapses rather than after.
-- Queue depth, age, attempts, stalled-job, and dead-letter metrics.
+  window elapses rather than after. The time backstop bounds the damage.
+- Queue depth, age, attempts, stalled-job, and dead-letter metrics. Needed
+  before real traffic, not before Wave 4.
+- Wave 3B batching and 3C busy UX: user-visible polish with no security
+  consequence if it lands later.
+- Wave 3A distributed leases: see the deployment-shape note below.
 
 **Deployment shape, and what it means for Wave 3.** `docker-compose.yml`
 defines a single `advance-backend` service with no `replicas` key, so Divo runs
@@ -335,9 +351,9 @@ marked accordingly; open items are owned by the wave named beside them.
 
 | Wave | Outcome | Status |
 |---|---|---|
-| 0 | Lock behavior, baselines, and prerequisite defects | Substantially complete; restart/approval fixtures remain |
+| 0 | Lock behavior, baselines, and prerequisite defects | Complete; restart and approval fixtures landed |
 | 1 | Canonical Lark event, mention, identity, and routing model | Complete |
-| 2 | Durable ingress and idempotent acceptance | Code and cold review complete; schema push blocked by offline DB tunnel |
+| 2 | Durable ingress and idempotent acceptance | Complete. Schema applied to `divo_dev`, exit gate closed by a real restart fixture. Retry classification and queue metrics remain as Phase 2B follow-ups |
 | 3 | Distributed execution lanes, batching, and busy behavior | 3A process-local lanes complete; distributed leases/fencing, batching (3B), and busy UX (3C) not started |
 | 4 | Thread-aware context plus per-turn RBAC/HITL | Not started |
 | 5 | Reliable status and final delivery | Not started |
@@ -472,16 +488,25 @@ Feature flag continues to use the old `chatId` key while retaining new normalize
 
 - [x] Duplicate Lark delivery produces one receipt and one run in the focused
       recovery scenario.
-- [ ] Crash after durable acceptance resumes without Lark redelivery in a real
-      Redis/Postgres process-restart fixture. Repository/worker recovery is unit-tested.
-- [ ] Crash during execution retries without duplicate final output.
+- [x] Crash after durable acceptance resumes without Lark redelivery in a real
+      Redis/Postgres process-restart fixture
+      (`tests/integration/lark-ingress-restart.integration.test.ts`). Covers both
+      a receipt orphaned in `processing` by a dead worker and one that never
+      reached the queue at all, recovered by reconciliation alone.
+- [x] Crash during execution retries. The fixture pins at-least-once
+      *execution*: a receipt whose first attempt dies mid-run is retried and
+      completes. Non-duplicate final *output* is Wave 5's delivery identity and
+      is deliberately not claimed here.
 - [x] Two acceptance races converge on one tenant-scoped receipt.
 - [x] Queue outage causes a retryable webhook response, not a false success.
 
 ### Exit gate
 
-- [ ] Accepted work survives restart.
-- [ ] Duplicate accepted work is observable but executes once.
+- [x] Accepted work survives restart. Proven against real Redis and Postgres,
+      not inferred from mocks.
+- [x] Duplicate accepted work is observable but executes once. Three deliveries
+      of one message — including one arriving after completion — produce a
+      single receipt and a single execution.
 - [x] No process-local Promise chain is the durability boundary.
 
 ### Rollback
