@@ -570,7 +570,7 @@ export const createServer = (c: Container) => {
   app.use('/api/admin/audit', adminAuth, createAuditRoutes({ auditService: c.auditService, logger: c.logger }));
 
   // Admin controls
-  app.use('/api/admin/controls', adminAuth, createControlsRoutes({ prisma: c.prisma, logger: c.logger }));
+  app.use('/api/admin/controls', adminAuth, createControlsRoutes({ prisma: c.prisma, logger: c.logger, env: c.env, audit: c.auditService }));
 
   // RBAC permissions
   app.use('/api/admin/rbac', adminAuth, createRbacRoutes({ prisma: c.prisma, logger: c.logger }));

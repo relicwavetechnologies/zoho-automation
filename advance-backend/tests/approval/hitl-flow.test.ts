@@ -1779,3 +1779,92 @@ describe('Idempotency key computation', () => {
     assert.notEqual(k1, k2);
   });
 });
+
+describe('LarkApprovalCardHandler audit trail', () => {
+  it('persists an audit record when someone approves a decision that is not theirs', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const resumer = { resume: async () => {} };
+    const audited: unknown[] = [];
+
+    await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'test',
+      payloadJson: {},
+      metadataJson: makeManagerMetadata(),
+      channel: 'lark',
+      idempotencyKey: 'idem-audit-1',
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+
+    const handler = new LarkApprovalCardHandler(
+      repo as any, resumer as any, lark as any, makeLogger(),
+      { record: (input: unknown) => { audited.push(input); } } as any,
+    );
+
+    const result = await handler.handle({
+      action: {
+        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
+        tag: 'button',
+      },
+      operator: { open_id: 'ou_intruder' },
+    }, makeManagerActor({ openId: 'ou_intruder' }));
+
+    assert.equal(result.handled, true);
+    assert.equal(repo.store.get('approval-1')!.status, 'pending', 'nothing was approved');
+
+    // Rejecting the click is not enough on its own: an attempt to approve
+    // someone else's decision has to survive somewhere an admin can query,
+    // not only in process telemetry that rotates away.
+    assert.equal(audited.length, 1, 'the attempt was recorded');
+    const entry = audited[0] as any;
+    assert.equal(entry.action, 'approval.card.unauthorized_actor');
+    assert.equal(entry.outcome, 'failure');
+    assert.equal(entry.companyId, String(COMPANY_ID), 'filed under the approval"s company');
+    assert.equal(entry.metadata.approvalId, 'approval-1');
+    assert.equal(entry.metadata.decision, 'approved');
+    assert.equal(entry.metadata.actorOpenId, 'ou_intruder');
+    assert.ok(entry.metadata.expectedApproverOpenId, 'records who it should have been');
+  });
+
+  it('records nothing when the rightful approver acts', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const resumer = { resume: async () => {} };
+    const audited: unknown[] = [];
+
+    await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'test',
+      payloadJson: {},
+      metadataJson: makeManagerMetadata(),
+      channel: 'lark',
+      idempotencyKey: 'idem-audit-2',
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+
+    const handler = new LarkApprovalCardHandler(
+      repo as any, resumer as any, lark as any, makeLogger(),
+      { record: (input: unknown) => { audited.push(input); } } as any,
+    );
+
+    await handler.handle({
+      action: {
+        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
+        tag: 'button',
+      },
+      operator: { open_id: 'ou_manager' },
+    }, makeManagerActor());
+
+    // A security log that fires on the happy path teaches admins to ignore it.
+    assert.deepEqual(audited, []);
+  });
+});

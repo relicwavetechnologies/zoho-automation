@@ -227,3 +227,72 @@ describe('Lark parent message references', () => {
     assert.deepEqual(result.imageUrls, []);
   });
 });
+
+describe('Lark parent message identity boundaries', () => {
+  /** Resolves the quoted sender into a company the requester does not belong to. */
+  function foreignSenderRepo(): ChannelIdentityRepoPort {
+    return {
+      resolveByLarkTenantIdentity: async () => ({
+        ok: true as const,
+        value: {
+          userId: 'user-9',
+          companyId: 'company-other',
+          aiRole: 'MEMBER',
+          channel: 'lark',
+          displayName: 'Someone Else',
+          email: 'someone@other.example',
+        },
+      }),
+    } as ChannelIdentityRepoPort;
+  }
+
+  it('does not name a quoted sender resolved into another company', async () => {
+    const result = await fetchParentMessage({
+      parentMessageId: 'om_parent',
+      env: {} as TypedEnv,
+      logger,
+      channelIdentityRepo: foreignSenderRepo(),
+      companyId: 'company-1',
+      userId: 'user-1',
+      chatId: 'oc_expected',
+      tenantKey: 'tenant-1',
+      sdkClient: sdkClient({
+        code: 0,
+        data: {
+          items: [{
+            chat_id: 'oc_expected',
+            msg_type: 'text',
+            sender: { id: 'ou_stranger' },
+            body: { content: JSON.stringify({ text: 'Quoted line.' }) },
+          }],
+        },
+      }),
+    });
+
+    // The message body is visible to this chat, so it is exposed; the identity
+    // behind it is not this company's to disclose, and a display name or email
+    // is exactly the kind of directory detail a shared room should not leak.
+    assert.equal(result.status, 'available');
+    assert.equal(result.senderName, undefined);
+    assert.doesNotMatch(buildParentContextPrefix(result), /Someone Else|other\.example/);
+  });
+
+  it('looks the quoted sender up inside the requesting installation', async () => {
+    const result = await fetchWith({
+      code: 0,
+      data: {
+        items: [{
+          chat_id: 'oc_expected',
+          msg_type: 'text',
+          sender: { id: 'ou_alice' },
+          body: { content: JSON.stringify({ text: 'Hello.' }) },
+        }],
+      },
+    });
+
+    assert.equal(result.status, 'available');
+    // A Lark open_id is only unique per installation, so an unscoped lookup
+    // would be resolving a name against the wrong tenant's directory.
+    assert.deepEqual(identityLookups, [{ openId: 'ou_alice', tenantKey: 'tenant-1' }]);
+  });
+});

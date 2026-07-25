@@ -42,7 +42,10 @@ import { buildLarkIngressLaneKey, buildLarkRoutingKeys } from './lark-routing';
 import {
   isUntaggedGroupMessage,
   mayPrepareAttachments,
-  resolveUntaggedGroupPolicy,
+  resolveCompanyUntaggedGroupPolicy,
+  UNTAGGED_ATTACHMENTS_CONTROL,
+  UNTAGGED_TEXT_RETENTION_CONTROL,
+  type ResolvedUntaggedGroupPolicy,
 } from './lark-untagged-policy';
 import { appendLarkMentionContext, listLarkMentionOpenIds } from './lark-mention-context';
 import type {
@@ -663,12 +666,17 @@ async function processInBackground(
   // read — it downloads the file out of Lark, OCRs it, pushes it to a CDN, and
   // indexes it as shared company knowledge. That only happens on an explicit
   // opt-in, and the decision must be made *before* the work, not after.
-  const untaggedPolicy = resolveUntaggedGroupPolicy(deps.env);
   const untagged = isUntaggedGroupMessage(incoming);
+  // Only an untagged message consults the policy, so only an untagged message
+  // pays for the lookup. Resolved here rather than inside the branch below
+  // because the decision has to precede the work, not filter its output.
+  const untaggedPolicy = untagged
+    ? await loadUntaggedGroupPolicy(identity.companyId, deps, log)
+    : null;
   const mayProcessAttachments = mayPrepareAttachments({
     attachmentCount: attachments.length,
     untagged,
-    policy: untaggedPolicy,
+    policy: untaggedPolicy ?? { retainText: false, processAttachments: false },
   });
 
   // Fetch parent message (quote-reply context) in parallel with attachment prep.
@@ -707,10 +715,10 @@ async function processInBackground(
       messageId: incoming.messageId,
       attachmentCount: attachments.length,
       attachmentsProcessed: mayProcessAttachments,
-      textRetained: untaggedPolicy.retainText,
+      textRetained: untaggedPolicy?.retainText ?? false,
     });
 
-    if (untaggedPolicy.retainText) {
+    if (untaggedPolicy?.retainText) {
       await storeGroupIncomingSnapshot({
         incoming,
         identity,
@@ -826,8 +834,13 @@ async function processInBackground(
 
   if (!effectiveIncoming.text?.trim()) return;
 
+  // The room transcript records what was said in the room, so it takes the
+  // original text rather than the prompt built from it. `effectiveIncoming`
+  // carries hydrated quote content and synthesised instructions, and the
+  // transcript is chat-scoped — writing them here would push a message quoted
+  // inside one thread into the ambient context every other thread reads back.
   await storeGroupIncomingSnapshot({
-    incoming: effectiveIncoming,
+    incoming,
     identity,
     deps,
     attachmentContexts: [],
@@ -1029,7 +1042,14 @@ async function handleSlashCommand(args: {
   };
 
   if (cmd === '/clear') {
-    const clearResult = await deps.conversationRepo.clearHistory(incoming.chatId);
+    // Clears the chat and every thread under it. Working context is thread-
+    // scoped, so clearing the single chat-keyed conversation would report
+    // success while leaving each thread's transcript untouched. Company-scoped
+    // because a bare chat-key lookup is not bound to the asking tenant.
+    const clearResult = await deps.conversationRepo.clearChatHistories(
+      String(incoming.chatId),
+      { companyId: identity.companyId, channel: 'lark' },
+    );
     if (!clearResult.ok) {
       log.warn('webhook.command.clear.failed', {
         chatId:        incoming.chatId,
@@ -1042,7 +1062,11 @@ async function handleSlashCommand(args: {
     if (deps.chatContextService) {
       await deps.chatContextService.clear(identity.companyId, String(incoming.chatId));
     }
-    log.info('webhook.command.clear.ok', { chatId: incoming.chatId, correlationId });
+    log.info('webhook.command.clear.ok', {
+      chatId: incoming.chatId,
+      conversationsCleared: clearResult.value,
+      correlationId,
+    });
     await reply('Done. Conversation history cleared — I\'ll start fresh from here.');
     return;
   }
@@ -1501,6 +1525,41 @@ async function prepareLarkAttachmentContexts(input: {
   }
 
   return prepared;
+}
+
+/**
+ * Resolve the untagged-group policy for one company, per turn.
+ *
+ * Deliberately uncached. This is a privacy control: an admin who turns
+ * attachment processing off expects the next message to obey, not the first
+ * message after a TTL expires. Two indexed rows on a path that already does
+ * several round trips is the cheaper side of that trade.
+ *
+ * A lookup failure falls back to the deployment default rather than to the
+ * permissive option, so a database blip cannot start indexing a company's
+ * files.
+ */
+async function loadUntaggedGroupPolicy(
+  companyId: string,
+  deps: { env: TypedEnv; prisma?: PrismaClient },
+  log: Logger,
+): Promise<ResolvedUntaggedGroupPolicy> {
+  if (!deps.prisma) {
+    return resolveCompanyUntaggedGroupPolicy({ env: deps.env, controls: [] });
+  }
+  try {
+    const controls = await deps.prisma.adminControlState.findMany({
+      where: {
+        companyId,
+        controlKey: { in: [UNTAGGED_TEXT_RETENTION_CONTROL, UNTAGGED_ATTACHMENTS_CONTROL] },
+      },
+      select: { controlKey: true, value: true },
+    });
+    return resolveCompanyUntaggedGroupPolicy({ env: deps.env, controls });
+  } catch (error) {
+    log.warn('webhook.untagged_policy.lookup_failed', { companyId, error: String(error) });
+    return resolveCompanyUntaggedGroupPolicy({ env: deps.env, controls: [] });
+  }
 }
 
 async function storeGroupIncomingSnapshot(input: {

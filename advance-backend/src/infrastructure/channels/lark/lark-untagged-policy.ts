@@ -30,7 +30,7 @@ export interface UntaggedGroupPolicy {
   readonly processAttachments: boolean;
 }
 
-type UntaggedPolicyEnv = {
+export type UntaggedPolicyEnv = {
   readonly LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain' | 'off';
   readonly LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore' | 'process';
 };
@@ -65,3 +65,61 @@ export const mayPrepareAttachments = (input: {
 }): boolean =>
   input.attachmentCount > 0
   && (!input.untagged || input.policy.processAttachments);
+
+// ─── Per-company overrides ──────────────────────────────────────────────────
+
+/** Admin control keys a company may set to override the deployment default. */
+export const UNTAGGED_TEXT_RETENTION_CONTROL = 'lark.untagged.textRetention';
+export const UNTAGGED_ATTACHMENTS_CONTROL = 'lark.untagged.attachments';
+
+export interface UntaggedPolicySource {
+  readonly value: 'retain' | 'off' | 'ignore' | 'process';
+  readonly origin: 'company' | 'deployment';
+}
+
+export interface ResolvedUntaggedGroupPolicy extends UntaggedGroupPolicy {
+  readonly textRetention: UntaggedPolicySource;
+  readonly attachments: UntaggedPolicySource;
+}
+
+type ControlRow = { readonly controlKey: string; readonly value: string };
+
+/**
+ * Layer a company's overrides over the deployment default.
+ *
+ * One deployment serves many companies, so a process-level switch cannot be the
+ * final word: enabling attachment processing for the company that asked would
+ * otherwise enable it for every other company sharing the process.
+ *
+ * An unrecognised stored value falls back to the deployment default rather than
+ * to the permissive option — a typo in a control row must not silently start
+ * indexing a company's files.
+ */
+export const resolveCompanyUntaggedGroupPolicy = (input: {
+  readonly env: UntaggedPolicyEnv;
+  readonly controls: readonly ControlRow[];
+}): ResolvedUntaggedGroupPolicy => {
+  const deployment = resolveUntaggedGroupPolicy(input.env);
+  const stored = (key: string): string | undefined =>
+    input.controls.find(row => row.controlKey === key)?.value;
+
+  const textOverride = stored(UNTAGGED_TEXT_RETENTION_CONTROL);
+  const attachmentOverride = stored(UNTAGGED_ATTACHMENTS_CONTROL);
+
+  const textRetention: UntaggedPolicySource =
+    textOverride === 'retain' || textOverride === 'off'
+      ? { value: textOverride, origin: 'company' }
+      : { value: deployment.retainText ? 'retain' : 'off', origin: 'deployment' };
+
+  const attachments: UntaggedPolicySource =
+    attachmentOverride === 'ignore' || attachmentOverride === 'process'
+      ? { value: attachmentOverride, origin: 'company' }
+      : { value: deployment.processAttachments ? 'process' : 'ignore', origin: 'deployment' };
+
+  return {
+    retainText: textRetention.value === 'retain',
+    processAttachments: attachments.value === 'process',
+    textRetention,
+    attachments,
+  };
+};

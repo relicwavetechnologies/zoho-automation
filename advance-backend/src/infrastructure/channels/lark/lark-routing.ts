@@ -33,6 +33,23 @@ const installationParts = (input: RoutingInput): readonly string[] => [
   ...channelParts(input.incoming),
 ];
 
+/**
+ * Lane identity, which is NOT the same as conversation identity.
+ *
+ * `conversationKeyForMessage` (domain/conversation/conversation-key.ts) prefers
+ * the root message and falls back to the message's own ID, so a thread's seed
+ * turn and its replies share one context key. This prefers `thread_id` and
+ * falls back to the requester, because a lane only has to answer "what must not
+ * run concurrently" and lane selection must stay synchronous and authority-free.
+ *
+ * The divergence is deliberate but not free: a seed message (no `thread_id`,
+ * lane = requester) and its first reply (lane = thread) occupy different lanes
+ * while writing to one conversation key, so their history appends are not
+ * serialised against each other. `appendTurn` claims sequence numbers with an
+ * atomic increment, so this reorders rather than corrupts. Unifying the two is
+ * tracked against Wave 3's distributed-lease work rather than patched here,
+ * because changing lane identity changes ordering guarantees.
+ */
 const laneParts = (incoming: IncomingMessage): readonly string[] => {
   if (incoming.chatType === 'p2p') return ['dm'];
   const threadIdentity = incoming.threadId ?? incoming.rootMessageId;

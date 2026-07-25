@@ -1470,6 +1470,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalResumer,
     larkAdapter,
     logger.child({ service: 'approval-card-handler' }),
+    auditService,
   );
 
   const localApprovalIntents = new LocalApprovalIntentService({

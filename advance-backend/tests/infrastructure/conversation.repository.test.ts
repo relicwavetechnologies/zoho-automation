@@ -264,14 +264,126 @@ describe('ConversationRepository.appendTurn', () => {
   });
 });
 
-describe('ConversationRepository.clearHistory', () => {
-  it('invalidates cache after clear', async () => {
-    const cache = makeCache(new Map([[CACHE_KEY, [turn1]]]));
-    const repo = new ConversationRepository(makeDb() as any, cache);
 
-    await repo.clearHistory(CHAT_KEY);
+describe('ConversationRepository.clearChatHistories', () => {
+  /** Records the queries a clear issues, so the match rule itself is inspectable. */
+  function makeSweepDb(rows: Array<{ id: string; channelConversationKey: string }>) {
+    const calls: { find?: any; deleteMany?: any; updateMany?: any } = {};
+    return {
+      db: {
+        runtimeConversation: {
+          findMany: async (input: unknown) => { calls.find = input; return rows; },
+          updateMany: async (input: unknown) => { calls.updateMany = input; return { count: rows.length }; },
+        },
+        runtimeConversationMessage: {
+          deleteMany: async (input: unknown) => { calls.deleteMany = input; return { count: 0 }; },
+        },
+      },
+      calls,
+    };
+  }
+
+  it('clears the chat and every thread beneath it', async () => {
+    const { db, calls } = makeSweepDb([
+      { id: 'conv-room', channelConversationKey: CHAT_KEY },
+      { id: 'conv-a', channelConversationKey: `${CHAT_KEY}:thread:om_alice` },
+      { id: 'conv-b', channelConversationKey: `${CHAT_KEY}:thread:om_bob` },
+    ]);
+    const repo = new ConversationRepository(db as any, makeCache());
+
+    const result = await repo.clearChatHistories(CHAT_KEY, SCOPE);
+
+    assert.deepEqual(result, { ok: true, value: 3 });
+    // Since working context became thread-scoped, clearing one exact key would
+    // report success while leaving each thread's transcript intact.
+    assert.deepEqual(calls.find.where.OR, [
+      { channelConversationKey: CHAT_KEY },
+      // `_` is a LIKE wildcard and real Lark chat IDs contain one, so the
+      // prefix arm is escaped while the equality arm is not.
+      { channelConversationKey: { startsWith: 'chat\\_001:thread:' } },
+    ]);
+    assert.deepEqual(calls.deleteMany.where.conversationId.in, ['conv-room', 'conv-a', 'conv-b']);
+    assert.equal(calls.updateMany.data.lastSummarizedSequence, 0);
+  });
+
+  it('refuses to reach outside the asking company', async () => {
+    const { db, calls } = makeSweepDb([]);
+    const repo = new ConversationRepository(db as any, makeCache());
+
+    await repo.clearChatHistories(CHAT_KEY, SCOPE);
+
+    // A bare chat-key lookup is not bound to a tenant; a clear must be.
+    assert.equal(calls.find.where.companyId, SCOPE.companyId);
+    assert.equal(calls.find.where.channel, SCOPE.channel);
+  });
+
+  it('invalidates the cached window for every conversation it cleared', async () => {
+    const { db } = makeSweepDb([
+      { id: 'conv-a', channelConversationKey: `${CHAT_KEY}:thread:om_alice` },
+    ]);
+    const cache = makeCache();
+    const repo = new ConversationRepository(db as any, cache);
+
+    await repo.clearChatHistories(CHAT_KEY, SCOPE);
     await new Promise(r => setImmediate(r));
 
-    assert.ok(cache.delCalls.includes(CACHE_KEY), 'cache should be invalidated after clearHistory');
+    assert.ok(
+      cache.delCalls.includes(conversationCacheKey(`${CHAT_KEY}:thread:om_alice`, SCOPE)),
+      'the thread window is dropped from cache',
+    );
+    // The chat key may hold a cached window with no row of its own.
+    assert.ok(cache.delCalls.includes(conversationCacheKey(CHAT_KEY, SCOPE)));
+  });
+
+  it('writes nothing when the chat has no conversations', async () => {
+    const { db, calls } = makeSweepDb([]);
+    const repo = new ConversationRepository(db as any, makeCache());
+
+    const result = await repo.clearChatHistories(CHAT_KEY, SCOPE);
+
+    assert.deepEqual(result, { ok: true, value: 0 });
+    assert.equal(calls.deleteMany, undefined, 'no blanket delete when nothing matched');
+    assert.equal(calls.updateMany, undefined);
+  });
+});
+
+describe('ConversationRepository.clearChatHistories LIKE safety', () => {
+  it('escapes wildcard characters in the chat ID before matching', async () => {
+    let where: any;
+    const db = {
+      runtimeConversation: {
+        findMany: async (input: any) => { where = input.where; return []; },
+        updateMany: async () => ({ count: 0 }),
+      },
+      runtimeConversationMessage: { deleteMany: async () => ({ count: 0 }) },
+    } as any;
+    const repo = new ConversationRepository(db, makeCache());
+
+    await repo.clearChatHistories('oc%_1', SCOPE);
+
+    // `startsWith` compiles to LIKE without escaping, and this is a delete path
+    // whose match set comes from an event payload. Unescaped, `oc%` would match
+    // every conversation in the company.
+    const prefix = where.OR[1].channelConversationKey.startsWith;
+    assert.equal(prefix, 'oc\\%\\_1:thread:');
+    assert.ok(!prefix.includes('%:'), 'no bare wildcard survives into the pattern');
+  });
+
+  it('leaves an ordinary chat ID untouched', async () => {
+    let where: any;
+    const db = {
+      runtimeConversation: {
+        findMany: async (input: any) => { where = input.where; return []; },
+        updateMany: async () => ({ count: 0 }),
+      },
+      runtimeConversationMessage: { deleteMany: async () => ({ count: 0 }) },
+    } as any;
+    const repo = new ConversationRepository(db, makeCache());
+
+    await repo.clearChatHistories('ocabc123', SCOPE);
+
+    assert.equal(where.OR[1].channelConversationKey.startsWith, 'ocabc123:thread:');
+    // The exact-key arm is an equality match and must stay unescaped.
+    assert.equal(where.OR[0].channelConversationKey, 'ocabc123');
   });
 });

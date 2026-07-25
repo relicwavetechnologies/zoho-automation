@@ -2,7 +2,7 @@
 
 > Tracking document for the Lark channel hardening project.
 >
-> Status: **Wave 2 closed and Wave 4C's attachment gate landed — untagged group attachments are no longer downloaded, OCR'd, or indexed by default. Per-company scoping, ingress-receipt retention, and admin visibility remain open inside 4C. Next: Wave 4A thread context boundaries, then tests pinning the 4B authority guarantees the code already appears to hold. Distributed leases, batching, busy UX, retry classification, and queue metrics remain deferred**
+> Status: **Waves 0-2 and 4 closed. Shared conversation no longer means shared authority: threads in a group room hold separate working context, every turn rebuilds authority from its own sender, and untagged group attachments are not downloaded, OCR'd, or indexed unless a company opts in. Wave 3's distributed leases, batching and busy UX, plus retry classification, queue metrics, and ingress receipt retention, remain deferred. Next: Wave 5 persisted idempotent delivery**
 >
 > Last updated: 2026-07-26
 
@@ -62,8 +62,17 @@ sections remain the detailed implementation checklist.
   (`LARK_UNTAGGED_GROUP_TEXT_RETENTION`, `LARK_UNTAGGED_GROUP_ATTACHMENTS`).
   Ambient text still feeds the bounded room transcript by default; attachments
   are ignored by default and are only downloaded, OCR'd, uploaded, and indexed
-  when a deployment opts in. The gate is evaluated before preparation, because
-  once an attachment context exists the file has already left Lark.
+  when a company opts in. The gate is evaluated before preparation, because
+  once an attachment context exists the file has already left Lark. Companies
+  override the deployment default through `AdminControlState`, and
+  `GET /api/admin/controls/lark-untagged-policy` reports the policy in force.
+- Working context is per thread, not per room. The engine's history reads and
+  writes key on `conversationKeyForMessage`, so unrelated threads in one group
+  chat no longer share a transcript; ambient room context stays chat-scoped and
+  bounded. `/clear` sweeps the chat and every thread beneath it, company-scoped.
+- Authority is rebuilt from the sender on every turn, and an attempt to approve
+  a decision that was not yours is persisted to the audit log rather than only
+  logged.
 
 ### Explicitly not implemented yet
 
@@ -96,17 +105,26 @@ sections remain the detailed implementation checklist.
 - Distributed execution leases and fencing remain in Wave 3. The current
   serializer preserves in-process lane order after durable recovery but does
   not coordinate multiple backend replicas.
+- Cross-process isolation for the restart fixture. `listRecoverable` filters on
+  channel rather than queue name, so any other worker on the same database —
+  including one orphaned by a run that died before cleanup — recovers the
+  fixture's receipts and makes them complete without executing. Correct for
+  production, which runs a single queue, but it means a failed run poisons the
+  next one until the stray process is killed. The fixture now fails fast when
+  the database is unreachable, which removes the common cause, and documents
+  the check; it does not remove the class.
 - Ingress receipt retention. Every accepted event's raw payload — including the
   text and file keys of untagged group messages — is stored in
   `IngressIdempotencyKey.payloadJson` before any context policy is consulted,
   and nothing ever deletes it. The Wave 4C retention setting bounds the room
   transcript, not this. Any compliance claim about untagged retention is false
   until receipts are pruned.
-- The untagged group policy is deployment-global, not per company or per chat,
-  and has no admin-facing surface. Both need per-company control state.
-- Room-level ambient context and per-turn shared-thread authority hardening
-  continue in Wave 4A. Wave 4B's guarantees appear to hold in code already but
-  are not yet pinned by tests.
+- Per-*chat* untagged policy. The policy is now per company via
+  `AdminControlState` with an admin read surface; a single room inside a
+  company cannot yet differ from the rest.
+- Response provenance. Nothing records which room messages or attachment
+  observations supported a given reply, so an admin cannot ask why Divo said
+  what it said. This is the one Phase 4A box left open.
 - Persisted idempotent outbound delivery begins in Wave 5.
 - Lark media staging, OCR, personal-only indexing, retention, and cleanup begin in Wave 6.
 
@@ -125,6 +143,7 @@ sections remain the detailed implementation checklist.
 | Durable ingress recovery | 28 focused receipt/queue/worker/webhook/restart-scenario tests passed; Prisma validation passed; full typecheck is temporarily blocked by unrelated in-progress Airtable mappings | Two fresh reviews found and verified the retained-failed-job recovery gap; failed receipts now reach reconciliation and retained failed jobs are explicitly retried. Final review: ship, no findings |
 | Wave 3A process-local lanes | 25 focused routing/webhook/scenario/serializer tests + full typecheck passed | Review found lane telemetry reporting the company-scoped key while the serializer ordered on the ingress key; corrected so `laneKey` is the key actually used and the contract key is recorded separately as `companyLaneKey` |
 | Wave 2 restart recovery | 4 real Redis/Postgres integration tests passed (`tests/integration/lark-ingress-restart.integration.test.ts`) + full typecheck; test rows verified cleaned up afterwards | Fixture initially failed twice from its own test isolation, not a product defect: `listRecoverable` filters on channel alone, so a worker left running from an earlier test recovered a later test's receipt onto its own queue. Tests now run one worker at a time and the constraint is documented |
+| Wave 4 thread context, per-turn RBAC, and untagged policy | Full suite without infrastructure: 1798 tests, 2 failing cases, both known and pre-existing (`governed-skill-runtime`, `runtime.routes`). With the tunnel and Redis up: 1813 tests, 1809 pass, the same 2 plus 2 live-Lark-API cases in `lark.integration.test.ts` that also fail with this wave's `src/` changes stashed. Wave 2's Redis/Postgres restart fixture re-run green (4/4) with every Wave 4 change in place. New coverage by file: conversation-key 8, thread-context-isolation 5, lark-untagged-policy 15, controls.routes 12 of 18, conversation.repository 6 of 15, lark.webhook.routes 15 of 27, lark-parent-message 2 of 11, hitl-flow 2 of 51. Three behaviours were mutation-checked rather than assumed: forcing the untagged gate to `false` fails exactly the two opt-in wiring tests, and reverting the conversation key to the bare chat ID fails three isolation tests | Audit-before-build again paid: Phase 4B was already true and needed tests, not code, while the real gaps were 4A's shared-per-room working context and 4C's missing per-company scoping. Thread-scoping history exposed a consequence the change would otherwise have shipped silently — `/clear` matched one exact key, so a user clearing a group would have been told it worked while every thread kept its transcript; `clearChatHistories` now sweeps the chat and its threads, company-scoped. Two harness defects were found and fixed rather than worked around: an empty permission set made the engine short-circuit before history loaded, so one isolation test was passing vacuously; and a hardcoded `om_1` receipt ID silently restricted the webhook harness to a single message, which the worker's own identity guard caught. Cold review then found a P1 the wave's own tests could not have caught: the thread key preferred Lark's `thread_id` over the root message, but Lark assigns a topic ID only once the thread exists — so the message that *seeds* a thread and the first reply in it resolved to different keys, losing the question every follow-up is answering. The precedence is now root-first, and the regression is pinned at both the key and engine level. Review also found the per-company override had a resolver and a read view but nothing that could write it outside hand-written SQL (now a `PUT` route, validated and audited), that hydrated quote content was still being written into the chat-scoped room transcript every thread reads back, and that `clearHistory` had become dead code sitting next to `clearChatHistories` as the wrong thing to reach for |
 | Wave 4C untagged group policy | 132 focused Lark tests (16 new: 10 pure policy/gate cases + 6 webhook behaviour cases) + full typecheck passed. The two opt-in wiring tests were mutation-checked — forcing the gate to `false` fails exactly those two and nothing else | Found by auditing Wave 4's boxes against the code rather than assuming they were unbuilt: untagged attachments were already being downloaded, OCR'd, uploaded to Cloudinary, and indexed as `shared` before the not-mentioned check ran. Adding the two production dependencies the harness had omitted (`chatContextService`, `ingestionQueue`) made two pre-existing order assertions fail; they were corrected upward, not relaxed, because a shorter order array was only achievable by leaving a real dependency unwired. Two unrelated failures (`governed-skill-runtime`, `runtime.routes`) were confirmed pre-existing by re-running them with this slice stashed. Cold review then found three contract-accuracy defects rather than code defects, all corrected: a test named "keeps nothing" that the durable ingress receipt contradicts, a checked box claiming per-company policy for a deployment-global env switch, and no route-level test for the opt-in path — leaving the over-blocking failure mode, where a dead gate keeps every test green, unguarded. A second fresh review returned `ship` with four P3 follow-ups, all applied: the negative test now asserts zero outbound fetches rather than inferring "did not download" from "did not index"; the untagged predicate is no longer spelled by hand at the identity-missing early return; the wasteful `off` + `process` combination is documented as configured-not-broken; and this table's Wave 4 row no longer calls 4C complete while three of its boxes are open |
 | Wave 2B ingress leases and dead-lettering | 170 focused ingress/lark/identity/AirNote/serializer tests + full typecheck + `prisma validate` passed | Two cold-review rounds. Round 1 found five issues, all corrected: the backfill migration sorted before the migration creating the table it altered; an attempt-counted dead-letter budget a 3-minute outage would exhaust; a stale AirNote test left failing by the tenant-scoped auth change; an index name not matching Prisma's derived name; and a widened repository assertion. Round 2 found the lease's own regression — a claim that returned "not yours" for both *finished* and *leased* let the queue complete a job whose work never ran, so a worker restart dropped the message permanently — plus retirement racing a live lease, a retryable failure able to resurrect a `dead` row, a backfill that guessed when a company held two active bindings, and a missed `updatedAt` default. All corrected. Migration apply order and the backfill itself remain unverified — no database was reachable |
 
@@ -158,36 +177,30 @@ by a dead worker resumes, that a receipt which never reached the queue is
 recovered by reconciliation alone, that three deliveries of one message produce
 one execution, and that a run dying mid-execution is retried to completion.
 
-**Wave 4 is underway, and the audit that opened it was worth more than the
-boxes suggested.** Reading Phase 4B against the code before writing anything
-found that most of it already holds, and that the real defect was in 4C, which
-had looked like the least urgent phase.
+**Wave 4 is closed.** Shared conversation no longer implies shared authority.
 
-What the audit established:
+Two things are worth carrying forward from how it went. First, auditing the
+checklist against the code before writing anything changed the order of the
+work entirely: Phase 4B was already true and needed tests rather than code,
+while 4C — which read as the least urgent phase — held a live defect that was
+downloading and indexing files nobody had asked Divo to read. Second,
+thread-scoping the working context had a consequence that would have shipped
+silently: `/clear` matched one exact conversation key, so a user clearing a
+group chat would have been told it worked while every thread kept its
+transcript. Changing what a key means changes everything that looks a key up.
 
-- **4B mostly holds already.** `processInBackground` resolves
-  `resolveByLarkTenantIdentity(openId, tenantKey)` fresh on every message and
-  builds `runContext` from that identity alone, so no authority is carried
-  forward from shared thread context; mentions travel as data, not authority.
-  Approvals are bound to requester *and* authority — reuse by a different
-  requester is rejected — and the approval card handler requires the actor's
-  open ID, user ID, company, and tenant all to match the resolved manager.
-  These need tests that pin them, not new code.
-- **4C was a live defect, now fixed.** See Phase 4C.
-- **4A is the genuine remaining gap.** Both the engine's conversation key and
-  `RuntimeConversation.channelConversationKey` are the bare `chatId`, so every
-  thread in a group chat reads and writes one shared history. DM context is
-  private only incidentally, because a DM has a different `chatId`. There is no
-  thread-level working context at all.
+**Next: Wave 5 — persisted idempotent outbound delivery.** Wave 2 guarantees a
+message is executed at least once; it says nothing about a reply being
+delivered exactly once. The restart fixture asserts that deliberately, and
+Wave 5 is where that gap closes.
 
-Next, in order:
+Two cross-wave gaps are worth resolving before rollout rather than inside a
+later wave:
 
-1. **Phase 4A** — thread-scoped conversation keys, with room-level ambient
-   context kept separate and bounded. This is the largest remaining piece.
-2. **Phase 4B tests** — the exit-gate scenarios, written against the behaviour
-   the audit says already exists: Bob's follow-up in Alice's thread runs with
-   Bob's RBAC, and a non-approver's approve or resume is rejected. If either
-   fails, that is a live authority bug rather than missing work.
+- **Ingress receipt retention.** Raw events persist forever, so no retention
+  setting can be described to a customer as deletion.
+- **Wave 3's distributed leases.** Ordering is still process-local, which is
+  correct only while the deployment is single-replica.
 
 Deferred, with reasons:
 
@@ -396,7 +409,7 @@ marked accordingly; open items are owned by the wave named beside them.
 | 1 | Canonical Lark event, mention, identity, and routing model | Complete |
 | 2 | Durable ingress and idempotent acceptance | Complete. Schema applied to `divo_dev`, exit gate closed by a real restart fixture. Retry classification and queue metrics remain as Phase 2B follow-ups |
 | 3 | Distributed execution lanes, batching, and busy behavior | 3A process-local lanes complete; distributed leases/fencing, batching (3B), and busy UX (3C) not started |
-| 4 | Thread-aware context plus per-turn RBAC/HITL | 4C attachment gate complete; per-company scoping, ingress-receipt retention, and admin visibility remain open within 4C. 4A context boundaries not started; 4B is largely already true in code but unproven by test |
+| 4 | Thread-aware context plus per-turn RBAC/HITL | Complete; exit gate closed. One 4A box is open by choice (recording which room messages supported a response) and ingress receipt retention is tracked as a cross-wave gap |
 | 5 | Reliable status and final delivery | Not started |
 | 6 | Images, documents, OCR, indexing, and retrieval safety | Plan ready |
 | 7 | Production rollout, replay operations, and legacy cleanup | Not started |
@@ -607,22 +620,58 @@ Set global lane concurrency to one while retaining durable jobs and lifecycle st
 
 ### Phase 4A — Context boundaries
 
-- [ ] Keep a bounded room-level transcript/summary for ambient context.
-- [ ] Maintain thread-level working context for thread turns.
-- [ ] Keep DM context private to that DM/user.
-- [ ] Prevent quote/parent hydration from contaminating unrelated threads.
+- [x] Keep a bounded room-level transcript/summary for ambient context.
+      `LarkChatContextService` keyed on the chat, bounded by `GROUP_CONTEXT_POLICY`.
+- [x] Maintain thread-level working context for thread turns.
+      The engine's history reads and writes now use
+      `conversationKeyForMessage`, not the bare chat ID. A top-level group
+      message seeds a thread rooted at itself, because Divo replies in-thread
+      and the follow-up arrives carrying that message as its root — keying on
+      the chat would hide the opening turn from the reply answering it.
+- [x] Keep DM context private to that DM/user. A DM keys on its own chat.
+- [x] Prevent quote/parent hydration from contaminating unrelated threads.
+      Two paths had to close, and only the first was obvious. Hydrated parent
+      content lands in the quoting thread's own working context; and the
+      chat-scoped room transcript now records what the sender actually typed
+      rather than the prompt built from it, because that transcript is read
+      back as ambient context by every other thread in the room.
 - [ ] Record which room messages and attachment observations supported a response.
-- [ ] Fetch only the direct parent by default; use the bounded thread summary for older history.
-- [ ] Re-check that the referenced message belongs to the expected tenant/chat/thread before exposing its content.
-- [ ] Cache reference hydration by tenant + message ID with a bounded TTL, but re-apply access policy on use.
+      Not started. Attachment contexts are persisted on the room message, but
+      nothing links a specific reply to the observations behind it.
+- [x] Fetch only the direct parent by default; use the bounded thread summary for older history.
+      Hydration is driven solely by `replyToMessageId`; there is no ancestor walk.
+- [x] Re-check that the referenced message belongs to the expected tenant/chat/thread before exposing its content.
+      Chat is re-checked against the event and a mismatch returns `forbidden`;
+      the sender is resolved inside the requesting installation and a sender
+      resolved into another company is left unnamed. **Thread is deliberately
+      not enforced**: quoting across threads inside one chat is a thing the
+      requester chose to do with a message they can already see, and blocking it
+      would break quote-replies. The isolation that matters is on the write
+      side, where the hydrated content stays in the quoting thread.
+- [x] Cache reference hydration by tenant + message ID with a bounded TTL, but re-apply access policy on use.
+      Satisfied by not caching: every hydration re-fetches and re-checks. Left
+      here as a constraint on any future cache rather than as work done.
 
 ### Phase 4B — Authority per turn
 
-- [ ] Resolve membership, company role, active department, grants, connection ownership, rate limits, and approval policy when the worker starts the turn.
-- [ ] Re-authorize every tool call through the existing backend gateway.
-- [ ] Never cache a previous participant's effective authority in shared thread context.
-- [ ] Bind pending approvals to run, requester, intended approver, connection, and exact action.
-- [ ] Reject another participant's attempt to resume or approve a run without authority.
+Established by audit and now pinned by tests. This phase was largely already
+true in code; what was missing was proof.
+
+- [x] Resolve membership, company role, active department, grants, connection ownership, rate limits, and approval policy when the worker starts the turn.
+      `processInBackground` resolves `resolveByLarkTenantIdentity` per message
+      and builds `runContext` from that identity alone.
+- [x] Re-authorize every tool call through the existing backend gateway.
+      The dispatcher calls `permissions.resolve` per call; covered by the
+      existing `permission_denied` gateway tests.
+- [x] Never cache a previous participant's effective authority in shared thread context.
+      Pinned: Bob's follow-up in Alice's thread runs with Bob's role and
+      department, and each turn performs its own identity lookup.
+- [x] Bind pending approvals to run, requester, intended approver, connection, and exact action.
+      Reuse is rejected when requester or authority differs.
+- [x] Reject another participant's attempt to resume or approve a run without authority.
+      The card handler requires actor open ID, user ID, company, and tenant to
+      match the resolved manager, and the attempt is now **persisted to the
+      audit log**, not only logged.
 
 ### Phase 4C — Untagged group context policy
 
@@ -633,11 +682,18 @@ Recommended default:
       policy. `LARK_UNTAGGED_GROUP_TEXT_RETENTION` defaults to `retain`;
       retention itself was already bounded by `GROUP_CONTEXT_POLICY`'s token
       budget and message caps, with older messages compacted into a summary.
-- [ ] Make that policy per company or per chat. `resolveUntaggedGroupPolicy`
-      reads process-level env, so on a shared deployment one company cannot opt
-      out of retention, and one company enabling attachment processing enables
-      it for every other company in that process. Scoping belongs with the
-      admin surface below, since both need per-company control state.
+- [x] Make that policy per company. `resolveCompanyUntaggedGroupPolicy` layers
+      `AdminControlState` rows (`lark.untagged.textRetention`,
+      `lark.untagged.attachments`) over the deployment default, resolved per
+      turn and deliberately uncached — an admin turning attachment processing
+      off should be obeyed by the next message, not after a TTL. Set through
+      `PUT /api/admin/controls/lark-untagged-policy`, company-scoped, validated
+      against the two legal values, and audited, because turning attachment
+      processing on starts moving a company's files out of Lark. An
+      unrecognised stored value falls back to the deployment default rather
+      than to the permissive option, so the resolver refuses to read a bad row
+      as consent even though the write path should prevent one. Per-*chat*
+      policy remains unbuilt; no use case has asked for it.
 - [ ] Bound retention of the durable ingress receipt itself. Untagged text and
       file keys are written verbatim to `IngressIdempotencyKey.payloadJson`
       before any policy is consulted, and no code path ever deletes a receipt.
@@ -650,12 +706,13 @@ Recommended default:
       not-mentioned check, so an untagged file was already downloaded, OCR'd,
       pushed to Cloudinary, and enqueued as `shared` company knowledge by the
       time the code decided not to respond. The gate now precedes the work.
-- [ ] The policy and retention window are visible to admins.
-      Deferred deliberately. The policy is deployment-level env today and is
-      observable in `webhook.group_message.not_mentioned` telemetry as the
-      policy *applied* per message, but there is no admin-facing surface. A
-      first-class surface belongs with per-company control state
-      (`AdminControlState`), which is a schema change this slice does not need.
+- [x] The policy and retention window are visible to admins.
+      `GET /api/admin/controls/lark-untagged-policy` reports the value in
+      force, whether it came from a company override or the deployment
+      default, who last changed it, the retention bounds, and the ingress
+      receipt caveat below. Listing raw control rows was not enough: a company
+      that has set nothing has no rows, so an admin would have seen an empty
+      list rather than the rule their people are actually governed by.
 
 **Known cost of the default.** With attachments ignored, a file dropped in a
 group and then referenced by a later `@Divo summarize the file above` is not
@@ -665,14 +722,41 @@ indexing every file in every group Divo sits in, whether or not anyone asked.
 
 ### Exit gate
 
-- [ ] Shared context cannot produce shared permissions.
-- [ ] Bob's follow-up in Alice's thread uses Bob's RBAC.
-- [ ] Unauthorized approval/card actions are rejected and audited.
-- [ ] Untagged messages never execute tools.
+- [x] Shared context cannot produce shared permissions. Threads in one room no
+      longer share working context at all, and authority is rebuilt per turn
+      from the sender's own identity.
+- [x] Bob's follow-up in Alice's thread uses Bob's RBAC. Pinned by test: same
+      room, same thread, different roles and departments in each run context.
+- [x] Unauthorized approval/card actions are rejected and audited. The
+      rejection was already proven; the audit half was a log line until this
+      wave and is now an `approval.card.unauthorized_actor` audit record filed
+      under the approval's company, asserted absent on the happy path.
+- [x] Untagged messages never execute tools. The untagged branch returns before
+      both `engine.run` call sites, and their attachments are not prepared.
+
+### Deploy-time consequence — group working context resets once
+
+This wave changes what a conversation key *means*, and there is no migration.
+Every existing group transcript is stored under the bare `chatId`; after deploy,
+group turns read `<chatId>:thread:<...>`, which has no rows. A group thread
+mid-conversation loses the exchange it was in the middle of — the user sees Divo
+forget something it just said. DMs are unaffected, because a DM's key does not
+change. The old chat-keyed rows are orphaned rather than deleted, and `/clear`
+still reaches them.
+
+This is accepted rather than mitigated. The obvious mitigation — read the chat
+key when the thread key is empty, for one release — would reintroduce exactly
+the cross-thread bleed this wave exists to remove: a thread would inherit a
+transcript containing every other thread's turns, including those of
+participants who are not in it. Trading the wave's security property for a
+one-time continuity smoothing is the wrong way round. Announce the reset instead.
 
 ### Rollback
 
-Disable room-level ambient context while retaining thread/DM context and per-turn authority.
+Disable room-level ambient context while retaining thread/DM context and
+per-turn authority. Reverting the conversation key itself is a second context
+reset, not a return to the prior state, because turns written after deploy live
+under thread keys.
 
 ## 11. Wave 5 — Status, Delivery, Retry, and User Recovery
 

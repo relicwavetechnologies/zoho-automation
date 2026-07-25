@@ -15,6 +15,15 @@ const noopLogger: Logger = {
   child: () => noopLogger,
 };
 
+interface LarkTestIdentity {
+  userId: string;
+  companyId: string;
+  aiRole: string;
+  channel: 'lark';
+  activeDepartmentId?: string;
+  email?: string;
+}
+
 function makeEvent(input: {
   chatType: 'p2p' | 'group';
   senderType?: 'user' | 'bot';
@@ -22,6 +31,11 @@ function makeEvent(input: {
   mentionsHuman?: boolean;
   /** Attach a file to the message instead of sending plain text. */
   file?: { key: string; name: string };
+  /** Override sender and message identity to model several people in one room. */
+  senderOpenId?: string;
+  messageId?: string;
+  rootId?: string;
+  text?: string;
 }) {
   const mentions = [
     ...(input.mentionsBot
@@ -38,7 +52,7 @@ function makeEvent(input: {
   const text = [
     ...(input.mentionsBot ? ['@_user_1'] : []),
     ...(input.mentionsHuman ? ['@_user_2'] : []),
-    'help',
+    input.text ?? 'help',
   ].join(' ');
   return {
     header: {
@@ -50,11 +64,11 @@ function makeEvent(input: {
     },
     event: {
       sender: {
-        sender_id: { open_id: 'ou_sender' },
+        sender_id: { open_id: input.senderOpenId ?? 'ou_sender' },
         sender_type: input.senderType ?? 'user',
       },
       message: {
-        message_id: 'om_1',
+        message_id: input.messageId ?? 'om_1',
         chat_id: 'oc_1',
         chat_type: input.chatType,
         message_type: input.file ? 'file' : 'text',
@@ -62,7 +76,7 @@ function makeEvent(input: {
           ? JSON.stringify({ file_key: input.file.key, file_name: input.file.name })
           : JSON.stringify({ text }),
         create_time: '1700000000000',
-        root_id: 'om_root',
+        root_id: input.rootId ?? 'om_root',
         parent_id: 'om_parent',
         mentions,
       },
@@ -92,12 +106,12 @@ async function runWebhook(body: unknown, options: {
   engineRun?: (input: unknown) => Promise<unknown>;
   serializer?: ChatMessageSerializer;
   waitForIdle?: boolean;
-  identity?: {
-    userId: string;
-    companyId: string;
-    aiRole: string;
-    channel: 'lark';
-  };
+  /**
+   * A fixed identity, or one resolved per Lark open ID. The per-ID form models
+   * a room with several people in it, which is the only way to show that a
+   * turn runs with its own sender's authority rather than the room's.
+   */
+  identity?: LarkTestIdentity | ((openId: string) => LarkTestIdentity);
   setupAdapter?: (adapter: LarkChannelAdapter) => void;
   shareResolverService?: {
     isShareAction(cardEvent: unknown): boolean;
@@ -124,6 +138,8 @@ async function runWebhook(body: unknown, options: {
     LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain' | 'off';
     LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore' | 'process';
   };
+  /** Per-company control rows layered over the deployment policy. */
+  companyControls?: Array<{ controlKey: string; value: string }>;
 } = {}) {
   const order: string[] = [];
   const ingestionJobs: unknown[] = [];
@@ -170,7 +186,10 @@ async function runWebhook(body: unknown, options: {
     channelIdentityRepo: {
       resolveByLarkTenantIdentity: async (openId: string, tenantKey: string) => {
         identityLookups.push({ openId, tenantKey });
-        return ok(options.identity ?? {
+        const resolved = typeof options.identity === 'function'
+          ? options.identity(openId)
+          : options.identity;
+        return ok(resolved ?? {
           userId: 'user-1',
           companyId: 'company-1',
           aiRole: 'MEMBER',
@@ -223,6 +242,16 @@ async function runWebhook(body: unknown, options: {
         return ok(null);
       },
     } as any,
+    ...(options.companyControls
+      ? {
+          prisma: {
+            adminControlState: {
+              findMany: async () => options.companyControls,
+            },
+            runtimeConversation: { upsert: async () => ({}) },
+          } as any,
+        }
+      : {}),
     cache: { setNx: async () => ok(true) } as any,
     serializer: options.serializer ?? {
       run: (key: string, task: (signal: AbortSignal) => Promise<void>) => {
@@ -265,7 +294,10 @@ async function runWebhook(body: unknown, options: {
     await processAcceptedLarkReceipt({
       receiptId: queuedReceiptId,
       tenantKey: 'tenant-1',
-      messageId: 'om_1',
+      // Taken from the event rather than hardcoded: the worker refuses a
+      // receipt whose stored identity disagrees with its payload, so a fixed ID
+      // here would silently restrict every test to one message.
+      messageId: String((body as any)?.event?.message?.message_id ?? 'om_1'),
       payload: body as Record<string, unknown>,
     }, routeDeps);
   };
@@ -778,5 +810,162 @@ describe('Lark untagged group policy', () => {
     assert.equal(skipped.fields['attachmentCount'], 1, 'the attachment is still counted');
     assert.equal(skipped.fields['attachmentsProcessed'], false);
     assert.equal(skipped.fields['textRetained'], true);
+  });
+});
+
+describe('Lark per-turn authority in a shared thread', () => {
+  const PEOPLE: Record<string, LarkTestIdentity> = {
+    ou_alice: {
+      userId: 'user-alice',
+      companyId: 'company-1',
+      aiRole: 'COMPANY_ADMIN',
+      channel: 'lark',
+      activeDepartmentId: 'dept-finance',
+      email: 'alice@example.com',
+    },
+    ou_bob: {
+      userId: 'user-bob',
+      companyId: 'company-1',
+      aiRole: 'MEMBER',
+      channel: 'lark',
+      activeDepartmentId: 'dept-support',
+      email: 'bob@example.com',
+    },
+  };
+
+  const runAs = (openId: string, messageId: string) => runWebhook(makeEvent({
+    chatType: 'group',
+    mentionsBot: true,
+    senderOpenId: openId,
+    messageId,
+    rootId: 'om_alice_thread',
+    text: 'what can I see',
+  }), { identity: (id: string) => PEOPLE[id]! });
+
+  it("runs Bob's follow-up in Alice's thread with Bob's own authority", async () => {
+    const alice = await runAs('ou_alice', 'om_a1');
+    const bob = await runAs('ou_bob', 'om_b1');
+
+    const aliceRun = (alice.engineInputs[0] as any).runContext;
+    const bobRun = (bob.engineInputs[0] as any).runContext;
+
+    // Same room, same thread, different people. Sharing the conversation must
+    // not share the authority: Bob inheriting Alice's admin role here is the
+    // whole failure mode this wave exists to prevent.
+    assert.equal(String(aliceRun.userId), 'user-alice');
+    assert.equal(String(bobRun.userId), 'user-bob');
+    assert.equal(String(aliceRun.companyRole), 'COMPANY_ADMIN');
+    assert.equal(String(bobRun.companyRole), 'MEMBER');
+    assert.equal(String(aliceRun.departmentId), 'dept-finance');
+    assert.equal(String(bobRun.departmentId), 'dept-support');
+    assert.equal(String(bobRun.requesterEmail), 'bob@example.com');
+  });
+
+  it('resolves identity per turn rather than reusing the thread"s first resolution', async () => {
+    const alice = await runAs('ou_alice', 'om_a1');
+    const bob = await runAs('ou_bob', 'om_b1');
+
+    // A cached "who owns this thread" would show up as a lookup that never
+    // happened for the second speaker.
+    assert.deepEqual(alice.identityLookups, [{ openId: 'ou_alice', tenantKey: 'tenant-1' }]);
+    assert.deepEqual(bob.identityLookups, [{ openId: 'ou_bob', tenantKey: 'tenant-1' }]);
+  });
+
+  it('binds the run to the sender, not to whoever is mentioned in the text', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      mentionsHuman: true,
+      senderOpenId: 'ou_bob',
+      messageId: 'om_b2',
+      rootId: 'om_alice_thread',
+    }), { identity: (id: string) => PEOPLE[id]! });
+
+    const runContext = (result.engineInputs[0] as any).runContext;
+    // Alice is mentioned in the message; Bob sent it. Authority follows the
+    // sender, and the mention travels as data the tools may read.
+    assert.equal(String(runContext.userId), 'user-bob');
+    assert.equal(String(runContext.companyRole), 'MEMBER');
+    assert.deepEqual(runContext.mentionedLarkOpenIds, ['ou_alice']);
+    assert.equal(runContext.userExternalId, 'ou_bob');
+  });
+});
+
+describe('Lark untagged policy per company', () => {
+  const untaggedFile = () => makeEvent({
+    chatType: 'group',
+    file: { key: 'file_v3_co', name: 'budget.xlsx' },
+  });
+
+  it("honours a company's opt-in over the deployment default", async () => {
+    const result = await withStubbedFetch(() => runWebhook(untaggedFile(), {
+      companyControls: [{ controlKey: 'lark.untagged.attachments', value: 'process' }],
+    }));
+
+    assert.equal(result.ingestionJobs.length, 1, 'the company that asked gets processing');
+  });
+
+  it("honours a company's opt-out even when the deployment enables processing", async () => {
+    const result = await withStubbedFetch(async calls => {
+      const value = await runWebhook(untaggedFile(), {
+        untaggedPolicy: {
+          LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
+          LARK_UNTAGGED_GROUP_ATTACHMENTS: 'process',
+        },
+        companyControls: [{ controlKey: 'lark.untagged.attachments', value: 'ignore' }],
+      });
+      assert.deepEqual(calls, [], 'nothing was fetched from Lark');
+      return value;
+    });
+
+    // The direction that matters: a company must be able to refuse regardless
+    // of what the shared deployment has turned on.
+    assert.deepEqual(result.ingestionJobs, []);
+  });
+
+  it('leaves other companies on the deployment default', async () => {
+    const result = await withStubbedFetch(async calls => {
+      const value = await runWebhook(untaggedFile(), { companyControls: [] });
+      assert.deepEqual(calls, []);
+      return value;
+    });
+
+    assert.deepEqual(result.ingestionJobs, [], 'no override means the safe default');
+  });
+});
+
+describe('Lark room transcript boundaries', () => {
+  it('does not write hydrated quote content into the room-wide transcript', async () => {
+    // Stubbed: this path quote-hydrates through Lark, and the assertion is
+    // about which object is recorded, not about the fetch succeeding.
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      text: 'can you action this',
+    })));
+
+    const userEntries = result.retainedMessages.filter(m => m['role'] === 'user');
+    assert.equal(userEntries.length, 1, 'one transcript entry for the sender');
+    const stored = String(userEntries[0]!['content']);
+    // The transcript is chat-scoped and every thread reads it back, so a
+    // message quoted inside one thread must not arrive as ambient context in
+    // an unrelated one. What the sender actually typed is what gets recorded.
+    assert.match(stored, /can you action this/);
+    assert.doesNotMatch(stored, /Referenced message/);
+  });
+
+  it('sends the engine the hydrated prompt even though the transcript keeps the raw text', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      text: 'can you action this',
+    })));
+
+    // Narrowing the transcript must not narrow what the model sees. Asserting
+    // only the raw text would stay green if someone "fixed" the sibling case by
+    // narrowing the engine input too — which is the regression this guards.
+    const engineText = String((result.engineInputs[0] as any).incoming.text);
+    assert.match(engineText, /can you action this/);
+    assert.match(engineText, /Referenced message/, 'the engine still receives the quote hydration');
   });
 });

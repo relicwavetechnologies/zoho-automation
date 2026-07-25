@@ -13,6 +13,16 @@
  *
  * Each test uses its own queue name and tenant key, and deletes its rows
  * afterwards, so runs cannot collide with each other or with dev data.
+ *
+ * KNOWN HAZARD — check this first when these tests fail mysteriously. A run
+ * that dies without completing its cleanup can leave a worker alive in an
+ * orphaned node process. `listRecoverable` filters on channel, not queue name,
+ * so that stray worker recovers the *next* run's receipts onto its own dead
+ * queue: the receipt reaches `completed` having never executed, and the failure
+ * reads exactly like a durability bug. Confirm with
+ * `ps aux | grep lark-ingress-restart`, clear with
+ * `pkill -f lark-ingress-restart.integration.test.ts`, and re-run. The
+ * reachability probe below removes the most common cause but not the class.
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -64,14 +74,45 @@ describe('Lark durable ingress — restart recovery', { skip: missing }, () => {
       select: { status: true },
     }))?.status;
 
+  /**
+   * Set when the services are configured but unreachable — typically the SSH
+   * tunnel being down.
+   *
+   * Checked eagerly because the alternative is worse than a slow failure. With
+   * an unreachable database the first test hangs until the whole suite is
+   * cancelled, and a cancelled test never runs its cleanup: the worker it
+   * started stays alive in an orphaned process. That worker keeps polling
+   * `listRecoverable`, which filters on channel rather than queue name, so it
+   * recovers the *next* run's receipts onto its own dead queue. The next run
+   * then fails with receipts that reach `completed` having never executed —
+   * a symptom that looks like a durability bug and is not one.
+   */
+  let unreachable: string | undefined;
+
   before(async () => {
+    try {
+      await Promise.race([
+        db.$queryRaw`SELECT 1`,
+        // Generous: a cold Prisma connect over an SSH tunnel is slow, and a
+        // false "unreachable" would silently skip Wave 2's exit gate — a worse
+        // outcome than waiting. This only has to beat the suite budget that
+        // would otherwise cancel the test and orphan its worker.
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('timed out after 20s')), 20_000)),
+      ]);
+    } catch (error) {
+      unreachable = `database unreachable (${String(error)}) — start the tunnel with \`bash scripts/db-tunnel.sh start\``;
+      return;
+    }
     await db.ingressIdempotencyKey.deleteMany({ where: { tenantKey: TENANT } });
   });
 
   after(async () => {
     for (const worker of workers) await worker.stop().catch(() => {});
     for (const queue of queues) await queue.close().catch(() => {});
-    await db.ingressIdempotencyKey.deleteMany({ where: { tenantKey: TENANT } });
+    if (!unreachable) {
+      await db.ingressIdempotencyKey.deleteMany({ where: { tenantKey: TENANT } });
+    }
     await db.$disconnect();
   });
 
@@ -113,7 +154,8 @@ describe('Lark durable ingress — restart recovery', { skip: missing }, () => {
     }
   };
 
-  it('resumes work accepted before a crash, without Lark redelivering it', async () => {
+  it('resumes work accepted before a crash, without Lark redelivering it', async t => {
+    if (unreachable) return t.skip(unreachable);
     const queueName = `zz-lark-ingress-resume-${process.pid}`;
     const messageId = `zz-resume-${process.pid}`;
 
@@ -139,7 +181,8 @@ describe('Lark durable ingress — restart recovery', { skip: missing }, () => {
     assert.deepEqual(executed, [receiptId], 'the orphaned receipt ran exactly once');
   });
 
-  it('recovers an orphaned receipt from reconciliation alone', async () => {
+  it('recovers an orphaned receipt from reconciliation alone', async t => {
+    if (unreachable) return t.skip(unreachable);
     const queueName = `zz-lark-ingress-reconcile-${process.pid}`;
     const messageId = `zz-reconcile-${process.pid}`;
 
@@ -159,7 +202,8 @@ describe('Lark durable ingress — restart recovery', { skip: missing }, () => {
     assert.deepEqual(executed, [receiptId], 'recovered receipt ran exactly once');
   });
 
-  it('executes one run for a duplicate Lark delivery and never re-runs a completed one', async () => {
+  it('executes one run for a duplicate Lark delivery and never re-runs a completed one', async t => {
+    if (unreachable) return t.skip(unreachable);
     const queueName = `zz-lark-ingress-dupe-${process.pid}`;
     const messageId = `zz-dupe-${process.pid}`;
 
@@ -192,7 +236,8 @@ describe('Lark durable ingress — restart recovery', { skip: missing }, () => {
     assert.equal(await statusOf(receiptId), 'completed');
   });
 
-  it('re-runs a receipt whose worker died mid-execution', async () => {
+  it('re-runs a receipt whose worker died mid-execution', async t => {
+    if (unreachable) return t.skip(unreachable);
     const queueName = `zz-lark-ingress-midrun-${process.pid}`;
     const messageId = `zz-midrun-${process.pid}`;
 

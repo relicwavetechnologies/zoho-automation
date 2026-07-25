@@ -39,6 +39,7 @@ import {
 } from '../../../shared/debug-run-log';
 import { generateText } from 'ai';
 import type { ConversationScope } from '../../../domain/conversation/conversation-scope';
+import { conversationKeyForMessage } from '../../../domain/conversation/conversation-key';
 
 const MEM0_SEARCH_TIMEOUT_MS = 500;
 
@@ -110,6 +111,16 @@ export class OrchestrationEngine {
       companyId: String(runContext.companyId),
       channel: runContext.channel,
     };
+    // Working context is per thread, not per room. Delivery, status cards, and
+    // telemetry keep using `incoming.chatId` — only history reads and writes
+    // move to this key, so a group's threads stop sharing one transcript.
+    const conversationKey = conversationKeyForMessage({
+      chatId: String(incoming.chatId),
+      chatType: incoming.chatType,
+      messageId: String(incoming.messageId),
+      ...(incoming.threadId ? { threadId: String(incoming.threadId) } : {}),
+      ...(incoming.rootMessageId ? { rootMessageId: String(incoming.rootMessageId) } : {}),
+    }) as unknown as ChatId;
 
     const log = this.deps.logger.child({
       chatId:    incoming.chatId,
@@ -317,7 +328,7 @@ export class OrchestrationEngine {
       isScheduledDelivery
         ? Promise.resolve({ ok: true as const, value: { turns: [], truncated: false, tokenEstimate: 0 } })
         : this.deps.history.loadWindow(
-            incoming.chatId as unknown as ChatId,
+            conversationKey,
             { filterPoison: true, perm, includeSummary: true, scope: conversationScope },
           ),
       isScheduledDelivery
@@ -362,19 +373,19 @@ export class OrchestrationEngine {
 
       abortController.signal.throwIfAborted();
       // Sequential append — sequence ordering matters (user before assistant).
-      await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
+      await this.deps.history.appendTurn(conversationKey, {
         role: 'user', content: incoming.text, timestamp: incoming.timestamp,
       }, conversationScope);
       abortController.signal.throwIfAborted();
-      await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
+      await this.deps.history.appendTurn(conversationKey, {
         role: 'assistant', content: fastResult.text,
         timestamp: this.deps.clock.now().toISOString(),
       }, conversationScope);
 
       if (incoming.chatType !== 'group' && this.deps.conversationSummarizer) {
-        const chatIdStr = String(incoming.chatId);
+        const summaryKey = String(conversationKey);
         setImmediate(() => {
-          this.deps.conversationSummarizer!.maybeSummarize(chatIdStr, conversationScope, larkModel)
+          this.deps.conversationSummarizer!.maybeSummarize(summaryKey, conversationScope, larkModel)
             .catch(e => log.warn('engine.summarization.failed', { error: String(e) }));
         });
       }
@@ -562,13 +573,13 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
       : finalReply.text;
 
     // ── 6. Persist conversation turn ──────────────────────────────────────
-    await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
+    await this.deps.history.appendTurn(conversationKey, {
       role:      'user',
       content:   incoming.text,
       timestamp: incoming.timestamp,
     }, conversationScope);
     abortController.signal.throwIfAborted();
-    await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
+    await this.deps.history.appendTurn(conversationKey, {
       role:      'assistant',
       content:   assistantHistoryContent,
       timestamp: this.deps.clock.now().toISOString(),
@@ -581,9 +592,9 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
       && incoming.chatType !== 'group'
       && this.deps.conversationSummarizer
     ) {
-      const chatIdStr = String(incoming.chatId);
+      const summaryKey = String(conversationKey);
       setImmediate(() => {
-        this.deps.conversationSummarizer!.maybeSummarize(chatIdStr, conversationScope, larkModel)
+        this.deps.conversationSummarizer!.maybeSummarize(summaryKey, conversationScope, larkModel)
           .catch(e => log.warn('engine.summarization.failed', { error: String(e) }));
       });
     }

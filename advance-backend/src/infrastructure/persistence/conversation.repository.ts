@@ -25,7 +25,15 @@ export interface ConversationMeta {
 export interface ConversationRepoPort {
   getHistory(chatId: string, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
   appendTurn(chatId: string, turn: Omit<Turn, 'id'>, scope?: ConversationScope): Promise<Result<Turn, InfraError>>;
-  clearHistory(chatId: string, scope?: ConversationScope): Promise<Result<void, InfraError>>;
+  /**
+   * Clear every conversation belonging to a chat, including the thread-scoped
+   * ones underneath it.
+   *
+   * There is deliberately no single-key variant. Working context is keyed per
+   * thread, so "clear this chat" is a sweep, and an exact-key clear would
+   * report success while leaving every thread's transcript in place.
+   */
+  clearChatHistories(chatId: string, scope: ConversationScope): Promise<Result<number, InfraError>>;
   getConversationMeta(chatId: string, scope?: ConversationScope): Promise<Result<ConversationMeta | null, InfraError>>;
   updateSummary(conversationId: string, data: {
     summaryJson: unknown;
@@ -34,6 +42,16 @@ export interface ConversationRepoPort {
   }): Promise<Result<void, InfraError>>;
   getHistoryAfterSequence(chatId: string, afterSequence: number, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
 }
+
+/**
+ * Escape LIKE metacharacters so a prefix match means what it reads as.
+ *
+ * Prisma compiles `startsWith` to LIKE and does not escape the pattern, so `%`
+ * and `_` in caller-supplied text stay wildcards. Backslash first, or it would
+ * escape the escapes added after it.
+ */
+const escapeLikePrefix = (value: string): string =>
+  value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 
 export class ConversationRepository implements ConversationRepoPort {
   constructor(
@@ -174,17 +192,36 @@ export class ConversationRepository implements ConversationRepoPort {
     }
   }
 
-  async clearHistory(chatId: string, scope?: ConversationScope): Promise<Result<void, InfraError>> {
+  async clearChatHistories(
+    chatId: string,
+    scope: ConversationScope,
+  ): Promise<Result<number, InfraError>> {
     try {
-      const conv = scope
-        ? await this.db.runtimeConversation.findUnique({
-          where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
-        })
-        : await this.db.runtimeConversation.findFirst({ where: { channelConversationKey: chatId } });
-      if (conv) {
-        await this.db.runtimeConversationMessage.deleteMany({ where: { conversationId: conv.id } });
-        await this.db.runtimeConversation.update({
-          where: { id: conv.id },
+      const conversations = await this.db.runtimeConversation.findMany({
+        where: {
+          companyId: scope.companyId,
+          channel: scope.channel,
+          OR: [
+            { channelConversationKey: chatId },
+            // Thread keys are `<chatId>:thread:<threadIdentity>`. The separator
+            // is part of the prefix so a different chat whose ID merely starts
+            // with this one cannot be swept up. The chat ID is escaped because
+            // `startsWith` compiles to LIKE without escaping, and this is a
+            // delete path whose match set comes from an event payload: a `%`
+            // in a chat ID would otherwise let one member's `/clear` match
+            // every conversation in their company.
+            { channelConversationKey: { startsWith: `${escapeLikePrefix(chatId)}:thread:` } },
+          ],
+        },
+        select: { id: true, channelConversationKey: true },
+      });
+
+      if (conversations.length > 0) {
+        await this.db.runtimeConversationMessage.deleteMany({
+          where: { conversationId: { in: conversations.map(c => c.id) } },
+        });
+        await this.db.runtimeConversation.updateMany({
+          where: { id: { in: conversations.map(c => c.id) } },
           data: {
             summaryJson: Prisma.JsonNull,
             summaryUpdatedAt: null,
@@ -192,12 +229,18 @@ export class ConversationRepository implements ConversationRepoPort {
           },
         });
       }
+
       if (this.cache) {
+        for (const conv of conversations) {
+          void this.cache.del(conversationCacheKey(conv.channelConversationKey, scope));
+        }
+        // The chat key itself may have no row yet still hold a cached window.
         void this.cache.del(conversationCacheKey(chatId, scope));
       }
-      return ok(undefined);
+
+      return ok(conversations.length);
     } catch (e) {
-      return err(wrapInfra('prisma', 'clearConversationHistory', e));
+      return err(wrapInfra('prisma', 'clearChatHistories', e));
     }
   }
 

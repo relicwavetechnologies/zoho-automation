@@ -4,6 +4,7 @@ import type { ApprovalResumerService } from '../../../application/approval/appro
 import type { LarkChannelAdapter } from './lark.adapter';
 import { buildApprovalResolutionCard } from '../../../application/approval/approval-card-builder';
 import { isGatewayApprovalMetadata } from '../../../application/approval/approval-origin';
+import type { AuditService } from '../../../application/observability/audit.service';
 
 interface CardActionPayload {
   kind:       string;
@@ -53,6 +54,8 @@ export class LarkApprovalCardHandler {
     private readonly resumer:      ApprovalResumerService,
     private readonly larkAdapter:  LarkChannelAdapter,
     logger: Logger,
+    /** Optional so existing wiring keeps working; absent means log-only. */
+    private readonly audit?: Pick<AuditService, 'record'>,
   ) {
     this.log = logger.child({ handler: 'lark-approval-card' });
   }
@@ -181,6 +184,26 @@ export class LarkApprovalCardHandler {
         actorUserId: actor.userId,
         actorCompanyId: actor.companyId,
         actorTenantKey: actor.tenantKey,
+      });
+      // Persisted, not just logged. Someone pressing approve on a decision that
+      // was not theirs to make is a security event, and it needs to survive in
+      // a place an admin can query rather than only in process telemetry.
+      // Attributed to the approval's company so it appears in that company's
+      // audit trail even when the actor came from somewhere else.
+      this.audit?.record({
+        actorId: actor.userId,
+        companyId: approval.companyId,
+        action: 'approval.card.unauthorized_actor',
+        outcome: 'failure',
+        metadata: {
+          approvalId,
+          decision,
+          actorOpenId: actor.openId,
+          actorCompanyId: actor.companyId,
+          actorTenantKey: actor.tenantKey,
+          expectedApproverUserId: resolvedManagerUserId,
+          expectedApproverOpenId: resolvedManagerOpenId,
+        },
       });
       return {
         handled: true,

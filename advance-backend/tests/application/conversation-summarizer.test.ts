@@ -29,7 +29,7 @@ function makeRepo(meta: ConversationMeta | null, turns: Array<{ id: string; role
   return {
     getHistory: async () => ok([]),
     appendTurn: async () => ok(undefined),
-    clearHistory: async () => ok(undefined),
+    clearChatHistories: async () => ok(0),
     getConversationMeta: async () => ok(meta),
     updateSummary: mock.fn(async () => ok(undefined)),
     getHistoryAfterSequence: async () => ok(turns as any),
