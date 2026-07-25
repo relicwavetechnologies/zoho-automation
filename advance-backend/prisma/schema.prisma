@@ -882,6 +882,7 @@ model IngressIdempotencyKey {
   @@index([channel, createdAt])
   @@index([channel, tenantKey, eventId])
   @@index([status, createdAt])
+  @@index([channel, status, acceptedAt])
 }
 
 model RbacPermission {

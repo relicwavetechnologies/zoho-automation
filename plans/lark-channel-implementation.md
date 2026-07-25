@@ -2,7 +2,7 @@
 
 > Tracking document for the Lark channel hardening project.
 >
-> Status: **Wave 3A process-local lane activation complete — distributed leases, batching, and busy UX still pending; schema push blocked until the local DB tunnel is restored**
+> Status: **Wave 3A process-local lanes and Wave 2B ingress leases/dead-lettering complete — distributed leases, batching, busy UX, and retry classification still pending; schema push blocked until the local DB tunnel is restored**
 >
 > Last updated: 2026-07-25
 
@@ -42,14 +42,46 @@ sections remain the detailed implementation checklist.
   by the durable worker; it remains a process-local ordering aid, not the
   durability boundary.
 - Redis is no longer the fail-open idempotency authority for Lark ingress.
+- Claiming an ingress receipt is a lease, not a status stamp: a receipt another
+  worker is actively processing is only re-claimable once its owner has been
+  silent past a staleness threshold. A claim reports `claimed`, `leased`, or
+  `terminal` — never a bare null — because a job that completes on a lease it
+  did not win closes the only recovery path that receipt had.
+- Receipts outside their retry window are dead-lettered rather than retried
+  forever, and are excluded from recovery so the oldest poison rows cannot
+  starve newer work. Receipts stranded in `processing` by a killed worker are
+  retired to `dead` by reconciliation instead of staying invisible.
+- AirNote request authentication resolves identity inside a verified Lark
+  installation and fails closed when Lark supplies no tenant key. No
+  `open_id`-only authentication path remains.
+- Lark card-action failures report an error toast instead of reporting success.
 
 ### Explicitly not implemented yet
 
 - The Wave 2 schema has not yet been pushed. The final cold review is clean,
   but `127.0.0.1:15432` is not responding, so the authorized development push
   cannot run until the DB tunnel is restored.
-- Explicit retry classification, dead-letter operations/metrics, and a
-  process-restart integration fixture remain before production rollout.
+- Explicit retry classification remains. Receipts are dead-lettered on a time
+  backstop (a retry window measured from acceptance), not by recognising which
+  errors are permanent, so a poison payload still consumes its whole window.
+- Operator-facing dead-letter tooling remains. `dead` receipts keep their
+  payload and last error and are excluded from recovery, but replay is manual
+  SQL until the Wave 7B admin view lands.
+- Dead-letter and queue metrics, and a process-restart integration fixture,
+  remain before production rollout.
+- `prisma/migrations/` is not a runnable history. There is no
+  `migration_lock.toml`, `LarkTenantBinding` and `IntegrationConnection` are
+  created by no migration, and `package.json` wires only `migrate dev` and
+  `db push` — never `migrate deploy`. Migration apply order is therefore
+  reasoned about by inspection, not proven. Closing this is a prerequisite for
+  the Wave 7 rollout, not for Wave 2.
+- The tenant backfill deliberately skips companies holding more than one active
+  Lark binding, because no tenant key is authoritative for their connections.
+  Those companies must be resolved through the admin 409 path before their
+  legacy connections will resolve.
+- `resolveByLarkOpenId` remains declared but is called by nothing. It should be
+  deleted once no caller can plausibly reappear; leaving it invites a future
+  unscoped lookup.
 - Distributed execution leases and fencing remain in Wave 3. The current
   serializer preserves in-process lane order after durable recovery but does
   not coordinate multiple backend replicas.
@@ -70,6 +102,7 @@ sections remain the detailed implementation checklist.
 | Durable ingress acceptance | Prisma validation + 16 focused repository/webhook/scenario tests + typecheck passed | Initial review found two fixed error-boundary/harness gaps; final review found the expected Wave 2B blocker: accepted receipts still need durable recovery before deployment |
 | Durable ingress recovery | 28 focused receipt/queue/worker/webhook/restart-scenario tests passed; Prisma validation passed; full typecheck is temporarily blocked by unrelated in-progress Airtable mappings | Two fresh reviews found and verified the retained-failed-job recovery gap; failed receipts now reach reconciliation and retained failed jobs are explicitly retried. Final review: ship, no findings |
 | Wave 3A process-local lanes | 25 focused routing/webhook/scenario/serializer tests + full typecheck passed | Review found lane telemetry reporting the company-scoped key while the serializer ordered on the ingress key; corrected so `laneKey` is the key actually used and the contract key is recorded separately as `companyLaneKey` |
+| Wave 2B ingress leases and dead-lettering | 170 focused ingress/lark/identity/AirNote/serializer tests + full typecheck + `prisma validate` passed | Two cold-review rounds. Round 1 found five issues, all corrected: the backfill migration sorted before the migration creating the table it altered; an attempt-counted dead-letter budget a 3-minute outage would exhaust; a stale AirNote test left failing by the tenant-scoped auth change; an index name not matching Prisma's derived name; and a widened repository assertion. Round 2 found the lease's own regression — a claim that returned "not yours" for both *finished* and *leased* let the queue complete a job whose work never ran, so a worker restart dropped the message permanently — plus retirement racing a live lease, a retryable failure able to resurrect a `dead` row, a backfill that guessed when a company held two active bindings, and a missed `updatedAt` default. All corrected. Migration apply order and the backfill itself remain unverified — no database was reachable |
 
 ### Immediate next step
 
@@ -402,7 +435,9 @@ Feature flag continues to use the old `chatId` key while retaining new normalize
 
 - [x] Use the existing BullMQ infrastructure as wake-up/retry transport.
 - [x] Keep Postgres/receipt state as the auditable lifecycle source of truth.
-- [ ] Classify retryable and terminal failures.
+- [ ] Classify retryable and terminal failures. A time-window backstop now
+      dead-letters receipts that outlive their retry window, but nothing yet
+      recognises a permanently-failing payload and terminates it early.
 - [x] Record every failed attempt for retry/replay instead of silently discarding it.
 - [x] Recover retained BullMQ jobs after exhausted attempts instead of treating
       their stable IDs as already runnable.
@@ -783,6 +818,8 @@ Initial internal targets to validate during canary:
 | 2026-07-24 | Untagged group attachments are not downloaded/OCR'd/indexed by default | Accepted |
 | 2026-07-25 | Canonical routing keys are shadow-logged while the live serializer remains on `chatId` | Superseded on 2026-07-25 by Wave 3A |
 | 2026-07-25 | The live serializer orders on the canonical ingress lane key; lane selection is synchronous and authority-free | Implemented |
+| 2026-07-26 | Ingress dead-lettering is bounded by a retry window measured from acceptance, not by an attempt count, so queue-level retries cannot exhaust the budget during a transient outage | Implemented |
+| 2026-07-26 | A worker that cannot win a receipt's lease fails its job rather than completing it, so recovery stays reachable | Implemented and cold-reviewed |
 | 2026-07-25 | Lark webhook ACK follows durable receipt persistence, stable queue admission, and receipt/job linkage | Implemented |
 | 2026-07-25 | Failed durable receipts remain recoverable; reconciliation retries retained failed BullMQ jobs | Implemented and cold-reviewed |
 

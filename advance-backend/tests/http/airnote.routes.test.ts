@@ -8,6 +8,7 @@
  *   (a) missing Bearer → 401 from airnoteAuth
  *   (a2) invalid Lark token → 401
  *   (a3) Lark user not linked to Divo → 403
+ *   (a4) Lark token without a tenant key → 401
  *   (b) no threadId → creates thread + emits meta then done
  *   (c) threadId present → reuses thread + loads history
  *   (d) threadId ownership mismatch → error SSE event
@@ -196,25 +197,33 @@ function makeApprovalGate() {
 }
 
 /** Lark OAuth service mock — getUserInfo verifies the user token → open_id. */
-function makeLarkOAuth(opts: { openId?: string; throws?: boolean } = {}) {
+function makeLarkOAuth(opts: {
+  openId?: string;
+  throws?: boolean;
+  tenantKey?: string | null;
+} = {}) {
   return {
     getUserInfo: async (_token: string) => {
       if (opts.throws) throw new Error('Lark user info failed: invalid token');
       return {
         larkOpenId: opts.openId ?? 'lark-open-id-001',
         larkUserId: null, larkName: null,
-        larkEmail: 'user@test.com', larkEnName: null, tenantKey: null, avatarUrl: null,
+        larkEmail: 'user@test.com', larkEnName: null,
+        // An open_id is unique only per installation, so the middleware
+        // resolves identity against the verified tenant key.
+        tenantKey: opts.tenantKey === undefined ? 'tenant-1' : opts.tenantKey,
+        avatarUrl: null,
       };
     },
   } as any;
 }
 
-/** Channel identity repo mock — resolves a Lark open_id to a Divo user. */
+/** Channel identity repo mock — resolves a Lark open_id within one tenant. */
 function makeChannelIdentityRepo(value: unknown = {
   userId: MOCK_USER_ID, companyId: MOCK_COMPANY_ID, aiRole: 'MEMBER', channel: 'lark',
 }) {
   return {
-    resolveByLarkOpenId: async (_openId: string) => ({ ok: true, value }),
+    resolveByLarkTenantIdentity: async (_openId: string, _tenantKey: string) => ({ ok: true, value }),
   } as any;
 }
 
@@ -292,6 +301,31 @@ describe('POST /api/airnote/chat', () => {
     await handlers[0](req, res, () => {});
 
     assert.equal((res as any).statusCode, 403);
+  });
+
+  it('(a4) Lark token without a tenant key → airnoteAuth returns 401', async () => {
+    const router = createAirnoteRoutes({
+      prisma: makePrisma(),
+      larkOAuthService: makeLarkOAuth({ tenantKey: null }),
+      // Resolution would succeed; the request must still be refused, because an
+      // installation we cannot name is one we cannot authorize against.
+      channelIdentityRepo: makeChannelIdentityRepo(),
+      logger: noopLogger,
+      engine: makeEngineOk(),
+      chatSerializer: makeChatSerializer(),
+      approvalGate: makeApprovalGate(),
+    });
+
+    const handlers = findHandler(router, 'post', '/chat')!;
+    const res = makeMockRes({});
+    const req = {
+      method: 'POST', path: '/chat', params: {}, query: {}, body: {},
+      headers: { authorization: 'Bearer valid-token' },
+    } as unknown as Request;
+
+    await handlers[0](req, res, () => {});
+
+    assert.equal((res as any).statusCode, 401);
   });
 
   it('(b) no threadId → creates thread, emits meta + done', async () => {

@@ -89,9 +89,14 @@ function createHarness(
     markQueued: async () => ok(undefined),
     claim: async (receiptId: string) => {
       const receipt = receipts.get(receiptId);
-      if (!receipt || receipt.status === 'completed') return ok(null);
+      if (!receipt || receipt.status === 'completed' || receipt.status === 'dead') {
+        return ok({ outcome: 'terminal' });
+      }
       receipt.status = 'processing';
-      return ok({ receiptId, ...receipt });
+      return ok({
+        outcome: 'claimed',
+        receipt: { receiptId, acceptedAt: new Date(), attempts: 1, ...receipt },
+      });
     },
     markCompleted: async (receiptId: string) => {
       const receipt = receipts.get(receiptId);
@@ -104,6 +109,7 @@ function createHarness(
       return ok(undefined);
     },
     listRecoverable: async () => ok([]),
+    listExhausted: async () => ok([]),
   };
   let worker: LarkIngressWorker;
   const ingressQueue = {

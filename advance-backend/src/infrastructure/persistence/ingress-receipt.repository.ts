@@ -21,6 +21,50 @@ export interface IngressReceipt {
   tenantKey: string;
   messageId: string;
   payload: Record<string, unknown>;
+  /** Attempt number of this claim, starting at 1. Recorded for observability. */
+  attempts: number;
+  /** When Lark's delivery was durably accepted. Owns the dead-letter decision. */
+  acceptedAt: Date;
+}
+
+/**
+ * Why a claim did not produce work. The two cases must stay distinguishable:
+ * `terminal` means the receipt is finished and the job may complete, whereas
+ * `leased` means someone else is mid-run and this job must be retried later.
+ * Collapsing them into a single null lets the queue complete a job whose work
+ * never happened, which permanently closes the recovery path for that receipt.
+ */
+export type IngressClaim =
+  | { outcome: 'claimed'; receipt: IngressReceipt }
+  | { outcome: 'leased' }
+  | { outcome: 'terminal' };
+
+export interface ClaimIngressReceiptOptions {
+  /**
+   * A `processing` receipt is only re-claimable once its owner has been silent
+   * this long. Without it a reconcile pass can hand live work to a second
+   * worker, which is the failure the durable receipt exists to prevent.
+   */
+  staleProcessingAfterMs?: number;
+}
+
+export interface MarkIngressFailedOptions {
+  /** Terminal failures move to `dead` so recovery stops retrying them forever. */
+  terminal?: boolean;
+}
+
+export interface ListRecoverableOptions {
+  channel?: string;
+  /** Mirrors the claim lease so retirement cannot race a live worker. */
+  staleProcessingAfterMs?: number;
+  /**
+   * How long after acceptance a receipt stays retryable. A budget counted in
+   * attempts instead of time is exhausted by whatever retries fastest — the
+   * queue's own in-job attempts burn it in seconds — which turns a short
+   * provider outage into a permanent drop. Time is the property that actually
+   * distinguishes a transient failure from a poison payload.
+   */
+  retryWindowMs?: number;
 }
 
 export interface IngressReceiptRepoPort {
@@ -28,11 +72,36 @@ export interface IngressReceiptRepoPort {
     input: AcceptIngressReceiptInput,
   ): Promise<Result<AcceptedIngressReceipt, InfraError>>;
   markQueued(receiptId: string, queueJobId: string): Promise<Result<void, InfraError>>;
-  claim(receiptId: string): Promise<Result<IngressReceipt | null, InfraError>>;
+  claim(
+    receiptId: string,
+    options?: ClaimIngressReceiptOptions,
+  ): Promise<Result<IngressClaim, InfraError>>;
   markCompleted(receiptId: string): Promise<Result<void, InfraError>>;
-  markFailed(receiptId: string, error: unknown): Promise<Result<void, InfraError>>;
-  listRecoverable(limit: number): Promise<Result<string[], InfraError>>;
+  markFailed(
+    receiptId: string,
+    error: unknown,
+    options?: MarkIngressFailedOptions,
+  ): Promise<Result<void, InfraError>>;
+  listRecoverable(
+    limit: number,
+    options?: ListRecoverableOptions,
+  ): Promise<Result<string[], InfraError>>;
+  /**
+   * Non-terminal receipts whose retry window has closed. These are past saving
+   * by retry — including ones stranded in `processing` by a worker that was
+   * killed — and must be moved to `dead` so they stop being invisible.
+   */
+  listExhausted(
+    limit: number,
+    options?: ListRecoverableOptions,
+  ): Promise<Result<string[], InfraError>>;
 }
+
+/** Statuses that must never be re-claimed or re-queued by recovery. */
+const TERMINAL_INGRESS_STATUSES = ['completed', 'dead'] as const;
+const RECOVERABLE_INGRESS_STATUSES = ['accepted', 'processing', 'failed'] as const;
+const DEFAULT_STALE_PROCESSING_MS = 5 * 60_000;
+const DEFAULT_RETRY_WINDOW_MS = 6 * 60 * 60_000;
 
 export class IngressReceiptRepository implements IngressReceiptRepoPort {
   constructor(private readonly db: PrismaClient) {}
@@ -88,12 +157,25 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
     }
   }
 
-  async claim(receiptId: string): Promise<Result<IngressReceipt | null, InfraError>> {
+  async claim(
+    receiptId: string,
+    options: ClaimIngressReceiptOptions = {},
+  ): Promise<Result<IngressClaim, InfraError>> {
+    const staleBefore = new Date(
+      Date.now() - (options.staleProcessingAfterMs ?? DEFAULT_STALE_PROCESSING_MS),
+    );
     try {
+      // A claim is a lease, not a status stamp: a receipt another worker is
+      // actively processing stays with that worker until its lease goes stale.
       const claimed = await this.db.ingressIdempotencyKey.updateMany({
         where: {
           id: receiptId,
-          status: { not: 'completed' },
+          status: { notIn: [...TERMINAL_INGRESS_STATUSES] },
+          OR: [
+            { status: { not: 'processing' } },
+            { startedAt: null },
+            { startedAt: { lt: staleBefore } },
+          ],
         },
         data: {
           status: 'processing',
@@ -102,7 +184,17 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
           lastError: null,
         },
       });
-      if (claimed.count === 0) return ok(null);
+      if (claimed.count === 0) {
+        // Nothing was claimed for one of two reasons. Re-read the status so the
+        // caller can tell "already finished" from "someone else is running it".
+        const current = await this.db.ingressIdempotencyKey.findUnique({
+          where: { id: receiptId },
+          select: { status: true },
+        });
+        const terminal = !current
+          || (TERMINAL_INGRESS_STATUSES as readonly string[]).includes(current.status);
+        return ok({ outcome: terminal ? 'terminal' : 'leased' });
+      }
 
       const row = await this.db.ingressIdempotencyKey.findUnique({
         where: { id: receiptId },
@@ -111,14 +203,21 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
           tenantKey: true,
           messageId: true,
           payloadJson: true,
+          attempts: true,
+          acceptedAt: true,
         },
       });
-      if (!row) return ok(null);
+      if (!row) return ok({ outcome: 'terminal' });
       return ok({
-        receiptId: row.id,
-        tenantKey: row.tenantKey,
-        messageId: row.messageId,
-        payload: row.payloadJson as Record<string, unknown>,
+        outcome: 'claimed',
+        receipt: {
+          receiptId: row.id,
+          tenantKey: row.tenantKey,
+          messageId: row.messageId,
+          payload: row.payloadJson as Record<string, unknown>,
+          attempts: row.attempts,
+          acceptedAt: row.acceptedAt,
+        },
       });
     } catch (cause) {
       return err(wrapInfra('prisma', 'ingressReceipt.claim', cause));
@@ -141,15 +240,23 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
     }
   }
 
-  async markFailed(receiptId: string, error: unknown): Promise<Result<void, InfraError>> {
+  async markFailed(
+    receiptId: string,
+    error: unknown,
+    options: MarkIngressFailedOptions = {},
+  ): Promise<Result<void, InfraError>> {
     try {
       await this.db.ingressIdempotencyKey.updateMany({
         where: {
           id: receiptId,
-          status: { not: 'completed' },
+          // A retryable failure must not resurrect an already dead-lettered
+          // receipt; only a terminal write may overwrite `dead`.
+          status: options.terminal
+            ? { not: 'completed' }
+            : { notIn: [...TERMINAL_INGRESS_STATUSES] },
         },
         data: {
-          status: 'failed',
+          status: options.terminal ? 'dead' : 'failed',
           lastError: error instanceof Error ? error.message : String(error),
         },
       });
@@ -159,12 +266,19 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
     }
   }
 
-  async listRecoverable(limit: number): Promise<Result<string[], InfraError>> {
+  async listRecoverable(
+    limit: number,
+    options: ListRecoverableOptions = {},
+  ): Promise<Result<string[], InfraError>> {
     try {
       const rows = await this.db.ingressIdempotencyKey.findMany({
         where: {
-          channel: 'lark',
-          status: { in: ['accepted', 'processing', 'failed'] },
+          channel: options.channel ?? 'lark',
+          status: { in: [...RECOVERABLE_INGRESS_STATUSES] },
+          // Receipts past their window stay inspectable but must never hold a
+          // recovery slot; otherwise the oldest poison rows, which sort first,
+          // starve live work forever.
+          acceptedAt: { gte: this.retryFloor(options) },
         },
         orderBy: { acceptedAt: 'asc' },
         take: limit,
@@ -174,5 +288,41 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
     } catch (cause) {
       return err(wrapInfra('prisma', 'ingressReceipt.listRecoverable', cause));
     }
+  }
+
+  async listExhausted(
+    limit: number,
+    options: ListRecoverableOptions = {},
+  ): Promise<Result<string[], InfraError>> {
+    const staleBefore = new Date(
+      Date.now() - (options.staleProcessingAfterMs ?? DEFAULT_STALE_PROCESSING_MS),
+    );
+    try {
+      const rows = await this.db.ingressIdempotencyKey.findMany({
+        where: {
+          channel: options.channel ?? 'lark',
+          status: { in: [...RECOVERABLE_INGRESS_STATUSES] },
+          acceptedAt: { lt: this.retryFloor(options) },
+          // Never retire a receipt a worker is still running. A long turn that
+          // crosses the window boundary would otherwise be logged as dead while
+          // it is about to succeed, and its real outcome would overwrite that.
+          OR: [
+            { status: { not: 'processing' } },
+            { startedAt: null },
+            { startedAt: { lt: staleBefore } },
+          ],
+        },
+        orderBy: { acceptedAt: 'asc' },
+        take: limit,
+        select: { id: true },
+      });
+      return ok(rows.map(row => row.id));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'ingressReceipt.listExhausted', cause));
+    }
+  }
+
+  private retryFloor(options: ListRecoverableOptions): Date {
+    return new Date(Date.now() - (options.retryWindowMs ?? DEFAULT_RETRY_WINDOW_MS));
   }
 }

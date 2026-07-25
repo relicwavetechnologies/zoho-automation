@@ -210,7 +210,14 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
           res.status(200).json({ ok: true });
         } catch (e) {
           log.error('webhook.card_action.error', { error: String(e) });
-          res.status(200).json({ ok: true });
+          // Lark needs a 200 to stop redelivering, but the actor must not be
+          // told a control action succeeded when it did not apply.
+          res.status(200).json({
+            toast: {
+              type: 'error',
+              content: 'Divo could not complete that action. Please try again.',
+            },
+          });
         }
       })();
       return;
