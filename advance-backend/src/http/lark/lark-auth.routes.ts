@@ -7,7 +7,7 @@
  *   2. GET /api/lark/auth/callback  — validate state, exchange code, persist tokens, DM user, show result page
  *
  * State parameter (base64url-encoded JSON):
- *   { companyId, userId, larkOpenId, nonce }
+ *   { companyId, userId, larkOpenId, tenantKey, nonce }
  *
  * CSRF: random nonce stored in Redis (TTL 10 min) on /connect, validated + consumed on /callback.
  *
@@ -32,6 +32,7 @@ interface OAuthState {
   companyId:  string;
   userId:     string;
   larkOpenId: string;
+  tenantKey:  string;
   nonce:      string;
 }
 
@@ -52,6 +53,7 @@ function decodeState(raw: string): OAuthState | null {
       typeof parsed.companyId  === 'string' &&
       typeof parsed.userId     === 'string' &&
       typeof parsed.larkOpenId === 'string' &&
+      typeof parsed.tenantKey  === 'string' &&
       typeof parsed.nonce      === 'string'
     ) return parsed as OAuthState;
     return null;
@@ -146,8 +148,9 @@ export function createLarkAuthRoutes(deps: {
     const companyId  = req.headers['x-company-id']   as string | undefined;
     const userId     = req.headers['x-user-id']       as string | undefined;
     const larkOpenId = req.headers['x-lark-open-id']  as string | undefined;
+    const tenantKey  = req.headers['x-lark-tenant-key'] as string | undefined;
 
-    if (!companyId || !userId || !larkOpenId) {
+    if (!companyId || !userId || !larkOpenId || !tenantKey) {
       res.status(400).json({ error: 'missing_required_headers' });
       return;
     }
@@ -157,7 +160,7 @@ export function createLarkAuthRoutes(deps: {
       return;
     }
 
-    const identity = await deps.channelIdentityRepo.prepareLarkLogin(larkOpenId);
+    const identity = await deps.channelIdentityRepo.prepareLarkLogin(larkOpenId, tenantKey);
     if (
       !identity.ok
       || identity.value?.status !== 'ready'
@@ -171,9 +174,13 @@ export function createLarkAuthRoutes(deps: {
     }
 
     const nonce = deps.larkOAuthService.generateNonce();
-    await deps.cache.set(larkOAuthNonceKey(nonce), { companyId, userId, larkOpenId }, LARK_OAUTH_NONCE_TTL_SECONDS);
+    await deps.cache.set(
+      larkOAuthNonceKey(nonce),
+      { companyId, userId, larkOpenId, tenantKey },
+      LARK_OAUTH_NONCE_TTL_SECONDS,
+    );
 
-    const state = encodeLarkOAuthState({ companyId, userId, larkOpenId, nonce });
+    const state = encodeLarkOAuthState({ companyId, userId, larkOpenId, tenantKey, nonce });
     const url   = deps.larkOAuthService.getAuthorizeUrl(state);
 
     log.info('lark.auth.connect.initiated', { companyId, userId, larkOpenId });
@@ -210,7 +217,12 @@ export function createLarkAuthRoutes(deps: {
     }
 
     // Validate CSRF nonce
-    const stored = await deps.cache.get<{ companyId: string; userId: string; larkOpenId: string }>(
+    const stored = await deps.cache.get<{
+      companyId: string;
+      userId: string;
+      larkOpenId: string;
+      tenantKey: string;
+    }>(
       larkOAuthNonceKey(state.nonce),
     );
     if (
@@ -219,6 +231,7 @@ export function createLarkAuthRoutes(deps: {
       || stored.value.companyId !== state.companyId
       || stored.value.userId !== state.userId
       || stored.value.larkOpenId !== state.larkOpenId
+      || stored.value.tenantKey !== state.tenantKey
     ) {
       log.warn('lark.auth.callback.nonce_mismatch', { companyId: state.companyId });
       sendError('Session expired or invalid — please run /login again.');
@@ -227,6 +240,22 @@ export function createLarkAuthRoutes(deps: {
     await deps.cache.del(larkOAuthNonceKey(state.nonce));
 
     try {
+      if (!deps.channelIdentityRepo) {
+        throw new Error('Lark identity validation is unavailable');
+      }
+      const identity = await deps.channelIdentityRepo.prepareLarkLogin(
+        state.larkOpenId,
+        state.tenantKey,
+      );
+      if (
+        !identity.ok
+        || identity.value?.status !== 'ready'
+        || identity.value.companyId !== state.companyId
+        || identity.value.userId !== state.userId
+      ) {
+        throw new Error('The Lark workspace binding is no longer active');
+      }
+
       const tokens = await deps.larkOAuthService.exchangeCode(code);
 
       if (!tokens.accessToken) {
@@ -241,6 +270,15 @@ export function createLarkAuthRoutes(deps: {
           userId: state.userId,
         });
         throw new Error('The authorised Lark account does not match the account that started this connection');
+      }
+      if (!tokens.tenantKey || tokens.tenantKey !== state.tenantKey) {
+        log.warn('lark.auth.callback.tenant_mismatch', {
+          expectedTenantKey: state.tenantKey,
+          returnedTenantKey: tokens.tenantKey || null,
+          companyId: state.companyId,
+          userId: state.userId,
+        });
+        throw new Error('The authorised Lark workspace does not match the workspace that started this connection');
       }
 
       const accessExpiresAt  = new Date(Date.now() + tokens.expiresIn * 1000);

@@ -22,8 +22,8 @@ const Schema = z.object({
   /** Unix timestamp in seconds, as required by Lark VC search. */
   endTime: z.string().regex(/^\d+$/).optional(),
   limit: z.number().int().min(1).max(50).optional(),
-  /** Divo-managed Lark connection. Required if multiple are accessible. */
-  connectionId: z.string().uuid(),
+  /** Divo-managed Lark connection. Required only if multiple are accessible. */
+  connectionId: z.string().uuid().optional(),
 }).superRefine((value, ctx) => {
   if ((value.startTime && !value.endTime) || (!value.startTime && value.endTime)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'startTime and endTime must be supplied together' });
@@ -69,7 +69,7 @@ export const createLarkMeetingTool = (deps: {
 - query: Optional title/keyword for search
 - startTime, endTime: Optional Unix timestamps in seconds; must be supplied together
 - limit: Max search results (default 20, max 50)
-- connectionId: Exact UUID of the connected or shared Lark account. Required for every action.
+- connectionId: Exact UUID when supplied. Omit it to auto-select one accessible account or receive safe choices when several are available.
 
 This tool is read-only. It does not join, end, or control a live meeting.
   `.trim(),
@@ -83,7 +83,7 @@ This tool is read-only. It does not join, end, or control a live meeting.
   async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     try {
       const userConnection = await resolveLarkUserClient(deps, ctx, {
-        connectionId: args.connectionId,
+        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
         minimumAccess: 'read_only',
       });
       if (userConnection.status === 'choose_connection') {

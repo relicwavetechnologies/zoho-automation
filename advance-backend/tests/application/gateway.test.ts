@@ -795,6 +795,200 @@ describe('ToolExecutor', () => {
     });
   }
 
+  it('does not start a runtime tool after its parent run is cancelled', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      execute: async () => {
+        executions += 1;
+        return ok({ result: 'unexpected' });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await executor.executeForRuntime({
+      toolId: 'fakeTool',
+      args: { query: 'hello' },
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+      } as never,
+      perm: makeAllowedPerm('fakeTool', ['read']),
+      abortSignal: controller.signal,
+    });
+
+    assert.equal(result.status, 'tool_error');
+    assert.match(result.message ?? '', /cancelled because the parent run ended/i);
+    assert.equal(executions, 0);
+  });
+
+  it('passes the parent cancellation signal into runtime tool context', async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      execute: async (_args, context) => {
+        receivedSignal = context.abortSignal;
+        return ok({ result: 'done' });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const controller = new AbortController();
+
+    const result = await executor.executeForRuntime({
+      toolId: 'fakeTool',
+      args: { query: 'hello' },
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+      } as never,
+      perm: makeAllowedPerm('fakeTool', ['read']),
+      abortSignal: controller.signal,
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(receivedSignal, controller.signal);
+  });
+
+  it('resolves the only accessible connected account before runtime validation', async () => {
+    const connectionId = '00000000-0000-4000-8000-000000000001';
+    let receivedConnectionId: string | undefined;
+    const registry = new ToolRegistry();
+    registry.register({
+      id: asToolId('zohoCrm'),
+      family: 'zoho',
+      actionGroups: new Set(['read']),
+      argsSchema: z.object({
+        connectionId: z.string().uuid(),
+        op: z.literal('list'),
+      }),
+      resultSchema: z.object({ result: z.string() }),
+      description: 'Connected-account test tool',
+      parameterDocs: 'connectionId, op',
+      permissionCheck: () => ok('read'),
+      execute: async (args) => {
+        receivedConnectionId = args.connectionId;
+        return ok({ result: 'done' });
+      },
+    });
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('zohoCrm', ['read'])),
+      connectionRegistry: {
+        listAccessibleZohoConnections: async () => ok([{
+          connectionId,
+          provider: 'zoho',
+          label: 'Work Zoho',
+          ownerType: 'user',
+          access: 'admin',
+          scopes: [],
+          connectedAt: new Date(),
+        }]),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.executeForRuntime({
+      toolId: 'zohoCrm',
+      args: { op: 'list' },
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+      } as never,
+      perm: makeAllowedPerm('zohoCrm', ['read']),
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(receivedConnectionId, connectionId);
+  });
+
+  it('returns safe connected-account choices instead of guessing between accounts', async () => {
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register({
+      id: asToolId('larkDoc'),
+      family: 'lark',
+      actionGroups: new Set(['create']),
+      argsSchema: z.object({
+        connectionId: z.string().uuid(),
+        op: z.literal('create'),
+      }),
+      resultSchema: z.object({ result: z.string() }),
+      description: 'Connected-account test tool',
+      parameterDocs: 'connectionId, op',
+      permissionCheck: () => ok('create'),
+      execute: async () => {
+        executions += 1;
+        return ok({ result: 'unexpected' });
+      },
+    });
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('larkDoc', ['create'])),
+      connectionRegistry: {
+        listAccessibleLarkConnections: async () => ok([
+          {
+            connectionId: '00000000-0000-4000-8000-000000000001',
+            provider: 'lark',
+            label: 'Primary Lark',
+            accountEmail: 'primary@example.com',
+            ownerType: 'user',
+            access: 'admin',
+            scopes: [],
+            connectedAt: new Date(),
+          },
+          {
+            connectionId: '00000000-0000-4000-8000-000000000002',
+            provider: 'lark',
+            label: 'Shared Lark',
+            accountEmail: 'shared@example.com',
+            ownerType: 'company',
+            access: 'read_write',
+            scopes: [],
+            connectedAt: new Date(),
+          },
+        ]),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.executeForRuntime({
+      toolId: 'larkDoc',
+      args: { op: 'create' },
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+      } as never,
+      perm: makeAllowedPerm('larkDoc', ['create']),
+    });
+
+    assert.equal(result.status, 'invalid_args');
+    assert.match(result.message ?? '', /Primary Lark/);
+    assert.match(result.message ?? '', /Shared Lark/);
+    assert.equal(executions, 0);
+  });
+
   it('keeps manager-approval scope stable when the same requester and run renews its session', async () => {
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({

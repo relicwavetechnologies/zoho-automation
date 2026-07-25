@@ -11,6 +11,15 @@ interface CardActionPayload {
   decision:   string;
 }
 
+export interface LarkAuthenticatedCardActor {
+  tenantKey:  string;
+  openId:     string;
+  userId:     string;
+  companyId:  string;
+  aiRole:     string;
+  displayName?: string;
+}
+
 // Supports both Card 2.0 (operator wrapper) and Card 1.0 (open_id at top level).
 interface CardActionTriggerEvent {
   action: {
@@ -54,6 +63,7 @@ export class LarkApprovalCardHandler {
    */
   async handle(
     rawEvent: unknown,
+    actor: LarkAuthenticatedCardActor,
   ): Promise<{ handled: boolean; responseBody?: unknown }> {
     const event = rawEvent as CardActionTriggerEvent | null;
     this.log.info('approval_card.handle.entry', {
@@ -102,12 +112,6 @@ export class LarkApprovalCardHandler {
       return { handled: false };
     }
 
-    const actorOpenId = event.operator?.open_id ?? event.open_id;
-    if (!actorOpenId) {
-      this.log.warn('approval_card.no_actor', { approvalId, eventKeys: Object.keys(event) });
-      return { handled: true, responseBody: { toast: { type: 'error', content: 'Could not identify actor.' } } };
-    }
-
     // Load approval and authorize actor
     const approvalResult = await this.approvalRepo.findById(approvalId);
     if (!approvalResult.ok || !approvalResult.value) {
@@ -142,8 +146,17 @@ export class LarkApprovalCardHandler {
 
     const meta = approval.metadataJson;
     const resolvedManagerOpenId = isRecord(meta) ? meta['resolvedManagerOpenId'] : undefined;
+    const resolvedManagerUserId = isRecord(meta) ? meta['resolvedManagerUserId'] : undefined;
+    const requesterTenantKey = isRecord(meta) ? meta['tenantKey'] : undefined;
 
-    if (typeof resolvedManagerOpenId !== 'string' || resolvedManagerOpenId.length === 0) {
+    if (
+      typeof resolvedManagerOpenId !== 'string'
+      || resolvedManagerOpenId.length === 0
+      || typeof resolvedManagerUserId !== 'string'
+      || resolvedManagerUserId.length === 0
+      || typeof approval.companyId !== 'string'
+      || approval.companyId.length === 0
+    ) {
       this.log.error('approval_card.missing_manager_metadata', { approvalId });
       return {
         handled: true,
@@ -153,8 +166,22 @@ export class LarkApprovalCardHandler {
       };
     }
 
-    if (actorOpenId !== resolvedManagerOpenId) {
-      this.log.warn('approval_card.unauthorized_actor', { approvalId, actorOpenId, resolvedManagerOpenId });
+    const tenantMatches = typeof requesterTenantKey !== 'string'
+      || requesterTenantKey.length === 0
+      || requesterTenantKey === actor.tenantKey;
+    if (
+      actor.openId !== resolvedManagerOpenId
+      || actor.userId !== resolvedManagerUserId
+      || actor.companyId !== approval.companyId
+      || !tenantMatches
+    ) {
+      this.log.warn('approval_card.unauthorized_actor', {
+        approvalId,
+        actorOpenId: actor.openId,
+        actorUserId: actor.userId,
+        actorCompanyId: actor.companyId,
+        actorTenantKey: actor.tenantKey,
+      });
       return {
         handled: true,
         responseBody: {
@@ -167,7 +194,7 @@ export class LarkApprovalCardHandler {
     const resolveResult = await this.approvalRepo.atomicResolve(
       approvalId,
       decision as 'approved' | 'rejected',
-      actorOpenId,
+      actor.openId,
     );
 
     if (!resolveResult.ok || !resolveResult.value) {
@@ -181,7 +208,10 @@ export class LarkApprovalCardHandler {
     }
 
     const resolvedAt    = new Date();
-    const resolvedByName = event.operator?.name ?? event.user_name ?? actorOpenId;
+    const resolvedByName = actor.displayName
+      ?? event.operator?.name
+      ?? event.user_name
+      ?? actor.openId;
 
     // Update the approval card to show the decision (remove buttons)
     const updatedCard = buildApprovalResolutionCard(decision as 'approved' | 'rejected', resolvedByName, resolvedAt);

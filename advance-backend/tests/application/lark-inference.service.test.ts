@@ -29,7 +29,7 @@ function generatedResult() {
 }
 
 describe('LarkInferenceService', () => {
-  it('pins Lark to Flash and records channel-attributed usage and audit data', async () => {
+  it('pins Lark to Pro and records channel-attributed usage and audit data', async () => {
     const calls: Array<{ name: string; input: any }> = [];
     let receivedKey = '';
     const upstream = {

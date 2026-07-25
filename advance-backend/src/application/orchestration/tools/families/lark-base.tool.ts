@@ -23,8 +23,8 @@ const Schema = z.object({
   /** Field to search. Defaults to the table's Lark primary field. */
   fieldName: z.string().optional(),
   limit: z.number().int().min(1).max(100).optional(),
-  /** Exact Divo-managed Lark connection for this governed action. */
-  connectionId: z.string().uuid(),
+  /** Exact Divo-managed Lark connection when more than one is accessible. */
+  connectionId: z.string().uuid().optional(),
 });
 type Args = z.infer<typeof Schema>;
 const ResultSchema = z.object({ success: z.boolean(), data: z.unknown().optional(), recordId: z.string().optional(), message: z.string().optional() });
@@ -48,7 +48,7 @@ export const createLarkBaseTool = (deps: {
   actionGroups: new Set(['read', 'create', 'update', 'delete']),
   argsSchema: Schema, resultSchema: ResultSchema,
   description: 'Read, create, update, or delete records in Lark Base (multi-dimensional tables).',
-  parameterDocs: 'op: list_records|get_record|create_record|update_record|delete_record|search_records. appToken, tableId, recordId, fields, filter, fieldName (optional; defaults to the table primary field), connectionId (exact UUID of a connected or shared Lark account; required for every action).',
+  parameterDocs: 'op: list_records|get_record|create_record|update_record|delete_record|search_records. appToken, tableId, recordId, fields, filter, fieldName (optional; defaults to the table primary field), connectionId (exact UUID when supplied; omit to auto-select one accessible account or receive safe choices).',
   permissionCheck(args, perm) {
     const op = args.op;
     const action: ToolActionGroup = op === 'list_records' || op === 'get_record' || op === 'search_records' ? 'read'
@@ -61,7 +61,7 @@ export const createLarkBaseTool = (deps: {
     if (!appToken || !tableId) return err(new ToolError({ toolId: 'larkBase', reason: 'bad_args', message: 'appToken and tableId required' }));
     try {
       const userConnection = await resolveLarkUserClient(deps, ctx, {
-        connectionId: args.connectionId,
+        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
         minimumAccess: args.op === 'list_records' || args.op === 'get_record' || args.op === 'search_records'
           ? 'read_only'
           : 'read_write',

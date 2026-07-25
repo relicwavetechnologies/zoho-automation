@@ -10,7 +10,9 @@ const LARK_IDENTITY_TTL = 900; // 15 min — identity almost never changes; inva
 // v2 selects the canonical Divo owner when historical duplicate Lark
 // connections exist. The version bump prevents a previously cached legacy
 // owner from surviving the corrected resolution semantics.
-const identityCacheKey = (larkOpenId: string) => `lark:id:v2:${larkOpenId}`;
+const identityCacheKey = (larkOpenId: string, tenantKey?: string) => tenantKey
+  ? `lark:id:v3:${tenantKey}:${larkOpenId}`
+  : `lark:id:v2:${larkOpenId}`;
 
 export interface ChannelIdentityRow {
   id: string;
@@ -57,12 +59,23 @@ export type PendingLarkLoginResolution =
     };
 
 export interface ChannelIdentityRepoPort {
-  /** Resolves a user identity by Lark openId without requiring a known companyId (multi-tenant safe). */
+  /** Legacy resolution for flows that do not yet have a trusted Lark tenant key. */
   resolveByLarkOpenId(larkOpenId: string): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
+  /** Resolves webhook identities within one authenticated Lark installation. */
+  resolveByLarkTenantIdentity(
+    larkOpenId: string,
+    tenantKey: string,
+  ): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
   /** Prepares a one-time OAuth link for a known Lark identity that has no active auth link yet. */
-  prepareLarkLogin(larkOpenId: string): Promise<Result<PendingLarkLoginResolution | null, InfraError>>;
-  /** Resolves a user identity by internal userId — used when only userId is known (e.g. approval resume). */
-  resolveByUserId(userId: string): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
+  prepareLarkLogin(
+    larkOpenId: string,
+    tenantKey?: string,
+  ): Promise<Result<PendingLarkLoginResolution | null, InfraError>>;
+  /** Resolves an internal user only within the authoritative company context. */
+  resolveByUserId(
+    userId: string,
+    companyId: string,
+  ): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
 }
 
 // ─── Token helpers for contact search ────────────────────────────────────────
@@ -105,10 +118,39 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
   async resolveByLarkOpenId(
     larkOpenId: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
+    return this.resolveLarkIdentity(larkOpenId);
+  }
+
+  async resolveByLarkTenantIdentity(
+    larkOpenId: string,
+    tenantKey: string,
+  ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
+    return this.resolveLarkIdentity(larkOpenId, tenantKey);
+  }
+
+  private async resolveLarkIdentity(
+    larkOpenId: string,
+    tenantKey?: string,
+  ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
+    let boundCompanyId: string | undefined;
+    if (tenantKey) {
+      try {
+        const binding = await this.db.larkTenantBinding.findFirst({
+          where: { larkTenantKey: tenantKey, isActive: true },
+          select: { companyId: true },
+        });
+        if (!binding) return ok(null);
+        boundCompanyId = binding.companyId;
+      } catch (e) {
+        return err(wrapInfra('prisma', 'resolveByLarkTenantIdentity.binding', e));
+      }
+    }
+
     // Cache read — only non-null identities are cached (null = user may register soon).
     if (this.cache) {
-      const cached = await this.cache.get<ResolvedUserIdentity>(identityCacheKey(larkOpenId));
+      const cached = await this.cache.get<ResolvedUserIdentity>(identityCacheKey(larkOpenId, tenantKey));
       if (cached.ok && cached.value !== null) {
+        if (boundCompanyId && cached.value.companyId !== boundCompanyId) return ok(null);
         const membership = await this.db.adminMembership.findFirst({
           where: {
             userId: cached.value.userId,
@@ -125,7 +167,12 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
 
     try {
       const ci = await this.db.channelIdentity.findFirst({
-        where: { channel: 'lark', larkOpenId },
+        where: {
+          channel: 'lark',
+          larkOpenId,
+          ...(tenantKey ? { externalTenantId: tenantKey } : {}),
+          ...(boundCompanyId ? { companyId: boundCompanyId } : {}),
+        },
         select: { id: true, aiRole: true, channel: true, companyId: true, displayName: true, email: true },
       });
       if (!ci) return ok(null);
@@ -135,6 +182,12 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
           companyId: ci.companyId,
           provider: 'lark',
           externalAccountId: larkOpenId,
+          ...(tenantKey ? {
+            tokenMetadata: {
+              path: ['larkTenantKey'],
+              equals: tenantKey,
+            },
+          } : {}),
           ownerUserId: { not: null },
           status: 'connected',
           revokedAt: null,
@@ -187,7 +240,7 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
       };
       // Populate cache — fire-and-forget.
       if (this.cache) {
-        void this.cache.set(identityCacheKey(larkOpenId), resolved, LARK_IDENTITY_TTL);
+        void this.cache.set(identityCacheKey(larkOpenId, tenantKey), resolved, LARK_IDENTITY_TTL);
       }
       return ok(resolved);
     } catch (e) {
@@ -199,15 +252,30 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
   async invalidateIdentityCache(larkOpenId: string): Promise<void> {
     if (this.cache) {
       void this.cache.del(identityCacheKey(larkOpenId));
+      void this.cache.scanDel(`lark:id:v3:*:${larkOpenId}`);
     }
   }
 
   async prepareLarkLogin(
     larkOpenId: string,
+    tenantKey?: string,
   ): Promise<Result<PendingLarkLoginResolution | null, InfraError>> {
     try {
+      const binding = tenantKey
+        ? await this.db.larkTenantBinding.findFirst({
+            where: { larkTenantKey: tenantKey, isActive: true },
+            select: { companyId: true },
+          })
+        : null;
+      if (tenantKey && !binding) return ok(null);
+
       const ci = await this.db.channelIdentity.findFirst({
-        where: { channel: 'lark', larkOpenId },
+        where: {
+          channel: 'lark',
+          larkOpenId,
+          ...(tenantKey ? { externalTenantId: tenantKey } : {}),
+          ...(binding ? { companyId: binding.companyId } : {}),
+        },
         select: {
           aiRole:      true,
           companyId:   true,
@@ -283,32 +351,39 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
 
   async resolveByUserId(
     userId: string,
+    companyId: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
     try {
+      const membership = await this.db.adminMembership.findFirst({
+        where: { userId, companyId, isActive: true },
+        select: { role: true },
+        orderBy: { updatedAt: 'desc' },
+      });
+      if (!membership) return ok(null);
+
       const connection = await this.db.integrationConnection.findFirst({
         where: {
+          companyId,
           ownerUserId: userId,
           provider: 'lark',
           status: 'connected',
           revokedAt: null,
         },
-        select: { externalAccountId: true },
+        select: { externalAccountId: true, tokenMetadata: true },
         orderBy: { updatedAt: 'desc' },
       });
-      if (!connection?.externalAccountId) return ok(null);
-
-      const ci = await this.db.channelIdentity.findFirst({
-        where: { channel: 'lark', larkOpenId: connection.externalAccountId },
-        select: { aiRole: true, channel: true, companyId: true },
-      });
-      if (!ci) return ok(null);
-
-      const membership = await this.db.adminMembership.findFirst({
-        where: { userId, companyId: ci.companyId, isActive: true },
-        select: { role: true },
-        orderBy: { updatedAt: 'desc' },
-      });
-      if (!membership) return ok(null);
+      const tenantKey = asOptionalString(asRecord(connection?.tokenMetadata)?.['larkTenantKey']);
+      const ci = connection?.externalAccountId
+        ? await this.db.channelIdentity.findFirst({
+            where: {
+              companyId,
+              channel: 'lark',
+              larkOpenId: connection.externalAccountId,
+              ...(tenantKey ? { externalTenantId: tenantKey } : {}),
+            },
+            select: { channel: true, displayName: true, email: true },
+          })
+        : null;
 
       const deptPref = await this.db.userDepartmentPreference.findUnique({
         where: { userId },
@@ -317,10 +392,12 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
 
       return ok({
         userId,
-        companyId:  ci.companyId,
+        companyId,
         aiRole:     membership.role,
-        channel:    ci.channel,
-        larkOpenId: connection.externalAccountId,
+        channel:    ci?.channel ?? 'internal',
+        ...(connection?.externalAccountId && ci ? { larkOpenId: connection.externalAccountId } : {}),
+        ...(ci?.displayName ? { displayName: ci.displayName } : {}),
+        ...(ci?.email ? { email: ci.email } : {}),
         ...(deptPref?.activeDepartmentId ? { activeDepartmentId: deptPref.activeDepartmentId } : {}),
       });
     } catch (e) {
@@ -386,4 +463,14 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
         createdAt: row.createdAt,
       }));
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

@@ -47,6 +47,7 @@ export interface FastPathInput {
   history:     ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>;
   model:       LanguageModel;
   log:         Logger;
+  abortSignal?: AbortSignal;
 }
 
 export interface FastPathOutput {
@@ -64,7 +65,9 @@ export async function runFastPath(input: FastPathInput): Promise<FastPathOutput>
     ],
     temperature:      0.4,
     maxOutputTokens:  256,
-    abortSignal:      AbortSignal.timeout(8_000),
+    abortSignal:      input.abortSignal
+      ? AbortSignal.any([AbortSignal.timeout(8_000), input.abortSignal])
+      : AbortSignal.timeout(8_000),
   });
   input.log.info('fast_path.llm_done', { durationMs: Date.now() - startMs, replyLength: text.length });
   return { text: text.trim() || 'Hello! How can I help you?' };

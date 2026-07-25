@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto';
 import type { Container } from './composition';
 import { createHealthRoutes } from './http/health.routes';
 import { createErrorBoundary } from './http/error-boundary';
-import { createLarkWebhookRoutes } from './infrastructure/channels/lark/lark.webhook.routes';
+import {
+  createLarkWebhookRoutes,
+  processAcceptedLarkReceipt,
+  type LarkWebhookDeps,
+} from './infrastructure/channels/lark/lark.webhook.routes';
 import { createAdminAuthRoutes } from './http/admin/admin-auth.routes';
 import { createAdminPermissionRoutes } from './http/admin/permission.routes';
 import { createGoogleAuthRoutes } from './http/google/google-auth.routes';
@@ -42,6 +46,7 @@ import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
+import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
 import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
 import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
@@ -64,9 +69,44 @@ export const createServer = (c: Container) => {
     ].filter(Boolean),
   );
 
+  const larkWebhookDeps: LarkWebhookDeps = {
+    adapter:               c.larkAdapter,
+    engine:                c.engine,
+    channelIdentityRepo:   c.channelIdentityRepo,
+    conversationRepo:      c.conversationRepo,
+    ingressReceiptRepo:    c.ingressReceiptRepo,
+    ingressQueue:          c.larkIngressQueue,
+    logger:                c.logger,
+    env:                   c.env,
+    approvalGate:          c.approvalGate,
+    approvalCardHandler:   c.approvalCardHandler,
+    ingestionQueue:        c.ingestionQueue,
+    knowledgeShareService: c.knowledgeShareService,
+    shareResolverService:  c.shareResolverService,
+    ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
+    larkOAuthService:      c.larkOAuthService,
+    connectionRepo:        c.integrationConnectionRepo,
+    cache:                 c.memoryCache,
+    serializer:            c.chatSerializer,
+    chatContextService:    c.chatContextService,
+    prisma:                c.prisma,
+    cloudinaryAdapter:     c.cloudinaryAdapter,
+    larkContactsClient:    c.larkContactsClient,
+  };
+
+  const larkIngressWorker = new LarkIngressWorker({
+    redisUrl: c.queueRedisUrl,
+    queue: c.larkIngressQueue,
+    receiptRepo: c.ingressReceiptRepo,
+    processReceipt: receipt => processAcceptedLarkReceipt(receipt, larkWebhookDeps),
+    logger: c.logger,
+  });
+  larkIngressWorker.start();
+
   // Boot BullMQ ingestion worker (queue lives in container, shared with webhook routes)
   const ingestionWorker = new IngestionWorker({
     redisUrl:         c.queueRedisUrl,   // isolated BullMQ connection → REDIS_QUEUE_URL
+    queueName:        c.env.REDIS_INGESTION_QUEUE_NAME,
     ingestionService: c.ingestionService,
     larkAdapter:      c.larkAdapter,
     env:              c.env,
@@ -249,28 +289,7 @@ export const createServer = (c: Container) => {
 
   app.use(
     '/webhooks/lark',
-    createLarkWebhookRoutes({
-      adapter:               c.larkAdapter,
-      engine:                c.engine,
-      channelIdentityRepo:   c.channelIdentityRepo,
-      conversationRepo:      c.conversationRepo,
-      logger:                c.logger,
-      env:                   c.env,
-      approvalGate:          c.approvalGate,
-      approvalCardHandler:   c.approvalCardHandler,
-      ingestionQueue:        c.ingestionQueue,
-      knowledgeShareService: c.knowledgeShareService,
-      shareResolverService:  c.shareResolverService,
-      ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
-      larkOAuthService:      c.larkOAuthService,
-      connectionRepo:        c.integrationConnectionRepo,
-      cache:                 c.memoryCache,
-      serializer:            c.chatSerializer,
-      chatContextService:    c.chatContextService,
-      prisma:                c.prisma,
-      cloudinaryAdapter:     c.cloudinaryAdapter,
-      larkContactsClient:    c.larkContactsClient,
-    }),
+    createLarkWebhookRoutes(larkWebhookDeps),
   );
 
   // Google OAuth connect + callback

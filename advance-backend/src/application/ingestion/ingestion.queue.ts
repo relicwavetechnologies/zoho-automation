@@ -2,6 +2,9 @@ import { Queue } from 'bullmq';
 
 export const INGESTION_QUEUE_NAME = 'ingestion';
 
+export const resolveIngestionQueueName = (queueName?: string): string =>
+  queueName ?? INGESTION_QUEUE_NAME;
+
 export interface IngestionJobPayload {
   jobType:        'buffer' | 'lark_file' | 'lark_image';
   companyId:      string;
@@ -28,8 +31,8 @@ export interface IngestionJobPayload {
 export class IngestionQueue {
   private readonly queue: Queue<IngestionJobPayload>;
 
-  constructor(redisUrl: string, queueName = INGESTION_QUEUE_NAME) {
-    this.queue = new Queue<IngestionJobPayload>(queueName, {
+  constructor(redisUrl: string, queueName?: string) {
+    this.queue = new Queue<IngestionJobPayload>(resolveIngestionQueueName(queueName), {
       connection: { url: redisUrl },
       defaultJobOptions: {
         attempts:    3,

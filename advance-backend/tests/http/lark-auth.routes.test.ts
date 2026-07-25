@@ -65,7 +65,15 @@ function makeRouter(overrides: Record<string, unknown> = {}) {
     appSecret: 'secret',
     apiBase: 'https://open.larksuite.com',
     channelIdentityRepo: {
-      prepareLarkLogin: async () => ok(null),
+      prepareLarkLogin: async (larkOpenId: string) => ok({
+        status: 'ready',
+        companyId: 'company-1',
+        userId: 'user-1',
+        aiRole: 'MEMBER',
+        larkOpenId,
+        email: 'user@example.com',
+        createdUser: false,
+      }),
       invalidateIdentityCache: async () => {},
     } as any,
     ...overrides,
@@ -80,6 +88,7 @@ describe('Lark OAuth account binding', () => {
         'x-company-id': 'company-victim',
         'x-user-id': 'user-victim',
         'x-lark-open-id': 'ou_victim',
+        'x-lark-tenant-key': 'tenant-victim',
       },
     });
 
@@ -89,7 +98,8 @@ describe('Lark OAuth account binding', () => {
 
   it('rejects a callback when OAuth returns a different Lark account', async () => {
     const state = {
-      companyId: 'company-1', userId: 'user-1', larkOpenId: 'ou_expected', nonce: 'nonce-1',
+      companyId: 'company-1', userId: 'user-1', larkOpenId: 'ou_expected',
+      tenantKey: 'tenant-1', nonce: 'nonce-1',
     };
     let upsertCalled = false;
     const router = makeRouter({
@@ -108,7 +118,12 @@ describe('Lark OAuth account binding', () => {
       cache: {
         get: async (key: string) => {
           assert.equal(key, larkOAuthNonceKey('nonce-1'));
-          return ok({ companyId: state.companyId, userId: state.userId, larkOpenId: state.larkOpenId });
+          return ok({
+            companyId: state.companyId,
+            userId: state.userId,
+            larkOpenId: state.larkOpenId,
+            tenantKey: state.tenantKey,
+          });
         },
         set: async () => ok(undefined), setNx: async () => ok(true),
         del: async () => ok(undefined), scanDel: async () => ok(0),
@@ -121,6 +136,89 @@ describe('Lark OAuth account binding', () => {
 
     assert.equal(response.status, 400);
     assert.match(String(response.body), /Connection failed/);
+    assert.equal(upsertCalled, false);
+  });
+
+  it('rejects a callback when OAuth returns a different Lark tenant', async () => {
+    const state = {
+      companyId: 'company-1', userId: 'user-1', larkOpenId: 'ou_expected',
+      tenantKey: 'tenant-expected', nonce: 'nonce-1',
+    };
+    let upsertCalled = false;
+    const router = makeRouter({
+      larkOAuthService: {
+        isConfigured: () => true,
+        exchangeCode: async () => ({
+          accessToken: 'token', refreshToken: 'refresh', tokenType: 'Bearer', expiresIn: 3600,
+          refreshTokenExpiresIn: 7200, larkOpenId: 'ou_expected', larkUserId: 'user-lark',
+          larkName: 'Expected User', larkEmail: 'expected@example.com', larkEnName: null,
+          tenantKey: 'tenant-other', scope: 'offline_access', avatarUrl: null,
+        }),
+      } as any,
+      connectionRepo: {
+        upsertLarkConnection: async () => { upsertCalled = true; return ok({ id: 'bad' }); },
+      } as any,
+      cache: {
+        get: async () => ok({
+          companyId: state.companyId,
+          userId: state.userId,
+          larkOpenId: state.larkOpenId,
+          tenantKey: state.tenantKey,
+        }),
+        set: async () => ok(undefined), setNx: async () => ok(true),
+        del: async () => ok(undefined), scanDel: async () => ok(0),
+      } as any,
+    });
+
+    const response = await callRoute(router, 'GET', '/callback', {
+      query: { code: 'code-1', state: encodeLarkOAuthState(state) },
+    });
+
+    assert.equal(response.status, 400);
+    assert.match(String(response.body), /Connection failed/);
+    assert.equal(upsertCalled, false);
+  });
+
+  it('rejects a callback when the tenant binding became inactive', async () => {
+    const state = {
+      companyId: 'company-1', userId: 'user-1', larkOpenId: 'ou_expected',
+      tenantKey: 'tenant-1', nonce: 'nonce-1',
+    };
+    let exchangeCalled = false;
+    let upsertCalled = false;
+    const router = makeRouter({
+      larkOAuthService: {
+        isConfigured: () => true,
+        exchangeCode: async () => {
+          exchangeCalled = true;
+          throw new Error('must not exchange');
+        },
+      } as any,
+      connectionRepo: {
+        upsertLarkConnection: async () => { upsertCalled = true; return ok({ id: 'bad' }); },
+      } as any,
+      channelIdentityRepo: {
+        prepareLarkLogin: async () => ok(null),
+        invalidateIdentityCache: async () => {},
+      } as any,
+      cache: {
+        get: async () => ok({
+          companyId: state.companyId,
+          userId: state.userId,
+          larkOpenId: state.larkOpenId,
+          tenantKey: state.tenantKey,
+        }),
+        set: async () => ok(undefined), setNx: async () => ok(true),
+        del: async () => ok(undefined), scanDel: async () => ok(0),
+      } as any,
+    });
+
+    const response = await callRoute(router, 'GET', '/callback', {
+      query: { code: 'code-1', state: encodeLarkOAuthState(state) },
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal(exchangeCalled, false);
     assert.equal(upsertCalled, false);
   });
 });

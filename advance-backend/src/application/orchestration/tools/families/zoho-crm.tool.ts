@@ -273,7 +273,7 @@ export const createZohoCrmTool = (deps: {
   ].join(' '),
 
   parameterDocs: [
-    'connectionId: exact UUID from connections.list (required for every action)',
+    'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
     'op: list|get|search|search_text|create|update|delete|build_pipeline_summary|build_lead_report|build_deal_forecast',
     'module: Leads|Contacts|Accounts|Deals|Tasks (required for CRUD ops)',
     'recordId: record ID (required for get/update/delete)',

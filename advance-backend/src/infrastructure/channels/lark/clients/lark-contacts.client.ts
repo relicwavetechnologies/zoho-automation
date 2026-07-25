@@ -10,7 +10,7 @@ type RawDirectoryUser = Record<string, unknown>;
 
 export class LarkContactsClient implements LarkContactsClientPort {
   private readonly http: LarkHttpClient;
-  private organizationPromise: Promise<string | undefined> | undefined;
+  private tenantPromise: Promise<{ name?: string; tenantKey?: string }> | undefined;
 
   constructor(deps: LarkHttpClientDeps) {
     this.http = new LarkHttpClient(deps);
@@ -49,6 +49,10 @@ export class LarkContactsClient implements LarkContactsClientPort {
       displayName,
       ...(email ? { email: email.trim().toLowerCase() } : {}),
     };
+  }
+
+  async getTenantKey(): Promise<string | undefined> {
+    return (await this.getTenant()).tenantKey;
   }
 
   async getUsers(openIds: string[]): Promise<LarkDirectoryPerson[]> {
@@ -186,17 +190,28 @@ export class LarkContactsClient implements LarkContactsClientPort {
     }
   }
 
-  private getOrganization(): Promise<string | undefined> {
-    if (!this.organizationPromise) {
-      this.organizationPromise = this.http.request<{ tenant?: Record<string, unknown> }>(
+  private async getOrganization(): Promise<string | undefined> {
+    return (await this.getTenant()).name;
+  }
+
+  private getTenant(): Promise<{ name?: string; tenantKey?: string }> {
+    if (!this.tenantPromise) {
+      this.tenantPromise = this.http.request<{ tenant?: Record<string, unknown> }>(
         'GET',
         '/open-apis/tenant/v2/tenant/query',
-      ).then(data => stringValue(data.tenant?.['name'])).catch(() => {
-        this.organizationPromise = undefined;
-        return undefined;
+      ).then(data => {
+        const name = stringValue(data.tenant?.['name']);
+        const tenantKey = stringValue(data.tenant?.['tenant_key']);
+        return {
+          ...(name ? { name } : {}),
+          ...(tenantKey ? { tenantKey } : {}),
+        };
+      }).catch(() => {
+        this.tenantPromise = undefined;
+        return {};
       });
     }
-    return this.organizationPromise;
+    return this.tenantPromise;
   }
 }
 

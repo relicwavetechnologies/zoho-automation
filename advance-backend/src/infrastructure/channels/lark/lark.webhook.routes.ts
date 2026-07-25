@@ -1,12 +1,19 @@
 import { Router, type Request, type Response } from 'express';
-import type { LarkChannelAdapter } from './lark.adapter';
+import {
+  isLarkHumanMessage,
+  shouldStartLarkAgent,
+  type LarkChannelAdapter,
+} from './lark.adapter';
 import type { OrchestrationEngine } from '../../../application/orchestration/engine/core';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
 import type { ConversationRepoPort } from '../../persistence/conversation.repository';
 import type { Logger } from '../../../shared/logger';
 import type { TypedEnv } from '../../../config/env';
 import type { ApprovalGateService } from '../../../application/approval/approval-gate.service';
-import type { LarkApprovalCardHandler } from './lark-approval-card.handler';
+import type {
+  LarkApprovalCardHandler,
+  LarkAuthenticatedCardActor,
+} from './lark-approval-card.handler';
 import type { IngestionQueue } from '../../../application/ingestion/ingestion.queue';
 import type { ShareResolverService } from '../../../application/knowledge-share/share-resolver.service';
 import type { KnowledgeShareService } from '../../../application/knowledge-share/knowledge-share.service';
@@ -31,12 +38,21 @@ import type { GroupChatAttachmentContext } from '../../../domain/conversation/gr
 import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
 import type { LarkContactsClient } from './clients/lark-contacts.client';
+import { buildLarkRoutingKeys } from './lark-routing';
+import { appendLarkMentionContext, listLarkMentionOpenIds } from './lark-mention-context';
+import type {
+  IngressReceipt,
+  IngressReceiptRepoPort,
+} from '../../persistence/ingress-receipt.repository';
+import type { LarkIngressQueue } from '../../../application/lark-ingress/lark-ingress.queue';
 
-export const createLarkWebhookRoutes = (deps: {
+export interface LarkWebhookDeps {
   adapter: LarkChannelAdapter;
   engine: OrchestrationEngine;
   channelIdentityRepo: ChannelIdentityRepoPort;
   conversationRepo: ConversationRepoPort;
+  ingressReceiptRepo: IngressReceiptRepoPort;
+  ingressQueue: Pick<LarkIngressQueue, 'enqueue'>;
   logger: Logger;
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
@@ -53,8 +69,10 @@ export const createLarkWebhookRoutes = (deps: {
   chatContextService?: LarkChatContextService;
   prisma?: PrismaClient;
   cloudinaryAdapter?: CloudinaryAdapter;
-  larkContactsClient?: Pick<LarkContactsClient, 'getUser'>;
-}): Router => {
+  larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
+}
+
+export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
   const router = Router();
   const log = deps.logger.child({ route: 'lark-webhook' });
 
@@ -71,7 +89,8 @@ export const createLarkWebhookRoutes = (deps: {
   // initial URL verification challenge that Lark fires when you first save
   // the webhook URL in the developer console.
   // Shared handler for both /events and /card endpoints.
-  const handlePost = (req: Request, res: Response): void => {
+  const handlePost = async (req: Request, res: Response): Promise<void> => {
+    const receivedAtMs = Date.now();
     // ── Step 1: Signature / token verification ──────────────────────────────
     const verifyResult = verifyLarkWebhookRequest(
       {
@@ -92,6 +111,7 @@ export const createLarkWebhookRoutes = (deps: {
       res.status(401).json({ error: 'unauthorized', reason: verifyResult.reason });
       return;
     }
+    const verifiedAtMs = Date.now();
 
     // ── Step 2: AES-256-CBC decryption (when encryption is enabled on Lark app) ──
     let body: unknown = req.body;
@@ -130,52 +150,69 @@ export const createLarkWebhookRoutes = (deps: {
     const isCard10Click = !headerType && !!topLevelAction && typeof topLevelAction === 'object';
     if (isCard20Click || isCard10Click) {
       const cardEvent = isCard20Click ? (event['event'] as unknown) : event;
+      void (async () => {
+        try {
+          const actor = await resolveAuthenticatedCardActor(
+            cardEvent,
+            event,
+            eventHeader,
+            deps.channelIdentityRepo,
+          );
+          if (!actor) {
+            log.warn('webhook.card_action.unauthorized');
+            res.status(200).json({
+              toast: { type: 'error', content: 'Could not verify this Lark action.' },
+            });
+            return;
+          }
 
-      // Check share actions first
-      if (deps.shareResolverService?.isShareAction(cardEvent)) {
-        void (async () => {
-          try {
-            const result = await deps.shareResolverService!.handle(cardEvent);
+          // Check share actions first
+          if (deps.shareResolverService?.isShareAction(cardEvent)) {
+            const result = await deps.shareResolverService.handle(cardEvent, actor);
             res.status(200).json(result.responseBody);
-          } catch (e) {
-            log.error('webhook.share_action.error', { error: String(e) });
-            res.status(200).json({ ok: true });
+            return;
           }
-        })();
-        return;
-      }
 
-      // Handle interrupt button clicks on status cards
-      const actionValue = (cardEvent as any)?.action?.value;
-      const actionObj = typeof actionValue === 'string' ? (() => { try { return JSON.parse(actionValue); } catch { return null; } })() : actionValue;
-      if (actionObj?.action === 'interrupt_run') {
-        const messageId = (cardEvent as any)?.open_message_id
-          ?? (cardEvent as any)?.context?.open_message_id
-          ?? (cardEvent as any)?.message_id;
-        if (messageId) {
-          const corrId = deps.adapter.findCorrelationByStatusMessage(messageId);
-          if (corrId) {
-            const aborted = deps.adapter.interruptRun(corrId);
-            log.info('webhook.interrupt', { correlationId: corrId, aborted });
+          // Handle interrupt button clicks on status cards
+          const actionValue = (cardEvent as any)?.action?.value;
+          const actionObj = typeof actionValue === 'string' ? (() => { try { return JSON.parse(actionValue); } catch { return null; } })() : actionValue;
+          if (actionObj?.action === 'interrupt_run') {
+            const messageId = (cardEvent as any)?.open_message_id
+              ?? (cardEvent as any)?.context?.open_message_id
+              ?? (cardEvent as any)?.message_id;
+            if (messageId) {
+              const corrId = deps.adapter.findCorrelationByStatusMessage(messageId);
+              if (corrId) {
+                const result = deps.adapter.interruptRun(corrId, actor);
+                log.info('webhook.interrupt', { correlationId: corrId, result, actorUserId: actor.userId });
+                const content = result === 'aborted'
+                  ? 'Interrupt requested.'
+                  : result === 'forbidden'
+                    ? 'You are not authorized to interrupt this run.'
+                    : 'This run is no longer active.';
+                res.status(200).json({
+                  toast: { type: result === 'aborted' ? 'success' : 'warning', content },
+                });
+                return;
+              }
+            }
+            res.status(200).json({
+              toast: { type: 'warning', content: 'This run is no longer active.' },
+            });
+            return;
           }
-        }
-        res.status(200).json({ ok: true });
-        return;
-      }
 
-      if (deps.approvalCardHandler) {
-        const handler = deps.approvalCardHandler;
-        void (async () => {
-          try {
-            const result = await handler.handle(cardEvent);
+          if (deps.approvalCardHandler) {
+            const result = await deps.approvalCardHandler.handle(cardEvent, actor);
             res.status(200).json(result.responseBody ?? { ok: true });
-          } catch (e) {
-            log.error('webhook.card_action.error', { error: String(e) });
-            res.status(200).json({ ok: true });
+            return;
           }
-        })();
-        return;
-      }
+          res.status(200).json({ ok: true });
+        } catch (e) {
+          log.error('webhook.card_action.error', { error: String(e) });
+          res.status(200).json({ ok: true });
+        }
+      })();
       return;
     }
 
@@ -188,33 +225,83 @@ export const createLarkWebhookRoutes = (deps: {
     }
 
     const incoming = parseResult.value;
+    const requestLog = createLarkRequestLog(log, incoming, eventHeader);
 
-    // Skip bot messages
-    const eventData = event['event'] as Record<string, unknown> | undefined;
-    const sender     = eventData?.['sender'] as Record<string, unknown> | undefined;
-    const senderType = sender?.['sender_type'] as string | undefined;
-    if (senderType === 'bot') {
+    if (!isLarkHumanMessage(incoming)) {
+      requestLog.debug('webhook.sender.ignored', {
+        senderType: incoming.senderType,
+      });
       res.status(200).json({ ok: true });
       return;
     }
 
-    // ── Step 5: Respond immediately to Lark (5s timeout requirement) ─────────
-    res.status(200).json({ ok: true });
+    const tenantKey = incoming.tenantKey;
+    if (!tenantKey) {
+      requestLog.warn('webhook.identity.tenant_missing');
+      res.status(200).json({ ok: true });
+      return;
+    }
 
-    // ── Step 6: Enqueue for per-chat sequential processing ────────────────────
-    // serializer.run() returns immediately. The task will start after any
-    // currently-running task for this chatId completes — so two simultaneous
-    // prompts in the same group are processed one at a time, in arrival order.
-    // The AbortSignal fires when the serializer timeout expires (720s).
-    deps.serializer.run(String(incoming.chatId), (signal) =>
-      processInBackground(incoming, event, {
-        ...deps,
-        ...(deps.larkOAuthService ? { larkOAuthService: deps.larkOAuthService } : {}),
-        ...(deps.connectionRepo ? { connectionRepo: deps.connectionRepo } : {}),
-        ...(deps.chatContextService ? { chatContextService: deps.chatContextService } : {}),
-        ...(deps.larkContactsClient ? { larkContactsClient: deps.larkContactsClient } : {}),
-      }, log, deps.approvalGate, deps.knowledgeShareService, signal),
+    // ── Step 5: Persist before ACK so Lark retries any failed admission ──────
+    const receipt = await deps.ingressReceiptRepo.accept({
+      channel: 'lark',
+      tenantKey,
+      messageId: String(incoming.messageId),
+      payload: event,
+      ...(typeof eventHeader?.['event_id'] === 'string'
+        ? { eventId: eventHeader['event_id'] }
+        : {}),
+    });
+    if (!receipt.ok) {
+      requestLog.error('webhook.receipt.failed', {
+        error: receipt.error.message,
+      });
+      res.status(503).json({ error: 'ingress_unavailable' });
+      return;
+    }
+    if (!receipt.value.isNew) {
+      requestLog.info('webhook.receipt.duplicate', {
+        receiptId: receipt.value.receiptId,
+      });
+    }
+
+    // A stable BullMQ job repairs the crash window between receipt persistence
+    // and queue admission. Duplicate Lark deliveries intentionally retry this
+    // same enqueue; BullMQ de-duplicates them by receipt-backed job ID.
+    let queueJobId: string;
+    try {
+      queueJobId = await deps.ingressQueue.enqueue(receipt.value.receiptId);
+    } catch (error) {
+      requestLog.error('webhook.queue.failed', {
+        receiptId: receipt.value.receiptId,
+        error: String(error),
+      });
+      res.status(503).json({ error: 'ingress_unavailable' });
+      return;
+    }
+    const queued = await deps.ingressReceiptRepo.markQueued(
+      receipt.value.receiptId,
+      queueJobId,
     );
+    if (!queued.ok) {
+      requestLog.error('webhook.receipt.queue_link_failed', {
+        receiptId: receipt.value.receiptId,
+        queueJobId,
+        error: queued.error.message,
+      });
+      res.status(503).json({ error: 'ingress_unavailable' });
+      return;
+    }
+
+    // Respond only after both durable receipt and stable queue admission.
+    res.status(200).json({ ok: true });
+    const acceptedAtMs = Date.now();
+    requestLog.info('webhook.accepted', {
+      receiptId: receipt.value.receiptId,
+      queueJobId,
+      verificationMs: verifiedAtMs - receivedAtMs,
+      ackMs: acceptedAtMs - receivedAtMs,
+    });
   };
 
   // Both /events and /card route to the same handler. Some Lark configs send
@@ -238,6 +325,89 @@ export const createLarkWebhookRoutes = (deps: {
   return router;
 };
 
+function createLarkRequestLog(
+  log: Logger,
+  incoming: IncomingMessage,
+  eventHeader?: Record<string, unknown>,
+): Logger {
+  return log.child({
+    tenantKey: incoming.tenantKey ?? null,
+    appId: incoming.appId ?? null,
+    larkEventId: eventHeader?.['event_id'] ?? null,
+    correlationId: incoming.traceId,
+    runId: incoming.traceId,
+    jobId: null,
+    attempt: 1,
+    chatId: incoming.chatId,
+    messageId: incoming.messageId,
+    threadId: incoming.threadId ?? null,
+    rootMessageId: incoming.rootMessageId ?? null,
+    parentMessageId: incoming.parentMessageId ?? null,
+    requesterOpenId: incoming.userExternalId,
+    legacyLaneKey: `lark:${String(incoming.chatId)}`,
+  });
+}
+
+/**
+ * Execute one payload already admitted by the durable ingress worker.
+ * This is deliberately separate from the HTTP handler: Lark receives an ACK
+ * only after durable queue admission, while retries and restart recovery own
+ * the actual agent run.
+ */
+export async function processAcceptedLarkReceipt(
+  receipt: IngressReceipt,
+  deps: LarkWebhookDeps,
+): Promise<void> {
+  const event = receipt.payload;
+  const parsed = deps.adapter.parseIncoming(event);
+  if (!parsed.ok) {
+    throw new Error(`Persisted Lark ingress payload is invalid: ${parsed.error.payload.reason}`);
+  }
+
+  const incoming = parsed.value;
+  if (!isLarkHumanMessage(incoming)) return;
+  if (
+    incoming.tenantKey !== receipt.tenantKey
+    || String(incoming.messageId) !== receipt.messageId
+  ) {
+    throw new Error('Persisted Lark ingress identity does not match its receipt');
+  }
+
+  const eventHeader = event['header'] as Record<string, unknown> | undefined;
+  const requestLog = createLarkRequestLog(
+    deps.logger.child({ route: 'lark-webhook' }),
+    incoming,
+    eventHeader,
+  ).child({
+    receiptId: receipt.receiptId,
+  });
+
+  await deps.serializer.runAndWait(String(incoming.chatId), async signal => {
+    const startedAtMs = Date.now();
+    requestLog.info('webhook.background.started');
+    try {
+      await processInBackground(
+        incoming,
+        event,
+        deps,
+        requestLog,
+        deps.approvalGate,
+        deps.knowledgeShareService,
+        signal,
+      );
+      requestLog.info('webhook.background.completed', {
+        runMs: Date.now() - startedAtMs,
+      });
+    } catch (error) {
+      requestLog.error('webhook.background.failed', {
+        error: String(error),
+        runMs: Date.now() - startedAtMs,
+      });
+      throw error;
+    }
+  });
+}
+
 const LARK_OAUTH_NONCE_TTL_SECONDS = 600;
 
 function larkOAuthNonceKey(nonce: string): string {
@@ -248,6 +418,7 @@ function encodeLarkOAuthState(input: {
   companyId: string;
   userId: string;
   larkOpenId: string;
+  tenantKey: string;
   nonce: string;
 }): string {
   return Buffer.from(JSON.stringify(input)).toString('base64url');
@@ -257,6 +428,7 @@ async function createLarkLoginUrl(input: {
   companyId: string;
   userId: string;
   larkOpenId: string;
+  tenantKey: string;
   deps: {
     larkOAuthService?: LarkOAuthService;
     cache: CachePort;
@@ -272,6 +444,7 @@ async function createLarkLoginUrl(input: {
       companyId:  input.companyId,
       userId:     input.userId,
       larkOpenId: input.larkOpenId,
+      tenantKey:  input.tenantKey,
     },
     LARK_OAUTH_NONCE_TTL_SECONDS,
   );
@@ -283,6 +456,7 @@ async function createLarkLoginUrl(input: {
     companyId:  input.companyId,
     userId:     input.userId,
     larkOpenId: input.larkOpenId,
+    tenantKey:  input.tenantKey,
     nonce,
   }));
 }
@@ -305,31 +479,27 @@ async function processInBackground(
     chatContextService?: LarkChatContextService;
     cloudinaryAdapter?: CloudinaryAdapter;
     prisma?: PrismaClient;
-    larkContactsClient?: Pick<LarkContactsClient, 'getUser'>;
+    larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
   },
   log: Logger,
   approvalGate?: ApprovalGateService,
   knowledgeShareService?: KnowledgeShareService,
-  _signal?: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<void> {
-  // ── Idempotency — reject duplicate webhook deliveries ──────────────────
-  // Lark retries on network hiccups. Redis SET NX with 1-hour TTL ensures
-  // each messageId is processed exactly once. Fails open (availability > dedup).
-  const idempotencyKey = `divo:ingress:msg:${String(incoming.messageId)}`;
-  try {
-    const claimed = await deps.cache.setNx(idempotencyKey, 1, 3600);
-    if (claimed.ok && !claimed.value) {
-      log.info('webhook.idempotency.duplicate', { messageId: incoming.messageId, chatId: incoming.chatId });
-      return;
-    }
-  } catch {
-    // Redis down — proceed anyway
-  }
-
   const correlationId = asCorrelationId(incoming.traceId);
 
-  const identityResult = await deps.channelIdentityRepo.resolveByLarkOpenId(
+  const tenantKey = incoming.tenantKey;
+  if (!tenantKey) {
+    log.warn('webhook.identity.tenant_missing', {
+      chatId: incoming.chatId,
+      messageId: incoming.messageId,
+      larkOpenId: incoming.userExternalId,
+    });
+    return;
+  }
+  const identityResult = await deps.channelIdentityRepo.resolveByLarkTenantIdentity(
     incoming.userExternalId,
+    tenantKey,
   );
 
   if (!identityResult.ok || !identityResult.value) {
@@ -351,12 +521,16 @@ async function processInBackground(
     };
 
     await bootstrapLarkFirstTouchIdentity(incoming.userExternalId, rawEvent, deps, log);
-    const pending = await deps.channelIdentityRepo.prepareLarkLogin(incoming.userExternalId);
+    const pending = await deps.channelIdentityRepo.prepareLarkLogin(
+      incoming.userExternalId,
+      tenantKey,
+    );
     if (pending.ok && pending.value?.status === 'ready') {
       const loginUrl = await createLarkLoginUrl({
         companyId:  pending.value.companyId,
         userId:     pending.value.userId,
         larkOpenId: pending.value.larkOpenId,
+        tenantKey,
         deps,
       });
 
@@ -396,6 +570,20 @@ async function processInBackground(
   }
 
   const identity = identityResult.value;
+  const routing = buildLarkRoutingKeys({
+    companyId: String(identity.companyId),
+    incoming,
+  });
+  log = log.child({
+    companyId: identity.companyId,
+    requesterUserId: identity.userId,
+    departmentId: identity.activeDepartmentId ?? null,
+    roomKey: routing.roomKey,
+    laneKey: routing.executionLaneKey,
+    deliveryTargetKey: routing.deliveryTargetKey,
+    routingMode: 'shadow',
+  });
+  log.info('webhook.execution.correlated');
   if (deps.prisma) {
     try {
       await deps.prisma.runtimeConversation.upsert({
@@ -425,14 +613,17 @@ async function processInBackground(
       log.warn('webhook.runtime_conversation.upsert_failed', { error: String(error), chatId: incoming.chatId });
     }
   }
+  const mentionedLarkOpenIds = listLarkMentionOpenIds(incoming.mentions);
   const runContext = {
     companyId:      asCompanyId(identity.companyId),
     userId:         asUserId(identity.userId),
     companyRole:    asCompanyRoleSlug(identity.aiRole),
     channel:        'lark' as const,
+    tenantId:       tenantKey,
     traceId:        String(incoming.traceId),
     requestId:      String(incoming.messageId),
     userExternalId: incoming.userExternalId,   // Lark open_id — tools use this as default assignee
+    ...(mentionedLarkOpenIds.length > 0 ? { mentionedLarkOpenIds } : {}),
     chatId:         String(incoming.chatId),
     ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
     ...(identity.email ? { requesterEmail: identity.email } : {}),
@@ -447,7 +638,7 @@ async function processInBackground(
   };
 
   const attachments = parseLarkAttachments(rawEvent);
-  const shouldRespond = incoming.chatType !== 'group' || incoming.mentionsSelf;
+  const shouldRespond = shouldStartLarkAgent(incoming);
 
   // Fetch parent message (quote-reply context) in parallel with attachment prep.
   const [preparedAttachments, parentRef] = await Promise.all([
@@ -461,17 +652,18 @@ async function processInBackground(
           shouldReact: shouldRespond,
         })
       : Promise.resolve([] as PreparedAttachmentContext[]),
-    incoming.replyToMessageId
+    shouldRespond && incoming.replyToMessageId
       ? fetchParentMessage({
           parentMessageId: String(incoming.replyToMessageId),
           env: deps.env,
-          logger: deps.logger,
+          logger: log,
           ...(deps.cloudinaryAdapter ? { cloudinaryAdapter: deps.cloudinaryAdapter } : {}),
           ...(deps.ingestionQueue ? { ingestionQueue: deps.ingestionQueue } : {}),
           channelIdentityRepo: deps.channelIdentityRepo,
           companyId: identity.companyId,
           userId: identity.userId,
           chatId: String(incoming.chatId),
+          tenantKey,
         })
       : Promise.resolve(null),
   ]);
@@ -533,17 +725,18 @@ async function processInBackground(
         ? (textWithParent ? `${contextBlock}\n\n${textWithParent}` : contextBlock)
         : (textWithParent || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`);
 
-    const enrichedIncoming: typeof incoming = {
+    const enrichedIncoming = appendLarkMentionContext({
       ...incoming,
       text: syntheticText,
       ...(allImageUrls.length > 0 ? { imageUrls: allImageUrls } : {}),
-    };
+    });
 
     const result = await deps.engine.run({
       incoming:       enrichedIncoming,
       runContext,
       conversation,
       channelAdapter: deps.adapter,
+      ...(signal ? { abortSignal: signal } : {}),
       ...(approvalGate ? { approvalGate } : {}),
     });
 
@@ -592,6 +785,8 @@ async function processInBackground(
     };
   }
 
+  effectiveIncoming = appendLarkMentionContext(effectiveIncoming);
+
   if (!effectiveIncoming.text?.trim()) return;
 
   await storeGroupIncomingSnapshot({
@@ -608,6 +803,7 @@ async function processInBackground(
     runContext,
     conversation,
     channelAdapter: deps.adapter,
+    ...(signal ? { abortSignal: signal } : {}),
     ...(approvalGate ? { approvalGate } : {}),
   });
 
@@ -623,7 +819,7 @@ export async function bootstrapLarkFirstTouchIdentity(
   rawEvent: Record<string, unknown>,
   deps: {
     prisma?: PrismaClient;
-    larkContactsClient?: Pick<LarkContactsClient, 'getUser'>;
+    larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
   },
   log: Logger,
 ): Promise<boolean> {
@@ -645,6 +841,17 @@ export async function bootstrapLarkFirstTouchIdentity(
   }
 
   try {
+    const directoryTenantKey = await deps.larkContactsClient.getTenantKey();
+    if (directoryTenantKey !== tenantKey) {
+      log.warn('webhook.first_touch.directory_tenant_mismatch', {
+        tenantKey,
+        directoryTenantKey: directoryTenantKey ?? null,
+        companyId: binding.companyId,
+        larkOpenId,
+      });
+      return false;
+    }
+
     const user = await deps.larkContactsClient.getUser(larkOpenId);
     if (!user || user.openId !== larkOpenId) {
       log.warn('webhook.first_touch.user_mismatch', {
@@ -657,8 +864,9 @@ export async function bootstrapLarkFirstTouchIdentity(
 
     await deps.prisma.channelIdentity.upsert({
       where: {
-        channel_externalUserId_companyId: {
+        channel_externalTenantId_externalUserId_companyId: {
           channel: 'lark',
+          externalTenantId: tenantKey,
           externalUserId: larkOpenId,
           companyId: binding.companyId,
         },
@@ -677,7 +885,6 @@ export async function bootstrapLarkFirstTouchIdentity(
         sourceRoles: [],
       },
       update: {
-        externalTenantId: tenantKey,
         displayName: user.displayName,
         ...(user.email ? { email: user.email } : {}),
       },
@@ -696,6 +903,57 @@ export async function bootstrapLarkFirstTouchIdentity(
     });
     return false;
   }
+}
+
+async function resolveAuthenticatedCardActor(
+  cardEvent: unknown,
+  envelope: Record<string, unknown>,
+  header: Record<string, unknown> | undefined,
+  identityRepo: ChannelIdentityRepoPort,
+): Promise<LarkAuthenticatedCardActor | null> {
+  const card = toRecord(cardEvent);
+  const operator = toRecord(card?.['operator']);
+  const envelopeEvent = toRecord(envelope['event']);
+  const openId = firstNonEmptyString(
+    operator?.['open_id'],
+    card?.['open_id'],
+    envelopeEvent?.['open_id'],
+    envelope['open_id'],
+  );
+  const tenantKey = firstNonEmptyString(
+    header?.['tenant_key'],
+    card?.['tenant_key'],
+    envelopeEvent?.['tenant_key'],
+    envelope['tenant_key'],
+  );
+  if (!openId || !tenantKey) return null;
+
+  const resolved = await identityRepo.resolveByLarkTenantIdentity(openId, tenantKey);
+  if (!resolved.ok || !resolved.value) return null;
+  const displayName = firstNonEmptyString(
+    operator?.['name'],
+    card?.['user_name'],
+    resolved.value.displayName,
+  );
+
+  return {
+    tenantKey,
+    openId,
+    userId: resolved.value.userId,
+    companyId: resolved.value.companyId,
+    aiRole: resolved.value.aiRole,
+    ...(displayName ? { displayName } : {}),
+  };
+}
+
+function toRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  return values.find(value => typeof value === 'string' && value.trim().length > 0) as string | undefined;
 }
 
 async function handleSlashCommand(args: {
@@ -833,6 +1091,7 @@ async function handleSlashCommand(args: {
       companyId:  identity.companyId,
       userId:     identity.userId,
       larkOpenId: incoming.userExternalId,
+      tenantKey:  String(incoming.tenantKey),
       deps,
     });
 
@@ -1076,7 +1335,7 @@ async function prepareLarkAttachmentContexts(input: {
 
   const { LarkFileClient } = await import('./clients/lark-file.client');
   const { extractAttachmentInlineContext } = await import('./lark-inline-context');
-  const fileClient = new LarkFileClient(deps.env, deps.logger);
+  const fileClient = new LarkFileClient(deps.env, log);
   const prepared: PreparedAttachmentContext[] = [];
 
   for (const att of attachments) {
@@ -1099,7 +1358,7 @@ async function prepareLarkAttachmentContexts(input: {
     }
 
     if (buffer) {
-      inlineContext = await extractAttachmentInlineContext(att, buffer, deps.env, deps.logger);
+      inlineContext = await extractAttachmentInlineContext(att, buffer, deps.env, log);
     }
 
     // Upload to Cloudinary for multimodal LLM access (non-blocking on failure)

@@ -2,6 +2,7 @@ import type {
   LarkMessageRendering,
   LarkMessagingClientPort,
 } from '../../../../application/orchestration/tools/families/lark-messaging.tool';
+import type { Client } from '@larksuiteoapi/node-sdk';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 import type { Logger } from '../../../../shared/logger';
 import { planFinalCards } from '../lark-card.builder';
@@ -11,10 +12,16 @@ interface LarkMessagingClientDeps {
   appSecret: string;
   logger: Logger;
   apiBaseUrl?: string;
+  sdkClient?: Pick<Client, 'request'>;
 }
 
 interface SendMessageResult {
   messageId: string;
+}
+
+interface BotIdentity {
+  openId: string;
+  name?: string;
 }
 
 /**
@@ -31,7 +38,20 @@ export class LarkMessagingClient {
       appId: deps.appId,
       appSecret: deps.appSecret,
       ...(deps.apiBaseUrl ? { apiBaseUrl: deps.apiBaseUrl } : {}),
+      ...(deps.sdkClient ? { sdkClient: deps.sdkClient } : {}),
     });
+  }
+
+  async getBotIdentity(): Promise<BotIdentity> {
+    const data = await this.sdk.request<{
+      bot?: { open_id?: string; bot_name?: string };
+    }>('GET', '/open-apis/bot/v3/info');
+    const openId = data.bot?.open_id?.trim();
+    if (!openId) throw new Error('Lark bot identity response did not include open_id');
+    return {
+      openId,
+      ...(data.bot?.bot_name ? { name: data.bot.bot_name } : {}),
+    };
   }
 
   async sendMessage(

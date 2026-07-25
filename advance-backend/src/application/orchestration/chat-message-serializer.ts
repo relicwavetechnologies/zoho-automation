@@ -17,7 +17,8 @@
 export interface SerializerOptions {
   /**
    * Max milliseconds a single task may run before it is considered timed out.
-   * The task is aborted via AbortSignal and the queue slot is freed.
+   * The task is aborted via AbortSignal. Its queue slot remains occupied until
+   * the task settles, preventing a timed-out run from overlapping its successor.
    *
    * Default: 120_000 ms (2 minutes).
    */
@@ -76,22 +77,36 @@ export class ChatMessageSerializer {
    * Tasks for different chatIds run fully in parallel (up to maxConcurrent).
    */
   run(chatId: string, task: (signal: AbortSignal) => Promise<void>): void {
+    void this.enqueue(chatId, task).catch(() => {});
+  }
+
+  /**
+   * Enqueue work and resolve only after that exact task settles. Durable queue
+   * consumers use this so their job is not acknowledged while work is merely
+   * waiting in this process-local lane.
+   */
+  runAndWait(chatId: string, task: (signal: AbortSignal) => Promise<void>): Promise<void> {
+    return this.enqueue(chatId, task);
+  }
+
+  private enqueue(
+    chatId: string,
+    task: (signal: AbortSignal) => Promise<void>,
+  ): Promise<void> {
     const prev = this.chains.get(chatId) ?? Promise.resolve();
 
     const guarded = async (): Promise<void> => {
       await this.acquireSlot();
       try {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        const timer = setTimeout(() => {
+          try { this.onTimeout?.(chatId); } catch { /* non-fatal */ }
+          controller.abort();
+        }, this.timeoutMs);
         (timer as ReturnType<typeof setTimeout>).unref?.();
 
         try {
           await task(controller.signal);
-        } catch (e) {
-          if (controller.signal.aborted) {
-            try { this.onTimeout?.(chatId); } catch { /* non-fatal */ }
-          }
-          // Swallow — caller handles errors internally.
         } finally {
           clearTimeout(timer);
         }
@@ -101,7 +116,8 @@ export class ChatMessageSerializer {
     };
 
     // Chain: wait for prev to settle (resolve OR reject) before starting next.
-    const next = prev.then(guarded, guarded);
+    const execution = prev.then(guarded, guarded);
+    const next = execution.catch(() => {});
 
     this.chains.set(chatId, next);
 
@@ -112,6 +128,7 @@ export class ChatMessageSerializer {
         this.chains.delete(chatId);
       }
     });
+    return execution;
   }
 
   /** Number of chats that currently have active or queued work. */

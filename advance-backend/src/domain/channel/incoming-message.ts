@@ -18,10 +18,25 @@ export interface MentionRef {
   readonly key: string;
   /** Lark open_id of the mentioned user or bot. */
   readonly openId: string;
+  /** Lark user_id when supplied by the event. */
+  readonly userId?: string;
+  /** Lark union_id when supplied by the event. */
+  readonly unionId?: string;
   /** Display name of the mentioned user or bot. */
   readonly name: string;
   /** True when this mention is the bot itself. */
   readonly isSelf: boolean;
+}
+
+export interface ReferencedMessage {
+  readonly messageId: string;
+  readonly status: 'available' | 'deleted' | 'invisible' | 'forbidden' | 'unsupported' | 'unavailable';
+  readonly messageType?: string;
+  readonly text: string;
+  readonly senderExternalId: string;
+  readonly senderName?: string;
+  readonly imageUrls: readonly string[];
+  readonly omittedImageCount?: number;
 }
 
 export interface IncomingMessage {
@@ -29,7 +44,16 @@ export interface IncomingMessage {
   readonly messageId: MessageId;
   readonly chatId: ChatId;
   readonly chatType: ChatType;
+  /** External tenant/install identity supplied by the channel envelope. */
+  readonly tenantKey?: string;
+  /** External application identity supplied by the channel envelope. */
+  readonly appId?: string;
   readonly userExternalId: string;    // lark open_id, desktop user token, etc.
+  /** Additional stable sender identities when supplied by the channel. */
+  readonly senderUserId?: string;
+  readonly senderUnionId?: string;
+  /** Lark sender type when supplied by the channel event. */
+  readonly senderType?: 'user' | 'bot' | 'app' | 'unknown';
   /**
    * Clean user intent text.
    * Self-mentions (@BotName) are stripped; other @mentions are replaced with
@@ -40,6 +64,13 @@ export interface IncomingMessage {
   /** Image URLs (Cloudinary or base64 data URLs) for multimodal LLM embedding in P2P. */
   readonly imageUrls?: readonly string[];
   readonly timestamp: string;         // ISO 8601
+  /** Direct message being replied to; distinct from root/thread ownership. */
+  readonly parentMessageId?: MessageId;
+  /** Root message of the Lark thread when supplied. */
+  readonly rootMessageId?: MessageId;
+  /** Native Lark thread identity when supplied. */
+  readonly threadId?: string;
+  /** Compatibility alias for callers that still expect the direct parent. */
   readonly replyToMessageId?: MessageId;
   readonly traceId: CorrelationId;
   /** All resolved mentions from this message. */

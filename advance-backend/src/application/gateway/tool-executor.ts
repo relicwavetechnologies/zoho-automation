@@ -9,6 +9,8 @@ import type { RunContext } from '../../domain/orchestration/run-context';
 import type { Logger } from '../../shared/logger';
 import type { Clock } from '../../shared/clock';
 import type { ConnectionRateLimitService } from '../governance/connection-rate-limit.service';
+import type { ConnectionRegistryPort } from '../connections/connection-registry.port';
+import { publicConnectionChoices, selectAccessibleConnection } from '../connections/accessible-connection-selection';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
@@ -39,6 +41,8 @@ export interface ToolExecutorDeps {
   readonly approvalGate?: ApprovalGateService;
   /** Optional during staged rollout; when configured this is the sole live connection budget authority. */
   readonly connectionRateLimits?: ConnectionRateLimitService;
+  /** Resolves request-scoped connected accounts for backend-hosted channels. */
+  readonly connectionRegistry?: ConnectionRegistryPort;
   readonly logger: Logger;
   readonly clock: Clock;
 }
@@ -59,6 +63,7 @@ export interface RuntimeToolExecutionInput {
   readonly chatId?: string;
   readonly onProgress?: (message: string) => void;
   readonly expectedAction?: ToolActionGroup;
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface RuntimeToolExecutionOutcome {
@@ -343,7 +348,7 @@ export class ToolExecutor {
    * before the first approved mutation.
    */
   async preflightForRuntime(input: RuntimeToolExecutionInput): Promise<RuntimeToolPreflightOutcome> {
-    const resolved = this.resolveRuntimeInvocation(input);
+    const resolved = await this.resolveRuntimeInvocation(input);
     if (!resolved.ok) return resolved.outcome;
 
     const { tool, toolId, action, args } = resolved.value;
@@ -383,7 +388,14 @@ export class ToolExecutor {
    * decision path.
    */
   async executeForRuntime(input: RuntimeToolExecutionInput): Promise<RuntimeToolExecutionOutcome> {
-    const resolved = this.resolveRuntimeInvocation(input);
+    if (input.abortSignal?.aborted) {
+      return runtimeFailure(
+        input.toolId,
+        'tool_error',
+        'Tool execution was cancelled because the parent run ended.',
+      );
+    }
+    const resolved = await this.resolveRuntimeInvocation(input);
     if (!resolved.ok) return resolved.outcome;
     const { toolId, tool, args: validatedArgs, action } = resolved.value;
     const { runContext, perm } = input;
@@ -464,10 +476,31 @@ export class ToolExecutor {
       correlationId: runContext.traceId ?? runContext.requestId ?? runContext.chatId ?? randomUUID(),
       logger: this.deps.logger.child({ toolId: tool.id, channel: runContext.channel }),
       clock: this.deps.clock,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       ...(input.onProgress ? { onProgress: input.onProgress } : {}),
     };
 
     try {
+      if (input.abortSignal?.aborted) {
+        if (executionGrant) {
+          const released = await this.releaseExecutionGrant(input.approvalGate, executionGrant);
+          if (!released) {
+            return runtimeFailure(
+              toolId,
+              'approval_misconfigured',
+              approvalReleaseFailureMessage(executionGrant.approvalId),
+              action,
+              executionGrant.approvalId,
+            );
+          }
+        }
+        return runtimeFailure(
+          toolId,
+          'tool_error',
+          'Tool execution was cancelled because the parent run ended.',
+          action,
+        );
+      }
       const result = await tool.execute(validatedArgs, context);
       if (!result.ok) {
         if (executionGrant) {
@@ -512,7 +545,9 @@ export class ToolExecutor {
     }
   }
 
-  private resolveRuntimeInvocation(input: RuntimeToolExecutionInput): ResolveRuntimeToolInvocationResult {
+  private async resolveRuntimeInvocation(
+    input: RuntimeToolExecutionInput,
+  ): Promise<ResolveRuntimeToolInvocationResult> {
     const { toolId, args, perm } = input;
     if (toolId === 'runCommand') {
       return {
@@ -536,7 +571,10 @@ export class ToolExecutor {
       return { ok: false, outcome: runtimeFailure(toolId, 'unknown_tool', `Unknown toolId "${toolId}"`) };
     }
 
-    const parsed = tool.argsSchema.safeParse(args);
+    const connectionArgs = await this.resolveRuntimeConnectionArgs(input);
+    if (!connectionArgs.ok) return connectionArgs.result;
+
+    const parsed = tool.argsSchema.safeParse(connectionArgs.args);
     if (!parsed.success) {
       const issues = parsed.error.errors
         .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
@@ -571,6 +609,88 @@ export class ToolExecutor {
     return {
       ok: true,
       value: { tool, toolId, action, args: validatedArgs },
+    };
+  }
+
+  private async resolveRuntimeConnectionArgs(input: RuntimeToolExecutionInput): Promise<
+    | { readonly ok: true; readonly args: Record<string, unknown> }
+    | { readonly ok: false; readonly result: ResolveRuntimeToolInvocationResult }
+  > {
+    const provider = runtimeConnectionProvider(input.toolId);
+    if (!provider) {
+      return { ok: true, args: input.args };
+    }
+    if (typeof input.args.connectionId === 'string' && input.args.connectionId.length > 0) {
+      return { ok: true, args: input.args };
+    }
+    if (!this.deps.connectionRegistry) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          outcome: runtimeFailure(
+            input.toolId,
+            'invalid_args',
+            `No ${runtimeConnectionLabel(provider)} connectionId was provided and connected-account discovery is unavailable.`,
+          ),
+        },
+      };
+    }
+
+    const connectionInput = {
+      companyId: String(input.runContext.companyId),
+      userId: String(input.runContext.userId),
+    };
+    const accessible = provider === 'zoho'
+      ? await this.deps.connectionRegistry.listAccessibleZohoConnections(connectionInput)
+      : await this.deps.connectionRegistry.listAccessibleLarkConnections(connectionInput);
+    if (!accessible.ok) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          outcome: runtimeFailure(
+            input.toolId,
+            'tool_error',
+            `Accessible ${runtimeConnectionLabel(provider)} accounts could not be loaded.`,
+          ),
+        },
+      };
+    }
+
+    const selection = selectAccessibleConnection({
+      connections: accessible.value,
+      minimumAccess: 'read_only',
+    });
+    if (selection.status === 'unavailable') {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          outcome: runtimeFailure(
+            input.toolId,
+            'invalid_args',
+            `No accessible ${runtimeConnectionLabel(provider)} connection is available for this member.`,
+          ),
+        },
+      };
+    }
+    if (selection.status === 'choose_connection') {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          outcome: runtimeFailure(
+            input.toolId,
+            'invalid_args',
+            `More than one ${runtimeConnectionLabel(provider)} connection is available. Retry with one exact connectionId: ${JSON.stringify(publicConnectionChoices(selection.connections))}`,
+          ),
+        },
+      };
+    }
+    return {
+      ok: true,
+      args: { ...input.args, connectionId: selection.connection.connectionId },
     };
   }
 
@@ -747,6 +867,28 @@ export class ToolExecutor {
     if (!approvalGate) return false;
     return approvalGate.releaseExecution(grant);
   }
+}
+
+type RuntimeConnectionProvider = 'zoho' | 'lark';
+
+const LARK_USER_CONNECTION_TOOL_IDS = new Set([
+  'larkTask',
+  'larkMessaging',
+  'larkCalendar',
+  'larkMeeting',
+  'larkDoc',
+  'larkBase',
+]);
+
+function runtimeConnectionProvider(toolId: string): RuntimeConnectionProvider | undefined {
+  if (toolId === 'zohoCrm' || toolId === 'zohoBooks') return 'zoho';
+  if (LARK_USER_CONNECTION_TOOL_IDS.has(toolId)) return 'lark';
+  return undefined;
+}
+
+function runtimeConnectionLabel(provider: RuntimeConnectionProvider): string {
+  if (provider === 'lark') return 'Lark';
+  return 'Zoho';
 }
 
 function runtimeFailure(

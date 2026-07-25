@@ -467,6 +467,11 @@ export class IntegrationConnectionRepository {
     input: UpsertLarkConnectionInput,
   ): Promise<Result<DecryptedIntegrationConnection, InfraError>> {
     try {
+      const tenantKey = input.larkTenantKey?.trim();
+      const actorUserId = input.ownerType === 'user' ? input.ownerUserId : input.createdBy;
+      if (!tenantKey || !actorUserId) {
+        throw new Error('A verified Lark tenant and owner are required');
+      }
       const encryptedAccess = encryptToken(input.accessToken, this.key);
       const encryptedRefresh = input.refreshToken ? encryptToken(input.refreshToken, this.key) : undefined;
       const externalAccountId = input.larkOpenId.trim();
@@ -477,67 +482,121 @@ export class IntegrationConnectionRepository {
         provider: LARK_PROVIDER,
         ownerType: input.ownerType,
         ownerUserId: input.ownerUserId,
-        accountEmail: input.larkEmail ?? undefined,
-        externalAccountId,
+        externalAccountId: `${tenantKey}:${externalAccountId}`,
       });
       const tokenMetadata = {
         larkOpenId: externalAccountId,
         ...(input.larkUserId ? { larkUserId: input.larkUserId } : {}),
-        ...(input.larkTenantKey ? { larkTenantKey: input.larkTenantKey } : {}),
+        larkTenantKey: tenantKey,
       };
 
-      const record = await this.db.integrationConnection.upsert({
-        where: { companyId_dedupeKey: { companyId: input.companyId, dedupeKey: key } },
-        create: {
-          companyId:             input.companyId,
-          provider:              LARK_PROVIDER,
-          ownerType:             input.ownerType,
-          ownerUserId:           input.ownerType === 'user' ? input.ownerUserId ?? null : null,
-          label,
-          accountEmail,
-          accountName,
-          externalAccountId,
-          dedupeKey:             key,
-          status:                'connected',
-          scopes:                input.scopes,
-          accessTokenEncrypted:  encryptedAccess.cipherText,
-          ...(encryptedRefresh ? { refreshTokenEncrypted: encryptedRefresh.cipherText } : {}),
-          tokenType:             input.tokenType ?? null,
-          accessTokenExpiresAt:  input.accessTokenExpiresAt ?? null,
-          refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
-          tokenMetadata:         tokenMetadata as Prisma.InputJsonValue,
-          createdBy:             input.createdBy ?? input.ownerUserId ?? null,
-          connectedAt:           new Date(),
-        },
-        update: {
-          label,
-          accountEmail,
-          accountName,
-          externalAccountId,
-          status:                'connected',
-          scopes:                input.scopes,
-          accessTokenEncrypted:  encryptedAccess.cipherText,
-          ...(encryptedRefresh ? { refreshTokenEncrypted: encryptedRefresh.cipherText } : {}),
-          tokenType:             input.tokenType ?? null,
-          accessTokenExpiresAt:  input.accessTokenExpiresAt ?? null,
-          refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
-          tokenMetadata:         tokenMetadata as Prisma.InputJsonValue,
-          revokedAt:             null,
-          connectedAt:           new Date(),
-        },
-      });
+      const record = await this.db.$transaction(async tx => {
+        const [binding, identity, membership] = await Promise.all([
+          tx.larkTenantBinding.findFirst({
+            where: {
+              companyId: input.companyId,
+              larkTenantKey: tenantKey,
+              isActive: true,
+            },
+            select: { id: true },
+          }),
+          tx.channelIdentity.findFirst({
+            where: {
+              companyId: input.companyId,
+              channel: 'lark',
+              externalTenantId: tenantKey,
+              larkOpenId: externalAccountId,
+            },
+            select: { id: true },
+          }),
+          tx.adminMembership.findFirst({
+            where: {
+              companyId: input.companyId,
+              userId: actorUserId,
+              isActive: true,
+            },
+            select: { id: true },
+          }),
+        ]);
+        if (!binding || !identity || !membership) {
+          throw new Error('The Lark tenant, account identity, or company membership is no longer active');
+        }
 
-      const initialUserGrant = input.ownerType === 'user' ? input.ownerUserId : input.createdBy;
-      if (initialUserGrant) {
-        await this.grantConnection({
-          companyId: input.companyId,
-          connectionId: record.id,
-          granteeType: 'user',
-          granteeId: initialUserGrant,
-          access: input.initialAccess ?? 'admin',
-          grantedBy: input.createdBy ?? initialUserGrant,
+        const connectionData = {
+          label,
+          accountEmail,
+          accountName,
+          externalAccountId,
+          status: 'connected',
+          scopes: input.scopes,
+          accessTokenEncrypted: encryptedAccess.cipherText,
+          ...(encryptedRefresh ? { refreshTokenEncrypted: encryptedRefresh.cipherText } : {}),
+          tokenType: input.tokenType ?? null,
+          accessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
+          refreshTokenExpiresAt: input.refreshTokenExpiresAt ?? null,
+          tokenMetadata: tokenMetadata as Prisma.InputJsonValue,
+          revokedAt: null,
+          connectedAt: new Date(),
+        };
+        const current = await tx.integrationConnection.findUnique({
+          where: { companyId_dedupeKey: { companyId: input.companyId, dedupeKey: key } },
         });
-      }
+        const legacy = current ?? await tx.integrationConnection.findFirst({
+          where: {
+            companyId: input.companyId,
+            provider: LARK_PROVIDER,
+            ownerType: input.ownerType,
+            ownerUserId: input.ownerType === 'user' ? input.ownerUserId ?? null : null,
+            externalAccountId,
+            tokenMetadata: {
+              path: ['larkTenantKey'],
+              equals: tenantKey,
+            },
+          },
+          orderBy: { updatedAt: 'desc' },
+        });
+        const saved = legacy
+          ? await tx.integrationConnection.update({
+              where: { id: legacy.id },
+              data: { ...connectionData, dedupeKey: key },
+            })
+          : await tx.integrationConnection.create({
+              data: {
+                companyId: input.companyId,
+                provider: LARK_PROVIDER,
+                ownerType: input.ownerType,
+                ownerUserId: input.ownerType === 'user' ? input.ownerUserId ?? null : null,
+                dedupeKey: key,
+                createdBy: input.createdBy ?? input.ownerUserId ?? null,
+                ...connectionData,
+              },
+            });
+
+        await tx.integrationConnectionGrant.upsert({
+          where: {
+            connectionId_granteeType_granteeId: {
+              connectionId: saved.id,
+              granteeType: 'user',
+              granteeId: actorUserId,
+            },
+          },
+          create: {
+            companyId: input.companyId,
+            connectionId: saved.id,
+            granteeType: 'user',
+            granteeId: actorUserId,
+            access: input.initialAccess ?? 'admin',
+            grantedBy: input.createdBy ?? actorUserId,
+          },
+          update: {
+            access: input.initialAccess ?? 'admin',
+            grantedBy: input.createdBy ?? actorUserId,
+            grantedAt: new Date(),
+            revokedAt: null,
+          },
+        });
+        return saved;
+      });
 
       return ok(this.decrypt(record));
     } catch (e) {

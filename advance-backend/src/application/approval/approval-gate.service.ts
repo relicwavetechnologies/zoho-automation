@@ -148,7 +148,12 @@ export class ApprovalGateService {
         payloadJson:    { toolId, action, args, argsHash },
         metadataJson:   {
           requesterId,
-          requesterLarkOpenId:    runContext.userExternalId ? String(runContext.userExternalId) : null,
+          requesterLarkOpenId:    runContext.channel === 'lark' && runContext.userExternalId
+            ? String(runContext.userExternalId)
+            : null,
+          tenantKey:              runContext.channel === 'lark' && runContext.tenantId
+            ? String(runContext.tenantId)
+            : null,
           departmentId,
           approvalOrigin:         approvalOriginFromChatId(chatId),
           statusMessageId:        statusMessageId ?? null,

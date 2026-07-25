@@ -10,6 +10,11 @@ function makeDb(overrides: Record<string, unknown>) {
     channelIdentity: {
       findFirst: async () => null,
     },
+    larkTenantBinding: {
+      findFirst: async ({ where }: any) => where.larkTenantKey
+        ? { companyId: `company-${where.larkTenantKey}` }
+        : null,
+    },
     integrationConnection: {
       findFirst: async () => null,
       findMany: async () => [],
@@ -35,6 +40,7 @@ function makeDb(overrides: Record<string, unknown>) {
 
 const OPEN_ID = 'ou_cache_test';
 const CACHE_KEY = `lark:id:v2:${OPEN_ID}`;
+const TENANT_CACHE_KEY = `lark:id:v3:tenant-1:${OPEN_ID}`;
 
 const resolvedIdentity: ResolvedUserIdentity = {
   userId: 'user-1',
@@ -53,6 +59,11 @@ function makeIdentityDb(overrides: Record<string, unknown> = {}) {
         channel: 'lark',
         companyId: 'company-1',
       }),
+    },
+    larkTenantBinding: {
+      findFirst: async ({ where }: any) => where.larkTenantKey
+        ? { companyId: `company-${where.larkTenantKey}` }
+        : null,
     },
     integrationConnection: {
       findFirst: async () => ({ ownerUserId: 'user-1' }),
@@ -73,16 +84,22 @@ function makeIdentityDb(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeCache(store = new Map<string, unknown>()): CachePort & { store: Map<string, unknown>; delCalls: string[] } {
+function makeCache(store = new Map<string, unknown>()): CachePort & {
+  store: Map<string, unknown>;
+  delCalls: string[];
+  scanDelCalls: string[];
+} {
   const delCalls: string[] = [];
+  const scanDelCalls: string[] = [];
   return {
     store,
     delCalls,
+    scanDelCalls,
     get: async (k) => ok(store.has(k) ? (store.get(k) as any) : null),
     set: async (k, v) => { store.set(k, v); return ok(undefined); },
     setNx: async (k, v) => { if (store.has(k)) return ok(false); store.set(k, v); return ok(true); },
     del: async (k) => { delCalls.push(k); store.delete(k); return ok(undefined); },
-    scanDel: async () => ok(0),
+    scanDel: async (pattern) => { scanDelCalls.push(pattern); return ok(0); },
   };
 }
 
@@ -95,6 +112,58 @@ function makeFailingCache(): CachePort {
     scanDel: async () => err({ kind: 'infra', source: 'redis', operation: 'scanDel', cause: new Error('redis down') } as any),
   };
 }
+
+describe('ChannelIdentityRepository.resolveByUserId', () => {
+  it('resolves an internal member without requiring a Lark connection', async () => {
+    const repo = new ChannelIdentityRepository(makeDb({
+      integrationConnection: {
+        findFirst: async ({ where }: any) => {
+          assert.equal(where.companyId, 'company-1');
+          assert.equal(where.ownerUserId, 'user-1');
+          return null;
+        },
+      },
+      adminMembership: {
+        findFirst: async ({ where }: any) => {
+          assert.deepEqual(
+            { userId: where.userId, companyId: where.companyId, isActive: where.isActive },
+            { userId: 'user-1', companyId: 'company-1', isActive: true },
+          );
+          return { role: 'MEMBER' };
+        },
+      },
+    }) as any);
+
+    const result = await repo.resolveByUserId('user-1', 'company-1');
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.ok ? result.value : undefined, {
+      userId: 'user-1',
+      companyId: 'company-1',
+      aiRole: 'MEMBER',
+      channel: 'internal',
+    });
+  });
+
+  it('fails closed when the user is not active in the requested company', async () => {
+    let connectionQueried = false;
+    const repo = new ChannelIdentityRepository(makeDb({
+      adminMembership: { findFirst: async () => null },
+      integrationConnection: {
+        findFirst: async () => {
+          connectionQueried = true;
+          return { externalAccountId: 'ou_other' };
+        },
+      },
+    }) as any);
+
+    const result = await repo.resolveByUserId('user-1', 'company-2');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok ? result.value : undefined, null);
+    assert.equal(connectionQueried, false);
+  });
+});
 
 // ── Cache tests for resolveByLarkOpenId ────────────────────────────────────────
 
@@ -238,6 +307,124 @@ describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
   });
 });
 
+describe('ChannelIdentityRepository.resolveByLarkTenantIdentity', () => {
+  it('keeps identical open IDs isolated by Lark tenant', async () => {
+    const connectionQueries: Array<Record<string, unknown>> = [];
+    const db = makeIdentityDb({
+      larkTenantBinding: {
+        findFirst: async () => ({ companyId: 'company-shared' }),
+      },
+      channelIdentity: {
+        findFirst: async ({ where }: any) => ({
+          id: `ci-${where.externalTenantId}`,
+          aiRole: 'MEMBER',
+          channel: 'lark',
+          companyId: 'company-shared',
+        }),
+      },
+      integrationConnection: {
+        findMany: async ({ where }: any) => {
+          connectionQueries.push(where);
+          return [{
+          ownerUserId: `user-${where.tokenMetadata.equals}`,
+          ownerUser: { email: 'user@example.com' },
+          }];
+        },
+      },
+    });
+    const cache = makeCache();
+    const repo = new ChannelIdentityRepository(db as any, cache);
+
+    const first = await repo.resolveByLarkTenantIdentity(OPEN_ID, 'tenant-1');
+    const second = await repo.resolveByLarkTenantIdentity(OPEN_ID, 'tenant-2');
+    await new Promise(r => setImmediate(r));
+
+    assert.ok(first.ok && first.value);
+    assert.ok(second.ok && second.value);
+    assert.equal(first.value.companyId, 'company-shared');
+    assert.equal(second.value.companyId, 'company-shared');
+    assert.notEqual(first.value.userId, second.value.userId);
+    assert.deepEqual(
+      connectionQueries.map(where => where.tokenMetadata),
+      [
+        { path: ['larkTenantKey'], equals: 'tenant-1' },
+        { path: ['larkTenantKey'], equals: 'tenant-2' },
+      ],
+    );
+    assert.ok(cache.store.has(TENANT_CACHE_KEY));
+    assert.ok(cache.store.has(`lark:id:v3:tenant-2:${OPEN_ID}`));
+  });
+
+  it('scopes first-touch login preparation to the same tenant', async () => {
+    let where: Record<string, unknown> | undefined;
+    const db = makeDb({
+      channelIdentity: {
+        findFirst: async (input: any) => {
+          where = input.where;
+          return null;
+        },
+      },
+    });
+    const repo = new ChannelIdentityRepository(db as any);
+
+    const result = await repo.prepareLarkLogin(OPEN_ID, 'tenant-1');
+
+    assert.ok(result.ok);
+    assert.equal(result.value, null);
+    assert.deepEqual(where, {
+      channel: 'lark',
+      larkOpenId: OPEN_ID,
+      externalTenantId: 'tenant-1',
+      companyId: 'company-tenant-1',
+    });
+  });
+
+  it('rejects first-touch login when the tenant binding is inactive', async () => {
+    let identityQueried = false;
+    const db = makeDb({
+      larkTenantBinding: { findFirst: async () => null },
+      channelIdentity: {
+        findFirst: async () => {
+          identityQueried = true;
+          return null;
+        },
+      },
+    });
+    const repo = new ChannelIdentityRepository(db as any);
+
+    const result = await repo.prepareLarkLogin(OPEN_ID, 'tenant-1');
+
+    assert.ok(result.ok);
+    assert.equal(result.value, null);
+    assert.equal(identityQueried, false);
+  });
+
+  it('rejects a retained identity when its tenant binding is inactive', async () => {
+    let identityQueried = false;
+    const db = makeIdentityDb({
+      larkTenantBinding: { findFirst: async () => null },
+      channelIdentity: {
+        findFirst: async () => {
+          identityQueried = true;
+          return {
+            id: 'ci-stale',
+            aiRole: 'MEMBER',
+            channel: 'lark',
+            companyId: 'company-1',
+          };
+        },
+      },
+    });
+    const repo = new ChannelIdentityRepository(db as any);
+
+    const result = await repo.resolveByLarkTenantIdentity(OPEN_ID, 'inactive-tenant');
+
+    assert.ok(result.ok);
+    assert.equal(result.value, null);
+    assert.equal(identityQueried, false);
+  });
+});
+
 describe('ChannelIdentityRepository.invalidateIdentityCache', () => {
   it('calls del on the correct cache key', async () => {
     const cache = makeCache(new Map([[CACHE_KEY, resolvedIdentity]]));
@@ -246,6 +433,10 @@ describe('ChannelIdentityRepository.invalidateIdentityCache', () => {
     await repo.invalidateIdentityCache(OPEN_ID);
 
     assert.ok(cache.delCalls.includes(CACHE_KEY), 'should call del with identity cache key');
+    assert.ok(
+      cache.scanDelCalls.includes(`lark:id:v3:*:${OPEN_ID}`),
+      'should invalidate tenant-scoped identity cache keys',
+    );
     assert.ok(!cache.store.has(CACHE_KEY), 'cached entry should be removed');
   });
 });

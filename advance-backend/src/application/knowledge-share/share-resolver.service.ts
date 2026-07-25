@@ -10,6 +10,14 @@ export interface ShareResolveResult {
   responseBody: Record<string, unknown>;
 }
 
+export interface AuthenticatedShareActor {
+  userId: string;
+  companyId: string;
+  aiRole: string;
+  openId: string;
+  displayName?: string;
+}
+
 export class ShareResolverService {
   private readonly log: Logger;
 
@@ -31,11 +39,14 @@ export class ShareResolverService {
     } catch { return false; }
   }
 
-  async handle(cardEvent: unknown): Promise<ShareResolveResult> {
+  async handle(
+    cardEvent: unknown,
+    actor: AuthenticatedShareActor,
+  ): Promise<ShareResolveResult> {
     const event = cardEvent as Record<string, unknown>;
 
     // Extract action metadata
-    const { action, shareId, adminOpenId, adminName } = this.parseEvent(event);
+    const { action, shareId } = this.parseEvent(event);
 
     if (!shareId) {
       return { ok: false, responseBody: { ok: false, reason: 'missing_share_id' } };
@@ -47,9 +58,31 @@ export class ShareResolverService {
     }
 
     const request = cacheResult.value;
+    const isCompanyAdmin = actor.aiRole === 'COMPANY_ADMIN' || actor.aiRole === 'SUPER_ADMIN';
+    if (!isCompanyAdmin || actor.companyId !== request.companyId) {
+      this.log.warn('share-resolver.unauthorized_actor', {
+        shareId,
+        actorUserId: actor.userId,
+        actorCompanyId: actor.companyId,
+        actorRole: actor.aiRole,
+      });
+      return {
+        ok: false,
+        responseBody: {
+          toast: { type: 'error', content: 'You are not authorized to decide this share request.' },
+        },
+      };
+    }
+
     const approved = action === 'share_approve';
 
-    this.log.info('share-resolver.handle', { shareId, approved, fileAssetId: request.fileAssetId, adminOpenId });
+    this.log.info('share-resolver.handle', {
+      shareId,
+      approved,
+      fileAssetId: request.fileAssetId,
+      actorUserId: actor.userId,
+      actorOpenId: actor.openId,
+    });
 
     if (approved) {
       await this.shareService.promoteToShared(request.fileAssetId, request.companyId, request.requesterUserId);
@@ -59,6 +92,7 @@ export class ShareResolverService {
     await this.cache.del(`${SHARE_CACHE_PREFIX}${shareId}`);
 
     // Update all admin approval cards in-place
+    const adminName = actor.displayName ?? 'Admin';
     const resolvedCard = approved
       ? buildShareApprovedCard(request.fileName, adminName)
       : buildShareRejectedCard(request.fileName, adminName);
@@ -117,8 +151,6 @@ export class ShareResolverService {
   private parseEvent(event: Record<string, unknown>): {
     action: string;
     shareId: string;
-    adminOpenId: string;
-    adminName: string;
   } {
     const eventInner = event['event'] as Record<string, unknown> | undefined;
     const target = eventInner ?? event;
@@ -132,15 +164,9 @@ export class ShareResolverService {
       parsed = valueRaw as Record<string, unknown>;
     }
 
-    const operator = target['operator'] as Record<string, unknown> | undefined;
-    const adminOpenId = String(operator?.['open_id'] ?? '');
-    const adminName   = String(operator?.['name'] ?? 'Admin');
-
     return {
       action:      String(parsed['action'] ?? ''),
       shareId:     String(parsed['shareId'] ?? ''),
-      adminOpenId,
-      adminName,
     };
   }
 }

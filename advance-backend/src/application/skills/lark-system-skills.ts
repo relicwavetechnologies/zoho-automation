@@ -20,6 +20,9 @@ export interface LarkSystemSkillDefinition {
 }
 
 const LARK_GOVERNED_ROUTING = `For ${GOVERNED_DIRECT_ACTION_CRITERION}, use the governed Divo route directly. ${GOVERNED_LOCAL_WORKFLOW_ROUTE} Never call Lark directly from Bash: no lark-cli, curl, local credentials, or direct Lark API calls.`;
+const LARK_USER_CONNECTION = `- Reuse an exact \`connectionId\` already supplied by the current run.
+- Otherwise omit \`connectionId\`. The backend selects an account only when exactly one accessible account qualifies; when several qualify, retry with one exact ID from the safe choices it returns.
+- Never invent an ID or call \`connections.list\` merely to rediscover an account the backend can select.`;
 
 export const LARK_SYSTEM_SKILLS: readonly LarkSystemSkillDefinition[] = [
   {
@@ -35,10 +38,9 @@ Use this skill for Lark documents, meeting notes, reports, plans, briefs, SOPs, 
 
 ## Connection
 
-1. List accessible connections with provider \`lark\`.
-2. Select one exact returned \`connectionId\`, even when only one account is available.
-3. If several are available and the member did not identify one, ask which account to use.
-4. Send \`connectionId\` with every user-scoped Lark document action. It is required for RBAC, owner policy, approval, and rate limits. ${LARK_GOVERNED_ROUTING}
+${LARK_USER_CONNECTION}
+- If several accounts are returned and the member did not identify one, ask which account to use.
+- ${LARK_GOVERNED_ROUTING}
 
 ## Create a polished document
 
@@ -79,7 +81,7 @@ Use this skill for todos, follow-ups, reminders, assignments, subtasks, and task
 
 ## Connection
 
-- Resolve an accessible \`lark\` connection and pass its \`connectionId\` to every task action.
+${LARK_USER_CONNECTION}
 - ${LARK_GOVERNED_ROUTING}
 
 ## Operating rules
@@ -104,7 +106,7 @@ Return the useful task title, assignee, and due date. Never claim completion whi
 
 Use this skill for meetings, events, schedules, attendees, recurring events, and free/busy checks.
 
-- Resolve an accessible \`lark\` connection and pass its \`connectionId\`.
+${LARK_USER_CONNECTION}
 - Use explicit ISO start and end times with timezone offsets. Use a 30-minute duration only when duration is omitted.
 - Add attendees only when explicitly requested. Resolve names and ask when several people match.
 - Use \`free_busy\` for availability; a person's open ID is not a calendar ID.
@@ -127,8 +129,9 @@ Use this skill to find Lark video meetings, inspect a known meeting, or retrieve
 
 ## Connection
 
-- Resolve an accessible \`lark\` connection and include its \`connectionId\` on every action.
-- If several accounts are available, ask the member which connection to use. Never guess. ${LARK_GOVERNED_ROUTING}
+${LARK_USER_CONNECTION}
+- If several accounts are returned, ask the member which connection to use. Never guess.
+- ${LARK_GOVERNED_ROUTING}
 
 ## Operating rules
 
@@ -151,11 +154,12 @@ Confirm the meeting title and time when present, and give the canonical recordin
 
 Use this skill for direct messages, group messages, replies, message search, and mentions.
 
-- Resolve an accessible \`lark\` connection and pass its \`connectionId\`.
+${LARK_USER_CONNECTION}
 - Send only when the member explicitly asked to send and named a recipient or destination.
-- For a direct message, use recipient-name resolution and ask when the match is ambiguous.
+- When the current message's \`<lark_mentioned_people>\` block contains an \`openId\`, pass that exact value as \`recipientOpenId\` for a DM or in \`mentionOpenIds\` for a group mention. These IDs are valid only for the current inbound turn.
+- For a plain-language recipient who was not structurally mentioned, use recipient-name resolution and ask when the match is ambiguous.
 - For a group, list chats first to resolve the chat. If Divo is absent, tell the member it must be added.
-- Resolve mention names before sending. Do not guess IDs.
+- Never transcribe, infer, or reuse an ID from prose or an earlier turn.
 - Outbound messages use a Divo Card 2.0 by default, so provide clean Markdown. Use plain-text delivery only when the member explicitly needs plain text.
 - Preserve approval state: pending is not sent, rejected is not sent.
 - ${LARK_GOVERNED_ROUTING}
@@ -202,7 +206,7 @@ In user-facing output, prefer the person's name, email, job title, department na
 
 Use this skill for Lark Base record lookup and mutation.
 
-- Resolve an accessible \`lark\` connection and pass its \`connectionId\`.
+${LARK_USER_CONNECTION}
 - Require the exact Base app and table identifiers supplied or resolved from trusted context.
 - Read before updating when the target record is unclear. Never guess field names or record IDs.
 - Preserve typed field values and structured results returned by Lark.

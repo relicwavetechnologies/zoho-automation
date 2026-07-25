@@ -43,6 +43,12 @@ export interface RunContext {
    */
   readonly userExternalId?: string;
   /**
+   * Exact Lark open_ids explicitly mentioned in the inbound message.
+   * Backend adapters own this list; tools may use it to avoid fuzzy person
+   * resolution but must not treat it as a permission or approval grant.
+   */
+  readonly mentionedLarkOpenIds?: ReadonlyArray<string>;
+  /**
    * Approval grants issued by a manager.
    * The gate in ai-sdk-adapter checks this list before sending a new approval request.
    * A grant is valid only when argsHash matches the tool call args.

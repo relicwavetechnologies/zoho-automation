@@ -69,9 +69,11 @@ export class ApprovalResumerService {
       ?? legacySourceChatId(storedChatId, meta['approvalOrigin']);
     const requesterId = asNonEmptyString(meta['requesterId']);
     const requesterLarkOpenId = asNonEmptyString(meta['requesterLarkOpenId']);
+    const tenantKey = asNonEmptyString(meta['tenantKey']);
     const statusMessageId = asNonEmptyString(meta['statusMessageId']);
+    const approvalCompanyId = asNonEmptyString(approval.companyId);
 
-    if (!chatId || !requesterId) {
+    if (!chatId || !requesterId || !approvalCompanyId) {
       this.log.error('resumer.missing_metadata', { approvalId });
       return;
     }
@@ -102,9 +104,17 @@ export class ApprovalResumerService {
       return;
     }
 
+    if (requesterLarkOpenId && !tenantKey) {
+      const message = 'I could not verify the Lark workspace for this approved action, so it was not executed.';
+      this.log.warn('resumer.tenant_missing', { approvalId, requesterId, requesterLarkOpenId });
+      await this.persistFailure(approvalId, { status: 'tenant_missing', message });
+      await this.deliverFinal(conversation, message);
+      return;
+    }
+
     const identityResult = requesterLarkOpenId
-      ? await this.deps.channelIdentityRepo.resolveByLarkOpenId(requesterLarkOpenId)
-      : await this.deps.channelIdentityRepo.resolveByUserId(requesterId);
+      ? await this.deps.channelIdentityRepo.resolveByLarkTenantIdentity(requesterLarkOpenId, tenantKey!)
+      : await this.deps.channelIdentityRepo.resolveByUserId(requesterId, approvalCompanyId);
     if (!identityResult.ok || !identityResult.value) {
       const message = 'I could not verify the requester for this approved action, so it was not executed.';
       this.log.warn('resumer.identity_not_found', { approvalId, requesterId, requesterLarkOpenId });
@@ -113,6 +123,19 @@ export class ApprovalResumerService {
       return;
     }
     const identity = identityResult.value;
+    if (identity.companyId !== approvalCompanyId || identity.userId !== requesterId) {
+      const message = 'I could not verify the requester company for this approved action, so it was not executed.';
+      this.log.warn('resumer.identity_scope_mismatch', {
+        approvalId,
+        requesterId,
+        approvalCompanyId,
+        identityCompanyId: identity.companyId,
+        identityUserId: identity.userId,
+      });
+      await this.persistFailure(approvalId, { status: 'identity_scope_mismatch', message });
+      await this.deliverFinal(conversation, message);
+      return;
+    }
 
     const permissionResult = await this.deps.permissions.resolve({
       companyId: asCompanyId(identity.companyId),

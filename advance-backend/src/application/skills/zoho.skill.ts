@@ -2,9 +2,9 @@ import type { Skill } from './skill.types';
 
 const ZOHO_CONNECTION_METHOD = `DIVO-GOVERNED ZOHO CONNECTION:
 - Invoke Zoho only through the Divo tool surface available in the current runtime: server channels use call_tool; desktop uses divo_gateway. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
-- Before every Zoho action, use connections.list with provider "zoho" and select one exact connected or shared account.
-- Pass that backend connectionId with every Zoho action. It is required for RBAC, owner policy, approval, and rate limits; Divo never auto-selects a Zoho account.
-- If Divo returns a structured connection choice, ask one short account-choice question using the returned labels. Do not guess.
+- Reuse an exact connectionId already supplied by the current run. Otherwise omit it: the backend selects an account only when exactly one accessible account qualifies.
+- If Divo returns structured connection choices, ask one short account-choice question using those labels, then retry with the selected exact ID. Do not guess.
+- Do not call connections.list merely to rediscover an account the backend can select.
 - If no connection is accessible, tell the member to connect or request access to Zoho.
 - Never use a label, organization name, or guessed value as connectionId. Use only a backend-provided connectionId.`;
 

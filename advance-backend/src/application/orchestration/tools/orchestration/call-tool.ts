@@ -44,6 +44,10 @@ export function createCallToolTool(
       `Available tools: ${availableIds}`,
     inputSchema: inputSchema as never,
     execute: async (input: unknown): Promise<string> => {
+      if (adapterCtx.abortSignal?.aborted) {
+        return 'error: Tool execution was cancelled because the parent run ended.';
+      }
+
       const parsed = inputSchema.safeParse(input);
       if (!parsed.success) {
         return `error: invalid call_tool input — ${parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ')}`;
@@ -66,6 +70,7 @@ export function createCallToolTool(
           ...(adapterCtx.approvalGate ? { approvalGate: adapterCtx.approvalGate } : {}),
           ...(adapterCtx.chatId ? { chatId: adapterCtx.chatId } : {}),
           ...(adapterCtx.onProgress ? { onProgress: adapterCtx.onProgress } : {}),
+          ...(adapterCtx.abortSignal ? { abortSignal: adapterCtx.abortSignal } : {}),
         });
         const outcomeResult = formatRuntimeOutcome(outcome);
         onDecision?.({
@@ -175,10 +180,14 @@ export function createCallToolTool(
         correlationId: tool.id,
         logger:       adapterCtx.logger.child({ toolId: tool.id }),
         clock:        adapterCtx.clock,
+        ...(adapterCtx.abortSignal ? { abortSignal: adapterCtx.abortSignal } : {}),
         ...(adapterCtx.onProgress ? { onProgress: adapterCtx.onProgress } : {}),
       };
 
       // ── Execute ──────────────────────────────────────────────────────────
+      if (adapterCtx.abortSignal?.aborted) {
+        return 'error: Tool execution was cancelled because the parent run ended.';
+      }
       const result = await tool.execute(validatedArgs, execCtx);
       if (!result.ok) {
         adapterCtx.logger.warn('call_tool.tool_error', {

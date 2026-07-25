@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
+import type { LanguageModel } from 'ai';
 
 import { OrchestrationEngine } from '../../src/application/orchestration/engine/core.ts';
 import type { OrchestrationEngineDeps } from '../../src/application/orchestration/engine/core.ts';
@@ -147,7 +148,7 @@ describe('OrchestrationEngine', () => {
           started.push('supervisor');
           assert.equal(input.memoryContext, 'remembered context');
           assert.ok(input.groupContext?.includes('Alice'));
-          assert.equal((input.model as { modelId?: string } | undefined)?.modelId, 'deepseek-v4-flash');
+          assert.equal((input.model as { modelId?: string } | undefined)?.modelId, 'deepseek-v4-pro');
           assert.equal(typeof input.resolveModel, 'function');
           return ok({
             finalReply: { kind: 'final', text: 'done', format: 'text' },
@@ -160,7 +161,7 @@ describe('OrchestrationEngine', () => {
         },
       } as unknown as OrchestrationEngineDeps['supervisor'],
       larkInference: {
-        createModel: () => ({ modelId: 'deepseek-v4-flash' }),
+        createModel: () => ({ modelId: 'deepseek-v4-pro' }),
       } as unknown as NonNullable<OrchestrationEngineDeps['larkInference']>,
       logger: createLogger(loggerEvents),
       clock,
@@ -187,5 +188,125 @@ describe('OrchestrationEngine', () => {
     assert.equal(result.ok, true);
     assert.equal(started.at(-1), 'supervisor');
     assert.ok(loggerEvents.some(entry => entry.event === 'engine.pre_supervisor.duration'));
+  });
+
+  it('cancels fast-path model work and always releases the registered controller', async () => {
+    const toolId = asToolId('larkTask');
+    const perm: PermissionResult = {
+      allowedToolIds: new Set([toolId]),
+      allowedActionsByTool: new Map([[toolId, new Set(['read'])]]),
+      decisions: [],
+    };
+    const tool: Tool<unknown, unknown> = {
+      id: toolId,
+      family: 'lark',
+      actionGroups: new Set(['read']),
+      argsSchema: z.unknown(),
+      resultSchema: z.unknown(),
+      description: 'test tool',
+      parameterDocs: '',
+      permissionCheck: () => ok('read'),
+      execute: async () => ok({}),
+    };
+    const incoming: IncomingMessage = {
+      channel: 'lark',
+      messageId: asMessageId('msg-fast'),
+      chatId: asChatId('chat-fast'),
+      chatType: 'p2p',
+      userExternalId: 'ou_1',
+      text: 'hello',
+      attachments: [],
+      timestamp: '2026-05-14T00:00:00.000Z',
+      traceId: asCorrelationId('corr-fast'),
+      mentions: [],
+      mentionsSelf: false,
+      raw: {},
+    };
+    const conversation: ConversationHandle = {
+      channel: 'lark',
+      chatId: incoming.chatId,
+      correlationId: incoming.traceId,
+    };
+    const modelStarted = Promise.withResolvers<void>();
+    const fastPathModel = {
+      provider: 'mock',
+      modelId: 'abortable-fast-path',
+      specificationVersion: 'v2',
+      doGenerate: async ({ abortSignal }: { abortSignal?: AbortSignal }) => {
+        modelStarted.resolve();
+        await new Promise<never>((_resolve, reject) => {
+          abortSignal?.addEventListener(
+            'abort',
+            () => reject(abortSignal.reason),
+            { once: true },
+          );
+        });
+      },
+      doStream: async () => { throw new Error('not used'); },
+    } as unknown as LanguageModel;
+    let registered = 0;
+    let cleaned = 0;
+    let finalReplies = 0;
+    const channelAdapter = {
+      key: 'lark',
+      parseIncoming: () => ok(incoming),
+      sendStatus: async () => ok({
+        channel: 'lark',
+        messageId: asMessageId('status-fast'),
+        correlationId: incoming.traceId,
+      }),
+      editStatus: async handle => ok(handle),
+      sendFinalReply: async () => {
+        finalReplies++;
+        return ok({ channel: 'lark', messageId: asMessageId('reply-fast') });
+      },
+      registerAbortController: () => { registered++; },
+      cleanupAbortController: () => { cleaned++; },
+    } as ChannelAdapter & {
+      registerAbortController: () => void;
+      cleanupAbortController: () => void;
+    };
+    const deps: OrchestrationEngineDeps = {
+      permissions: {
+        resolve: async () => ok(perm),
+      } as unknown as OrchestrationEngineDeps['permissions'],
+      toolRegistry: {
+        forRuntime: () => [tool],
+      } as unknown as OrchestrationEngineDeps['toolRegistry'],
+      history: {
+        loadWindow: async () => ok({ turns: [], truncated: false, tokenEstimate: 0 }),
+        appendTurn: async () => undefined,
+      } as unknown as OrchestrationEngineDeps['history'],
+      supervisor: {
+        run: async () => { throw new Error('not used'); },
+        getModel: () => fastPathModel,
+      } as unknown as OrchestrationEngineDeps['supervisor'],
+      fastPathModel,
+      logger: createLogger([]),
+      clock,
+    };
+    const controller = new AbortController();
+
+    const resultPromise = new OrchestrationEngine(deps).run({
+      incoming,
+      runContext: {
+        companyId: asCompanyId('company-1'),
+        userId: asUserId('user-1'),
+        companyRole: asCompanyRoleSlug('MEMBER'),
+        channel: 'lark',
+      },
+      conversation,
+      channelAdapter,
+      abortSignal: controller.signal,
+    });
+
+    await modelStarted.promise;
+    controller.abort(new Error('lane timed out'));
+    const result = await resultPromise;
+
+    assert.equal(result.ok, false);
+    assert.equal(registered, 1);
+    assert.equal(cleaned, 1);
+    assert.equal(finalReplies, 0);
   });
 });

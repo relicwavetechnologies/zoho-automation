@@ -28,6 +28,7 @@ import { DeptUserOverrideRepository } from './infrastructure/persistence/departm
 import { ConversationRepository } from './infrastructure/persistence/conversation.repository';
 import { ChannelIdentityRepository } from './infrastructure/persistence/channel-identity.repository';
 import { LarkChatContextRepository } from './infrastructure/persistence/lark-chat-context.repository';
+import { IngressReceiptRepository } from './infrastructure/persistence/ingress-receipt.repository';
 import { LarkChatContextService } from './application/chat-context/lark-chat-context.service';
 import { LarkChannelAdapter } from './infrastructure/channels/lark/lark.adapter';
 import { LarkPeopleResolver } from './infrastructure/channels/lark/lark-people.resolver';
@@ -118,6 +119,7 @@ import { VectorDocumentRepository } from './infrastructure/persistence/vector-do
 import { FileAccessPolicyRepository } from './infrastructure/persistence/file-access-policy.repository';
 import { IngestionService } from './application/ingestion/ingestion.service';
 import { IngestionQueue } from './application/ingestion/ingestion.queue';
+import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
 import { PersonaLearningQueue } from './application/persona-learning/persona-learning.queue';
 import { DeepSeekPersonaLearningExtractor } from './application/persona-learning/persona-learning.extractor';
 import { PersonaLearningService } from './application/persona-learning/persona-learning.service';
@@ -215,6 +217,7 @@ export interface Container {
   channelRegistry: ChannelAdapterRegistry;
   channelIdentityRepo: ChannelIdentityRepository;
   conversationRepo: ConversationRepository;
+  ingressReceiptRepo: IngressReceiptRepository;
   logger: import('./shared/logger').Logger;
   prisma: ReturnType<typeof getPrismaClient>;
   /** Hot-path app cache: permissions, OAuth tokens, agent defs. → REDIS_CACHE_URL */
@@ -273,6 +276,7 @@ export interface Container {
   // Document RAG
   ingestionService: IngestionService;
   ingestionQueue: IngestionQueue;
+  larkIngressQueue: LarkIngressQueue;
   // Manager learning P1–P4. Promotion remains isolated from memory, skills, and RBAC.
   personaLearningQueue: PersonaLearningQueue;
   personaLearningService: PersonaLearningService;
@@ -360,6 +364,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const conversationRepo      = new ConversationRepository(prisma, cache);
   const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache);
   const larkChatContextRepo   = new LarkChatContextRepository(prisma);
+  const ingressReceiptRepo    = new IngressReceiptRepository(prisma);
 
   // ── Permission service ─────────────────────────────────────────────────
   const permissions = new PermissionServiceImpl({
@@ -450,7 +455,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const chatContextService = new LarkChatContextService({
     repo: larkChatContextRepo,
     // Group context keeps its deterministic compaction until it receives a
-    // per-run Lark Flash model; never let it silently use the global fallback.
+    // per-run Lark model; never let it silently use the global fallback.
     logger: logger.child({ service: 'chat-context' }),
   });
   logger.warn('ai.model.selected', {
@@ -972,6 +977,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   const ingestionQueue = new IngestionQueue(queueRedisUrl, env.REDIS_INGESTION_QUEUE_NAME);
+  const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
   const personaLearningQueue = new PersonaLearningQueue(
     queueRedisUrl,
     env.REDIS_PERSONA_LEARNING_QUEUE_NAME,
@@ -1337,6 +1343,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     toolRegistry,
     permissions,
     connectionRateLimits,
+    connectionRegistry: integrationConnectionRepo,
     logger: logger.child({ service: 'lark-runtime-tool-executor' }),
     clock: systemClock,
   });
@@ -1402,6 +1409,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Channels ───────────────────────────────────────────────────────────
   const larkAdapter = new LarkChannelAdapter({ env, logger: logger.child({ channel: 'lark' }) });
+  await larkAdapter.initialize();
   const channelRegistry = new ChannelAdapterRegistry();
   channelRegistry.register(larkAdapter);
 
@@ -1528,6 +1536,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     channelRegistry,
     channelIdentityRepo,
     conversationRepo,
+    ingressReceiptRepo,
     logger,
     prisma,
     cache,
@@ -1576,6 +1585,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Document RAG
     ingestionService,
     ingestionQueue,
+    larkIngressQueue,
     personaLearningQueue,
     personaLearningService,
     personaLearningPromotionService,

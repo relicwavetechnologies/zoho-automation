@@ -599,7 +599,7 @@ model ChannelIdentity {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  @@unique([channel, externalUserId, companyId])
+  @@unique([channel, externalTenantId, externalUserId, companyId])
   @@index([companyId, larkOpenId])
   @@index([companyId, larkUserId])
   @@index([companyId, channel])
@@ -861,12 +861,27 @@ model VectorShareRequest {
 }
 
 model IngressIdempotencyKey {
-  id        String   @id @default(uuid())
-  channel   String
-  messageId String   @unique
-  createdAt DateTime @default(now())
+  id          String    @id @default(uuid())
+  channel     String
+  tenantKey   String
+  eventId     String?
+  messageId   String
+  payloadJson Json
+  status      String    @default("accepted")
+  attempts    Int       @default(0)
+  companyId   String?
+  queueJobId  String?
+  lastError   String?
+  acceptedAt  DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
+  @@unique([channel, tenantKey, messageId])
   @@index([channel, createdAt])
+  @@index([channel, tenantKey, eventId])
+  @@index([status, createdAt])
 }
 
 model RbacPermission {

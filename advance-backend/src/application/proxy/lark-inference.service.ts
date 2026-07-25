@@ -8,8 +8,8 @@ import type { OrchestrationTracer } from '../observability/orchestration-tracer'
 
 type DeepSeekModel = ReturnType<ReturnType<typeof createDeepSeek>>;
 
-export const LARK_MODEL_ID = 'deepseek-v4-flash';
-const DEEPSEEK_UPSTREAM_MODEL_ID = 'deepseek-chat';
+export const LARK_MODEL_ID = 'deepseek-v4-pro';
+const DEEPSEEK_UPSTREAM_MODEL_ID = 'deepseek-reasoner';
 
 export interface LarkInferenceContext {
   runContext: RunContext;
@@ -49,7 +49,7 @@ function toDeepSeekUsage(usage: {
 
 /**
  * Creates a per-run DeepSeek model for Lark. The model is deliberately pinned:
- * agent/company model overrides cannot move Lark away from Flash. Credentials,
+ * agent/company model overrides cannot move Lark away from Pro. Credentials,
  * block/model/rate/budget policy, audit rows and token usage remain backend-owned.
  */
 export class LarkInferenceService {

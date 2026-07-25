@@ -24,8 +24,8 @@ const Schema = z.object({
   cols: z.number().int().min(1).max(20).optional(),
   headers: z.array(z.string()).optional(),
   visibility: z.enum(['anyone', 'tenant', 'specified']).optional(),
-  /** Exact Divo-managed Lark connection for this governed action. */
-  connectionId: z.string().uuid(),
+  /** Exact Divo-managed Lark connection when more than one is accessible. */
+  connectionId: z.string().uuid().optional(),
 });
 type Args = z.infer<typeof Schema>;
 
@@ -77,7 +77,7 @@ export const createLarkDocTool = (deps: {
 - rows, cols: Table dimensions in cells (required for insert_table)
 - headers: Column header strings (optional, for insert_table)
 - visibility: anyone|tenant|specified (required for share)
-- connectionId: Exact UUID of the connected or shared Lark account. Required for every action.
+- connectionId: Exact accessible Lark UUID. In backend-hosted channels, omit it when no account was supplied; the backend selects only one accessible account or returns exact choices.
   `.trim(),
 
   permissionCheck(args: Args, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -89,7 +89,7 @@ export const createLarkDocTool = (deps: {
   async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     try {
       const userConnection = await resolveLarkUserClient(deps, ctx, {
-        connectionId: args.connectionId,
+        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
         minimumAccess: inferAction(args.op) === 'read' ? 'read_only' : 'read_write',
       });
       if (userConnection.status === 'choose_connection') {

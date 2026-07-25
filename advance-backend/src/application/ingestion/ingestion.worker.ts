@@ -1,7 +1,7 @@
 import { Worker, type Job } from 'bullmq';
 import type { LanguageModel } from 'ai';
 import type { IngestionJobPayload } from './ingestion.queue';
-import { INGESTION_QUEUE_NAME } from './ingestion.queue';
+import { resolveIngestionQueueName } from './ingestion.queue';
 import type { IngestionService } from './ingestion.service';
 import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark.adapter';
 import type { Logger } from '../../shared/logger';
@@ -11,6 +11,7 @@ import type { GroupChatAttachmentContext } from '../../domain/conversation/group
 
 export interface IngestionWorkerDeps {
   redisUrl:         string;
+  queueName?:       string;
   ingestionService: IngestionService;
   larkAdapter:      LarkChannelAdapter;
   env:              TypedEnv;
@@ -29,10 +30,11 @@ export class IngestionWorker {
   }
 
   start(): void {
-    const { redisUrl, concurrency = 2 } = this.deps;
+    const { redisUrl, queueName, concurrency = 2 } = this.deps;
+    const resolvedQueueName = resolveIngestionQueueName(queueName);
 
     this.worker = new Worker<IngestionJobPayload>(
-      INGESTION_QUEUE_NAME,
+      resolvedQueueName,
       async (job: Job<IngestionJobPayload>) => this.process(job),
       {
         connection:  { url: redisUrl },
@@ -47,7 +49,7 @@ export class IngestionWorker {
       this.log.error('ingestion.worker.failed', { jobId: job?.id, error: String(err) });
     });
 
-    this.log.info('ingestion.worker.started', { concurrency });
+    this.log.info('ingestion.worker.started', { queueName: resolvedQueueName, concurrency });
   }
 
   async stop(): Promise<void> {

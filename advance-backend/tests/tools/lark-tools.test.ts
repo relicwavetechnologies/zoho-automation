@@ -19,6 +19,29 @@ import { createLarkCalendarTool }  from '../../src/application/orchestration/too
 import { createLarkDocTool }       from '../../src/application/orchestration/tools/families/lark-doc.tool.ts';
 import { createLarkBaseTool }      from '../../src/application/orchestration/tools/families/lark-base.tool.ts';
 import { createLarkApprovalTool }  from '../../src/application/orchestration/tools/families/lark-approval.tool.ts';
+import { createLarkMeetingTool }   from '../../src/application/orchestration/tools/families/lark-meeting.tool.ts';
+
+describe('backend-hosted Lark connection selection', () => {
+  it('lets every managed Lark family omit connectionId while retaining UUID validation', () => {
+    const toolsAndArgs = [
+      [createLarkTaskTool({ client: {} } as any), { op: 'list' }],
+      [createLarkMessagingTool({ client: {} } as any), { op: 'list_chats' }],
+      [createLarkCalendarTool({ client: {} } as any), { op: 'list' }],
+      [createLarkDocTool({ client: {} } as any), { op: 'get' }],
+      [createLarkBaseTool({ client: {} } as any), { op: 'list_records' }],
+      [createLarkMeetingTool({ client: {} } as any), { op: 'search' }],
+    ] as const;
+
+    for (const [tool, args] of toolsAndArgs) {
+      assert.equal(tool.argsSchema.safeParse(args).success, true, `${tool.id} should allow backend selection`);
+      assert.equal(
+        tool.argsSchema.safeParse({ ...args, connectionId: 'not-a-uuid' }).success,
+        false,
+        `${tool.id} should still validate explicit IDs`,
+      );
+    }
+  });
+});
 
 // ─── lark-task ────────────────────────────────────────────────────────────────
 
@@ -231,6 +254,13 @@ describe('larkMessaging tool', () => {
 
   describe('execute', () => {
     const ctx = makeCtx('larkMessaging', ['read', 'send']);
+    const peopleResolver = {
+      resolve: async (_companyId: string, queries: string[]) => ({
+        resolved: queries.map(query => ({ openId: `resolved:${query}`, displayName: query })),
+        ambiguous: [],
+        notFound: [],
+      }),
+    };
 
     it('send: ok with messageId', async () => {
       const tool = createLarkMessagingTool({ client: fakeClient });
@@ -324,6 +354,113 @@ describe('larkMessaging tool', () => {
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'bad_args');
       assert.match((r as any).error.message, /locked to the current chat/i);
+    });
+
+    it('send_dm: uses an exact recipient ID explicitly mentioned in this turn', async () => {
+      let recipient: string | null = null;
+      const client = {
+        ...fakeClient,
+        sendDm: async (openId: string) => {
+          recipient = openId;
+          return { messageId: 'dm-1' };
+        },
+      };
+      const exactCtx = makeCtx('larkMessaging', ['send'], {
+        mentionedLarkOpenIds: ['ou_alice'],
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'hello',
+        recipientOpenId: 'ou_alice',
+      }, exactCtx);
+      assert.equal(r.ok, true);
+      assert.equal(recipient, 'ou_alice');
+    });
+
+    it('send_dm: rejects an exact recipient ID not mentioned in this turn', async () => {
+      let called = false;
+      const client = {
+        ...fakeClient,
+        sendDm: async () => {
+          called = true;
+          return { messageId: 'dm-1' };
+        },
+      };
+      const exactCtx = makeCtx('larkMessaging', ['send'], {
+        mentionedLarkOpenIds: ['ou_alice'],
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'hello',
+        recipientOpenId: 'ou_mallory',
+      }, exactCtx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.equal(called, false);
+    });
+
+    it('send_dm: does not accept chatId as an arbitrary recipient openId', async () => {
+      let called = false;
+      const client = {
+        ...fakeClient,
+        sendDm: async () => {
+          called = true;
+          return { messageId: 'dm-1' };
+        },
+      };
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'hello',
+        chatId: 'ou_mallory',
+      }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.equal(called, false);
+    });
+
+    it('mention: uses and deduplicates exact IDs explicitly mentioned in this turn', async () => {
+      let recipients: string[] = [];
+      const client = {
+        ...fakeClient,
+        mentionMessage: async (_chatId: string, _text: string, openIds: string[]) => {
+          recipients = openIds;
+          return { messageId: 'mention-1' };
+        },
+      };
+      const exactCtx = makeCtx('larkMessaging', ['send'], {
+        mentionedLarkOpenIds: ['ou_alice', 'ou_bob'],
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'mention',
+        chatId: 'oc_group',
+        text: 'hello',
+        mentionOpenIds: ['ou_alice', 'ou_bob', 'ou_alice'],
+      }, exactCtx);
+      assert.equal(r.ok, true);
+      assert.deepEqual(recipients, ['ou_alice', 'ou_bob']);
+    });
+
+    it('send_dm: retains fuzzy name resolution when no structured ID exists', async () => {
+      let recipient: string | null = null;
+      const client = {
+        ...fakeClient,
+        sendDm: async (openId: string) => {
+          recipient = openId;
+          return { messageId: 'dm-1' };
+        },
+      };
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'hello',
+        recipientName: 'Alice',
+      }, ctx);
+      assert.equal(r.ok, true);
+      assert.equal(recipient, 'resolved:Alice');
     });
 
     it('list: ok with data array', async () => {

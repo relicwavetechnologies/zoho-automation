@@ -31,6 +31,25 @@ describe('Lark system skill provisioning', () => {
     }
   });
 
+  it('keeps user-scoped Lark skills on backend-owned connection selection', () => {
+    const userScopedTools = new Set([
+      'larkBase',
+      'larkCalendar',
+      'larkDoc',
+      'larkMeeting',
+      'larkMessaging',
+      'larkTask',
+    ]);
+    const userScopedSkills = LARK_SYSTEM_SKILLS.filter((skill) =>
+      skill.toolIds.some((toolId) => userScopedTools.has(toolId)));
+
+    for (const skill of userScopedSkills) {
+      assert.match(skill.markdown, /Otherwise omit `connectionId`/);
+      assert.match(skill.markdown, /backend selects an account only when exactly one accessible account qualifies/);
+      assert.doesNotMatch(skill.markdown, /List accessible connections|pass its `connectionId`|include its `connectionId` on every action/);
+    }
+  });
+
   it('defines durable company-person aliases for Lark Contacts', () => {
     const contacts = LARK_SYSTEM_SKILLS.find((skill) => skill.slug === 'lark-contacts');
     assert(contacts);

@@ -35,6 +35,8 @@ export interface AdapterContext {
   chatId?:       string;
   /** Live progress callback — tool updates flow to the user's status bubble. */
   onProgress?:   ((message: string) => void) | undefined;
+  /** Parent run cancellation propagated into governed tool execution. */
+  abortSignal?:  AbortSignal;
 }
 
 export function toAISdkTool(
@@ -47,6 +49,7 @@ export function toAISdkTool(
     correlationId: t.id,
     logger:        adapterCtx.logger.child({ toolId: t.id }),
     clock:         adapterCtx.clock,
+    ...(adapterCtx.abortSignal ? { abortSignal: adapterCtx.abortSignal } : {}),
     ...(adapterCtx.onProgress ? { onProgress: adapterCtx.onProgress } : {}),
   };
 
@@ -58,6 +61,10 @@ export function toAISdkTool(
     description,
     inputSchema: t.argsSchema as never,
     execute: async (args: unknown): Promise<string> => {
+      if (adapterCtx.abortSignal?.aborted) {
+        return 'error: Tool execution was cancelled because the parent run ended.';
+      }
+
       // ── Permission check ───────────────────────────────────────────────
       const permCheck = t.permissionCheck(args, adapterCtx.perm);
       if (!permCheck.ok) {
@@ -116,6 +123,9 @@ export function toAISdkTool(
       }
 
       // ── Execute ────────────────────────────────────────────────────────
+      if (adapterCtx.abortSignal?.aborted) {
+        return 'error: Tool execution was cancelled because the parent run ended.';
+      }
       const result = await t.execute(args, ctx);
       if (!result.ok) {
         adapterCtx.logger.warn('ai_sdk_adapter.tool_error', {

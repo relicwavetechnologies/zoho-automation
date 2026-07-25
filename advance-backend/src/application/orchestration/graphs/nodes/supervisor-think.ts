@@ -29,13 +29,14 @@ import { redModelSelection } from '../../../../shared/model-selection-log';
 import { buildToolFinishedPayload, isErrorOutput } from '../../agent-runners/tool-trace';
 import { enforceContextBudget } from '../../engine/context-budget-enforcer';
 import { getToolLabels } from '../../agents/tool-labels';
+import { LARK_MODEL_ID } from '../../../proxy/lark-inference.service';
 
 // Must be longer than DYNAMIC_AGENT_TIMEOUT_MS (300s) + buffer for retries.
 // A failed agent + retry can take 300s+300s; supervisor must outlast that.
 const SUPERVISOR_TIMEOUT_MS = 660_000;
 
 const isPinnedLarkModel = (model: LanguageModel): boolean =>
-  typeof model === 'object' && model !== null && 'modelId' in model && model.modelId === 'deepseek-v4-flash';
+  typeof model === 'object' && model !== null && 'modelId' in model && model.modelId === LARK_MODEL_ID;
 
 export interface SupervisorThinkDeps {
   readonly model: LanguageModel;
@@ -327,7 +328,7 @@ export async function supervisorThink(
 
     const larkPinned = state.runContext.channel === 'lark' && isPinnedLarkModel(deps.model);
     const selectedProvider = larkPinned ? 'deepseek' : (rootAgent.provider ?? deps.defaultModel?.provider ?? 'default');
-    const selectedModelId = larkPinned ? 'deepseek-v4-flash' : (rootAgent.modelId ?? deps.defaultModel?.modelId ?? 'default');
+    const selectedModelId = larkPinned ? LARK_MODEL_ID : (rootAgent.modelId ?? deps.defaultModel?.modelId ?? 'default');
     const modelSource = larkPinned ? 'lark_channel_pin' : (rootAgent.provider && rootAgent.modelId && deps.resolveModel ? 'agent_override' : 'company_default');
     deps.logger.warn('ai.model.selected', {
       provider: selectedProvider,
@@ -423,25 +424,24 @@ async function runSupervisorStream(input: {
   const toolCalls: string[] = [];
   const toolResults: Array<{ toolName: string; output: string }> = [];
   const toolTimers = new Map<string, number>();
-  let text = '';
+  let finalStepText = '';
+  let stepText = '';
+  let stepHasToolCall = false;
   let statusHandle: Awaited<ReturnType<StatusChannel['sendStatus']>> = null;
-  // Gating for streaming the user-facing reply text:
-  //   - text-deltas BEFORE any tool call are direct-reply (forward).
-  //   - text-deltas AFTER a tool-result are synthesis (forward).
-  //   - text-deltas BETWEEN tools (right after tool-call, before tool-result) are
-  //     reasoning toward the next tool; we capture them in the activity stream via
-  //     thinking events but must NOT echo them into message.content.
-  let lastNonTextChunkWasResult = false;
   for await (const chunk of result.fullStream) {
+    if (chunk.type === 'start-step') {
+      stepText = '';
+      stepHasToolCall = false;
+    }
     if (chunk.type === 'error') {
       const message = chunk.error instanceof Error ? chunk.error.message : String(chunk.error);
       input.logger?.error('supervisor.stream.error', { error: message, toolsSoFar: toolCalls });
       throw chunk.error instanceof Error ? chunk.error : new Error(message);
     }
     if (chunk.type === 'tool-call') {
+      stepHasToolCall = true;
       toolCalls.push(chunk.toolName);
       toolTimers.set(chunk.toolCallId, Date.now());
-      lastNonTextChunkWasResult = false;
       input.tracer?.emit({
         phase: 'execute', eventType: 'tool_call_started',
         actorType: 'supervisor', actorKey: chunk.toolName,
@@ -467,7 +467,6 @@ async function runSupervisorStream(input: {
       }
     }
     if (chunk.type === 'tool-result') {
-      lastNonTextChunkWasResult = true;
       const output = String(chunk.output);
       const isError = isErrorOutput(output);
       const startMs = toolTimers.get(chunk.toolCallId);
@@ -503,11 +502,7 @@ async function runSupervisorStream(input: {
       }
     }
     if (chunk.type === 'text-delta') {
-      const isUserFacing = toolCalls.length === 0 || lastNonTextChunkWasResult;
-      if (isUserFacing) {
-        text += chunk.text;
-        input.statusChannel?.emitTextDelta?.(chunk.text);
-      }
+      stepText += chunk.text;
       if (input.aggregator && toolCalls.length > 0) {
         input.aggregator.setSynthesizing();
       }
@@ -521,7 +516,11 @@ async function runSupervisorStream(input: {
         });
       }
     }
+    if (chunk.type === 'finish-step' && !stepHasToolCall && stepText.trim()) {
+      finalStepText = stepText;
+    }
   }
+  const text = finalStepText;
 
   const agentResults = toolResults
     .filter(r => r.toolName.startsWith('agent_') && r.output && !r.output.startsWith('error:'))

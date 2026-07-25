@@ -6,8 +6,12 @@ import { LarkBaseClient } from '../../src/infrastructure/channels/lark/clients/l
 import { LarkCalendarClient } from '../../src/infrastructure/channels/lark/clients/lark-calendar.client';
 import { LarkMeetingClient } from '../../src/infrastructure/channels/lark/clients/lark-meeting.client';
 import { LarkDocClient } from '../../src/infrastructure/channels/lark/clients/lark-doc.client';
-import { LarkToolMessagingClient } from '../../src/infrastructure/channels/lark/clients/lark-messaging.client';
+import {
+  LarkMessagingClient,
+  LarkToolMessagingClient,
+} from '../../src/infrastructure/channels/lark/clients/lark-messaging.client';
 import { LarkTaskClient } from '../../src/infrastructure/channels/lark/clients/lark-task.client';
+import type { Logger } from '../../src/shared/logger';
 
 type SdkRequest = { method: string; url: string; params?: unknown; data?: unknown };
 
@@ -23,8 +27,27 @@ function sdkStub(respond: (request: SdkRequest) => unknown) {
 }
 
 const deps = (sdkClient: Pick<Client, 'request'>) => ({ appId: 'app', appSecret: 'secret', sdkClient });
+const noopLogger: Logger = {
+  info: () => {}, warn: () => {}, error: () => {}, debug: () => {},
+  child: () => noopLogger,
+};
 
 describe('Lark family clients through the official SDK boundary', () => {
+  it('resolves the installed bot identity through the documented bot endpoint', async () => {
+    const { sdkClient, requests } = sdkStub(() => ({
+      bot: { open_id: 'ou_bot', bot_name: 'Divo' },
+    }));
+    const client = new LarkMessagingClient({
+      appId: 'app',
+      appSecret: 'secret',
+      logger: noopLogger,
+      sdkClient,
+    });
+
+    assert.deepEqual(await client.getBotIdentity(), { openId: 'ou_bot', name: 'Divo' });
+    assert.deepEqual(requests[0], { method: 'GET', url: '/open-apis/bot/v3/info' });
+  });
+
   it('maps task records while preserving the documented SDK request', async () => {
     const { sdkClient, requests } = sdkStub(() => ({ task: { guid: 'task-1', summary: 'Ship SDK', completed: true } }));
     const task = await new LarkTaskClient(deps(sdkClient)).getTask('task-1');

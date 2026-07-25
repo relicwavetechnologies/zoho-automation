@@ -40,6 +40,26 @@ const DEPT_ID     = 'dept-finance';
 const CHAT_ID     = 'oc_test_chat';
 const TOOL_ID     = asToolId('googleGmail');
 
+function makeManagerActor(overrides: Record<string, string> = {}) {
+  return {
+    tenantKey: 'tenant-1',
+    openId: MANAGER_OID,
+    userId: String(MANAGER),
+    companyId: String(COMPANY_ID),
+    displayName: 'Abhishek Verma',
+    ...overrides,
+  };
+}
+
+function makeManagerMetadata(extra: Record<string, unknown> = {}) {
+  return {
+    resolvedManagerOpenId: MANAGER_OID,
+    resolvedManagerUserId: String(MANAGER),
+    tenantKey: 'tenant-1',
+    ...extra,
+  };
+}
+
 function makeLogger(): Logger {
   return {
     debug: () => {},
@@ -99,6 +119,7 @@ function makeApprovalRepo() {
       counter++;
       const row: RuntimeApprovalRow = {
         id:                  `approval-${counter}`,
+        companyId:           input.companyId,
         conversationId:      `conv-${counter}`,
         runId:               `run-${counter}`,
         toolId:              input.toolId,
@@ -1274,11 +1295,10 @@ describe('LarkApprovalCardHandler', () => {
       kind: 'tool_action',
       summary: 'Send email to test@example.com',
       payloadJson: {},
-      metadataJson: {
+      metadataJson: makeManagerMetadata({
         approvalOrigin: 'lark',
-        resolvedManagerOpenId: MANAGER_OID,
         requesterId: String(REQUESTER),
-      },
+      }),
       channel: 'lark',
       requestedBy: String(REQUESTER),
       idempotencyKey: 'idem-dispatching-approve',
@@ -1295,7 +1315,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: MANAGER_OID, name: 'Abhishek Verma' },
-    });
+    }, makeManagerActor());
 
     assert.equal(result.handled, true);
     assert.equal((result.responseBody as any).toast.type, 'success');
@@ -1318,12 +1338,11 @@ describe('LarkApprovalCardHandler', () => {
       kind: 'tool_action',
       summary: 'Send governed email',
       payloadJson: {},
-      metadataJson: {
+      metadataJson: makeManagerMetadata({
         approvalOrigin: 'gateway',
         chatId: 'gateway:session-1',
-        resolvedManagerOpenId: MANAGER_OID,
         requesterId: String(REQUESTER),
-      },
+      }),
       channel: 'lark',
       requestedBy: String(REQUESTER),
       idempotencyKey: 'idem-dispatching-reject',
@@ -1340,7 +1359,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: MANAGER_OID, name: 'Abhishek Verma' },
-    });
+    }, makeManagerActor());
 
     assert.equal(result.handled, true);
     assert.equal((result.responseBody as any).toast.type, 'success');
@@ -1371,7 +1390,7 @@ describe('LarkApprovalCardHandler', () => {
       kind: 'tool_action',
       summary: 'Send email to test@example.com',
       payloadJson: {},
-      metadataJson: { resolvedManagerOpenId: MANAGER_OID, requesterId: String(REQUESTER) },
+      metadataJson: makeManagerMetadata({ requesterId: String(REQUESTER) }),
       channel: 'lark',
       requestedBy: String(REQUESTER),
       idempotencyKey: 'idem-1',
@@ -1389,7 +1408,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: MANAGER_OID, name: 'Abhishek Verma' },
-    });
+    }, makeManagerActor());
 
     assert.equal(result.handled, true);
     assert.ok(result.responseBody);
@@ -1423,7 +1442,7 @@ describe('LarkApprovalCardHandler', () => {
       kind: 'tool_action',
       summary: 'test',
       payloadJson: {},
-      metadataJson: { resolvedManagerOpenId: MANAGER_OID },
+      metadataJson: makeManagerMetadata(),
       channel: 'lark',
       idempotencyKey: 'idem-2',
       expiresAt: new Date(Date.now() + 86400_000),
@@ -1437,7 +1456,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: 'ou_unauthorized_person' },
-    });
+    }, makeManagerActor({ openId: 'ou_unauthorized_person' }));
 
     assert.equal(result.handled, true);
     assert.equal((result.responseBody as any).toast.type, 'error');
@@ -1446,6 +1465,48 @@ describe('LarkApprovalCardHandler', () => {
     // Approval NOT resolved
     const approval = repo.store.get('approval-1')!;
     assert.equal(approval.status, 'pending');
+  });
+
+  it('rejects actor identities from another user, company, or tenant', async () => {
+    const mismatches = [
+      { userId: 'user-someone-else' },
+      { companyId: 'comp-other' },
+      { tenantKey: 'tenant-other' },
+    ];
+
+    for (const mismatch of mismatches) {
+      const repo = makeApprovalRepo();
+      await repo.create({
+        chatId: CHAT_ID,
+        companyId: String(COMPANY_ID),
+        toolId: String(TOOL_ID),
+        actionGroup: 'send',
+        kind: 'tool_action',
+        summary: 'test',
+        payloadJson: {},
+        metadataJson: makeManagerMetadata(),
+        channel: 'lark',
+        idempotencyKey: `idem-scope-${Object.keys(mismatch)[0]}`,
+        expiresAt: new Date(Date.now() + 86400_000),
+      });
+      const handler = new LarkApprovalCardHandler(
+        repo as any,
+        { resume: async () => {} } as any,
+        makeLarkAdapter() as any,
+        makeLogger(),
+      );
+
+      const result = await handler.handle({
+        action: {
+          value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
+          tag: 'button',
+        },
+        operator: { open_id: MANAGER_OID },
+      }, makeManagerActor(mismatch));
+
+      assert.equal((result.responseBody as any).toast.type, 'error');
+      assert.equal(repo.store.get('approval-1')!.status, 'pending');
+    }
   });
 
   it('rejects approval clicks when manager metadata is missing', async () => {
@@ -1475,7 +1536,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: MANAGER_OID },
-    });
+    }, makeManagerActor());
 
     assert.equal(result.handled, true);
     assert.equal((result.responseBody as any).toast.type, 'error');
@@ -1496,7 +1557,7 @@ describe('LarkApprovalCardHandler', () => {
       kind: 'tool_action',
       summary: 'test',
       payloadJson: {},
-      metadataJson: { resolvedManagerOpenId: MANAGER_OID },
+      metadataJson: makeManagerMetadata(),
       channel: 'lark',
       idempotencyKey: 'idem-expired-click',
       expiresAt: new Date(Date.now() - 1_000),
@@ -1510,7 +1571,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: MANAGER_OID },
-    });
+    }, makeManagerActor());
 
     assert.equal(result.handled, true);
     assert.equal((result.responseBody as any).toast.type, 'error');
@@ -1531,7 +1592,7 @@ describe('LarkApprovalCardHandler', () => {
       kind: 'tool_action',
       summary: 'test',
       payloadJson: {},
-      metadataJson: { resolvedManagerOpenId: MANAGER_OID },
+      metadataJson: makeManagerMetadata(),
       channel: 'lark',
       idempotencyKey: 'idem-3',
       expiresAt: new Date(Date.now() + 86400_000),
@@ -1548,7 +1609,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: MANAGER_OID },
-    });
+    }, makeManagerActor());
 
     assert.equal(result.handled, true);
     assert.equal((result.responseBody as any).toast.type, 'info');
@@ -1569,7 +1630,7 @@ describe('LarkApprovalCardHandler', () => {
       kind: 'tool_action',
       summary: 'test',
       payloadJson: {},
-      metadataJson: { resolvedManagerOpenId: MANAGER_OID },
+      metadataJson: makeManagerMetadata(),
       channel: 'lark',
       idempotencyKey: 'idem-4',
       expiresAt: new Date(Date.now() + 86400_000),
@@ -1584,7 +1645,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: MANAGER_OID, name: 'Abhishek' },
-    });
+    }, makeManagerActor({ displayName: 'Abhishek' }));
 
     assert.equal(result.handled, true);
 
@@ -1610,12 +1671,11 @@ describe('LarkApprovalCardHandler', () => {
       kind: 'tool_action',
       summary: 'test gateway approval',
       payloadJson: {},
-      metadataJson: {
+      metadataJson: makeManagerMetadata({
         approvalOrigin: 'gateway',
         chatId: 'gateway:sess-test',
-        resolvedManagerOpenId: MANAGER_OID,
         requesterId: String(REQUESTER),
-      },
+      }),
       channel: 'lark',
       requestedBy: String(REQUESTER),
       idempotencyKey: 'idem-gateway',
@@ -1631,7 +1691,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: MANAGER_OID, name: 'Abhishek' },
-    });
+    }, makeManagerActor({ displayName: 'Abhishek' }));
 
     assert.equal(result.handled, true);
     assert.match((result.responseBody as any).toast.content, /retry the exact desktop action/i);
@@ -1655,7 +1715,7 @@ describe('LarkApprovalCardHandler', () => {
       kind: 'tool_action',
       summary: 'test',
       payloadJson: {},
-      metadataJson: { resolvedManagerOpenId: MANAGER_OID },
+      metadataJson: makeManagerMetadata(),
       channel: 'lark',
       idempotencyKey: 'idem-5',
       expiresAt: new Date(Date.now() + 86400_000),
@@ -1671,7 +1731,7 @@ describe('LarkApprovalCardHandler', () => {
     const result = await handler.handle({
       action: { value: JSON.parse(doubleEncoded), tag: 'button' },
       operator: { open_id: MANAGER_OID },
-    });
+    }, makeManagerActor());
 
     assert.equal(result.handled, true);
     assert.equal(repo.store.get('approval-1')!.status, 'approved');
@@ -1689,7 +1749,7 @@ describe('LarkApprovalCardHandler', () => {
         tag: 'button',
       },
       operator: { open_id: 'ou_anyone' },
-    });
+    }, makeManagerActor({ openId: 'ou_anyone' }));
 
     assert.equal(result.handled, false);
   });

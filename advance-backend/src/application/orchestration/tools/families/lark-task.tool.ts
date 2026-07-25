@@ -56,8 +56,8 @@ const LarkTaskArgsSchema = z.object({
   tasklistId: z.string().optional(),
   // subtask ops
   parentTaskId: z.string().optional(),
-  /** Exact Divo-managed Lark connection for this governed action. */
-  connectionId: z.string().uuid(),
+  /** Exact Divo-managed Lark connection when more than one is accessible. */
+  connectionId: z.string().uuid().optional(),
 });
 type LarkTaskArgs = z.infer<typeof LarkTaskArgsSchema>;
 
@@ -156,6 +156,7 @@ export const createLarkTaskTool = (deps: {
 - assigneeNames: Array of human-readable names, e.g. ["Anish", "Shivam sir"]. Resolved automatically.
 - notes: Task description/notes (optional).
 - limit: Max tasks to return for list/listMine/listOpenMine (default 50).
+- connectionId: Exact UUID when supplied. Omit it to auto-select one accessible account or receive safe choices when several are available.
   `.trim(),
 
   permissionCheck(args: LarkTaskArgs, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -176,7 +177,7 @@ export const createLarkTaskTool = (deps: {
     let client = deps.client;
     try {
       const userConnection = await resolveLarkUserClient(deps, ctx, {
-        connectionId: args.connectionId,
+        ...(args.connectionId ? { connectionId: args.connectionId } : {}),
         minimumAccess: inferAction(args.op) === 'read' ? 'read_only' : 'read_write',
       });
       if (userConnection.status === 'choose_connection') {

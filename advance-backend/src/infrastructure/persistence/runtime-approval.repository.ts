@@ -6,6 +6,8 @@ import type { ToolActionGroup } from '../../domain/permissions/tool-action-group
 
 export interface RuntimeApprovalRow {
   id:                  string;
+  /** Authoritative company from the owning RuntimeConversation, when loaded by ID. */
+  companyId?:           string;
   conversationId:      string;
   runId:               string;
   toolId:              string;
@@ -174,8 +176,20 @@ export class RuntimeApprovalRepository {
 
   async findById(id: string): Promise<Result<RuntimeApprovalRow | null, Error>> {
     try {
-      const row = await this.prisma.runtimeApproval.findUnique({ where: { id } });
-      return ok(row as unknown as RuntimeApprovalRow | null);
+      const row = await this.prisma.runtimeApproval.findUnique({
+        where: { id },
+        include: {
+          conversation: {
+            select: { companyId: true },
+          },
+        },
+      });
+      if (!row) return ok(null);
+      const { conversation, ...approval } = row;
+      return ok({
+        ...approval,
+        companyId: conversation.companyId,
+      } as unknown as RuntimeApprovalRow);
     } catch (e) {
       return err(wrapInfra('prisma', 'runtime-approval.findById', e));
     }
@@ -221,13 +235,26 @@ export class RuntimeApprovalRepository {
           },
           data: { status: 'executing' },
         }),
-        this.prisma.runtimeApproval.findMany({ where: { id } }),
+        this.prisma.runtimeApproval.findMany({
+          where: { id },
+          include: {
+            conversation: {
+              select: { companyId: true },
+            },
+          },
+        }),
       ]);
 
       if (count.count === 0) {
         return ok(null);
       }
-      return ok((rows[0] ?? null) as unknown as RuntimeApprovalRow | null);
+      const row = rows[0];
+      if (!row) return ok(null);
+      const { conversation, ...approval } = row;
+      return ok({
+        ...approval,
+        companyId: conversation.companyId,
+      } as unknown as RuntimeApprovalRow);
     } catch (e) {
       return err(wrapInfra('prisma', 'runtime-approval.claimApprovedExecution', e));
     }

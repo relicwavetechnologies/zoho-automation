@@ -506,6 +506,7 @@ export class SupervisorAgent {
           clock,
           ...(approvalGate ? { approvalGate } : {}),
           chatId: chatId ?? String(channelId),
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         }, allowedToolIds, this.deps.auditService ? (event) => this.deps.auditService!.record({
           actorId: String(runContext.userId),
           companyId: String(runContext.companyId),

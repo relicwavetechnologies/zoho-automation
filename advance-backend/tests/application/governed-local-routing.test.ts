@@ -10,6 +10,11 @@ import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from '../../src/application/skills/goo
 import { LARK_SYSTEM_SKILLS } from '../../src/application/skills/lark-system-skills';
 import { DIVO_LOCAL_PYTHON_SYSTEM_SKILL } from '../../src/application/skills/divo-local-python-system-skill';
 import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from '../../src/application/skills/divo-presentations-system-skill';
+import {
+  financeOpsCoreSkill,
+  zohoBillNotifyAccountsSkill,
+  zohoBooksBillSkill,
+} from '../../src/application/skills/zoho.skill';
 
 const permission = {
   allowedToolIds: new Set(['googleGmail', 'googleSheets']),
@@ -72,5 +77,12 @@ describe('governed local-workflow instruction contract', () => {
     assert.match(googleSkill.instructions, /connections\.list once only when the bootstrap explicitly says/i);
     assert.doesNotMatch(googleSkill.instructions, /Before any op="call", use connections\.list/i);
     assert.doesNotMatch(googleSkill.instructions, /connectionId may be omitted/i);
+  });
+
+  it('keeps Zoho skills aligned with backend-owned connection selection', () => {
+    for (const skill of [financeOpsCoreSkill, zohoBooksBillSkill, zohoBillNotifyAccountsSkill]) {
+      assert.match(skill.instructions, /Otherwise omit it: the backend selects an account only when exactly one accessible account qualifies/);
+      assert.doesNotMatch(skill.instructions, /Before every Zoho action, use connections\.list|Divo never auto-selects a Zoho account/);
+    }
   });
 });

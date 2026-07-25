@@ -13,13 +13,9 @@ import { Client as LarkSdkClient, Domain, LoggerLevel } from '@larksuiteoapi/nod
 import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
 import type { IngestionQueue } from '../../../application/ingestion/ingestion.queue';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
+import type { ReferencedMessage } from '../../../domain/channel/incoming-message';
 
-export interface ParentMessageResult {
-  readonly text: string;
-  readonly senderOpenId: string;
-  readonly senderName?: string;
-  readonly imageUrls: readonly string[];
-}
+export type ParentMessageResult = ReferencedMessage;
 
 export async function fetchParentMessage(input: {
   parentMessageId: string;
@@ -31,12 +27,14 @@ export async function fetchParentMessage(input: {
   companyId: string;
   userId: string;
   chatId: string;
-}): Promise<ParentMessageResult | null> {
+  tenantKey: string;
+  sdkClient?: LarkSdkClient;
+}): Promise<ParentMessageResult> {
   const { parentMessageId, env, logger, companyId, chatId } = input;
   const log = logger.child({ component: 'parent-message', parentMessageId });
 
   try {
-    const client = new LarkSdkClient({
+    const client = input.sdkClient ?? new LarkSdkClient({
       appId: env.LARK_APP_ID,
       appSecret: env.LARK_APP_SECRET,
       domain: env.LARK_API_BASE_URL?.replace(/\/$/, '') || Domain.Lark,
@@ -45,17 +43,26 @@ export async function fetchParentMessage(input: {
     });
 
     const msg = await fetchLarkMessage(parentMessageId, client, log);
-    if (!msg) return null;
+    if (msg.status !== 'available') {
+      return unavailableParent(parentMessageId, msg.status);
+    }
+    if (msg.chatId !== chatId) {
+      log.warn('parent_message.chat_mismatch', { expectedChatId: chatId, actualChatId: msg.chatId });
+      return unavailableParent(parentMessageId, 'forbidden');
+    }
 
     const { msgType, content, senderOpenId } = msg;
     let text = '';
     const imageUrls: string[] = [];
+    let omittedImageCount = 0;
 
     if (msgType === 'text') {
       text = (content['text'] as string) ?? '';
     } else if (msgType === 'post') {
       text = extractPostText(content);
-      for (const key of extractPostImageKeys(content)) {
+      const imageKeys = extractPostImageKeys(content);
+      omittedImageCount = Math.max(0, imageKeys.length - MAX_PARENT_IMAGE_COUNT);
+      for (const key of imageKeys.slice(0, MAX_PARENT_IMAGE_COUNT)) {
         const url = await downloadAndUploadParentImage({
           messageId: parentMessageId, imageKey: key, client,
           ...(input.cloudinaryAdapter ? { cloudinaryAdapter: input.cloudinaryAdapter } : {}),
@@ -79,13 +86,18 @@ export async function fetchParentMessage(input: {
       text = `[File: ${(content['file_name'] as string) ?? 'attachment'}]`;
     } else if (msgType === 'media') {
       text = '[Media/Video]';
+    } else {
+      return unavailableParent(parentMessageId, 'unsupported', msgType);
     }
 
     let senderName: string | undefined;
     if (senderOpenId) {
       try {
-        const resolved = await input.channelIdentityRepo.resolveByLarkOpenId(senderOpenId);
-        if (resolved.ok && resolved.value) {
+        const resolved = await input.channelIdentityRepo.resolveByLarkTenantIdentity(
+          senderOpenId,
+          input.tenantKey,
+        );
+        if (resolved.ok && resolved.value?.companyId === companyId) {
           senderName = resolved.value.displayName ?? resolved.value.email ?? undefined;
         }
       } catch { /* non-fatal */ }
@@ -97,52 +109,98 @@ export async function fetchParentMessage(input: {
     });
 
     return {
+      messageId: parentMessageId,
+      status: 'available',
+      messageType: msgType,
       text: text.trim(),
-      senderOpenId,
+      senderExternalId: senderOpenId,
       ...(senderName ? { senderName } : {}),
       imageUrls,
+      ...(omittedImageCount > 0 ? { omittedImageCount } : {}),
     };
   } catch (e) {
     log.warn('parent_message.error', { error: e instanceof Error ? e.message : String(e) });
-    return null;
+    return unavailableParent(parentMessageId, 'unavailable');
   }
 }
 
 export function buildParentContextPrefix(ref: ParentMessageResult): string {
+  if (ref.status !== 'available') {
+    const reason = {
+      deleted: 'was deleted or recalled',
+      invisible: 'is not visible to Divo',
+      forbidden: 'cannot be accessed from this conversation',
+      unsupported: `uses an unsupported message type${ref.messageType ? ` (${ref.messageType})` : ''}`,
+      unavailable: 'could not be loaded because Lark is temporarily unavailable',
+    }[ref.status];
+    return `[Referenced message ${reason}. Its contents are unavailable; do not infer or guess them.]`;
+  }
   const sender = ref.senderName ?? 'a colleague';
-  if (ref.text) return `[Referenced message from ${sender}: "${ref.text.slice(0, 2000)}"]`;
-  if (ref.imageUrls.length > 0) return `[Replying to ${sender}'s message (image attached)]`;
-  return '';
+  const omitted = ref.omittedImageCount
+    ? ` ${ref.omittedImageCount} additional image${ref.omittedImageCount === 1 ? ' was' : 's were'} omitted.`
+    : '';
+  if (ref.text) return `[Referenced message from ${sender}: "${ref.text.slice(0, 2000)}"${omitted}]`;
+  if (ref.imageUrls.length > 0) return `[Replying to ${sender}'s message (image attached).${omitted}]`;
+  return '[Referenced message is available but contains no readable text or image.]';
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
+
+type ParentFetchResult =
+  | { status: 'available'; msgType: string; content: Record<string, unknown>; senderOpenId: string; chatId: string }
+  | { status: 'deleted' | 'invisible' | 'forbidden' | 'unavailable' };
 
 async function fetchLarkMessage(
   messageId: string,
   client: LarkSdkClient,
   log: Logger,
-): Promise<{ msgType: string; content: Record<string, unknown>; senderOpenId: string } | null> {
+): Promise<ParentFetchResult> {
   try {
     const response = await client.im.v1.message.get({ path: { message_id: messageId } });
     if (response.code !== undefined && response.code !== 0) {
       log.warn('parent_message.fetch_failed', { code: response.code, message: response.msg });
-      return null;
+      return { status: classifyParentFetchFailure(response.code) };
     }
     const msg = response.data?.items?.[0];
-    if (!msg) return null;
+    if (!msg) return { status: 'invisible' };
 
     const msgType = msg.msg_type ?? 'text';
     const senderOpenId = msg.sender?.id ?? '';
+    const chatId = msg.chat_id ?? '';
     const contentStr = msg.body?.content ?? '{}';
 
     let content: Record<string, unknown> = {};
     try { content = JSON.parse(contentStr) as Record<string, unknown>; } catch { /* empty */ }
 
-    return { msgType, content, senderOpenId };
+    return { status: 'available', msgType, content, senderOpenId, chatId };
   } catch (e) {
     log.warn('parent_message.fetch_error', { error: String(e) });
-    return null;
+    return { status: 'unavailable' };
   }
+}
+
+export function classifyParentFetchFailure(
+  code: number,
+): 'deleted' | 'invisible' | 'forbidden' | 'unavailable' {
+  if (code === 230110) return 'deleted';
+  if (code === 230073 || code === 230002 || code === 230030) return 'invisible';
+  if (code === 230027 || code === 99991672 || code === 99991676) return 'forbidden';
+  return 'unavailable';
+}
+
+function unavailableParent(
+  messageId: string,
+  status: Exclude<ParentMessageResult['status'], 'available'>,
+  messageType?: string,
+): ParentMessageResult {
+  return {
+    messageId,
+    status,
+    ...(messageType ? { messageType } : {}),
+    text: '',
+    senderExternalId: '',
+    imageUrls: [],
+  };
 }
 
 function extractPostText(content: Record<string, unknown>): string {
@@ -185,7 +243,9 @@ function extractPostImageKeys(content: Record<string, unknown>): string[] {
   return keys;
 }
 
-const MAX_PARENT_IMAGE_BUFFER = 1_024 * 1_024;
+const MAX_PARENT_IMAGE_COUNT = 4;
+const MAX_PARENT_IMAGE_BYTES = 10 * 1_024 * 1_024;
+const MAX_PARENT_IMAGE_DATA_URL_BYTES = 1_024 * 1_024;
 
 async function downloadAndUploadParentImage(input: {
   messageId: string;
@@ -206,8 +266,19 @@ async function downloadAndUploadParentImage(input: {
       params: { type: 'image' },
     });
     const chunks: Buffer[] = [];
+    let totalBytes = 0;
     for await (const chunk of resource.getReadableStream()) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += bufferChunk.length;
+      if (totalBytes > MAX_PARENT_IMAGE_BYTES) {
+        log.warn('parent_message.image_too_large', {
+          imageKey,
+          sizeBytes: totalBytes,
+          maxBytes: MAX_PARENT_IMAGE_BYTES,
+        });
+        return null;
+      }
+      chunks.push(bufferChunk);
     }
     const buffer = Buffer.concat(chunks);
     if (buffer.length === 0) return null;
@@ -246,7 +317,7 @@ async function downloadAndUploadParentImage(input: {
       }
     }
 
-    if (buffer.length <= MAX_PARENT_IMAGE_BUFFER) {
+    if (buffer.length <= MAX_PARENT_IMAGE_DATA_URL_BYTES) {
       return `data:image/png;base64,${buffer.toString('base64')}`;
     }
 

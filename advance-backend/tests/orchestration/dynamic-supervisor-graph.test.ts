@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
+import { simulateStreamingMiddleware, wrapLanguageModel } from 'ai';
 import { ok } from '../../src/shared/result.ts';
 import { asToolId, asCompanyId, asUserId } from '../../src/shared/ids.ts';
 import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
@@ -304,5 +305,77 @@ describe('dynamic supervisor graph', () => {
     });
 
     assert.ok(toolNames.includes('rememberFact'));
+  });
+
+  it('returns only the terminal no-tool step as the user-facing reply', async () => {
+    const root = makeAgent({
+      id: 'root',
+      slug: 'divo-supervisor',
+      isRootAgent: true,
+    });
+    let call = 0;
+    const model = wrapLanguageModel({
+      model: {
+        provider: 'mock',
+        modelId: 'mock-multi-step',
+        specificationVersion: 'v3',
+        supportedUrls: {},
+        doGenerate: async () => {
+          call++;
+          return call === 1
+            ? {
+              content: [
+                { type: 'text' as const, text: 'Let me inspect the available data first.' },
+                {
+                  type: 'tool-call' as const,
+                  toolCallId: 'call-1',
+                  toolName: 'contextSearch',
+                  input: {},
+                },
+              ],
+              finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+              usage: {
+                inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 5, text: 5, reasoning: 0 },
+              },
+              warnings: [],
+            }
+            : {
+              content: [{ type: 'text' as const, text: 'Here is the verified final answer.' }],
+              finishReason: { unified: 'stop' as const, raw: 'stop' },
+              usage: {
+                inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 5, text: 5, reasoning: 0 },
+              },
+              warnings: [],
+            };
+        },
+        doStream: async () => { throw new Error('wrapped by simulateStreamingMiddleware'); },
+      } as any,
+      middleware: simulateStreamingMiddleware(),
+    });
+    const graph = buildDynamicSupervisorGraph({
+      model,
+      agentCatalogCache: {
+        getForCompany: async () => [root],
+      } as any,
+      todoRepo: {} as any,
+      prisma: {} as any,
+      logger: noopLogger,
+      clock,
+    });
+
+    const output = await graph.invoke({
+      userMessage: 'check the data',
+      conversationHistory: [],
+      companyId: 'co-1',
+      perm,
+      runContext,
+      permittedTools: [makeTool('contextSearch')],
+      chatId: 'chat-1',
+    });
+
+    assert.equal(output.supervisorResult, 'Here is the verified final answer.');
+    assert.doesNotMatch(output.supervisorResult, /Let me inspect/);
   });
 });

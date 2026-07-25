@@ -1,6 +1,6 @@
 import type { Result } from '../../../shared/result';
-import { ok } from '../../../shared/result';
-import type { AppError } from '../../../shared/errors';
+import { err, ok } from '../../../shared/result';
+import { OrchestrationError, type AppError } from '../../../shared/errors';
 import type { Logger } from '../../../shared/logger';
 import type { Clock } from '../../../shared/clock';
 import type { IncomingMessage } from '../../../domain/channel/incoming-message';
@@ -64,6 +64,8 @@ export interface EngineInput {
   runContext: RunContext;
   conversation: ConversationHandle;
   channelAdapter: ChannelAdapter;
+  /** Cancels this run when its channel execution lane times out. */
+  abortSignal?: AbortSignal;
   /** When provided, non-read tool actions are routed through the approval gate. */
   approvalGate?: ApprovalGateService;
   /** Pre-seeded statusMessageId for resume flows (so same bubble is updated). */
@@ -117,11 +119,24 @@ export class OrchestrationEngine {
     });
 
     const abortController = new AbortController();
+    if (input.abortSignal?.aborted) {
+      abortController.abort(input.abortSignal.reason);
+    } else {
+      input.abortSignal?.addEventListener(
+        'abort',
+        () => abortController.abort(input.abortSignal?.reason),
+        { once: true },
+      );
+    }
     if ('registerAbortController' in channelAdapter) {
       const corrId = String(runContext.traceId ?? incoming.traceId);
-      (channelAdapter as any).registerAbortController(corrId, abortController);
+      (channelAdapter as any).registerAbortController(corrId, abortController, {
+        userId: String(runContext.userId),
+        companyId: String(runContext.companyId),
+      });
     }
 
+    try {
     log.info('engine.run.start', { userMessage: incoming.text.slice(0, 100) });
 
     debugRunStart({
@@ -163,7 +178,7 @@ export class OrchestrationEngine {
       }
     }
 
-    // Lark is intentionally pinned to DeepSeek V4 Flash. This per-run wrapper
+    // Lark is intentionally pinned to DeepSeek V4 Pro. This per-run wrapper
     // resolves backend-held credentials, enforces shared policy and records every
     // model call against the same ExecutionRun created above.
     const larkModel = runContext.channel === 'lark' && this.deps.larkInference
@@ -188,6 +203,7 @@ export class OrchestrationEngine {
     const permissionStartMs = this.deps.clock.nowMs();
     const permResult = await this.deps.permissions.resolve(permQuery);
     const permissionDurationMs = this.deps.clock.nowMs() - permissionStartMs;
+    abortController.signal.throwIfAborted();
     if (!permResult.ok) {
       log.warn('engine.permission.denied', {
         error: permResult.error.message,
@@ -286,6 +302,7 @@ export class OrchestrationEngine {
         format: 'text',
       };
       await statusPromise;
+      abortController.signal.throwIfAborted();
       await channelAdapter.sendFinalReply(conversation, noToolsReply);
       return ok({ finalReply: noToolsReply, toolsCalled: [] });
     }
@@ -315,6 +332,7 @@ export class OrchestrationEngine {
         : Promise.resolve(null),
       statusPromise,
     ]);
+    abortController.signal.throwIfAborted();
     const history = historyResult.ok
       ? historyResult.value
       : { turns: [], truncated: false, tokenEstimate: 0 };
@@ -335,16 +353,19 @@ export class OrchestrationEngine {
         history:     history.turns.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),
         model:       larkModel ?? this.deps.fastPathModel,
         log,
+        abortSignal: abortController.signal,
       });
 
       const fastReply: FinalReply = {
         kind: 'final', text: fastResult.text, format: 'text', branding,
       };
 
+      abortController.signal.throwIfAborted();
       // Sequential append — sequence ordering matters (user before assistant).
       await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
         role: 'user', content: incoming.text, timestamp: incoming.timestamp,
       }, conversationScope);
+      abortController.signal.throwIfAborted();
       await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
         role: 'assistant', content: fastResult.text,
         timestamp: this.deps.clock.now().toISOString(),
@@ -358,6 +379,7 @@ export class OrchestrationEngine {
         });
       }
 
+      abortController.signal.throwIfAborted();
       await channelAdapter.sendFinalReply(conversation, fastReply);
 
       const fpMs = this.deps.clock.nowMs() - runStartMs;
@@ -429,14 +451,18 @@ export class OrchestrationEngine {
 
     if (abortController.signal.aborted) {
       log.info('engine.run.interrupted', { durationMs: this.deps.clock.nowMs() - runStartMs });
+      if (input.abortSignal?.aborted) {
+        return err(new OrchestrationError({
+          stage: 'execute',
+          reason: 'canceled',
+          cause: input.abortSignal.reason,
+        }));
+      }
       tracer?.fail('interrupted', 'Run interrupted by user');
       const interruptReply: FinalReply = {
         kind: 'final', text: 'Run interrupted.', format: 'text', branding,
       };
       await channelAdapter.sendFinalReply(conversation, interruptReply);
-      if ('cleanupAbortController' in channelAdapter) {
-        (channelAdapter as any).cleanupAbortController(String(runContext.traceId ?? incoming.traceId));
-      }
       return ok({ finalReply: interruptReply, toolsCalled: [] });
     }
 
@@ -508,7 +534,10 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
             { role: 'user' as const, content: 'Present these results to me.' },
           ],
           temperature: 0.3,
-          abortSignal: AbortSignal.timeout(30_000),
+          abortSignal: AbortSignal.any([
+            AbortSignal.timeout(30_000),
+            abortController.signal,
+          ]),
         });
         if (synthesized.text.trim()) {
           presentedReply = { ...supervisorResult.value.finalReply, text: synthesized.text.trim() };
@@ -518,6 +547,8 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
         log.warn('engine.reply_useless.synthesis_failed', { error: String(e) });
       }
     }
+
+    abortController.signal.throwIfAborted();
 
     const executionTrace = isScheduledDelivery ? undefined : aggregator.getExecutionTrace();
     const finalReply: FinalReply = {
@@ -536,11 +567,13 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
       content:   incoming.text,
       timestamp: incoming.timestamp,
     }, conversationScope);
+    abortController.signal.throwIfAborted();
     await this.deps.history.appendTurn(incoming.chatId as unknown as ChatId, {
       role:      'assistant',
       content:   assistantHistoryContent,
       timestamp: this.deps.clock.now().toISOString(),
     }, conversationScope);
+    abortController.signal.throwIfAborted();
 
     // ── 6b. Background conversation summarization (DMs only) ─────────────
     if (
@@ -561,12 +594,17 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
       finalReply: finalReply.text,
       toolsCalled,
     });
+    abortController.signal.throwIfAborted();
     let deliveryResult = await channelAdapter.sendFinalReply(conversation, finalReply);
 
     // If delivery failed (card too large, Lark API error, etc.), condense
     // with LLM and retry. The user should see a clean card — never raw dumps
     // or error states.
-    if (!deliveryResult.ok) {
+    if (
+      !deliveryResult.ok
+      && deliveryResult.error.payload.reason !== 'partial_delivery'
+      && deliveryResult.error.payload.reason !== 'ambiguous_delivery'
+    ) {
       log.warn('engine.delivery.condensing', {
         originalLength: finalReply.text.length,
         correlationId: String(conversation.correlationId),
@@ -581,7 +619,10 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
             { role: 'user' as const, content: 'Rewrite this response more concisely.' },
           ],
           temperature: 0.3,
-          abortSignal: AbortSignal.timeout(30_000),
+          abortSignal: AbortSignal.any([
+            AbortSignal.timeout(30_000),
+            abortController.signal,
+          ]),
         });
         if (condensed.text.trim()) {
           const condensedReply: FinalReply = { ...finalReply, text: condensed.text.trim() };
@@ -594,18 +635,35 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
         log.warn('engine.delivery.condense_failed', { error: String(e) });
       }
 
-      if (!deliveryResult.ok) {
-        log.error('engine.delivery.failed', {
-          error: deliveryResult.error.message,
-          replyLength: finalReply.text.length,
-        });
-        tracer?.emit({
-          phase: 'complete', eventType: 'delivery_failed', actorType: 'engine',
-          title: 'Final reply delivery failed', status: 'error',
-          payload: { error: deliveryResult.error.message, replyLength: finalReply.text.length },
-        });
-      }
     }
+
+    if (!deliveryResult.ok) {
+      log.error('engine.delivery.failed', {
+        error: deliveryResult.error.message,
+        reason: deliveryResult.error.payload.reason,
+        replyLength: finalReply.text.length,
+      });
+      tracer?.emit({
+        phase: 'complete', eventType: 'delivery_failed', actorType: 'engine',
+        title: deliveryResult.error.payload.reason === 'partial_delivery'
+          ? 'Final reply was partially delivered'
+          : 'Final reply delivery failed',
+        status: 'error',
+        payload: {
+          error: deliveryResult.error.message,
+          reason: deliveryResult.error.payload.reason,
+          replyLength: finalReply.text.length,
+        },
+      });
+      return err(new OrchestrationError({
+        stage: 'compose',
+        reason: 'step_failed',
+        cause: deliveryResult.error,
+        message: deliveryResult.error.message,
+      }));
+    }
+
+    abortController.signal.throwIfAborted();
 
     // ── 8. Background memory extraction ───────────────────────────────────
     if (this.deps.mem0) {
@@ -661,11 +719,31 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
     });
     tracer?.complete(finalReply.text.slice(0, 500));
 
-    if ('cleanupAbortController' in channelAdapter) {
-      (channelAdapter as any).cleanupAbortController(String(runContext.traceId ?? incoming.traceId));
-    }
-
     return ok({ finalReply, toolsCalled });
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        log.info('engine.run.canceled', { durationMs: this.deps.clock.nowMs() - runStartMs });
+        if (!input.abortSignal?.aborted) {
+          const interruptReply: FinalReply = {
+            kind: 'final',
+            text: 'Run interrupted.',
+            format: 'text',
+          };
+          await channelAdapter.sendFinalReply(conversation, interruptReply);
+          return ok({ finalReply: interruptReply, toolsCalled: [] });
+        }
+        return err(new OrchestrationError({
+          stage: 'execute',
+          reason: 'canceled',
+          cause: error,
+        }));
+      }
+      throw error;
+    } finally {
+      if ('cleanupAbortController' in channelAdapter) {
+        (channelAdapter as any).cleanupAbortController(String(runContext.traceId ?? incoming.traceId));
+      }
+    }
   }
 
   private async searchMemoryContext(input: {

@@ -112,11 +112,32 @@ export class KnowledgeShareService {
       createdAt:        new Date().toISOString(),
     };
 
-    // Find admins in this company (Lark channel identities with ADMIN role)
-    const admins = await this.prisma.channelIdentity.findMany({
-      where: { companyId: input.companyId, aiRole: 'ADMIN', channel: 'lark' },
-      select: { larkOpenId: true, displayName: true },
+    const adminMemberships = await this.prisma.adminMembership.findMany({
+      where: {
+        companyId: input.companyId,
+        isActive: true,
+        role: { in: ['COMPANY_ADMIN', 'SUPER_ADMIN'] },
+      },
+      select: { userId: true },
     });
+    const adminUserIds = adminMemberships.map(admin => admin.userId);
+    const admins = adminUserIds.length > 0
+      ? await this.prisma.integrationConnection.findMany({
+          where: {
+            companyId: input.companyId,
+            provider: 'lark',
+            ownerUserId: { in: adminUserIds },
+            status: 'connected',
+            revokedAt: null,
+            externalAccountId: { not: null },
+          },
+          select: {
+            externalAccountId: true,
+            ownerUser: { select: { name: true } },
+          },
+          orderBy: { updatedAt: 'desc' },
+        })
+      : [];
 
     const cardContent = buildShareApprovalCard({
       shareId,
@@ -128,9 +149,9 @@ export class KnowledgeShareService {
 
     const cardMessageIds: string[] = [];
     for (const admin of admins) {
-      if (!admin.larkOpenId) continue;
+      if (!admin.externalAccountId) continue;
       try {
-        const result = await this.larkAdapter.sendDirectCard(admin.larkOpenId, cardContent);
+        const result = await this.larkAdapter.sendDirectCard(admin.externalAccountId, cardContent);
         if (result.ok) cardMessageIds.push(result.value.messageId);
       } catch { /* non-fatal — at least one admin card sent */ }
     }
