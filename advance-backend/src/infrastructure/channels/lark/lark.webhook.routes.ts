@@ -14,7 +14,6 @@ import type {
   LarkApprovalCardHandler,
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
-import type { IngestionQueue } from '../../../application/ingestion/ingestion.queue';
 import type { ShareResolverService } from '../../../application/knowledge-share/share-resolver.service';
 import type { KnowledgeShareService } from '../../../application/knowledge-share/knowledge-share.service';
 import type { ChatMessageSerializer } from '../../../application/orchestration/chat-message-serializer';
@@ -35,7 +34,6 @@ import type { InlineContextResult } from './lark-inline-context';
 import type { LarkChatContextService } from '../../../application/chat-context/lark-chat-context.service';
 import type { PrismaClient } from '../../../generated/prisma';
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
-import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
 import type { LarkContactsClient } from './clients/lark-contacts.client';
 import { buildLarkIngressLaneKey, buildLarkRoutingKeys } from './lark-routing';
@@ -53,6 +51,12 @@ import {
   type ResolvedUntaggedGroupPolicy,
 } from './lark-untagged-policy';
 import { appendLarkMentionContext, listLarkMentionOpenIds } from './lark-mention-context';
+import {
+  isSupportedLarkMedia,
+  unsupportedDocumentNotice,
+  withoutTransientBytes,
+  MAX_INLINE_IMAGE_BYTES,
+} from './lark-media-support';
 import type {
   IngressReceipt,
   IngressReceiptRepoPort,
@@ -70,7 +74,6 @@ export interface LarkWebhookDeps {
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
   approvalCardHandler?: LarkApprovalCardHandler;
-  ingestionQueue?: IngestionQueue;
   knowledgeShareService?: KnowledgeShareService;
   shareResolverService?: ShareResolverService;
   mem0?: Mem0Service;
@@ -83,7 +86,6 @@ export interface LarkWebhookDeps {
   prisma?: PrismaClient;
   /** Optional: absent means a retried run re-runs the agent, as before Wave 5. */
   channelDeliveryRepo?: ChannelDeliveryRepoPort;
-  cloudinaryAdapter?: CloudinaryAdapter;
   larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
 }
 
@@ -552,13 +554,11 @@ async function processInBackground(
     conversationRepo: ConversationRepoPort;
     logger: Logger;
     env: TypedEnv;
-    ingestionQueue?: IngestionQueue;
     mem0?: Mem0Service;
     larkOAuthService?: LarkOAuthService;
     connectionRepo?: IntegrationConnectionRepository;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
-    cloudinaryAdapter?: CloudinaryAdapter;
     prisma?: PrismaClient;
     larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
   },
@@ -728,9 +728,9 @@ async function processInBackground(
   const shouldRespond = shouldStartLarkAgent(incoming);
 
   // Divo is in the room but was not addressed. Preparing an attachment is not a
-  // read — it downloads the file out of Lark, OCRs it, pushes it to a CDN, and
-  // indexes it as shared company knowledge. That only happens on an explicit
-  // opt-in, and the decision must be made *before* the work, not after.
+  // read — it pulls the image out of Lark and sends it to an OCR provider. That
+  // only happens on an explicit opt-in, and the decision must be made *before*
+  // the work, not after.
   const untagged = isUntaggedGroupMessage(incoming);
   // Only an untagged message consults the policy, so only an untagged message
   // pays for the lookup. Resolved here rather than inside the branch below
@@ -750,7 +750,6 @@ async function processInBackground(
       ? prepareLarkAttachmentContexts({
           incoming,
           attachments,
-          identity,
           deps,
           log,
           shouldReact: shouldRespond,
@@ -761,11 +760,8 @@ async function processInBackground(
           parentMessageId: String(incoming.replyToMessageId),
           env: deps.env,
           logger: log,
-          ...(deps.cloudinaryAdapter ? { cloudinaryAdapter: deps.cloudinaryAdapter } : {}),
-          ...(deps.ingestionQueue ? { ingestionQueue: deps.ingestionQueue } : {}),
           channelIdentityRepo: deps.channelIdentityRepo,
           companyId: identity.companyId,
-          userId: identity.userId,
           chatId: String(incoming.chatId),
           tenantKey,
         })
@@ -805,11 +801,11 @@ async function processInBackground(
       log,
     });
 
-    // Collect image URLs for multimodal LLM embedding (Cloudinary or base64 fallback).
+    // Inline image bytes for multimodal embedding, valid for this turn only.
     // The LLM sees images natively — OCR text is bonus context, not the primary path.
     const imageUrls = preparedAttachments
       .filter(p => p.attachment.type === 'image')
-      .map(p => p.context.cloudinaryUrl ?? p.context.base64DataUrl)
+      .map(p => p.context.base64DataUrl)
       .filter((url): url is string => !!url);
 
     // Merge parent message image URLs (quote-reply with images)
@@ -827,13 +823,15 @@ async function processInBackground(
       .filter((part): part is string => !!part)
       .join('\n\n');
 
-    // For images: the LLM will see them via imageUrls (multimodal) — no text injection needed.
-    // For docs: inject the text excerpt into the message so the engine can reason about it.
-    const syntheticText = incoming.chatType === 'group'
-      ? (textWithParent || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`)
-      : contextBlock
-        ? (textWithParent ? `${contextBlock}\n\n${textWithParent}` : contextBlock)
-        : (textWithParent || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`);
+    // Images reach the model as pixels via imageUrls, so they need no text
+    // injection. Everything else is a document Divo declined to read, and that
+    // notice goes into the message for groups as well as DMs: a group also
+    // carries it in the stored snapshot, but that write is best-effort, and if
+    // it fails Divo must still know it never opened the file rather than
+    // answer from the filename.
+    const askText = textWithParent
+      || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`;
+    const syntheticText = contextBlock ? `${contextBlock}\n\n${askText}` : askText;
 
     const enrichedIncoming = appendLarkMentionContext({
       ...incoming,
@@ -1410,21 +1408,6 @@ type PreparedAttachmentContext = {
   inlineContext?: InlineContextResult;
 };
 
-function groupAttachmentRetrievalHint(input: {
-  fileName: string;
-  fileAssetId?: string;
-  isInlineComplete?: boolean;
-  queued: boolean;
-}): string | undefined {
-  if (input.fileAssetId) {
-    return `For more detail beyond the inline excerpt, use contextSearch or documentRag with fileAssetId="${input.fileAssetId}" or filename "${input.fileName}".`;
-  }
-  if (input.queued || input.isInlineComplete === false) {
-    return `If the inline context is incomplete and more detail is needed after indexing, use contextSearch or documentRag with filename "${input.fileName}".`;
-  }
-  return undefined;
-}
-
 function hasUsefulInlineAttachmentContext(item: PreparedAttachmentContext): boolean {
   const rawText = item.inlineContext?.rawText.trim() ?? '';
   if (rawText) return true;
@@ -1439,21 +1422,20 @@ function hasUsefulInlineAttachmentContext(item: PreparedAttachmentContext): bool
 async function prepareLarkAttachmentContexts(input: {
   incoming: IncomingMessage;
   attachments: readonly LarkAttachment[];
-  identity: LarkResolvedIdentity;
   deps: {
     adapter: LarkChannelAdapter;
     env: TypedEnv;
     logger: Logger;
-    ingestionQueue?: IngestionQueue;
-    cloudinaryAdapter?: CloudinaryAdapter;
   };
   log: Logger;
   shouldReact: boolean;
 }): Promise<PreparedAttachmentContext[]> {
-  const { incoming, attachments, identity, deps, log } = input;
+  const { incoming, attachments, deps, log } = input;
   if (attachments.length === 0) return [];
 
-  if (input.shouldReact) {
+  // Acknowledge only what Divo will actually look at. A 📥 on a PDF it is about
+  // to refuse reads as "received, working on it" and then contradicts itself.
+  if (input.shouldReact && attachments.some(isSupportedLarkMedia)) {
     try {
       await deps.adapter.reactToIncoming(incoming.messageId, '📥');
     } catch { /* non-fatal */ }
@@ -1465,14 +1447,40 @@ async function prepareLarkAttachmentContexts(input: {
   const prepared: PreparedAttachmentContext[] = [];
 
   for (const att of attachments) {
+    // Documents are refused before anything happens to them: no download, no
+    // OCR, no upload, no indexing. The refusal is the whole handling, and it
+    // travels as prompt context so Divo says it in its own voice rather than
+    // as a canned card bolted onto an otherwise confident answer.
+    if (!isSupportedLarkMedia(att)) {
+      log.info('webhook.attachment.unsupported', {
+        fileName: att.fileName,
+        mimeType: att.mimeType,
+        kind: att.type,
+      });
+      const notice = unsupportedDocumentNotice(att.fileName);
+      prepared.push({
+        attachment: att,
+        context: {
+          kind: att.type,
+          fileName: att.fileName,
+          mimeType: att.mimeType,
+          larkFileKey: att.key,
+          larkMessageId: att.messageId,
+          ingestionStatus: 'unsupported',
+          inlineContext: notice,
+          isInlineComplete: false,
+        },
+        inlineContext: { context: notice, isComplete: false, rawText: '' },
+      });
+      continue;
+    }
+
     let buffer: Buffer | undefined;
     let inlineContext: InlineContextResult | undefined;
     let error: string | undefined;
 
     try {
-      const downloaded = att.type === 'image'
-        ? await fileClient.downloadImage(att.messageId, att.key)
-        : await fileClient.downloadFile(att.messageId, att.key);
+      const downloaded = await fileClient.downloadImage(att.messageId, att.key);
       if (downloaded && downloaded.length > 0) {
         buffer = downloaded;
       } else {
@@ -1487,99 +1495,33 @@ async function prepareLarkAttachmentContexts(input: {
       inlineContext = await extractAttachmentInlineContext(att, buffer, deps.env, log);
     }
 
-    // Upload to Cloudinary for multimodal LLM access (non-blocking on failure)
-    let cloudinaryUrl: string | undefined;
-    if (buffer && deps.cloudinaryAdapter?.isAvailable) {
-      try {
-        const uploadResult = await deps.cloudinaryAdapter.uploadBuffer({
-          buffer,
-          mimeType:  att.mimeType,
-          fileName:  att.fileName,
-          folder:    'group_context',
-          companyId: identity.companyId,
-          assetId:   att.key,
-          tags:      ['group_context', `chat:${String(incoming.chatId)}`],
-        });
-        cloudinaryUrl = uploadResult.secureUrl;
-        log.info('webhook.attachment.cloudinary.uploaded', {
-          fileName: att.fileName, publicId: uploadResult.publicId,
-        });
-      } catch (e) {
-        log.warn('webhook.attachment.cloudinary.failed', {
-          fileName: att.fileName,
-          error: e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200),
-        });
-      }
-    }
-
-    // Base64 data URL fallback for images when Cloudinary fails (cap: 1 MB buffer)
-    const MAX_BASE64_BUFFER = 1_024 * 1_024;
+    // The pixels ride along with this turn and are then dropped. Nothing is
+    // uploaded to a CDN and nothing is queued for indexing, so there is no
+    // stored copy of the image and no derived chunks to retrieve later — the
+    // OCR text below is all that outlives the request.
     let base64DataUrl: string | undefined;
-    if (att.type === 'image' && buffer && !cloudinaryUrl && buffer.length <= MAX_BASE64_BUFFER) {
+    if (buffer && buffer.length <= MAX_INLINE_IMAGE_BYTES) {
       base64DataUrl = `data:${att.mimeType};base64,${buffer.toString('base64')}`;
-      log.info('webhook.attachment.base64_fallback', { fileName: att.fileName, bytes: buffer.length });
+    } else if (buffer) {
+      // OCR still ran, so the text is available even though the model cannot
+      // look at the image itself.
+      log.warn('webhook.attachment.image_too_large_for_inline', {
+        fileName: att.fileName, bytes: buffer.length, maxBytes: MAX_INLINE_IMAGE_BYTES,
+      });
     }
 
-    let queued = false;
-    let enqueueError: string | undefined;
-
-    if (deps.ingestionQueue) {
-      try {
-        const basePayload = {
-          companyId:        identity.companyId,
-          uploaderUserId:   identity.userId,
-          uploaderChannel:  'lark',
-          fileName:         att.fileName,
-          mimeType:         att.mimeType,
-          larkFileKey:      att.key,
-          larkMessageId:    att.messageId,
-          chatId:           String(incoming.chatId),
-          replyToMessageId: String(incoming.messageId),
-          ...(incoming.chatType === 'group' ? { groupContextMessageId: String(incoming.messageId) } : {}),
-          visibility:       incoming.chatType === 'group' ? 'shared' as const : 'personal' as const,
-        };
-
-        await deps.ingestionQueue.enqueue(buffer && buffer.length > 0 ? {
-          ...basePayload,
-          jobType:      'buffer',
-          bufferBase64: buffer.toString('base64'),
-        } : {
-          ...basePayload,
-          jobType: att.type === 'image' ? 'lark_image' : 'lark_file',
-        });
-        queued = true;
-        log.info('webhook.attachment.enqueued', {
-          fileName: att.fileName,
-          type: att.type,
-          companyId: identity.companyId,
-          visibility: incoming.chatType === 'group' ? 'shared' : 'personal',
-        });
-      } catch (e) {
-        enqueueError = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
-        log.error('webhook.attachment.enqueue.failed', { fileName: att.fileName, error: enqueueError });
-      }
-    }
-
-    const retrievalHint = groupAttachmentRetrievalHint({
-      fileName: att.fileName,
-      queued,
-      ...(inlineContext ? { isInlineComplete: inlineContext.isComplete } : {}),
-    });
-    const contextError = enqueueError ?? error;
     const context: GroupChatAttachmentContext = {
       kind: att.type,
       fileName: att.fileName,
       mimeType: att.mimeType,
       larkFileKey: att.key,
       larkMessageId: att.messageId,
-      ingestionStatus: queued ? 'processing' : enqueueError ? 'failed' : 'inline_only',
-      ...(cloudinaryUrl ? { cloudinaryUrl } : {}),
+      ingestionStatus: 'inline_only',
       ...(base64DataUrl ? { base64DataUrl } : {}),
       ...(inlineContext?.context ? { inlineContext: inlineContext.context } : {}),
       ...(inlineContext ? { isInlineComplete: inlineContext.isComplete } : {}),
       ...(inlineContext?.rawText ? { rawTextPreview: inlineContext.rawText.slice(0, 2000) } : {}),
-      ...(retrievalHint ? { retrievalHint } : {}),
-      ...(contextError ? { error: contextError } : {}),
+      ...(error ? { error } : {}),
     };
 
     prepared.push({
@@ -1634,8 +1576,11 @@ async function storeGroupIncomingSnapshot(input: {
   attachmentContexts: readonly GroupChatAttachmentContext[];
   log: Logger;
 }): Promise<void> {
-  const { incoming, identity, deps, attachmentContexts, log } = input;
+  const { incoming, identity, deps, log } = input;
   if (incoming.chatType !== 'group' || !deps.chatContextService) return;
+
+  // The room transcript keeps what the image *said*, never the image itself.
+  const attachmentContexts = input.attachmentContexts.map(withoutTransientBytes);
 
   const content = incoming.text?.trim()
     || attachmentContexts.map(att => `[${att.kind}: ${att.fileName}]`).join(' ');

@@ -2,9 +2,9 @@
 
 > Tracking document for the Lark channel hardening project.
 >
-> Status: **Waves 0-2, 4 and 5 closed. Shared conversation no longer means shared authority: threads in a group room hold separate working context, every turn rebuilds authority from its own sender, and untagged group attachments are not downloaded, OCR'd, or indexed unless a company opts in. A run's answer is now delivered at most once, and a delivery failure resends the finished answer rather than re-running the agent that produced it. Wave 3's distributed leases, batching and busy UX, plus ingress retry classification, queue metrics, a delivery retry driver, and ingress receipt retention, remain deferred. Next: Wave 6 media, OCR and indexing**
+> Status: **Waves 0-2, 4 and 5 closed, plus the Wave 6 interim media slice. Shared conversation no longer means shared authority: threads in a group room hold separate working context, every turn rebuilds authority from its own sender, and untagged group attachments are not downloaded or OCR'd unless a company opts in. A run's answer is now delivered at most once, and a delivery failure resends the finished answer rather than re-running the agent that produced it. Media over Lark is now images only, read for the turn and stored nowhere; documents are declined out loud. Wave 3's distributed leases, batching and busy UX, plus ingress retry classification, queue metrics, a delivery retry driver, and ingress receipt retention, remain deferred. Next: Wave 6 proper — document intake with staging, retention and ACLs**
 >
-> Last updated: 2026-07-27
+> Last updated: 2026-07-28
 
 ## 0. Current Implementation Status
 
@@ -155,6 +155,7 @@ sections remain the detailed implementation checklist.
 | Wave 5 delivery identity | Full suite 1850 tests, 1848 pass — the only failures are the two known pre-existing ones. New: 9 delivery-key cases, 20 classification/backoff/budget cases, 17 repository cases, 10 adapter-guard cases, 5 resume cases. The duplicate guard was mutation-checked — disabling the `delivered` branch fails exactly the no-resend test. Schema pushed to `divo_dev` 2026-07-27 after confirming the diff was purely additive; `migrate diff --from-url` then reported zero drift and the deployment migration is checked in. 8 live round-trip checks passed against real Postgres: first reserve, concurrent reserve returning `inFlight`, reserve-after-send returning `delivered` with the provider ID retained, resumable lookup before and after delivery, retry listing, and payload clearing | Wiring the guard exposed a defect it did not cause: on total failure the adapter returned a hardcoded `upstream_5xx` and discarded the provider error, so every failure classified alike and a permanently-refused 400 would have been retried like an outage. The error is now preserved as `cause`. The live checks earned their place — the `payloadJson: { not: DbNull }` filter is exactly the kind of Prisma JSON handling that typechecks and then behaves differently against a real database. Self-review then found the defect that mattered most, and it was in the guard itself: `reserve` did a read-then-create, so two genuine first attempts both saw no row and both created one. The loser hit the unique constraint, which `reserve` surfaced as an infra error — and the adapter treats a broken guard as licence to send unguarded, so both attempts would have delivered. Under exactly the concurrency the constraint exists for, the wave's central guarantee inverted. `reserve` now resolves a `P2002` into a verdict rather than an error, sharing one code path with the ordinary case so a race and a retry cannot disagree. Verified against the live constraint: two concurrent first attempts yield one `reserved`, one `inFlight`, one row. **This review was single-perspective rather than an independent cold review** |
 | Wave 4 thread context, per-turn RBAC, and untagged policy | Full suite without infrastructure: 1798 tests, 2 failing cases, both known and pre-existing (`governed-skill-runtime`, `runtime.routes`). With the tunnel and Redis up: 1813 tests, 1809 pass, the same 2 plus 2 live-Lark-API cases in `lark.integration.test.ts` that also fail with this wave's `src/` changes stashed. Wave 2's Redis/Postgres restart fixture re-run green (4/4) with every Wave 4 change in place. New coverage by file: conversation-key 8, thread-context-isolation 5, lark-untagged-policy 15, controls.routes 12 of 18, conversation.repository 6 of 15, lark.webhook.routes 15 of 27, lark-parent-message 2 of 11, hitl-flow 2 of 51. Three behaviours were mutation-checked rather than assumed: forcing the untagged gate to `false` fails exactly the two opt-in wiring tests, and reverting the conversation key to the bare chat ID fails three isolation tests | Audit-before-build again paid: Phase 4B was already true and needed tests, not code, while the real gaps were 4A's shared-per-room working context and 4C's missing per-company scoping. Thread-scoping history exposed a consequence the change would otherwise have shipped silently — `/clear` matched one exact key, so a user clearing a group would have been told it worked while every thread kept its transcript; `clearChatHistories` now sweeps the chat and its threads, company-scoped. Two harness defects were found and fixed rather than worked around: an empty permission set made the engine short-circuit before history loaded, so one isolation test was passing vacuously; and a hardcoded `om_1` receipt ID silently restricted the webhook harness to a single message, which the worker's own identity guard caught. Cold review then found a P1 the wave's own tests could not have caught: the thread key preferred Lark's `thread_id` over the root message, but Lark assigns a topic ID only once the thread exists — so the message that *seeds* a thread and the first reply in it resolved to different keys, losing the question every follow-up is answering. The precedence is now root-first, and the regression is pinned at both the key and engine level. Review also found the per-company override had a resolver and a read view but nothing that could write it outside hand-written SQL (now a `PUT` route, validated and audited), that hydrated quote content was still being written into the chat-scoped room transcript every thread reads back, and that `clearHistory` had become dead code sitting next to `clearChatHistories` as the wrong thing to reach for |
 | Wave 4C untagged group policy | 132 focused Lark tests (16 new: 10 pure policy/gate cases + 6 webhook behaviour cases) + full typecheck passed. The two opt-in wiring tests were mutation-checked — forcing the gate to `false` fails exactly those two and nothing else | Found by auditing Wave 4's boxes against the code rather than assuming they were unbuilt: untagged attachments were already being downloaded, OCR'd, uploaded to Cloudinary, and indexed as `shared` before the not-mentioned check ran. Adding the two production dependencies the harness had omitted (`chatContextService`, `ingestionQueue`) made two pre-existing order assertions fail; they were corrected upward, not relaxed, because a shorter order array was only achievable by leaving a real dependency unwired. Two unrelated failures (`governed-skill-runtime`, `runtime.routes`) were confirmed pre-existing by re-running them with this slice stashed. Cold review then found three contract-accuracy defects rather than code defects, all corrected: a test named "keeps nothing" that the durable ingress receipt contradicts, a checked box claiming per-company policy for a deployment-global env switch, and no route-level test for the opt-in path — leaving the over-blocking failure mode, where a dead gate keeps every test green, unguarded. A second fresh review returned `ship` with four P3 follow-ups, all applied: the negative test now asserts zero outbound fetches rather than inferring "did not download" from "did not index"; the untagged predicate is no longer spelled by hand at the identity-missing early return; the wasteful `off` + `process` combination is documented as configured-not-broken; and this table's Wave 4 row no longer calls 4C complete while three of its boxes are open |
+| Wave 6 interim media slice | Full suite 1869 tests, 1867 pass — the only failures are the two known pre-existing ones. Lark suite 369/369. New: 10 media-policy cases, 6 webhook behaviour cases. Typecheck clean | Two mutation checks were run and one of them mattered. Treating documents as supported failed exactly the four document tests. Deleting the byte-stripper failed nothing at the webhook level — because no download succeeds in a unit test, `base64DataUrl` is absent whether or not the stripper runs, so the assertion could never have failed. That test was removed rather than left standing as false assurance, and the guarantee is pinned on `withoutTransientBytes` directly, where the same mutation does fail. The same mutation check exposed a pre-existing defect in the Wave 4C suite: `assert.deepEqual(outbound, [], 'nothing was fetched from Lark')` observed a stubbed `globalThis.fetch`, but the Lark SDK is built on axios, so that assertion had always been vacuous and would have passed with the untagged gate deleted. Downloads are now observed through the attempt log, which does fail under the mutation |
 | Wave 2B ingress leases and dead-lettering | 170 focused ingress/lark/identity/AirNote/serializer tests + full typecheck + `prisma validate` passed | Two cold-review rounds. Round 1 found five issues, all corrected: the backfill migration sorted before the migration creating the table it altered; an attempt-counted dead-letter budget a 3-minute outage would exhaust; a stale AirNote test left failing by the tenant-scoped auth change; an index name not matching Prisma's derived name; and a widened repository assertion. Round 2 found the lease's own regression — a claim that returned "not yours" for both *finished* and *leased* let the queue complete a job whose work never ran, so a worker restart dropped the message permanently — plus retirement racing a live lease, a retryable failure able to resurrect a `dead` row, a backfill that guessed when a company held two active bindings, and a missed `updatedAt` default. All corrected. Migration apply order and the backfill itself remain unverified — no database was reachable |
 
 ### Immediate next step
@@ -866,6 +867,46 @@ but no worker wakes up to act on it. The guarantees above hold either way — th
 affects how *quickly* a failed delivery recovers, not whether it duplicates.
 Closing it is a small worker in the shape of the ingress reconciler, and it
 belongs with Wave 7's queue metrics rather than bolted on here.
+
+## 11B. Wave 6 interim — images only, stored nowhere
+
+**Shipped ahead of Wave 6 proper.** Wave 6 as specified below cannot ship
+quickly: document intake needs private staging, retention policy, ACL-checked
+retrieval and a storage decision that is not yet made. Rather than run an
+unbounded pipeline in the meantime, this slice reduces Lark media to the part
+that works without any of that.
+
+What it does:
+
+- **Images are the only supported Lark media.** Downloaded for the turn, OCR'd
+  through the existing provider abstraction, shown to the model as inline
+  bytes, and then dropped.
+- **Documents are declined out loud.** No download, no OCR, no upload, no
+  indexing. The refusal travels as prompt context instructing Divo to say it
+  cannot read documents over Lark yet, that the team is building it, and to
+  offer the routes that do work — screenshot the page, paste the text, or use
+  the desktop app, which parses documents locally. It also forbids inferring
+  anything from the filename, which is what a model does when handed
+  `[File: Q3-revenue.pdf]` and nothing else.
+- **Nothing is stored.** The Cloudinary upload and the ingestion enqueue are
+  both gone from the Lark path. Image bytes ride the prompt and are stripped
+  before the group snapshot is written, so the transcript keeps the OCR text
+  and never the picture.
+
+Consequences accepted deliberately:
+
+- **No RAG over Lark media.** A later turn can read back what an image *said*,
+  never re-examine it. Documents cannot be queried at all.
+- **Images above 4 MB get OCR text but no visual.** With the CDN upload gone,
+  inline bytes are the only path; the old 1 MB cap was a fallback behind
+  Cloudinary and would have silently blinded the model to ordinary retina
+  screenshots, so it was raised to match.
+- **`ingestionQueue` and `cloudinaryAdapter` were removed from the Lark webhook
+  entirely**, rather than left wired and unused. Wave 6 will reintroduce
+  ingestion in the reference-only shape §12.1 describes, not this one.
+
+Not addressed here, and still Wave 6's job: scanned PDFs, document staging,
+retention, ACL-checked retrieval, and the storage decision in §12.0.
 
 ## 12. Wave 6 — Images, Documents, OCR, and Indexing
 

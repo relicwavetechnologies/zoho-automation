@@ -5,7 +5,10 @@ export type GroupChatAttachmentStatus =
   | 'processing'
   | 'indexed'
   | 'failed'
-  | 'inline_only';
+  /** Read for this turn only; nothing was stored and nothing can be retrieved later. */
+  | 'inline_only'
+  /** Deliberately not read. Divo does not accept this kind of attachment yet. */
+  | 'unsupported';
 
 export interface GroupChatAttachmentContext {
   readonly kind: GroupChatAttachmentKind;
@@ -15,7 +18,11 @@ export interface GroupChatAttachmentContext {
   readonly larkMessageId?: string;
   readonly fileAssetId?: string;
   readonly cloudinaryUrl?: string;
-  /** Base64 data URL fallback when Cloudinary upload fails. Capped at 1 MB buffer. */
+  /**
+   * Inline image bytes for the current turn only. Stripped before the message
+   * is persisted — see `withoutTransientBytes` — so this is never present on a
+   * context read back out of the group snapshot.
+   */
   readonly base64DataUrl?: string;
   readonly ingestionStatus?: GroupChatAttachmentStatus;
   /**

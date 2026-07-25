@@ -4,14 +4,14 @@
  * When a user replies to (quotes) a message and @Divo, the bot needs to see
  * what the quoted message contains — text, images, files. This module fetches
  * the parent message via Lark API, extracts its content, and makes images
- * available as multimodal URLs for the LLM. Background OCR/indexing is queued
- * separately so the AI can answer instantly from inline context.
+ * available as inline multimodal data URLs for the current turn only. Nothing
+ * from a quoted message is stored: quoting is a reference, not consent to keep
+ * a copy. Documents are declined outright — see `lark-media-support`.
  */
 import type { TypedEnv } from '../../../config/env';
 import type { Logger } from '../../../shared/logger';
 import { Client as LarkSdkClient, Domain, LoggerLevel } from '@larksuiteoapi/node-sdk';
-import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
-import type { IngestionQueue } from '../../../application/ingestion/ingestion.queue';
+import { unsupportedDocumentNotice, MAX_INLINE_IMAGE_BYTES } from './lark-media-support';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
 import type { ReferencedMessage } from '../../../domain/channel/incoming-message';
 
@@ -21,11 +21,8 @@ export async function fetchParentMessage(input: {
   parentMessageId: string;
   env: TypedEnv;
   logger: Logger;
-  cloudinaryAdapter?: CloudinaryAdapter;
-  ingestionQueue?: IngestionQueue;
   channelIdentityRepo: ChannelIdentityRepoPort;
   companyId: string;
-  userId: string;
   chatId: string;
   tenantKey: string;
   sdkClient?: LarkSdkClient;
@@ -63,27 +60,24 @@ export async function fetchParentMessage(input: {
       const imageKeys = extractPostImageKeys(content);
       omittedImageCount = Math.max(0, imageKeys.length - MAX_PARENT_IMAGE_COUNT);
       for (const key of imageKeys.slice(0, MAX_PARENT_IMAGE_COUNT)) {
-        const url = await downloadAndUploadParentImage({
-          messageId: parentMessageId, imageKey: key, client,
-          ...(input.cloudinaryAdapter ? { cloudinaryAdapter: input.cloudinaryAdapter } : {}),
-          ...(input.ingestionQueue ? { ingestionQueue: input.ingestionQueue } : {}),
-          companyId, userId: input.userId, chatId, log,
+        const url = await downloadParentImage({
+          messageId: parentMessageId, imageKey: key, client, log,
         });
         if (url) imageUrls.push(url);
       }
     } else if (msgType === 'image') {
       const imageKey = content['image_key'] as string;
       if (imageKey) {
-        const url = await downloadAndUploadParentImage({
-          messageId: parentMessageId, imageKey, client,
-          ...(input.cloudinaryAdapter ? { cloudinaryAdapter: input.cloudinaryAdapter } : {}),
-          ...(input.ingestionQueue ? { ingestionQueue: input.ingestionQueue } : {}),
-          companyId, userId: input.userId, chatId, log,
+        const url = await downloadParentImage({
+          messageId: parentMessageId, imageKey, client, log,
         });
         if (url) imageUrls.push(url);
       }
     } else if (msgType === 'file') {
-      text = `[File: ${(content['file_name'] as string) ?? 'attachment'}]`;
+      // The quoted message is a document. Divo cannot read those over Lark, and
+      // saying so is better than handing the model a bare filename it will
+      // cheerfully speculate about.
+      text = unsupportedDocumentNotice((content['file_name'] as string) ?? 'attachment');
     } else if (msgType === 'media') {
       text = '[Media/Video]';
     } else {
@@ -245,20 +239,20 @@ function extractPostImageKeys(content: Record<string, unknown>): string[] {
 
 const MAX_PARENT_IMAGE_COUNT = 4;
 const MAX_PARENT_IMAGE_BYTES = 10 * 1_024 * 1_024;
-const MAX_PARENT_IMAGE_DATA_URL_BYTES = 1_024 * 1_024;
+/**
+ * Shared with the direct-attachment path. A quoted image and an attached one
+ * are the same picture; the model should not be able to see one and not the
+ * other because of where it was posted.
+ */
+const MAX_PARENT_IMAGE_DATA_URL_BYTES = MAX_INLINE_IMAGE_BYTES;
 
-async function downloadAndUploadParentImage(input: {
+async function downloadParentImage(input: {
   messageId: string;
   imageKey: string;
   client: LarkSdkClient;
-  cloudinaryAdapter?: CloudinaryAdapter;
-  ingestionQueue?: IngestionQueue;
-  companyId: string;
-  userId: string;
-  chatId: string;
   log: Logger;
 }): Promise<string | null> {
-  const { messageId, imageKey, client, cloudinaryAdapter, companyId, chatId, log } = input;
+  const { messageId, imageKey, client, log } = input;
 
   try {
     const resource = await client.im.v1.messageResource.get({
@@ -283,44 +277,16 @@ async function downloadAndUploadParentImage(input: {
     const buffer = Buffer.concat(chunks);
     if (buffer.length === 0) return null;
 
-    // Background: queue for OCR/indexing (fire-and-forget)
-    if (input.ingestionQueue) {
-      input.ingestionQueue.enqueue({
-        companyId,
-        uploaderUserId: input.userId,
-        uploaderChannel: 'lark',
-        fileName: `parent_${imageKey}.png`,
-        mimeType: 'image/png',
-        larkFileKey: imageKey,
-        larkMessageId: messageId,
-        chatId,
-        visibility: 'shared',
-        jobType: 'buffer',
-        bufferBase64: buffer.toString('base64'),
-      }).catch(e => log.warn('parent_message.index_enqueue_failed', { imageKey, error: String(e) }));
-    }
-
-    if (cloudinaryAdapter?.isAvailable) {
-      try {
-        const result = await cloudinaryAdapter.uploadBuffer({
-          buffer,
-          mimeType: 'image/png',
-          fileName: `parent_${imageKey}.png`,
-          folder: 'parent_context',
-          companyId,
-          assetId: imageKey,
-          tags: ['parent_context', `chat:${chatId}`],
-        });
-        return result.secureUrl;
-      } catch (e) {
-        log.warn('parent_message.cloudinary_failed', { imageKey, error: String(e) });
-      }
-    }
-
+    // Quoting a message is not consent to keep what was in it. The image is
+    // shown to the model for this turn and then dropped: no CDN copy, no
+    // indexing, nothing that outlives the request.
     if (buffer.length <= MAX_PARENT_IMAGE_DATA_URL_BYTES) {
       return `data:image/png;base64,${buffer.toString('base64')}`;
     }
 
+    log.warn('parent_message.image_too_large_for_inline', {
+      imageKey, sizeBytes: buffer.length, maxBytes: MAX_PARENT_IMAGE_DATA_URL_BYTES,
+    });
     return null;
   } catch (e) {
     log.warn('parent_message.image_error', { imageKey, error: String(e) });

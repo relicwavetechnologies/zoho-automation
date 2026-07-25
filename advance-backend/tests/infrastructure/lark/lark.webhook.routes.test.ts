@@ -31,6 +31,8 @@ function makeEvent(input: {
   mentionsHuman?: boolean;
   /** Attach a file to the message instead of sending plain text. */
   file?: { key: string; name: string };
+  /** Attach an image — the one media kind Divo actually reads over Lark. */
+  image?: { key: string };
   /** Override sender and message identity to model several people in one room. */
   senderOpenId?: string;
   messageId?: string;
@@ -71,10 +73,12 @@ function makeEvent(input: {
         message_id: input.messageId ?? 'om_1',
         chat_id: 'oc_1',
         chat_type: input.chatType,
-        message_type: input.file ? 'file' : 'text',
+        message_type: input.file ? 'file' : input.image ? 'image' : 'text',
         content: input.file
           ? JSON.stringify({ file_key: input.file.key, file_name: input.file.name })
-          : JSON.stringify({ text }),
+          : input.image
+            ? JSON.stringify({ image_key: input.image.key })
+            : JSON.stringify({ text }),
         create_time: '1700000000000',
         root_id: input.rootId ?? 'om_root',
         parent_id: 'om_parent',
@@ -144,7 +148,6 @@ async function runWebhook(body: unknown, options: {
   channelDeliveryRepo?: unknown;
 } = {}) {
   const order: string[] = [];
-  const ingestionJobs: unknown[] = [];
   const retainedMessages: Array<Record<string, unknown>> = [];
   const acceptedPayloads: unknown[] = [];
   const engineInputs: unknown[] = [];
@@ -228,15 +231,10 @@ async function runWebhook(body: unknown, options: {
     },
     logger,
     env,
-    // Both spies stand in for the side effects the untagged policy governs:
-    // `ingestionQueue` is where an attachment becomes indexed company knowledge,
-    // and `chatContextService` is where a message enters the room transcript.
-    ingestionQueue: {
-      enqueue: async (job: unknown) => {
-        order.push('ingest');
-        ingestionJobs.push(job);
-      },
-    } as any,
+    // Divo no longer indexes Lark attachments, so the side effect the untagged
+    // policy governs is the download itself — observed through the stubbed
+    // fetch, not here. `chatContextService` remains the spy for the other half:
+    // whether a message enters the room transcript.
     chatContextService: {
       appendMessage: async (message: Record<string, unknown>) => {
         order.push('retain');
@@ -323,7 +321,6 @@ async function runWebhook(body: unknown, options: {
     serializerKeys,
     identityLookups,
     logEvents,
-    ingestionJobs,
     retainedMessages,
     acceptedPayloads,
     processQueuedReceipt,
@@ -681,11 +678,11 @@ describe('Lark webhook card authorization', () => {
 /**
  * Run `body` with every outbound HTTP call refused.
  *
- * Attachment preparation reaches Lark for a tenant token and the file bytes.
+ * Attachment preparation reaches Lark for a tenant token and the image bytes.
  * These tests are about whether preparation is *entered*, not whether the
  * download succeeds, and a unit test must not depend on the network. Refusing
- * the fetch exercises the same path: the download failure is non-fatal, so the
- * attachment still reaches the ingestion queue as a key-only job.
+ * the fetch exercises the same path: a failed download is non-fatal, so the
+ * attachment still gets a prepared context — with an error recorded on it.
  */
 async function withStubbedFetch<T>(
   body: (calls: string[]) => Promise<T>,
@@ -706,31 +703,134 @@ async function withStubbedFetch<T>(
   }
 }
 
-describe('Lark untagged group policy', () => {
-  it('does not download, OCR, or index a file shared without mentioning Divo', async () => {
-    const outbound: string[] = [];
-    const result = await withStubbedFetch(async calls => {
-      const value = await runWebhook(makeEvent({
-        chatType: 'group',
-        file: { key: 'file_v3_secret', name: 'salaries.xlsx' },
-      }));
-      outbound.push(...calls);
-      return value;
-    });
+/** Attachment contexts as they were handed to the room transcript. */
+function attachmentsOf(message: unknown): Record<string, unknown>[] {
+  const attachments = (message as Record<string, unknown> | undefined)?.['attachments'];
+  return Array.isArray(attachments) ? attachments as Record<string, unknown>[] : [];
+}
 
-    // Asserted directly rather than inferred from the absence of an ingestion
-    // job: "did not index" and "did not leave Lark" are different claims, and
-    // only this one fails if the download ever moves out of the gated helper.
-    assert.deepEqual(outbound, [], 'nothing was fetched from Lark');
+/**
+ * Filenames Divo tried to pull out of Lark.
+ *
+ * Observed through the download log rather than through `globalThis.fetch`:
+ * the Lark SDK is built on axios, so a stubbed `fetch` never sees these calls
+ * and asserting on it would pass no matter what the code did. Every attempt
+ * that does not succeed logs here, and in a unit test none of them succeed.
+ */
+function attemptedDownloads(
+  logEvents: Array<{ event: string; fields: Record<string, unknown> }>,
+): string[] {
+  return logEvents
+    .filter(entry => entry.event.startsWith('webhook.attachment.download.'))
+    .map(entry => String(entry.fields['fileName']));
+}
+
+describe('Lark document attachments', () => {
+  it('never fetches a document out of Lark, even when Divo is addressed', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'p2p',
+      file: { key: 'file_v3_budget', name: 'budget.xlsx' },
+    })));
+
+    // The refusal has to happen before the download, not after it. Fetching a
+    // file we then decline to read is the worst of both: the bytes left Lark
+    // and the user got nothing for it.
+    assert.deepEqual(attemptedDownloads(result.logEvents), [], 'the document never left Lark');
+    assert.ok(
+      result.logEvents.some(entry => entry.event === 'webhook.attachment.unsupported'),
+      'and the refusal is recorded',
+    );
     assert.equal(result.status, 200);
-    // Preparing this attachment would have pulled the file out of Lark, OCR'd
-    // it, pushed it to a CDN, and indexed it as shared company knowledge — all
-    // for a message nobody addressed to Divo.
-    assert.deepEqual(result.ingestionJobs, [], 'no attachment was indexed');
-    assert.ok(!result.order.includes('ingest'), 'ingestion queue never touched');
+    assert.ok(result.order.includes('engine'), 'Divo still answers the message');
+  });
+
+  it('tells the model it did not read the document, and not to pretend it did', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'p2p',
+      file: { key: 'file_v3_q3', name: 'Q3-revenue.pdf' },
+    })));
+
+    const incoming = (result.engineInputs[0] as Record<string, any>)?.['incoming'];
+    const text = String(incoming?.text ?? '');
+
+    // Without this the model receives a bare filename and answers from it.
+    assert.match(text, /NOT READ/, 'the refusal reaches the prompt');
+    assert.match(text, /Q3-revenue\.pdf/);
+    assert.match(text, /Do not guess or infer/i);
+  });
+
+  it('records the document as unsupported rather than as failed or pending', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      file: { key: 'file_v3_spec', name: 'spec.docx' },
+    })));
+
+    const attachments = attachmentsOf(result.retainedMessages[0]);
+    assert.equal(attachments.length, 1);
+    // 'failed' would imply something went wrong and a retry might help;
+    // 'processing' would imply an answer is coming. Neither is true.
+    assert.equal(attachments[0]?.['ingestionStatus'], 'unsupported');
+    assert.equal(attachments[0]?.['error'], undefined, 'a refusal is not an error');
+  });
+
+  it('does not acknowledge a document-only message with a received reaction', async () => {
+    const reactions: string[] = [];
+    await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'p2p',
+      file: { key: 'file_v3_only', name: 'notes.txt' },
+    }), {
+      setupAdapter: adapter => {
+        (adapter as any).reactToIncoming = async (_id: string, emoji: string) => {
+          reactions.push(emoji);
+        };
+      },
+    }));
+
+    // A 📥 says "received, working on it" and is then contradicted by the
+    // refusal that follows.
+    assert.deepEqual(reactions, []);
+  });
+});
+
+describe('Lark image attachments', () => {
+  /**
+   * That the image bytes never reach the transcript is pinned in
+   * `lark-media-support.test.ts`, on `withoutTransientBytes` itself. It cannot
+   * be pinned here: no download succeeds in a unit test, so `base64DataUrl` is
+   * absent whether or not the stripper runs, and the assertion would hold even
+   * with the stripping deleted.
+   */
+  it('records a download failure on the attachment instead of dropping it', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      image: { key: 'img_v3_broken' },
+    })));
+
+    const attachments = attachmentsOf(result.retainedMessages[0]);
+    assert.equal(attachments.length, 1, 'the attachment is still reported');
+    // Distinguishes "we tried and could not" from "we declined to try", which
+    // is the difference between a retry being worth suggesting and not.
+    assert.ok(attachments[0]?.['error'], 'the failure is recorded');
+    assert.notEqual(attachments[0]?.['ingestionStatus'], 'unsupported');
+  });
+});
+
+describe('Lark untagged group policy', () => {
+  it('does not download or OCR an image shared without mentioning Divo', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      image: { key: 'img_v3_secret' },
+    })));
+
+    // Asserted on the attempt itself rather than inferred from a missing side
+    // effect: "was not read" and "did not leave Lark" are different claims, and
+    // only this one fails if the download ever moves out of the gated helper.
+    assert.deepEqual(attemptedDownloads(result.logEvents), [], 'nothing was fetched from Lark');
+    assert.equal(result.status, 200);
     assert.ok(!result.order.includes('engine'), 'engine did not run');
-    // Nothing is retained either: the filename is all that survived parsing, and
-    // a file message carries no text to keep.
+    // Nothing is retained either: an image message carries no text to keep.
     assert.deepEqual(result.retainedMessages, [], 'nothing entered the transcript');
   });
 
@@ -771,10 +871,10 @@ describe('Lark untagged group policy', () => {
   it('reaches attachment preparation when a deployment opts in', async () => {
     // Guards the over-blocking failure mode: with only untagged-and-ignored
     // cases, hard-wiring the gate to false would leave every test green while
-    // attachment ingestion was silently dead.
+    // attachment handling was silently dead.
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'group',
-      file: { key: 'file_v3_shared', name: 'roadmap.pdf' },
+      image: { key: 'img_v3_shared' },
     }), {
       untaggedPolicy: {
         LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
@@ -782,23 +882,26 @@ describe('Lark untagged group policy', () => {
       },
     }));
 
-    assert.equal(result.ingestionJobs.length, 1, 'opt-in reaches the ingestion queue');
-    const job = result.ingestionJobs[0] as Record<string, unknown>;
-    assert.equal(job['fileName'], 'roadmap.pdf');
-    assert.equal(job['visibility'], 'shared');
+    const attachments = attachmentsOf(result.retainedMessages[0]);
+    assert.equal(attachments.length, 1, 'opt-in reaches attachment preparation');
+    // `inline_only` is the status preparation produces; a skipped attachment
+    // would never have been given one.
+    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
     assert.ok(!result.order.includes('engine'), 'opting in does not make Divo reply');
   });
 
-  it('still ingests a file on a message that does address Divo', async () => {
+  it('still prepares an image on a message that does address Divo', async () => {
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'group',
       mentionsBot: true,
-      file: { key: 'file_v3_asked', name: 'contract.pdf' },
+      image: { key: 'img_v3_asked' },
     })));
 
     // The policy governs what Divo takes uninvited; being asked is the
     // invitation, so the default 'ignore' setting must not gate this.
-    assert.equal(result.ingestionJobs.length, 1, 'an addressed file is ingested');
+    const attachments = attachmentsOf(result.retainedMessages[0]);
+    assert.equal(attachments.length, 1, 'an addressed image is prepared');
+    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
     assert.ok(result.order.includes('engine'), 'and the turn still runs');
   });
 
@@ -897,45 +1000,52 @@ describe('Lark per-turn authority in a shared thread', () => {
 });
 
 describe('Lark untagged policy per company', () => {
-  const untaggedFile = () => makeEvent({
+  // An image, because that is the only attachment kind the policy can still
+  // decide anything about — a document is refused whatever the policy says.
+  const untaggedImage = () => makeEvent({
     chatType: 'group',
-    file: { key: 'file_v3_co', name: 'budget.xlsx' },
+    image: { key: 'img_v3_co' },
+    text: 'take a look',
   });
 
   it("honours a company's opt-in over the deployment default", async () => {
-    const result = await withStubbedFetch(() => runWebhook(untaggedFile(), {
-      companyControls: [{ controlKey: 'lark.untagged.attachments', value: 'process' }],
+    const result = await withStubbedFetch(() => runWebhook(untaggedImage(), {
+      companyControls: [
+        { controlKey: 'lark.untagged.attachments', value: 'process' },
+        { controlKey: 'lark.untagged.textRetention', value: 'retain' },
+      ],
     }));
 
-    assert.equal(result.ingestionJobs.length, 1, 'the company that asked gets processing');
+    const attachments = attachmentsOf(result.retainedMessages[0]);
+    assert.equal(attachments.length, 1, 'the company that asked gets processing');
+    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
   });
 
   it("honours a company's opt-out even when the deployment enables processing", async () => {
-    const result = await withStubbedFetch(async calls => {
-      const value = await runWebhook(untaggedFile(), {
-        untaggedPolicy: {
-          LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
-          LARK_UNTAGGED_GROUP_ATTACHMENTS: 'process',
-        },
-        companyControls: [{ controlKey: 'lark.untagged.attachments', value: 'ignore' }],
-      });
-      assert.deepEqual(calls, [], 'nothing was fetched from Lark');
-      return value;
-    });
+    const result = await withStubbedFetch(() => runWebhook(untaggedImage(), {
+      untaggedPolicy: {
+        LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
+        LARK_UNTAGGED_GROUP_ATTACHMENTS: 'process',
+      },
+      companyControls: [{ controlKey: 'lark.untagged.attachments', value: 'ignore' }],
+    }));
 
     // The direction that matters: a company must be able to refuse regardless
-    // of what the shared deployment has turned on.
-    assert.deepEqual(result.ingestionJobs, []);
+    // of what the shared deployment has turned on. The text is still retained,
+    // so this asserts the attachment was skipped rather than the whole message.
+    assert.deepEqual(attemptedDownloads(result.logEvents), [], 'nothing was fetched from Lark');
+    assert.deepEqual(attachmentsOf(result.retainedMessages[0]), []);
   });
 
   it('leaves other companies on the deployment default', async () => {
-    const result = await withStubbedFetch(async calls => {
-      const value = await runWebhook(untaggedFile(), { companyControls: [] });
-      assert.deepEqual(calls, []);
-      return value;
-    });
+    const result = await withStubbedFetch(() => runWebhook(untaggedImage(), {
+      companyControls: [],
+    }));
 
-    assert.deepEqual(result.ingestionJobs, [], 'no override means the safe default');
+    assert.deepEqual(
+      attemptedDownloads(result.logEvents), [], 'no override means the safe default',
+    );
+    assert.deepEqual(attachmentsOf(result.retainedMessages[0]), []);
   });
 });
 

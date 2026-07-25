@@ -80,7 +80,6 @@ export const createServer = (c: Container) => {
     env:                   c.env,
     approvalGate:          c.approvalGate,
     approvalCardHandler:   c.approvalCardHandler,
-    ingestionQueue:        c.ingestionQueue,
     knowledgeShareService: c.knowledgeShareService,
     shareResolverService:  c.shareResolverService,
     ...(c.mem0Service ? { mem0: c.mem0Service } : {}),
@@ -91,7 +90,6 @@ export const createServer = (c: Container) => {
     chatContextService:    c.chatContextService,
     channelDeliveryRepo:   c.channelDeliveryRepo,
     prisma:                c.prisma,
-    cloudinaryAdapter:     c.cloudinaryAdapter,
     larkContactsClient:    c.larkContactsClient,
   };
 
