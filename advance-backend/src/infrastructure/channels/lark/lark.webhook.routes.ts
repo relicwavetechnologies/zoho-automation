@@ -38,7 +38,7 @@ import type { GroupChatAttachmentContext } from '../../../domain/conversation/gr
 import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
 import type { LarkContactsClient } from './clients/lark-contacts.client';
-import { buildLarkRoutingKeys } from './lark-routing';
+import { buildLarkIngressLaneKey, buildLarkRoutingKeys } from './lark-routing';
 import { appendLarkMentionContext, listLarkMentionOpenIds } from './lark-mention-context';
 import type {
   IngressReceipt,
@@ -64,7 +64,7 @@ export interface LarkWebhookDeps {
   larkOAuthService?: LarkOAuthService;
   connectionRepo?: IntegrationConnectionRepository;
   cache: CachePort;
-  /** Per-chat message serializer — ensures only one engine.run() per chat at a time. */
+  /** Per-lane serializer — preserves FIFO within one DM, thread, or group requester. */
   serializer: ChatMessageSerializer;
   chatContextService?: LarkChatContextService;
   prisma?: PrismaClient;
@@ -382,7 +382,8 @@ export async function processAcceptedLarkReceipt(
     receiptId: receipt.receiptId,
   });
 
-  await deps.serializer.runAndWait(String(incoming.chatId), async signal => {
+  const executionLaneKey = buildLarkIngressLaneKey(incoming);
+  await deps.serializer.runAndWait(executionLaneKey, async signal => {
     const startedAtMs = Date.now();
     requestLog.info('webhook.background.started');
     try {
@@ -579,9 +580,15 @@ async function processInBackground(
     requesterUserId: identity.userId,
     departmentId: identity.activeDepartmentId ?? null,
     roomKey: routing.roomKey,
-    laneKey: routing.executionLaneKey,
+    // The key the serializer actually ordered this turn on. It is derived
+    // without company identity so lane selection stays synchronous; recomputing
+    // it here is safe because the builder is pure over the same event.
+    laneKey: buildLarkIngressLaneKey(incoming),
+    // The company-scoped lane identity from the product contract. Wave 3's
+    // distributed leases adopt it; today it is recorded for comparison only.
+    companyLaneKey: routing.executionLaneKey,
     deliveryTargetKey: routing.deliveryTargetKey,
-    routingMode: 'shadow',
+    routingMode: 'active',
   });
   log.info('webhook.execution.correlated');
   if (deps.prisma) {

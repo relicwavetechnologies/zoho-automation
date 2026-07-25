@@ -66,6 +66,24 @@ function makeEvent(input: {
   };
 }
 
+/**
+ * Await a condition by yielding the event loop. The budget only exists to turn a
+ * genuine hang into a readable failure — it is deliberately far larger than the
+ * work being awaited, because `node --test` runs files in parallel and a tight
+ * wall-clock deadline fails on CPU contention rather than on real regressions.
+ */
+async function waitUntil(
+  condition: () => boolean,
+  label: string,
+  budgetMs = 10_000,
+): Promise<void> {
+  const deadline = Date.now() + budgetMs;
+  while (!condition() && Date.now() < deadline) {
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  assert.ok(condition(), label);
+}
+
 async function runWebhook(body: unknown, options: {
   engineRun?: (input: unknown) => Promise<unknown>;
   serializer?: ChatMessageSerializer;
@@ -133,12 +151,13 @@ async function runWebhook(body: unknown, options: {
       resolveByLarkTenantIdentity: async (openId: string, tenantKey: string) => {
         identityLookups.push({ openId, tenantKey });
         return ok(options.identity ?? {
-        userId: 'user-1',
-        companyId: 'company-1',
-        aiRole: 'MEMBER',
-        channel: 'lark',
+          userId: 'user-1',
+          companyId: 'company-1',
+          aiRole: 'MEMBER',
+          channel: 'lark',
         });
       },
+      prepareLarkLogin: async () => ok(null),
     } as any,
     conversationRepo: {} as any,
     ingressReceiptRepo: {
@@ -203,10 +222,7 @@ async function runWebhook(body: unknown, options: {
   const layer = (router as any).stack.find((entry: any) => entry.route?.path === '/events');
   assert.ok(layer, 'events route');
   await Promise.resolve(layer.route.stack[0].handle(req, res, () => {}));
-  const responseDeadline = Date.now() + 1_000;
-  while (responseBody === undefined && Date.now() < responseDeadline) {
-    await new Promise<void>(resolve => setImmediate(resolve));
-  }
+  await waitUntil(() => responseBody !== undefined, 'webhook responded');
   const processQueuedReceipt = async (): Promise<void> => {
     if (!queuedReceiptId) throw new Error('No durable receipt was queued');
     await processAcceptedLarkReceipt({
@@ -220,11 +236,8 @@ async function runWebhook(body: unknown, options: {
     await processQueuedReceipt();
   }
   if (options.serializer && options.waitForIdle !== false) {
-    const deadline = Date.now() + 1_000;
-    while (options.serializer.activeChats > 0 && Date.now() < deadline) {
-      await new Promise<void>(resolve => setImmediate(resolve));
-    }
-    assert.equal(options.serializer.activeChats, 0, 'serializer settled');
+    const serializer = options.serializer;
+    await waitUntil(() => serializer.activeChats === 0, 'serializer settled');
   } else {
     await Promise.all(background);
   }
@@ -246,7 +259,9 @@ describe('Lark webhook admission', () => {
     assert.equal(result.status, 200);
     assert.deepEqual(result.responseBody, { ok: true });
     assert.deepEqual(result.order, ['receipt', 'queue', 'link', 'ack', 'execute', 'engine']);
-    assert.deepEqual(result.serializerKeys, ['oc_1']);
+    assert.deepEqual(result.serializerKeys, [
+      '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
+    ]);
     assert.deepEqual(result.identityLookups, [{ openId: 'ou_sender', tenantKey: 'tenant-1' }]);
     assert.equal(result.engineInputs.length, 1);
     const engineInput = result.engineInputs[0] as {
@@ -287,10 +302,19 @@ describe('Lark webhook admission', () => {
       requesterUserId: 'user-1',
       departmentId: null,
       roomKey: '["lark","room","company-1","tenant-1","app-1","oc_1"]',
-      laneKey: '["lark","lane","company-1","tenant-1","app-1","oc_1","thread","om_root"]',
+      // The reported lane must be the one the serializer actually ordered on,
+      // otherwise lane telemetry cannot be used to diagnose ordering.
+      laneKey: '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
+      companyLaneKey: '["lark","lane","company-1","tenant-1","app-1","oc_1","thread","om_root"]',
       deliveryTargetKey: '["lark","delivery","company-1","tenant-1","app-1","oc_1","om_1","om_root"]',
-      routingMode: 'shadow',
+      routingMode: 'active',
     });
+    assert.equal(
+      result.serializerKeys[0],
+      (result.logEvents.find(entry => entry.event === 'webhook.execution.correlated')
+        ?.fields['laneKey']),
+      'reported lane key matches the serialized lane key',
+    );
     for (const event of ['webhook.accepted', 'webhook.background.started', 'webhook.background.completed']) {
       assert.ok(result.logEvents.some(entry => entry.event === event), `${event} log`);
     }
@@ -442,11 +466,7 @@ describe('Lark webhook admission', () => {
         processQueued: false,
       });
       const firstProcessing = first.processQueuedReceipt().catch(error => error);
-      const startDeadline = Date.now() + 1_000;
-      while (!rejectFirst && Date.now() < startDeadline) {
-        await new Promise<void>(resolve => setImmediate(resolve));
-      }
-      assert.ok(rejectFirst, 'first engine run started');
+      await waitUntil(() => !!rejectFirst, 'first engine run started');
       const second = await runWebhook(makeEvent({ chatType: 'p2p' }), {
         serializer,
         engineRun,
@@ -459,13 +479,8 @@ describe('Lark webhook admission', () => {
       const firstError = await firstProcessing;
       await secondProcessing;
 
-      const deadline = Date.now() + 1_000;
-      while (serializer.activeChats > 0 && Date.now() < deadline) {
-        await new Promise<void>(resolve => setImmediate(resolve));
-      }
+      await waitUntil(() => serializer.activeChats === 0, 'queued successor settled');
       await new Promise<void>(resolve => setImmediate(resolve));
-
-      assert.equal(serializer.activeChats, 0, 'queued successor settled');
       assert.equal(
         first.logEvents.filter(entry => entry.event === 'webhook.background.failed').length,
         1,

@@ -2,7 +2,7 @@
 
 > Tracking document for the Lark channel hardening project.
 >
-> Status: **Wave 2 code reviewed clean — schema push blocked until the local DB tunnel is restored**
+> Status: **Wave 3A process-local lane activation complete — distributed leases, batching, and busy UX still pending; schema push blocked until the local DB tunnel is restored**
 >
 > Last updated: 2026-07-25
 
@@ -69,14 +69,30 @@ sections remain the detailed implementation checklist.
 | Trigger/thread delivery | 53 focused tests + typecheck passed | Fresh review: ship, no findings |
 | Durable ingress acceptance | Prisma validation + 16 focused repository/webhook/scenario tests + typecheck passed | Initial review found two fixed error-boundary/harness gaps; final review found the expected Wave 2B blocker: accepted receipts still need durable recovery before deployment |
 | Durable ingress recovery | 28 focused receipt/queue/worker/webhook/restart-scenario tests passed; Prisma validation passed; full typecheck is temporarily blocked by unrelated in-progress Airtable mappings | Two fresh reviews found and verified the retained-failed-job recovery gap; failed receipts now reach reconciliation and retained failed jobs are explicitly retried. Final review: ship, no findings |
+| Wave 3A process-local lanes | 25 focused routing/webhook/scenario/serializer tests + full typecheck passed | Review found lane telemetry reporting the company-scoped key while the serializer ordered on the ingress key; corrected so `laneKey` is the key actually used and the contract key is recorded separately as `companyLaneKey` |
 
 ### Immediate next step
 
-Continue with Wave 3A's process-local canonical-lane activation while the local
-DB tunnel on `127.0.0.1:15432` remains unavailable. Once restored, push the
-already-authorized development schema and run the real Redis/Postgres restart
-smoke test before marking the production exit gate complete. Rerun the full typecheck after the
-unrelated Airtable tool mappings are complete.
+Wave 3A's process-local lane activation is complete: the serializer now orders on
+a canonical lane rather than the chat, so unrelated group requesters run
+concurrently while a thread, a DM, and a single requester each stay FIFO. Lane
+selection is synchronous and carries no authority — identity and RBAC are still
+resolved inside execution, immediately before `engine.run()`.
+
+What Wave 3 still owes before this is safe on more than one replica:
+
+- Distributed lane leases with owner, heartbeat, expiry, and fencing token
+  (Phase 3A). Today's ordering is process-local; two replicas would each run
+  their own lane for the same thread.
+- Initial-burst batching (Phase 3B). No compatible-message debouncing exists.
+- Busy-turn UX (Phase 3C): first busy acknowledgement, queue position, cancel.
+- Global lane concurrency is currently unbounded by default. Group top-level
+  lanes are now per-requester, so a busy group can open many parallel runs until
+  `maxConcurrent` is set deliberately.
+
+Independently of Wave 3, the local DB tunnel on `127.0.0.1:15432` remains
+unavailable, so the already-authorized development schema push and the real
+Redis/Postgres restart smoke test are still outstanding.
 
 ## 1. Decision and Confidence
 
@@ -232,8 +248,11 @@ marked accordingly; open items are owned by the wave named beside them.
 1. **Resolved in code; schema push pending:** The webhook persists and durably
    queues before acknowledgement, and accepted/processing receipts are recovered.
 2. **Open — Wave 3:** `ChatMessageSerializer` remains process-local ordering;
-   it is no longer the ingress durability boundary.
-3. **Partially resolved:** Canonical lane keys remove chat-wide routing ambiguity; distributed lane ownership remains in Wave 3.
+   it is no longer the ingress durability boundary. Its own doc comments still
+   describe per-chat serialization and must be corrected when Wave 3 replaces it.
+3. **Resolved for a single replica:** The serializer orders on canonical lane
+   keys instead of the chat ID, so chat-wide routing ambiguity is gone.
+   Distributed lane ownership remains in Wave 3.
 4. **Resolved for current orchestration path:** Cancellation now reaches the engine and governed tool contexts; individual integration-client cancellation remains incremental.
 5. **Resolved:** Parent, root, and thread IDs are distinct canonical fields.
 6. **Open — Wave 4:** Runtime conversation context still needs complete thread-aware isolation.
@@ -261,7 +280,7 @@ marked accordingly; open items are owned by the wave named beside them.
 | 0 | Lock behavior, baselines, and prerequisite defects | Substantially complete; restart/approval fixtures remain |
 | 1 | Canonical Lark event, mention, identity, and routing model | Complete |
 | 2 | Durable ingress and idempotent acceptance | Code and cold review complete; schema push blocked by offline DB tunnel |
-| 3 | Distributed execution lanes, batching, and busy behavior | Not started |
+| 3 | Distributed execution lanes, batching, and busy behavior | 3A process-local lanes complete; distributed leases/fencing, batching (3B), and busy UX (3C) not started |
 | 4 | Thread-aware context plus per-turn RBAC/HITL | Not started |
 | 5 | Reliable status and final delivery | Not started |
 | 6 | Images, documents, OCR, indexing, and retrieval safety | Plan ready |
@@ -415,11 +434,17 @@ Disable the durable-ingress consumer flag, drain or inspect persisted jobs, and 
 
 ### Phase 3A — Lane ownership
 
+- [x] Activate canonical process-local lanes: the serializer orders on
+      `buildLarkIngressLaneKey` (tenant + app + chat + DM/thread/requester)
+      instead of the chat ID. The key is derived synchronously from the parsed
+      event so an identity lookup can never reorder FIFO admission, and it
+      carries no company or authority.
+- [x] Preserve FIFO sequence inside a lane.
+- [x] Re-resolve each queued item's requester when its turn begins.
 - [ ] Implement one active lease per execution lane with owner, heartbeat, expiry, and fencing token.
 - [ ] Prevent an expired owner from publishing a final response after a new owner takes the lane.
-- [ ] Preserve FIFO sequence inside a lane.
-- [ ] Allow unrelated lanes to use bounded global concurrency.
-- [ ] Re-resolve each queued item's requester when its turn begins.
+- [ ] Allow unrelated lanes to use bounded global concurrency. `maxConcurrent`
+      exists on the serializer but still defaults to unbounded.
 
 ### Phase 3B — Initial burst batching
 
@@ -756,7 +781,8 @@ Initial internal targets to validate during canary:
 | 2026-07-24 | Lark media uses private cloud staging, not permanent raw retention by default | Accepted |
 | 2026-07-24 | Saved group attachments remain personal to the triggering user | Accepted |
 | 2026-07-24 | Untagged group attachments are not downloaded/OCR'd/indexed by default | Accepted |
-| 2026-07-25 | Canonical routing keys are shadow-logged while the live serializer remains on `chatId` | Implemented |
+| 2026-07-25 | Canonical routing keys are shadow-logged while the live serializer remains on `chatId` | Superseded on 2026-07-25 by Wave 3A |
+| 2026-07-25 | The live serializer orders on the canonical ingress lane key; lane selection is synchronous and authority-free | Implemented |
 | 2026-07-25 | Lark webhook ACK follows durable receipt persistence, stable queue admission, and receipt/job linkage | Implemented |
 | 2026-07-25 | Failed durable receipts remain recoverable; reconciliation retries retained failed BullMQ jobs | Implemented and cold-reviewed |
 

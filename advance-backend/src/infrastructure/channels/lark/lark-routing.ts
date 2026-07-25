@@ -22,27 +22,33 @@ type RoutingInput = {
 
 const key = (...parts: readonly string[]): string => JSON.stringify(parts);
 
+const channelParts = (incoming: IncomingMessage): readonly string[] => [
+  incoming.tenantKey ?? '',
+  incoming.appId ?? '',
+  String(incoming.chatId),
+];
+
 const installationParts = (input: RoutingInput): readonly string[] => [
   input.companyId,
-  input.incoming.tenantKey ?? '',
-  input.incoming.appId ?? '',
-  String(input.incoming.chatId),
+  ...channelParts(input.incoming),
 ];
+
+const laneParts = (incoming: IncomingMessage): readonly string[] => {
+  if (incoming.chatType === 'p2p') return ['dm'];
+  const threadIdentity = incoming.threadId ?? incoming.rootMessageId;
+  return threadIdentity
+    ? ['thread', String(threadIdentity)]
+    : ['requester', incoming.userExternalId];
+};
 
 export const buildLarkRoomKey = (input: RoutingInput): string =>
   key('lark', 'room', ...installationParts(input));
 
-export const buildLarkExecutionLaneKey = (input: RoutingInput): string => {
-  const base = installationParts(input);
-  if (input.incoming.chatType === 'p2p') {
-    return key('lark', 'lane', ...base, 'dm');
-  }
+export const buildLarkIngressLaneKey = (incoming: IncomingMessage): string =>
+  key('lark', 'ingress-lane', ...channelParts(incoming), ...laneParts(incoming));
 
-  const threadIdentity = input.incoming.threadId ?? input.incoming.rootMessageId;
-  return threadIdentity
-    ? key('lark', 'lane', ...base, 'thread', String(threadIdentity))
-    : key('lark', 'lane', ...base, 'requester', input.incoming.userExternalId);
-};
+export const buildLarkExecutionLaneKey = (input: RoutingInput): string =>
+  key('lark', 'lane', ...installationParts(input), ...laneParts(input.incoming));
 
 export const buildLarkDeliveryTarget = (input: RoutingInput): {
   key: string;

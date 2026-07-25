@@ -21,6 +21,8 @@ function makeEvent(input: {
   messageId: string;
   chatId: string;
   senderOpenId: string;
+  rootMessageId?: string;
+  threadId?: string;
 }) {
   return {
     header: {
@@ -43,6 +45,8 @@ function makeEvent(input: {
         content: JSON.stringify({ text: '@_user_1 help' }),
         create_time: '1700000000000',
         mentions: [{ key: '@_user_1', name: 'Renamed Bot', id: { open_id: 'ou_bot' } }],
+        ...(input.rootMessageId ? { root_id: input.rootMessageId } : {}),
+        ...(input.threadId ? { thread_id: input.threadId } : {}),
       },
     },
   };
@@ -203,7 +207,7 @@ describe('Lark webhook scenarios', () => {
     assert.deepEqual(calls, ['message-retry']);
   });
 
-  it('serializes two users in one group while a different chat proceeds independently', async () => {
+  it('runs independent top-level group requesters concurrently', async () => {
     const events: string[] = [];
     let releaseFirst: (() => void) | undefined;
     const harness = createHarness(async (messageId, userId) => {
@@ -233,21 +237,89 @@ describe('Lark webhook scenarios', () => {
       senderOpenId: 'sender-3',
     }));
 
-    await waitFor(() => events.includes('end:message-3'));
-    assert.deepEqual(events, [
-      'start:message-1:user:sender-1',
-      'start:message-3:user:sender-3',
-      'end:message-3',
-    ]);
+    await waitFor(() => events.includes('end:message-2') && events.includes('end:message-3'));
+    assert.ok(events.includes('start:message-1:user:sender-1'));
+    assert.ok(events.includes('start:message-2:user:sender-2'));
+    assert.ok(events.includes('start:message-3:user:sender-3'));
+    assert.ok(!events.includes('end:message-1'));
+
+    releaseFirst?.();
+    await harness.waitForIdle();
+    assert.ok(events.includes('end:message-1'));
+  });
+
+  it('keeps top-level requests from the same group requester FIFO', async () => {
+    const events: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const harness = createHarness(async messageId => {
+      events.push(`start:${messageId}`);
+      if (messageId === 'message-1') {
+        await new Promise<void>(resolve => { releaseFirst = resolve; });
+      }
+      events.push(`end:${messageId}`);
+    });
+
+    await harness.deliver(makeEvent({
+      eventId: 'event-1',
+      messageId: 'message-1',
+      chatId: 'group-1',
+      senderOpenId: 'sender-1',
+    }));
+    await harness.deliver(makeEvent({
+      eventId: 'event-2',
+      messageId: 'message-2',
+      chatId: 'group-1',
+      senderOpenId: 'sender-1',
+    }));
+
+    await waitFor(() => events.includes('start:message-1'));
+    assert.deepEqual(events, ['start:message-1']);
 
     releaseFirst?.();
     await harness.waitForIdle();
     assert.deepEqual(events, [
-      'start:message-1:user:sender-1',
-      'start:message-3:user:sender-3',
-      'end:message-3',
+      'start:message-1',
       'end:message-1',
-      'start:message-2:user:sender-2',
+      'start:message-2',
+      'end:message-2',
+    ]);
+  });
+
+  it('keeps different requesters in the same group thread FIFO', async () => {
+    const events: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const harness = createHarness(async messageId => {
+      events.push(`start:${messageId}`);
+      if (messageId === 'message-1') {
+        await new Promise<void>(resolve => { releaseFirst = resolve; });
+      }
+      events.push(`end:${messageId}`);
+    });
+
+    await harness.deliver(makeEvent({
+      eventId: 'event-1',
+      messageId: 'message-1',
+      chatId: 'group-1',
+      senderOpenId: 'sender-1',
+      threadId: 'thread-1',
+    }));
+    await harness.deliver(makeEvent({
+      eventId: 'event-2',
+      messageId: 'message-2',
+      chatId: 'group-1',
+      senderOpenId: 'sender-2',
+      threadId: 'thread-1',
+    }));
+
+    await waitFor(() => events.includes('start:message-1'));
+    assert.deepEqual(events, ['start:message-1']);
+
+    releaseFirst?.();
+    await harness.waitForIdle();
+    assert.deepEqual(events, [
+      'start:message-1',
+      'end:message-1',
+      'start:message-2',
       'end:message-2',
     ]);
   });
