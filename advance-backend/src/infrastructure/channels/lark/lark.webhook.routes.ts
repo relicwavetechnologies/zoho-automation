@@ -39,6 +39,11 @@ import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
 import type { LarkContactsClient } from './clients/lark-contacts.client';
 import { buildLarkIngressLaneKey, buildLarkRoutingKeys } from './lark-routing';
+import {
+  isUntaggedGroupMessage,
+  mayPrepareAttachments,
+  resolveUntaggedGroupPolicy,
+} from './lark-untagged-policy';
 import { appendLarkMentionContext, listLarkMentionOpenIds } from './lark-mention-context';
 import type {
   IngressReceipt,
@@ -511,7 +516,7 @@ async function processInBackground(
   );
 
   if (!identityResult.ok || !identityResult.value) {
-    if (incoming.chatType === 'group' && !incoming.mentionsSelf) {
+    if (isUntaggedGroupMessage(incoming)) {
       log.debug('webhook.group_message.not_mentioned.identity_missing', {
         chatId: incoming.chatId,
         messageId: incoming.messageId,
@@ -654,9 +659,21 @@ async function processInBackground(
   const attachments = parseLarkAttachments(rawEvent);
   const shouldRespond = shouldStartLarkAgent(incoming);
 
+  // Divo is in the room but was not addressed. Preparing an attachment is not a
+  // read — it downloads the file out of Lark, OCRs it, pushes it to a CDN, and
+  // indexes it as shared company knowledge. That only happens on an explicit
+  // opt-in, and the decision must be made *before* the work, not after.
+  const untaggedPolicy = resolveUntaggedGroupPolicy(deps.env);
+  const untagged = isUntaggedGroupMessage(incoming);
+  const mayProcessAttachments = mayPrepareAttachments({
+    attachmentCount: attachments.length,
+    untagged,
+    policy: untaggedPolicy,
+  });
+
   // Fetch parent message (quote-reply context) in parallel with attachment prep.
   const [preparedAttachments, parentRef] = await Promise.all([
-    attachments.length > 0
+    mayProcessAttachments
       ? prepareLarkAttachmentContexts({
           incoming,
           attachments,
@@ -682,21 +699,27 @@ async function processInBackground(
       : Promise.resolve(null),
   ]);
 
-  if (incoming.chatType === 'group' && !incoming.mentionsSelf) {
+  if (untagged) {
+    // Logged as the policy actually applied, not as the policy configured, so a
+    // company can see from its own traffic what Divo kept and what it skipped.
     log.debug('webhook.group_message.not_mentioned', {
       chatId: incoming.chatId,
       messageId: incoming.messageId,
-      attachmentCount: preparedAttachments.length,
-    });
-    await storeGroupIncomingSnapshot({
-      incoming,
-      identity,
-      deps,
-      attachmentContexts: preparedAttachments.map(item => item.context),
-      log,
+      attachmentCount: attachments.length,
+      attachmentsProcessed: mayProcessAttachments,
+      textRetained: untaggedPolicy.retainText,
     });
 
-    // OCR/indexing runs silently in the background. No user-facing ack.
+    if (untaggedPolicy.retainText) {
+      await storeGroupIncomingSnapshot({
+        incoming,
+        identity,
+        deps,
+        attachmentContexts: preparedAttachments.map(item => item.context),
+        log,
+      });
+    }
+
     return;
   }
 

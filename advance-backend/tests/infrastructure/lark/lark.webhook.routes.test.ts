@@ -20,6 +20,8 @@ function makeEvent(input: {
   senderType?: 'user' | 'bot';
   mentionsBot?: boolean;
   mentionsHuman?: boolean;
+  /** Attach a file to the message instead of sending plain text. */
+  file?: { key: string; name: string };
 }) {
   const mentions = [
     ...(input.mentionsBot
@@ -55,8 +57,10 @@ function makeEvent(input: {
         message_id: 'om_1',
         chat_id: 'oc_1',
         chat_type: input.chatType,
-        message_type: 'text',
-        content: JSON.stringify({ text }),
+        message_type: input.file ? 'file' : 'text',
+        content: input.file
+          ? JSON.stringify({ file_key: input.file.key, file_name: input.file.name })
+          : JSON.stringify({ text }),
         create_time: '1700000000000',
         root_id: 'om_root',
         parent_id: 'om_parent',
@@ -110,8 +114,21 @@ async function runWebhook(body: unknown, options: {
     error?: Error;
   }>;
   processQueued?: boolean;
+  /**
+   * Untagged-group policy. Production resolves these from validated env with
+   * defaults; tests must state them, because an unset value is not the default
+   * and a silently-off policy would make a gate look like it works when the
+   * message simply never reached it.
+   */
+  untaggedPolicy?: {
+    LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain' | 'off';
+    LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore' | 'process';
+  };
 } = {}) {
   const order: string[] = [];
+  const ingestionJobs: unknown[] = [];
+  const retainedMessages: Array<Record<string, unknown>> = [];
+  const acceptedPayloads: unknown[] = [];
   const engineInputs: unknown[] = [];
   const serializerKeys: string[] = [];
   const identityLookups: Array<{ openId: string; tenantKey: string }> = [];
@@ -133,6 +150,9 @@ async function runWebhook(body: unknown, options: {
     LARK_APP_SECRET: 'secret',
     LARK_BOT_NAME: 'Divo',
     LARK_VERIFICATION_TOKEN: 'verify',
+    LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
+    LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore',
+    ...(options.untaggedPolicy ?? {}),
   } as any;
   const adapter = new LarkChannelAdapter({ env, logger: noopLogger, botOpenId: 'ou_bot' });
   options.setupAdapter?.(adapter);
@@ -161,8 +181,9 @@ async function runWebhook(body: unknown, options: {
     } as any,
     conversationRepo: {} as any,
     ingressReceiptRepo: {
-      accept: async () => {
+      accept: async (input?: { payload?: unknown }) => {
         order.push('receipt');
+        acceptedPayloads.push(input?.payload);
         return options.acceptReceipt
           ? options.acceptReceipt()
           : { ok: true, value: { receiptId: 'receipt-1', isNew: true } };
@@ -186,6 +207,22 @@ async function runWebhook(body: unknown, options: {
     },
     logger,
     env,
+    // Both spies stand in for the side effects the untagged policy governs:
+    // `ingestionQueue` is where an attachment becomes indexed company knowledge,
+    // and `chatContextService` is where a message enters the room transcript.
+    ingestionQueue: {
+      enqueue: async (job: unknown) => {
+        order.push('ingest');
+        ingestionJobs.push(job);
+      },
+    } as any,
+    chatContextService: {
+      appendMessage: async (message: Record<string, unknown>) => {
+        order.push('retain');
+        retainedMessages.push(message);
+        return ok(null);
+      },
+    } as any,
     cache: { setNx: async () => ok(true) } as any,
     serializer: options.serializer ?? {
       run: (key: string, task: (signal: AbortSignal) => Promise<void>) => {
@@ -249,6 +286,9 @@ async function runWebhook(body: unknown, options: {
     serializerKeys,
     identityLookups,
     logEvents,
+    ingestionJobs,
+    retainedMessages,
+    acceptedPayloads,
     processQueuedReceipt,
   };
 }
@@ -258,7 +298,12 @@ describe('Lark webhook admission', () => {
     const result = await runWebhook(makeEvent({ chatType: 'group', mentionsBot: true }));
     assert.equal(result.status, 200);
     assert.deepEqual(result.responseBody, { ok: true });
-    assert.deepEqual(result.order, ['receipt', 'queue', 'link', 'ack', 'execute', 'engine']);
+    // A mentioned turn is recorded in the room transcript on both sides of the
+    // run, so the group keeps a coherent record of what was asked and answered.
+    assert.deepEqual(
+      result.order,
+      ['receipt', 'queue', 'link', 'ack', 'execute', 'retain', 'engine', 'retain'],
+    );
     assert.deepEqual(result.serializerKeys, [
       '["lark","ingress-lane","tenant-1","app-1","oc_1","thread","om_root"]',
     ]);
@@ -330,7 +375,8 @@ describe('Lark webhook admission', () => {
 
   it('ACKs and passively queues an unmentioned group message without running the engine', async () => {
     const result = await runWebhook(makeEvent({ chatType: 'group' }));
-    assert.deepEqual(result.order, ['receipt', 'queue', 'link', 'ack', 'execute']);
+    // Retained as ambient room context under the default policy, but never run.
+    assert.deepEqual(result.order, ['receipt', 'queue', 'link', 'ack', 'execute', 'retain']);
     assert.equal(result.engineInputs.length, 0);
   });
 
@@ -592,5 +638,145 @@ describe('Lark webhook card authorization', () => {
     assert.deepEqual(result.responseBody, {
       toast: { type: 'success', content: 'Interrupt requested.' },
     });
+  });
+});
+
+/**
+ * Run `body` with every outbound HTTP call refused.
+ *
+ * Attachment preparation reaches Lark for a tenant token and the file bytes.
+ * These tests are about whether preparation is *entered*, not whether the
+ * download succeeds, and a unit test must not depend on the network. Refusing
+ * the fetch exercises the same path: the download failure is non-fatal, so the
+ * attachment still reaches the ingestion queue as a key-only job.
+ */
+async function withStubbedFetch<T>(
+  body: (calls: string[]) => Promise<T>,
+): Promise<T> {
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input: unknown) => {
+    calls.push(String(input));
+    return new Response('{}', {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof globalThis.fetch;
+  try {
+    return await body(calls);
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+describe('Lark untagged group policy', () => {
+  it('does not download, OCR, or index a file shared without mentioning Divo', async () => {
+    const outbound: string[] = [];
+    const result = await withStubbedFetch(async calls => {
+      const value = await runWebhook(makeEvent({
+        chatType: 'group',
+        file: { key: 'file_v3_secret', name: 'salaries.xlsx' },
+      }));
+      outbound.push(...calls);
+      return value;
+    });
+
+    // Asserted directly rather than inferred from the absence of an ingestion
+    // job: "did not index" and "did not leave Lark" are different claims, and
+    // only this one fails if the download ever moves out of the gated helper.
+    assert.deepEqual(outbound, [], 'nothing was fetched from Lark');
+    assert.equal(result.status, 200);
+    // Preparing this attachment would have pulled the file out of Lark, OCR'd
+    // it, pushed it to a CDN, and indexed it as shared company knowledge — all
+    // for a message nobody addressed to Divo.
+    assert.deepEqual(result.ingestionJobs, [], 'no attachment was indexed');
+    assert.ok(!result.order.includes('ingest'), 'ingestion queue never touched');
+    assert.ok(!result.order.includes('engine'), 'engine did not run');
+    // Nothing is retained either: the filename is all that survived parsing, and
+    // a file message carries no text to keep.
+    assert.deepEqual(result.retainedMessages, [], 'nothing entered the transcript');
+  });
+
+  it('retains untagged group text in the room transcript by default', async () => {
+    const result = await runWebhook(makeEvent({ chatType: 'group' }));
+
+    assert.equal(result.retainedMessages.length, 1, 'ambient text is kept');
+    const message = result.retainedMessages[0]!;
+    assert.equal(message['botMentioned'], false);
+    assert.equal(message['chatId'], 'oc_1');
+    assert.ok(!result.order.includes('engine'), 'retention is not invocation');
+  });
+
+  it('adds no transcript entry for an untagged group message when retention is off', async () => {
+    const result = await runWebhook(makeEvent({ chatType: 'group' }), {
+      untaggedPolicy: {
+        LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'off',
+        LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore',
+      },
+    });
+
+    assert.deepEqual(result.retainedMessages, [], 'no transcript entry');
+    assert.ok(!result.order.includes('retain'), 'context service never called');
+
+    // Retention 'off' governs the room transcript, and nothing more. The raw
+    // event was already written to the durable ingress receipt before any
+    // policy was consulted, and no code path ever deletes it. Pinned here so
+    // the setting is not mistaken for a promise that Divo stored nothing.
+    const payload = result.acceptedPayloads[0] as Record<string, any>;
+    assert.ok(payload, 'the message was still accepted durably');
+    assert.match(
+      payload['event']['message']['content'],
+      /help/,
+      'the untagged text survives verbatim in the ingress receipt',
+    );
+  });
+
+  it('reaches attachment preparation when a deployment opts in', async () => {
+    // Guards the over-blocking failure mode: with only untagged-and-ignored
+    // cases, hard-wiring the gate to false would leave every test green while
+    // attachment ingestion was silently dead.
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      file: { key: 'file_v3_shared', name: 'roadmap.pdf' },
+    }), {
+      untaggedPolicy: {
+        LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
+        LARK_UNTAGGED_GROUP_ATTACHMENTS: 'process',
+      },
+    }));
+
+    assert.equal(result.ingestionJobs.length, 1, 'opt-in reaches the ingestion queue');
+    const job = result.ingestionJobs[0] as Record<string, unknown>;
+    assert.equal(job['fileName'], 'roadmap.pdf');
+    assert.equal(job['visibility'], 'shared');
+    assert.ok(!result.order.includes('engine'), 'opting in does not make Divo reply');
+  });
+
+  it('still ingests a file on a message that does address Divo', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      file: { key: 'file_v3_asked', name: 'contract.pdf' },
+    })));
+
+    // The policy governs what Divo takes uninvited; being asked is the
+    // invitation, so the default 'ignore' setting must not gate this.
+    assert.equal(result.ingestionJobs.length, 1, 'an addressed file is ingested');
+    assert.ok(result.order.includes('engine'), 'and the turn still runs');
+  });
+
+  it('reports the policy it actually applied, not the policy configured', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      file: { key: 'file_v3_x', name: 'notes.txt' },
+    }));
+
+    const skipped = result.logEvents.find(
+      entry => entry.event === 'webhook.group_message.not_mentioned',
+    );
+    assert.ok(skipped, 'skip is logged');
+    assert.equal(skipped.fields['attachmentCount'], 1, 'the attachment is still counted');
+    assert.equal(skipped.fields['attachmentsProcessed'], false);
+    assert.equal(skipped.fields['textRetained'], true);
   });
 });

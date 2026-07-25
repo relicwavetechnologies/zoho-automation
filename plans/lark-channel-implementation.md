@@ -2,7 +2,7 @@
 
 > Tracking document for the Lark channel hardening project.
 >
-> Status: **Wave 2 closed — durable ingress verified end to end against real Redis and Postgres. Next: Wave 4 thread context and per-turn RBAC. Distributed leases, batching, busy UX, retry classification, and queue metrics remain deferred**
+> Status: **Wave 2 closed and Wave 4C's attachment gate landed — untagged group attachments are no longer downloaded, OCR'd, or indexed by default. Per-company scoping, ingress-receipt retention, and admin visibility remain open inside 4C. Next: Wave 4A thread context boundaries, then tests pinning the 4B authority guarantees the code already appears to hold. Distributed leases, batching, busy UX, retry classification, and queue metrics remain deferred**
 >
 > Last updated: 2026-07-26
 
@@ -58,6 +58,12 @@ sections remain the detailed implementation checklist.
   installation and fails closed when Lark supplies no tenant key. No
   `open_id`-only authentication path remains.
 - Lark card-action failures report an error toast instead of reporting success.
+- Group messages that never mention Divo are governed by an explicit policy
+  (`LARK_UNTAGGED_GROUP_TEXT_RETENTION`, `LARK_UNTAGGED_GROUP_ATTACHMENTS`).
+  Ambient text still feeds the bounded room transcript by default; attachments
+  are ignored by default and are only downloaded, OCR'd, uploaded, and indexed
+  when a deployment opts in. The gate is evaluated before preparation, because
+  once an attachment context exists the file has already left Lark.
 
 ### Explicitly not implemented yet
 
@@ -90,7 +96,17 @@ sections remain the detailed implementation checklist.
 - Distributed execution leases and fencing remain in Wave 3. The current
   serializer preserves in-process lane order after durable recovery but does
   not coordinate multiple backend replicas.
-- Room-level ambient context and per-turn shared-thread authority hardening begin in Wave 4.
+- Ingress receipt retention. Every accepted event's raw payload — including the
+  text and file keys of untagged group messages — is stored in
+  `IngressIdempotencyKey.payloadJson` before any context policy is consulted,
+  and nothing ever deletes it. The Wave 4C retention setting bounds the room
+  transcript, not this. Any compliance claim about untagged retention is false
+  until receipts are pruned.
+- The untagged group policy is deployment-global, not per company or per chat,
+  and has no admin-facing surface. Both need per-company control state.
+- Room-level ambient context and per-turn shared-thread authority hardening
+  continue in Wave 4A. Wave 4B's guarantees appear to hold in code already but
+  are not yet pinned by tests.
 - Persisted idempotent outbound delivery begins in Wave 5.
 - Lark media staging, OCR, personal-only indexing, retention, and cleanup begin in Wave 6.
 
@@ -109,6 +125,7 @@ sections remain the detailed implementation checklist.
 | Durable ingress recovery | 28 focused receipt/queue/worker/webhook/restart-scenario tests passed; Prisma validation passed; full typecheck is temporarily blocked by unrelated in-progress Airtable mappings | Two fresh reviews found and verified the retained-failed-job recovery gap; failed receipts now reach reconciliation and retained failed jobs are explicitly retried. Final review: ship, no findings |
 | Wave 3A process-local lanes | 25 focused routing/webhook/scenario/serializer tests + full typecheck passed | Review found lane telemetry reporting the company-scoped key while the serializer ordered on the ingress key; corrected so `laneKey` is the key actually used and the contract key is recorded separately as `companyLaneKey` |
 | Wave 2 restart recovery | 4 real Redis/Postgres integration tests passed (`tests/integration/lark-ingress-restart.integration.test.ts`) + full typecheck; test rows verified cleaned up afterwards | Fixture initially failed twice from its own test isolation, not a product defect: `listRecoverable` filters on channel alone, so a worker left running from an earlier test recovered a later test's receipt onto its own queue. Tests now run one worker at a time and the constraint is documented |
+| Wave 4C untagged group policy | 132 focused Lark tests (16 new: 10 pure policy/gate cases + 6 webhook behaviour cases) + full typecheck passed. The two opt-in wiring tests were mutation-checked — forcing the gate to `false` fails exactly those two and nothing else | Found by auditing Wave 4's boxes against the code rather than assuming they were unbuilt: untagged attachments were already being downloaded, OCR'd, uploaded to Cloudinary, and indexed as `shared` before the not-mentioned check ran. Adding the two production dependencies the harness had omitted (`chatContextService`, `ingestionQueue`) made two pre-existing order assertions fail; they were corrected upward, not relaxed, because a shorter order array was only achievable by leaving a real dependency unwired. Two unrelated failures (`governed-skill-runtime`, `runtime.routes`) were confirmed pre-existing by re-running them with this slice stashed. Cold review then found three contract-accuracy defects rather than code defects, all corrected: a test named "keeps nothing" that the durable ingress receipt contradicts, a checked box claiming per-company policy for a deployment-global env switch, and no route-level test for the opt-in path — leaving the over-blocking failure mode, where a dead gate keeps every test green, unguarded. A second fresh review returned `ship` with four P3 follow-ups, all applied: the negative test now asserts zero outbound fetches rather than inferring "did not download" from "did not index"; the untagged predicate is no longer spelled by hand at the identity-missing early return; the wasteful `off` + `process` combination is documented as configured-not-broken; and this table's Wave 4 row no longer calls 4C complete while three of its boxes are open |
 | Wave 2B ingress leases and dead-lettering | 170 focused ingress/lark/identity/AirNote/serializer tests + full typecheck + `prisma validate` passed | Two cold-review rounds. Round 1 found five issues, all corrected: the backfill migration sorted before the migration creating the table it altered; an attempt-counted dead-letter budget a 3-minute outage would exhaust; a stale AirNote test left failing by the tenant-scoped auth change; an index name not matching Prisma's derived name; and a widened repository assertion. Round 2 found the lease's own regression — a claim that returned "not yours" for both *finished* and *leased* let the queue complete a job whose work never ran, so a worker restart dropped the message permanently — plus retirement racing a live lease, a retryable failure able to resurrect a `dead` row, a backfill that guessed when a company held two active bindings, and a missed `updatedAt` default. All corrected. Migration apply order and the backfill itself remain unverified — no database was reachable |
 
 ### Immediate next step
@@ -141,12 +158,36 @@ by a dead worker resumes, that a receipt which never reached the queue is
 recovered by reconciliation alone, that three deliveries of one message produce
 one execution, and that a run dying mid-execution is retried to completion.
 
-**Next: Wave 4 — thread context and per-turn RBAC.** This is the security-
-critical wave: shared conversation context must never share authority. Much of
-Phase 4B may already hold — identity is resolved per turn inside execution and
-tools re-authorize through the gateway — so the first task is to establish by
-test which guarantees are real and which are only assumed, rather than assuming
-the boxes are unchecked because the work is missing.
+**Wave 4 is underway, and the audit that opened it was worth more than the
+boxes suggested.** Reading Phase 4B against the code before writing anything
+found that most of it already holds, and that the real defect was in 4C, which
+had looked like the least urgent phase.
+
+What the audit established:
+
+- **4B mostly holds already.** `processInBackground` resolves
+  `resolveByLarkTenantIdentity(openId, tenantKey)` fresh on every message and
+  builds `runContext` from that identity alone, so no authority is carried
+  forward from shared thread context; mentions travel as data, not authority.
+  Approvals are bound to requester *and* authority — reuse by a different
+  requester is rejected — and the approval card handler requires the actor's
+  open ID, user ID, company, and tenant all to match the resolved manager.
+  These need tests that pin them, not new code.
+- **4C was a live defect, now fixed.** See Phase 4C.
+- **4A is the genuine remaining gap.** Both the engine's conversation key and
+  `RuntimeConversation.channelConversationKey` are the bare `chatId`, so every
+  thread in a group chat reads and writes one shared history. DM context is
+  private only incidentally, because a DM has a different `chatId`. There is no
+  thread-level working context at all.
+
+Next, in order:
+
+1. **Phase 4A** — thread-scoped conversation keys, with room-level ambient
+   context kept separate and bounded. This is the largest remaining piece.
+2. **Phase 4B tests** — the exit-gate scenarios, written against the behaviour
+   the audit says already exists: Bob's follow-up in Alice's thread runs with
+   Bob's RBAC, and a non-approver's approve or resume is rejected. If either
+   fails, that is a live authority bug rather than missing work.
 
 Deferred, with reasons:
 
@@ -355,7 +396,7 @@ marked accordingly; open items are owned by the wave named beside them.
 | 1 | Canonical Lark event, mention, identity, and routing model | Complete |
 | 2 | Durable ingress and idempotent acceptance | Complete. Schema applied to `divo_dev`, exit gate closed by a real restart fixture. Retry classification and queue metrics remain as Phase 2B follow-ups |
 | 3 | Distributed execution lanes, batching, and busy behavior | 3A process-local lanes complete; distributed leases/fencing, batching (3B), and busy UX (3C) not started |
-| 4 | Thread-aware context plus per-turn RBAC/HITL | Not started |
+| 4 | Thread-aware context plus per-turn RBAC/HITL | 4C attachment gate complete; per-company scoping, ingress-receipt retention, and admin visibility remain open within 4C. 4A context boundaries not started; 4B is largely already true in code but unproven by test |
 | 5 | Reliable status and final delivery | Not started |
 | 6 | Images, documents, OCR, indexing, and retrieval safety | Plan ready |
 | 7 | Production rollout, replay operations, and legacy cleanup | Not started |
@@ -587,10 +628,40 @@ Set global lane concurrency to one while retaining durable jobs and lifecycle st
 
 Recommended default:
 
-- [ ] Untagged text does not invoke Divo.
-- [ ] Bounded text context may be retained only under an explicit company/chat policy.
-- [ ] Untagged attachments are not downloaded, OCR'd, uploaded, or indexed by default.
+- [x] Untagged text does not invoke Divo.
+- [x] Bounded text context may be retained only under an explicit **deployment**
+      policy. `LARK_UNTAGGED_GROUP_TEXT_RETENTION` defaults to `retain`;
+      retention itself was already bounded by `GROUP_CONTEXT_POLICY`'s token
+      budget and message caps, with older messages compacted into a summary.
+- [ ] Make that policy per company or per chat. `resolveUntaggedGroupPolicy`
+      reads process-level env, so on a shared deployment one company cannot opt
+      out of retention, and one company enabling attachment processing enables
+      it for every other company in that process. Scoping belongs with the
+      admin surface below, since both need per-company control state.
+- [ ] Bound retention of the durable ingress receipt itself. Untagged text and
+      file keys are written verbatim to `IngressIdempotencyKey.payloadJson`
+      before any policy is consulted, and no code path ever deletes a receipt.
+      Setting text retention to `off` therefore suppresses the room transcript
+      only — the raw event still persists indefinitely. Wave 2 has no receipt
+      retention item either, so this is a gap in both waves rather than a
+      regression from 4C.
+- [x] Untagged attachments are not downloaded, OCR'd, uploaded, or indexed by default.
+      This was the live defect: preparation ran in a `Promise.all` *before* the
+      not-mentioned check, so an untagged file was already downloaded, OCR'd,
+      pushed to Cloudinary, and enqueued as `shared` company knowledge by the
+      time the code decided not to respond. The gate now precedes the work.
 - [ ] The policy and retention window are visible to admins.
+      Deferred deliberately. The policy is deployment-level env today and is
+      observable in `webhook.group_message.not_mentioned` telemetry as the
+      policy *applied* per message, but there is no admin-facing surface. A
+      first-class surface belongs with per-company control state
+      (`AdminControlState`), which is a schema change this slice does not need.
+
+**Known cost of the default.** With attachments ignored, a file dropped in a
+group and then referenced by a later `@Divo summarize the file above` is not
+available unless that later message quote-replies it, which routes through
+parent hydration instead. This was accepted knowingly: the alternative is
+indexing every file in every group Divo sits in, whether or not anyone asked.
 
 ### Exit gate
 
