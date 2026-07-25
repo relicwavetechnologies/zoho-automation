@@ -136,10 +136,21 @@ Still outstanding on the reliability track:
 
 - The real Redis/Postgres process-restart smoke test. The live checks covered
   the repository's lease and dead-letter semantics directly; they did not kill
-  a worker mid-run and prove the successor picks the receipt up.
+  a worker mid-run and prove the successor picks the receipt up. This is the
+  last thing gating the Wave 2 exit gate.
 - Retry classification, so a known-permanent failure terminates before its
   window elapses rather than after.
 - Queue depth, age, attempts, stalled-job, and dead-letter metrics.
+
+**Deployment shape, and what it means for Wave 3.** `docker-compose.yml`
+defines a single `advance-backend` service with no `replicas` key, so Divo runs
+one backend process today. The process-local serializer is therefore sufficient
+for correct ordering right now, and Wave 3A's distributed leases and fencing
+tokens are pre-work for horizontal scale rather than a current correctness gap.
+They must land before a second replica is ever started — the failure they
+prevent (two replicas each running their own lane for one thread, both
+publishing a final reply) is silent and user-visible. Until then the honest
+statement is that ordering is correct for the deployment we actually run.
 
 ## 1. Decision and Confidence
 
@@ -490,7 +501,9 @@ Disable the durable-ingress consumer flag, drain or inspect persisted jobs, and 
       carries no company or authority.
 - [x] Preserve FIFO sequence inside a lane.
 - [x] Re-resolve each queued item's requester when its turn begins.
-- [ ] Implement one active lease per execution lane with owner, heartbeat, expiry, and fencing token.
+- [ ] Implement one active lease per execution lane with owner, heartbeat,
+      expiry, and fencing token. Not a correctness gap for the current
+      single-replica deployment, but a hard prerequisite for starting a second.
 - [ ] Prevent an expired owner from publishing a final response after a new owner takes the lane.
 - [ ] Allow unrelated lanes to use bounded global concurrency. `maxConcurrent`
       exists on the serializer but still defaults to unbounded.
