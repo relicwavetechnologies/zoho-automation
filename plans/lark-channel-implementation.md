@@ -2,9 +2,9 @@
 
 > Tracking document for the Lark channel hardening project.
 >
-> Status: **Waves 0-2 and 4 closed. Shared conversation no longer means shared authority: threads in a group room hold separate working context, every turn rebuilds authority from its own sender, and untagged group attachments are not downloaded, OCR'd, or indexed unless a company opts in. Wave 3's distributed leases, batching and busy UX, plus retry classification, queue metrics, and ingress receipt retention, remain deferred. Next: Wave 5 persisted idempotent delivery**
+> Status: **Waves 0-2, 4 and 5 closed. Shared conversation no longer means shared authority: threads in a group room hold separate working context, every turn rebuilds authority from its own sender, and untagged group attachments are not downloaded, OCR'd, or indexed unless a company opts in. A run's answer is now delivered at most once, and a delivery failure resends the finished answer rather than re-running the agent that produced it. Wave 3's distributed leases, batching and busy UX, plus ingress retry classification, queue metrics, a delivery retry driver, and ingress receipt retention, remain deferred. Next: Wave 6 media, OCR and indexing**
 >
-> Last updated: 2026-07-26
+> Last updated: 2026-07-27
 
 ## 0. Current Implementation Status
 
@@ -125,7 +125,16 @@ sections remain the detailed implementation checklist.
 - Response provenance. Nothing records which room messages or attachment
   observations supported a given reply, so an admin cannot ask why Divo said
   what it said. This is the one Phase 4A box left open.
-- Persisted idempotent outbound delivery begins in Wave 5.
+- A delivery retry driver. `ChannelDelivery.nextAttemptAt` is computed and
+  honoured, but nothing sweeps `listRetryable`, so a failed delivery waits for
+  its ingress receipt to be retried instead of for its own backoff. Affects
+  recovery latency, not correctness.
+- Continuation cards are not individually reserved. The delivery key supports
+  per-segment identity and the repository stores `segmentIndex`, but only the
+  final reply currently takes a reservation, so a partial multi-card delivery
+  still resends from the first card.
+- A "retrying delivery" status. A delivery in backoff is indistinguishable from
+  a run still working, which is the one Phase 5B box left open.
 - Lark media staging, OCR, personal-only indexing, retention, and cleanup begin in Wave 6.
 
 ### Validation and review ledger
@@ -143,6 +152,7 @@ sections remain the detailed implementation checklist.
 | Durable ingress recovery | 28 focused receipt/queue/worker/webhook/restart-scenario tests passed; Prisma validation passed; full typecheck is temporarily blocked by unrelated in-progress Airtable mappings | Two fresh reviews found and verified the retained-failed-job recovery gap; failed receipts now reach reconciliation and retained failed jobs are explicitly retried. Final review: ship, no findings |
 | Wave 3A process-local lanes | 25 focused routing/webhook/scenario/serializer tests + full typecheck passed | Review found lane telemetry reporting the company-scoped key while the serializer ordered on the ingress key; corrected so `laneKey` is the key actually used and the contract key is recorded separately as `companyLaneKey` |
 | Wave 2 restart recovery | 4 real Redis/Postgres integration tests passed (`tests/integration/lark-ingress-restart.integration.test.ts`) + full typecheck; test rows verified cleaned up afterwards | Fixture initially failed twice from its own test isolation, not a product defect: `listRecoverable` filters on channel alone, so a worker left running from an earlier test recovered a later test's receipt onto its own queue. Tests now run one worker at a time and the constraint is documented |
+| Wave 5 delivery identity | Full suite 1850 tests, 1848 pass — the only failures are the two known pre-existing ones. New: 9 delivery-key cases, 20 classification/backoff/budget cases, 17 repository cases, 10 adapter-guard cases, 5 resume cases. The duplicate guard was mutation-checked — disabling the `delivered` branch fails exactly the no-resend test. Schema pushed to `divo_dev` 2026-07-27 after confirming the diff was purely additive; `migrate diff --from-url` then reported zero drift and the deployment migration is checked in. 8 live round-trip checks passed against real Postgres: first reserve, concurrent reserve returning `inFlight`, reserve-after-send returning `delivered` with the provider ID retained, resumable lookup before and after delivery, retry listing, and payload clearing | Wiring the guard exposed a defect it did not cause: on total failure the adapter returned a hardcoded `upstream_5xx` and discarded the provider error, so every failure classified alike and a permanently-refused 400 would have been retried like an outage. The error is now preserved as `cause`. The live checks earned their place — the `payloadJson: { not: DbNull }` filter is exactly the kind of Prisma JSON handling that typechecks and then behaves differently against a real database. Self-review then found the defect that mattered most, and it was in the guard itself: `reserve` did a read-then-create, so two genuine first attempts both saw no row and both created one. The loser hit the unique constraint, which `reserve` surfaced as an infra error — and the adapter treats a broken guard as licence to send unguarded, so both attempts would have delivered. Under exactly the concurrency the constraint exists for, the wave's central guarantee inverted. `reserve` now resolves a `P2002` into a verdict rather than an error, sharing one code path with the ordinary case so a race and a retry cannot disagree. Verified against the live constraint: two concurrent first attempts yield one `reserved`, one `inFlight`, one row. **This review was single-perspective rather than an independent cold review** |
 | Wave 4 thread context, per-turn RBAC, and untagged policy | Full suite without infrastructure: 1798 tests, 2 failing cases, both known and pre-existing (`governed-skill-runtime`, `runtime.routes`). With the tunnel and Redis up: 1813 tests, 1809 pass, the same 2 plus 2 live-Lark-API cases in `lark.integration.test.ts` that also fail with this wave's `src/` changes stashed. Wave 2's Redis/Postgres restart fixture re-run green (4/4) with every Wave 4 change in place. New coverage by file: conversation-key 8, thread-context-isolation 5, lark-untagged-policy 15, controls.routes 12 of 18, conversation.repository 6 of 15, lark.webhook.routes 15 of 27, lark-parent-message 2 of 11, hitl-flow 2 of 51. Three behaviours were mutation-checked rather than assumed: forcing the untagged gate to `false` fails exactly the two opt-in wiring tests, and reverting the conversation key to the bare chat ID fails three isolation tests | Audit-before-build again paid: Phase 4B was already true and needed tests, not code, while the real gaps were 4A's shared-per-room working context and 4C's missing per-company scoping. Thread-scoping history exposed a consequence the change would otherwise have shipped silently — `/clear` matched one exact key, so a user clearing a group would have been told it worked while every thread kept its transcript; `clearChatHistories` now sweeps the chat and its threads, company-scoped. Two harness defects were found and fixed rather than worked around: an empty permission set made the engine short-circuit before history loaded, so one isolation test was passing vacuously; and a hardcoded `om_1` receipt ID silently restricted the webhook harness to a single message, which the worker's own identity guard caught. Cold review then found a P1 the wave's own tests could not have caught: the thread key preferred Lark's `thread_id` over the root message, but Lark assigns a topic ID only once the thread exists — so the message that *seeds* a thread and the first reply in it resolved to different keys, losing the question every follow-up is answering. The precedence is now root-first, and the regression is pinned at both the key and engine level. Review also found the per-company override had a resolver and a read view but nothing that could write it outside hand-written SQL (now a `PUT` route, validated and audited), that hydrated quote content was still being written into the chat-scoped room transcript every thread reads back, and that `clearHistory` had become dead code sitting next to `clearChatHistories` as the wrong thing to reach for |
 | Wave 4C untagged group policy | 132 focused Lark tests (16 new: 10 pure policy/gate cases + 6 webhook behaviour cases) + full typecheck passed. The two opt-in wiring tests were mutation-checked — forcing the gate to `false` fails exactly those two and nothing else | Found by auditing Wave 4's boxes against the code rather than assuming they were unbuilt: untagged attachments were already being downloaded, OCR'd, uploaded to Cloudinary, and indexed as `shared` before the not-mentioned check ran. Adding the two production dependencies the harness had omitted (`chatContextService`, `ingestionQueue`) made two pre-existing order assertions fail; they were corrected upward, not relaxed, because a shorter order array was only achievable by leaving a real dependency unwired. Two unrelated failures (`governed-skill-runtime`, `runtime.routes`) were confirmed pre-existing by re-running them with this slice stashed. Cold review then found three contract-accuracy defects rather than code defects, all corrected: a test named "keeps nothing" that the durable ingress receipt contradicts, a checked box claiming per-company policy for a deployment-global env switch, and no route-level test for the opt-in path — leaving the over-blocking failure mode, where a dead gate keeps every test green, unguarded. A second fresh review returned `ship` with four P3 follow-ups, all applied: the negative test now asserts zero outbound fetches rather than inferring "did not download" from "did not index"; the untagged predicate is no longer spelled by hand at the identity-missing early return; the wasteful `off` + `process` combination is documented as configured-not-broken; and this table's Wave 4 row no longer calls 4C complete while three of its boxes are open |
 | Wave 2B ingress leases and dead-lettering | 170 focused ingress/lark/identity/AirNote/serializer tests + full typecheck + `prisma validate` passed | Two cold-review rounds. Round 1 found five issues, all corrected: the backfill migration sorted before the migration creating the table it altered; an attempt-counted dead-letter budget a 3-minute outage would exhaust; a stale AirNote test left failing by the tenant-scoped auth change; an index name not matching Prisma's derived name; and a widened repository assertion. Round 2 found the lease's own regression — a claim that returned "not yours" for both *finished* and *leased* let the queue complete a job whose work never ran, so a worker restart dropped the message permanently — plus retirement racing a live lease, a retryable failure able to resurrect a `dead` row, a backfill that guessed when a company held two active bindings, and a missed `updatedAt` default. All corrected. Migration apply order and the backfill itself remain unverified — no database was reachable |
@@ -189,10 +199,23 @@ silently: `/clear` matched one exact conversation key, so a user clearing a
 group chat would have been told it worked while every thread kept its
 transcript. Changing what a key means changes everything that looks a key up.
 
-**Next: Wave 5 — persisted idempotent outbound delivery.** Wave 2 guarantees a
-message is executed at least once; it says nothing about a reply being
-delivered exactly once. The restart fixture asserts that deliberately, and
-Wave 5 is where that gap closes.
+**Wave 5 is closed.** Wave 2 guaranteed a message is executed at least once and
+the restart fixture asserted exactly that, deliberately declining to claim
+anything about the reply. That gap is now shut: a run's answer is reserved
+before it is sent, the reservation is keyed on something derived rather than
+generated, and a retry finds the finished answer instead of recomputing it.
+
+Two things are worth carrying forward. The adapter threw away the provider error
+on total failure, so the new classifier had nothing to classify — a new component
+is only as good as the information the existing ones hand it. And the guard's own
+first version had a read-then-create race that inverted its purpose: under
+concurrency the loser reported a broken guard, which the caller reads as licence
+to send unguarded. A uniqueness constraint only helps if the code treats hitting
+it as an answer rather than as a failure.
+
+**Next: Wave 6 — media, OCR, personal-only indexing, retention, and cleanup.**
+Wave 4C stopped Divo ingesting files nobody asked it to read; Wave 6 is where
+the files it *is* asked to read get handled properly.
 
 Two cross-wave gaps are worth resolving before rollout rather than inside a
 later wave:
@@ -764,32 +787,85 @@ under thread keys.
 
 ### Phase 5A — Delivery lifecycle
 
-- [ ] Persist a delivery record keyed by run + segment/purpose.
-- [ ] Reuse one stable idempotency key across retries.
-- [ ] Classify network/429/5xx as retryable and ordinary 4xx as terminal unless explicitly mapped.
-- [ ] Add exponential backoff with jitter and a maximum attempt/time budget.
-- [ ] Preserve the current card → new card → plain-text degradation path.
+- [x] Persist a delivery record keyed by run + segment/purpose. `ChannelDelivery`,
+      unique on `(channel, idempotencyKey)` — that constraint *is* the guard, not
+      an optimisation of it.
+- [x] Reuse one stable idempotency key across retries. Derived, never generated:
+      `runKey:purpose:segmentIndex`, where `runKey` is the correlation ID. That
+      ID is `${messageId}-${createTime}`, so it is identical on every retry of a
+      Lark message — a randomly minted key would identify nothing and the guard
+      would be a no-op across restarts. Also sent to Lark as `uuid`, which closes
+      the window the database cannot see: a send that succeeds at Lark but whose
+      HTTP response is lost.
+- [x] Classify network/429/5xx as retryable and ordinary 4xx as terminal unless
+      explicitly mapped. The adapter previously asked one question — "is this
+      ambiguous?" — and used the answer for everything. Those are two independent
+      facts: 429 is retryable *and* certain, a 400 is neither, a socket hang-up is
+      both. `classifyDeliveryFailure` answers them separately.
+- [x] Add exponential backoff with jitter and a maximum attempt/time budget.
+      Full-range jitter, because a Lark outage fails every in-flight delivery at
+      once and a fixed schedule marches them all back in lockstep. Budget is
+      elapsed time, not attempt count, for the reason Wave 2 settled on.
+- [x] Preserve the current card → new card → plain-text degradation path.
+      Untouched, and now the provider error it used to discard is preserved as
+      the `cause` — without it every total failure looked alike and a 400 that
+      can never succeed was retried on the same schedule as an outage.
 
 ### Phase 5B — Status semantics
 
-- [ ] One status object per run.
-- [ ] Status accurately represents queued, running, waiting for approval, retrying delivery, completed, failed, or cancelled.
-- [ ] Completion cleans up typing/reaction/status state.
-- [ ] Failure never displays success language.
-- [ ] A user can retry/recover a terminally failed delivery without rerunning completed side effects.
+- [x] One status object per run. The status coordinator is keyed by correlation
+      ID and finalised into the answer card.
+- [ ] Status accurately represents queued, running, waiting for approval,
+      retrying delivery, completed, failed, or cancelled. `retrying delivery` has
+      no representation: a delivery in backoff looks the same to the user as one
+      still running. Left open rather than checked — see below.
+- [x] Completion cleans up typing/reaction/status state, including the
+      stuck-card path when finalisation fails.
+- [x] Failure never displays success language. Closed earlier for card actions;
+      the delivery paths report partial and ambiguous delivery distinctly rather
+      than as success.
+- [x] A user can retry/recover a terminally failed delivery without rerunning
+      completed side effects. The rendered reply is stored on the delivery record
+      and `processAcceptedLarkReceipt` consults it *before* the agent runs, so a
+      retry caused only by a delivery failure resends the finished answer. The
+      stored copy is cleared on delivery — it exists to enable a resend, and
+      keeping it afterwards would be retention without a purpose.
 
 ### Phase 5C — Delivery tests
 
-- [ ] Lost HTTP response after successful Lark send does not create duplicate final replies.
-- [ ] Missing/withdrawn parent uses a documented safe fallback.
-- [ ] Thread replies remain in the correct thread.
-- [ ] Status-card failure still produces one plain-text terminal result.
+- [x] Lost HTTP response after successful Lark send does not create duplicate
+      final replies. Covered on both halves: the reservation returns `delivered`
+      and the adapter sends nothing, and the `uuid` covers the case where the
+      database never learned the send succeeded.
+- [x] Missing/withdrawn parent uses a documented safe fallback — Lark code
+      232001 is classified terminal rather than retried until the budget expires.
+- [x] Thread replies remain in the correct thread. Unchanged by this wave and
+      still covered by the Wave 1 trigger/thread delivery tests.
+- [x] Status-card failure still produces one plain-text terminal result; the
+      degradation path is unchanged and now records which provider error caused
+      the fall-through.
 
 ### Exit gate
 
-- [ ] Exactly one terminal outcome is visible per run.
-- [ ] Delivery retry is independent from agent/tool retry.
-- [ ] Completed side effects are never repeated merely to resend the answer.
+- [x] Exactly one terminal outcome is visible per run. The unique constraint on
+      `(channel, idempotencyKey)` makes a second final reply for one run
+      impossible to reserve, and `markDelivered` cannot be walked back by a late
+      failure from an earlier attempt.
+- [x] Delivery retry is independent from agent/tool retry. A retry finds the
+      stored answer and resends it; the agent is not re-entered.
+- [x] Completed side effects are never repeated merely to resend the answer.
+      Pinned by test: with a resumable delivery present, the engine is never
+      called.
+
+### Known gap — no delivery retry driver
+
+Nothing sweeps `listRetryable` yet. A delivery that fails transiently is retried
+when the ingress receipt is retried, which is a coarser trigger than the backoff
+schedule the policy computes: `nextAttemptAt` is written and honoured on lookup,
+but no worker wakes up to act on it. The guarantees above hold either way — this
+affects how *quickly* a failed delivery recovers, not whether it duplicates.
+Closing it is a small worker in the shape of the ingress reconciler, and it
+belongs with Wave 7's queue metrics rather than bolted on here.
 
 ## 12. Wave 6 — Images, Documents, OCR, and Indexing
 

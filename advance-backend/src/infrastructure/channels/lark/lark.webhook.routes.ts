@@ -39,6 +39,11 @@ import type { CloudinaryAdapter } from '../../cloudinary/cloudinary.adapter';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
 import type { LarkContactsClient } from './clients/lark-contacts.client';
 import { buildLarkIngressLaneKey, buildLarkRoutingKeys } from './lark-routing';
+import type {
+  ChannelDeliveryRepoPort,
+  ResumableDelivery,
+} from '../../persistence/channel-delivery.repository';
+import type { FinalReply } from '../../../domain/channel/outbound';
 import {
   isUntaggedGroupMessage,
   mayPrepareAttachments,
@@ -76,6 +81,8 @@ export interface LarkWebhookDeps {
   serializer: ChatMessageSerializer;
   chatContextService?: LarkChatContextService;
   prisma?: PrismaClient;
+  /** Optional: absent means a retried run re-runs the agent, as before Wave 5. */
+  channelDeliveryRepo?: ChannelDeliveryRepoPort;
   cloudinaryAdapter?: CloudinaryAdapter;
   larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
 }
@@ -397,6 +404,28 @@ export async function processAcceptedLarkReceipt(
     receiptId: receipt.receiptId,
   });
 
+  // A retry caused only by a failed delivery must not re-run the agent. If this
+  // run already produced an answer that never reached the user, resend that
+  // answer rather than recomputing it — every tool it called has already had
+  // its effect, and calling them again to repeat a sentence is the failure mode
+  // this wave exists to remove.
+  if (deps.channelDeliveryRepo) {
+    const runKey = String(incoming.traceId);
+    const resumable = await deps.channelDeliveryRepo.findResumable('lark', runKey);
+    if (!resumable.ok) {
+      requestLog.warn('webhook.delivery.resume_lookup_failed', {
+        error: resumable.error.message,
+      });
+    } else if (resumable.value) {
+      requestLog.info('webhook.delivery.resuming', {
+        deliveryId: resumable.value.deliveryId,
+        attempts: resumable.value.attempts,
+      });
+      await resumeLarkDelivery(incoming, resumable.value, deps, requestLog);
+      return;
+    }
+  }
+
   const executionLaneKey = buildLarkIngressLaneKey(incoming);
   await deps.serializer.runAndWait(executionLaneKey, async signal => {
     const startedAtMs = Date.now();
@@ -422,6 +451,42 @@ export async function processAcceptedLarkReceipt(
       throw error;
     }
   });
+}
+
+/**
+ * Resend an answer the agent already produced.
+ *
+ * Deliberately goes back through `sendFinalReply` rather than to the messaging
+ * client: the reservation, the idempotency key, and the failure classification
+ * all live there, and a resend needs them at least as much as a first attempt
+ * does.
+ */
+async function resumeLarkDelivery(
+  incoming: IncomingMessage,
+  resumable: ResumableDelivery,
+  deps: LarkWebhookDeps,
+  log: Logger,
+): Promise<void> {
+  const reply = resumable.payload as unknown as FinalReply;
+  const conversation: ConversationHandle = {
+    channel: 'lark',
+    chatId: incoming.chatId,
+    replyToMessageId: incoming.messageId,
+    replyInThread: incoming.chatType === 'group',
+    correlationId: asCorrelationId(incoming.traceId),
+  };
+
+  const result = await deps.adapter.sendFinalReply(conversation, reply);
+  if (!result.ok) {
+    log.warn('webhook.delivery.resume_failed', {
+      deliveryId: resumable.deliveryId,
+      reason: result.error.payload.reason,
+    });
+    // Rethrown so the ingress receipt stays retryable: the answer exists and
+    // the user still has not seen it.
+    throw new Error(`Lark delivery resume failed: ${result.error.payload.reason}`);
+  }
+  log.info('webhook.delivery.resumed', { deliveryId: resumable.deliveryId });
 }
 
 const LARK_OAUTH_NONCE_TTL_SECONDS = 600;

@@ -10,6 +10,10 @@ import type { Logger } from '../../../shared/logger';
 import type { TypedEnv } from '../../../config/env';
 import { LarkMessagingClient } from './clients/lark-messaging.client';
 import { LarkApiError } from './clients/lark-http.client';
+import type { ChannelDeliveryRepoPort } from '../../persistence/channel-delivery.repository';
+import { buildDeliveryKey, toProviderIdempotencyKey } from '../../../domain/channel/delivery-key';
+import { classifyDeliveryFailure } from './lark-delivery-policy';
+import { createHash } from 'node:crypto';
 import {
   LarkStatusCoordinator,
   LarkStatusDrainTimeoutError,
@@ -32,6 +36,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
 
   private readonly messagingClient: LarkMessagingClient;
   private readonly logger: Logger;
+  private readonly deliveryRepo: ChannelDeliveryRepoPort | undefined;
   private readonly botName: string;
   private botOpenId: string;
   // One coordinator per in-flight run, keyed by correlationId.
@@ -40,7 +45,18 @@ export class LarkChannelAdapter implements ChannelAdapter {
   private readonly abortControllers = new Map<string, AbortController>();
   private readonly runOwners = new Map<string, LarkRunOwner>();
 
-  constructor(deps: { env: TypedEnv; logger: Logger; botOpenId?: string }) {
+  constructor(deps: {
+    env: TypedEnv;
+    logger: Logger;
+    botOpenId?: string;
+    /**
+     * Optional so every existing construction site keeps working; absent means
+     * delivery falls back to the pre-Wave-5 behaviour of sending without a
+     * duplicate guard.
+     */
+    deliveryRepo?: ChannelDeliveryRepoPort;
+  }) {
+    this.deliveryRepo = deps.deliveryRepo;
     this.logger = deps.logger.child({ channel: 'lark' });
     this.botName = deps.env.LARK_BOT_NAME;
     this.botOpenId = deps.botOpenId ?? '';
@@ -277,9 +293,114 @@ export class LarkChannelAdapter implements ChannelAdapter {
 
   // ── sendFinalReply ───────────────────────────────────────────────────
 
+  /**
+   * Deliver a run's answer at most once.
+   *
+   * Wave 2 made an accepted message survive a restart, but at-least-once
+   * execution only promises the work happens again — a retried run reaching
+   * here would say the same thing twice. The reservation below is what makes
+   * the retry safe: the key is derived from the run, so the second attempt
+   * recognises the first instead of posting a second reply.
+   *
+   * Without a delivery repository this degrades to the previous behaviour
+   * rather than refusing to send, because a missing duplicate guard should not
+   * turn into silence.
+   */
   async sendFinalReply(
     conversation: ConversationHandle,
     reply: FinalReply,
+  ): Promise<Result<ReplyHandle, ChannelError>> {
+    const repo = this.deliveryRepo;
+    if (!repo) return this.deliverFinalReply(conversation, reply);
+
+    const corrId = String(conversation.correlationId);
+    const deliveryKey = buildDeliveryKey({ runKey: corrId, purpose: 'final' });
+    const reservation = await repo.reserve({
+      channel: 'lark',
+      idempotencyKey: deliveryKey,
+      runKey: corrId,
+      purpose: 'final',
+      chatId: String(conversation.chatId),
+      // Stored so a delivery that fails after the agent finished can be resent
+      // without re-running the tools that produced it.
+      payload: reply as unknown as Record<string, unknown>,
+    });
+
+    if (!reservation.ok) {
+      // The guard is unavailable, not the channel. Sending unguarded risks a
+      // duplicate; not sending guarantees silence. Duplicate is the lesser harm.
+      this.logger.warn('lark.adapter.delivery.reserve_failed', {
+        correlationId: corrId,
+        error: reservation.error.message,
+      });
+      return this.deliverFinalReply(conversation, reply);
+    }
+
+    if (reservation.value.outcome === 'delivered') {
+      this.logger.info('lark.adapter.delivery.already_delivered', {
+        correlationId: corrId,
+        providerMessageId: reservation.value.record.providerMessageId ?? null,
+        attempts: reservation.value.record.attempts,
+      });
+      return ok({
+        channel: 'lark',
+        messageId: asMessageId(reservation.value.record.providerMessageId ?? ''),
+      });
+    }
+
+    if (reservation.value.outcome === 'inFlight') {
+      // Another attempt holds the lease and has not gone quiet. Reporting this
+      // as ambiguous rather than failed keeps the caller from re-driving it.
+      this.logger.warn('lark.adapter.delivery.in_flight', { correlationId: corrId });
+      return err(new ChannelError({
+        channel: 'lark',
+        stage: 'send_final',
+        reason: 'ambiguous_delivery',
+        message: 'Another attempt is already delivering this reply',
+      }));
+    }
+
+    if (reservation.value.outcome === 'abandoned') {
+      this.logger.warn('lark.adapter.delivery.abandoned', { correlationId: corrId });
+      return err(new ChannelError({
+        channel: 'lark',
+        stage: 'send_final',
+        reason: 'upstream_5xx',
+        message: 'Delivery of this reply was already abandoned',
+      }));
+    }
+
+    const { deliveryId } = reservation.value.record;
+    const providerKey = toProviderIdempotencyKey(
+      deliveryKey,
+      input => createHash('sha256').update(input).digest('hex'),
+    );
+
+    const result = await this.deliverFinalReply(conversation, reply, providerKey);
+
+    if (result.ok) {
+      await repo.markDelivered(deliveryId, String(result.value.messageId) || undefined);
+      return result;
+    }
+
+    const verdict = classifyDeliveryFailure(result.error.payload.cause ?? result.error);
+    await repo.markFailed(deliveryId, result.error, {
+      terminal: !verdict.retryable,
+      ambiguous: verdict.ambiguous,
+    });
+    this.logger.warn('lark.adapter.delivery.failed', {
+      correlationId: corrId,
+      reason: verdict.reason,
+      retryable: verdict.retryable,
+      ambiguous: verdict.ambiguous,
+    });
+    return result;
+  }
+
+  private async deliverFinalReply(
+    conversation: ConversationHandle,
+    reply: FinalReply,
+    providerIdempotencyKey?: string,
   ): Promise<Result<ReplyHandle, ChannelError>> {
     const startedAtMs = Date.now();
     const corrId = String(conversation.correlationId);
@@ -311,6 +432,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
       let messageId: string | undefined;
       let statusFinalizeFailed = false;
       let deliveryIncomplete = false;
+      // Kept so the caller can classify the failure. Without it every total
+      // failure looks alike, and a 400 that will never succeed gets retried on
+      // the same schedule as a transient outage.
+      let lastSendError: unknown;
 
       // Try 1: Finalize via coordinator (edit status card → final card)
       if (coordinator) {
@@ -318,6 +443,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
           messageId = await coordinator.finalizeMessage(primarySegment.payload);
         } catch (e) {
           statusFinalizeFailed = true;
+          lastSendError = e;
           this.logger.warn('lark.adapter.finalize_failed', {
             error: e instanceof Error ? e.message : String(e),
             correlationId: corrId,
@@ -338,9 +464,11 @@ export class LarkChannelAdapter implements ChannelAdapter {
             primarySegment.payload,
             conversation.replyToMessageId,
             conversation.replyInThread,
+            providerIdempotencyKey,
           );
           messageId = result.messageId;
         } catch (e) {
+          lastSendError = e;
           this.logger.warn('lark.adapter.send_card_failed', {
             error: e instanceof Error ? e.message : String(e),
             correlationId: corrId,
@@ -467,6 +595,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       return err(new ChannelError({
         channel: 'lark', stage: 'send_final', reason: 'upstream_5xx',
         message: 'All delivery attempts failed (finalize, card, plain text)',
+        ...(lastSendError ? { cause: lastSendError } : {}),
       }));
     } catch (e) {
       this.coordinators.delete(corrId);

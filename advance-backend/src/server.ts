@@ -89,6 +89,7 @@ export const createServer = (c: Container) => {
     cache:                 c.memoryCache,
     serializer:            c.chatSerializer,
     chatContextService:    c.chatContextService,
+    channelDeliveryRepo:   c.channelDeliveryRepo,
     prisma:                c.prisma,
     cloudinaryAdapter:     c.cloudinaryAdapter,
     larkContactsClient:    c.larkContactsClient,

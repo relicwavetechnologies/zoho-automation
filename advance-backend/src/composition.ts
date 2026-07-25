@@ -54,6 +54,7 @@ import { GoogleWorkspaceGatewayClient } from './infrastructure/google/google-wor
 import { CanvaMcpOAuthService } from './infrastructure/canva/canva-mcp-oauth.service';
 import { CanvaMcpClient } from './infrastructure/canva/canva-mcp.client';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
+import { ChannelDeliveryRepository } from './infrastructure/persistence/channel-delivery.repository';
 import {
   publicConnectionChoices,
   selectAccessibleConnection,
@@ -297,6 +298,7 @@ export interface Container {
   invalidateGatewayProviderCache: (companyId: string) => void;
   // Group chat context
   chatContextService: LarkChatContextService;
+  channelDeliveryRepo: ChannelDeliveryRepository;
   // Lark contacts (for directory sync)
   larkContactsClient: LarkContactsClient;
   // Pi/Desktop capability gateway
@@ -1408,7 +1410,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   });
 
   // ── Channels ───────────────────────────────────────────────────────────
-  const larkAdapter = new LarkChannelAdapter({ env, logger: logger.child({ channel: 'lark' }) });
+  const channelDeliveryRepo = new ChannelDeliveryRepository(prisma);
+  const larkAdapter = new LarkChannelAdapter({
+    env,
+    logger: logger.child({ channel: 'lark' }),
+    deliveryRepo: channelDeliveryRepo,
+  });
   await larkAdapter.initialize();
   const channelRegistry = new ChannelAdapterRegistry();
   channelRegistry.register(larkAdapter);
@@ -1607,6 +1614,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     chatSerializer,
     // Group chat context
     chatContextService,
+    channelDeliveryRepo,
     // Lark contacts (for directory sync)
     larkContactsClient,
     // Pi/Desktop capability gateway

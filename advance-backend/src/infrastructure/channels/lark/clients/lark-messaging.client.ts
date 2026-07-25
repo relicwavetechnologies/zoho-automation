@@ -54,11 +54,19 @@ export class LarkMessagingClient {
     };
   }
 
+  /**
+   * @param idempotencyKey Passed to Lark as `uuid`. Lark deduplicates sends
+   *   carrying the same value, which closes the window this cannot close on its
+   *   own: a send that succeeds at Lark but whose HTTP response is lost looks
+   *   identical to a send that never happened, and retrying it would post a
+   *   second copy of the same reply. Max 50 characters.
+   */
   async sendMessage(
     receiveId: string,
     content: string,
     replyToMessageId?: string,
     replyInThread?: boolean,
+    idempotencyKey?: string,
   ): Promise<SendMessageResult> {
     // The adapter builders embed { msg_type, content|card } in the content string.
     // Parse it here so the Lark API gets the right msg_type and the correct inner content.
@@ -90,6 +98,9 @@ export class LarkMessagingClient {
     if (replyToMessageId) {
       body['reply_in_thread'] = replyInThread ?? true;
       body['quote_reply_msg_id'] = replyToMessageId;
+    }
+    if (idempotencyKey) {
+      body['uuid'] = idempotencyKey;
     }
 
     const data = await this.sdk.request<{ message_id?: string }>(

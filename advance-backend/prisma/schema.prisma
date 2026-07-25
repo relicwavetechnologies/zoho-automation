@@ -860,6 +860,48 @@ model VectorShareRequest {
   @@index([companyId, requesterUserId, conversationKey])
 }
 
+/// One outbound delivery attempt-set for a single piece of a run's answer.
+///
+/// Wave 2 made an incoming message survive a restart, but at-least-once
+/// execution only guarantees the work happens again — not that the user sees
+/// one answer. This row is what makes the resend safe: the key is derived from
+/// the run and the segment being delivered, so a retry after a lost HTTP
+/// response finds the existing record instead of sending a second reply.
+model ChannelDelivery {
+  id             String    @id @default(uuid())
+  channel        String
+  /// Stable across every retry of this segment — also sent to Lark as `uuid`.
+  idempotencyKey String
+  /// Correlates every segment belonging to one agent run.
+  runKey         String
+  /// Which part of the answer this is: final, continuation, or status.
+  purpose        String
+  segmentIndex   Int       @default(0)
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  companyId      String?
+  chatId         String?
+  /// The rendered reply, kept so a failed delivery can be resent without
+  /// re-running the agent that produced it. Cleared once delivered.
+  payloadJson    Json?
+  /// Provider message ID once the send is confirmed.
+  providerMessageId String?
+  lastError      String?
+  /// Set when a send failed in a way that leaves delivery genuinely unknown.
+  ambiguous      Boolean   @default(false)
+  firstAttemptAt DateTime  @default(now())
+  startedAt      DateTime?
+  deliveredAt    DateTime?
+  nextAttemptAt  DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([channel, idempotencyKey])
+  @@index([channel, status, nextAttemptAt])
+  @@index([runKey])
+  @@index([channel, status, firstAttemptAt])
+}
+
 model IngressIdempotencyKey {
   id          String    @id @default(uuid())
   channel     String

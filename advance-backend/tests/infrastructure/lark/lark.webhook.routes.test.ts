@@ -140,6 +140,8 @@ async function runWebhook(body: unknown, options: {
   };
   /** Per-company control rows layered over the deployment policy. */
   companyControls?: Array<{ controlKey: string; value: string }>;
+  /** Delivery outbox, consulted before the agent runs. */
+  channelDeliveryRepo?: unknown;
 } = {}) {
   const order: string[] = [];
   const ingestionJobs: unknown[] = [];
@@ -251,6 +253,9 @@ async function runWebhook(body: unknown, options: {
             runtimeConversation: { upsert: async () => ({}) },
           } as any,
         }
+      : {}),
+    ...(options.channelDeliveryRepo
+      ? { channelDeliveryRepo: options.channelDeliveryRepo as any }
       : {}),
     cache: { setNx: async () => ok(true) } as any,
     serializer: options.serializer ?? {
@@ -967,5 +972,120 @@ describe('Lark room transcript boundaries', () => {
     const engineText = String((result.engineInputs[0] as any).incoming.text);
     assert.match(engineText, /can you action this/);
     assert.match(engineText, /Referenced message/, 'the engine still receives the quote hydration');
+  });
+});
+
+describe('Lark delivery resume', () => {
+  /** A delivery repo holding one finished-but-undelivered reply for this run. */
+  const repoWithResumable = (payload: Record<string, unknown> | null) => {
+    const resends: unknown[] = [];
+    return {
+      resends,
+      repo: {
+        findResumable: async (channel: string, runKey: string) => {
+          resends.push({ channel, runKey });
+          return ok(payload
+            ? {
+                deliveryId: 'd-1',
+                purpose: 'final' as const,
+                segmentIndex: 0,
+                attempts: 2,
+                firstAttemptAt: new Date('2026-07-26T00:00:00.000Z'),
+                payload,
+              }
+            : null);
+        },
+        reserve: async () => ok({
+          outcome: 'reserved' as const,
+          record: { deliveryId: 'd-1', attempts: 1, firstAttemptAt: new Date() },
+        }),
+        markDelivered: async () => ok(undefined),
+        markFailed: async () => ok(undefined),
+        listRetryable: async () => ok([]),
+      },
+    };
+  };
+
+  it('resends a finished answer instead of re-running the agent', async () => {
+    const { repo } = repoWithResumable({ kind: 'final', text: 'already computed', format: 'text' });
+    const finalReplies: unknown[] = [];
+
+    const result = await runWebhook(makeEvent({ chatType: 'p2p' }), {
+      channelDeliveryRepo: repo,
+      setupAdapter: adapter => {
+        (adapter as any).sendFinalReply = async (_c: unknown, reply: unknown) => {
+          finalReplies.push(reply);
+          return ok({ channel: 'lark', messageId: 'om_resent' });
+        };
+      },
+    });
+
+    // The whole point of the wave: every tool this run called has already had
+    // its effect. Re-running them to repeat a sentence is the failure mode.
+    assert.ok(!result.order.includes('engine'), 'the agent did not run again');
+    assert.equal(finalReplies.length, 1, 'the stored answer was resent');
+    assert.equal((finalReplies[0] as any).text, 'already computed');
+  });
+
+  it('runs the agent normally when there is nothing to resume', async () => {
+    const { repo } = repoWithResumable(null);
+
+    const result = await runWebhook(makeEvent({ chatType: 'p2p' }), {
+      channelDeliveryRepo: repo,
+    });
+
+    assert.ok(result.order.includes('engine'), 'a first attempt still runs');
+  });
+
+  it('looks the resume up by the run key the delivery was written under', async () => {
+    const { repo, resends } = repoWithResumable(null);
+
+    await runWebhook(makeEvent({ chatType: 'p2p' }), { channelDeliveryRepo: repo });
+
+    // `traceId` is derived from the Lark message, so it is the same string on
+    // every retry of that message. A random per-run key would make the whole
+    // guard a no-op across restarts.
+    assert.equal(resends.length, 1);
+    assert.equal((resends[0] as any).channel, 'lark');
+    assert.equal((resends[0] as any).runKey, 'om_1-1700000000000');
+  });
+
+  it('keeps the receipt retryable when the resend itself fails', async () => {
+    const { repo } = repoWithResumable({ kind: 'final', text: 'answer', format: 'text' });
+
+    const result = await runWebhook(makeEvent({ chatType: 'p2p' }), {
+      channelDeliveryRepo: repo,
+      processQueued: false,
+      setupAdapter: adapter => {
+        (adapter as any).sendFinalReply = async () => ({
+          ok: false,
+          error: { payload: { reason: 'upstream_5xx' } },
+        });
+      },
+    });
+
+    // The answer exists and the user still has not seen it, so this must not be
+    // reported as done.
+    await assert.rejects(() => result.processQueuedReceipt(), /resume failed/i);
+  });
+
+  it('runs the agent when the resume lookup is unavailable', async () => {
+    const repo = {
+      findResumable: async () => ({ ok: false as const, error: new Error('db down') }),
+      reserve: async () => ok({
+        outcome: 'reserved' as const,
+        record: { deliveryId: 'd-1', attempts: 1, firstAttemptAt: new Date() },
+      }),
+      markDelivered: async () => ok(undefined),
+      markFailed: async () => ok(undefined),
+      listRetryable: async () => ok([]),
+    };
+
+    const result = await runWebhook(makeEvent({ chatType: 'p2p' }), {
+      channelDeliveryRepo: repo,
+    });
+
+    // Failing closed here would strand the message: no resume and no run.
+    assert.ok(result.order.includes('engine'));
   });
 });
