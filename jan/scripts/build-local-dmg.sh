@@ -183,33 +183,73 @@ verify_mounted_dmg() {
   ACTIVE_MOUNT_POINT=""
 }
 
-notarize_dmg() {
-  local dmg_path="$1"
-  local notary_output
-  local notary_status
-
-  set +e
+# Run notarytool with whichever credential mode preflight validated.
+notarytool_run() {
   if [ "$NOTARY_MODE" = "password" ]; then
-    notary_output="$(xcrun notarytool submit "$dmg_path" \
+    xcrun notarytool "$@" \
       --apple-id "$APPLE_ID" \
       --team-id "$APPLE_TEAM_ID" \
-      --password "$APPLE_NOTARY_PASSWORD" \
-      --timeout "$NOTARY_TIMEOUT" \
-      --wait 2>&1)"
-    notary_status=$?
+      --password "$APPLE_NOTARY_PASSWORD"
   else
-    notary_output="$(xcrun notarytool submit "$dmg_path" \
-      --keychain-profile "$APPLE_KEYCHAIN_PROFILE" \
-      --timeout "$NOTARY_TIMEOUT" \
-      --wait 2>&1)"
-    notary_status=$?
+    xcrun notarytool "$@" --keychain-profile "$APPLE_KEYCHAIN_PROFILE"
+  fi
+}
+
+notarize_dmg() {
+  local dmg_path="$1"
+  # The record is keyed to the DMG's contents, not its path. Resuming a
+  # submission for different bytes would ask Apple about an artifact we no
+  # longer have, so a rebuilt DMG must start a fresh submission.
+  local record_file="${dmg_path}.notary-submission"
+  local dmg_digest notary_log notary_status submission_id=""
+  dmg_digest="$(shasum -a 256 "$dmg_path" | awk '{ print $1 }')"
+  notary_log="$(mktemp "${TMPDIR:-/tmp}/divo-notary.XXXXXX")"
+
+  if [ -s "$record_file" ]; then
+    local recorded_digest recorded_id
+    read -r recorded_digest recorded_id < "$record_file" || true
+    if [ "$recorded_digest" = "$dmg_digest" ] && [ -n "${recorded_id:-}" ]; then
+      submission_id="$recorded_id"
+      echo "Resuming notarization submission $submission_id (already uploaded)"
+    else
+      rm -f "$record_file"
+    fi
+  fi
+
+  set +e
+  if [ -n "$submission_id" ]; then
+    notarytool_run wait "$submission_id" --timeout "$NOTARY_TIMEOUT" 2>&1 | tee "$notary_log"
+    notary_status=${PIPESTATUS[0]}
+  else
+    # Stream to a file rather than capturing in a variable: if this process is
+    # killed mid-wait, the submission id has already been written to disk and
+    # the next run resumes instead of paying for the upload and queue again.
+    notarytool_run submit "$dmg_path" --timeout "$NOTARY_TIMEOUT" --wait 2>&1 | tee "$notary_log"
+    notary_status=${PIPESTATUS[0]}
+    submission_id="$(awk '/^[[:space:]]*id:[[:space:]]/ { print $2; exit }' "$notary_log")"
+    [ -z "$submission_id" ] || printf '%s %s\n' "$dmg_digest" "$submission_id" > "$record_file"
   fi
   set -e
 
-  printf '%s\n' "$notary_output"
-  [ "$notary_status" -eq 0 ] || fail "Apple notarization failed for $dmg_path"
-  printf '%s\n' "$notary_output" | grep -Eq 'status:[[:space:]]*Accepted' \
-    || fail "Apple did not report an Accepted notarization status for $dmg_path"
+  # An exit status above 128 is death by signal (128 + signum). That says
+  # nothing about Apple's verdict — reporting it as a rejection is what made an
+  # interrupted run look like a failed build and discard a good submission.
+  if [ "$notary_status" -gt 128 ]; then
+    rm -f "$notary_log"
+    fail "notarization was interrupted by signal $((notary_status - 128)); Apple did not reject this build.
+Submission ${submission_id:-<not yet assigned>} may still be in progress. Re-run the same command to wait on it again — the app is not rebuilt and the DMG is not re-uploaded."
+  fi
+
+  if [ "$notary_status" -ne 0 ] || ! grep -Eq 'status:[[:space:]]*Accepted' "$notary_log"; then
+    if [ -n "$submission_id" ]; then
+      echo "--- Apple notarization log for $submission_id ---"
+      notarytool_run log "$submission_id" 2>&1 | head -n 60 || true
+    fi
+    rm -f "$notary_log" "$record_file"
+    fail "Apple did not accept $dmg_path"
+  fi
+
+  rm -f "$notary_log" "$record_file"
 }
 
 build_target() {
