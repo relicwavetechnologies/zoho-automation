@@ -100,6 +100,12 @@ export function createDesktopToolsRoutes(deps: DesktopToolsRouteDeps): Router {
     try { res.json(await service.inventory(actor(res))); } catch (error) { respondError(res, error); }
   });
 
+  // Configured reach of the whole catalogue in one department. The tools list
+  // needs this for every row at once; `/tools/:toolId/manage` is the drill-down.
+  router.get('/tools/coverage/:departmentId', memberAuth, async (req: Request, res: Response) => {
+    try { res.json(await service.coverage(actor(res), req.params.departmentId!)); } catch (error) { respondError(res, error); }
+  });
+
   router.get('/tools/:toolId/manage', memberAuth, async (req: Request, res: Response) => {
     const parsed = scopeSchema.safeParse(req.query);
     if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'scope must be global or department with a departmentId' }); return; }

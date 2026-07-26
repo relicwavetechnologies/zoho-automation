@@ -4,6 +4,7 @@ import type { PermissionWriteService } from '../permissions/permission-write.ser
 import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import { getDesktopToolPolicy } from '../../domain/tools/tool-policy';
 import { TOOL_DEFAULT_PERMISSIONS } from '../../domain/tools/tool-id';
+import { actionPhrase } from '../../domain/tools/tool-labels';
 import type { ToolActionPermissionRepoPort } from '../../infrastructure/persistence/tool-action-permission.repository';
 import type { ToolPermissionRepoPort } from '../../infrastructure/persistence/tool-permission.repository';
 import type { CompanyRoleRepoPort, CompanyRoleRow } from '../../infrastructure/persistence/company-role.repository';
@@ -74,6 +75,24 @@ export class DesktopToolAccessService {
       select: { id: true },
     });
     return Boolean(membership);
+  }
+
+  /**
+   * Who may configure one department's tool access.
+   *
+   * Its manager, and any company admin. The read and write paths drifted apart
+   * here: reading a department's coverage allowed either, while opening a tool
+   * inside it demanded MANAGER membership — so a company admin who was not
+   * personally a manager of Marketing could see it listed and get a 403 on
+   * click. One rule, used by every path that governs a department.
+   */
+  private async canGovernDepartment(
+    actor: Pick<Actor, 'userId' | 'companyId'>,
+    liveRole: string,
+    departmentId: string,
+  ): Promise<boolean> {
+    if (COMPANY_ADMIN_ROLES.has(liveRole)) return true;
+    return this.isDepartmentManager(actor, departmentId);
   }
 
   private async requireRegisteredConfigurable(toolId: string): Promise<RegisteredTool | null> {
@@ -154,6 +173,19 @@ export class DesktopToolAccessService {
     const airtableReady = airtable.ok && airtable.value.length > 0;
     const canManageGlobal = COMPANY_ADMIN_ROLES.has(liveRole);
     const managedDepartments = new Set(memberships.filter(m => m.role.slug === 'MANAGER').map(m => m.departmentId));
+    // A company admin governs every department, not only the ones they happen
+    // to be a MANAGER of. Building this list from the actor's own memberships
+    // meant an admin who was a manager of Finance and nothing else could not
+    // see — let alone configure — Marketing or Sales at all.
+    const manageableDepartments = canManageGlobal
+      ? await this.deps.prisma.department.findMany({
+        where: { companyId: actor.companyId, status: 'active' },
+        select: { id: true, name: true },
+        orderBy: { name: 'asc' },
+      })
+      : memberships
+        .filter(m => managedDepartments.has(m.departmentId))
+        .map(m => ({ id: m.departmentId, name: m.department.name }));
 
     const tools: Array<{ tool: RegisteredTool; origins: unknown[]; managementScopes: unknown[]; readiness: string }> = [];
     for (const tool of registered) {
@@ -170,7 +202,7 @@ export class DesktopToolAccessService {
       );
       const managementScopes = [
         ...(canManageGlobal ? [{ kind: 'global' as const, label: 'Global' as const }] : []),
-        ...memberships.filter(m => managedDepartments.has(m.departmentId)).map(m => ({ kind: 'department' as const, department: { id: m.departmentId, name: m.department.name } })),
+        ...manageableDepartments.map(department => ({ kind: 'department' as const, department })),
       ];
       if (globalActions.length === 0 && departmentOrigins.length === 0 && managementScopes.length === 0) continue;
       const readiness = tool.toolId.startsWith('google')
@@ -214,6 +246,7 @@ export class DesktopToolAccessService {
       const toolValues = new Map(toolRows.value.filter(row => row.toolId === toolId).map(row => [`${row.role}:${row.toolId}`, row.enabled]));
       return {
         tool, scope: { kind: 'global' as const, label: 'Global' as const }, supportedActions: policy.kind === 'configurable' ? policy.supportedActions : [],
+        actionLabels: Object.fromEntries((policy.kind === 'configurable' ? policy.supportedActions : []).map(action => [action, actionPhrase(toolId, action)])),
         roles: companyRoles.map(roleDefinition => {
           const role = roleDefinition.slug;
           const toolEnabled = this.toolGate(toolId, role, toolValues);
@@ -231,7 +264,7 @@ export class DesktopToolAccessService {
         }),
       };
     }
-    if (!await this.isDepartmentManager(actor, scope.departmentId)) throw new DesktopToolAccessError('forbidden');
+    if (!await this.canGovernDepartment(actor, liveRole, scope.departmentId)) throw new DesktopToolAccessError('forbidden');
     const department = await this.deps.prisma.department.findFirst({ where: { id: scope.departmentId, companyId: actor.companyId, status: 'active' }, select: { id: true, name: true } });
     if (!department) throw new DesktopToolAccessError('forbidden');
     const [roles, members, roleRows, overrideRows, companyActionRows, companyToolRows] = await Promise.all([
@@ -320,6 +353,7 @@ export class DesktopToolAccessService {
     });
     return {
       tool, scope: { kind: 'department' as const, department }, supportedActions,
+      actionLabels: Object.fromEntries(supportedActions.map(action => [action, actionPhrase(toolId, action)])),
       roles, members: activeMembers.map(({ member }) => ({ userId: member.userId, name: member.user.name, email: member.user.email, roleId: member.roleId })),
       roleActions: roleRows, memberOverrides: overrideRows,
       memberActionStates: activeMembers.flatMap(({ actions }) => actions),
@@ -331,6 +365,107 @@ export class DesktopToolAccessService {
           : [],
       })),
     };
+  }
+
+  /**
+   * Every tool's configured reach in one department, in one round trip.
+   *
+   * The tools list needs to answer "who can use this" for a whole catalogue at
+   * once, and `snapshot()` is far too heavy for that — it resolves permissions
+   * per member per tool. This reads the department's grant rows directly and
+   * counts, so a 30-tool catalogue costs a handful of queries instead of a
+   * hundred. It reports what a manager *configured*, and separately whether the
+   * company ceiling is holding any of it down, because those are the two facts
+   * a manager needs before deciding to open a tool.
+   */
+  async coverage(actor: Actor, departmentId: string) {
+    const liveRole = await this.liveCompanyRole(actor);
+    if (!liveRole) throw new DesktopToolAccessError('forbidden');
+    if (!await this.canGovernDepartment(actor, liveRole, departmentId)) throw new DesktopToolAccessError('forbidden');
+    const department = await this.deps.prisma.department.findFirst({
+      where: { id: departmentId, companyId: actor.companyId, status: 'active' },
+      select: { id: true, name: true },
+    });
+    if (!department) throw new DesktopToolAccessError('forbidden');
+
+    const [registered, members, roleRows, overrideRows, companyActionRows, companyToolRows, agentConfig] = await Promise.all([
+      this.deps.prisma.registeredTool.findMany({
+        where: { deprecated: false },
+        select: { toolId: true, name: true, description: true, category: true, domain: true, hitlRequired: true },
+      }),
+      this.deps.prisma.departmentMembership.findMany({
+        where: { departmentId: department.id, status: 'active' },
+        select: { userId: true, roleId: true },
+      }),
+      this.deps.prisma.departmentToolPermission.findMany({
+        where: { departmentId: department.id, allowed: true },
+        select: { toolId: true, roleId: true, actionGroup: true },
+      }),
+      this.deps.prisma.departmentUserToolOverride.findMany({
+        where: { departmentId: department.id },
+        select: { toolId: true, userId: true, actionGroup: true, allowed: true },
+      }),
+      this.deps.toolActionRepo.getForCompany(actor.companyId),
+      this.deps.toolPermRepo.getForCompany(actor.companyId),
+      this.deps.prisma.departmentAgentConfig.findUnique({
+        where: { departmentId: department.id },
+        select: { managerApprovalJson: true },
+      }),
+    ]);
+    if (!companyActionRows.ok || !companyToolRows.ok) throw new DesktopToolAccessError('internal');
+
+    const companyActionValues = new Map(companyActionRows.value.map(row => [`${row.toolId}:${row.role}:${row.actionGroup}`, row.enabled]));
+    const companyToolValues = new Map(companyToolRows.value.map(row => [`${row.role}:${row.toolId}`, row.enabled]));
+    const grantedByTool = groupBy(roleRows, row => row.toolId);
+    const overridesByTool = groupBy(overrideRows, row => row.toolId);
+    const approvalByTool = approvalActionsByTool(agentConfig?.managerApprovalJson);
+
+    const tools = registered.flatMap(tool => {
+      const policy = this.cataloguePolicy(tool.toolId);
+      if (policy?.kind !== 'configurable') return [];
+      const supportedActions = policy.supportedActions;
+      const grants = grantedByTool.get(tool.toolId) ?? [];
+      const overrides = overridesByTool.get(tool.toolId) ?? [];
+
+      const grantedByRole = new Map<string, Set<string>>();
+      for (const grant of grants) {
+        const set = grantedByRole.get(grant.roleId) ?? new Set<string>();
+        set.add(grant.actionGroup);
+        grantedByRole.set(grant.roleId, set);
+      }
+      const overrideByUser = new Map<string, Map<string, boolean>>();
+      for (const override of overrides) {
+        const map = overrideByUser.get(override.userId) ?? new Map<string, boolean>();
+        map.set(override.actionGroup, override.allowed);
+        overrideByUser.set(override.userId, map);
+      }
+
+      const peopleWithAccess = members.filter(member => supportedActions.some(action => {
+        const override = overrideByUser.get(member.userId)?.get(action);
+        return override ?? Boolean(grantedByRole.get(member.roleId)?.has(action));
+      })).length;
+
+      // The ceiling as it applies to an ordinary member; a company admin's own
+      // reach is never what a manager is trying to read off this row.
+      const memberToolEnabled = this.toolGate(tool.toolId, 'MEMBER', companyToolValues);
+      const blockedActions = supportedActions.filter(action => !memberToolEnabled
+        || !(companyActionValues.get(`${tool.toolId}:MEMBER:${action}`) ?? true));
+
+      return [{
+        tool,
+        supportedActions,
+        // Phrased on the backend so a switch, an approval card and the tools
+        // list all call the same action by the same name.
+        actionLabels: Object.fromEntries(supportedActions.map(action => [action, actionPhrase(tool.toolId, action)])),
+        actionsGranted: supportedActions.filter(action => [...grantedByRole.values()].some(set => set.has(action))),
+        approvalActions: (approvalByTool.get(tool.toolId) ?? []).filter(action => supportedActions.includes(action)),
+        peopleWithAccess,
+        blockedActions,
+        exceptionCount: overrideByUser.size,
+      }];
+    });
+
+    return { department, totalPeople: members.length, tools };
   }
 
   async setGlobal(actor: Actor, toolId: string, role: string, actionGroup: string, enabled: boolean) {
@@ -355,39 +490,82 @@ export class DesktopToolAccessService {
   }
 
   async setDepartmentRole(actor: Actor, toolId: string, departmentId: string, roleId: string, actionGroup: string, allowed: boolean) {
-    if (!await this.liveCompanyRole(actor)) throw new DesktopToolAccessError('forbidden');
-    if (!await this.isDepartmentManager(actor, departmentId)) throw new DesktopToolAccessError('forbidden');
+    const liveRole = await this.liveCompanyRole(actor);
+    if (!liveRole) throw new DesktopToolAccessError('forbidden');
+    if (!await this.canGovernDepartment(actor, liveRole, departmentId)) throw new DesktopToolAccessError('forbidden');
     if (!await this.requireRegisteredConfigurable(toolId)) throw new DesktopToolAccessError('invalid');
     const target = await this.deps.prisma.departmentRole.findFirst({ where: { id: roleId, departmentId }, select: { id: true } });
     if (!target) throw new DesktopToolAccessError('forbidden');
     const result = await this.deps.permissionWrites.setDepartmentRoleAction({
       companyId: actor.companyId, departmentId, actorId: actor.userId, toolId, roleId, actionGroup, allowed,
-      revalidate: async () => Boolean(await this.liveCompanyRole(actor))
-        && Boolean(await this.isDepartmentManager(actor, departmentId))
-        && Boolean(await this.deps.prisma.departmentRole.findFirst({ where: { id: roleId, departmentId }, select: { id: true } })),
+      // Re-checked against live state at write time, so a role or membership
+      // revoked mid-request cannot land the change.
+      revalidate: async () => {
+        const role = await this.liveCompanyRole(actor);
+        return Boolean(role)
+          && await this.canGovernDepartment(actor, role!, departmentId)
+          && Boolean(await this.deps.prisma.departmentRole.findFirst({ where: { id: roleId, departmentId }, select: { id: true } }));
+      },
     });
     if (!result.ok) throw new DesktopToolAccessError(result.reason === 'invalid' ? 'invalid' : 'internal');
     return this.snapshot(actor, toolId, { kind: 'department', departmentId });
   }
 
   async setDepartmentMember(actor: Actor, toolId: string, departmentId: string, userId: string, actionGroup: string, allowed: boolean) {
-    if (!await this.liveCompanyRole(actor)) throw new DesktopToolAccessError('forbidden');
-    if (!await this.isDepartmentManager(actor, departmentId)) throw new DesktopToolAccessError('forbidden');
+    const liveRole = await this.liveCompanyRole(actor);
+    if (!liveRole) throw new DesktopToolAccessError('forbidden');
+    if (!await this.canGovernDepartment(actor, liveRole, departmentId)) throw new DesktopToolAccessError('forbidden');
     if (!await this.requireRegisteredConfigurable(toolId)) throw new DesktopToolAccessError('invalid');
     const target = await this.deps.prisma.departmentMembership.findFirst({ where: { departmentId, userId, status: 'active', department: { companyId: actor.companyId, status: 'active' } }, select: { id: true } });
     if (!target) throw new DesktopToolAccessError('forbidden');
     const result = await this.deps.permissionWrites.setDepartmentMemberAction({
       companyId: actor.companyId, departmentId, actorId: actor.userId, userId, toolId, actionGroup, allowed,
-      revalidate: async () => Boolean(await this.liveCompanyRole(actor))
-        && Boolean(await this.isDepartmentManager(actor, departmentId))
-        && Boolean(await this.deps.prisma.departmentMembership.findFirst({
-          where: { departmentId, userId, status: 'active', department: { companyId: actor.companyId, status: 'active' } },
-          select: { id: true },
-        })),
+      revalidate: async () => {
+        const role = await this.liveCompanyRole(actor);
+        return Boolean(role)
+          && await this.canGovernDepartment(actor, role!, departmentId)
+          && Boolean(await this.deps.prisma.departmentMembership.findFirst({
+            where: { departmentId, userId, status: 'active', department: { companyId: actor.companyId, status: 'active' } },
+            select: { id: true },
+          }));
+      },
     });
     if (!result.ok) throw new DesktopToolAccessError(result.reason === 'invalid' ? 'invalid' : 'internal');
     return this.snapshot(actor, toolId, { kind: 'department', departmentId });
   }
+}
+
+function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    const bucket = grouped.get(key(item));
+    if (bucket) bucket.push(item);
+    else grouped.set(key(item), [item]);
+  }
+  return grouped;
+}
+
+/**
+ * Which actions a department gates behind manager approval, per tool.
+ * `requiredActionGroups` is the flat form — an action group gated for every
+ * tool — so it has to be folded in per tool rather than read as a tool list.
+ */
+function approvalActionsByTool(managerApprovalJson: unknown): Map<string, string[]> {
+  const byTool = new Map<string, string[]>();
+  if (typeof managerApprovalJson !== 'object' || managerApprovalJson === null) return byTool;
+  const config = managerApprovalJson as Record<string, unknown>;
+  if (config['enabled'] !== true) return byTool;
+
+  const required = Array.isArray(config['requiredActions']) ? config['requiredActions'] : [];
+  for (const entry of required) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const toolId = typeof record['toolId'] === 'string' ? record['toolId'] : null;
+    const actions = Array.isArray(record['actions']) ? record['actions'].filter((a): a is string => typeof a === 'string') : [];
+    if (!toolId || !actions.length) continue;
+    byTool.set(toolId, [...new Set([...(byTool.get(toolId) ?? []), ...actions])]);
+  }
+  return byTool;
 }
 
 export class DesktopToolAccessError extends Error {
