@@ -10,6 +10,7 @@ function makeService() {
   const service = new DepartmentAdminService({
     prisma: {
       department: { findFirst: async () => ({ id: 'dept-1', companyId: 'company-1', name: 'Ops', slug: 'ops' }) },
+      departmentRole: { findFirst: async () => ({ id: 'role-1', departmentId: 'dept-1', slug: 'MEMBER', name: 'Member' }) },
       departmentToolPermission: { upsert: async () => { roleWrites++; return {}; } },
       departmentUserToolOverride: { upsert: async () => { memberWrites++; return {}; } },
     } as any,
@@ -32,6 +33,21 @@ describe('DepartmentAdminService fixed policy', () => {
     assert.equal(member.ok, false);
     assert.equal(writes().roleWrites, 0);
     assert.equal(writes().memberWrites, 0);
+  });
+
+  // OMS was classified a fixed 'system' tool, so this write path answered
+  // "Fixed-policy tool cannot be configured: omsSiteData" and a company admin
+  // could not grant it to anyone, themselves included.
+  it('lets an admin grant OMS Site Data to a department role', async () => {
+    const { service, writes } = makeService();
+    const role = await service.updateRolePermission('dept-1', 'company-1', 'role-1', 'omsSiteData', 'read', true, 'actor-1');
+
+    assert.equal(role.ok, true);
+    assert.equal(writes().roleWrites, 1);
+  });
+
+  it('does not seed OMS Site Data into MEMBER templates', () => {
+    assert.equal(memberTemplateGrants().some(grant => grant.toolId === 'omsSiteData'), false);
   });
 
   it('invalidates the exact department permission cache after membership changes', async () => {

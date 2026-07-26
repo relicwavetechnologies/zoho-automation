@@ -14,6 +14,7 @@ import {
   TOOL_SUPPORTED_ACTIONS,
   type CanonicalToolId,
 } from '../../domain/tools/tool-id';
+import { DEPARTMENT_GRANT_ONLY_TOOLS } from '../../domain/tools/tool-policy';
 import type { PermissionDecision, PermissionSource } from '../../domain/permissions/permission-decision';
 import type { PermissionQuery, PermissionResult, DepartmentMeta } from './permission.types';
 import {
@@ -75,7 +76,11 @@ export class PermissionServiceImpl implements PermissionService {
 
     // ── No department: pure company-axis ──────────────────────────────
     if (!departmentId) {
-      return this.applyCompanyAdminFixedAccess(companyRole, await this.resolveCompanyOnly(companyId, companyRole));
+      const companyOnly = await this.resolveCompanyOnly(companyId, companyRole);
+      return this.applyCompanyAdminFixedAccess(
+        companyRole,
+        companyOnly.ok ? ok(stripDepartmentGrantOnlyTools(companyOnly.value)) : companyOnly,
+      );
     }
 
     // ── With department: check dept cache first ────────────────────────
@@ -382,16 +387,15 @@ export class PermissionServiceImpl implements PermissionService {
       decisions,
     };
 
-    const safeResult = stripCompanyAdminFixedAccess(result);
+    // Cached unstripped: this doubles as the ceiling for the department axis,
+    // and a tool removed here could never be granted to a department at all.
+    await this.permCache.setCompany(companyId, companyRole, serializePermissionResult(result));
 
-    // Cache before returning
-    await this.permCache.setCompany(companyId, companyRole, serializePermissionResult(safeResult));
-
-    return ok(safeResult);
+    return ok(result);
   }
 
   /**
-   * Tools fixed to live company administrators, whatever department is
+   * Tools a live company administrator always holds, whatever department is
    * selected and whatever the department overlay says. The overlay is
    * default-deny per department role, so a company-wide integration that is
    * still being piloted by its admin would otherwise be denied everywhere
@@ -402,7 +406,7 @@ export class PermissionServiceImpl implements PermissionService {
     result: Result<PermissionResult, PermissionError>,
   ): Result<PermissionResult, PermissionError> {
     if (!result.ok) return result;
-    const base = stripCompanyAdminFixedAccess(result.value);
+    const base = result.value;
     if (!['COMPANY_ADMIN', 'SUPER_ADMIN'].includes(companyRole)) return ok(base);
 
     const allowedActionsByTool = new Map(base.allowedActionsByTool);
@@ -438,18 +442,19 @@ const COMPANY_ADMIN_FIXED_TOOLS: ReadonlyArray<readonly [CanonicalToolId, readon
 ];
 
 /**
- * Tools whose access is the company-admin grant and nothing else, stripped
- * before the admin floor is applied so no department row can widen them.
- * Airtable is deliberately absent: its department grants are real, and the
- * team is meant to get it once the pilot ends.
+ * The company axis serves two purposes at once: it is the ceiling the
+ * department overlay is clamped against, and — when no department is selected
+ * — it is the answer. DEPARTMENT_GRANT_ONLY_TOOLS need a permissive ceiling so
+ * an admin can grant them to a role at all, but that same ceiling would hand
+ * them to every member in a department-less context. So they are removed on
+ * the department-less path only, and the admin floor puts them back for
+ * administrators.
  */
-const COMPANY_ADMIN_EXCLUSIVE_TOOLS: readonly CanonicalToolId[] = ['omsSiteData'];
-
-function stripCompanyAdminFixedAccess(result: PermissionResult): PermissionResult {
-  if (!COMPANY_ADMIN_EXCLUSIVE_TOOLS.some(toolId => result.allowedToolIds.has(asToolId(toolId)))) return result;
+function stripDepartmentGrantOnlyTools(result: PermissionResult): PermissionResult {
+  if (!DEPARTMENT_GRANT_ONLY_TOOLS.some(toolId => result.allowedToolIds.has(asToolId(toolId)))) return result;
   const allowedToolIds = new Set(result.allowedToolIds);
   const allowedActionsByTool = new Map(result.allowedActionsByTool);
-  for (const toolId of COMPANY_ADMIN_EXCLUSIVE_TOOLS) {
+  for (const toolId of DEPARTMENT_GRANT_ONLY_TOOLS) {
     allowedToolIds.delete(asToolId(toolId));
     allowedActionsByTool.delete(asToolId(toolId));
   }
@@ -457,6 +462,6 @@ function stripCompanyAdminFixedAccess(result: PermissionResult): PermissionResul
     ...result,
     allowedToolIds,
     allowedActionsByTool,
-    decisions: result.decisions.filter(decision => !COMPANY_ADMIN_EXCLUSIVE_TOOLS.includes(decision.toolId as CanonicalToolId)),
+    decisions: result.decisions.filter(decision => !DEPARTMENT_GRANT_ONLY_TOOLS.includes(decision.toolId as CanonicalToolId)),
   };
 }

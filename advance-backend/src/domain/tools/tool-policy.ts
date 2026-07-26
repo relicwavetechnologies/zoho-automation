@@ -16,9 +16,10 @@ export function getDesktopToolPolicy(toolId: string): DesktopToolPolicy | null {
   if (toolId === 'memoryRecall') {
     return { kind: 'system', supportedActions: ['read'], reason: 'System memory recall is available to authenticated members.' };
   }
-  if (toolId === 'omsSiteData') {
-    return { kind: 'system', supportedActions: ['read'], reason: 'OMS Site Data is a company-owned, read-only capability available only to active company administrators.' };
-  }
+  // omsSiteData was classified 'system' here, which made every write path
+  // reject it outright — a company admin could not grant it to a department
+  // even for themselves. It is configurable now: company admins hold it
+  // regardless, and anyone else needs an explicit department grant.
   if (!CANONICAL_TOOL_IDS.includes(toolId as CanonicalToolId)) return null;
   return {
     kind: 'configurable',
@@ -34,4 +35,20 @@ export function isConfigurableDesktopTool(toolId: string): boolean {
 export function isFixedToolPolicy(toolId: string): boolean {
   const policy = getDesktopToolPolicy(toolId);
   return policy?.kind === 'local' || policy?.kind === 'system';
+}
+
+/**
+ * Tools a department must be granted explicitly, never by inheriting a
+ * company-role default.
+ *
+ * Their company-role default is permissive on purpose — it is the ceiling the
+ * department overlay is clamped against, and a restrictive ceiling would make
+ * them impossible to grant at all. Everywhere that same default would act as a
+ * grant rather than a ceiling has to skip them: the department-less permission
+ * path, and the MEMBER template that seeds new role matrices.
+ */
+export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = ['omsSiteData'];
+
+export function isDepartmentGrantOnlyTool(toolId: string): boolean {
+  return DEPARTMENT_GRANT_ONLY_TOOLS.includes(toolId as CanonicalToolId);
 }

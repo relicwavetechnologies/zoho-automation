@@ -577,6 +577,45 @@ describe('PermissionService', () => {
       assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('omsSiteData')) ?? [])], ['read']);
     });
 
+    // OMS used to be classified a fixed 'system' tool, so every write path
+    // rejected it and no department could ever be granted it. It is now
+    // grantable — but only explicitly, never inherited from a role default.
+    it('honours an explicit department grant of OMS Site Data for an ordinary member', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'omsSiteData', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('omsSiteData')) ?? [])], ['read']);
+    });
+
+    it('still denies OMS Site Data to a department member with no explicit grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('omsSiteData')), false);
+    });
+
     it('keeps Airtable available to a company admin in a department context without a department grant', async () => {
       const svc = new PermissionServiceImpl(buildDeps({
         deptRepo: { getMembership: async () => ok(membershipRow()) },

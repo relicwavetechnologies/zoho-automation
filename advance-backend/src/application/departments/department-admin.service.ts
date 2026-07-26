@@ -12,7 +12,7 @@ import {
 import { unknownSkillToolIds } from '../skills/skill-tool-validation';
 import { recordSkillRegistryMutation } from '../skills/skill-registry-versioning';
 import { larkSkillEnglishOnlyError } from '../skills/lark-skill-language-policy';
-import { isFixedToolPolicy } from '../../domain/tools/tool-policy';
+import { isFixedToolPolicy, isDepartmentGrantOnlyTool } from '../../domain/tools/tool-policy';
 
 export interface DepartmentAdminServiceDeps {
   prisma: PrismaClient;
@@ -25,6 +25,9 @@ export function memberTemplateGrants(): Array<{ toolId: string; actionGroup: str
   const grants: Array<{ toolId: string; actionGroup: string }> = [];
   for (const toolId of CANONICAL_TOOL_IDS) {
     if (isFixedToolPolicy(toolId)) continue;
+    // Permissive by role default, but only as a ceiling — seeding it here
+    // would hand it to every member of every new role matrix.
+    if (isDepartmentGrantOnlyTool(toolId)) continue;
     if (!TOOL_DEFAULT_PERMISSIONS[toolId].MEMBER) continue;
     for (const actionGroup of TOOL_SUPPORTED_ACTIONS[toolId as CanonicalToolId]) {
       grants.push({ toolId, actionGroup });

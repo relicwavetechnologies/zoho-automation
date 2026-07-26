@@ -166,7 +166,10 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   semrush: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   // OMS inventory access is deliberately fixed to live company administrators.
   // PermissionService strips normal role overrides before applying that rule.
-  omsSiteData: { MEMBER: false, COMPANY_ADMIN: false, SUPER_ADMIN: false },
+  // A ceiling, not a grant. OMS stays department-grant-only in
+  // permission.service, so raising this lets an admin grant it to a role
+  // without handing it to every member who has no department selected.
+  omsSiteData: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
 };
 
 /**
