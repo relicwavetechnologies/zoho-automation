@@ -1553,6 +1553,61 @@ describe('GatewayDispatcher', () => {
     }]);
   });
 
+  it('returns accessible Airtable connections only through the explicit Airtable provider', async () => {
+    const perm = makeAllowedPerm('airtableRecords', ['read']);
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(perm),
+      toolRegistry: new ToolRegistry(),
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: new ToolRegistry(),
+        permissions: makePermissionService(perm),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      connectionRegistry: {
+        listAccessibleAirtableConnections: async () => ok([{
+          connectionId: 'conn-airtable-1',
+          provider: 'airtable',
+          label: 'Finance Airtable',
+          ownerType: 'user',
+          ownerUserId: 'manager-1',
+          access: 'read_write',
+          scopes: ['data.records:read'],
+          connectedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }]),
+      },
+      logger: noopLogger,
+    });
+
+    const missingProvider = await dispatcher.dispatch({
+      op: 'connections.list',
+      payload: {},
+    }, member);
+    assert.equal(missingProvider.ok, false);
+    assert.equal(missingProvider.status, 'bad_request');
+
+    const result = await dispatcher.dispatch({
+      op: 'connections.list',
+      payload: { provider: 'airtable' },
+    }, member);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual((result.data as any).connections[0], {
+      connectionId: 'conn-airtable-1',
+      provider: 'airtable',
+      label: 'Finance Airtable',
+      accountEmail: null,
+      accountName: null,
+      ownerType: 'user',
+      ownerUserId: 'manager-1',
+      access: 'read_write',
+      scopes: ['data.records:read'],
+      connectedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+    });
+  });
+
   it('returns shared Canva connections only when Canva RBAC is allowed', async () => {
     const perm = makeAllowedPerm('canvaDesign', ['read']);
     const dispatcher = new GatewayDispatcher({

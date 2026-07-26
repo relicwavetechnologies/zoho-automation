@@ -50,17 +50,19 @@ Supported operations are:
 - `tools.list`: list tools available to the current user and department.
 - `skills.list`: list backend-provided company skills/instructions available to the current user.
 - `skills.get`: fetch one backend-provided skill or instruction payload by id.
-- `connections.list`: list backend-visible personal/shared integration connections, e.g. Google Workspace and Lark accounts.
+- `connections.list`: list backend-visible personal/shared integration connections, including Google Workspace, Zoho, Canva, Airtable, and Lark accounts.
 - `tools.invoke`: execute a backend tool with `payload: { "toolId": "...", "args": { ... } }`.
 
 Scheduling is available in normal and Teach conversations through the backend `scheduledWorkflows` tool. Load the exact Schedule Divo Work skill from the injected catalogue with `divo_skill_view`; use `divo_skill_resolve` only if that exact recipe is absent. Use `scheduledWorkflows` for agent work, reminders, reports, or monitoring that runs later or repeatedly; use a calendar skill for meetings, invitations, free/busy, or reserving time. If the request is ambiguous, ask which one the user means. Follow the returned scheduling skill exactly: call `tools.list` with payload `{ "toolId": "scheduledWorkflows" }`, then `tools.invoke` with `{ "toolId": "scheduledWorkflows", "args": { ... } }`. Keep all operation and timing fields inside `args`. Never guess material details or claim success before the backend returns the created schedule.
 
-For `connections.list`, provider ids are exact backend enums:
+For `connections.list`, always include exactly one provider. Provider ids are exact backend enums:
 
 - Use `google_workspace` for Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, and Apps Script.
 - Use `zoho` for Zoho CRM and Zoho Books.
+- Use `canva` for Canva.
+- Use `airtable` for Airtable.
 - Use `lark` for Lark Tasks, Messaging, Contacts, Calendar, Docs, Base, and Approvals.
-- Never use `google` as a provider id.
+- Never omit `provider`, substitute another connection family, or use `google` as a provider id.
 
 ## Lark Is Governed
 
@@ -114,6 +116,8 @@ The retired `divo_python_automation` tool is unavailable. Ignore any older retri
    - If it says to call `connections.list`, call that before `tools.invoke`.
    - For Google Workspace connections, call `connections.list` with payload `{ "provider": "google_workspace" }`.
    - For Zoho connections, call `connections.list` with payload `{ "provider": "zoho" }`.
+   - For Canva connections, call `connections.list` with payload `{ "provider": "canva" }`.
+   - For Airtable connections, call `connections.list` with payload `{ "provider": "airtable" }`.
    - For Lark connections, call `connections.list` with payload `{ "provider": "lark" }`.
    - If exactly one connection matches, use its backend `connectionId`.
    - If multiple connections are plausible and the user did not specify, ask one short account-choice question.

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { Check } from "typebox/value";
 import {
 	DIVO_COMPANY_PERSONA_PROMPT,
 	DIVO_DIRECT_WEB_SEARCH_POLICY,
@@ -43,6 +44,17 @@ describe("Divo normal-session routing policy", () => {
 		const schema = JSON.stringify(DIVO_GATEWAY_PARAMS);
 		assert.match(schema, /only for explicit registry inspection/i);
 		assert.match(schema, /do not use them as a routing loop/i);
+	});
+
+	it("treats Airtable as an exact governed connection family", () => {
+		assert.equal(Check(DIVO_GATEWAY_PARAMS, {
+			op: "connections.list",
+			payload: { provider: "airtable" },
+		}), true);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /airtable for Airtable/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never omit provider/i);
+		assert.match(ROUTER_SKILL, /airtable.*for Airtable/i);
+		assert.match(ROUTER_SKILL, /never omit `provider`/i);
 	});
 
 	it("uses one persistent local Python file and never routes through the retired inline-code tool", () => {

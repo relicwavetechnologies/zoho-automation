@@ -877,7 +877,7 @@ export class GatewayDispatcher {
       return gatewayFailure('tool_error', 'Connection registry is not configured');
     }
 
-    const provider = parsed.data.provider ?? 'google_workspace';
+    const provider = parsed.data.provider;
     const canUseGoogle = GOOGLE_WORKSPACE_TOOL_IDS.some((toolId) =>
       perm.allowedToolIds.has(asToolId(toolId)),
     );

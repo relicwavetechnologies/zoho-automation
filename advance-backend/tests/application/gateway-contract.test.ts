@@ -78,9 +78,12 @@ describe('public gateway request contract', () => {
     assert.equal(malformed.success, false);
   });
 
-  it('rejects invented provider names and unknown search controls', () => {
+  it('requires one exact supported connection provider and rejects unknown search controls', () => {
+    for (const provider of ['google_workspace', 'zoho', 'canva', 'airtable', 'lark']) {
+      assert.equal(connectionsListPayloadSchema.safeParse({ provider }).success, true);
+    }
+    assert.equal(connectionsListPayloadSchema.safeParse({}).success, false);
     assert.equal(connectionsListPayloadSchema.safeParse({ provider: 'google' }).success, false);
-    assert.equal(connectionsListPayloadSchema.safeParse({ provider: 'google_workspace' }).success, true);
     assert.equal(skillsSearchPayloadSchema.safeParse({ query: 'Gmail', offset: 20 }).success, false);
   });
 

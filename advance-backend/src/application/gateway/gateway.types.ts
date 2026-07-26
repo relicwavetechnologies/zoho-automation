@@ -147,7 +147,7 @@ export const teachContextGetPayloadSchema = z.object({
 }).strict();
 
 export const connectionsListPayloadSchema = z.object({
-  provider: z.enum(['google_workspace', 'zoho', 'canva', 'lark']).optional(),
+  provider: z.enum(['google_workspace', 'zoho', 'canva', 'airtable', 'lark']),
 }).strict();
 
 export const toolsListPayloadSchema = z.object({
