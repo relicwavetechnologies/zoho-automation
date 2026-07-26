@@ -11,6 +11,7 @@ import type {
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
 import type { PreparedToolInvocation, ToolExecutor } from './tool-executor';
 import { googleWorkspaceProductByToolId } from '../google/google-workspace-mcp-manifest';
+import { AIRTABLE_PRODUCTS } from '../airtable/airtable-mcp-manifest';
 
 const DEFAULT_INTENT_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_TOMBSTONE_TTL_MS = 10 * 60 * 1000;
@@ -377,6 +378,19 @@ function buildApprovalPresentation(
       title: googleApprovalTitle(googleProduct.service, googleProduct.name, operation, action),
       action,
       operation,
+      details: pickDefined(args, ['connectionId', 'nativeTool', 'input']),
+    };
+  }
+
+  const airtableProduct = AIRTABLE_PRODUCTS.find(product => product.toolId === toolId);
+  if (airtableProduct) {
+    const nativeTool = typeof args['nativeTool'] === 'string' ? args['nativeTool'] : operation;
+    return {
+      kind: `airtable.${airtableProduct.service}.${nativeTool}`,
+      provider: 'airtable',
+      title: `Review Airtable ${humanize(nativeTool)}`,
+      action,
+      operation: nativeTool,
       details: pickDefined(args, ['connectionId', 'nativeTool', 'input']),
     };
   }
