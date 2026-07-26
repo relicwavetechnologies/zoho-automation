@@ -50,6 +50,44 @@ export const unsupportedDocumentNotice = (fileName: string): string =>
   + 'Do not claim to have read it, and do not promise to read it later in this conversation.]';
 
 /**
+ * Whether this message is an attachment with nothing asked of it yet.
+ *
+ * People send the picture first and say what they want about it second. Those
+ * are two Lark messages but one request, and answering the first produces the
+ * only reply that is guaranteed to be useless — Divo has been shown something
+ * and asked nothing. Worse, it burns a turn and a model call to say so.
+ *
+ * Only for direct messages. In a group Divo answers when addressed, so an
+ * image posted without a mention already stays quiet, and an image posted
+ * *with* one is a deliberate request that deserves an answer.
+ */
+export const isAwaitingItsQuestion = (input: {
+  readonly chatType: string;
+  readonly text: string | undefined;
+  readonly supportedAttachmentCount: number;
+  readonly unsupportedAttachmentCount: number;
+}): boolean =>
+  input.chatType === 'p2p'
+  && input.supportedAttachmentCount > 0
+  // A document is refused now, never later: no follow-up question can make a
+  // PDF readable, so waiting for one would leave the user with no answer at
+  // all rather than with an honest refusal.
+  && input.unsupportedAttachmentCount === 0
+  && !(input.text ?? '').trim();
+
+/**
+ * Prompt context for an image that was attached but could not be prepared.
+ *
+ * Without this the model is handed nothing at all and says "I don't see any
+ * image" — which is both wrong and unhelpful, because the user is looking at
+ * the image they just sent. "I could not open it, resend it" is actionable.
+ */
+export const unreadableImageNotice = (fileName: string, reason?: string): string =>
+  `[Image: "${fileName}" — attached but could not be read${reason ? ` (${reason})` : ''}.\n`
+  + 'Tell the user you could not open the image and ask them to send it again. '
+  + 'Do not tell them no image was attached — one was.]';
+
+/**
  * Strip bytes that exist only for the current turn before the message is
  * persisted.
  *

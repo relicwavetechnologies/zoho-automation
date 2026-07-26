@@ -61,10 +61,13 @@ import {
 import { appendLarkMentionContext, listLarkMentionOpenIds } from './lark-mention-context';
 import {
   isSupportedLarkMedia,
+  isAwaitingItsQuestion,
+  unreadableImageNotice,
   unsupportedDocumentNotice,
   withoutTransientBytes,
   MAX_INLINE_IMAGE_BYTES,
 } from './lark-media-support';
+import { conversationKeyForMessage } from '../../../domain/conversation/conversation-key';
 import type {
   IngressReceipt,
   IngressReceiptRepoPort,
@@ -932,8 +935,44 @@ async function processInBackground(
       log,
     });
 
+    // An attachment with no question attached to it yet. Record what it shows
+    // so the next message can ask about it, and say nothing — see
+    // `isAwaitingItsQuestion`.
+    if (isAwaitingItsQuestion({
+      chatType: incoming.chatType,
+      text: incoming.text,
+      supportedAttachmentCount: attachments.filter(isSupportedLarkMedia).length,
+      unsupportedAttachmentCount: attachments.filter(a => !isSupportedLarkMedia(a)).length,
+    })) {
+      const seen = preparedAttachments
+        .map(item => item.inlineContext?.context)
+        .filter((part): part is string => !!part)
+        .join('\n\n');
+      if (seen) {
+        await deps.conversationRepo.appendTurn(
+          conversationKeyForMessage({
+            chatId: String(incoming.chatId),
+            chatType: incoming.chatType,
+            messageId: String(incoming.messageId),
+            ...(incoming.threadId ? { threadId: String(incoming.threadId) } : {}),
+            ...(incoming.rootMessageId ? { rootMessageId: String(incoming.rootMessageId) } : {}),
+          }) as never,
+          { role: 'user', content: seen, timestamp: incoming.timestamp },
+          { companyId: identity.companyId, channel: 'lark' },
+        ).catch(e => log.warn('webhook.attachment.await_question.persist_failed', {
+          error: String(e),
+        }));
+      }
+      log.info('webhook.attachment.awaiting_question', {
+        chatId: incoming.chatId,
+        messageId: incoming.messageId,
+        attachmentCount: attachments.length,
+        recorded: Boolean(seen),
+      });
+      return;
+    }
+
     // Inline image bytes for multimodal embedding, valid for this turn only.
-    // The LLM sees images natively — OCR text is bonus context, not the primary path.
     const imageUrls = preparedAttachments
       .filter(p => p.attachment.type === 'image')
       .map(p => p.context.base64DataUrl)
@@ -948,18 +987,28 @@ async function processInBackground(
     const textWithParent = parentPrefix
       ? (userText ? `${parentPrefix}\n\n${userText}` : parentPrefix)
       : userText;
+    // Image OCR is injected as text for direct messages, and only there.
+    //
+    // Passing pixels through `imageUrls` assumes the model can see them. The
+    // Lark supervisor runs on DeepSeek, which is text-only, so on that path the
+    // image parts are dropped and Divo answers "I don't see any image" about a
+    // picture it successfully downloaded and read. The OCR text is the only
+    // form it can actually receive.
+    //
+    // A group already carries this: the attachment context is written to the
+    // room snapshot above, and the transcript formatter emits an OCR
+    // supplement. Injecting it here as well would say the same thing twice.
+    const includeImageContext = incoming.chatType !== 'group';
     const contextBlock = preparedAttachments
-      .filter(p => p.attachment.type !== 'image')
+      .filter(p => includeImageContext || p.attachment.type !== 'image')
       .map(item => item.inlineContext?.context)
       .filter((part): part is string => !!part)
       .join('\n\n');
 
-    // Images reach the model as pixels via imageUrls, so they need no text
-    // injection. Everything else is a document Divo declined to read, and that
-    // notice goes into the message for groups as well as DMs: a group also
-    // carries it in the stored snapshot, but that write is best-effort, and if
-    // it fails Divo must still know it never opened the file rather than
-    // answer from the filename.
+    // A declined document's notice goes into the message for groups as well as
+    // DMs: a group also carries it in the stored snapshot, but that write is
+    // best-effort, and if it fails Divo must still know it never opened the
+    // file rather than answer from the filename.
     const askText = textWithParent
       || `Please review the attached ${attachments.length === 1 ? 'file' : 'files'}.`;
     const syntheticText = contextBlock ? `${contextBlock}\n\n${askText}` : askText;
@@ -1641,6 +1690,15 @@ async function prepareLarkAttachmentContexts(input: {
       });
     }
 
+    // An image that could not be downloaded or read still has to reach the
+    // model as *something*. Handing it nothing produces "I don't see any
+    // image", which contradicts the picture the user is looking at.
+    const effectiveContext: InlineContextResult = inlineContext ?? {
+      context: unreadableImageNotice(att.fileName, error),
+      isComplete: false,
+      rawText: '',
+    };
+
     const context: GroupChatAttachmentContext = {
       kind: att.type,
       fileName: att.fileName,
@@ -1649,16 +1707,16 @@ async function prepareLarkAttachmentContexts(input: {
       larkMessageId: att.messageId,
       ingestionStatus: 'inline_only',
       ...(base64DataUrl ? { base64DataUrl } : {}),
-      ...(inlineContext?.context ? { inlineContext: inlineContext.context } : {}),
-      ...(inlineContext ? { isInlineComplete: inlineContext.isComplete } : {}),
-      ...(inlineContext?.rawText ? { rawTextPreview: inlineContext.rawText.slice(0, 2000) } : {}),
+      inlineContext: effectiveContext.context,
+      isInlineComplete: effectiveContext.isComplete,
+      ...(effectiveContext.rawText ? { rawTextPreview: effectiveContext.rawText.slice(0, 2000) } : {}),
       ...(error ? { error } : {}),
     };
 
     prepared.push({
       attachment: att,
       context,
-      ...(inlineContext ? { inlineContext } : {}),
+      inlineContext: effectiveContext,
     });
   }
 

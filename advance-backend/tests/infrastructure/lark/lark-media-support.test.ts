@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   classifyLarkMedia,
   isSupportedLarkMedia,
+  isAwaitingItsQuestion,
   unsupportedDocumentNotice,
   withoutTransientBytes,
   MAX_INLINE_IMAGE_BYTES,
@@ -89,5 +90,66 @@ describe('MAX_INLINE_IMAGE_BYTES', () => {
     // The previous 1 MB cap existed as a fallback behind a CDN upload. With the
     // upload gone it became the only path, and a retina screenshot exceeds it.
     assert.ok(MAX_INLINE_IMAGE_BYTES >= 4 * 1_024 * 1_024);
+  });
+});
+
+describe('isAwaitingItsQuestion', () => {
+  it('waits when a DM carries an attachment and no words', () => {
+    // The picture-then-question pattern. Answering the picture alone produces
+    // the one reply guaranteed to be useless: shown something, asked nothing.
+    assert.equal(
+      isAwaitingItsQuestion({ chatType: 'p2p', text: '', supportedAttachmentCount: 1, unsupportedAttachmentCount: 0 }),
+      true,
+    );
+  });
+
+  it('treats whitespace as no words', () => {
+    assert.equal(
+      isAwaitingItsQuestion({ chatType: 'p2p', text: '   \n ', supportedAttachmentCount: 1, unsupportedAttachmentCount: 0 }),
+      true,
+    );
+  });
+
+  it('answers as soon as the message says something', () => {
+    assert.equal(
+      isAwaitingItsQuestion({ chatType: 'p2p', text: 'check this img', supportedAttachmentCount: 1, unsupportedAttachmentCount: 0 }),
+      false,
+    );
+  });
+
+  it('never waits on a plain message with nothing attached', () => {
+    assert.equal(
+      isAwaitingItsQuestion({ chatType: 'p2p', text: '', supportedAttachmentCount: 0, unsupportedAttachmentCount: 0 }),
+      false,
+    );
+  });
+
+  it('refuses a document now rather than waiting for a question', () => {
+    // No follow-up can make a PDF readable, so waiting would leave the user
+    // with silence instead of an honest refusal.
+    assert.equal(
+      isAwaitingItsQuestion({
+        chatType: 'p2p', text: '', supportedAttachmentCount: 0, unsupportedAttachmentCount: 1,
+      }),
+      false,
+    );
+  });
+
+  it('does not wait when an image arrives alongside a document', () => {
+    assert.equal(
+      isAwaitingItsQuestion({
+        chatType: 'p2p', text: '', supportedAttachmentCount: 1, unsupportedAttachmentCount: 1,
+      }),
+      false,
+    );
+  });
+
+  it('does not apply in a group', () => {
+    // A group only reaches this path when Divo was addressed, and being
+    // addressed with an image is a deliberate request, not a half-finished one.
+    assert.equal(
+      isAwaitingItsQuestion({ chatType: 'group', text: '', supportedAttachmentCount: 1, unsupportedAttachmentCount: 0 }),
+      false,
+    );
   });
 });

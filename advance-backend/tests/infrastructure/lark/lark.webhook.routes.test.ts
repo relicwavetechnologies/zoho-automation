@@ -149,6 +149,7 @@ async function runWebhook(body: unknown, options: {
 } = {}) {
   const order: string[] = [];
   const retainedMessages: Array<Record<string, unknown>> = [];
+  const appendedTurns: Array<Record<string, unknown>> = [];
   const acceptedPayloads: unknown[] = [];
   const engineInputs: unknown[] = [];
   const serializerKeys: string[] = [];
@@ -203,7 +204,14 @@ async function runWebhook(body: unknown, options: {
       },
       prepareLarkLogin: async () => ok(null),
     } as any,
-    conversationRepo: {} as any,
+    conversationRepo: {
+      // Only `appendTurn` is exercised here: it is how an attachment with no
+      // question yet is remembered for the message that finally asks one.
+      appendTurn: async (key: string, turn: Record<string, unknown>) => {
+        appendedTurns.push({ key, ...turn });
+        return ok({ id: 't1', ...turn });
+      },
+    } as any,
     ingressReceiptRepo: {
       accept: async (input?: { payload?: unknown }) => {
         order.push('receipt');
@@ -322,6 +330,7 @@ async function runWebhook(body: unknown, options: {
     identityLookups,
     logEvents,
     retainedMessages,
+    appendedTurns,
     acceptedPayloads,
     processQueuedReceipt,
   };
@@ -794,13 +803,59 @@ describe('Lark document attachments', () => {
 });
 
 describe('Lark image attachments', () => {
-  /**
-   * That the image bytes never reach the transcript is pinned in
-   * `lark-media-support.test.ts`, on `withoutTransientBytes` itself. It cannot
-   * be pinned here: no download succeeds in a unit test, so `base64DataUrl` is
-   * absent whether or not the stripper runs, and the assertion would hold even
-   * with the stripping deleted.
-   */
+  it('does not answer a DM image that has not been asked about yet', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'p2p',
+      image: { key: 'img_v3_silent' },
+      text: '',
+    })));
+
+    // People send the picture first and the question second. Replying to the
+    // picture alone spends a turn to say nothing useful.
+    assert.ok(!result.order.includes('engine'), 'no agent run');
+    assert.ok(
+      result.logEvents.some(e => e.event === 'webhook.attachment.awaiting_question'),
+      'and the wait is recorded',
+    );
+    // Silence is only acceptable if the image is remembered. A Lark image
+    // message carries no text — a caption is always a separate message — so
+    // conversation history is the only place the follow-up can read it back
+    // from, and it is what makes "check this img" answerable a moment later.
+    assert.equal(result.appendedTurns.length, 1, 'the image is kept for the next turn');
+    assert.match(String(result.appendedTurns[0]?.['content'] ?? ''), /Image:/);
+  });
+
+  it('tells the model it could not open an image rather than denying one exists', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'p2p',
+      image: { key: 'img_v3_broken' },
+    })));
+
+    // The user is looking at the picture they just sent. "I don't see any
+    // image" is both wrong and useless; "I could not open it, resend it" is
+    // actionable. The download always fails here, so this is that path.
+    const recorded = String(result.appendedTurns[0]?.['content'] ?? '');
+    assert.match(recorded, /could not be read/);
+    assert.match(recorded, /Do not tell them no image was attached/);
+  });
+
+
+  it('keeps the OCR text in the transcript but not the image bytes', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      image: { key: 'img_v3_chart' },
+    })));
+
+    const attachments = attachmentsOf(result.retainedMessages[0]);
+    assert.equal(attachments.length, 1);
+    // The whole point of dropping the CDN upload is that no copy of the image
+    // survives the turn. Persisting the data URL would reintroduce one.
+    assert.equal(attachments[0]?.['base64DataUrl'], undefined);
+    assert.equal(attachments[0]?.['cloudinaryUrl'], undefined);
+    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
+  });
+
   it('records a download failure on the attachment instead of dropping it', async () => {
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'group',
