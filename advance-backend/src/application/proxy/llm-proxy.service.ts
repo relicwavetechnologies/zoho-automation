@@ -68,6 +68,20 @@ export class LlmProxyService {
   }
 
   /** Pre-forward guardrail check. */
+  /**
+   * Which models this member may use, best first.
+   *
+   * Exposed so a caller can *choose* a model it is allowed to run instead of
+   * asking for one and being refused. Lark used to pin Pro unconditionally, so
+   * every member on the Flash-only default — which is the default — got a 403
+   * before the model saw a token.
+   */
+  async allowedModelsFor(userId: string): Promise<string[]> {
+    const policy = await this.prisma.memberProxyPolicy.findUnique({ where: { userId } });
+    if (policy?.blocked) return [];
+    return policy && policy.allowedModels.length > 0 ? policy.allowedModels : DEFAULT_ALLOWED_MODELS;
+  }
+
   async gate(input: GateInput): Promise<GateResult> {
     const policy = await this.prisma.memberProxyPolicy.findUnique({ where: { userId: input.userId } });
 

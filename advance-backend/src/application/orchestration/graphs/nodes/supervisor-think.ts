@@ -29,14 +29,29 @@ import { redModelSelection } from '../../../../shared/model-selection-log';
 import { buildToolFinishedPayload, isErrorOutput } from '../../agent-runners/tool-trace';
 import { enforceContextBudget } from '../../engine/context-budget-enforcer';
 import { getToolLabels } from '../../agents/tool-labels';
-import { LARK_MODEL_ID } from '../../../proxy/lark-inference.service';
+import { LARK_MODEL_PREFERENCE } from '../../../proxy/lark-inference.service';
 
 // Must be longer than DYNAMIC_AGENT_TIMEOUT_MS (300s) + buffer for retries.
 // A failed agent + retry can take 300s+300s; supervisor must outlast that.
 const SUPERVISOR_TIMEOUT_MS = 660_000;
 
+/**
+ * Whether this is the backend-held Lark model wrapper.
+ *
+ * Matches any model Lark may run, not Pro alone. Lark now picks the best model
+ * the member actually holds, so an equality check against Pro would fail for
+ * every Flash member — and this flag gates whether an agent-level model
+ * override may replace the model, so failing it would let a Lark run escape the
+ * backend's credentials, policy, and billing.
+ */
 const isPinnedLarkModel = (model: LanguageModel): boolean =>
-  typeof model === 'object' && model !== null && 'modelId' in model && model.modelId === LARK_MODEL_ID;
+  typeof model === 'object' && model !== null && 'modelId' in model
+  && (LARK_MODEL_PREFERENCE as readonly string[]).includes(String(model.modelId));
+
+const larkModelIdOf = (model: LanguageModel): string =>
+  typeof model === 'object' && model !== null && 'modelId' in model
+    ? String(model.modelId)
+    : LARK_MODEL_PREFERENCE[0];
 
 export interface SupervisorThinkDeps {
   readonly model: LanguageModel;
@@ -328,7 +343,9 @@ export async function supervisorThink(
 
     const larkPinned = state.runContext.channel === 'lark' && isPinnedLarkModel(deps.model);
     const selectedProvider = larkPinned ? 'deepseek' : (rootAgent.provider ?? deps.defaultModel?.provider ?? 'default');
-    const selectedModelId = larkPinned ? LARK_MODEL_ID : (rootAgent.modelId ?? deps.defaultModel?.modelId ?? 'default');
+    const selectedModelId = larkPinned
+      ? larkModelIdOf(deps.model)
+      : (rootAgent.modelId ?? deps.defaultModel?.modelId ?? 'default');
     const modelSource = larkPinned ? 'lark_channel_pin' : (rootAgent.provider && rootAgent.modelId && deps.resolveModel ? 'agent_override' : 'company_default');
     deps.logger.warn('ai.model.selected', {
       provider: selectedProvider,

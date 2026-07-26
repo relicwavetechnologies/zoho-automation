@@ -40,6 +40,7 @@ import {
 import { generateText } from 'ai';
 import type { ConversationScope } from '../../../domain/conversation/conversation-scope';
 import { conversationKeyForMessage } from '../../../domain/conversation/conversation-key';
+import { userFacingMessageOf } from '../../../shared/user-facing-error';
 
 const MEM0_SEARCH_TIMEOUT_MS = 500;
 
@@ -193,7 +194,7 @@ export class OrchestrationEngine {
     // resolves backend-held credentials, enforces shared policy and records every
     // model call against the same ExecutionRun created above.
     const larkModel = runContext.channel === 'lark' && this.deps.larkInference
-      ? this.deps.larkInference.createModel({
+      ? await this.deps.larkInference.createModel({
         runContext,
         ...(tracer ? { executionRunId: tracer.executionRunId } : {}),
         ...(tracer ? { tracer } : {}),
@@ -480,9 +481,14 @@ export class OrchestrationEngine {
     if (!supervisorResult.ok) {
       log.error('engine.supervisor.failed', { error: supervisorResult.error.message });
       tracer?.fail('supervisor_failed', supervisorResult.error.message);
+      // A refusal the user can act on — "Pro is not enabled for this account",
+      // "monthly budget reached" — is the answer, not a symptom. Only errors
+      // that opted in are shown; everything else stays generic, because most
+      // failures carry provider payloads and internal identifiers.
+      const explained = userFacingMessageOf(supervisorResult.error);
       const errReply: FinalReply = {
         kind: 'final',
-        text: 'Something went wrong. Please try again.',
+        text: explained ?? 'Something went wrong. Please try again.',
         format: 'text',
       };
       await channelAdapter.sendFinalReply(conversation, errReply);

@@ -5,7 +5,9 @@ import type { LanguageModel } from 'ai';
 
 import { OrchestrationEngine } from '../../src/application/orchestration/engine/core.ts';
 import type { OrchestrationEngineDeps } from '../../src/application/orchestration/engine/core.ts';
-import { ok } from '../../src/shared/result.ts';
+import { ok, err } from '../../src/shared/result.ts';
+import { OrchestrationError } from '../../src/shared/errors.ts';
+import { asUserFacing } from '../../src/shared/user-facing-error.ts';
 import type { Logger } from '../../src/shared/logger.ts';
 import type { Clock } from '../../src/shared/clock.ts';
 import {
@@ -188,6 +190,103 @@ describe('OrchestrationEngine', () => {
     assert.equal(result.ok, true);
     assert.equal(started.at(-1), 'supervisor');
     assert.ok(loggerEvents.some(entry => entry.event === 'engine.pre_supervisor.duration'));
+  });
+
+  /**
+   * The engine's reply when the supervisor fails. Two cases matter and they
+   * pull in opposite directions: a policy refusal is the answer and must be
+   * shown, while an ordinary failure carries internals and must not be.
+   */
+  async function replyForSupervisorError(error: unknown): Promise<string> {
+    const toolId = asToolId('larkTask');
+    const perm: PermissionResult = {
+      allowedToolIds: new Set([toolId]),
+      allowedActionsByTool: new Map([[toolId, new Set(['read'])]]),
+      decisions: [],
+    };
+    const tool: Tool<unknown, unknown> = {
+      id: toolId, family: 'lark', actionGroups: new Set(['read']),
+      argsSchema: z.unknown(), resultSchema: z.unknown(),
+      description: 'test tool', parameterDocs: '',
+      permissionCheck: () => ok('read'), execute: async () => ok({}),
+    };
+    const conversation: ConversationHandle = {
+      channel: 'lark', chatId: asChatId('chat-1'), correlationId: asCorrelationId('corr-1'),
+    };
+    const incoming: IncomingMessage = {
+      channel: 'lark', messageId: asMessageId('msg-1'), chatId: asChatId('chat-1'),
+      chatType: 'p2p', userExternalId: 'ou_1', text: 'hello', attachments: [],
+      timestamp: '2026-05-14T00:00:00.000Z', traceId: asCorrelationId('corr-1'),
+      mentions: [], mentionsSelf: true, raw: {},
+    };
+    let sent = '';
+    const channelAdapter: ChannelAdapter = {
+      key: 'lark',
+      parseIncoming: () => ok(incoming),
+      sendStatus: async () => ok({
+        channel: 'lark', messageId: asMessageId('status-1'), correlationId: asCorrelationId('corr-1'),
+      } as StatusHandle),
+      editStatus: async () => ok({
+        channel: 'lark', messageId: asMessageId('status-1'), correlationId: asCorrelationId('corr-1'),
+      } as StatusHandle),
+      sendFinalReply: async (_c, reply) => {
+        sent = reply.text;
+        return ok({ channel: 'lark', messageId: asMessageId('reply-1') });
+      },
+    };
+    const deps: OrchestrationEngineDeps = {
+      permissions: { resolve: async () => ok(perm) } as unknown as OrchestrationEngineDeps['permissions'],
+      toolRegistry: { forRuntime: () => [tool] } as unknown as OrchestrationEngineDeps['toolRegistry'],
+      history: {
+        loadWindow: async () => ok({ turns: [], truncated: false, tokenEstimate: 0 }),
+        appendTurn: async () => undefined,
+      } as unknown as OrchestrationEngineDeps['history'],
+      supervisor: {
+        run: async () => err(new OrchestrationError({
+          stage: 'plan',
+          reason: 'llm_invalid_output',
+          message: 'Supervisor LLM failed',
+          cause: error,
+        })),
+        getModel: () => { throw new Error('not used'); },
+      } as unknown as OrchestrationEngineDeps['supervisor'],
+      logger: createLogger([]),
+      clock,
+    };
+
+    await new OrchestrationEngine(deps).run({
+      incoming,
+      runContext: {
+        companyId: asCompanyId('company-1'),
+        userId: asUserId('user-1'),
+        companyRole: asCompanyRoleSlug('MEMBER'),
+        channel: 'lark',
+      },
+      conversation,
+      channelAdapter,
+    });
+    return sent;
+  }
+
+  it('shows a policy refusal instead of a generic apology', async () => {
+    const denied = asUserFacing(
+      new Error('denied'),
+      'Model deepseek-v4-pro is not enabled for this account.',
+    );
+
+    const reply = await replyForSupervisorError(denied);
+
+    // "Something went wrong, please try again" sends the user to retry
+    // something that will never work, and an engineer to read logs for
+    // something that is not a bug.
+    assert.match(reply, /not enabled for this account/);
+  });
+
+  it('stays generic for a failure the user cannot act on', async () => {
+    const reply = await replyForSupervisorError(new Error('ECONNRESET at 10.0.0.4:5432'));
+
+    assert.equal(reply, 'Something went wrong. Please try again.');
+    assert.ok(!reply.includes('10.0.0.4'), 'internals never reach the chat');
   });
 
   it('cancels fast-path model work and always releases the registered controller', async () => {

@@ -5,6 +5,7 @@ import type { RunContext } from '../../domain/orchestration/run-context';
 import type { ProxyKeyStore, ResolvedKey } from './proxy-key.store';
 import { LlmProxyService, type DeepSeekUsage } from './llm-proxy.service';
 import type { OrchestrationTracer } from '../observability/orchestration-tracer';
+import { asUserFacing } from '../../shared/user-facing-error';
 
 type DeepSeekModel = ReturnType<ReturnType<typeof createDeepSeek>>;
 
@@ -15,8 +16,23 @@ type DeepSeekModel = ReturnType<ReturnType<typeof createDeepSeek>>;
  * model, translated here so billing and traces could use the v4 name everywhere
  * else. DeepSeek retired that alias and now rejects it outright, so there is no
  * translation left to do — one name, used in one place.
+ *
+ * Kept as the *preferred* model rather than the pinned one — see
+ * `LARK_MODEL_PREFERENCE`.
  */
 export const LARK_MODEL_ID = 'deepseek-v4-pro';
+
+/**
+ * Which model Lark runs on, best first.
+ *
+ * Pro was previously pinned, which meant Lark asked for a model most members
+ * are not granted: the proxy policy defaults to Flash-only and Pro must be
+ * granted deliberately. Every such member got a 403 before inference started.
+ * Asking for the best model the account actually holds is both what an admin
+ * expects from a per-model permission and the difference between Divo working
+ * and not.
+ */
+export const LARK_MODEL_PREFERENCE = ['deepseek-v4-pro', 'deepseek-v4-flash'] as const;
 
 export interface LarkInferenceContext {
   runContext: RunContext;
@@ -38,6 +54,10 @@ class LarkInferenceUnavailableError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
     this.name = 'LarkInferenceUnavailableError';
+    // Policy refusals are the answer, not a symptom. Marked user-facing so the
+    // engine shows "Pro is not enabled for this account" instead of burying it
+    // under a generic apology the user can only respond to by retrying.
+    asUserFacing(this, message);
   }
 }
 
@@ -66,28 +86,53 @@ export class LarkInferenceService {
     this.log = deps.logger.child({ service: 'lark-inference' });
   }
 
-  createModel(context: LarkInferenceContext): LanguageModel {
+  /**
+   * Resolve the best model this member holds.
+   *
+   * Falls back to the least-privileged preference when the account holds none
+   * of them, so the refusal comes from `gate` — one place that audits the
+   * denial and phrases it — rather than from two.
+   */
+  private async resolveModelId(userId: string): Promise<string> {
+    try {
+      const allowed = await this.deps.policy.allowedModelsFor(String(userId));
+      return LARK_MODEL_PREFERENCE.find(model => allowed.includes(model))
+        ?? LARK_MODEL_PREFERENCE[LARK_MODEL_PREFERENCE.length - 1]!;
+    } catch (error) {
+      this.log.warn('model.resolve_failed', { error: String(error) });
+      return LARK_MODEL_PREFERENCE[LARK_MODEL_PREFERENCE.length - 1]!;
+    }
+  }
+
+  async createModel(context: LarkInferenceContext): Promise<LanguageModel> {
+    const modelId = await this.resolveModelId(String(context.runContext.userId));
+    this.log.info('model.selected', {
+      modelId,
+      companyId: String(context.runContext.companyId),
+      userId: String(context.runContext.userId),
+    });
+
     const prepare = async (startedAt: number): Promise<{ model: DeepSeekModel; key: ResolvedKey }> => {
       const gate = await this.deps.policy.gate({
         companyId: context.runContext.companyId,
         userId: context.runContext.userId,
-        model: LARK_MODEL_ID,
+        model: modelId,
       });
       if (!gate.allow) {
         const status = gate.status ?? 403;
-        void this.audit(context, startedAt, 'denied', status, null, null, gate.reason ?? 'guardrails');
+        void this.audit(context, startedAt, 'denied', status, null, null, modelId, gate.reason ?? 'guardrails');
         throw new LarkInferenceUnavailableError(status, gate.reason ?? 'Lark AI access is denied by policy.');
       }
 
       const key = await this.deps.store.resolve(context.runContext.companyId);
       if (!key) {
-        void this.audit(context, startedAt, 'denied', 503, null, null, 'not_configured');
+        void this.audit(context, startedAt, 'denied', 503, null, null, modelId, 'not_configured');
         throw new LarkInferenceUnavailableError(503, 'DeepSeek is not configured for this company. Add a key in Guardrails.');
       }
 
       const model = this.deps.createUpstreamModel
         ? this.deps.createUpstreamModel(key.key)
-        : createDeepSeek({ apiKey: key.key, baseURL: this.deps.baseUrl })(LARK_MODEL_ID);
+        : createDeepSeek({ apiKey: key.key, baseURL: this.deps.baseUrl })(modelId);
       return { model, key };
     };
 
@@ -95,7 +140,7 @@ export class LarkInferenceService {
     const wrapped: DeepSeekModel = {
       specificationVersion: 'v3',
       provider: 'deepseek',
-      modelId: LARK_MODEL_ID,
+      modelId,
       supportedUrls: {},
       async doGenerate(options) {
         const startedAt = Date.now();
@@ -105,11 +150,11 @@ export class LarkInferenceService {
           resolved = prepared.key;
           const result = await prepared.model.doGenerate(options);
           const usage = toDeepSeekUsage(result.usage);
-          await service.recordSuccess(context, startedAt, usage, resolved);
+          await service.recordSuccess(context, startedAt, usage, resolved, modelId);
           return result;
         } catch (error) {
           if (!(error instanceof LarkInferenceUnavailableError)) {
-            void service.audit(context, startedAt, 'denied', 502, null, resolved, 'upstream');
+            void service.audit(context, startedAt, 'denied', 502, null, resolved, modelId, 'upstream');
           }
           throw error;
         }
@@ -130,7 +175,7 @@ export class LarkInferenceService {
                 if (next.done) {
                   if (!terminalRecorded) {
                     terminalRecorded = true;
-                    void service.audit(context, startedAt, 'denied', 502, null, resolved, 'stream_missing_finish');
+                    void service.audit(context, startedAt, 'denied', 502, null, resolved, modelId, 'stream_missing_finish');
                   }
                   controller.close();
                   return;
@@ -138,16 +183,16 @@ export class LarkInferenceService {
                 if (next.value.type === 'finish') {
                   terminalRecorded = true;
                   const usage = toDeepSeekUsage(next.value.usage);
-                  void service.recordSuccess(context, startedAt, usage, resolved!);
+                  void service.recordSuccess(context, startedAt, usage, resolved!, modelId);
                 } else if (next.value.type === 'error') {
                   terminalRecorded = true;
-                  void service.audit(context, startedAt, 'denied', 502, null, resolved, 'stream_error');
+                  void service.audit(context, startedAt, 'denied', 502, null, resolved, modelId, 'stream_error');
                 }
                 controller.enqueue(next.value);
               } catch (error) {
                 if (!terminalRecorded) {
                   terminalRecorded = true;
-                  void service.audit(context, startedAt, 'denied', 502, null, resolved, 'stream_interrupted');
+                  void service.audit(context, startedAt, 'denied', 502, null, resolved, modelId, 'stream_interrupted');
                 }
                 controller.error(error);
               }
@@ -155,7 +200,7 @@ export class LarkInferenceService {
             cancel(reason) {
               if (!terminalRecorded) {
                 terminalRecorded = true;
-                void service.audit(context, startedAt, 'denied', 499, null, resolved, 'client_cancelled');
+                void service.audit(context, startedAt, 'denied', 499, null, resolved, modelId, 'client_cancelled');
               }
               return reader.cancel(reason);
             },
@@ -163,7 +208,7 @@ export class LarkInferenceService {
           return { ...result, stream };
         } catch (error) {
           if (!(error instanceof LarkInferenceUnavailableError)) {
-            void service.audit(context, startedAt, 'denied', 502, null, resolved, 'upstream');
+            void service.audit(context, startedAt, 'denied', 502, null, resolved, modelId, 'upstream');
           }
           throw error;
         }
@@ -177,6 +222,7 @@ export class LarkInferenceService {
     startedAt: number,
     usage: DeepSeekUsage,
     key: ResolvedKey,
+    modelId: string,
   ): Promise<void> {
     await this.deps.store.touch(key.source, context.runContext.companyId);
     if (context.executionRunId) {
@@ -186,9 +232,9 @@ export class LarkInferenceService {
         const output = usage.completion_tokens ?? 0;
         context.tracer?.emit({
           phase: 'model', eventType: 'model_call', actorType: 'model',
-          actorKey: LARK_MODEL_ID, title: LARK_MODEL_ID, status: 'success',
+          actorKey: modelId, title: modelId, status: 'success',
           payload: {
-            provider: 'deepseek', model: LARK_MODEL_ID,
+            provider: 'deepseek', model: modelId,
             channel: 'lark', agentTarget: context.agentTarget ?? 'lark.orchestration',
             usage: { input: cacheMiss, output, cacheRead: cacheHit },
           },
@@ -197,7 +243,7 @@ export class LarkInferenceService {
           executionId: context.executionRunId,
           companyId: context.runContext.companyId,
           userId: context.runContext.userId,
-          model: LARK_MODEL_ID,
+          model: modelId,
           provider: 'deepseek',
           usage,
           agentTarget: context.agentTarget ?? 'lark.orchestration',
@@ -209,7 +255,7 @@ export class LarkInferenceService {
         this.log.warn('usage.record_failed', { error: String(error) });
       }
     }
-    await this.audit(context, startedAt, 'allowed', 200, usage, key);
+    await this.audit(context, startedAt, 'allowed', 200, usage, key, modelId);
   }
 
   private audit(
@@ -219,13 +265,14 @@ export class LarkInferenceService {
     httpStatus: number,
     usage: DeepSeekUsage | null,
     key: ResolvedKey | null,
+    modelId: string,
     reason?: string,
   ): Promise<void> {
     return this.deps.policy.recordAudit({
       companyId: context.runContext.companyId,
       userId: context.runContext.userId,
       ...(context.executionRunId ? { executionId: context.executionRunId } : {}),
-      model: LARK_MODEL_ID,
+      model: modelId,
       decision,
       httpStatus,
       ...(reason ? { reason } : {}),

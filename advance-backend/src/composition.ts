@@ -683,10 +683,20 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   }, logger.child({ service: 'web-search' }));
 
   // ── Lark user OAuth ───────────────────────────────────────────────────────
+  const larkOAuthRedirectUri =
+    env.LARK_OAUTH_REDIRECT_URI ?? `${env.BACKEND_PUBLIC_URL}/api/lark/auth/callback`;
+  // Logged because it is silently wrong by default. The sign-in link is built
+  // by the ingress worker, which has no HTTP request to read a Host from, so an
+  // unset `LARK_OAUTH_REDIRECT_URI` sends every user to localhost — and the
+  // failure only shows up in the browser of whoever tapped the link.
+  logger.info('lark.oauth.redirect_uri.resolved', {
+    redirectUri: larkOAuthRedirectUri,
+    source: env.LARK_OAUTH_REDIRECT_URI ? 'LARK_OAUTH_REDIRECT_URI' : 'BACKEND_PUBLIC_URL',
+  });
   const larkOAuthService = new LarkOAuthService(
     env.LARK_APP_ID,
     env.LARK_APP_SECRET,
-    env.LARK_OAUTH_REDIRECT_URI ?? `${env.BACKEND_PUBLIC_URL}/api/lark/auth/callback`,
+    larkOAuthRedirectUri,
     env.LARK_API_BASE_URL,
   );
 
