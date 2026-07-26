@@ -175,6 +175,8 @@ export interface SupervisorDeps {
   skillAccessEnforcement?: SkillAccessEnforcementPort;
   /** Shared desktop/Lark resolver for persona rules and company skill recipes. */
   workResolution?: WorkResolutionService;
+  /** Shared desktop/Lark discovery context: accessible accounts and native contracts. */
+  workBootstrap?: import('../../gateway/work-bootstrap.service').WorkBootstrapService;
   /** Shared governed executor used by backend-hosted channel tool calls. */
   toolExecutor?: ToolExecutor;
   auditService?: Pick<AuditService, 'record'>;
@@ -448,6 +450,7 @@ export class SupervisorAgent {
           userId: String(runContext.userId),
           ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
           permission: perm,
+          ...(this.deps.workBootstrap ? { workBootstrap: this.deps.workBootstrap } : {}),
           onResolution: (event) => {
             const selectedSkills = event.resolution
               ? [
@@ -480,11 +483,13 @@ export class SupervisorAgent {
         discover_skill: createGovernedDiscoverSkillTool({
           skillCatalog: this.deps.skillCatalog!,
           companyId: String(runContext.companyId),
+          userId: String(runContext.userId),
           ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
           permission: perm,
           grantedSkillIds,
           visibleSkills,
           permittedTools: governedPermittedTools,
+          ...(this.deps.workBootstrap ? { workBootstrap: this.deps.workBootstrap } : {}),
           ...(this.deps.auditService ? {
             onDiscovery: (event) => this.deps.auditService!.record({
               actorId: String(runContext.userId),

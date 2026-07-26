@@ -3,6 +3,8 @@ import { z } from 'zod';
 import type { CatalogSkill, SkillCatalogService } from '../../../skills/skill-catalog.service';
 import type { PermissionResult } from '../../../permissions/permission.types';
 import type { Tool as AppTool } from '../tool.contract';
+import type { WorkBootstrapService } from '../../../gateway/work-bootstrap.service';
+import { renderWorkBootstrapBrief } from './work-bootstrap-brief';
 
 const inputSchema = z.object({
   query: z.string().min(1).describe('The capability needed, for example "create a Lark document" or "send Gmail"'),
@@ -16,6 +18,14 @@ export interface GovernedSkillDiscoveryContext {
   readonly grantedSkillIds: ReadonlySet<string>;
   readonly visibleSkills: readonly CatalogSkill[];
   readonly permittedTools: ReadonlyArray<AppTool<unknown, unknown>>;
+  readonly userId?: string;
+  /**
+   * Mirrors the desktop gateway attaching a bootstrap to `skills.get`. This is
+   * the attach point that matters when no company recipe matched: the model
+   * falls through to discovery, and without accounts here it reaches a provider
+   * tool holding nothing it can pass as a connectionId.
+   */
+  readonly workBootstrap?: WorkBootstrapService;
   readonly onDiscovery?: (event: {
     query: string;
     outcome: 'success' | 'failure';
@@ -79,12 +89,29 @@ export function createGovernedDiscoverSkillTool(context: GovernedSkillDiscoveryC
         skillId: selected.id,
       });
 
+      let brief = '';
+      if (context.workBootstrap && context.userId && selected.toolIds.length > 0) {
+        try {
+          brief = renderWorkBootstrapBrief(await context.workBootstrap.build({
+            companyId: context.companyId,
+            userId: context.userId,
+            permission: context.permission,
+            registryRevision: 0,
+            query: parsed.data.query,
+            toolIds: selected.toolIds,
+          }));
+        } catch {
+          brief = '';
+        }
+      }
+
       return [
         `[Approved skill loaded: ${selected.name}]`,
         `## Instructions\n${selected.instructions}`,
         toolDocs.length > 0
           ? `## Permitted tools\n${toolDocs.join('\n\n')}`
           : '## Permitted tools\nNo executable tools from this skill are allowed for the current member.',
+        brief,
         alternatives.length > 0 ? `## Other possible matches\n${alternatives}` : '',
       ].filter(Boolean).join('\n\n');
     },

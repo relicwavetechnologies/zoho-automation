@@ -226,6 +226,89 @@ describe('Google Workspace MCP product tools', () => {
     });
   });
 
+  it('names a usable account rather than declaring the member has none', async () => {
+    // The model guessed a well-formed UUID. Told only "connection unavailable",
+    // it concluded the member had no Gmail at all and said so — while he held a
+    // read-only grant on a shared account. The reachable account has to appear
+    // in the error, or the run has no way back.
+    const gmail = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({
+        status: 'unavailable',
+        reason: 'requested_not_accessible',
+        accessible: [{
+          connectionId: '8bba6aac-79aa-4729-9dd6-806f0238359e',
+          label: 'Shared Google',
+          accountEmail: 'abhishek@emiactech.com',
+          access: 'read_only',
+        }],
+      }),
+    }).find((tool) => tool.id === 'googleGmail')!;
+
+    const result = await gmail.execute({
+      op: 'call',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      nativeTool: 'search_gmail_messages',
+      input: { query: 'is:unread' },
+    }, makeCtx('googleGmail', ['read']));
+
+    assert.equal(result.ok, false);
+    const message = !result.ok ? result.error.message : '';
+    assert.match(message, /8bba6aac-79aa-4729-9dd6-806f0238359e/);
+    assert.match(message, /abhishek@emiactech\.com/);
+  });
+
+  it('offers a stronger account when the named one is too weak', async () => {
+    // A read-only account cannot send. If a read_write account is also shared,
+    // stranding the run without naming it turns a solvable request into a dead
+    // end — and telling the model not to switch accounts guarantees it.
+    const gmail = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({
+        status: 'unavailable',
+        reason: 'insufficient_access',
+        accessible: [{
+          connectionId: '22222222-2222-4222-8222-222222222222',
+          label: 'Work',
+          accountEmail: 'work@example.com',
+          access: 'read_write',
+        }],
+      }),
+    }).find((tool) => tool.id === 'googleGmail')!;
+
+    const result = await gmail.execute({
+      op: 'call',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      nativeTool: 'send_gmail_message',
+      input: { to: ['a@b.com'], subject: 's', body: 'b' },
+    }, makeCtx('googleGmail', ['send']));
+
+    assert.equal(result.ok, false);
+    const message = !result.ok ? result.error.message : '';
+    assert.match(message, /22222222-2222-4222-8222-222222222222/);
+    assert.doesNotMatch(message, /switch accounts/);
+  });
+
+  it('tells the model to stop when the member genuinely has no account', async () => {
+    const gmail = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({
+        status: 'unavailable',
+        reason: 'none_accessible',
+        accessible: [],
+      }),
+    }).find((tool) => tool.id === 'googleGmail')!;
+
+    const result = await gmail.execute({
+      op: 'call',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      nativeTool: 'search_gmail_messages',
+      input: { query: 'is:unread' },
+    }, makeCtx('googleGmail', ['read']));
+
+    assert.equal(result.ok, false);
+    const message = !result.ok ? result.error.message : '';
+    assert.match(message, /no Gmail account connected or shared/);
+    assert.match(message, /do not retry/);
+  });
+
   it('classifies destructive and executable native actions without a fallback switch', () => {
     assert.equal(googleWorkspaceActionFor('manage_event', { action: 'delete' }), 'delete');
     assert.equal(googleWorkspaceActionFor('manage_drive_access', { action: 'grant' }), 'create');

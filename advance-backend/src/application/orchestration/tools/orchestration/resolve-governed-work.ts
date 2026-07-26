@@ -2,6 +2,8 @@ import { dynamicTool } from 'ai';
 import { z } from 'zod';
 import type { PermissionResult } from '../../../permissions/permission.types';
 import type { WorkResolutionService, WorkResolution } from '../../../gateway/work-resolution.service';
+import type { WorkBootstrapService } from '../../../gateway/work-bootstrap.service';
+import { renderWorkBootstrapBrief } from './work-bootstrap-brief';
 
 const inputSchema = z.object({
   query: z.string().trim().min(3).max(2_000)
@@ -16,6 +18,13 @@ export function createResolveGovernedWorkTool(input: {
   readonly userId: string;
   readonly departmentId?: string;
   readonly permission: PermissionResult;
+  /**
+   * Discovery context for the recipes this resolves to — the same bootstrap the
+   * desktop gateway attaches to `work.resolve`. Optional so a caller without a
+   * connection registry still resolves work; when absent the model simply has
+   * no accounts preloaded, exactly as before.
+   */
+  readonly workBootstrap?: WorkBootstrapService;
   readonly onResolution?: (event: {
     readonly query: string;
     readonly outcome: 'success' | 'failure';
@@ -45,13 +54,56 @@ export function createResolveGovernedWorkTool(input: {
           ...(parsed.data.variants ? { variants: parsed.data.variants } : {}),
         });
         input.onResolution?.({ query: parsed.data.query, outcome: 'success', resolution });
-        return formatWorkResolution(resolution);
+        const brief = input.workBootstrap
+          ? await buildBootstrapBrief({
+              service: input.workBootstrap,
+              companyId: input.companyId,
+              userId: input.userId,
+              permission: input.permission,
+              query: parsed.data.query,
+              resolution,
+            })
+          : '';
+        return [formatWorkResolution(resolution), brief].filter(Boolean).join('\n\n');
       } catch (error) {
         input.onResolution?.({ query: parsed.data.query, outcome: 'failure' });
         return `error: work context could not be resolved — ${error instanceof Error ? error.message : String(error)}`;
       }
     },
   });
+}
+
+/**
+ * Never let discovery context sink the resolution it decorates. Without the
+ * brief the model is where it was before this existed; without the recipes it
+ * has nothing at all, so a bootstrap failure is swallowed on purpose.
+ */
+async function buildBootstrapBrief(input: {
+  readonly service: WorkBootstrapService;
+  readonly companyId: string;
+  readonly userId: string;
+  readonly permission: PermissionResult;
+  readonly query: string;
+  readonly resolution: WorkResolution;
+}): Promise<string> {
+  const toolIds = [
+    ...input.resolution.persona.linkedSkills.flatMap(item => item.skill.toolIds),
+    ...input.resolution.additionalSkills.flatMap(item => item.skill.toolIds),
+  ];
+  if (toolIds.length === 0) return '';
+  try {
+    const bootstrap = await input.service.build({
+      companyId: input.companyId,
+      userId: input.userId,
+      permission: input.permission,
+      registryRevision: input.resolution.registryRevision,
+      query: input.query,
+      toolIds,
+    });
+    return renderWorkBootstrapBrief(bootstrap);
+  } catch {
+    return '';
+  }
 }
 
 function formatWorkResolution(resolution: WorkResolution): string {

@@ -1,5 +1,4 @@
 import type { AccessibleConnection } from '../connections/connection-registry.port';
-import type { GatewayMemberContext } from './gateway.types';
 
 export interface WorkNativeContract {
   readonly toolId: string;
@@ -21,7 +20,12 @@ export interface WorkContractBootstrapResult {
  */
 export interface WorkContractBootstrapPort {
   load(input: {
-    readonly member: GatewayMemberContext;
+    /**
+     * Only the acting principal, deliberately not a channel-specific member
+     * context: every caller must be able to supply this, and backend-hosted
+     * channels have no gateway session to hand over.
+     */
+    readonly member: { readonly companyId: string; readonly userId: string };
     readonly query: string;
     readonly toolIds: readonly string[];
     readonly connections: readonly AccessibleConnection[];

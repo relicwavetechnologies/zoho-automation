@@ -182,6 +182,7 @@ import { ToolExecutor } from './application/gateway/tool-executor';
 import { GatewayDispatcher } from './application/gateway/gateway-dispatcher';
 import { GoogleWorkspaceContractBootstrapService } from './application/gateway/google-workspace-contract-bootstrap.service';
 import { WorkResolutionService } from './application/gateway/work-resolution.service';
+import { WorkBootstrapService } from './application/gateway/work-bootstrap.service';
 import {
   InMemoryApprovalIntentRepository,
   LocalApprovalIntentService,
@@ -728,6 +729,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     );
     const selection = selectAccessibleConnection({
       connections: scopeEligible,
+      filteredOut: accessible.value.filter((connection) => !scopeEligible.includes(connection)),
       ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       minimumAccess: input.minimumAccess,
     });
@@ -749,7 +751,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
           requiredScopeGroups: input.requiredScopeGroups,
         });
       }
-      return { status: 'unavailable' as const };
+      return {
+        status: 'unavailable' as const,
+        reason: selection.reason,
+        accessible: publicConnectionChoices(selection.accessible),
+      };
     }
 
     const selectedConnectionId = selection.connection.connectionId;
@@ -828,8 +834,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     const scopeEligible = accessible.value.filter((connection) =>
       hasAirtableScopeGroups(connection.scopes, input.requiredScopeGroups),
     );
+    // Airtable still discards the reason, so this changes nothing it reports
+    // today. Declared anyway: the moment it does surface one, a silent filter
+    // here would reproduce Google's "you have no account" falsehood exactly.
     const selection = selectAccessibleConnection({
       connections: scopeEligible,
+      filteredOut: accessible.value.filter((connection) => !scopeEligible.includes(connection)),
       ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       minimumAccess: input.minimumAccess,
     });
@@ -1487,6 +1497,17 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     skillAccessEnforcement,
     managerPersonaRuntime: managerPersonaRuntimeService,
   });
+  const workContractBootstrap = new GoogleWorkspaceContractBootstrapService(
+    getGoogleWorkspaceMcpConnection,
+  );
+  // One instance for both surfaces. The desktop gateway and the backend-hosted
+  // channels must resolve the same accounts and contracts, or the model works
+  // blind on whichever one was left out.
+  const workBootstrap = new WorkBootstrapService({
+    toolRegistry,
+    connectionRegistry: integrationConnectionRepo,
+    workContractBootstrap,
+  });
   // The Lark supervisor passes its freshly resolved permission snapshot into
   // this executor; the approval gate is supplied per invocation after the
   // channel adapter is available below.
@@ -1517,6 +1538,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     skillCatalog,
     skillAccessEnforcement,
     workResolution,
+    workBootstrap,
     toolExecutor: larkRuntimeToolExecutor,
     auditService,
     ...(mem0Service ? { mem0: mem0Service } : {}),
@@ -1664,9 +1686,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     toolExecutor: gatewayToolExecutor,
     localApprovalIntents,
     connectionRegistry: integrationConnectionRepo,
-    workContractBootstrap: new GoogleWorkspaceContractBootstrapService(
-      getGoogleWorkspaceMcpConnection,
-    ),
+    workContractBootstrap,
     mediaOcr,
     managerPersonaRuntime: managerPersonaRuntimeService,
     workResolution,

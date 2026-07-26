@@ -69,7 +69,12 @@ export interface GoogleWorkspaceMcpConnectionChoice {
 
 export type GoogleWorkspaceMcpConnectionResolution =
   | { readonly status: 'resolved'; readonly connection: GoogleWorkspaceMcpConnection }
-  | { readonly status: 'unavailable' }
+  | {
+      readonly status: 'unavailable';
+      /** Present when the caller named an account it cannot reach. */
+      readonly reason?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
+      readonly accessible?: readonly GoogleWorkspaceMcpConnectionChoice[];
+    }
   | { readonly status: 'choose_connection'; readonly connections: readonly GoogleWorkspaceMcpConnectionChoice[] };
 
 export type ResolveGoogleWorkspaceMcpConnection = (input: {
@@ -155,7 +160,7 @@ function createProductTool(
         return err(new ToolError({
           toolId: product.toolId,
           reason: 'unrecoverable',
-          message: `${product.name} preflight failed because the selected connection is unavailable, not shared for this action, or missing required scopes.`,
+          message: unavailableMessage(product, connectionResolution),
         }));
       }
 
@@ -228,7 +233,7 @@ function createProductTool(
         return err(new ToolError({
           toolId: product.toolId,
           reason: 'unrecoverable',
-          message: `${product.name} connection is unavailable, not shared for this action, or missing required scopes. Reconnect Google Workspace to grant the complete Workspace scopes.`,
+          message: unavailableMessage(product, connectionResolution),
         }));
       }
       const connection = connectionResolution.connection;
@@ -306,4 +311,40 @@ function progressVerb(action: ToolActionGroup): string {
 
 function badArgs(toolId: string, message: string): Result<never, ToolError> {
   return err(new ToolError({ toolId, reason: 'bad_args', message }));
+}
+
+/**
+ * "No account" and "not that account" need different answers.
+ *
+ * Told only that a connection was unavailable, a model that had guessed an ID
+ * concluded the member had no Google account at all and said so — while the
+ * member held a read-only grant on one. Naming the accounts that do work turns
+ * a dead end into a correction.
+ */
+function unavailableMessage(
+  product: GoogleWorkspaceProductDefinition,
+  resolution: {
+    readonly reason?: 'none_accessible' | 'insufficient_access' | 'requested_not_accessible';
+    readonly accessible?: readonly GoogleWorkspaceMcpConnectionChoice[];
+  },
+): string {
+  const accessible = resolution.accessible ?? [];
+  // A usable account is worth naming whatever went wrong. Withholding the list
+  // on any branch strands a request that a different account could have served.
+  if (accessible.length > 0) {
+    const options = accessible
+      .map((choice) => `${choice.accountEmail ?? choice.label} (${choice.access}) — connectionId ${choice.connectionId}`)
+      .join('; ');
+    const lead = resolution.reason === 'insufficient_access'
+      ? `That ${product.name} account cannot perform this action.`
+      : `That connectionId is not an account this member can use for ${product.name}.`;
+    return `${lead} Use one of these exact accounts instead: ${options}`;
+  }
+  if (resolution.reason === 'none_accessible') {
+    return `This member has no ${product.name} account connected or shared with them, so the request cannot be completed. Ask the user to connect Google Workspace or have an admin share an existing account; do not retry.`;
+  }
+  if (resolution.reason === 'insufficient_access') {
+    return `This member's ${product.name} account is shared read-only or lacks the scopes this action needs, and no other account is available. Tell the user which access is missing; do not retry.`;
+  }
+  return `${product.name} connection is unavailable, not shared for this action, or missing required scopes. Reconnect Google Workspace to grant the complete Workspace scopes.`;
 }
