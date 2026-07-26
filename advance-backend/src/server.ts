@@ -402,8 +402,12 @@ export const createServer = (c: Container) => {
       inbox:           c.approvalInbox,
     }),
   );
+  // Mounted under /auth because that is the base the desktop's
+  // `divo_desktop_json_request` helper prefixes onto every tool path. Moving it
+  // to /api/desktop takes GET /api/desktop/auth/tools off the air, and the
+  // desktop reads that 401 as an expired session.
   app.use(
-    '/api/desktop',
+    '/api/desktop/auth',
     createDesktopToolsRoutes({
       prisma:                 c.prisma,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,

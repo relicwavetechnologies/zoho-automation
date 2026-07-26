@@ -2100,16 +2100,15 @@ pub async fn divo_tool_coverage<R: Runtime>(
     department_id: String,
 ) -> Result<Value, String> {
     let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
-    divo_member_json_request(
+    // Same base as every other tool route, and deliberately the lenient helper:
+    // this is supplementary data for the tools list, so a backend without the
+    // endpoint yet costs a column rather than the member's session.
+    divo_desktop_json_request_optional(
         &app,
-        "/api/desktop",
         reqwest::Method::GET,
         &format!("/tools/coverage/{department_id}"),
         None,
         "Divo department tool coverage",
-        // Supplementary data for the tools list, not proof of a session. A
-        // backend without this endpoint yet must not sign the member out.
-        false,
     )
     .await
 }

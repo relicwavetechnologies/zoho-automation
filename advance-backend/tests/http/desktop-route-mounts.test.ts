@@ -6,11 +6,15 @@ import { fileURLToPath } from 'node:url';
 /**
  * Where each desktop router is mounted.
  *
+ * These prefixes are not interchangeable and not guessable: the desktop's
+ * `divo_desktop_json_request` prefixes `/api/desktop/auth` onto every tool
+ * path, while its department and approval calls use `/api/desktop`. Moving a
+ * router between the two takes its endpoints off the air, and the desktop reads
+ * the resulting 401 as an expired session — the symptom is members being signed
+ * out seconds after signing in.
+ *
  * The router tests exercise routers in isolation, so none of them can see a
- * wrong prefix in server.ts. One did happen: the tools router was moved to
- * `/api/desktop/auth`, which took `/api/desktop/tools` off the air. The desktop
- * treats a 401 on an authoritative call as an expired session, so the symptom
- * was members being signed out moments after signing in.
+ * wrong prefix here. This one can.
  */
 const server = readFileSync(fileURLToPath(new URL('../../src/server.ts', import.meta.url)), 'utf-8');
 
@@ -24,7 +28,8 @@ function mountedPaths(): Map<string, string[]> {
 }
 
 const EXPECTED: ReadonlyArray<readonly [factory: string, path: string]> = [
-  ['createDesktopToolsRoutes', '/api/desktop'],
+  // Matches divo_desktop_json_request in src-tauri/src/core/divo/commands.rs.
+  ['createDesktopToolsRoutes', '/api/desktop/auth'],
   ['createDesktopDepartmentRoutes', '/api/desktop'],
   ['createDesktopApprovalRoutes', '/api/desktop'],
   ['createDesktopAuthRoutes', '/api/desktop/auth'],
@@ -38,11 +43,11 @@ describe('desktop route mounts', () => {
     }
   });
 
-  it('keeps member tool endpoints off the auth prefix', () => {
-    // /api/desktop/auth is the OAuth and session surface. A member API mounted
-    // under it is unreachable at the URL the desktop actually requests.
+  it('keeps department and approval routers off the tools prefix', () => {
+    // These two are called with the plain /api/desktop base. Mounting either
+    // under /auth would make every one of their endpoints unreachable.
     const mounts = mountedPaths();
-    for (const factory of ['createDesktopToolsRoutes', 'createDesktopDepartmentRoutes', 'createDesktopApprovalRoutes']) {
+    for (const factory of ['createDesktopDepartmentRoutes', 'createDesktopApprovalRoutes']) {
       assert.ok(
         !(mounts.get(factory) ?? []).some(path => path.startsWith('/api/desktop/auth')),
         `${factory} must not be mounted under the auth prefix`,
