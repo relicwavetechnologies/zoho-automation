@@ -140,7 +140,12 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     }
 
     // ── Forward to DeepSeek ───────────────────────────────────────────────────
-    const forwardBody: ChatBody = { ...body };
+    // Forward the canonical name, not the client's. The allow-list, the budget
+    // check, and the pricing all ran against `model`; forwarding `body.model`
+    // would authorise one model and then call another. It is also the only
+    // correct name to send — DeepSeek has retired the legacy aliases that
+    // `canonicalModel` still accepts from clients, and now rejects them.
+    const forwardBody: ChatBody = { ...body, model };
     delete forwardBody.divo_run_id;
     delete forwardBody.divo_trace_mode;
     delete forwardBody.divo_request_kind;

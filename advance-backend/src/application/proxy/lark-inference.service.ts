@@ -8,8 +8,15 @@ import type { OrchestrationTracer } from '../observability/orchestration-tracer'
 
 type DeepSeekModel = ReturnType<ReturnType<typeof createDeepSeek>>;
 
+/**
+ * The name we bill, trace, and call DeepSeek by.
+ *
+ * These used to differ: `deepseek-reasoner` was the API's own name for this
+ * model, translated here so billing and traces could use the v4 name everywhere
+ * else. DeepSeek retired that alias and now rejects it outright, so there is no
+ * translation left to do — one name, used in one place.
+ */
 export const LARK_MODEL_ID = 'deepseek-v4-pro';
-const DEEPSEEK_UPSTREAM_MODEL_ID = 'deepseek-reasoner';
 
 export interface LarkInferenceContext {
   runContext: RunContext;
@@ -80,7 +87,7 @@ export class LarkInferenceService {
 
       const model = this.deps.createUpstreamModel
         ? this.deps.createUpstreamModel(key.key)
-        : createDeepSeek({ apiKey: key.key, baseURL: this.deps.baseUrl })(DEEPSEEK_UPSTREAM_MODEL_ID);
+        : createDeepSeek({ apiKey: key.key, baseURL: this.deps.baseUrl })(LARK_MODEL_ID);
       return { model, key };
     };
 
