@@ -5,12 +5,14 @@ import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';
 import type { GoogleOAuthService } from '../../infrastructure/google/google-oauth.service';
 import type { CanvaMcpOAuthService } from '../../infrastructure/canva/canva-mcp-oauth.service';
+import type { AirtableMcpOAuthService } from '../../infrastructure/airtable/airtable-mcp-oauth.service';
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
 import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
+import { parseCallbackOriginAllowlist, requestHost, resolveCallbackOrigin } from './callback-origin';
 import type { PermissionService } from '../../application/permissions/permission.service';
 import type { SkillCatalogService } from '../../application/skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../../application/skills/skill-access.port';
@@ -29,6 +31,7 @@ export interface DesktopAuthRoutesDeps {
   larkOAuthService:       LarkOAuthService;
   googleOAuthService:     GoogleOAuthService;
   canvaMcpOAuthService:   CanvaMcpOAuthService;
+  airtableMcpOAuthService: AirtableMcpOAuthService;
   zohoTokenService:       ZohoTokenService;
   zohoConnectionRepo:     ZohoConnectionRepository;
   connectionRepo:         IntegrationConnectionRepository;
@@ -58,6 +61,14 @@ interface StatePayload {
 const DESKTOP_PROTOCOL = 'cursorr';
 const HANDOFF_TTL_MS   = 5 * 60 * 1000;
 const CONNECTION_GRANT_ACCESSES = new Set(['read_only', 'read_write', 'admin']);
+/** Providers whose connections expose the shared manage/grant/disconnect surface. */
+const MANAGEABLE_CONNECTION_PROVIDERS = ['google_workspace', 'zoho', 'canva', 'airtable', 'lark'] as const;
+type ManageableConnectionProvider = typeof MANAGEABLE_CONNECTION_PROVIDERS[number];
+
+function isManageableConnectionProvider(value: string): value is ManageableConnectionProvider {
+  return (MANAGEABLE_CONNECTION_PROVIDERS as readonly string[]).includes(value);
+}
+
 const CONNECTION_GRANTEE_TYPES = new Set(['user', 'department', 'role', 'company']);
 const COMPANY_ADMIN_ROLES = new Set(['COMPANY_ADMIN', 'SUPER_ADMIN']);
 const DEFAULT_ZOHO_SCOPES = [
@@ -110,46 +121,6 @@ function verifyJwt(token: string, secret: string): StatePayload | null {
   return payload;
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
-}
-
-/**
- * OAuth must return to the backend that the desktop actually selected. For a
- * local Desktop URL, use the request host instead of a machine-wide .env value
- * that may still point at a deployed environment. For deployed hosts, retain
- * the configured public origin so TLS termination cannot downgrade HTTPS.
- */
-function resolveDesktopCallbackBase(req: Request, configuredPublicUrl: string): string {
-  const configured = configuredPublicUrl.replace(/\/+$/, '');
-  let configuredUrl: URL | null = null;
-  try {
-    configuredUrl = new URL(configured);
-  } catch {
-    return configured;
-  }
-
-  const hostHeader = req.headers.host;
-  const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
-  if (!host) return configuredUrl.origin;
-
-  try {
-    const requestProtocol = req.protocol === 'https' ? 'https' : 'http';
-    const requestUrl = new URL(`${requestProtocol}://${host}`);
-    if (isLoopbackHost(requestUrl.hostname)) return requestUrl.origin;
-    if (requestUrl.host === configuredUrl.host) return configuredUrl.origin;
-  } catch {
-    // Fall through to the configured safe public origin.
-  }
-
-  return configuredUrl.origin;
-}
-
-/** Build a callback URL for the backend instance the desktop actually selected. */
-function desktopCallbackUri(req: Request, configuredPublicUrl: string, callbackPath: string): string {
-  return `${resolveDesktopCallbackBase(req, configuredPublicUrl)}${callbackPath}`;
-}
-
 function isSyntheticLarkIdentityEmail(email: string): boolean {
   return email.toLowerCase().endsWith('@identity.divo.invalid');
 }
@@ -198,20 +169,52 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     logger:    deps.logger,
   });
 
+  const callbackAllowlist = parseCallbackOriginAllowlist(deps.env?.BACKEND_PUBLIC_URL_ALLOWLIST);
+
+  /**
+   * Build a callback URL on the backend origin the Desktop actually signed in
+   * against. Falling back is legal but almost always a misconfiguration — the
+   * user would finish OAuth on a backend they did not choose — so it is logged
+   * rather than left silent.
+   */
+  const desktopCallbackUri = (req: Request, callbackPath: string): string => {
+    const host = requestHost(req.headers);
+    const resolved = resolveCallbackOrigin({
+      host,
+      protocol:    req.protocol,
+      allowlist:   callbackAllowlist,
+      fallbackUrl: deps.backendPublicUrl,
+    });
+    if (resolved.source === 'fallback' && host) {
+      log.warn('desktop.callback.host_not_allowlisted', {
+        requestHost: host,
+        usedOrigin:  resolved.origin,
+        hint:        'Add this origin to BACKEND_PUBLIC_URL_ALLOWLIST if it is a real backend.',
+      });
+    }
+    return `${resolved.origin}${callbackPath}`;
+  };
+
   const buildConnectionManagePayload = async (
     connectionId: string,
     userId: string,
     companyId: string,
     role: string,
-    provider: 'google_workspace' | 'zoho' | 'canva' | 'lark' = 'google_workspace',
+    provider: ManageableConnectionProvider = 'google_workspace',
   ) => {
-    const accessible = provider === 'zoho'
-      ? await deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId })
-      : provider === 'canva'
-        ? await deps.connectionRepo.listAccessibleCanvaConnections({ userId, companyId })
-        : provider === 'lark'
-          ? await deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId })
-        : await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
+    // Exhaustive lookup rather than a ternary chain: a new provider must be
+    // added here or the build fails, instead of quietly listing Google accounts.
+    const listAccessibleByProvider: Record<
+      ManageableConnectionProvider,
+      () => ReturnType<typeof deps.connectionRepo.listAccessibleGoogleConnections>
+    > = {
+      google_workspace: () => deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId }),
+      zoho:             () => deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId }),
+      canva:            () => deps.connectionRepo.listAccessibleCanvaConnections({ userId, companyId }),
+      airtable:         () => deps.connectionRepo.listAccessibleAirtableConnections({ userId, companyId }),
+      lark:             () => deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId }),
+    };
+    const accessible = await listAccessibleByProvider[provider]();
     if (!accessible.ok) throw new Error(accessible.error.message);
     const summary = accessible.value.find(connection => connection.connectionId === connectionId);
 
@@ -415,7 +418,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         where: { id: connectionId, companyId, revokedAt: null, status: 'connected' },
         select: { provider: true },
       });
-      if (!connection || !['google_workspace', 'zoho', 'canva', 'lark'].includes(connection.provider)) {
+      if (!connection || !isManageableConnectionProvider(connection.provider)) {
         res.status(404).json({ success: false, message: 'Connection not found' });
         return;
       }
@@ -425,7 +428,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         userId,
         companyId,
         role,
-        connection.provider as 'google_workspace' | 'zoho' | 'canva' | 'lark',
+        connection.provider,
       );
       if (!manageable) {
         res.status(404).json({ success: false, message: 'Connection not found' });
@@ -514,7 +517,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
 
       const nonce = randomBytes(16).toString('hex');
-      const redirectUri = desktopCallbackUri(req, deps.backendPublicUrl, '/api/desktop/auth/lark/callback');
+      const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/lark/callback');
       const state = signJwt(
         { kind: 'desktop_lark_login', nonce, redirectUri },
         deps.memberJwtSecret,
@@ -1068,7 +1071,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
       const userId = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
-      const redirectUri = desktopCallbackUri(req, deps.backendPublicUrl, '/api/desktop/auth/lark/connections/callback');
+      const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/lark/connections/callback');
       const state = signJwt(
         {
           kind: 'desktop_lark_connect', nonce: randomBytes(16).toString('hex'), userId, companyId, redirectUri,
@@ -1261,7 +1264,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     try {
       const userId    = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
-      const redirectUri = desktopCallbackUri(req, deps.backendPublicUrl, '/api/desktop/auth/google/callback');
+      const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/google/callback');
 
       const state = signJwt(
         {
@@ -1546,8 +1549,12 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
   // connection ID; callers never receive a Canva access or refresh token.
   router.get('/canva/authorize-url', memberAuth, async (req: Request, res: Response) => {
     try {
-      if (!deps.canvaMcpOAuthService.isConfigured()) {
-        res.status(503).json({ success: false, message: 'Canva MCP OAuth is not configured' });
+      const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/canva/callback');
+      if (!deps.canvaMcpOAuthService.isConnectConfigured(redirectUri)) {
+        res.status(503).json({
+          success: false,
+          message: 'Canva MCP OAuth needs an HTTPS backend URL. Sign in against an allowlisted https origin.',
+        });
         return;
       }
       const userId = res.locals['userId'] as string;
@@ -1557,11 +1564,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         : '';
       const attemptId = randomBytes(24).toString('hex');
       const state = signJwt(
-        { kind: 'desktop_canva_connect', nonce: attemptId, userId, companyId, ...(requestedLabel ? { label: requestedLabel } : {}) },
+        {
+          kind: 'desktop_canva_connect', nonce: attemptId, userId, companyId, redirectUri,
+          ...(requestedLabel ? { label: requestedLabel } : {}),
+        },
         deps.memberJwtSecret,
         600,
       );
-      const authorizeUrl = await deps.canvaMcpOAuthService.beginAuthorization({ attemptId, state });
+      const authorizeUrl = await deps.canvaMcpOAuthService.beginAuthorization({ attemptId, state, redirectUri });
       res.json({ success: true, data: { authorizeUrl } });
     } catch (e) {
       log.error('canva.authorize-url.error', { error: String(e) });
@@ -1592,6 +1602,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       const tokens = await deps.canvaMcpOAuthService.completeAuthorization({
         attemptId: payload.nonce,
         code,
+        // Replay the exact redirect the authorization used; the token exchange
+        // fails if it differs by so much as a scheme.
+        ...(payload.redirectUri ? { redirectUri: payload.redirectUri } : {}),
       });
       const connection = await deps.connectionRepo.upsertCanvaConnection({
         companyId: payload.companyId,
@@ -1792,7 +1805,274 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     }
   });
 
-  router.get('/zoho/authorize-url', memberAuth, async (_req: Request, res: Response) => {
+  // ── Airtable ───────────────────────────────────────────────────────────────
+  // Airtable registers OAuth clients dynamically, so unlike Google there is no
+  // console-provisioned app and no client secret; PKCE proves the exchange.
+
+  router.get('/airtable/authorize-url', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/airtable/callback');
+      if (!deps.airtableMcpOAuthService.isConnectConfigured(redirectUri)) {
+        res.status(503).json({
+          success: false,
+          message: 'Airtable MCP OAuth needs an HTTPS backend URL, or HTTP on loopback. Sign in against an allowlisted origin.',
+        });
+        return;
+      }
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const requestedLabel = typeof req.query['label'] === 'string'
+        ? req.query['label'].trim().slice(0, 120)
+        : '';
+      const attemptId = randomBytes(24).toString('hex');
+      const state = signJwt(
+        {
+          kind: 'desktop_airtable_connect', nonce: attemptId, userId, companyId, redirectUri,
+          ...(requestedLabel ? { label: requestedLabel } : {}),
+        },
+        deps.memberJwtSecret,
+        600,
+      );
+      const authorizeUrl = await deps.airtableMcpOAuthService.beginAuthorization({ attemptId, state, redirectUri });
+      res.json({ success: true, data: { authorizeUrl } });
+    } catch (e) {
+      log.error('airtable.authorize-url.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.get('/airtable/callback', async (req: Request, res: Response) => {
+    const code = typeof req.query['code'] === 'string' ? req.query['code'] : undefined;
+    const state = typeof req.query['state'] === 'string' ? req.query['state'] : undefined;
+    const oauthError = typeof req.query['error'] === 'string' ? req.query['error'] : undefined;
+    if (oauthError) {
+      res.status(400).type('text/plain').send(`Airtable connection cancelled: ${oauthError}`);
+      return;
+    }
+    if (!code || !state) {
+      res.status(400).type('text/plain').send('Airtable connection failed: missing OAuth code or state.');
+      return;
+    }
+
+    const payload = verifyJwt(state, deps.memberJwtSecret);
+    if (!payload || payload.kind !== 'desktop_airtable_connect' || !payload.nonce || !payload.userId || !payload.companyId) {
+      res.status(400).type('text/plain').send('Airtable connection failed: invalid or expired state.');
+      return;
+    }
+
+    try {
+      const tokens = await deps.airtableMcpOAuthService.completeAuthorization({
+        attemptId: payload.nonce,
+        code,
+        // Replay the exact redirect the authorization used; the token exchange
+        // fails if it differs by so much as a scheme.
+        ...(payload.redirectUri ? { redirectUri: payload.redirectUri } : {}),
+      });
+      const connection = await deps.connectionRepo.upsertAirtableConnection({
+        companyId: payload.companyId,
+        ownerType: 'user',
+        ownerUserId: payload.userId,
+        createdBy: payload.userId,
+        // The MCP lane exposes no profile endpoint, so this stable OAuth
+        // authorization ID is the account key until a canonical subject exists.
+        // It also keeps repeat authorizations of the same Airtable account
+        // distinct rows rather than silently overwriting one another.
+        externalAccountId: `mcp-oauth:${payload.nonce}`,
+        label: typeof payload.label === 'string' && payload.label.trim()
+          ? payload.label.trim().slice(0, 120)
+          : 'Airtable connection',
+        accessToken: tokens.accessToken,
+        ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+        tokenType: tokens.tokenType,
+        ...(tokens.expiresIn ? { accessTokenExpiresAt: new Date(Date.now() + tokens.expiresIn * 1000) } : {}),
+        scopes: tokens.scopes,
+        // The dynamically registered client and OAuth discovery document must
+        // survive with the connection: a later refresh has to rebuild exactly
+        // the client that received this grant.
+        tokenMetadata: {
+          ...(tokens.clientInformation ? { oauthClientInformation: tokens.clientInformation } : {}),
+          ...(tokens.discoveryState ? { oauthDiscoveryState: tokens.discoveryState } : {}),
+        },
+        initialAccess: 'admin',
+      });
+      if (!connection.ok) throw new Error(connection.error.message);
+      await deps.airtableMcpOAuthService.clearAttempt(payload.nonce);
+      log.info('airtable.callback.success', {
+        companyId: payload.companyId,
+        userId: payload.userId,
+        connectionId: connection.value.id,
+      });
+      res.type('text/plain').send('Airtable connected successfully. You can close this window and return to Divo Desktop.');
+    } catch (e) {
+      log.error('airtable.callback.error', { error: String(e) });
+      res.status(500).type('text/plain').send('Airtable connection failed. Return to Divo and try again.');
+    }
+  });
+
+  router.get('/airtable/status', memberAuth, async (_req: Request, res: Response) => {
+    const userId = res.locals['userId'] as string;
+    const companyId = res.locals['companyId'] as string;
+    const connections = await deps.connectionRepo.listAccessibleAirtableConnections({ userId, companyId });
+    if (!connections.ok) {
+      res.status(500).json({ success: false, message: connections.error.message });
+      return;
+    }
+    res.json({
+      success: true,
+      data: {
+        connected: connections.value.length > 0,
+        connections: connections.value.map(connection => ({
+          connectionId: connection.connectionId,
+          label: connection.label,
+          accountEmail: connection.accountEmail ?? null,
+          accountName: connection.accountName ?? null,
+          ownerType: connection.ownerType,
+          ownerUserId: connection.ownerUserId ?? null,
+          access: connection.access,
+          scopes: connection.scopes,
+          connectedAt: connection.connectedAt.toISOString(),
+          lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+        })),
+      },
+    });
+  });
+
+  router.get('/airtable/connections/:connectionId/manage', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'airtable');
+      if (!payload) {
+        res.status(404).json({ success: false, message: 'Airtable connection not found' });
+        return;
+      }
+      if ('forbidden' in payload) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Airtable connection' });
+        return;
+      }
+      res.json({ success: true, data: payload });
+    } catch (e) {
+      log.error('airtable.manage.read.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.post('/airtable/connections/:connectionId/grants', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const body = req.body as { granteeType?: string; granteeId?: string; access?: string };
+      const granteeType = body.granteeType?.trim();
+      const granteeId = body.granteeId?.trim();
+      const access = body.access?.trim();
+      if (!connectionId || !granteeType || !granteeId || !access) {
+        res.status(400).json({ success: false, message: 'connectionId, granteeType, granteeId, and access are required' });
+        return;
+      }
+      if (!CONNECTION_GRANTEE_TYPES.has(granteeType) || !CONNECTION_GRANT_ACCESSES.has(access)) {
+        res.status(400).json({ success: false, message: 'Invalid grantee type or access level' });
+        return;
+      }
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'airtable');
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Airtable connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Airtable connection' });
+        return;
+      }
+      const candidates = manageable.candidates;
+      const isKnownGrantee =
+        (granteeType === 'user' && candidates.users.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'department' && candidates.departments.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'role' && candidates.roles.some(candidate => candidate.id === granteeId)) ||
+        (granteeType === 'company' && candidates.company?.id === granteeId);
+      if (!isKnownGrantee) {
+        res.status(400).json({ success: false, message: 'Selected grantee is not part of this company' });
+        return;
+      }
+      const granted = await deps.connectionRepo.grantConnection({
+        companyId,
+        connectionId,
+        granteeType: granteeType as 'user' | 'department' | 'role' | 'company',
+        granteeId,
+        access: access as 'read_only' | 'read_write' | 'admin',
+        grantedBy: userId,
+      });
+      if (!granted.ok) {
+        res.status(500).json({ success: false, message: granted.error.message });
+        return;
+      }
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'airtable');
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('airtable.manage.grant.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.delete('/airtable/connections/:connectionId/grants/:grantId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const grantId = String(req.params['grantId'] ?? '');
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'airtable');
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Airtable connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Airtable connection' });
+        return;
+      }
+      const revoked = await deps.connectionRepo.revokeConnectionGrant({ companyId, connectionId, grantId });
+      if (!revoked.ok) {
+        res.status(500).json({ success: false, message: revoked.error.message });
+        return;
+      }
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'airtable');
+      res.json({ success: true, data: payload && !('forbidden' in payload) ? payload : null });
+    } catch (e) {
+      log.error('airtable.manage.revoke_grant.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.delete('/airtable/connections/:connectionId', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const manageable = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'airtable');
+      if (!manageable) {
+        res.status(404).json({ success: false, message: 'Airtable connection not found' });
+        return;
+      }
+      if ('forbidden' in manageable) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this Airtable connection' });
+        return;
+      }
+      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'airtable' });
+      if (!revoked.ok) {
+        res.status(500).json({ success: false, message: revoked.error.message });
+        return;
+      }
+      res.json({ success: true, message: 'Airtable connection disconnected' });
+    } catch (e) {
+      log.error('airtable.connection.disconnect.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.get('/zoho/authorize-url', memberAuth, async (req: Request, res: Response) => {
     try {
       const userId    = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
@@ -1806,11 +2086,17 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const redirectUri = `${deps.backendPublicUrl}/api/desktop/auth/zoho/callback`;
+      const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/zoho/callback');
       const authorizeConfig = await deps.zohoTokenService.getAuthorizeConfig(companyId);
 
       const state = signJwt(
-        { kind: 'desktop_zoho_connect', nonce: randomBytes(16).toString('hex'), userId, companyId },
+        {
+          kind: 'desktop_zoho_connect',
+          nonce: randomBytes(16).toString('hex'),
+          userId,
+          companyId,
+          redirectUri,
+        },
         deps.memberJwtSecret,
         600,
       );
@@ -1848,7 +2134,8 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
-      const redirectUri = `${deps.backendPublicUrl}/api/desktop/auth/zoho/callback`;
+      const redirectUri = payload.redirectUri
+        ?? `${deps.backendPublicUrl.replace(/\/+$/, '')}/api/desktop/auth/zoho/callback`;
       const tokens = await deps.zohoTokenService.exchangeAuthorizationCode({
         companyId:         payload.companyId,
         environment:       'prod',

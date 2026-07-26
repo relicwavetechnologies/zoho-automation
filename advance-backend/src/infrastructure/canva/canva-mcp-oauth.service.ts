@@ -38,34 +38,57 @@ export interface CanvaMcpTokens {
  */
 export class CanvaMcpOAuthService {
   private readonly mcpUrl: string;
-  private readonly redirectUri: string;
+  private readonly configuredRedirectUri: string | undefined;
   private readonly clientMetadataUrl: string | undefined;
   private readonly log: Logger;
 
   constructor(opts: { env: TypedEnv; cache: CachePort; logger: Logger }) {
     this.cache = opts.cache;
     this.mcpUrl = (opts.env.CANVA_MCP_URL ?? CANVA_MCP_DEFAULT_URL).trim();
-    this.redirectUri = (opts.env.CANVA_MCP_REDIRECT_URI
-      ?? `${opts.env.BACKEND_PUBLIC_URL.replace(/\/$/, '')}/api/desktop/auth/canva/callback`).trim();
+    // An explicit override still wins, but the normal path is the caller
+    // passing the callback for the backend origin Desktop signed in against.
+    this.configuredRedirectUri = opts.env.CANVA_MCP_REDIRECT_URI?.trim() || undefined;
     this.clientMetadataUrl = opts.env.CANVA_MCP_CLIENT_METADATA_URL?.trim() || undefined;
     this.log = opts.logger.child({ service: 'canva-mcp-oauth' });
   }
 
   private readonly cache: CachePort;
 
+  /**
+   * Whether the service can talk to Canva at all. Deliberately independent of
+   * any redirect URI: refreshing an existing connection never redirects, so an
+   * unresolvable callback origin must not strand live connections.
+   */
   isConfigured(): boolean {
     try {
-      const mcp = new URL(this.mcpUrl);
-      const redirect = new URL(this.redirectUri);
-      return mcp.protocol === 'https:' && redirect.protocol === 'https:';
+      return new URL(this.mcpUrl).protocol === 'https:';
     } catch {
       return false;
     }
   }
 
-  async beginAuthorization(input: { readonly attemptId: string; readonly state: string }): Promise<string> {
-    this.assertConfigured();
-    const provider = this.createProvider(input.attemptId, input.state);
+  /** Whether a *new* connection can be started against this callback origin. */
+  isConnectConfigured(redirectUri?: string): boolean {
+    if (!this.isConfigured()) return false;
+    try {
+      return new URL(this.resolveRedirectUri(redirectUri)).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  resolveRedirectUri(requested?: string): string {
+    return (this.configuredRedirectUri ?? requested ?? '').trim();
+  }
+
+  async beginAuthorization(input: {
+    readonly attemptId: string;
+    readonly state: string;
+    readonly redirectUri?: string;
+  }): Promise<string> {
+    const redirectUri = this.resolveRedirectUri(input.redirectUri);
+    this.assertConnectConfigured(redirectUri);
+    const provider = this.createProvider(input.attemptId, redirectUri, input.state);
     const client = new Client({ name: 'Divo Dex', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(this.mcpUrl), { authProvider: provider });
 
@@ -86,9 +109,16 @@ export class CanvaMcpOAuthService {
     }
   }
 
-  async completeAuthorization(input: { readonly attemptId: string; readonly code: string }): Promise<CanvaMcpTokens> {
-    this.assertConfigured();
-    const provider = this.createProvider(input.attemptId);
+  async completeAuthorization(input: {
+    readonly attemptId: string;
+    readonly code: string;
+    readonly redirectUri?: string;
+  }): Promise<CanvaMcpTokens> {
+    // OAuth requires the token exchange to present the *same* redirect_uri the
+    // authorization used, so the caller replays the one it signed into state.
+    const redirectUri = this.resolveRedirectUri(input.redirectUri);
+    this.assertConnectConfigured(redirectUri);
+    const provider = this.createProvider(input.attemptId, redirectUri);
     const transport = new StreamableHTTPClientTransport(new URL(this.mcpUrl), { authProvider: provider });
     try {
       await transport.finishAuth(input.code);
@@ -134,7 +164,10 @@ export class CanvaMcpOAuthService {
     };
     let clientInformation = input.clientInformation;
     let discoveryState = input.discoveryState;
-    const metadata = this.clientMetadata();
+    // Refresh replays the registration stored with the connection, so the
+    // redirect in this metadata is never exercised — it only satisfies the
+    // SDK's required shape.
+    const metadata = this.clientMetadata(this.configuredRedirectUri ?? '');
     const provider: OAuthClientProvider = {
       get redirectUrl() { return undefined; },
       ...(this.clientMetadataUrl ? { clientMetadataUrl: this.clientMetadataUrl } : {}),
@@ -168,11 +201,11 @@ export class CanvaMcpOAuthService {
     }
   }
 
-  private createProvider(attemptId: string, state?: string): OAuthClientProvider {
-    const metadata = this.clientMetadata();
+  private createProvider(attemptId: string, redirectUri: string, state?: string): OAuthClientProvider {
+    const metadata = this.clientMetadata(redirectUri);
 
     return {
-      redirectUrl: this.redirectUri,
+      redirectUrl: redirectUri,
       ...(this.clientMetadataUrl ? { clientMetadataUrl: this.clientMetadataUrl } : {}),
       clientMetadata: metadata,
       state: async () => state ?? '',
@@ -199,9 +232,9 @@ export class CanvaMcpOAuthService {
     return `canva:mcp:oauth:${attemptId}`;
   }
 
-  private clientMetadata(): OAuthClientMetadata {
+  private clientMetadata(redirectUri: string): OAuthClientMetadata {
     return {
-      redirect_uris: [this.redirectUri],
+      redirect_uris: [redirectUri],
       token_endpoint_auth_method: 'none',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
@@ -225,6 +258,13 @@ export class CanvaMcpOAuthService {
   }
 
   private assertConfigured(): void {
-    if (!this.isConfigured()) throw new Error('Canva MCP OAuth is not configured with HTTPS MCP and redirect URLs');
+    if (!this.isConfigured()) throw new Error('Canva MCP OAuth is not configured with an HTTPS MCP URL');
+  }
+
+  private assertConnectConfigured(redirectUri: string): void {
+    this.assertConfigured();
+    if (!this.isConnectConfigured(redirectUri)) {
+      throw new Error(`Canva MCP OAuth needs an HTTPS callback URL; got "${redirectUri || '(none)'}"`);
+    }
   }
 }

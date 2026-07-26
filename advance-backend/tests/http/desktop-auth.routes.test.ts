@@ -116,11 +116,11 @@ describe('desktop auth routes', () => {
   });
 
   it('carries a user-provided Canva connection name through the OAuth state', async () => {
-    let authorization: { attemptId: string; state: string } | null = null;
+    let authorization: { attemptId: string; state: string; redirectUri?: string } | null = null;
     const router = createDesktopAuthRoutes(makeDeps({
       canvaMcpOAuthService: {
-        isConfigured: () => true,
-        beginAuthorization: async (input: { attemptId: string; state: string }) => {
+        isConnectConfigured: () => true,
+        beginAuthorization: async (input: { attemptId: string; state: string; redirectUri?: string }) => {
           authorization = input;
           return 'https://mcp.canva.com/authorize';
         },
@@ -137,6 +137,61 @@ describe('desktop auth routes', () => {
     assert.ok(authorization);
     const payload = JSON.parse(Buffer.from(authorization.state.split('.')[1]!, 'base64url').toString('utf8'));
     assert.equal(payload.label, 'Marketing workspace');
+  });
+
+  it('builds the Canva callback on the backend URL the desktop signed in against', async () => {
+    let authorization: { state: string; redirectUri?: string } | null = null;
+    const router = createDesktopAuthRoutes(makeDeps({
+      env: { BACKEND_PUBLIC_URL_ALLOWLIST: 'https://app-dev.example.test' } as any,
+      canvaMcpOAuthService: {
+        isConnectConfigured: () => true,
+        beginAuthorization: async (input: { state: string; redirectUri?: string }) => {
+          authorization = input;
+          return 'https://mcp.canva.com/authorize';
+        },
+      },
+    }));
+
+    const result = await callRoute(router, 'GET', '/canva/authorize-url', {
+      headers: { host: 'app-dev.example.test' },
+      locals: { userId: 'user-1', companyId: 'company-1' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.ok(authorization);
+    // Not backendPublicUrl ('https://backend.example.com') — the request host wins.
+    assert.equal(
+      authorization.redirectUri,
+      'https://app-dev.example.test/api/desktop/auth/canva/callback',
+    );
+    // The callback replays it from state, so both legs present the same URI.
+    const payload = JSON.parse(Buffer.from(authorization.state.split('.')[1]!, 'base64url').toString('utf8'));
+    assert.equal(payload.redirectUri, 'https://app-dev.example.test/api/desktop/auth/canva/callback');
+  });
+
+  it('ignores a Host that is not allowlisted rather than registering it', async () => {
+    let authorization: { redirectUri?: string } | null = null;
+    const router = createDesktopAuthRoutes(makeDeps({
+      env: { BACKEND_PUBLIC_URL_ALLOWLIST: 'https://app-dev.example.test' } as any,
+      canvaMcpOAuthService: {
+        isConnectConfigured: () => true,
+        beginAuthorization: async (input: { redirectUri?: string }) => {
+          authorization = input;
+          return 'https://mcp.canva.com/authorize';
+        },
+      },
+    }));
+
+    await callRoute(router, 'GET', '/canva/authorize-url', {
+      headers: { host: 'attacker.example.test' },
+      locals: { userId: 'user-1', companyId: 'company-1' },
+    });
+
+    assert.ok(authorization);
+    assert.equal(
+      authorization.redirectUri,
+      'https://backend.example.com/api/desktop/auth/canva/callback',
+    );
   });
 
   it('disconnects only the selected Google connection for an admin accessor', async () => {
@@ -350,6 +405,67 @@ describe('desktop auth routes', () => {
     assert.equal(callback.status, 200);
     assert.equal(exchangedRedirectUri, authorizeRedirectUri);
     assert.equal(storedConnection?.['scope'], 'openid https://www.googleapis.com/auth/spreadsheets');
+  });
+
+  it('keeps Zoho OAuth on the Desktop-selected local backend through code exchange', async () => {
+    let exchangedRedirectUri: string | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => ({ org: [] }),
+    })) as typeof fetch;
+    try {
+      const router = createDesktopAuthRoutes(makeDeps({
+        env: {
+          ZOHO_API_BASE_URL: 'https://www.zohoapis.in',
+          ZOHO_ACCOUNTS_BASE_URL: 'https://accounts.zoho.in',
+        },
+        zohoTokenService: {
+          isConfigured: () => true,
+          getAuthorizeConfig: async () => ({
+            clientId: 'client-1',
+            accountsBaseUrl: 'https://accounts.zoho.in',
+          }),
+          exchangeAuthorizationCode: async (input: { redirectUri: string }) => {
+            exchangedRedirectUri = input.redirectUri;
+            return {
+              accessToken: 'token-1',
+              refreshToken: 'refresh-1',
+              expiresIn: 3600,
+              scopes: ['ZohoBooks.fullaccess.all'],
+              accountsBaseUrl: 'https://accounts.zoho.in',
+              apiDomain: 'https://www.zohoapis.in',
+            };
+          },
+        },
+        zohoConnectionRepo: {
+          upsertFromExchange: async () => ({ ok: true, value: {} }),
+        },
+        connectionRepo: {
+          listAccessibleZohoConnections: async () => ({ ok: true, value: [] }),
+          upsertZohoConnection: async () => ({ ok: true, value: { id: 'connection-1' } }),
+        },
+      }));
+
+      const authorize = await callRoute(router, 'GET', '/zoho/authorize-url', {
+        headers: { host: 'localhost:8000' },
+        locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+      });
+      const authorizeUrl = new URL(authorize.body.data.authorizeUrl);
+      assert.equal(
+        authorizeUrl.searchParams.get('redirect_uri'),
+        'http://localhost:8000/api/desktop/auth/zoho/callback',
+      );
+
+      const callback = await callRoute(router, 'GET', '/zoho/callback', {
+        query: { code: 'code-1', state: authorizeUrl.searchParams.get('state')! },
+      });
+
+      assert.equal(callback.status, 200);
+      assert.equal(exchangedRedirectUri, 'http://localhost:8000/api/desktop/auth/zoho/callback');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('does not create a separate Desktop user when Lark does not expose an email', async () => {
