@@ -195,6 +195,56 @@ export class RuntimeApprovalRepository {
     }
   }
 
+  /**
+   * Live requests a person is on the hook for, and the ones they are waiting on.
+   *
+   * `dispatching` counts as live for the same reason the Lark card handler
+   * accepts it: a row can be delivered before its message ID is persisted, and
+   * the request is genuinely outstanding either way.
+   */
+  async listInboxFor(input: {
+    companyId: string;
+    userId: string;
+    limit?: number;
+  }): Promise<Result<{ awaitingMe: RuntimeApprovalRow[]; requestedByMe: RuntimeApprovalRow[] }, Error>> {
+    try {
+      const now = new Date();
+      const live = {
+        status: { in: ['dispatching', 'pending'] },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        conversation: { companyId: input.companyId },
+      } satisfies Prisma.RuntimeApprovalWhereInput;
+      const take = input.limit ?? 50;
+      const include = { conversation: { select: { companyId: true } } } as const;
+
+      const [awaiting, requested] = await this.prisma.$transaction([
+        this.prisma.runtimeApproval.findMany({
+          where: {
+            ...live,
+            metadataJson: { path: ['resolvedManagerUserId'], equals: input.userId },
+          },
+          orderBy: { createdAt: 'desc' },
+          take,
+          include,
+        }),
+        this.prisma.runtimeApproval.findMany({
+          where: { ...live, requestedBy: input.userId },
+          orderBy: { createdAt: 'desc' },
+          take,
+          include,
+        }),
+      ]);
+
+      const shape = (rows: typeof awaiting): RuntimeApprovalRow[] => rows.map(row => {
+        const { conversation, ...approval } = row;
+        return { ...approval, companyId: conversation.companyId } as unknown as RuntimeApprovalRow;
+      });
+      return ok({ awaitingMe: shape(awaiting), requestedByMe: shape(requested) });
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.listInboxFor', e));
+    }
+  }
+
   async findActiveByIdempotencyKey(key: string): Promise<Result<RuntimeApprovalRow | null, Error>> {
     try {
       const row = await this.findActiveWithinTransaction(this.prisma, key, new Date());

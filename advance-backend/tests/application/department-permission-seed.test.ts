@@ -6,7 +6,7 @@ import {
   TOOL_SUPPORTED_ACTIONS,
   type CanonicalToolId,
 } from '../../src/domain/tools/tool-id.ts';
-import { isFixedToolPolicy } from '../../src/domain/tools/tool-policy.ts';
+import { DEPARTMENT_GRANT_ONLY_TOOLS, isDepartmentGrantOnlyTool, isFixedToolPolicy } from '../../src/domain/tools/tool-policy.ts';
 
 describe('memberTemplateGrants', () => {
   it('includes only MEMBER-enabled tools and all of their supported actions', () => {
@@ -18,6 +18,15 @@ describe('memberTemplateGrants', () => {
       if (isFixedToolPolicy(toolId)) {
         for (const action of actions) {
           assert.ok(!keys.has(`${toolId}:${action}`), `fixed-policy tool must not be seeded: ${toolId}:${action}`);
+        }
+        continue;
+      }
+      // A permissive MEMBER default on these is a ceiling, not a grant: they
+      // exist to be grantable at all, and seeding them here would hand them to
+      // every new role matrix.
+      if (isDepartmentGrantOnlyTool(toolId)) {
+        for (const action of actions) {
+          assert.ok(!keys.has(`${toolId}:${action}`), `department-grant-only tool must not be seeded: ${toolId}:${action}`);
         }
         continue;
       }
@@ -35,5 +44,15 @@ describe('memberTemplateGrants', () => {
     assert.ok(keys.has('dataProcessor:read'));
     assert.ok(!keys.has('larkBase:read'));
     assert.ok(!keys.has('larkApproval:read'));
+  });
+
+  it('keeps every department-grant-only tool out of the template', () => {
+    const keys = new Set(memberTemplateGrants().map((g) => `${g.toolId}:${g.actionGroup}`));
+    assert.ok(DEPARTMENT_GRANT_ONLY_TOOLS.length > 0, 'this guard is pointless if the list is empty');
+    for (const toolId of DEPARTMENT_GRANT_ONLY_TOOLS) {
+      for (const action of TOOL_SUPPORTED_ACTIONS[toolId]) {
+        assert.ok(!keys.has(`${toolId}:${action}`), `${toolId}:${action} leaked into the MEMBER template`);
+      }
+    }
   });
 });

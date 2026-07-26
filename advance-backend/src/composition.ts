@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 import type { TypedEnv } from './config/env';
 import { resolveRedisUrl } from './config/env';
 import { RuntimeApprovalRepository } from './infrastructure/persistence/runtime-approval.repository';
+import { ApprovalInboxService } from './application/approval/approval-inbox.service';
+import { buildApprovalResolutionCard } from './application/approval/approval-card-builder';
 import { ApprovalResolverService } from './application/approval/approval-resolver.service';
 import { ApprovalGateService } from './application/approval/approval-gate.service';
 import { ApprovalResumerService } from './application/approval/approval-resumer.service';
@@ -285,6 +287,7 @@ export interface Container {
   approvalGate: ApprovalGateService;
   approvalCardHandler: LarkApprovalCardHandler;
   approvalResumer: ApprovalResumerService;
+  approvalInbox: ApprovalInboxService;
   // Document RAG
   ingestionService: IngestionService;
   ingestionQueue: IngestionQueue;
@@ -1662,6 +1665,19 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     auditService,
   );
 
+  // The same decisions the Lark card carries, reachable by anyone signed in.
+  // `onResolvedCard` is what stops a delivered card from still offering buttons
+  // for a decision that was already made in the inbox.
+  const approvalInbox = new ApprovalInboxService({
+    approvals: approvalRepo,
+    resumer: approvalResumer,
+    logger: logger.child({ service: 'approval-inbox' }),
+    audit: auditService,
+    onResolvedCard: async (messageId, decision, byName) => {
+      await larkAdapter.updateMessageById(messageId, buildApprovalResolutionCard(decision, byName, new Date()));
+    },
+  });
+
   const localApprovalIntents = new LocalApprovalIntentService({
     toolExecutor: gatewayToolExecutor,
     repository: new InMemoryApprovalIntentRepository(),
@@ -1771,6 +1787,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   approvalGate,
     approvalCardHandler,
     approvalResumer,
+    approvalInbox,
     // Document RAG
     ingestionService,
     ingestionQueue,
