@@ -14,6 +14,61 @@ describe('OMS Site Data tool', () => {
     assert.equal(tool.argsSchema.safeParse({ operation: 'run_sql', sql: 'SELECT * FROM Site' }).success, false);
   });
 
+  /**
+   * Exactly what ToolExecutor puts in front of the model on invalid args
+   * (tool-executor.ts:579). Nested `unionErrors` are not part of it, so a test
+   * that inspects the raw issue tree can pass while the caller is still told
+   * nothing — which is how the original defect survived having tests at all.
+   */
+  const modelFacing = (result: ReturnType<typeof createTool>['argsSchema']['safeParse'] extends
+    (...args: never[]) => infer R ? R : never): string =>
+    result.success ? '' : result.error.errors
+      .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+      .join('; ');
+
+  it('names the field a caller got wrong instead of saying "Invalid input"', () => {
+    // The live failure. A model read "1–20 exact bare website hostnames" from
+    // the docs and sent `hostnames`. Under a plain z.union every branch failed,
+    // so the only issue raised was `invalid_union` at the root — rendered as
+    // "(root): Invalid input". Told nothing, the model assumed its hostname
+    // *format* was wrong and burned its retry reformatting them.
+    const tool = createTool();
+    const rendered = modelFacing(tool.argsSchema.safeParse({
+      operation: 'get_site_profiles',
+      hostnames: ['example.com', 'test.com'],
+    }));
+
+    assert.match(rendered, /hostnames/, 'must name the key it did not recognise');
+    assert.match(rendered, /websites/, 'must name the key it expected');
+    assert.doesNotMatch(rendered, /^\(root\): Invalid input$/);
+  });
+
+  it('reports the real problem for a chosen branch rather than trying them all', () => {
+    // Same defect, different branch: a criterion-less search used to fail every
+    // union arm and surface as "Invalid input" too.
+    const tool = createTool();
+    const rendered = modelFacing(tool.argsSchema.safeParse({ operation: 'search_sites' }));
+
+    assert.match(rendered, /at least one search criterion/);
+  });
+
+  it('names the valid operations when the discriminator itself is wrong', () => {
+    const tool = createTool();
+    const rendered = modelFacing(tool.argsSchema.safeParse({ operation: 'run_sql', sql: 'SELECT 1' }));
+
+    assert.match(rendered, /get_site_profiles/, 'should list the operations it does accept');
+  });
+
+  it('still accepts a correctly shaped request for every operation', () => {
+    // The restructure moved search's cross-field checks out of the object, so
+    // the happy path needs pinning too.
+    const tool = createTool();
+    assert.equal(tool.argsSchema.safeParse({ operation: 'get_site_profiles', websites: ['example.com'] }).success, true);
+    assert.equal(tool.argsSchema.safeParse({ operation: 'list_catalog_values', field: 'niche' }).success, true);
+    assert.equal(tool.argsSchema.safeParse({ operation: 'search_sites', niche: 'Technology' }).success, true);
+    assert.equal(tool.argsSchema.safeParse({ operation: 'search_sites', minDomainRating: 50, maxDomainRating: 10 }).success, false);
+  });
+
   it('requires explicit OMS read permission', () => {
     const tool = createTool();
     assert.equal(tool.permissionCheck({ operation: 'get_site_profiles', websites: ['example.com'] }, makeDeniedPerm()).ok, false);

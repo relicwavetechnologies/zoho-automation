@@ -84,7 +84,10 @@ export const SEARCH_SORT_FIELDS = [
 
 const searchSortField = z.enum(SEARCH_SORT_FIELDS);
 
-const SearchSitesSchema = z.object({
+// Kept as a raw object so the union below can discriminate on `operation`.
+// The cross-field checks live in `refineSearchSites` and run once the branch
+// has been chosen — see the union for why that ordering matters.
+const SearchSitesObject = z.object({
   operation: z.literal('search_sites'),
   niche: queryText.optional(),
   contentCategory: queryText.optional(),
@@ -118,7 +121,9 @@ const SearchSitesSchema = z.object({
   maxSellingPrice: metric.optional(),
   sortBy: searchSortField.optional(),
   sortDirection: z.enum(['ASC', 'DESC']).optional(),
-}).strict().superRefine((value, ctx) => {
+}).strict();
+
+const refineSearchSites = (value: z.infer<typeof SearchSitesObject>, ctx: z.RefinementCtx): void => {
   const criteria = Object.entries(value).filter(([key, item]) => key !== 'operation' && key !== 'sortBy' && key !== 'sortDirection' && item !== undefined);
   if (criteria.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Provide at least one search criterion.' });
@@ -156,7 +161,7 @@ const SearchSitesSchema = z.object({
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Minimum ${label} cannot exceed maximum ${label}.` });
     }
   }
-});
+};
 
 const GetSiteProfilesSchema = z.object({
   operation: z.literal('get_site_profiles'),
@@ -188,14 +193,30 @@ const ListCatalogValuesSchema = z.object({
   field: OmsCatalogFieldSchema,
 }).strict();
 
-// Search validation needs cross-field range checks, which makes that branch a
-// ZodEffects value; use a strict union rather than discriminatedUnion (which
-// accepts raw object branches only).
-export const OmsSiteDataToolArgsSchema = z.union([
-  SearchSitesSchema,
-  GetSiteProfilesSchema,
-  ListCatalogValuesSchema,
-]);
+/**
+ * Discriminated on `operation` so a rejection names what was actually wrong.
+ *
+ * A plain `z.union` tries every branch and, when all fail, reports only
+ * `invalid_union` at the root — which the tool layer renders as
+ * "(root): Invalid input". The caller is told nothing: not which operation was
+ * being validated, not which field was missing, not that a key was
+ * unrecognised. A model that passed `hostnames` instead of `websites` retried
+ * twice with reformatted hostnames, because the one fact it needed was the one
+ * the error had thrown away.
+ *
+ * Discriminating first picks the single branch the caller asked for and
+ * surfaces that branch's real issues. Search's cross-field checks run after
+ * the branch is chosen, which is why they had to move out of the object.
+ */
+export const OmsSiteDataToolArgsSchema = z
+  .discriminatedUnion('operation', [
+    SearchSitesObject,
+    GetSiteProfilesSchema,
+    ListCatalogValuesSchema,
+  ])
+  .superRefine((value, ctx) => {
+    if (value.operation === 'search_sites') refineSearchSites(value, ctx);
+  });
 export type OmsSiteDataToolArgs = z.infer<typeof OmsSiteDataToolArgsSchema>;
 
 // The provider allows up to 25 columns per request. Every filterable metric is

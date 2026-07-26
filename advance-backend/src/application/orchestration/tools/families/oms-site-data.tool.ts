@@ -47,8 +47,8 @@ export const createOmsSiteDataTool = (deps: {
     'search_sites accepts at most 20 criteria per call.',
     'search_sites sortBy: set it whenever the user wants best/top/cheapest sites. OMS sorts before applying its 100-row cap, so sorting changes which rows come back, not just their order.',
     'search_sites sortDirection: defaults to DESC, except spamScore, sellingPrice, costPrice and turnAroundTime, which default to ASC because lower is better for those. Pass it explicitly when the user wants the opposite.',
-    'get_site_profiles: look up 1–20 exact bare website hostnames and return the standard full profile view.',
-    'list_catalog_values: list distinct current values for a supported inventory field before narrowing a search.',
+    'get_site_profiles: pass websites, an array of 1–20 exact bare hostnames; returns the standard full profile view. The field is named websites, not hostnames or domains.',
+    'list_catalog_values: pass field, one supported inventory field, to list its distinct current values before narrowing a search.',
     'Divo rejects SQL, webhook URLs, headers, API keys, raw OMS columns, raw filters, sorting expressions, and provider request bodies.',
   ].join('\n'),
   permissionCheck(_args: OmsSiteDataToolArgs, perm: PermissionResult) {
