@@ -1,8 +1,10 @@
 import {
-  AlertTriangle,
   CheckCircle2,
+  CloudOff,
   FileVideo2,
+  MessageSquareText,
   RotateCcw,
+  Send,
   Trash2,
   Undo2,
   Upload,
@@ -13,17 +15,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { PersonaGraph } from './PersonaGraph'
 import { TeachSteps } from './TeachHowItWorks'
-import type {
-  ManagerPersonaTree,
-  TeachLocalRecording,
-  TeachSession,
-} from '@/lib/divo-teach'
-
-const formatBytes = (bytes: number | null) => {
-  if (!bytes) return 'Unknown size'
-  const mb = bytes / (1024 * 1024)
-  return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`
-}
+import { cn } from '@/lib/utils'
+import { formatTeachBytes, type TeachWorkItem } from '@/lib/teach-activity'
+import type { ManagerPersonaTree, TeachSession } from '@/lib/divo-teach'
 
 const formatLearningDate = (value: string) =>
   new Intl.DateTimeFormat(undefined, {
@@ -33,74 +27,92 @@ const formatLearningDate = (value: string) =>
     minute: '2-digit',
   }).format(new Date(value))
 
-/** Human wording for the state a local recording is stuck in. */
-const describeState = (recording: TeachLocalRecording) => {
-  switch (recording.state) {
-    case 'agent_ready':
-      return 'waiting for you in a conversation'
-    case 'retryable':
-      return 'upload failed'
-    case 'processing':
-      return 'processing'
-    case 'uploading':
-      return 'uploading'
-    default:
-      return 'ready to upload'
-  }
-}
+/** Why Teach cannot be started, when it cannot be started. */
+export type TeachAccessProblem = 'not-manager' | 'unreachable'
 
 export type TeachStudioProps = {
   checkingAccess: boolean
+  accessProblem?: TeachAccessProblem
   departmentId?: string
+  online: boolean
   loadingOverview: boolean
   overviewWarning?: string
-  localRecordings: TeachLocalRecording[]
+  workItems: TeachWorkItem[]
   recentLearnings: TeachSession[]
   personaTree: ManagerPersonaTree | null
   undoing: boolean
   onRecord: () => void
   onUpload: () => void
   onHowItWorks: () => void
-  onRetryRecording: (recording: TeachLocalRecording) => void
-  onResumeRecording: (recording: TeachLocalRecording) => void
-  onDeleteRecording: (recording: TeachLocalRecording) => void
+  onSendRecording: (item: TeachWorkItem) => void
+  onOpenRecording: (item: TeachWorkItem) => void
+  onResumeRecording: (item: TeachWorkItem) => void
+  onDeleteRecording: (item: TeachWorkItem) => void
   onUndoLastLearning: (learning: TeachSession) => void
+}
+
+/** One line describing what a finished session actually did. */
+function summarizeLearning(learning: TeachSession) {
+  if (learning.appliedChangeCount === 0) {
+    return 'Divo did not find anything new to learn from this one.'
+  }
+  const rules = learning.appliedChanges.length
+  const skills = learning.appliedSkills.length
+  const parts = [`Learned ${rules} ${rules === 1 ? 'thing' : 'things'}`]
+  if (skills > 0) {
+    parts.push(`and can now run ${skills} ${skills === 1 ? 'task' : 'tasks'} for you`)
+  }
+  return `${parts.join(' ')}.`
 }
 
 export function TeachStudio({
   checkingAccess,
+  accessProblem,
   departmentId,
+  online,
   loadingOverview,
   overviewWarning,
-  localRecordings,
+  workItems,
   recentLearnings,
   personaTree,
   undoing,
   onRecord,
   onUpload,
   onHowItWorks,
-  onRetryRecording,
+  onSendRecording,
+  onOpenRecording,
   onResumeRecording,
   onDeleteRecording,
   onUndoLastLearning,
 }: TeachStudioProps) {
   const blocked = checkingAccess || !departmentId
-  const hasHistory = recentLearnings.length > 0 || Boolean(personaTree?.nodes.length)
+  const hasHistory =
+    recentLearnings.length > 0 || Boolean(personaTree?.nodes.length)
 
   // Undo pops the department persona stack — it is not addressable per row.
   // So only the newest learning that actually wrote something may offer it;
   // anything older would silently revert a different session's changes.
-  const undoableId = recentLearnings.find(
+  const newestApplied = recentLearnings.find(
     (learning) => learning.appliedChangeCount > 0
   )
   const canUndo =
-    undoableId && undoableId.remainingUndos > 0 ? undoableId.id : undefined
+    newestApplied && newestApplied.remainingUndos > 0
+      ? newestApplied.id
+      : undefined
+
+  const accessNotice = checkingAccess
+    ? null
+    : accessProblem === 'unreachable'
+      ? 'Divo cannot be reached right now, so teaching cannot start. Your existing recordings are safe.'
+      : accessProblem === 'not-manager'
+        ? 'Teach learns from the manager of a department. Pick a department you manage to start.'
+        : null
 
   // Deliberately NOT gated on `loadingOverview`. Both this and the studio
   // branch start empty, so keying the choice on the loading flag made the whole
   // page unmount and remount on every refresh — a visible flicker, and it tore
   // the launcher buttons out from under an in-flight click.
-  if (!hasHistory && localRecordings.length === 0) {
+  if (!hasHistory && workItems.length === 0) {
     return (
       <div
         className="flex h-full items-center justify-center overflow-y-auto px-5 py-10"
@@ -111,12 +123,11 @@ export function TeachStudio({
             <Video className="size-6" />
           </div>
           <h1 className="mt-5 font-studio text-2xl font-medium tracking-tight">
-            Teach Divo how you work
+            Show Divo how you work
           </h1>
           <p className="mx-auto mt-3 max-w-md text-sm leading-7 text-muted-foreground">
-            Record your screen while you do a task and explain your decisions
-            out loud. Divo turns the demonstration into department rules and
-            reusable skills.
+            Record yourself doing a task once, talking through your decisions.
+            Divo watches it and learns to do that work your way.
           </p>
 
           <TeachSteps className="mx-auto mt-6 max-w-sm text-left" />
@@ -128,20 +139,18 @@ export function TeachStudio({
               disabled={blocked}
               data-testid="upload-teach-recording"
             >
-              <Upload /> Upload recording
+              <Upload /> Use a video I already have
             </Button>
             <Button
               onClick={onRecord}
               disabled={blocked}
               data-testid="start-teach-recording"
             >
-              <Video /> Record teaching
+              <Video /> Start recording
             </Button>
           </div>
-          {!checkingAccess && !departmentId && (
-            <p className="mt-4 text-sm text-amber-600">
-              Select a department you manage before starting Teach.
-            </p>
+          {accessNotice && (
+            <p className="mt-4 text-sm text-amber-600">{accessNotice}</p>
           )}
         </div>
       </div>
@@ -153,86 +162,38 @@ export function TeachStudio({
       className="h-full overflow-y-auto px-5 py-6 sm:px-8"
       data-testid="teach-mode"
     >
-      <div className="mx-auto max-w-5xl pb-10">
-        {/* Unprocessed recordings are work already done that has not landed,
-            so they outrank the launcher. When there are none this collapses
-            to a single reassuring line rather than an empty 50% column. */}
-        {localRecordings.length > 0 ? (
-          <section className="mb-4 overflow-hidden rounded-xl border border-amber-500/35 bg-amber-500/[0.07]">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-3 text-sm">
-              <AlertTriangle className="size-4 shrink-0 text-amber-600" />
-              <span className="font-medium">
-                {localRecordings.length}{' '}
-                {localRecordings.length === 1 ? 'recording is' : 'recordings are'}{' '}
-                still on this Mac
-              </span>
-              <span className="text-muted-foreground">
-                They finished recording but have not been processed. Nothing is
-                lost.
-              </span>
-            </div>
-            {localRecordings.slice(0, 4).map((recording) => {
-              const canResume = recording.state === 'agent_ready'
-              const canRetry =
-                recording.state === 'ready' || recording.state === 'retryable'
-              return (
-                <div
-                  key={recording.path}
-                  className="flex flex-wrap items-center gap-3 border-t border-amber-500/20 px-4 py-3"
-                >
-                  <FileVideo2 className="size-4 shrink-0 text-muted-foreground" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">
-                      {recording.fileName}
-                    </p>
-                    <p className="mt-0.5 font-mono text-xs text-muted-foreground">
-                      {formatBytes(recording.size)} · {describeState(recording)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant={canResume || canRetry ? 'default' : 'outline'}
-                      size="sm"
-                      disabled={!canRetry && !canResume}
-                      onClick={() =>
-                        canResume
-                          ? onResumeRecording(recording)
-                          : onRetryRecording(recording)
-                      }
-                    >
-                      <RotateCcw />{' '}
-                      {canResume
-                        ? 'Resume teaching'
-                        : canRetry
-                          ? 'Retry'
-                          : 'Processing'}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive hover:text-destructive"
-                      aria-label={`Delete ${recording.fileName}`}
-                      onClick={() => onDeleteRecording(recording)}
-                    >
-                      <Trash2 /> Delete
-                    </Button>
-                  </div>
-                </div>
-              )
-            })}
+      <div className="mx-auto max-w-3xl pb-10">
+        {/* Work already done that has not landed outranks the launcher —
+            answering "where did my recording go?" before offering a new one. */}
+        {workItems.length > 0 ? (
+          <section
+            className="mb-4 overflow-hidden rounded-xl border bg-card"
+            data-testid="teach-work-items"
+          >
+            <p className="border-b px-4 py-3 text-sm font-medium">
+              Your recordings
+            </p>
+            {workItems.map((item) => (
+              <TeachWorkRow
+                key={item.path}
+                item={item}
+                onSend={() => onSendRecording(item)}
+                onOpen={() => onOpenRecording(item)}
+                onResume={() => onResumeRecording(item)}
+                onDelete={() => onDeleteRecording(item)}
+              />
+            ))}
           </section>
         ) : null}
 
-        {/* The launcher: one row, not a hero. A returning manager has read the
-            explainer already; it lives behind "How it works". */}
         <section className="flex flex-wrap items-center gap-3 rounded-2xl border bg-gradient-to-b from-violet-500/[0.06] to-transparent p-4">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-violet-500/10 text-violet-500">
             <Video className="size-5" />
           </span>
           <div className="min-w-40 flex-1">
-            <h1 className="text-sm font-medium">Teach a workflow</h1>
+            <h1 className="text-sm font-medium">Teach Divo something new</h1>
             <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              Record your screen while you work and explain your decisions.
+              Record a task and talk through your decisions.
             </p>
           </div>
           <Button variant="ghost" size="sm" onClick={onHowItWorks}>
@@ -244,111 +205,81 @@ export function TeachStudio({
             disabled={blocked}
             data-testid="upload-teach-recording"
           >
-            <Upload /> Upload recording
+            <Upload /> Use a video
           </Button>
           <Button
             onClick={onRecord}
             disabled={blocked}
             data-testid="start-teach-recording"
           >
-            <Video /> Record teaching
+            <Video /> Start recording
           </Button>
         </section>
 
-        {!checkingAccess && !departmentId && (
-          <p className="mt-3 text-sm text-amber-600">
-            Select a department you manage before starting Teach.
+        {accessNotice && (
+          <p className="mt-3 text-sm text-amber-600">{accessNotice}</p>
+        )}
+
+        {!online && !accessNotice && (
+          <p className="mt-3 flex items-center gap-2 rounded-lg border border-amber-500/35 bg-amber-500/[0.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            <CloudOff className="size-3.5 shrink-0" />
+            Divo cannot be reached right now. Anything you record is kept safely
+            on this Mac and sent automatically when the connection is back.
           </p>
         )}
 
-        {localRecordings.length === 0 && !loadingOverview ? (
+        {workItems.length === 0 && !loadingOverview && online ? (
           <p className="mt-3 flex items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
             <CheckCircle2 className="size-3.5" />
-            No recordings waiting to process. Everything you have taught has
-            been saved.
+            Nothing waiting. Everything you have taught Divo has been saved.
           </p>
         ) : null}
 
-        {/* The persona is the accumulated result of every session — it was
-            previously the last thing on the page, below both cards. */}
         <PersonaGraph tree={personaTree} loading={loadingOverview} />
 
         <section className="mt-6">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-medium">Recent Teach learnings</h2>
+          <div className="mb-3">
+            <h2 className="text-sm font-medium">Your teaching sessions</h2>
             <p className="text-xs text-muted-foreground">
-              Every session and exactly what it changed
+              What each recording changed
             </p>
           </div>
 
           {recentLearnings.length === 0 ? (
             <p className="rounded-xl border bg-card px-5 py-6 text-sm text-muted-foreground">
               {loadingOverview
-                ? 'Loading recent learnings…'
-                : 'No completed Teach learnings yet.'}
+                ? 'Loading your recent sessions…'
+                : 'No finished teaching sessions yet.'}
             </p>
           ) : (
-            <ol className="relative space-y-2.5 pl-6">
-              <span
-                aria-hidden
-                className="absolute bottom-2 left-1.5 top-2 w-px bg-border"
-              />
+            <ol className="space-y-2.5">
               {recentLearnings.slice(0, 6).map((learning) => {
                 const changed = learning.appliedChangeCount > 0
                 return (
-                  <li key={learning.id} className="relative">
-                    <span
-                      aria-hidden
-                      className={
-                        changed
-                          ? 'absolute -left-[18px] top-4 size-2.5 rounded-full border-2 border-violet-500 bg-card'
-                          : 'absolute -left-[18px] top-4 size-2.5 rounded-full border-2 border-muted-foreground/40 bg-card'
-                      }
-                    />
+                  <li key={learning.id}>
                     <div className="rounded-xl border bg-card px-4 py-3.5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {changed ? (
-                          <>
-                            <Badge variant="secondary">
-                              {learning.appliedChanges.length}{' '}
-                              {learning.appliedChanges.length === 1
-                                ? 'rule'
-                                : 'rules'}
-                            </Badge>
-                            {learning.appliedSkills.length > 0 && (
-                              <Badge variant="outline">
-                                {learning.appliedSkills.length}{' '}
-                                {learning.appliedSkills.length === 1
-                                  ? 'skill'
-                                  : 'skills'}
-                              </Badge>
-                            )}
-                          </>
-                        ) : (
-                          <Badge variant="outline">no changes</Badge>
-                        )}
-                        <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        <p
+                          className={cn(
+                            'text-sm font-medium',
+                            !changed && 'text-muted-foreground'
+                          )}
+                        >
+                          {summarizeLearning(learning)}
+                        </p>
+                        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
                           {formatLearningDate(learning.updatedAt)}
                         </span>
                       </div>
 
                       {learning.understanding && (
-                        <p className="mt-2 line-clamp-2 text-sm leading-5">
+                        <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
                           {learning.understanding}
                         </p>
                       )}
                       {learning.appliedChanges[0]?.instruction && (
-                        <p className="mt-2 line-clamp-2 border-l-2 border-emerald-500/30 pl-3 text-xs leading-5 text-muted-foreground">
+                        <p className="mt-2 border-l-2 border-emerald-500/40 pl-3 text-sm leading-6">
                           {learning.appliedChanges[0].instruction}
-                        </p>
-                      )}
-                      {learning.appliedSkills[0] && (
-                        <p className="mt-2 text-xs text-violet-500">
-                          {learning.appliedSkills[0].outcome === 'created'
-                            ? 'Created'
-                            : 'Updated'}{' '}
-                          skill: {learning.appliedSkills[0].name} v
-                          {learning.appliedSkills[0].revision}
                         </p>
                       )}
 
@@ -363,13 +294,13 @@ export function TeachStudio({
                               onClick={() => onUndoLastLearning(learning)}
                             >
                               <Undo2 />
-                              {undoing ? 'Undoing…' : 'Undo this learning'}
+                              {undoing ? 'Undoing…' : 'Undo this session'}
                             </Button>
                           ) : (
                             <span className="ml-auto text-xs text-muted-foreground">
                               {learning.remainingUndos > 0
-                                ? 'Only the most recent learning can be undone'
-                                : 'No undos remaining'}
+                                ? 'Only the most recent session can be undone'
+                                : 'This can no longer be undone'}
                             </span>
                           )}
                         </div>
@@ -386,6 +317,106 @@ export function TeachStudio({
           <p className="mt-3 text-xs text-amber-600" role="status">
             {overviewWarning}
           </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * One recording, with the single action that moves it forward.
+ *
+ * Every row previously offered "Retry" whether or not retrying was the right
+ * move, and a row mid-upload offered a Delete that would have pulled the file
+ * out from under the stream. Each state now gets exactly the button that
+ * applies to it, and states with nothing to do say so instead.
+ */
+function TeachWorkRow({
+  item,
+  onSend,
+  onOpen,
+  onResume,
+  onDelete,
+}: {
+  item: TeachWorkItem
+  onSend: () => void
+  onOpen: () => void
+  onResume: () => void
+  onDelete: () => void
+}) {
+  const busy =
+    !item.canResume && (item.phase === 'sending' || item.phase === 'thinking')
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-t px-4 py-3.5 first:border-t-0">
+      <span
+        className={cn(
+          'grid size-9 shrink-0 place-items-center rounded-lg',
+          item.phase === 'needs_you'
+            ? 'bg-emerald-500/10 text-emerald-600'
+            : busy
+              ? 'bg-violet-500/10 text-violet-500'
+              : 'bg-amber-500/10 text-amber-600'
+        )}
+      >
+        {item.phase === 'needs_you' ? (
+          <MessageSquareText className="size-4" />
+        ) : (
+          <FileVideo2 className={cn('size-4', busy && 'animate-pulse')} />
+        )}
+      </span>
+
+      <div className="min-w-45 flex-1">
+        <p className="flex flex-wrap items-baseline gap-x-2 text-sm font-medium">
+          {item.headline}
+          {item.percent !== null && (
+            <span className="font-mono text-xs font-normal text-muted-foreground">
+              {item.percent}%
+            </span>
+          )}
+        </p>
+        <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+          {item.detail}
+        </p>
+        {item.problem && (
+          <p className="mt-1 text-xs text-amber-600">{item.problem}</p>
+        )}
+        <p className="mt-1 truncate text-[11px] text-muted-foreground">
+          {item.fileName} · {formatTeachBytes(item.size)}
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2">
+        {item.canOpen && (
+          <Button size="sm" onClick={onOpen}>
+            <MessageSquareText /> Open the chat
+          </Button>
+        )}
+        {item.canSend && (
+          <Button size="sm" onClick={onSend}>
+            <Send /> Send to Divo
+          </Button>
+        )}
+        {item.canResume && (
+          <Button size="sm" onClick={onResume} data-testid="resume-teach-recording">
+            <RotateCcw /> Start it again
+          </Button>
+        )}
+        {item.canDelete && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground hover:text-destructive"
+            aria-label={`Delete ${item.fileName}`}
+            onClick={onDelete}
+          >
+            <Trash2 />
+          </Button>
+        )}
+        {busy && (
+          <Badge variant="outline" className="font-normal">
+            Working
+          </Badge>
         )}
       </div>
     </div>

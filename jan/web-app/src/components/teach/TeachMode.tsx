@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useRouter } from '@tanstack/react-router'
 import { Trash2 } from 'lucide-react'
 
@@ -13,64 +12,85 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { TeachSessionProgress } from './TeachSessionProgress'
-import { TeachStudio } from './TeachStudio'
+import { TeachStudio, type TeachAccessProblem } from './TeachStudio'
 import { TeachRecording } from './TeachRecording'
 import { TeachHowItWorks } from './TeachHowItWorks'
 import { TeachErrorPanel, type TeachErrorKind } from './TeachErrorPanel'
 import { route } from '@/constants/routes'
 import { ensureDivoTeachConversation } from '@/lib/divo-teach-thread'
 import {
+  useTeachActivity,
+  useTeachWorkItems,
+} from '@/hooks/useTeachActivity'
+import {
+  isTeachSessionWaitingForYou,
+  isTransientTeachError,
+  type TeachWorkItem,
+} from '@/lib/teach-activity'
+import {
   cancelTeachRecording,
   cancelTeachSession,
   createTeachSession,
   deleteLocalTeachRecording,
-  finalizeLocalTeachRecording,
   getDivoSessionStatus,
   getTeachSession,
   getManagerPersonaTree,
-  listLocalTeachRecordings,
   listRecentTeachLearnings,
   pickTeachRecording,
   recordTeachScreen,
+  resumeTeachSession,
+  stopTeachRecording,
   undoManagerPersona,
   uploadTeachRecording,
   type TeachRecordingFile,
-  type TeachLocalRecording,
   type TeachSession,
   type ManagerPersonaTree,
 } from '@/lib/divo-teach'
 
-type TeachStage = 'intro' | 'recording' | 'uploading' | 'processing' | 'error'
-
-type UploadProgress = {
-  sessionId: string
-  uploadedBytes: number
-  totalBytes: number
-  percent: number
-}
-
+/**
+ * The Teach screen.
+ *
+ * Everything durable — the native recorder, local recordings, session status,
+ * automatic retries — lives in the app-level Teach store and keeps running
+ * whether or not this component is mounted. What is left here is genuinely
+ * screen-local: which dialog is open, which failure the manager is looking at,
+ * and whether they are actively waiting on a session they just started.
+ *
+ * That split is the point. Teach is a mode toggle on the home route, so this
+ * component dies the moment the manager clicks anything else; when it comes
+ * back it re-derives what is happening from the store rather than assuming
+ * nothing was going on.
+ */
 export function TeachMode() {
   const router = useRouter()
-  const [stage, setStage] = useState<TeachStage>('intro')
   const [departmentId, setDepartmentId] = useState<string>()
   const [checkingAccess, setCheckingAccess] = useState(true)
-  const [session, setSession] = useState<TeachSession>()
-  const [uploadProgress, setUploadProgress] = useState(0)
-  const [errorKind, setErrorKind] = useState<TeachErrorKind>('generic')
-  const [statusWarning, setStatusWarning] = useState<string>()
+  const [accessProblem, setAccessProblem] = useState<TeachAccessProblem>()
+  const [errorKind, setErrorKind] = useState<TeachErrorKind>()
+  /** Set when a send failed in a way the reconciler will recover by itself. */
+  const [sendNotice, setSendNotice] = useState<string>()
+  const [resuming, setResuming] = useState(false)
+  /** The session this screen is actively waiting on, if any. */
+  const [watchedSessionId, setWatchedSessionId] = useState<string>()
+  const [watchedIsUploading, setWatchedIsUploading] = useState(false)
   const [activeRecording, setActiveRecording] = useState<TeachRecordingFile>()
-  const [localRecordings, setLocalRecordings] = useState<TeachLocalRecording[]>([])
   const [recentLearnings, setRecentLearnings] = useState<TeachSession[]>([])
   const [personaTree, setPersonaTree] = useState<ManagerPersonaTree | null>(null)
   const [loadingOverview, setLoadingOverview] = useState(false)
   const [overviewWarning, setOverviewWarning] = useState<string>()
-  const [recordingToDelete, setRecordingToDelete] = useState<TeachLocalRecording>()
+  const [recordingToDelete, setRecordingToDelete] = useState<TeachWorkItem>()
   const [deletingRecording, setDeletingRecording] = useState(false)
   const [howItWorksOpen, setHowItWorksOpen] = useState(false)
   const [undoTarget, setUndoTarget] = useState<TeachSession>()
   const [undoing, setUndoing] = useState(false)
-  const sessionId = session?.id
-  const sessionStatus = session?.status
+
+  const recorder = useTeachActivity((state) => state.recorder)
+  const online = useTeachActivity((state) => state.online)
+  const sessions = useTeachActivity((state) => state.sessions)
+  const uploadPercent = useTeachActivity((state) => state.uploadPercent)
+  const forgetRecording = useTeachActivity((state) => state.forgetRecording)
+  const workItems = useTeachWorkItems()
+
   const handoffSessionId = useRef<string | undefined>(undefined)
   const routeActiveRef = useRef(true)
 
@@ -78,32 +98,42 @@ export function TeachMode() {
     routeActiveRef.current = false
   }, [])
 
-  const openTeachConversation = useCallback(async (current: TeachSession) => {
-    if (handoffSessionId.current === current.id) return
-    handoffSessionId.current = current.id
+  const openTeachConversation = useCallback(
+    async (current: TeachSession) => {
+      if (handoffSessionId.current === current.id) return
+      handoffSessionId.current = current.id
 
-    try {
-      const newThread = await ensureDivoTeachConversation(current)
-      if (!routeActiveRef.current) return
-      await router.navigate({
-        to: route.threadsDetail,
-        params: { threadId: newThread.id },
-      })
-    } catch (error) {
-      handoffSessionId.current = undefined
-      console.warn('Teach conversation handoff failed', error)
-      setErrorKind('generic')
-      setStage('error')
-    }
-  }, [router])
+      try {
+        const newThread = await ensureDivoTeachConversation(current)
+        if (!routeActiveRef.current) return
+        await router.navigate({
+          to: route.threadsDetail,
+          params: { threadId: newThread.id },
+        })
+      } catch (error) {
+        handoffSessionId.current = undefined
+        console.warn('Teach conversation handoff failed', error)
+        setErrorKind('generic')
+      }
+    },
+    [router]
+  )
 
   useEffect(() => {
     let active = true
     void getDivoSessionStatus()
       .then((status) => {
-        if (active) setDepartmentId(status.configured ? status.departmentId : undefined)
+        if (!active) return
+        setDepartmentId(status.configured ? status.departmentId : undefined)
+        // A failed check and a real "you do not manage this department" used
+        // to produce the same message, which sent people hunting through
+        // department settings for what was actually a dropped connection.
+        setAccessProblem(status.configured ? undefined : 'not-manager')
       })
-      .catch((error) => console.warn('Teach session status unavailable', error))
+      .catch((error) => {
+        console.warn('Teach session status unavailable', error)
+        if (active) setAccessProblem('unreachable')
+      })
       .finally(() => {
         if (active) setCheckingAccess(false)
       })
@@ -117,35 +147,6 @@ export function TeachMode() {
     setLoadingOverview(true)
     setOverviewWarning(undefined)
     try {
-      const local = await listLocalTeachRecordings()
-      const reconciled = await Promise.all(local.map(async recording => {
-        if (!recording.sessionId || recording.state === 'ready' || recording.state === 'retryable') {
-          return recording
-        }
-        try {
-          const current = await getTeachSession(recording.sessionId)
-          if (current.status === 'completed' || current.status === 'persona_updated' || current.status === 'no_learning') {
-            await finalizeLocalTeachRecording(recording.path, recording.sessionId)
-            return null
-          }
-          if (current.status === 'evidence_ready' || current.status === 'agent_processing') {
-            return { ...recording, state: 'agent_ready' as const }
-          }
-          if (current.status === 'failed' || current.status === 'cancelled') {
-            return { ...recording, state: 'retryable' as const, lastError: current.lastError }
-          }
-          return { ...recording, state: 'processing' as const }
-        } catch {
-          // Do not offer a duplicate retry while the server outcome is unknown.
-          return recording
-        }
-      }))
-      setLocalRecordings(reconciled.filter((recording): recording is TeachLocalRecording => recording !== null))
-    } catch (error) {
-      console.warn('Teach local recording inventory unavailable', error)
-      setOverviewWarning('Local recording history could not be loaded.')
-    }
-    try {
       const [learnings, tree] = await Promise.all([
         listRecentTeachLearnings(departmentId, 6),
         getManagerPersonaTree(departmentId),
@@ -154,151 +155,206 @@ export function TeachMode() {
       setPersonaTree(tree)
     } catch (error) {
       console.warn('Teach recent learnings unavailable', error)
-      setOverviewWarning(current => current ?? 'Recent database learnings could not be loaded.')
+      setOverviewWarning(
+        'Divo could not load your past sessions right now. Nothing has been lost.'
+      )
     } finally {
       setLoadingOverview(false)
     }
   }, [departmentId])
 
   useEffect(() => {
-    if (stage === 'intro' && departmentId) void refreshOverview()
-  }, [departmentId, refreshOverview, stage])
+    if (departmentId) void refreshOverview()
+  }, [departmentId, refreshOverview])
 
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined
-    void listen<UploadProgress>('divo-teach-upload-progress', (event) => {
-      if (!sessionId || event.payload.sessionId === sessionId) {
-        setUploadProgress(event.payload.percent)
-      }
-    }).then((dispose) => {
-      unlisten = dispose
-    })
-    return () => unlisten?.()
-  }, [sessionId])
+  const watchedSession = watchedSessionId ? sessions[watchedSessionId] : undefined
 
+  // Losing the connection while waiting is not a failure and must not be shown
+  // as one — the recording and the session both still exist. Derived rather
+  // than stored, because as state it was cleared again by every unrelated
+  // re-render of the effect below.
+  // The retry notice is scoped to a session that still has not been sent, so
+  // it clears itself the moment the reconciler gets the video through.
+  const statusWarning = !watchedSessionId
+    ? undefined
+    : !online
+      ? 'Divo cannot be reached right now. Your recording is safe and this will pick up again automatically.'
+      : watchedSession?.status === 'awaiting_upload'
+        ? sendNotice
+        : undefined
+
+  // The background engine owns polling; this only reacts to what it publishes.
   useEffect(() => {
-    if (!sessionId || !sessionStatus || ![
-      'queued',
-      'ingesting',
-      'evidence_ready',
-      'agent_processing',
-      'ready_for_processing',
-      'persona_processing',
-    ].includes(sessionStatus)) return
-    let active = true
-    let timer: number | undefined
-    const refresh = async () => {
-      try {
-        const current = await getTeachSession(sessionId)
-        if (!active) return
-        setStatusWarning(undefined)
-        setSession(current)
-        if (current.status === 'evidence_ready' || current.status === 'agent_processing') {
-          void openTeachConversation(current)
-        }
-        if (current.status === 'completed' || current.status === 'persona_updated' || current.status === 'no_learning') {
-          void openTeachConversation(current)
-          if (activeRecording?.localOwned) {
-            void finalizeLocalTeachRecording(activeRecording.path, current.id)
-              .then(() => {
-                setActiveRecording(undefined)
-                setLocalRecordings(recordings => recordings.filter(recording => recording.path !== activeRecording.path))
-              })
-              .catch(error => console.warn('Processed Teach recording local cleanup failed', error))
-          }
-        }
-        if (current.status === 'failed') {
-          setErrorKind('processing')
-          setStage('error')
-        }
-        if (current.status === 'cancelled') setStage('error')
-      } catch (error) {
-        console.warn('Teach processing status unavailable', error)
-        if (active) {
-          setStatusWarning('Status temporarily unavailable. Divo has not reported success or failure yet.')
-        }
-      } finally {
-        // Schedule only after the current request settles. A setInterval here
-        // creates overlapping requests when the database is slow or offline.
-        if (active) timer = window.setTimeout(() => void refresh(), 1_000)
-      }
+    if (!watchedSession) return
+
+    if (isTeachSessionWaitingForYou(watchedSession)) {
+      setWatchedSessionId(undefined)
+      void openTeachConversation(watchedSession)
+      return
     }
-    void refresh()
-    return () => {
-      active = false
-      if (timer !== undefined) window.clearTimeout(timer)
+    if (
+      watchedSession.status === 'completed' ||
+      watchedSession.status === 'persona_updated' ||
+      watchedSession.status === 'no_learning'
+    ) {
+      setWatchedSessionId(undefined)
+      void openTeachConversation(watchedSession)
+      void refreshOverview()
+      return
     }
-  }, [activeRecording, openTeachConversation, sessionId, sessionStatus])
+    if (watchedSession.status === 'failed') {
+      setWatchedSessionId(undefined)
+      setErrorKind('processing')
+      return
+    }
+    if (watchedSession.status === 'cancelled') {
+      setWatchedSessionId(undefined)
+    }
+  }, [openTeachConversation, refreshOverview, watchedSession])
 
   const reset = useCallback(() => {
-    setStage('intro')
-    setSession(undefined)
-    setUploadProgress(0)
-    setErrorKind('generic')
-    setStatusWarning(undefined)
+    setErrorKind(undefined)
+    setSendNotice(undefined)
+    setWatchedSessionId(undefined)
+    setWatchedIsUploading(false)
     setActiveRecording(undefined)
     handoffSessionId.current = undefined
   }, [])
 
-  const ingest = useCallback(async (
-    recording: TeachRecordingFile,
-    source: 'recording' | 'upload'
-  ) => {
-    if (!departmentId) {
-      setErrorKind('manager')
-      setStage('error')
-      return
-    }
+  const ingest = useCallback(
+    async (recording: TeachRecordingFile, source: 'recording' | 'upload') => {
+      if (!departmentId) {
+        setErrorKind('manager')
+        return
+      }
 
-    let created: TeachSession | undefined
+      let created: TeachSession | undefined
+      try {
+        setActiveRecording(recording)
+        setErrorKind(undefined)
+        setSendNotice(undefined)
+        setWatchedIsUploading(true)
+        created = await createTeachSession(departmentId, source, recording)
+        setWatchedSessionId(created.id)
+        useTeachActivity.getState().mergeSession(created)
+        const queued = await uploadTeachRecording(created.id, recording)
+        useTeachActivity.getState().mergeSession(queued)
+        setWatchedIsUploading(false)
+      } catch (error) {
+        console.warn('Teach recording ingestion failed', error)
+        setWatchedIsUploading(false)
+
+        // A dropped connection is not a failed teaching. Divo holds a local
+        // copy and the background reconciler is already retrying it, so
+        // dead-ending into an error screen here would report a failure while
+        // the recovery was underway — and strand the manager on a screen with
+        // nothing to do but go back.
+        if (created && recording.localOwned && isTransientTeachError(error)) {
+          setSendNotice(
+            'Divo could not be reached. Your recording is safe, and Divo keeps trying on its own.'
+          )
+          return
+        }
+
+        // The session is only cancelled when nothing was uploaded against it.
+        // Cancelling one that already holds the video would throw away work
+        // the backend has, purely because this screen saw an error.
+        if (created && !recording.localOwned) {
+          void cancelTeachSession(created.id).catch(() => undefined)
+        }
+        setWatchedSessionId(undefined)
+        setErrorKind(
+          String(error).includes('active department manager') ? 'manager' : 'upload'
+        )
+      }
+    },
+    [departmentId]
+  )
+
+  /** Send a recording that is sitting on this Mac, new session or not. */
+  const sendWorkItem = useCallback(
+    async (item: TeachWorkItem) => {
+      const recording: TeachRecordingFile = {
+        path: item.path,
+        fileName: item.fileName,
+        mimeType: 'video/quicktime',
+        size: item.size,
+        localOwned: true,
+      }
+
+      // An existing session that never received its video is resumed rather
+      // than replaced, so the manager does not accumulate dead sessions.
+      if (item.sessionId) {
+        try {
+          const existing = await getTeachSession(item.sessionId)
+          if (existing.status === 'awaiting_upload') {
+            setActiveRecording(recording)
+            setWatchedSessionId(existing.id)
+            setWatchedIsUploading(true)
+            const queued = await uploadTeachRecording(existing.id, recording)
+            useTeachActivity.getState().mergeSession(queued)
+            setWatchedIsUploading(false)
+            return
+          }
+        } catch (error) {
+          console.warn('Teach session resume check failed', error)
+          setWatchedIsUploading(false)
+          setActiveRecording(recording)
+          setErrorKind('upload')
+          return
+        }
+      }
+
+      await ingest(recording, 'recording')
+    },
+    [ingest]
+  )
+
+  const resumeSession = useCallback(async (sessionId: string) => {
     try {
-      setActiveRecording(recording)
-      setUploadProgress(0)
-      setStage('uploading')
-      created = await createTeachSession(departmentId, source, recording)
-      setSession(created)
-      const queued = await uploadTeachRecording(created.id, recording)
-      setSession(queued)
-      setUploadProgress(100)
-      setStage('processing')
+      setResuming(true)
+      const resumed = await resumeTeachSession(sessionId)
+      useTeachActivity.getState().mergeSession(resumed)
     } catch (error) {
-      console.warn('Teach recording ingestion failed', error)
-      if (created) void cancelTeachSession(created.id).catch(() => undefined)
-      setErrorKind(String(error).includes('active department manager') ? 'manager' : 'upload')
-      setStage('error')
+      console.warn('Teach session resume failed', error)
+      setOverviewWarning(
+        'Divo could not restart that just now. Your recording is safe — try again in a moment.'
+      )
+    } finally {
+      setResuming(false)
     }
-  }, [departmentId])
+  }, [])
 
-  const retryLocalRecording = useCallback(async (recording: TeachLocalRecording) => {
-    await ingest(recording, 'recording')
-  }, [ingest])
-
-  const resumeLocalTeaching = useCallback(async (recording: TeachLocalRecording) => {
-    if (!recording.sessionId) return
-    const current = await getTeachSession(recording.sessionId)
-    setActiveRecording(recording)
-    setSession(current)
-    await openTeachConversation(current)
-  }, [openTeachConversation])
+  const openWorkItem = useCallback(
+    async (item: TeachWorkItem) => {
+      if (!item.sessionId) return
+      const current = sessions[item.sessionId] ?? (await getTeachSession(item.sessionId))
+      handoffSessionId.current = undefined
+      await openTeachConversation(current)
+    },
+    [openTeachConversation, sessions]
+  )
 
   const deleteLocalRecording = useCallback(async () => {
     if (!recordingToDelete) return
     try {
       setDeletingRecording(true)
       await deleteLocalTeachRecording(recordingToDelete.path)
-      setLocalRecordings(recordings => recordings.filter(recording => recording.path !== recordingToDelete.path))
+      forgetRecording(recordingToDelete.path)
       setRecordingToDelete(undefined)
     } catch (error) {
       console.warn('Teach local recording delete failed', error)
-      setOverviewWarning('The local recording could not be deleted.')
+      setOverviewWarning('That recording could not be deleted. It is still here.')
     } finally {
       setDeletingRecording(false)
     }
-  }, [recordingToDelete])
+  }, [forgetRecording, recordingToDelete])
 
   const startRecording = useCallback(async () => {
     try {
-      setStage('recording')
+      setErrorKind(undefined)
+      // Resolves when the recorder stops. The store's recorder status is what
+      // drives the recording screen, so this can safely outlive the mount.
       const recording = await recordTeachScreen()
       await ingest(recording, 'recording')
     } catch (error) {
@@ -308,7 +364,6 @@ export function TeachMode() {
       }
       console.warn('Teach screen recording failed', error)
       setErrorKind('recorder')
-      setStage('error')
     }
   }, [ingest, reset])
 
@@ -319,15 +374,15 @@ export function TeachMode() {
     } catch (error) {
       console.warn('Teach recording selection failed', error)
       setErrorKind('upload')
-      setStage('error')
     }
   }, [ingest])
 
-  const cancel = useCallback(async () => {
-    if (stage === 'recording') await cancelTeachRecording().catch(() => undefined)
-    if (session?.canCancel) await cancelTeachSession(session.id).catch(() => undefined)
+  const cancelSession = useCallback(async () => {
+    if (watchedSession?.canCancel) {
+      await cancelTeachSession(watchedSession.id).catch(() => undefined)
+    }
     reset()
-  }, [reset, session, stage])
+  }, [reset, watchedSession])
 
   const undoLastLearning = useCallback(async () => {
     if (!departmentId) return
@@ -338,115 +393,183 @@ export function TeachMode() {
       await refreshOverview()
     } catch (error) {
       console.warn('Teach persona undo failed', error)
-      setOverviewWarning('That learning could not be undone. Your persona is unchanged.')
+      setOverviewWarning(
+        'That could not be undone, so nothing was changed. Try again in a moment.'
+      )
       setUndoTarget(undefined)
     } finally {
       setUndoing(false)
     }
   }, [departmentId, refreshOverview])
 
-  if (stage === 'intro') {
+  // The recorder is the truth about recording, not this component's state.
+  // Coming back to Teach mid-recording now shows the recording, instead of an
+  // idle launcher whose button failed with "a recording is already open".
+  if (recorder.recording) {
     return (
-      <>
-        <TeachStudio
-          checkingAccess={checkingAccess}
-          departmentId={departmentId}
-          loadingOverview={loadingOverview}
-          overviewWarning={overviewWarning}
-          localRecordings={localRecordings}
-          recentLearnings={recentLearnings}
-          personaTree={personaTree}
-          undoing={undoing}
-          onRecord={() => void startRecording()}
-          onUpload={() => void chooseRecording()}
-          onHowItWorks={() => setHowItWorksOpen(true)}
-          onRetryRecording={recording => void retryLocalRecording(recording)}
-          onResumeRecording={recording => void resumeLocalTeaching(recording)}
-          onDeleteRecording={setRecordingToDelete}
-          onUndoLastLearning={setUndoTarget}
-        />
-
-        <TeachHowItWorks
-          open={howItWorksOpen}
-          onOpenChange={setHowItWorksOpen}
-          canRecord={!checkingAccess && Boolean(departmentId)}
-          onRecord={() => void startRecording()}
-        />
-
-        <Dialog open={Boolean(recordingToDelete)} onOpenChange={open => !open && !deletingRecording && setRecordingToDelete(undefined)}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Delete local recording?</DialogTitle>
-              <DialogDescription>
-                {recordingToDelete?.fileName} will be permanently removed from this Mac. This cannot be undone.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" disabled={deletingRecording} onClick={() => setRecordingToDelete(undefined)}>Cancel</Button>
-              <Button variant="destructive" disabled={deletingRecording} onClick={() => void deleteLocalRecording()}>
-                <Trash2 /> {deletingRecording ? 'Deleting…' : 'Delete recording'}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Undo reverts the whole department persona to its previous revision,
-            so the dialog names that rather than implying a per-row rollback. */}
-        <Dialog open={Boolean(undoTarget)} onOpenChange={open => !open && !undoing && setUndoTarget(undefined)}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Undo this learning?</DialogTitle>
-              <DialogDescription>
-                Your department persona rolls back to the revision before this
-                session. Rules and skills it created are removed. The recording
-                itself is not deleted.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" disabled={undoing} onClick={() => setUndoTarget(undefined)}>Keep it</Button>
-              <Button
-                variant="destructive"
-                disabled={undoing}
-                onClick={() => void undoLastLearning()}
-              >
-                {undoing ? 'Undoing…' : 'Undo learning'}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </>
+      <TeachRecording
+        startedAt={recorder.startedAt}
+        onStop={() => void stopTeachRecording()}
+        onCancel={() => void cancelTeachRecording()}
+      />
     )
   }
 
-  if (stage === 'recording') {
-    return <TeachRecording onCancel={() => void cancel()} />
+  if (errorKind) {
+    return (
+      <TeachErrorPanel
+        kind={errorKind}
+        lastError={watchedSession?.lastError}
+        recording={activeRecording}
+        onRetry={
+          errorKind === 'recorder'
+            ? () => void startRecording()
+            : errorKind === 'upload' && activeRecording
+              ? () => void ingest(activeRecording, 'recording')
+              : undefined
+        }
+        onBack={reset}
+      />
+    )
   }
 
-  if (stage === 'uploading' || (stage === 'processing' && session)) {
+  if (watchedSessionId && (watchedIsUploading || watchedSession)) {
+    // The same stall signal the recording list uses, so a session cannot look
+    // wedged in one place and healthy in the other.
+    const watchedItem = workItems.find(
+      (item) => item.sessionId === watchedSessionId
+    )
     return (
       <TeachSessionProgress
-        session={session}
-        uploading={stage === 'uploading'}
-        uploadProgress={uploadProgress}
+        session={watchedSession}
+        uploading={watchedIsUploading}
+        uploadProgress={uploadPercent[watchedSessionId] ?? 0}
         statusWarning={statusWarning}
-        onCancel={session?.canCancel ? () => void cancel() : undefined}
+        stuck={watchedItem?.canResume ?? false}
+        resuming={resuming}
+        onResume={() => void resumeSession(watchedSessionId)}
+        onClose={() => {
+          setWatchedSessionId(undefined)
+          setWatchedIsUploading(false)
+        }}
+        onCancel={watchedSession?.canCancel ? () => void cancelSession() : undefined}
       />
     )
   }
 
   return (
-    <TeachErrorPanel
-      kind={errorKind}
-      lastError={session?.lastError}
-      recording={activeRecording}
-      onRetry={
-        errorKind === 'recorder'
-          ? () => void startRecording()
-          : errorKind === 'upload' && activeRecording
-            ? () => void ingest(activeRecording, 'recording')
-            : undefined
-      }
-      onBack={reset}
-    />
+    <>
+      <TeachStudio
+        checkingAccess={checkingAccess}
+        accessProblem={accessProblem}
+        departmentId={departmentId}
+        online={online}
+        loadingOverview={loadingOverview}
+        overviewWarning={overviewWarning}
+        workItems={workItems}
+        recentLearnings={recentLearnings}
+        personaTree={personaTree}
+        undoing={undoing}
+        onRecord={() => void startRecording()}
+        onUpload={() => void chooseRecording()}
+        onHowItWorks={() => setHowItWorksOpen(true)}
+        onSendRecording={(item) => void sendWorkItem(item)}
+        onOpenRecording={(item) => void openWorkItem(item)}
+        onResumeRecording={(item) => {
+          if (item.sessionId) void resumeSession(item.sessionId)
+        }}
+        onDeleteRecording={setRecordingToDelete}
+        onUndoLastLearning={setUndoTarget}
+      />
+
+      <TeachHowItWorks
+        open={howItWorksOpen}
+        onOpenChange={setHowItWorksOpen}
+        canRecord={!checkingAccess && Boolean(departmentId)}
+        onRecord={() => void startRecording()}
+      />
+
+      <Dialog
+        open={Boolean(recordingToDelete)}
+        onOpenChange={(open) =>
+          !open && !deletingRecording && setRecordingToDelete(undefined)
+        }
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogContentBody
+            fileName={recordingToDelete?.fileName}
+            deleting={deletingRecording}
+            onCancel={() => setRecordingToDelete(undefined)}
+            onConfirm={() => void deleteLocalRecording()}
+          />
+        </DialogContent>
+      </Dialog>
+
+      {/* Undo reverts the whole department persona to its previous revision,
+          so the dialog names that rather than implying a per-row rollback. */}
+      <Dialog
+        open={Boolean(undoTarget)}
+        onOpenChange={(open) => !open && !undoing && setUndoTarget(undefined)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Undo what Divo learned here?</DialogTitle>
+            <DialogDescription>
+              Divo goes back to how it worked before this session. Anything it
+              learned from this recording is removed. The recording itself is
+              not deleted.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={undoing}
+              onClick={() => setUndoTarget(undefined)}
+            >
+              Keep it
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={undoing}
+              onClick={() => void undoLastLearning()}
+            >
+              {undoing ? 'Undoing…' : 'Undo this session'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+function DialogContentBody({
+  fileName,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  fileName?: string
+  deleting: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Delete this recording?</DialogTitle>
+        <DialogDescription>
+          {fileName} is removed from this Mac for good, and Divo will never
+          learn anything from it. This cannot be undone.
+        </DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button variant="outline" disabled={deleting} onClick={onCancel}>
+          Keep it
+        </Button>
+        <Button variant="destructive" disabled={deleting} onClick={onConfirm}>
+          <Trash2 /> {deleting ? 'Deleting…' : 'Delete recording'}
+        </Button>
+      </DialogFooter>
+    </>
   )
 }

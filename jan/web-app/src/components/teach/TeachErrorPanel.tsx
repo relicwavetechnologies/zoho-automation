@@ -2,6 +2,7 @@ import { ArrowLeft, CheckCircle2, RotateCcw, ShieldAlert } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { formatTeachBytes } from '@/lib/teach-activity'
 import type { TeachRecordingFile } from '@/lib/divo-teach'
 
 export type TeachErrorKind =
@@ -11,33 +12,29 @@ export type TeachErrorKind =
   | 'processing'
   | 'generic'
 
-const formatBytes = (bytes: number | null) => {
-  if (!bytes) return 'Unknown size'
-  const mb = bytes / (1024 * 1024)
-  return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)} MB`
-}
-
 export const describeProcessingFailure = (
   lastError: string | null | undefined
 ) => {
   if (lastError?.includes('Failed to process successful response')) {
-    return "The recording was processed, but Divo could not validate the Teach model's response. No persona or skill changes were saved."
+    return 'Divo watched your recording, but could not make sense of what it got back. Nothing was changed.'
   }
   if (
     lastError?.includes('Transaction not found') ||
     lastError?.includes("Can't reach database server")
   ) {
-    return 'The recording was processed, but Divo lost its database connection while saving the learning. No persona or skill changes were saved.'
+    return 'Divo watched your recording, but lost its connection while saving. Nothing was changed.'
   }
-  return 'The recording was processed, but Divo could not save the learning. No persona or skill changes were saved.'
+  return 'Divo watched your recording, but could not save what it learned. Nothing was changed.'
 }
 
 /**
+ * What went wrong, what is still safe, and the one thing to do next.
+ *
  * Failures used to collapse into one card with a single "Try again" that threw
- * the user back to the start. The kinds are genuinely different — a missing
+ * the manager back to the start. The kinds are genuinely different — a missing
  * macOS permission, a dropped upload with the file still on disk, and a
- * successful read that failed to persist all need different next steps — so
- * each states what survived and offers the action that actually recovers it.
+ * successful read that failed to save all need different next steps — so each
+ * one states what survived and offers the action that actually recovers it.
  */
 export function TeachErrorPanel({
   kind,
@@ -55,33 +52,35 @@ export function TeachErrorPanel({
 }) {
   const copy = {
     manager: {
-      title: 'Manager access required',
-      body: 'Teach currently learns only from the manager of the selected department. Choose a department you manage, then start again.',
+      title: 'Pick a department you manage',
+      body: 'Divo learns the way a department works from the person who runs it. Choose a department you manage, then start again.',
       retryLabel: undefined,
     },
     recorder: {
-      title: 'Screen recorder could not start',
-      body: 'Allow Screen & System Audio Recording and Microphone access for Divo in Mac System Settings, then try again. This is a one-time approval.',
+      title: 'macOS did not let Divo record',
+      body: 'Open System Settings › Privacy & Security, and switch on Screen Recording and Microphone for Divo. You only have to do this once.',
       retryLabel: 'Try again',
     },
     upload: {
-      title: 'Upload failed',
-      body: 'Your recording was completed and saved locally, but Divo could not upload it. Your persona was not changed.',
-      retryLabel: 'Retry upload',
+      title: 'Could not send your recording',
+      body: 'Your recording finished and is saved on this Mac. Divo just could not send it — usually the internet connection. Nothing about the way Divo works has changed.',
+      retryLabel: 'Send it again',
     },
     processing: {
-      title: 'Persona update failed',
+      title: 'Divo could not save what it learned',
       body: describeProcessingFailure(lastError),
       retryLabel: undefined,
     },
     generic: {
-      title: 'Teaching did not complete',
-      body: 'Divo could not complete this teaching workflow. Your persona was not changed.',
+      title: 'That teaching did not finish',
+      body: 'Something stopped part way through. Nothing about the way Divo works has changed.',
       retryLabel: undefined,
     },
   }[kind]
 
   const destructive = kind === 'recorder' || kind === 'manager'
+  const survivorNote =
+    kind === 'upload' || kind === 'processing' || kind === 'generic'
 
   return (
     <div
@@ -115,13 +114,21 @@ export function TeachErrorPanel({
           {/* What survived. After a failure the first question is always
               "did I just lose the recording I made?" — answer it before
               offering an action. */}
-          {kind === 'upload' && recording ? (
-            <div className="mt-4 flex items-center gap-2.5 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-3 py-2.5 text-xs text-emerald-700 dark:text-emerald-300">
-              <CheckCircle2 className="size-4 shrink-0" />
+          {survivorNote ? (
+            <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-3 py-2.5 text-xs leading-5 text-emerald-700 dark:text-emerald-300">
+              <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
               <span className="min-w-0">
-                Your recording is safe on this Mac —{' '}
-                <span className="font-medium">{recording.fileName}</span>,{' '}
-                {formatBytes(recording.size)}
+                {recording ? (
+                  <>
+                    Your recording is safe on this Mac —{' '}
+                    <span className="font-medium">{recording.fileName}</span>,{' '}
+                    {formatTeachBytes(recording.size)}.{' '}
+                  </>
+                ) : (
+                  'Your recording is safe on this Mac. '
+                )}
+                It stays in “Your recordings” on the Teach screen, where you can
+                send it again whenever you like.
               </span>
             </div>
           ) : null}

@@ -18,24 +18,24 @@ import {
  */
 export const TEACH_STEPS = [
   {
-    title: 'Your main display starts recording',
+    title: 'Divo records your screen and your voice',
     detail:
-      'Along with your microphone, so your reasoning is captured with the screen.',
+      'Only your main display, and only while the recording is running.',
   },
   {
-    title: 'Work normally and explain what matters',
+    title: 'Do the task, and say why as you go',
     detail:
-      'Say why you chose something, not just what you clicked — that is what becomes a rule.',
+      'Explain why you chose something, not just what you clicked. That is the part Divo learns from.',
   },
   {
-    title: 'Stop from the Mac menu bar',
+    title: 'Press “Stop and save” when you are done',
     detail:
-      'Divo reads the recording, then opens a conversation to check what it understood.',
+      'Divo watches the recording. You can close this and keep working — it carries on in the background.',
   },
   {
-    title: 'You approve every change',
+    title: 'You decide what Divo keeps',
     detail:
-      'Nothing reaches your department persona until you confirm it, and recent sessions can be undone.',
+      'Divo opens a chat, tells you what it thinks it learned, and changes nothing until you agree. You can undo it afterwards too.',
   },
 ]
 
@@ -74,10 +74,10 @@ export function TeachHowItWorks({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>How Teach works</DialogTitle>
+          <DialogTitle>How this works</DialogTitle>
           <DialogDescription>
-            Divo learns from a demonstration, not from a form. You show the
-            work; it writes the rule.
+            You do not have to describe your job to Divo. Just do it once while
+            it watches, and talk it through.
           </DialogDescription>
         </DialogHeader>
 

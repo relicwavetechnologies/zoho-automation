@@ -187,6 +187,22 @@ export function createManagerTeachRoutes(deps: {
     }
   });
 
+  // Manual counterpart to the automatic stall sweep. The sweep waits ten
+  // minutes before assuming an ingestion is dead; a manager watching a frozen
+  // progress bar should not have to.
+  router.post('/sessions/:sessionId/resume', async (req, res) => {
+    try {
+      const session = await deps.service.resumeIngestion({
+        companyId: res.locals.companyId as string,
+        managerId: res.locals.userId as string,
+        sessionId: req.params.sessionId!,
+      });
+      res.json({ data: session });
+    } catch (error) {
+      respondError(res, error);
+    }
+  });
+
   router.post('/persona/:departmentId/undo', async (req, res) => {
     try {
       const result = await deps.revisions.undo({

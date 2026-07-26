@@ -146,3 +146,80 @@ describe('ManagerTeachService', () => {
     assert.deepEqual(calls, ['context', 'apply']);
   });
 });
+
+describe('ManagerTeachService stalled ingestion recovery', () => {
+  /**
+   * A worker that vanishes mid-ingestion never reaches `processIngestion`'s
+   * catch, so nothing returns the row to `queued`. It used to sit in
+   * `ingesting` forever — never retried, never failed, and shown to the
+   * manager as still in progress.
+   */
+  const makeService = (rows: any[], enqueued: string[]) => new ManagerTeachService({
+    prisma: {
+      managerTeachSession: {
+        findMany: async ({ where }: any) => rows.filter(row =>
+          row.status === where.status && row.updatedAt < where.updatedAt.lt),
+        updateMany: async ({ where, data }: any) => {
+          const row = rows.find(candidate => candidate.id === where.id);
+          if (!row) return { count: 0 };
+          Object.assign(row, data);
+          return { count: 1 };
+        },
+      },
+    } as never,
+    queue: {
+      enqueue: async ({ teachSessionId }: any) => {
+        enqueued.push(teachSessionId);
+        return 'job-1';
+      },
+    } as never,
+    logger: noopLogger,
+    mediaProcessor: {} as never,
+    personaProcessor: {} as never,
+    maxVideoBytes: 100,
+    rawRetentionHours: 24,
+    uploadDir: '/tmp/divo-teach-test',
+  });
+
+  it('re-queues an ingestion that stopped writing progress', async () => {
+    const rows: any[] = [{
+      id: 'teach-1', status: 'ingesting', attempts: 1,
+      updatedAt: new Date(Date.now() - 60 * 60_000),
+    }];
+    const enqueued: string[] = [];
+
+    const result = await makeService(rows, enqueued).recoverStalledIngestions();
+
+    assert.deepEqual(result, { requeued: 1, failed: 0 });
+    assert.equal(rows[0].status, 'queued');
+    assert.deepEqual(enqueued, ['teach-1']);
+  });
+
+  it('leaves an ingestion alone while it is still making progress', async () => {
+    // Cutting a slow-but-working job short would be worse than waiting.
+    const rows: any[] = [{
+      id: 'teach-1', status: 'ingesting', attempts: 1, updatedAt: new Date(),
+    }];
+    const enqueued: string[] = [];
+
+    const result = await makeService(rows, enqueued).recoverStalledIngestions();
+
+    assert.deepEqual(result, { requeued: 0, failed: 0 });
+    assert.equal(rows[0].status, 'ingesting');
+    assert.deepEqual(enqueued, []);
+  });
+
+  it('stops retrying and says so once the attempts are spent', async () => {
+    const rows: any[] = [{
+      id: 'teach-1', status: 'ingesting', attempts: 9,
+      updatedAt: new Date(Date.now() - 60 * 60_000),
+    }];
+    const enqueued: string[] = [];
+
+    const result = await makeService(rows, enqueued).recoverStalledIngestions();
+
+    assert.deepEqual(result, { requeued: 0, failed: 1 });
+    assert.equal(rows[0].status, 'failed');
+    assert.deepEqual(enqueued, []);
+  });
+});

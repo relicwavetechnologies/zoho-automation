@@ -10,13 +10,62 @@ import type {
 
 const transcriptionResponseSchema = z.object({ text: z.string() });
 const MAX_OPENAI_FILE_BYTES = 24 * 1_024 * 1_024;
+const DEFAULT_CHUNK_ATTEMPTS = 3;
+const CHUNK_RETRY_DELAYS_MS = [1_000, 4_000, 10_000] as const;
+
+/**
+ * Whether OpenAI is having a bad moment or is refusing this request outright.
+ *
+ * Their 500s are routine and clear on a second attempt seconds later; retrying
+ * a 400 or a 401 just burns the upload again. Rate limits are retryable by
+ * definition, and the caller honours `Retry-After` when one is offered.
+ */
+function isRetryableTranscriptionStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 429 || status >= 500;
+}
+
+/** Network-level faults never reach a status code, but are always worth a retry. */
+function isRetryableTransportError(error: unknown): boolean {
+  return /aborted|timeout|timed out|network|socket|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|fetch failed/i
+    .test(error instanceof Error ? `${error.name} ${error.message}` : String(error));
+}
+
+class RetryableTranscriptionError extends Error {
+  constructor(message: string, readonly retryAfterMs?: number) {
+    super(message);
+    this.name = 'RetryableTranscriptionError';
+  }
+}
+
+function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(60_000, seconds * 1_000);
+  const at = Date.parse(header);
+  return Number.isNaN(at) ? undefined : Math.max(0, Math.min(60_000, at - Date.now()));
+}
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+function describeWindow(start: number, end: number): string {
+  const format = (value: number) => {
+    const minutes = Math.floor(value / 60);
+    const seconds = Math.round(value % 60);
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+  };
+  return `${format(start)}–${format(end)}`;
+}
 
 export interface OpenAiManagerTeachTranscriberOptions {
   readonly apiKey: string;
   readonly model?: string;
   readonly chunkSeconds?: number;
   readonly requestTimeoutMs?: number;
+  /** Attempts per audio chunk before the chunk is given up on. */
+  readonly chunkAttempts?: number;
   readonly fetchImpl?: typeof fetch;
+  /** Injected so tests exercise the backoff without waiting for it. */
+  readonly sleepImpl?: (ms: number) => Promise<void>;
   readonly audioChunker?: (input: {
     audioPath: string;
     ffmpegPath: string;
@@ -61,21 +110,45 @@ export class OpenAiManagerTeachTranscriber implements ManagerTeachTranscriber {
       if (chunkPaths.length === 0) throw new Error('Audio chunking produced no files');
 
       const segments: ManagerTeachTranscriptSegment[] = [];
+      const warnings: string[] = [
+        'Transcript timing is available at audio-chunk level; this model does not return native word or segment timestamps.',
+      ];
       let previousText = '';
+      let lastFailure: unknown;
+
       for (const [index, chunkPath] of chunkPaths.entries()) {
         const metadata = await stat(chunkPath);
         if (metadata.size > MAX_OPENAI_FILE_BYTES) {
           throw new Error(`Audio chunk exceeds the OpenAI upload limit: ${basename(chunkPath)}`);
         }
-        const text = await this.transcribeChunk(chunkPath, previousText);
+        const start = index * this.chunkSeconds;
+        const end = Math.min(input.durationSeconds, (index + 1) * this.chunkSeconds);
+
+        let text: string;
+        try {
+          text = await this.transcribeChunkWithRetries(chunkPath, previousText);
+        } catch (error) {
+          // One unlucky chunk must not destroy the rest of the narration. A
+          // manager who explained a twenty-minute workflow keeps nineteen
+          // minutes of it, and the gap is recorded rather than hidden.
+          lastFailure = error;
+          warnings.push(
+            `Audio from ${describeWindow(start, end)} could not be transcribed: ${String(error)}`,
+          );
+          continue;
+        }
+
         if (text) {
-          segments.push({
-            start: index * this.chunkSeconds,
-            end: Math.min(input.durationSeconds, (index + 1) * this.chunkSeconds),
-            text,
-          });
+          segments.push({ start, end, text });
           previousText = text.slice(-800);
         }
+      }
+
+      // Nothing at all came back. Narration is the signal Teach actually
+      // learns from, so inventing a rule from silent screenshots would be
+      // worse than failing — throw and let the queue retry the job.
+      if (segments.length === 0 && lastFailure !== undefined) {
+        throw lastFailure instanceof Error ? lastFailure : new Error(String(lastFailure));
       }
 
       return {
@@ -85,13 +158,48 @@ export class OpenAiManagerTeachTranscriber implements ManagerTeachTranscriber {
         durationSeconds: input.durationSeconds,
         segments,
         text: segments.map(segment => segment.text).join(' ').trim(),
-        warnings: [
-          'Transcript timing is available at audio-chunk level; this model does not return native word or segment timestamps.',
-        ],
+        warnings,
       };
     } finally {
       await rm(input.workDir, { recursive: true, force: true });
     }
+  }
+
+  /**
+   * Retry one chunk through an upstream wobble.
+   *
+   * A single OpenAI 500 used to fail the whole ingestion job, and the queue's
+   * job-level retry then re-downloaded the video, re-extracted every frame and
+   * re-ran all the OCR to reach the same request again — expensive, slow, and
+   * no more likely to succeed. Retrying the one request that actually failed
+   * costs seconds and recovers almost all of these.
+   */
+  private async transcribeChunkWithRetries(
+    chunkPath: string,
+    previousText: string,
+  ): Promise<string> {
+    const attempts = Math.max(1, this.options.chunkAttempts ?? DEFAULT_CHUNK_ATTEMPTS);
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.transcribeChunk(chunkPath, previousText);
+      } catch (error) {
+        const retryable =
+          error instanceof RetryableTranscriptionError || isRetryableTransportError(error);
+        if (!retryable || attempt === attempts) throw error;
+        lastError = error;
+        const backoff =
+          CHUNK_RETRY_DELAYS_MS[attempt - 1] ?? CHUNK_RETRY_DELAYS_MS.at(-1)!;
+        const wait =
+          error instanceof RetryableTranscriptionError && error.retryAfterMs !== undefined
+            ? Math.max(error.retryAfterMs, backoff)
+            : backoff;
+        await (this.options.sleepImpl ?? sleep)(wait);
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   private async transcribeChunk(chunkPath: string, previousText: string): Promise<string> {
@@ -117,7 +225,13 @@ export class OpenAiManagerTeachTranscriber implements ManagerTeachTranscriber {
     });
     const raw = await response.text();
     if (!response.ok) {
-      throw new Error(`OpenAI transcription failed (${response.status}): ${raw.slice(0, 500)}`);
+      const message = `OpenAI transcription failed (${response.status}): ${raw.slice(0, 500)}`;
+      throw isRetryableTranscriptionStatus(response.status)
+        ? new RetryableTranscriptionError(
+          message,
+          parseRetryAfterMs(response.headers.get('retry-after')),
+        )
+        : new Error(message);
     }
     return transcriptionResponseSchema.parse(JSON.parse(raw)).text.trim();
   }

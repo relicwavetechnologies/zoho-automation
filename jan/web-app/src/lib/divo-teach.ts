@@ -122,11 +122,32 @@ export type DivoSessionStatus = {
   departmentId?: string
 }
 
+export type TeachRecorderStatus = {
+  recording: boolean
+  startedAt?: string | null
+  fileName?: string | null
+}
+
 export const getDivoSessionStatus = () =>
   invoke<DivoSessionStatus>('divo_get_session_status')
 
 export const recordTeachScreen = () =>
   invoke<TeachRecordingFile>('divo_teach_record_screen')
+
+/**
+ * Whether the native recorder is running right now.
+ *
+ * Teach is a mode toggle inside the home route, so its component unmounts as
+ * soon as the manager clicks anything else. The recorder lives in Rust and
+ * keeps going; this is how a freshly mounted screen finds that out instead of
+ * showing an idle launcher over a live recording.
+ */
+export const getTeachRecorderStatus = () =>
+  invoke<TeachRecorderStatus>('divo_teach_recording_status')
+
+/** Stop recording and keep the video. Resolves false if nothing was running. */
+export const stopTeachRecording = () =>
+  invoke<boolean>('divo_teach_stop_recording')
 
 export const cancelTeachRecording = () =>
   invoke<void>('divo_teach_cancel_recording')
@@ -151,28 +172,25 @@ export const createTeachSession = (
     recording,
   })
 
-const activeTeachUploads = new Set<string>()
-
+/**
+ * Whether an upload for this session is streaming right now.
+ *
+ * Asked of Rust rather than tracked in a module-level Set, because the webview
+ * can reload while the upload future keeps running in the backend — which used
+ * to leave JavaScript believing the session was idle and start a second
+ * concurrent upload of the same recording.
+ */
 export const isTeachUploadActive = (sessionId: string) =>
-  activeTeachUploads.has(sessionId)
+  invoke<boolean>('divo_teach_upload_active', { sessionId })
 
-export const uploadTeachRecording = async (
+export const uploadTeachRecording = (
   sessionId: string,
   recording: TeachRecordingFile
-) => {
-  if (activeTeachUploads.has(sessionId)) {
-    throw new Error('This Teach recording is already uploading')
-  }
-  activeTeachUploads.add(sessionId)
-  try {
-    return await invoke<TeachSession>('divo_teach_upload_recording', {
-      sessionId,
-      recording,
-    })
-  } finally {
-    activeTeachUploads.delete(sessionId)
-  }
-}
+) =>
+  invoke<TeachSession>('divo_teach_upload_recording', {
+    sessionId,
+    recording,
+  })
 
 export const getTeachSession = (sessionId: string) =>
   invoke<TeachSession>('divo_teach_get_session', { sessionId })
@@ -188,6 +206,16 @@ export const finalizeLocalTeachRecording = (path: string, sessionId: string) =>
 
 export const cancelTeachSession = (sessionId: string) =>
   invoke<TeachSession>('divo_teach_cancel_session', { sessionId })
+
+/**
+ * Put a session that stopped making progress back in the queue.
+ *
+ * The server sweeps up stalled ingestions on its own, but deliberately waits
+ * ten minutes before assuming one is dead. This is the manager saying "it is
+ * clearly stuck, try again now" rather than watching a frozen bar.
+ */
+export const resumeTeachSession = (sessionId: string) =>
+  invoke<TeachSession>('divo_teach_resume_session', { sessionId })
 
 export const undoManagerPersona = (departmentId: string) =>
   invoke<{ revision: number; remainingUndos: number }>('divo_teach_undo_persona', {

@@ -2,9 +2,10 @@ import type { ComponentType } from 'react'
 import {
   AudioLines,
   Check,
+  Eye,
   FileVideo2,
-  GitCompareArrows,
-  Image,
+  ListChecks,
+  RotateCcw,
   ScanText,
   ShieldCheck,
   UploadCloud,
@@ -26,6 +27,15 @@ type CompilingStep = Extract<
   | 'evidence_ready'
 >
 
+/**
+ * The stages, named for what they mean to the person waiting.
+ *
+ * These used to be described in the vocabulary of the pipeline that runs them
+ * — "OCR is extracting the interface text", "aligned into evidence for the
+ * Teach agent". A manager watching a progress bar does not need the mechanism;
+ * they need to know that something sensible is happening to their recording
+ * and roughly how far along it is.
+ */
 const steps: Array<{
   key: CompilingStep
   icon: ComponentType<{ className?: string }>
@@ -36,40 +46,37 @@ const steps: Array<{
     key: 'recording_received',
     icon: UploadCloud,
     title: 'Recording received',
-    detail: 'The completed recording is stored safely for this Teach session.',
+    detail: 'Your video is safely with Divo.',
   },
   {
     key: 'selecting_evidence',
     icon: FileVideo2,
-    title: 'Selecting useful screens',
-    detail:
-      'Repeated screens are removed while meaningful visual changes are retained.',
+    title: 'Finding the moments that matter',
+    detail: 'Divo skips the parts where nothing changed on screen.',
   },
   {
     key: 'transcribing',
     icon: AudioLines,
-    title: 'Transcribing your explanation',
-    detail: 'Your narration is becoming timestamped workflow evidence.',
+    title: 'Listening to what you said',
+    detail: 'Your explanation is what turns the clicks into a rule.',
   },
   {
     key: 'reading_screens',
     icon: ScanText,
-    title: 'Reading visible screen details',
-    detail:
-      'OCR is extracting the interface text needed to understand each step.',
+    title: 'Reading what was on screen',
+    detail: 'Divo reads the text in each step so it understands the context.',
   },
   {
     key: 'reconstructing_workflow',
-    icon: GitCompareArrows,
-    title: 'Compiling the teaching context',
-    detail:
-      'Screens and narration are being aligned into evidence for the Teach agent.',
+    icon: ListChecks,
+    title: 'Putting your steps in order',
+    detail: 'Working out what you did, and why you did it that way.',
   },
   {
     key: 'evidence_ready',
     icon: Check,
-    title: 'Evidence ready',
-    detail: 'The interactive Teach conversation is ready to begin.',
+    title: 'Ready to talk it through',
+    detail: 'Divo will open a chat to check what it understood.',
   },
 ]
 
@@ -80,9 +87,9 @@ const steps: Array<{
  */
 const RAIL = [
   { key: 'recorded', label: 'Recorded' },
-  { key: 'uploaded', label: 'Uploaded' },
-  { key: 'reading', label: 'Reading the recording' },
-  { key: 'review', label: 'Review together' },
+  { key: 'uploaded', label: 'Sent' },
+  { key: 'reading', label: 'Divo watches it' },
+  { key: 'review', label: 'You check it together' },
   { key: 'saved', label: 'Saved' },
 ] as const
 
@@ -134,22 +141,35 @@ function Rail({ activeIndex }: { activeIndex: number }) {
 }
 
 /**
- * Upload and evidence-compilation as one continuous session view. They were
- * two separate full-screen takeovers; uploading is seconds of work and never
- * deserved its own screen, and splitting them hid the fact that they are one
- * job the user is waiting on.
+ * Sending and watching as one continuous wait.
+ *
+ * They were two separate full-screen takeovers; sending is seconds of work and
+ * never deserved its own screen, and splitting them hid the fact that they are
+ * one job the manager is waiting on. The one thing this screen must never
+ * imply is that the manager has to sit here for it — so that is said outright,
+ * at the top, in the badge and again beside the progress bar.
  */
 export function TeachSessionProgress({
   session,
   uploading,
   uploadProgress,
   statusWarning,
+  stuck,
+  resuming,
+  onResume,
+  onClose,
   onCancel,
 }: {
   session?: TeachSession
   uploading: boolean
   uploadProgress: number
   statusWarning?: string
+  /** Progress has not moved for long enough to offer a restart. */
+  stuck?: boolean
+  resuming?: boolean
+  onResume?: () => void
+  /** Leave the waiting screen without touching the work. */
+  onClose?: () => void
   onCancel?: () => void
 }) {
   const foundIndex = session
@@ -163,31 +183,48 @@ export function TeachSessionProgress({
           Math.min(steps.length - 1, Math.floor((session?.progress ?? 0) / 16))
         )
   const activeStep = steps[activeIndex] ?? steps[0]!
-  const ActiveIcon = uploading ? UploadCloud : activeStep.icon
-  const percent = uploading ? uploadProgress : (session?.progress ?? 0)
+  // The session exists but Divo never received the video — a send that
+  // dropped and is queued for another try. Claiming "Divo is watching it"
+  // here was simply untrue, and the step list below meant nothing yet.
+  const waitingToSend = !uploading && session?.status === 'awaiting_upload'
+  const ActiveIcon = uploading || waitingToSend ? UploadCloud : activeStep.icon
+  const percent = uploading
+    ? uploadProgress
+    : waitingToSend
+      ? 0
+      : (session?.progress ?? 0)
 
   return (
     <div
       className="flex h-full flex-col overflow-hidden"
       data-testid="teach-processing-experience"
     >
-      <header className="flex shrink-0 items-center justify-between gap-4 border-b px-5 py-3 sm:px-7">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-5 py-3 sm:px-7">
         <div>
           <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-            Preparing Teach
+            Teaching in progress
           </p>
           <p className="text-sm font-medium">
             {uploading
-              ? 'Uploading your teaching'
-              : 'Compiling your recording evidence'}
+              ? 'Sending your recording'
+              : waitingToSend
+                ? 'Waiting to send'
+                : 'Divo is watching it'}
           </p>
         </div>
-        <Badge variant="outline">Durable · safe to close</Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline">Keeps running if you close this</Badge>
+          {onClose && (
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Close
+            </Button>
+          )}
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
-        <div className="mx-auto max-w-6xl">
-          <Rail activeIndex={uploading ? 1 : 2} />
+        <div className="mx-auto max-w-5xl">
+          <Rail activeIndex={uploading || waitingToSend ? 1 : 2} />
 
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
             <main className="rounded-xl border bg-card">
@@ -203,13 +240,17 @@ export function TeachSessionProgress({
                       </p>
                       <h1 className="mt-1 font-studio text-xl font-medium">
                         {uploading
-                          ? 'Uploading your recording'
-                          : activeStep.title}
+                          ? 'Sending your recording'
+                          : waitingToSend
+                            ? 'Waiting to send'
+                            : activeStep.title}
                       </h1>
                       <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
                         {uploading
-                          ? 'The recording is streamed securely without loading the whole video into memory.'
-                          : activeStep.detail}
+                          ? 'This can take a few minutes on a slow connection. It carries on in the background if you leave.'
+                          : waitingToSend
+                            ? 'Your recording is saved on this Mac. Divo retries on its own as soon as it can reach the service.'
+                            : activeStep.detail}
                       </p>
                     </div>
                   </div>
@@ -226,8 +267,9 @@ export function TeachSessionProgress({
               <div className="divide-y px-4 sm:px-5">
                 {steps.map((step, index) => {
                   const Icon = step.icon
-                  const completed = !uploading && index < activeIndex
-                  const active = !uploading && index === activeIndex
+                  const started = !uploading && !waitingToSend
+                  const completed = started && index < activeIndex
+                  const active = started && index === activeIndex
                   return (
                     <div
                       key={step.key}
@@ -276,55 +318,49 @@ export function TeachSessionProgress({
             </main>
 
             <aside className="space-y-4">
-              <section className="rounded-xl border bg-card p-4">
-                <h2 className="text-sm font-medium">Evidence receipt</h2>
-                <div className="mt-3 divide-y">
-                  <Fact
-                    icon={FileVideo2}
-                    label="Recording"
-                    value={formatDuration(session?.evidence?.durationSeconds)}
-                  />
-                  <Fact
-                    icon={Image}
-                    label="Selected screens"
-                    value={
-                      session?.evidence
-                        ? String(session.evidence.frameCount)
-                        : 'Preparing'
-                    }
-                  />
-                  <Fact
-                    icon={AudioLines}
-                    label="Transcript"
-                    value={
-                      session?.evidence
-                        ? `${session.evidence.transcriptSegmentCount} segments`
-                        : 'Preparing'
-                    }
-                  />
-                  <Fact
-                    icon={ScanText}
-                    label="OCR"
-                    value={session?.evidence?.ocrModels.join(', ') || 'Preparing'}
-                  />
-                </div>
-              </section>
-              <div className="flex gap-2.5 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] p-3 text-xs leading-5 text-emerald-700 dark:text-emerald-300">
+              <div className="flex gap-2.5 rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] p-3.5 text-xs leading-5 text-emerald-700 dark:text-emerald-300">
                 <ShieldCheck className="mt-0.5 size-4 shrink-0" />
                 <span>
-                  <span className="font-medium">Nothing is saved yet.</span>{' '}
-                  When this finishes, Divo opens a conversation and walks you
-                  through what it thinks it learned. You approve each change
-                  before it is written.
+                  <span className="font-medium">Nothing has changed yet.</span>{' '}
+                  When Divo has finished watching, it opens a chat and tells you
+                  what it thinks it learned. You approve every change before it
+                  is saved.
                 </span>
               </div>
+
+              <div className="flex gap-2.5 rounded-xl border p-3.5 text-xs leading-5 text-muted-foreground">
+                <Eye className="mt-0.5 size-4 shrink-0" />
+                <span>
+                  You do not have to wait here. Close this and keep working —
+                  the sidebar shows how it is going, and Divo tells you when it
+                  needs you.
+                </span>
+              </div>
+
+              {stuck && onResume && (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-3.5">
+                  <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                    This looks stuck
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    Divo has not made progress for a while. Your recording is
+                    safe — starting it again usually sorts it out.
+                  </p>
+                  <Button
+                    size="sm"
+                    className="mt-3 w-full"
+                    disabled={resuming}
+                    onClick={onResume}
+                    data-testid="resume-teach-session"
+                  >
+                    <RotateCcw /> {resuming ? 'Starting again…' : 'Start it again'}
+                  </Button>
+                </div>
+              )}
+
               {onCancel && (
-                <Button
-                  variant="ghost"
-                  className="w-full"
-                  onClick={onCancel}
-                >
-                  Cancel teaching
+                <Button variant="ghost" className="w-full" onClick={onCancel}>
+                  Stop and throw this away
                 </Button>
               )}
             </aside>
@@ -333,33 +369,4 @@ export function TeachSessionProgress({
       </div>
     </div>
   )
-}
-
-function Fact({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: ComponentType<{ className?: string }>
-  label: string
-  value: string
-}) {
-  return (
-    <div className="flex items-center gap-2.5 py-3 first:pt-0 last:pb-0">
-      <Icon className="size-3.5 text-muted-foreground" />
-      <span className="min-w-0 flex-1 text-xs text-muted-foreground">
-        {label}
-      </span>
-      <span className="max-w-36 truncate text-right text-xs font-medium">
-        {value}
-      </span>
-    </div>
-  )
-}
-
-function formatDuration(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined) return 'Preparing'
-  const minutes = Math.floor(seconds / 60)
-  const remainder = Math.round(seconds % 60)
-  return minutes > 0 ? `${minutes}m ${remainder}s` : `${remainder}s`
 }

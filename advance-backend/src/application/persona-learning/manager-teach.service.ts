@@ -8,6 +8,15 @@ import { ManagerTeachPersonaProcessor } from './manager-teach-persona.processor'
 import type { ManagerTeachLearningPatch } from './manager-teach-persona.types';
 import { ManagerTeachQueue } from './manager-teach.queue';
 
+/**
+ * How long an ingestion may go without writing progress before it is treated
+ * as dead. Generous, because a long recording can spend minutes inside a
+ * single step — but finite, because "forever" is what it used to be.
+ */
+const STALLED_INGESTION_AFTER_MS = 10 * 60_000;
+/** Claims of the same session before Teach stops trying and says so. */
+const MAX_INGESTION_ATTEMPTS = 4;
+
 export type ManagerTeachSourceInput = 'recording' | 'upload';
 
 export type ManagerTeachProcessingStep =
@@ -490,6 +499,123 @@ export class ManagerTeachService {
       take: limit,
     });
     await Promise.all(sessions.map(session => this.enqueueDurableSession(session.id)));
+  }
+
+  /**
+   * Rescue sessions whose worker disappeared mid-ingestion.
+   *
+   * `processIngestion` returns a session to `queued` when it throws, so
+   * ordinary failures already recover. A *stalled* job never reaches that
+   * catch — the process died or the BullMQ lock expired, so nothing in this
+   * process ever rejects. The row was simply left in `ingesting` forever:
+   * never retried, never failed, and shown to the manager as "Divo is
+   * watching your recording" for as long as they cared to look.
+   *
+   * Staleness is judged on `updatedAt`, which every progress write bumps, so
+   * a genuinely slow recording that is still making headway is never
+   * disturbed — only one that has stopped moving entirely.
+   */
+  async recoverStalledIngestions(options?: {
+    staleAfterMs?: number;
+    maxAttempts?: number;
+    limit?: number;
+  }): Promise<{ requeued: number; failed: number }> {
+    const staleAfterMs = options?.staleAfterMs ?? STALLED_INGESTION_AFTER_MS;
+    const maxAttempts = options?.maxAttempts ?? MAX_INGESTION_ATTEMPTS;
+    const cutoff = new Date(Date.now() - staleAfterMs);
+
+    const stranded = await this.deps.prisma.managerTeachSession.findMany({
+      where: {
+        status: 'ingesting',
+        cancelRequestedAt: null,
+        updatedAt: { lt: cutoff },
+      },
+      select: { id: true, attempts: true },
+      orderBy: { updatedAt: 'asc' },
+      take: options?.limit ?? 25,
+    });
+
+    let requeued = 0;
+    let failed = 0;
+    for (const session of stranded) {
+      if (session.attempts >= maxAttempts) {
+        // Out of road. Failing is honest here, and the manager still has the
+        // recording locally to send again.
+        await this.markFailed(
+          session.id,
+          new Error('Teach ingestion stopped responding and ran out of retries'),
+        );
+        failed += 1;
+        continue;
+      }
+
+      const released = await this.deps.prisma.managerTeachSession.updateMany({
+        where: { id: session.id, status: 'ingesting', cancelRequestedAt: null },
+        data: {
+          status: 'queued',
+          progress: 25,
+          lastError: 'Ingestion stopped responding and was restarted automatically',
+        },
+      });
+      if (released.count === 0) continue;
+      await this.enqueueDurableSession(session.id);
+      requeued += 1;
+    }
+
+    if (requeued > 0 || failed > 0) {
+      this.log.warn('manager-teach.ingestion.stalled_recovered', { requeued, failed });
+    }
+    return { requeued, failed };
+  }
+
+  /**
+   * Put a session back in the queue on the manager's say-so.
+   *
+   * The automatic sweep deliberately waits ten minutes before deciding an
+   * ingestion is dead, because cutting a slow-but-working job short would be
+   * worse. That is a long time to sit watching a progress bar that stopped, so
+   * the manager gets to say "it is stuck, try again" immediately. Attempts are
+   * still counted, so this cannot be used to loop forever.
+   */
+  async resumeIngestion(input: {
+    sessionId: string;
+    companyId: string;
+    managerId: string;
+  }): Promise<ManagerTeachSessionView> {
+    const session = await this.deps.prisma.managerTeachSession.findFirst({
+      where: { id: input.sessionId, companyId: input.companyId, managerId: input.managerId },
+    });
+    if (!session) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
+    if (session.cancelRequestedAt) {
+      throw new ManagerTeachError('invalid_state', 'This Teach session was cancelled');
+    }
+    if (!['queued', 'ingesting', 'failed'].includes(session.status)) {
+      throw new ManagerTeachError(
+        'invalid_state',
+        'This Teach session is not waiting to be processed',
+      );
+    }
+
+    await this.deps.prisma.managerTeachSession.updateMany({
+      where: { id: session.id, cancelRequestedAt: null },
+      data: {
+        status: 'queued',
+        progress: 25,
+        failedAt: null,
+        lastError: null,
+        // Reset so a manager retrying by hand is not immediately cut off by
+        // the automatic attempt ceiling that stranded them in the first place.
+        attempts: 0,
+      },
+    });
+    await this.enqueueDurableSession(session.id);
+    this.log.info('manager-teach.ingestion.resumed', { sessionId: session.id });
+
+    const current = await this.deps.prisma.managerTeachSession.findUnique({
+      where: { id: session.id },
+    });
+    if (!current) throw new ManagerTeachError('session_not_found', 'Teach session was not found');
+    return toSessionView(current);
   }
 
   async processIngestion(sessionId: string): Promise<void> {

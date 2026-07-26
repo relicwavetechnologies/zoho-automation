@@ -1,26 +1,50 @@
 import { useEffect, useState } from 'react'
-import { CircleStop, MonitorPlay } from 'lucide-react'
+import { CircleStop, Square, Trash2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-
-function formatElapsed(seconds: number) {
-  const minutes = Math.floor(seconds / 60)
-  const remainder = seconds % 60
-  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
-}
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { formatTeachElapsed } from '@/lib/teach-activity'
 
 /**
- * While recording, the manager is in other applications demonstrating work —
- * not looking at Divo. So this drops to the three things worth coming back to
- * check: that it is still running, for how long, and how to stop or bail.
+ * The live recording screen.
+ *
+ * Previously the only button here threw the recording away, and finishing
+ * properly meant knowing to stop it from the macOS menu bar. Anyone who did
+ * not know that — which is most people — pressed the one button that was
+ * offered and destroyed the demonstration they had just given. So stopping and
+ * keeping the recording is now the obvious primary action, and discarding is a
+ * quiet secondary that asks first.
  */
-export function TeachRecording({ onCancel }: { onCancel: () => void }) {
+export function TeachRecording({
+  startedAt,
+  onStop,
+  onCancel,
+}: {
+  /** ISO timestamp from the native recorder, so the timer survives a remount. */
+  startedAt?: string | null
+  onStop: () => void
+  onCancel: () => void
+}) {
   const [elapsed, setElapsed] = useState(0)
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false)
 
   useEffect(() => {
-    const id = window.setInterval(() => setElapsed((value) => value + 1), 1_000)
+    // Anchored to the recorder's own start time rather than counting from
+    // mount, so leaving Teach and coming back shows the real duration.
+    const started = startedAt ? new Date(startedAt).getTime() : Date.now()
+    const tick = () =>
+      setElapsed(Math.max(0, Math.round((Date.now() - started) / 1_000)))
+    tick()
+    const id = window.setInterval(tick, 1_000)
     return () => window.clearInterval(id)
-  }, [])
+  }, [startedAt])
 
   return (
     <div
@@ -36,26 +60,66 @@ export function TeachRecording({ onCancel }: { onCancel: () => void }) {
         className="mt-6 font-mono text-4xl font-medium tabular-nums tracking-tight"
         aria-label="Recording elapsed time"
       >
-        {formatElapsed(elapsed)}
+        {formatTeachElapsed(elapsed)}
       </p>
 
       <h1 className="mt-3 font-studio text-xl font-medium">
-        Recording in progress
+        Recording your screen
       </h1>
       <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-        Divo is watching your main display. Work the way you normally would and
-        say what matters out loud — your narration is what turns the
-        demonstration into a rule.
+        Do the task the way you normally would, and say out loud why you make
+        each choice. Your explanation is what Divo learns from.
       </p>
 
-      <div className="mt-6 flex items-center gap-2 rounded-full border bg-muted px-4 py-2 text-xs text-muted-foreground">
-        <MonitorPlay className="size-3.5" />
-        Stop from the Mac menu bar when you are finished
-      </div>
-
-      <Button variant="ghost" className="mt-4" onClick={onCancel}>
-        <CircleStop /> Cancel — discard this recording
+      <Button
+        size="lg"
+        className="mt-7"
+        onClick={onStop}
+        data-testid="stop-teach-recording"
+      >
+        <Square className="fill-current" /> Stop and save
       </Button>
+      <p className="mt-2.5 text-xs text-muted-foreground">
+        Nothing is sent until you stop. You can also stop from the Mac menu bar.
+      </p>
+
+      <Button
+        variant="ghost"
+        size="sm"
+        className="mt-6 text-muted-foreground"
+        onClick={() => setConfirmingDiscard(true)}
+      >
+        <CircleStop /> Discard this recording
+      </Button>
+
+      <Dialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Throw this recording away?</DialogTitle>
+            <DialogDescription>
+              Everything you have recorded so far is deleted and Divo learns
+              nothing from it. To keep it instead, choose “Stop and save”.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmingDiscard(false)}
+            >
+              Keep recording
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setConfirmingDiscard(false)
+                onCancel()
+              }}
+            >
+              <Trash2 /> Discard it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

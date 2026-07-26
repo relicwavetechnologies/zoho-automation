@@ -1,5 +1,6 @@
 import { Worker, type Job } from 'bullmq';
 import type { Logger } from '../../shared/logger';
+import { isFinalFailedAttempt } from '../../shared/queue-retry';
 import { PERSONA_LEARNING_QUEUE_NAME, type PersonaLearningQueuePayload } from './persona-learning.queue';
 import { PersonaLearningService } from './persona-learning.service';
 import { PersonaLearningPromotionService } from './persona-learning-promotion.service';
@@ -37,7 +38,7 @@ export class PersonaLearningWorker {
     });
     this.worker.on('failed', (job, error) => {
       this.log.warn('persona-learning.worker.failed', { jobId: job?.id, error: String(error) });
-      if (job && job.attemptsMade + 1 >= (job.opts.attempts ?? 1)) {
+      if (isFinalFailedAttempt(job) && job) {
         void this.deps.service.markJobFailed(job.data.personaLearningJobId, error);
       }
     });
