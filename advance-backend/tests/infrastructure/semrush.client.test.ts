@@ -61,12 +61,113 @@ describe('SemrushClient', () => {
     assert.deepEqual(result.rows, []);
   });
 
-  it('rejects a capability that does not have an official contract', async () => {
-    const client = new SemrushClient({ timeoutMs: 1_000, fetchImpl: async () => new Response('', { status: 200 }) });
+  it('still refuses an operation with no mapped API surface', async () => {
+    // The guard is what stops a future operation being tunnelled to Semrush
+    // before its contract is verified, so it must survive all seven shipping.
+    const client = new SemrushClient({ timeoutMs: 1_000, fetchImpl: async () => { throw new Error('must not call'); } });
     await assert.rejects(
-      () => client.fetch({ apiKey: 'key', args: { operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] } }),
+      () => client.fetch({ apiKey: 'key', args: { operation: 'not_a_real_operation' } as never }),
       (error: unknown) => error instanceof SemrushServiceError && error.code === 'capability_unavailable',
     );
+  });
+
+  it('reads monthly history newest-first for a position trend', async () => {
+    const calls: URL[] = [];
+    const client = new SemrushClient({
+      timeoutMs: 1_000,
+      fetchImpl: async (url) => {
+        calls.push(new URL(String(url)));
+        return new Response('Date;Rank;Organic Keywords\n20260615;288510;46\n20260515;291952;31\n', { status: 200 });
+      },
+    });
+    const result = await client.fetch({ apiKey: 'k', args: { operation: 'organic_position_trend', domain: 'example.com', database: 'in' } });
+    assert.equal(calls[0]?.searchParams.get('type'), 'domain_rank_history');
+    assert.equal(result.status, 'complete');
+    assert.equal(result.rows.length, 2);
+    assert.equal(result.coverage.months, 2);
+  });
+
+  it('batches keyword research into one call and reports what came back', async () => {
+    const calls: URL[] = [];
+    const client = new SemrushClient({
+      timeoutMs: 1_000,
+      fetchImpl: async (url) => {
+        calls.push(new URL(String(url)));
+        return new Response('Keyword;Search Volume\nseo services;18100\n', { status: 200 });
+      },
+    });
+    const result = await client.fetch({
+      apiKey: 'k',
+      args: { operation: 'keyword_research', keywords: ['seo services', 'link building'], database: 'in' },
+    });
+    assert.equal(calls.length, 1, 'batched phrases must not fan out into one call each');
+    assert.equal(calls[0]?.searchParams.get('type'), 'phrase_these');
+    assert.equal(calls[0]?.searchParams.get('phrase'), 'seo services;link building');
+    // Semrush drops phrases it has no data for, so the gap has to be visible.
+    assert.equal(result.coverage.requestedKeywords, 2);
+    assert.equal(result.coverage.returnedKeywords, 1);
+  });
+
+  it('excludes the first target for a keyword gap but includes it for a comparison', async () => {
+    const calls: URL[] = [];
+    const client = new SemrushClient({
+      timeoutMs: 1_000,
+      fetchImpl: async (url) => {
+        calls.push(new URL(String(url)));
+        return new Response('Keyword;Search Volume;b.com;a.com\nseo;100;3;0\n', { status: 200 });
+      },
+    });
+
+    await client.fetch({ apiKey: 'k', args: { operation: 'keyword_gap', targets: ['a.com', 'b.com', 'c.com'], database: 'us' } });
+    // The leading sign is the operator: `-` excludes, so the caller's own
+    // domain is the excluded one and the result is what it does not rank for.
+    assert.equal(calls[0]?.searchParams.get('domains'), '*|or|b.com|*|or|c.com|-|or|a.com');
+    assert.equal(calls[0]?.searchParams.get('export_columns'), 'Ph,Nq,Cp,Co,P0,P1,P2');
+
+    await client.fetch({ apiKey: 'k', args: { operation: 'domain_comparison', targets: ['a.com', 'b.com'], database: 'us' } });
+    assert.equal(calls[1]?.searchParams.get('domains'), '*|or|a.com|*|or|b.com');
+  });
+
+  it('bills one backlinks request per target and stamps the blank target column', async () => {
+    const calls: URL[] = [];
+    const client = new SemrushClient({
+      timeoutMs: 1_000,
+      fetchImpl: async (url) => {
+        calls.push(new URL(String(url)));
+        // The provider really does return an empty leading `target` field.
+        return new Response('target;ascore;domains_num\n;73;126236\n', { status: 200 });
+      },
+    });
+    const result = await client.fetch({ apiKey: 'k', args: { operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] } });
+
+    assert.equal(calls.length, 2, 'the backlinks host takes one target per call');
+    assert.equal(calls[0]?.toString().split('?')[0], 'https://api.semrush.com/analytics/v1/');
+    assert.equal(result.coverage.requestsBilled, 2);
+    // Without the stamp both rows would be indistinguishable.
+    assert.deepEqual(result.rows.map(row => row.target), ['a.com', 'b.com']);
+  });
+
+  it('treats NOTHING FOUND as an empty result rather than a provider failure', async () => {
+    // Two domains that share no keywords return this routinely; calling it a
+    // failure would report "Semrush failed" for a question with no answer.
+    const client = new SemrushClient({
+      timeoutMs: 1_000,
+      fetchImpl: async () => new Response('ERROR 50 :: NOTHING FOUND', { status: 200 }),
+    });
+    const result = await client.fetch({ apiKey: 'k', args: { operation: 'domain_comparison', targets: ['a.com', 'b.com'] } });
+    assert.equal(result.status, 'empty');
+    assert.deepEqual(result.rows, []);
+  });
+
+  it('does not parse a prose error body as a data row', async () => {
+    for (const body of ['Validation Error : target', 'Internal Server Error']) {
+      const client = new SemrushClient({ timeoutMs: 1_000, fetchImpl: async () => new Response(body, { status: 200 }) });
+      await assert.rejects(
+        () => client.fetch({ apiKey: 'k', args: { operation: 'domain_overview', domain: 'example.com' } }),
+        (error: unknown) => error instanceof SemrushServiceError && error.code === 'provider_failure',
+        `${body} must not be parsed as CSV`,
+      );
+    }
   });
 
   it('does not retry a provider rate-limit response', async () => {

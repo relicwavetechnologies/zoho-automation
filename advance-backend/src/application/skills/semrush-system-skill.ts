@@ -27,12 +27,22 @@ Use this skill for read-only Semrush SEO research available through Divo's backe
    - \`blocked\` or an invocation error: explain whether configuration, permission, unsupported capability, or provider availability prevented the lookup. Never invent the missing data.
 5. Summarize evidence in chat. If Divo returns a temporary CSV artifact, identify it as a temporary export and do not reproduce hundreds of rows in chat.
 
-## Currently supported official operations
+## Supported official operations
 
-- \`domain_overview\`: one bare domain and a supported country database.
-- \`organic_positions\`: one bare domain, supported database, and bounded pagination.
+- \`domain_overview\`: one bare domain and a supported country database. A single snapshot row.
+- \`organic_positions\`: which keywords a domain ranks for right now, with bounded pagination.
+- \`organic_position_trend\`: monthly authority and traffic history, newest first. This answers "is it growing", not "where does it rank today".
+- \`keyword_research\`: volume, CPC, competition and 12-month trend for up to 25 keywords in one request.
+- \`domain_comparison\`: keywords two to five domains share, each domain's position in its own column.
+- \`keyword_gap\`: what competitors rank for and you do not. **The first target is the domain you own** and is excluded from the result; the rest are the competitors. Reversing that order silently answers the opposite question, so confirm which domain is the user's before calling it.
+- \`backlinks_comparison\`: authority score, total backlinks and referring domains per target.
 
-Other named SEO functions return an unavailable result until Divo has a verified official Semrush API contract for them. Do not silently substitute a different Semrush report for the requested one.`,
+## Cost and honesty rules for these operations
+
+1. \`backlinks_comparison\` costs one billed Semrush request per target. Compare the domains the user actually named; do not pad the list to be thorough.
+2. \`keyword_research\` silently omits keywords Semrush has no data for. Compare \`coverage.requestedKeywords\` with \`coverage.returnedKeywords\` and name the missing keywords as "no Semrush data" rather than "zero volume".
+3. A comparison of domains that share no keywords returns \`empty\`. That is a real answer — report it as no overlap, not as a Semrush failure.
+4. Never substitute one report for another. If the user asked for a gap and only a comparison is appropriate, say so rather than quietly returning the overlap.`,
   toolIds: ['semrush'],
   tags: ['divo', 'seo', 'semrush', 'organic', 'rankings', 'domain'],
   aliases: ['semrush', 'seo research', 'organic rankings', 'domain overview'],

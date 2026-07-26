@@ -43,9 +43,14 @@ export const createSemrushTool = (deps: {
   resultSchema: ResultSchema,
   description: 'Run read-only Semrush SEO research through official backend-configured APIs. Supports only explicit operations.',
   parameterDocs: [
-    'operation: domain_overview or organic_positions. Other named capabilities return an explicit unavailable result until their official contracts are enabled.',
-    'domain_overview: { domain, database? }. Returns a compact official v3 domain overview.',
+    'operation: domain_overview, organic_positions, organic_position_trend, keyword_research, domain_comparison, keyword_gap, or backlinks_comparison.',
+    'domain_overview: { domain, database? }. One-row snapshot of rank, organic/paid keywords, traffic and cost.',
     'organic_positions: { domain, database?, limit?, offset? }. limit is 1–1000; Divo returns at most 200 rows in chat and creates a temporary CSV for larger results.',
+    'organic_position_trend: { domain, database?, limit? }. Monthly history, newest month first; limit is months (default 24). Use it for "is this domain growing", never for current position.',
+    'keyword_research: { keywords[1–25], database? }. Volume, CPC, competition and 12-month trend per keyword, batched into one request. Semrush omits keywords it has no data for, so compare coverage.requestedKeywords with returnedKeywords before saying a keyword has no volume.',
+    'domain_comparison: { targets[2–5], database?, limit? }. Keywords the targets have in common, with each domain position in its own column.',
+    'keyword_gap: { targets[2–5], database?, limit? }. THE FIRST TARGET IS THE ONE YOU OWN and is excluded; the result is what the remaining competitors rank for and it does not. Order matters — reversing it answers the opposite question.',
+    'backlinks_comparison: { targets[2–10] }. Authority score, total backlinks and referring domains per target. Costs one billed request per target, so ask for the domains that matter rather than a wide sweep.',
     'Divo rejects arbitrary Semrush endpoints, headers, cookies, export columns, and API keys. Do not claim an unavailable operation has run.',
   ].join('\n'),
   permissionCheck(_args: SemrushToolArgs, perm: PermissionResult) {
