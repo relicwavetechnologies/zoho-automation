@@ -800,37 +800,26 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       throw routeError(503, 'Lark OAuth is not configured');
     }
 
-    const [user, existingConnection, binding] = await Promise.all([
+    const [user, bindings] = await Promise.all([
       prisma.user.findUnique({
         where:  { id: userId },
         select: { email: true },
       }),
-      prisma.integrationConnection.findFirst({
-        where: {
-          companyId,
-          provider: 'lark',
-          ownerUserId: userId,
-          status: 'connected',
-          revokedAt: null,
-        },
-        select: { externalAccountId: true },
-        orderBy: { updatedAt: 'desc' },
-      }),
-      prisma.larkTenantBinding.findFirst({
+      prisma.larkTenantBinding.findMany({
         where:  { companyId, isActive: true },
         select: { larkTenantKey: true },
+        orderBy: { createdAt: 'desc' },
+        take: 2,
       }),
     ]);
 
-    if (!binding) throw routeError(400, 'No active Lark tenant binding exists for this company');
+    if (bindings.length === 0) throw routeError(400, 'No active Lark tenant binding exists for this company');
+    if (bindings.length > 1) {
+      throw routeError(409, 'Multiple active Lark tenant bindings exist; select one before starting OAuth');
+    }
+    const binding = bindings[0]!;
 
-    const identityFilters = [
-      ...(user?.email ? [{ email: user.email }] : []),
-      ...(existingConnection?.externalAccountId ? [
-        { larkOpenId: existingConnection.externalAccountId },
-        { externalUserId: existingConnection.externalAccountId },
-      ] : []),
-    ];
+    const identityFilters = user?.email ? [{ email: user.email }] : [];
 
     if (identityFilters.length === 0) {
       throw routeError(400, 'No Lark identity is mapped for this admin user');
@@ -840,6 +829,7 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       where: {
         companyId,
         channel: 'lark',
+        externalTenantId: binding.larkTenantKey,
         OR:      identityFilters,
       },
       select: {
@@ -848,17 +838,23 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       },
     });
 
-    const larkOpenId = identity?.larkOpenId ?? identity?.externalUserId ?? existingConnection?.externalAccountId;
+    const larkOpenId = identity?.larkOpenId ?? identity?.externalUserId;
     if (!larkOpenId) {
       throw routeError(400, 'No Lark open_id is mapped for this admin user');
     }
 
     const nonce = deps.larkOAuthService.generateNonce();
-    const noncePayload = { companyId, userId, larkOpenId };
+    const noncePayload = { companyId, userId, larkOpenId, tenantKey: binding.larkTenantKey };
     const cacheResult = await deps.cache.set(larkOAuthNonceKey(nonce), noncePayload, LARK_OAUTH_NONCE_TTL_SECONDS);
     if (!cacheResult.ok) throw routeError(503, 'Unable to start Lark OAuth session');
 
-    const state = encodeLarkOAuthState({ companyId, userId, larkOpenId, nonce });
+    const state = encodeLarkOAuthState({
+      companyId,
+      userId,
+      larkOpenId,
+      tenantKey: binding.larkTenantKey,
+      nonce,
+    });
     const url = deps.larkOAuthService.getAuthorizeUrl(state);
 
     deps.logger.info('lark.admin_oauth.start', { companyId, userId, larkOpenId, tenantKey: binding.larkTenantKey });
@@ -1048,11 +1044,12 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       for (const user of users) {
         if (!user.openId) continue;
 
-        // 1. Upsert ChannelIdentity (matched by openId)
+        // 1. Upsert ChannelIdentity within this Lark tenant.
         await prisma.channelIdentity.upsert({
           where: {
-            channel_externalUserId_companyId: {
+            channel_externalTenantId_externalUserId_companyId: {
               channel: 'lark',
+              externalTenantId: binding.larkTenantKey,
               externalUserId: user.openId,
               companyId,
             },

@@ -94,12 +94,28 @@ export class AutomationPlanExecutor {
         return;
       }
 
-      const identityResult = await this.deps.channelIdentityRepo.resolveByUserId(requesterId);
+      const approvalCompanyId = claimedApproval.companyId;
+      if (!approvalCompanyId) {
+        await this.fail(claimedApproval.id, 'invalid_plan', 'The approved batch has no authoritative company.');
+        return;
+      }
+      const identityResult = await this.deps.channelIdentityRepo.resolveByUserId(
+        requesterId,
+        approvalCompanyId,
+      );
       if (!identityResult.ok || !identityResult.value) {
         await this.fail(claimedApproval.id, 'identity_not_found', 'The requester can no longer be verified.');
         return;
       }
       const identity = identityResult.value;
+      if (identity.companyId !== approvalCompanyId || identity.userId !== requesterId) {
+        await this.fail(
+          claimedApproval.id,
+          'identity_scope_mismatch',
+          'The requester no longer matches the approved company.',
+        );
+        return;
+      }
       const permissionResult = await this.resolvePermissions(identity, departmentId);
       if (!permissionResult.ok) {
         await this.fail(claimedApproval.id, 'permission_denied', permissionResult.error.message);

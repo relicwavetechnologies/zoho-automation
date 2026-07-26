@@ -196,7 +196,10 @@ export class ScheduledWorkflowService {
       return;
     }
 
-    const identityResult = await this.deps.channelIdentityRepo.resolveByUserId(workflow.createdByUserId);
+    const identityResult = await this.deps.channelIdentityRepo.resolveByUserId(
+      workflow.createdByUserId,
+      workflow.companyId,
+    );
     if (!identityResult.ok || !identityResult.value) {
       await this.markFailed(workflowId, scheduledFor, 'Could not resolve creator identity');
       return;

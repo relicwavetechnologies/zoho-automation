@@ -175,12 +175,14 @@ function makePrisma(overrides: {
   createdInvite?:     any;
   zohoConn?:          any;
   larkBinding?:       any;
+  larkBindings?:      any[];
   googleConnection?:  any;
   integrationConnections?: any[];
   capabilityGovernance?: any[];
   user?:              any;
   larkUserAuthLink?:  any;
   channelIdentity?:   any;
+  channelIdentityFindFirst?: (input: any) => Promise<any>;
   toolPerms?:         any[];
   actionPerms?:       any[];
 } = {}) {
@@ -198,7 +200,9 @@ function makePrisma(overrides: {
     adminSession: { updateMany: async () => ({ count: 1 }) },
     channelIdentity: {
       findMany: async () => overrides.identities ?? [],
-      findFirst: async () => overrides.channelIdentity ?? null,
+      findFirst: async (input: any) => overrides.channelIdentityFindFirst
+        ? overrides.channelIdentityFindFirst(input)
+        : overrides.channelIdentity ?? null,
     },
     companyInvite: {
       findMany: async () => overrides.invites ?? [fakeInvite],
@@ -209,6 +213,8 @@ function makePrisma(overrides: {
     },
     larkTenantBinding: {
       findFirst: async () => overrides.larkBinding ?? null,
+      findMany: async () => overrides.larkBindings
+        ?? (overrides.larkBinding ? [overrides.larkBinding] : []),
     },
     larkUserAuthLink: {
       findUnique: async () => overrides.larkUserAuthLink ?? null,
@@ -578,10 +584,32 @@ describe('POST /onboarding/lark-start', () => {
       companyId:  'co-1',
       userId:     'u-1',
       larkOpenId: 'ou_abc',
+      tenantKey:  'tk_abc',
       nonce:      'lark-nonce-1',
     });
     assert.equal(cachedKey, 'lark:oauth:nonce:lark-nonce-1');
-    assert.deepEqual(cachedValue, { companyId: 'co-1', userId: 'u-1', larkOpenId: 'ou_abc' });
+    assert.deepEqual(cachedValue, {
+      companyId: 'co-1',
+      userId: 'u-1',
+      larkOpenId: 'ou_abc',
+      tenantKey: 'tk_abc',
+    });
+  });
+
+  it('selects the admin identity only from the active Lark tenant', async () => {
+    let identityWhere: unknown;
+    const router = makeRouter({
+      larkBinding: { larkTenantKey: 'tk_current', isActive: true, createdAt: new Date('2025-01-01') },
+      channelIdentityFindFirst: async (input: any) => {
+        identityWhere = input.where;
+        return { externalUserId: 'ou_current', larkOpenId: 'ou_current' };
+      },
+    });
+
+    const { status } = await callRoute(router, 'POST', '/onboarding/lark-start');
+
+    assert.equal(status, 200);
+    assert.equal((identityWhere as any).externalTenantId, 'tk_current');
   });
 
   it('returns 400 when the company has no active Lark tenant binding', async () => {
@@ -589,11 +617,36 @@ describe('POST /onboarding/lark-start', () => {
     assert.equal(status, 400);
   });
 
+  it('returns 409 when the company has multiple active Lark tenant bindings', async () => {
+    const { status } = await callRoute(makeRouter({
+      larkBindings: [
+        { larkTenantKey: 'tk_one', isActive: true, createdAt: new Date('2025-01-01') },
+        { larkTenantKey: 'tk_two', isActive: true, createdAt: new Date('2025-01-02') },
+      ],
+    }), 'POST', '/onboarding/lark-start');
+
+    assert.equal(status, 409);
+  });
+
   it('returns 400 when the admin user is not mapped to a Lark identity', async () => {
     const router = makeRouter({
       larkBinding: { larkTenantKey: 'tk_abc', isActive: true, createdAt: new Date('2025-01-01') },
     });
     const { status } = await callRoute(router, 'POST', '/onboarding/lark-start');
+    assert.equal(status, 400);
+  });
+
+  it('does not reuse an account ID from a previous Lark tenant', async () => {
+    const router = makeRouter({
+      larkBinding: { larkTenantKey: 'tk_current', isActive: true, createdAt: new Date('2025-01-01') },
+      integrationConnections: [{
+        provider: 'lark',
+        externalAccountId: 'ou_previous_tenant',
+      }],
+    });
+
+    const { status } = await callRoute(router, 'POST', '/onboarding/lark-start');
+
     assert.equal(status, 400);
   });
 

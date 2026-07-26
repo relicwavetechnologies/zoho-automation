@@ -557,6 +557,16 @@ function createExecutorScenario(
 ) {
   const calls: unknown[] = [];
   const failures: any[] = [];
+  const channelIdentityRepo = {
+    resolveByUserId: async () => ok({
+      userId: member.userId,
+      companyId: member.companyId,
+      aiRole: member.aiRole,
+      channel: 'lark',
+      larkOpenId: member.larkOpenId,
+      email: member.email,
+    }),
+  };
   const executor = new AutomationPlanExecutor({
     approvalRepo: {
       claimApprovedExecution: async () => ok(plan),
@@ -568,16 +578,7 @@ function createExecutorScenario(
       },
       persistResult: async () => ok(undefined),
     } as any,
-    channelIdentityRepo: {
-      resolveByUserId: async () => ok({
-        userId: member.userId,
-        companyId: member.companyId,
-        aiRole: member.aiRole,
-        channel: 'lark',
-        larkOpenId: member.larkOpenId,
-        email: member.email,
-      }),
-    } as any,
+    channelIdentityRepo: channelIdentityRepo as any,
     permissions: { resolve: resolvePermissions } as any,
     approvalGate: {
       inspect: async (input: { args: Record<string, unknown> }) => typeof currentRequirement === 'function'
@@ -594,7 +595,7 @@ function createExecutorScenario(
     } as any,
     logger: noopLogger,
   });
-  return { executor, calls, failures };
+  return { executor, calls, failures, channelIdentityRepo };
 }
 
 function createSignedPlan(
@@ -616,6 +617,7 @@ function createSignedPlan(
       };
   const plan = {
     id: 'approval-signature-test',
+    companyId: member.companyId,
     kind: 'automation_script_plan',
     status: 'approved',
     requestedBy: member.userId,
@@ -650,6 +652,27 @@ function createFixedApprovalResolver(userId: string) {
 }
 
 describe('AutomationPlanExecutor', () => {
+  it('fails closed when identity resolution returns a different requester or company', async () => {
+    const plan = createSignedPlan({ kind: 'allowed' }, 'manager-1');
+    const { executor, calls, failures, channelIdentityRepo } = createExecutorScenario(
+      plan,
+      { kind: 'allowed' },
+    );
+    channelIdentityRepo.resolveByUserId = async () => ok({
+      userId: 'different-user',
+      companyId: 'different-company',
+      aiRole: 'COMPANY_ADMIN',
+      channel: 'lark',
+      larkOpenId: 'ou_different',
+      email: 'different@example.com',
+    });
+
+    await executor.resume(plan, 'approved');
+
+    assert.equal(calls.length, 0);
+    assert.equal(failures[0]?.status, 'identity_scope_mismatch');
+  });
+
   it('revalidates approval authority and durably checkpoints every completed mutation', async () => {
     const calls: any[] = [];
     const completed: any[] = [];
@@ -657,6 +680,7 @@ describe('AutomationPlanExecutor', () => {
     const args = { nativeTool: 'create_spreadsheet', input: { title: 'Summary' } };
     const plan = {
       id: 'approval-1',
+      companyId: member.companyId,
       kind: 'automation_script_plan',
       status: 'approved',
       requestedBy: member.userId,
@@ -761,6 +785,7 @@ describe('AutomationPlanExecutor', () => {
     };
     const plan = {
       id: 'approval-1',
+      companyId: member.companyId,
       kind: 'automation_script_plan',
       status: 'approved',
       requestedBy: member.userId,
