@@ -365,12 +365,43 @@ pub fn run() {
 
             setup_mcp(app);
             setup::setup_theme_listener(app)?;
+
+            // macOS: the red traffic light closes a *window*, it does not quit
+            // the app. Divo Dex has exactly one window, so letting the close
+            // through tears the whole process down — running agents, the MCP
+            // servers, the local model — which is not what pressing close
+            // means on this platform. Hide instead, and hide the app so focus
+            // returns to whatever was behind us; RunEvent::Reopen (Dock click)
+            // brings it back. Cmd+Q and the Quit menu item still exit.
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                let hidden = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = hidden.hide();
+                        let _ = hidden.app_handle().hide();
+                    }
+                });
+            }
+
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
     // Handle app lifecycle events
     app.run(|app, event| {
+        // Dock icon clicked while we are hidden behind a closed window.
+        #[cfg(target_os = "macos")]
+        if let RunEvent::Reopen { .. } = event {
+            let _ = app.show();
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+
         if let RunEvent::Exit = event {
             let app_handle = app.clone();
 
