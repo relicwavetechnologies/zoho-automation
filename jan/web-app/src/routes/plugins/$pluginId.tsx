@@ -41,6 +41,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import HeaderPage from '@/containers/HeaderPage'
 import { route } from '@/constants/routes'
 import {
   getPlugin,
@@ -465,7 +466,26 @@ function pickPostOauthManageConnection(
   )
 }
 
+/**
+ * Every other route in the app wears HeaderPage, which is where the "open
+ * sidebar" control lives. These tool pages did not, so collapsing the sidebar
+ * here left the window with no navigation and no way to bring it back.
+ *
+ * It wraps the whole route rather than each of the four detail variants, so a
+ * new variant cannot forget it.
+ */
 export function PluginDetailRoute() {
+  return (
+    <div className="flex h-svh w-full min-h-0 flex-col bg-background">
+      <HeaderPage />
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <PluginDetailContent />
+      </div>
+    </div>
+  )
+}
+
+function PluginDetailContent() {
   const navigate = useNavigate()
   const { pluginId } = Route.useParams()
   const [addOpen, setAddOpen] = useState(false)
@@ -662,7 +682,7 @@ export function PluginDetailRoute() {
   }
 
   return (
-    <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
+    <div className="min-h-full">
       <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-6 lg:px-8">
         <header className="flex flex-col gap-5 rounded-lg border border-border/70 bg-card/30 p-5">
           <div className="flex items-center justify-between gap-4">
@@ -867,13 +887,13 @@ export function PluginDetailRoute() {
 }
 
 function DetailInventoryState({ title, description, onRetry }: { title: string; description: string; onRetry?: () => void }) {
-  return <div className="flex h-svh items-center justify-center bg-background px-6"><div className="max-w-md text-center"><h1 className="text-lg font-medium">{title}</h1><p className="mt-2 text-sm text-muted-foreground">{description}</p><div className="mt-4 flex justify-center gap-2"><Button asChild variant="outline"><Link to={route.plugins.index}>Back to Tools</Link></Button>{onRetry ? <Button onClick={onRetry}>Retry</Button> : null}</div></div></div>
+  return <div className="flex h-full items-center justify-center px-6 py-16"><div className="max-w-md text-center"><h1 className="text-lg font-medium">{title}</h1><p className="mt-2 text-sm text-muted-foreground">{description}</p><div className="mt-4 flex justify-center gap-2"><Button asChild variant="outline"><Link to={route.plugins.index}>Back to Tools</Link></Button>{onRetry ? <Button onClick={onRetry}>Retry</Button> : null}</div></div></div>
 }
 
 function FallbackToolDetail({ group, onBack, onUpdated }: { group: NonNullable<ReturnType<typeof groupToolsForDetail>>; onBack: () => void; onUpdated: () => void }) {
   const Icon = group.Icon
   return (
-    <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
+    <div className="min-h-full">
       <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-6 lg:px-8">
         <header className="rounded-lg border border-border/70 bg-card/30 p-5">
           <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-4" />Back to Tools</Button>
@@ -973,7 +993,7 @@ function WebSearchPluginDetail({ group, onBack, onUpdated }: { group: NonNullabl
       toast.success('Estimated credit balance updated')
     } catch (error) { toast.error('Could not update credit balance', { description: String(error) }) } finally { setBusy(false) }
   }
-  return <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background"><main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6 lg:px-8">
+  return <div className="min-h-full"><main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6 lg:px-8">
     <header className="rounded-lg border border-border/70 bg-card/30 p-5"><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-4" />Back to Tools</Button><div className="mt-5 flex items-center gap-4"><span className="flex size-14 items-center justify-center rounded-lg border border-border/70 bg-muted/40"><Icon className="size-7" /></span><div><h1 className="text-2xl font-medium">Web Search</h1><p className="mt-2 text-sm text-muted-foreground">Company-authorised Serper connections. Divo uses the first healthy key, records its successful searches, and falls back when a key is rate-limited or rejected.</p></div></div></header>
     <section className="rounded-lg border border-border/70 p-5"><h2 className="text-lg font-medium">Add company connection</h2><p className="mt-1 text-sm text-muted-foreground">Only company admins can add keys. A live Serper test is required before the encrypted key can be saved; the test itself may use one Serper credit.</p><div className="mt-5 grid gap-3"><input value={label} onChange={e => setLabel(e.target.value)} placeholder="Connection label" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><input value={apiKey} onChange={e => { setApiKey(e.target.value); setVerificationToken(null) }} type="password" placeholder="Serper API key" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><input value={remainingCredits} onChange={e => setRemainingCredits(e.target.value)} inputMode="numeric" placeholder="Current Serper balance after test (optional)" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><p className="text-xs text-muted-foreground">Serper does not provide Divo a supported live-balance API. Copy the balance after testing from Serper’s dashboard; Divo then shows an estimate after subtracting searches it observes.</p><div className="flex gap-2"><Button variant="outline" disabled={busy} onClick={() => void test()}>{verificationToken ? <Check className="size-4" /> : <KeyRound className="size-4" />}{verificationToken ? 'Verified' : 'Test key'}</Button><Button disabled={busy || !verificationToken} onClick={() => void save()}><Plus className="size-4" />Save connection</Button></div></div></section>
     <section className="rounded-lg border border-border/70 p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-medium">Company connections</h2><p className="mt-1 text-sm text-muted-foreground">Keys remain encrypted on the backend. Usage is Divo-observed; estimated remaining credits begin from the balance you last copied from Serper.</p></div><Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4" />Refresh</Button></div><div className="mt-4 space-y-3">{connections.map((connection, index) => <div key={connection.id} className="flex flex-col gap-4 rounded-md border border-border/70 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-2 font-medium"><span className={cn('size-2 rounded-full', connection.status === 'connected' && !connection.unavailableUntil ? 'bg-emerald-400' : 'bg-muted-foreground')} />{connection.label}{index === 0 && connection.status === 'connected' ? <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">Default</span> : null}</div><p className="mt-1 text-xs text-muted-foreground">{connection.unavailableUntil ? `Temporarily skipped until ${new Date(connection.unavailableUntil).toLocaleString()}` : connection.lastFailureCode ? `Last issue: ${connection.lastFailureCode}` : connection.lastSucceededAt ? 'Validated and ready' : 'Not yet used'}</p><p className="mt-1 text-xs text-muted-foreground">Divo-observed successful searches: {connection.successfulRequestCount}</p>{connection.creditsAtLastSync !== null ? <p className="mt-1 text-xs text-muted-foreground">Estimated remaining: {connection.estimatedCreditsRemaining ?? 0} credits ({connection.observedRequestsSinceCreditSync} observed since the balance update)</p> : <p className="mt-1 text-xs text-muted-foreground">No Serper balance recorded yet.</p>}</div><div className="flex flex-wrap items-center gap-2"><input value={creditDrafts[connection.id] ?? ''} onChange={e => setCreditDrafts(drafts => ({ ...drafts, [connection.id]: e.target.value }))} inputMode="numeric" placeholder="Current credits" aria-label={`Current Serper credits for ${connection.label}`} className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs" /><Button size="sm" variant="outline" disabled={busy} onClick={() => void saveRemainingCredits(connection)}>Update balance</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => void toggle(connection)}>{connection.status === 'connected' ? 'Disable' : 'Enable'}</Button><Button size="sm" variant="ghost" disabled={busy} className="text-destructive hover:text-destructive" onClick={() => void remove(connection.id)}><Trash2 className="size-4" />Disconnect</Button></div></div>)}{!loading && connections.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">No company Web Search connection yet.</p> : null}</div></section>
@@ -1097,7 +1117,7 @@ function ZohoPluginDetail({
   const canManage = Boolean(status?.canManage)
 
   return (
-    <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
+    <div className="min-h-full">
       <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 py-6 lg:px-8">
         <header className="flex flex-col gap-5 rounded-lg border border-border/70 bg-card/30 p-5">
           <div className="flex items-center justify-between gap-4">

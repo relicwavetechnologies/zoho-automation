@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import HeaderPage from '@/containers/HeaderPage'
 import { route } from '@/constants/routes'
 import {
   getDivoDepartmentManageSnapshot,
@@ -144,23 +145,27 @@ export function PluginsRoute() {
   }
 
   return (
-    <div className="h-svh min-h-0 overflow-y-auto overscroll-contain bg-background">
-      <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-5 py-7 lg:px-8">
-        <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-medium tracking-tight">Tools</h1>
-            <p className="text-sm text-muted-foreground">
-              {inventory !== null && !error && !hasManagementAccess
-                ? 'Connect the accounts you use with Divo, and see what you are allowed to do.'
-                : canEditCompanyPolicy
-                  ? 'Set what the company allows, then manage any department in detail.'
-                  : 'Give your people the access they need, inside what the company allows.'}
-            </p>
-          </div>
+    <div className="flex h-svh w-full min-h-0 flex-col bg-background">
+      {/* Every other route wears this titlebar. Without it, collapsing the
+          sidebar here left the window with no navigation and no way back. */}
+      <HeaderPage>
+        <div className="mr-2 flex w-full items-center justify-end pr-3">
           <Button variant="outline" size="sm" onClick={() => void loadInventory()} disabled={inventory === null && !error}>
             <RefreshCw data-icon="inline-start" />
             Refresh
           </Button>
+        </div>
+      </HeaderPage>
+      <main className="mx-auto flex w-full min-h-0 max-w-6xl flex-1 flex-col gap-6 overflow-y-auto overscroll-contain px-5 pt-2 pb-7 lg:px-8">
+        <header className="flex flex-col gap-1">
+          <h1 className="text-2xl font-medium tracking-tight">Tools</h1>
+          <p className="text-sm text-muted-foreground">
+            {inventory !== null && !error && !hasManagementAccess
+              ? 'Connect the accounts you use with Divo, and see what you are allowed to do.'
+              : canEditCompanyPolicy
+                ? 'Set what the company allows, then manage any department in detail.'
+                : 'Give your people the access they need, inside what the company allows.'}
+          </p>
         </header>
 
         {/* A paused action outranks the catalogue: it is work someone is
