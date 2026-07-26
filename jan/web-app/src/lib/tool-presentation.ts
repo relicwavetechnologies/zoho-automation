@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import type { ComponentType } from 'react'
 
-import { CanvaIcon, GoogleIcon, LarkIcon, SemrushIcon, ZohoIcon } from '@/components/brand-icons'
+import { AirtableIcon, CanvaIcon, GoogleIcon, LarkIcon, SemrushIcon, ZohoIcon } from '@/components/brand-icons'
 import type { DivoToolInventoryItem } from './divo-tools'
 
 export type ToolPresentationGroup = {
@@ -34,6 +34,7 @@ const providers = [
     ],
   },
   { id: 'canva', title: 'Canva', description: 'Design, asset, folder, and export tools.', Icon: CanvaIcon, toolIds: ['canvaDesign'] },
+  { id: 'airtable', title: 'Airtable', description: 'Records, base schema, interfaces, and automations.', Icon: AirtableIcon, toolIds: ['airtableRecords', 'airtableSchema', 'airtableAutomation'] },
   { id: 'zoho', title: 'Zoho', description: 'CRM and Books tools.', Icon: ZohoIcon, iconClassName: 'h-5 w-7', toolIds: ['zohoCrm', 'zohoBooks'] },
   { id: 'lark', title: 'Lark', description: 'Company-managed Lark connections and collaboration tools.', Icon: LarkIcon, toolIds: ['larkMessaging', 'larkContacts', 'larkTask', 'larkCalendar', 'larkDoc', 'larkBase', 'larkApproval'] },
   { id: 'tool-memory', title: 'Memory', description: 'Company memory and knowledge tools.', Icon: Brain, toolIds: ['memoryPublishing', 'memoryRecall'] },

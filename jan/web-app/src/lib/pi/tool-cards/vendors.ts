@@ -9,6 +9,7 @@ import {
   TableIcon,
 } from 'lucide-react'
 import {
+  AirtableIcon,
   CanvaIcon,
   GmailIcon,
   GoogleAppsScriptIcon,
@@ -44,10 +45,11 @@ import { DOCS_DESCRIPTORS } from './google/docs'
 import { CALENDAR_DESCRIPTORS, calendarVerbOverride } from './google/calendar'
 import { LARK_DESCRIPTORS } from './lark'
 import { ZOHO_DESCRIPTORS } from './zoho'
+import { AIRTABLE_DESCRIPTORS } from './airtable'
 import { MISC_DESCRIPTORS } from './misc'
 
 type IconComponent = ComponentType<{ className?: string }>
-type Family = 'google' | 'lark' | 'zoho' | 'canva' | 'semrush' | 'web' | 'divo'
+type Family = 'google' | 'lark' | 'zoho' | 'canva' | 'airtable' | 'semrush' | 'web' | 'divo'
 
 type VendorDef = {
   appName: string
@@ -55,6 +57,12 @@ type VendorDef = {
   family: Family
   descriptors?: DescriptorTable
   verbOverride?: (op: string, input: Record<string, unknown> | null) => Verb | undefined
+  /**
+   * MCP-backed families send `{ op: 'describe' | 'call', nativeTool, input }`,
+   * so the real arguments sit one level down and a `describe` call performed no
+   * action. Flat families carry their arguments at the top level.
+   */
+  nativeInputNested?: boolean
 }
 
 /**
@@ -100,6 +108,11 @@ const VENDORS: Record<string, VendorDef> = {
 
   // Design + research + web.
   canvaDesign: { appName: 'Canva', Mark: CanvaIcon, family: 'canva', descriptors: MISC_DESCRIPTORS.canva },
+
+  // Airtable — MCP-backed, so arguments arrive nested under `input`.
+  airtableRecords: { appName: 'Airtable', Mark: AirtableIcon, family: 'airtable', descriptors: AIRTABLE_DESCRIPTORS.records, nativeInputNested: true },
+  airtableSchema: { appName: 'Airtable', Mark: AirtableIcon, family: 'airtable', descriptors: AIRTABLE_DESCRIPTORS.schema, nativeInputNested: true },
+  airtableAutomation: { appName: 'Airtable', Mark: AirtableIcon, family: 'airtable', descriptors: AIRTABLE_DESCRIPTORS.automation, nativeInputNested: true },
   semrush: { appName: 'Semrush', Mark: SemrushIcon, family: 'semrush', descriptors: MISC_DESCRIPTORS.semrush },
   webSearch: { appName: 'Web Search', Mark: GlobeIcon, family: 'web', descriptors: MISC_DESCRIPTORS.webSearch },
 
@@ -169,8 +182,9 @@ export function resolveToolCardModel(
   // flat single-op tools (web/context search, data processor) carry none, so
   // their descriptor lives under the empty-string key.
   const op = identity.action ?? argString(args, 'op', 'action', 'operation') ?? ''
-  const nativeInput = vendor.family === 'google' ? asRecord(args?.['input']) : args
-  const describe = vendor.family === 'google' && argString(args, 'op') === 'describe'
+  const nested = vendor.nativeInputNested || vendor.family === 'google'
+  const nativeInput = nested ? asRecord(args?.['input']) : args
+  const describe = nested && argString(args, 'op') === 'describe'
 
   const descriptor = vendor.descriptors?.[op]
 

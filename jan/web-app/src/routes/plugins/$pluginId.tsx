@@ -182,14 +182,20 @@ type GoogleManageResponse = {
   message?: string
 }
 
-type ManageAccessProvider = 'google' | 'zoho' | 'canva' | 'lark'
+type ManageAccessProvider = 'google' | 'zoho' | 'canva' | 'lark' | 'airtable'
 
 type CloudProviderConfig = {
-  provider: Extract<ManageAccessProvider, 'google' | 'canva' | 'lark'>
-  pluginId: 'google-workspace' | 'canva' | 'lark'
-  label: 'Google Workspace' | 'Canva' | 'Lark'
-  connectionLabel: 'Google' | 'Canva' | 'Lark'
+  provider: Extract<ManageAccessProvider, 'google' | 'canva' | 'lark' | 'airtable'>
+  pluginId: 'google-workspace' | 'canva' | 'lark' | 'airtable'
+  label: 'Google Workspace' | 'Canva' | 'Lark' | 'Airtable'
+  connectionLabel: 'Google' | 'Canva' | 'Lark' | 'Airtable'
   accountFallback: string
+  /**
+   * Whether the backend's authorize-url accepts a `label`. These providers
+   * allow several connections per company, so the member names the one they
+   * are creating; single-account providers have nothing to disambiguate.
+   */
+  supportsLabel?: boolean
   commands: {
     authorize: string
     status: string
@@ -216,6 +222,7 @@ const cloudProviders: Record<CloudProviderConfig['pluginId'], CloudProviderConfi
     label: 'Canva',
     connectionLabel: 'Canva',
     accountFallback: 'Canva connection',
+    supportsLabel: true,
     commands: {
       authorize: 'divo_canva_authorize_url',
       status: 'divo_canva_status',
@@ -234,6 +241,19 @@ const cloudProviders: Record<CloudProviderConfig['pluginId'], CloudProviderConfi
       disconnect: 'divo_lark_disconnect_connection',
     },
   },
+  airtable: {
+    provider: 'airtable',
+    pluginId: 'airtable',
+    label: 'Airtable',
+    connectionLabel: 'Airtable',
+    accountFallback: 'Airtable account',
+    supportsLabel: true,
+    commands: {
+      authorize: 'divo_airtable_authorize_url',
+      status: 'divo_airtable_status',
+      disconnect: 'divo_airtable_disconnect_connection',
+    },
+  },
 }
 
 const canvaServices = [
@@ -242,15 +262,25 @@ const canvaServices = [
   { name: 'Collaboration', description: 'Read and add design comments through shared access.', icon: Users },
 ]
 
+const airtableServices = [
+  { name: 'Records', description: 'Search, read, create and update records in bases you have access to.', icon: Users },
+  { name: 'Base schema', description: 'Inspect tables and fields, and reshape a base when approved.', icon: KeyRound },
+  { name: 'Interfaces & automations', description: 'Review interfaces and automation runs through Divo controls.', icon: CalendarDays },
+]
+
 const larkServices = [
   { name: 'Messaging & contacts', description: 'Read permitted chats and send approved messages through the selected Lark connection.', icon: Users },
   { name: 'Calendar & tasks', description: 'Read schedules and manage tasks when the shared connection and Divo policy allow it.', icon: CalendarDays },
   { name: 'Docs, Base & approvals', description: 'Work with authorised documents, Bases, and approval flows through Divo controls.', icon: KeyRound },
 ]
 
+// Derived from the registry rather than a parallel list of ids: the previous
+// hardcoded check silently sent any unlisted provider to the generic tool-access
+// page, which is how Airtable ended up with no way to connect.
 function getCloudProvider(pluginId: string): CloudProviderConfig | null {
-  if (pluginId === 'google-workspace' || pluginId === 'canva' || pluginId === 'lark') return cloudProviders[pluginId]
-  return null
+  return Object.prototype.hasOwnProperty.call(cloudProviders, pluginId)
+    ? cloudProviders[pluginId as CloudProviderConfig['pluginId']]
+    : null
 }
 
 type ZohoStatusResponse = {
@@ -772,7 +802,7 @@ export function PluginDetailRoute() {
             <div className="rounded-lg border border-border/70 bg-card/30 p-4">
               <h2 className="text-sm font-medium">Available services</h2>
               <div className="mt-3 space-y-3">
-                {(cloudProvider.provider === 'canva' ? canvaServices : cloudProvider.provider === 'lark' ? larkServices : googleWorkspaceServices).map((service) => {
+                {(cloudProvider.provider === 'canva' ? canvaServices : cloudProvider.provider === 'lark' ? larkServices : cloudProvider.provider === 'airtable' ? airtableServices : googleWorkspaceServices).map((service) => {
                   const ServiceIcon = service.icon
                   return (
                     <div key={service.name} className="flex gap-3">
@@ -1478,30 +1508,19 @@ function ConnectionManagementSheet({
   const [managerPolicy, setManagerPolicy] = useState<ConnectionGovernancePolicy>(defaultConnectionGovernancePolicy)
   const [selectedPerson, setSelectedPerson] = useState<ConnectionPerson | null>(null)
   const open = Boolean(connection)
-  const providerLabel = provider === 'zoho' ? 'Zoho' : provider === 'canva' ? 'Canva' : provider === 'lark' ? 'Lark' : 'Google'
-  const commandNames = provider === 'zoho'
-    ? {
-      manage: 'divo_zoho_manage_access',
-      grant: 'divo_zoho_grant_access',
-      revoke: 'divo_zoho_revoke_access',
-    }
-    : provider === 'canva'
-      ? {
-        manage: 'divo_canva_manage_access',
-        grant: 'divo_canva_grant_access',
-        revoke: 'divo_canva_revoke_access',
-      }
-      : provider === 'lark'
-        ? {
-          manage: 'divo_lark_manage_access',
-          grant: 'divo_lark_grant_access',
-          revoke: 'divo_lark_revoke_access',
-        }
-    : {
-      manage: 'divo_google_manage_access',
-      grant: 'divo_google_grant_access',
-      revoke: 'divo_google_revoke_access',
-    }
+  // Keyed by provider rather than chained ternaries: the previous chain ended
+  // in a Google fallback, so a provider added without a branch here silently
+  // managed access through Google's commands instead of its own.
+  const PROVIDER_ACCESS: Record<ManageAccessProvider, { label: string; manage: string; grant: string; revoke: string }> = {
+    zoho: { label: 'Zoho', manage: 'divo_zoho_manage_access', grant: 'divo_zoho_grant_access', revoke: 'divo_zoho_revoke_access' },
+    canva: { label: 'Canva', manage: 'divo_canva_manage_access', grant: 'divo_canva_grant_access', revoke: 'divo_canva_revoke_access' },
+    lark: { label: 'Lark', manage: 'divo_lark_manage_access', grant: 'divo_lark_grant_access', revoke: 'divo_lark_revoke_access' },
+    airtable: { label: 'Airtable', manage: 'divo_airtable_manage_access', grant: 'divo_airtable_grant_access', revoke: 'divo_airtable_revoke_access' },
+    google: { label: 'Google', manage: 'divo_google_manage_access', grant: 'divo_google_grant_access', revoke: 'divo_google_revoke_access' },
+  }
+  const providerAccess = PROVIDER_ACCESS[provider]
+  const providerLabel = providerAccess.label
+  const commandNames = { manage: providerAccess.manage, grant: providerAccess.grant, revoke: providerAccess.revoke }
 
   const loadManageData = useCallback(async () => {
     if (!connection) return
@@ -2105,8 +2124,8 @@ function AddConnectionDialog({
     setIsStartingOAuth(true)
     console.debug('[DivoPlugins] cloud_oauth.start', { provider: provider.provider })
     try {
-      const authorizeUrl = provider.provider === 'canva'
-        ? await invoke<string>(provider.commands.authorize, { label: connectionLabel.trim() || 'Canva connection' })
+      const authorizeUrl = provider.supportsLabel
+        ? await invoke<string>(provider.commands.authorize, { label: connectionLabel.trim() || provider.accountFallback })
         : await invoke<string>(provider.commands.authorize)
       console.debug('[DivoPlugins] cloud_oauth.authorize_url_received', {
         provider: provider.provider,
@@ -2163,7 +2182,7 @@ function AddConnectionDialog({
             title="Connect account"
             description={`OAuth creates a backend-owned ${provider.label} connection with admin access for you.`}
           />
-          {provider.provider === 'canva' ? (
+          {provider.supportsLabel ? (
             <label className="grid gap-1.5 text-sm font-medium">
               Connection name
               <input

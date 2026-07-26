@@ -22,6 +22,26 @@ export function CanvaIcon({ title = 'Canva', ...props }: BrandIconProps) {
   )
 }
 
+/**
+ * Airtable's three-panel mark: a yellow top face, a blue lower-left grid, and a
+ * red cylinder on the right, over a pink base panel.
+ *
+ * Redrawn rather than traced, like `CanvaIcon`, from the four brand colours
+ * (`#FFBF00`, `#18BFFF`, `#F82B60`, `#BA2E5B`). The four panels each carry
+ * their own colour, so the mark reads at 14px — the size the work log renders
+ * it at — on both light and dark backgrounds without a fill override.
+ */
+export function AirtableIcon({ title = 'Airtable', ...props }: BrandIconProps) {
+  return (
+    <svg viewBox="0 0 48 48" role="img" aria-label={title} {...props}>
+      <path fill="#FFBF00" d="M22.2 6.6 4.4 14a1.3 1.3 0 0 0 0 2.4l17.9 7.1c1.1.4 2.3.4 3.4 0l17.9-7.1a1.3 1.3 0 0 0 0-2.4L25.6 6.6a4.6 4.6 0 0 0-3.4 0Z" />
+      <path fill="#18BFFF" d="M23.9 27.1v17.7a1.3 1.3 0 0 1-1.8 1.2L3.9 39.2A1.3 1.3 0 0 1 3 38V20.6a1.3 1.3 0 0 1 1.8-1.2l18.2 6.5c.5.2.9.7.9 1.2Z" />
+      <path fill="#F82B60" d="M44.1 20.3 28.3 26.4c-.6.3-1 .8-1 1.5v16.2a1.3 1.3 0 0 0 1.8 1.2l15.8-6.1c.6-.3 1-.8 1-1.5V21.5a1.3 1.3 0 0 0-1.8-1.2Z" />
+      <path fill="#BA2E5B" d="m15.4 30.2-4.7-2.3v9.5c0 .8.9 1.4 1.7 1.1l3.5-1.4c.5-.2.8-.7.8-1.2v-4.5c0-.5-.3-1-.8-1.2Z" />
+    </svg>
+  )
+}
+
 /** Official Gmail 2026 product mark, bundled locally for offline desktop use. */
 export function GmailIcon({ title = 'Gmail', ...props }: BrandIconProps) {
   const gradientSuffix = useId().replaceAll(':', '')

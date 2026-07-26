@@ -28,6 +28,7 @@ function makeService(options: {
   overrideRows?: Array<{ userId: string; actionGroup: string; allowed: boolean }>;
   canvaConnections?: Array<unknown>;
   larkConnections?: Array<unknown>;
+  airtableConnections?: Array<unknown>;
 } = {}) {
   const writes: Array<Record<string, unknown>> = [];
   const invalidations: string[] = [];
@@ -105,6 +106,7 @@ function makeService(options: {
       listAccessibleCanvaConnections: async () => ({ ok: true as const, value: options.canvaConnections ?? [] }),
       listAccessibleZohoConnections: async () => ({ ok: true as const, value: [] }),
       listAccessibleLarkConnections: async () => ({ ok: true as const, value: options.larkConnections ?? [] }),
+      listAccessibleAirtableConnections: async () => ({ ok: true as const, value: options.airtableConnections ?? [] }),
     } as any,
     toolRegistry: {
       byId: (toolId: string) => (options.runtimeToolIds ?? ['larkTask', 'memoryRecall', 'runCommand']).includes(toolId) ? {} : undefined,
@@ -136,6 +138,18 @@ describe('DesktopToolAccessService', () => {
     assert.equal((await disconnected.service.inventory(actor)).tools[0]?.readiness, 'connection_required');
 
     const connected = makeService({ registeredTools: [canva], runtimeToolIds, canvaConnections: [{ connectionId: 'canva-1' }] });
+    assert.equal((await connected.service.inventory(actor)).tools[0]?.readiness, 'ready');
+  });
+
+  it('shows Airtable as needing a connection until one is accessible', async () => {
+    // Without an Airtable branch here every Airtable tool reported
+    // not_applicable, so the card rendered as usable while every call failed.
+    const records = { ...tool, toolId: 'airtableRecords', name: 'Airtable Records', category: 'data', domain: 'airtable' };
+    const runtimeToolIds = ['larkTask', 'airtableRecords', 'memoryRecall', 'runCommand'];
+    const disconnected = makeService({ registeredTools: [records], runtimeToolIds });
+    assert.equal((await disconnected.service.inventory(actor)).tools[0]?.readiness, 'connection_required');
+
+    const connected = makeService({ registeredTools: [records], runtimeToolIds, airtableConnections: [{ connectionId: 'airtable-1' }] });
     assert.equal((await connected.service.inventory(actor)).tools[0]?.readiness, 'ready');
   });
 
