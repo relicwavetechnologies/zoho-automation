@@ -79,6 +79,7 @@ import { createCallToolTool } from '../tools/orchestration/call-tool';
 import { createResolveGovernedWorkTool } from '../tools/orchestration/resolve-governed-work';
 import type { AuditService } from '../../observability/audit.service';
 import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from '../../skills/scheduled-work-system-skill';
+import { FinalAnswerAccumulator } from './final-answer';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -582,7 +583,7 @@ export class SupervisorAgent {
           const innerCalled: string[] = [];
           const toolResults: Array<{ toolName: string; output: string }> = [];
           const toolTimers = new Map<string, number>();
-          let innerText = '';
+          const answer = new FinalAnswerAccumulator();
           let stepCount = 0;
           let chunkCount = 0;
 
@@ -598,12 +599,14 @@ export class SupervisorAgent {
               log.info('supervisor.stream.step_finish', {
                 step: stepCount,
                 finishReason: (chunk as { finishReason?: string }).finishReason ?? 'unknown',
-                textSoFar: innerText.length,
+                textSoFar: answer.fullTranscript.length,
                 toolsSoFar: innerCalled.length,
               });
             }
 
             if (chunk.type === 'tool-call') {
+              // Whatever was said leading up to this was working, not answering.
+              answer.onToolCall();
               aggregator.recordCall(chunk.toolName);
               toolTimers.set(chunk.toolName, Date.now());
               currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
@@ -655,7 +658,9 @@ export class SupervisorAgent {
             }
 
             if (chunk.type === 'text-delta') {
-              innerText += chunk.text;
+              answer.appendText(chunk.text);
+              // The work-log still wants every delta — narration is exactly what
+              // it exists to show. Only the delivered reply drops it.
               if (aggregator.appendTextDelta(chunk.text)) {
                 currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
                   kind: 'status', terminal: false, timeline: aggregator.snapshot(),
@@ -669,7 +674,7 @@ export class SupervisorAgent {
                 error: errorMsg,
                 step: stepCount,
                 toolsSoFar: innerCalled,
-                textSoFar: innerText.length,
+                textSoFar: answer.fullTranscript.length,
               });
               const lastTool = innerCalled[innerCalled.length - 1];
               if (lastTool) aggregator.recordFailure(lastTool, errorMsg);
@@ -681,12 +686,13 @@ export class SupervisorAgent {
             totalSteps: stepCount,
             totalChunks: chunkCount,
             totalToolCalls: innerCalled.length,
-            finalTextLength: innerText.length,
+            finalTextLength: answer.text.length,
+            narrationDropped: answer.fullTranscript.length - answer.text.length,
             toolsCalled: innerCalled,
-            hasText: innerText.trim().length > 0,
+            hasText: answer.text.trim().length > 0,
           });
 
-          return { finalText: innerText, toolsCalled: innerCalled, toolResults };
+          return { finalText: answer.text, toolsCalled: innerCalled, toolResults };
         },
         log,
       );
