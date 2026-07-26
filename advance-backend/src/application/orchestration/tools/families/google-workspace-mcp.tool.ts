@@ -104,7 +104,7 @@ function createProductTool(
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [
-      'connectionId: required for op=call. Reuse the exact run-bootstrap account; use connections.list once only when no suitable account was loaded. Reuse the same connectionId for describe.',
+      'connectionId: reuse the exact run-bootstrap account when supplied. In backend-hosted channels, omit it when no account was supplied; the backend selects only one eligible account or returns safe choices. Reuse the same connectionId for describe and call.',
       'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.',
       `nativeTool: one of ${product.tools.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}`,

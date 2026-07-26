@@ -17,6 +17,7 @@ graphify-out/
 research/
 research/hermes-agent/
 research/graphiti/
+openworker/
 
 # production/local secrets
 .env
