@@ -73,8 +73,13 @@ export type ManagerApprovalConfig = z.infer<typeof ManagerApprovalConfigSchema>;
 
 // ─── Resolved manager info ────────────────────────────────────────────────────
 
+/**
+ * The person whose yes is required. `larkOpenId` is a delivery address, not part
+ * of their authority — null means Divo cannot card them, and the request waits
+ * in their approval inbox instead.
+ */
 export interface ResolvedManager {
   readonly userId:      string;
-  readonly larkOpenId:  string;
+  readonly larkOpenId:  string | null;
   readonly displayName: string;
 }

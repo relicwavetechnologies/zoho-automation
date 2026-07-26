@@ -303,6 +303,16 @@ export class AutomationPlanService {
     }
     const approval = create.value.approval;
 
+    // No card address for the approver. The plan is stored and live; it waits
+    // in their Divo approval inbox rather than failing for want of a Lark DM.
+    if (!approver.larkOpenId) {
+      this.deps.logger.info('automation_plan.created_inbox', {
+        planId: approval.id,
+        approver: approver.userId,
+      });
+      return gatewaySuccess(this.present(approval, { actionCounts, requestState: 'created' }));
+    }
+
     const card = buildAutomationPlanApprovalCard({
       approvalId: approval.id,
       title: stored.title,

@@ -1,0 +1,1050 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Divo · Tools & Access — UX spec</title>
+<style>
+  :root{
+    --bg:#181818; --rail:#242424; --card:#1f1f1f; --card2:#232323; --hover:#262626;
+    --fg:#ededed; --mut:#9b9b9b; --dim:#6f6f6f;
+    --bd:rgba(255,255,255,.08); --bd2:rgba(255,255,255,.16);
+    --pri:#7cc5f7; --pri-fg:#12212b;
+    --ok:#6ee7a8; --warn:#f7c56b; --bad:#f38a8a; --note:#c9a227;
+    --r:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  h1,h2,h3,h4,p{margin:0}
+  a{color:var(--pri)}
+
+  /* ---------- spec chrome (not part of the product) ---------- */
+  .specbar{
+    position:sticky;top:0;z-index:60;display:flex;gap:14px;align-items:center;flex-wrap:wrap;
+    padding:8px 14px;background:#101010;border-bottom:1px solid var(--bd);font-size:12px;
+  }
+  .specbar .tag{color:var(--note);font-weight:600;letter-spacing:.04em;text-transform:uppercase;font-size:10px}
+  .specbar .lbl{color:var(--dim)}
+  .seg{display:inline-flex;border:1px solid var(--bd);border-radius:8px;overflow:hidden;background:var(--card)}
+  .seg button{padding:5px 10px;color:var(--mut);font-size:12px;white-space:nowrap}
+  .seg button+button{border-left:1px solid var(--bd)}
+  .seg button.on{background:var(--hover);color:var(--fg)}
+  .note{
+    border:1px solid rgba(201,162,39,.35);background:rgba(201,162,39,.07);border-radius:var(--r);
+    padding:11px 13px;margin:12px 0;font-size:12.5px;line-height:1.6;color:#e6d9ae;
+  }
+  .note b{color:var(--note)}
+  .note .q{display:inline-block;background:rgba(201,162,39,.2);color:#f0dfae;border-radius:5px;padding:1px 6px;font-weight:600;margin-right:6px}
+  .hidden{display:none !important}
+
+  /* ---------- app shell ---------- */
+  .app{display:grid;grid-template-columns:236px 1fr;min-height:calc(100vh - 37px)}
+  .rail{background:var(--rail);border-right:1px solid var(--bd);padding:14px 10px;display:flex;flex-direction:column;gap:2px}
+  .brand{display:flex;align-items:center;gap:9px;padding:6px 8px 16px;font-weight:600}
+  .brand .mark{width:22px;height:22px;border-radius:6px;background:var(--pri);color:var(--pri-fg);display:grid;place-items:center;font-size:12px;font-weight:700}
+  .navitem{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:8px;color:var(--mut);font-size:13.5px}
+  .navitem.on{background:var(--hover);color:var(--fg)}
+  .railhead{padding:16px 9px 6px;font-size:11px;color:var(--dim);letter-spacing:.03em}
+  .railfoot{margin-top:auto;display:flex;align-items:center;gap:9px;padding:9px;border-top:1px solid var(--bd);color:var(--mut);font-size:12.5px}
+  .ava{width:26px;height:26px;border-radius:50%;background:#3a3a3a;display:grid;place-items:center;font-size:11px;color:var(--fg)}
+
+  main{padding:26px 30px 90px;overflow:auto}
+  .wrap{max-width:1060px;margin:0 auto}
+
+  /* ---------- typography / bits ---------- */
+  .h1{font-size:22px;font-weight:600;letter-spacing:-.01em}
+  .sub{color:var(--mut);font-size:13px;margin-top:3px}
+  .h2{font-size:15px;font-weight:600}
+  .h3{font-size:13.5px;font-weight:600}
+  .muted{color:var(--mut)}
+  .dim{color:var(--dim)}
+  .xs{font-size:12px}
+  .crumb{display:flex;align-items:center;gap:7px;color:var(--mut);font-size:12.5px;margin-bottom:14px}
+  .crumb button{color:var(--mut)}
+  .crumb button:hover{color:var(--fg)}
+  .crumb .sep{color:var(--dim)}
+
+  .btn{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border:1px solid var(--bd2);border-radius:8px;font-size:13px;color:var(--fg);background:var(--card)}
+  .btn:hover{background:var(--hover)}
+  .btn.primary{background:var(--pri);color:var(--pri-fg);border-color:transparent;font-weight:500}
+  .btn.primary:hover{filter:brightness(1.06)}
+  .btn.ghost{border-color:transparent;background:none;color:var(--mut)}
+  .btn.ghost:hover{color:var(--fg);background:var(--hover)}
+  .btn.sm{padding:4px 9px;font-size:12px}
+
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:11.5px;border:1px solid var(--bd);color:var(--mut);background:var(--card)}
+  .chip.ok{color:var(--ok);border-color:rgba(110,231,168,.28);background:rgba(110,231,168,.08)}
+  .chip.warn{color:var(--warn);border-color:rgba(247,197,107,.3);background:rgba(247,197,107,.08)}
+  .chip.bad{color:var(--bad);border-color:rgba(243,138,138,.3);background:rgba(243,138,138,.08)}
+  .chip.flat{background:transparent}
+  .dot{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
+
+  .tile{width:32px;height:32px;border-radius:8px;display:grid;place-items:center;font-weight:700;font-size:13px;flex:none}
+  .tile.lg{width:46px;height:46px;border-radius:11px;font-size:18px}
+
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:var(--r)}
+  .pad{padding:16px}
+
+  /* ---------- tables ---------- */
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:11px;font-weight:500;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;padding:9px 14px;border-bottom:1px solid var(--bd)}
+  td{padding:11px 14px;border-bottom:1px solid var(--bd);vertical-align:middle;font-size:13.5px}
+  tr:last-child td{border-bottom:0}
+  tr.click{cursor:pointer}
+  tr.click:hover td{background:var(--hover)}
+  td.num,th.num{text-align:center;width:96px}
+  .chev{color:var(--dim);width:20px;text-align:right}
+  tr.click:hover .chev{color:var(--fg)}
+  .cellsub{font-size:11.5px;color:var(--dim);margin-top:1px}
+
+  /* ---------- switch ---------- */
+  .sw{width:34px;height:19px;border-radius:999px;background:#3a3a3a;position:relative;display:inline-block;transition:background .12s;flex:none;cursor:pointer;vertical-align:middle}
+  .sw i{position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#c9c9c9;transition:transform .12s,background .12s}
+  .sw.on{background:var(--pri)} .sw.on i{transform:translateX(15px);background:#0f1c24}
+  .sw.off-locked{opacity:.32;cursor:not-allowed}
+  .swwrap{display:inline-flex;flex-direction:column;align-items:center;gap:3px}
+  .swwrap .why{font-size:10.5px;color:var(--warn);cursor:help;border-bottom:1px dotted rgba(247,197,107,.5)}
+
+  /* ---------- layout helpers ---------- */
+  .row{display:flex;align-items:center;gap:10px}
+  .between{display:flex;align-items:center;justify-content:space-between;gap:14px}
+  .stack{display:flex;flex-direction:column;gap:16px}
+  .gap8{display:flex;gap:8px;flex-wrap:wrap}
+  .sec-title{display:flex;align-items:baseline;justify-content:space-between;margin:22px 0 9px}
+
+  .banner{display:flex;gap:11px;align-items:flex-start;border:1px solid rgba(247,197,107,.25);background:rgba(247,197,107,.06);border-radius:var(--r);padding:13px 15px}
+  .banner .bt{font-size:13.5px;font-weight:500}
+  .banner .bd{font-size:12.5px;color:var(--mut);margin-top:2px}
+
+  .search{width:100%;height:36px;border:1px solid var(--bd);background:#1c1c1c;border-radius:9px;padding:0 12px;color:var(--fg);font:inherit;font-size:13px}
+  .search::placeholder{color:var(--dim)}
+
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--bd);margin:18px 0 0}
+  .tabs button{padding:8px 13px;font-size:13.5px;color:var(--mut);border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tabs button.on{color:var(--fg);border-bottom-color:var(--fg)}
+  .tabs .count{color:var(--dim);font-size:11.5px;margin-left:5px}
+
+  /* ---------- detail drawer ---------- */
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:70}
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:min(460px,92vw);background:var(--card);border-left:1px solid var(--bd);z-index:71;overflow:auto;padding:20px 22px 60px;box-shadow:-24px 0 60px rgba(0,0,0,.45)}
+  .drawer .dh{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding-bottom:14px;border-bottom:1px solid var(--bd);margin-bottom:16px}
+  .kv{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--bd);font-size:13px}
+  .kv:last-child{border-bottom:0}
+  .kv .k{color:var(--mut)}
+  .chain{border-left:2px solid var(--bd2);padding-left:12px;margin:4px 0 0;display:flex;flex-direction:column;gap:7px}
+  .chain .step{font-size:12.5px;color:var(--mut)}
+  .chain .step b{color:var(--fg);font-weight:500}
+
+  .empty{border:1px dashed var(--bd2);border-radius:var(--r);padding:26px;text-align:center;color:var(--mut);font-size:13px}
+  .grid2{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
+  .conncard{border:1px solid var(--bd);border-radius:var(--r);padding:14px;background:var(--card2)}
+</style>
+</head>
+<body>
+
+<div class="specbar">
+  <span class="tag">UX spec — not shipped</span>
+  <span class="lbl">Viewing as</span>
+  <span class="seg" id="personaSeg"></span>
+  <span class="lbl" style="margin-left:auto">Annotations</span>
+  <span class="seg" id="notesSeg"></span>
+</div>
+
+<div class="app">
+  <aside class="rail">
+    <div class="brand"><span class="mark">D</span> Divo Dex</div>
+    <div class="navitem">💬&nbsp; New Chat</div>
+    <div class="navitem on">🧩&nbsp; Tools</div>
+    <div class="navitem">⚙️&nbsp; Settings</div>
+    <div class="railhead">Chats</div>
+    <div class="navitem">Airtable access request</div>
+    <div class="navitem">Q3 vendor reconciliation</div>
+    <div class="navitem">OMS status check</div>
+    <div class="railfoot"><span class="ava" id="railAva">AV</span><span id="railName">Abhishek Verma</span></div>
+  </aside>
+  <main><div class="wrap" id="app"></div></main>
+</div>
+
+<script>
+/* =====================================================================
+   DATA — shaped to match the real backend model:
+   company policy (ceiling) → department role grants → personal exceptions
+   ===================================================================== */
+
+const VERB = {read:'View', create:'Add', update:'Edit', delete:'Delete', send:'Send', execute:'Run'};
+const label = (a, noun) => VERB[a] + ' ' + noun;
+
+function cap(id, name, noun, actions, opts){ return Object.assign({id,name,noun,actions,approvable:[],memberBlocked:false,fixed:false,adminOnly:false}, opts||{}); }
+
+const TOOLS = [
+  { id:'google', name:'Google Workspace', kind:'app', color:'#4285F4', letter:'G',
+    desc:'Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat and Apps Script.',
+    connection:{style:'personal', status:'connected', accounts:[
+      {label:'abhishek@emiactech.com', kind:'Personal', state:'connected', added:'12 Jun 2026'},
+      {label:'ops@emiactech.com', kind:'Shared by admin', state:'connected', added:'2 Feb 2026'}]},
+    caps:[
+      cap('gmail','Gmail','email',['read','create','update','delete','send'],{approvable:['send','delete']}),
+      cap('gdrive','Drive','files',['read','create','update','delete'],{approvable:['delete']}),
+      cap('gcal','Calendar','events',['read','create','update','delete'],{approvable:['delete']}),
+      cap('gdocs','Docs','documents',['read','create','update','delete'],{approvable:['delete']}),
+      cap('gsheets','Sheets','spreadsheets',['read','create','update','delete'],{approvable:['delete']}),
+      cap('gslides','Slides','presentations',['read','create','update','delete'],{approvable:['delete']}),
+      cap('gforms','Forms','forms',['read','create','update','delete'],{approvable:['delete']}),
+      cap('gtasks','Tasks','tasks',['read','create','update','delete']),
+      cap('gcontacts','Contacts','contacts',['read','create','update','delete'],{approvable:['delete']}),
+      cap('gchat','Chat','messages',['read','send','update'],{approvable:['send']}),
+      cap('gscript','Apps Script','scripts',['read','create','update','delete','execute'],{memberBlocked:true,approvable:['execute','delete']})]},
+
+  { id:'airtable', name:'Airtable', kind:'app', color:'#FCB400', letter:'A',
+    desc:'Records, base schema, interfaces and automations across connected Airtable accounts.',
+    connection:{style:'personal', status:'connected', accounts:[
+      {label:'abhishek@emiactech.com', kind:'Personal', state:'connected', added:'26 Jul 2026'}]},
+    caps:[
+      cap('atrec','Records','records',['read','create','update','delete'],{approvable:['delete']}),
+      cap('atschema','Base schema','tables & fields',['read','create','update','delete'],{memberBlocked:true,approvable:['delete','update']}),
+      cap('atauto','Automations','automations',['read','create','update','delete'],{memberBlocked:true,approvable:['delete','update']})]},
+
+  { id:'canva', name:'Canva', kind:'app', color:'#00C4CC', letter:'C',
+    desc:'Designs, assets, folders and exports.',
+    connection:{style:'personal', status:'needed', accounts:[]},
+    caps:[ cap('canvad','Designs','designs',['read','create','update']) ]},
+
+  { id:'zoho', name:'Zoho', kind:'app', color:'#E42527', letter:'Z',
+    desc:'CRM and Books, connected once by the company.',
+    connection:{style:'company', status:'connected', accounts:[{label:'EMIAC Tech (org 60xxxx)', kind:'Company', state:'connected', added:'9 Jan 2026'}]},
+    caps:[
+      cap('zcrm','CRM','records',['read','create','update','delete'],{approvable:['delete']}),
+      cap('zbooks','Books','invoices',['read','create','update','delete'],{approvable:['delete','create']})]},
+
+  { id:'lark', name:'Lark', kind:'app', color:'#00D6B9', letter:'L',
+    desc:'Company-managed Lark messaging, docs, tasks and approvals.',
+    connection:{style:'company', status:'connected', accounts:[{label:'EMIAC Tech tenant', kind:'Company', state:'connected', added:'4 Nov 2025'}]},
+    caps:[
+      cap('lmsg','Messaging','messages',['read','send'],{approvable:['send']}),
+      cap('lcontacts','Contacts','contacts',['read']),
+      cap('ltask','Tasks','tasks',['read','create','update','delete']),
+      cap('lcal','Calendar','events',['read','create','update','delete']),
+      cap('ldoc','Docs','documents',['read','create','update']),
+      cap('lbase','Base','tables',['read','create','update','delete'],{memberBlocked:true,approvable:['delete']}),
+      cap('lapp','Approvals','approvals',['read','create'],{memberBlocked:true,approvable:['create']})]},
+
+  { id:'websearch', name:'Web Search', kind:'capability', color:'#8ab4f8', letter:'W',
+    desc:'Live web search through company-owned Serper keys.',
+    connection:{style:'company', status:'connected', accounts:[{label:'Serper key · primary', kind:'Company', state:'connected', added:'30 Apr 2026'}]},
+    caps:[ cap('websearch','Web search','the web',['read']) ]},
+
+  { id:'memory', name:'Memory', kind:'capability', color:'#c4b5fd', letter:'M',
+    desc:'Company memory Divo writes to and reads from.',
+    connection:{style:'none', status:'n/a', accounts:[]},
+    caps:[
+      cap('memrecall','Memory recall','memories',['read'],{fixed:true}),
+      cap('mempub','Memory publishing','memories',['read','create'])]},
+
+  { id:'rag', name:'Document knowledge', kind:'capability', color:'#7dd3fc', letter:'K',
+    desc:'Ask questions across documents indexed for your company.',
+    connection:{style:'none', status:'n/a', accounts:[]},
+    caps:[ cap('docrag','Document knowledge','documents',['read']) ]},
+
+  { id:'schedules', name:'Scheduled work', kind:'capability', color:'#fca5a5', letter:'S',
+    desc:'Recurring jobs Divo runs on a schedule.',
+    connection:{style:'none', status:'n/a', accounts:[]},
+    caps:[ cap('sched','Scheduled work','schedules',['read','create','update','delete','execute'],{approvable:['execute','delete']}) ]},
+
+  { id:'semrush', name:'Semrush', kind:'capability', color:'#FF642D', letter:'S',
+    desc:'Keyword, domain and backlink data from company Semrush keys.',
+    connection:{style:'company', status:'expiring', accounts:[{label:'Semrush key · marketing', kind:'Company', state:'expiring', added:'2 Feb 2026'}]},
+    caps:[ cap('semrush','Semrush','SEO data',['read']) ]},
+
+  { id:'oms', name:'OMS site data', kind:'capability', color:'#a3e635', letter:'O',
+    desc:'Site inventory and pricing from the company OMS.',
+    connection:{style:'company', status:'connected', accounts:[{label:'OMS API · production', kind:'Company', state:'connected', added:'18 Jul 2026'}]},
+    caps:[ cap('oms','OMS site data','site inventory',['read'],{adminOnly:true}) ]},
+
+  { id:'skills', name:'Skills', kind:'capability', color:'#924ff7', letter:'K',
+    desc:'Publish and manage reusable Divo skills for the company.',
+    connection:{style:'none', status:'n/a', accounts:[]},
+    caps:[ cap('skillpub','Skill publishing','skills',['read','create','update','delete'],{memberBlocked:true,approvable:['delete']}) ]},
+
+  { id:'terminal', name:'Terminal', kind:'capability', color:'#9b9b9b', letter:'>',
+    desc:'Runs commands on your own machine. You approve each command as it happens.',
+    connection:{style:'none', status:'n/a', accounts:[]},
+    caps:[ cap('runcmd','Terminal','commands',['execute'],{fixed:true}) ]},
+];
+
+const DEPARTMENTS = [
+  { id:'fin', name:'Finance',
+    roles:[{id:'fin-mgr',name:'Manager',rank:3,system:true},{id:'fin-anl',name:'Analyst',rank:2},{id:'fin-asc',name:'Associate',rank:1}],
+    people:[
+      {id:'u1',name:'Rahul Verma',email:'rahul@emiactech.com',role:'fin-mgr',companyRole:'admin'},
+      {id:'u2',name:'Priya Nair',email:'priya@emiactech.com',role:'fin-mgr',companyRole:'member'},
+      {id:'u3',name:'Aman Gupta',email:'aman@emiactech.com',role:'fin-anl',companyRole:'member'},
+      {id:'u4',name:'Sana Iqbal',email:'sana@emiactech.com',role:'fin-anl',companyRole:'member'},
+      {id:'u5',name:'Dev Menon',email:'dev@emiactech.com',role:'fin-anl',companyRole:'member'},
+      {id:'u6',name:'Kiran Rao',email:'kiran@emiactech.com',role:'fin-anl',companyRole:'member'},
+      {id:'u7',name:'Neha Shah',email:'neha@emiactech.com',role:'fin-anl',companyRole:'member'},
+      {id:'u8',name:'Farhan Ali',email:'farhan@emiactech.com',role:'fin-asc',companyRole:'member'},
+      {id:'u9',name:'Tara Bose',email:'tara@emiactech.com',role:'fin-asc',companyRole:'member'}],
+    adopted:['google','airtable','zoho','lark','websearch','memory','rag','oms'] },
+  { id:'mkt', name:'Marketing',
+    roles:[{id:'mkt-mgr',name:'Manager',rank:3,system:true},{id:'mkt-str',name:'Strategist',rank:2},{id:'mkt-des',name:'Designer',rank:2},{id:'mkt-int',name:'Intern',rank:1}],
+    people:[
+      {id:'u10',name:'Abhishek Verma',email:'abhishek@emiactech.com',role:'mkt-mgr',companyRole:'member'},
+      {id:'u11',name:'Ritu Sen',email:'ritu@emiactech.com',role:'mkt-mgr',companyRole:'member'},
+      {id:'u12',name:'Mohit Jain',email:'mohit@emiactech.com',role:'mkt-str',companyRole:'member'},
+      {id:'u13',name:'Ayesha Khan',email:'ayesha@emiactech.com',role:'mkt-str',companyRole:'member'},
+      {id:'u14',name:'Vikram Iyer',email:'vikram@emiactech.com',role:'mkt-str',companyRole:'member'},
+      {id:'u15',name:'Neel Kapoor',email:'neel@emiactech.com',role:'mkt-des',companyRole:'member'},
+      {id:'u16',name:'Isha Roy',email:'isha@emiactech.com',role:'mkt-des',companyRole:'member'},
+      {id:'u17',name:'Zoya Sheikh',email:'zoya@emiactech.com',role:'mkt-int',companyRole:'member'}],
+    adopted:['google','canva','lark','websearch','semrush','memory','rag','schedules'] },
+  { id:'ops', name:'Operations',
+    roles:[{id:'ops-mgr',name:'Manager',rank:3,system:true},{id:'ops-crd',name:'Coordinator',rank:2}],
+    people:[
+      {id:'u18',name:'Sunil Patil',email:'sunil@emiactech.com',role:'ops-mgr',companyRole:'member'},
+      {id:'u19',name:'Meera Das',email:'meera@emiactech.com',role:'ops-crd',companyRole:'member'},
+      {id:'u20',name:'Arjun Nair',email:'arjun@emiactech.com',role:'ops-crd',companyRole:'member'}],
+    adopted:['google','lark','websearch','memory','schedules'] },
+];
+
+const ALL_CAPS = {}; const CAP_TOOL = {};
+TOOLS.forEach(t => t.caps.forEach(c => { ALL_CAPS[c.id] = c; CAP_TOOL[c.id] = t; }));
+const dept = id => DEPARTMENTS.find(d => d.id === id);
+const tool = id => TOOLS.find(t => t.id === id);
+const personOf = id => DEPARTMENTS.flatMap(d => d.people).find(p => p.id === id);
+
+/* ---- company policy: the ceiling. What a company role may EVER do. ---- */
+const COMPANY = {};
+TOOLS.forEach(t => t.caps.forEach(c => {
+  COMPANY[c.id] = {
+    member: new Set(c.memberBlocked || c.adminOnly ? [] : c.actions),
+    admin:  new Set(c.actions),
+  };
+}));
+
+/* ---- department role grants (seeded to look like a real company) ---- */
+const GRANTS = {};
+DEPARTMENTS.forEach(d => {
+  GRANTS[d.id] = {};
+  TOOLS.forEach(t => t.caps.forEach(c => {
+    GRANTS[d.id][c.id] = {};
+    d.roles.forEach(r => {
+      const s = new Set();
+      const adopted = d.adopted.includes(t.id);
+      if (adopted && !c.fixed) {
+        c.actions.forEach(a => {
+          if (a === 'read') s.add(a);
+          else if ((a === 'create' || a === 'update' || a === 'send') && r.rank >= 2) s.add(a);
+          else if ((a === 'delete' || a === 'execute') && r.rank >= 3) s.add(a);
+        });
+      }
+      GRANTS[d.id][c.id][r.id] = s;
+    });
+  }));
+});
+// hand-tuned reality
+GRANTS.fin.atschema['fin-anl'] = new Set(); GRANTS.fin.atschema['fin-asc'] = new Set();
+GRANTS.fin.atschema['fin-mgr'] = new Set(['read']);
+Object.keys(GRANTS.fin.atauto).forEach(r => GRANTS.fin.atauto[r] = new Set());
+GRANTS.fin.oms['fin-mgr'] = new Set(['read']);
+GRANTS.fin.oms['fin-anl'] = new Set(); GRANTS.fin.oms['fin-asc'] = new Set();
+// Capabilities a department deliberately keeps away from some groups. Without
+// these every role reads as "everyone", and a coverage column that always says
+// the same thing teaches nobody anything.
+[
+  ['mkt','semrush',['mkt-des','mkt-int']],
+  ['mkt','sched',  ['mkt-des','mkt-int']],
+  ['mkt','gscript',['mkt-mgr','mkt-str','mkt-des','mkt-int']],
+  ['mkt','lbase',  ['mkt-str','mkt-des','mkt-int']],
+  ['mkt','lapp',   ['mkt-str','mkt-des','mkt-int']],
+  ['mkt','canvad', ['mkt-int']],
+  ['fin','zcrm',   ['fin-asc']],
+  ['fin','zbooks', ['fin-asc']],
+  ['fin','gscript',['fin-anl','fin-asc']],
+  ['fin','lbase',  ['fin-anl','fin-asc']],
+  ['fin','lapp',   ['fin-anl','fin-asc']],
+  ['ops','sched',  ['ops-crd']],
+  ['ops','lbase',  ['ops-crd']],
+  ['ops','lapp',   ['ops-crd']],
+].forEach(([d,c,roles]) => roles.forEach(r => GRANTS[d][c][r] = new Set()));
+
+/* ---- personal exceptions: userId → capId → action → allow/deny ---- */
+const EXCEPTIONS = {
+  u9:  { atrec: { create:true } },              // Tara Bose, Associate, allowed to add records
+  u4:  { zcrm:  { update:false } },             // Sana Iqbal, Analyst, edit taken away
+  u17: { gmail: { send:false } },               // Zoya Sheikh, Intern, cannot send email
+};
+
+/* ---- approval requirements: deptId → capId → action ---- */
+const APPROVAL = {
+  fin: { atrec:{ delete:true }, zbooks:{ create:true } },
+  mkt: { gmail:{ send:true } },
+  ops: {},
+};
+
+/* ---------- the one function everything renders from ---------- */
+function effective(person, capId, action){
+  const c = ALL_CAPS[capId];
+  const companySet = COMPANY[capId][person.companyRole === 'admin' ? 'admin' : 'member'];
+  const d = DEPARTMENTS.find(x => x.people.some(p => p.id === person.id));
+  const roleAllows = GRANTS[d.id][capId][person.role].has(action);
+  const ex = EXCEPTIONS[person.id] && EXCEPTIONS[person.id][capId] && EXCEPTIONS[person.id][capId][action];
+  const configured = ex === undefined ? roleAllows : ex;
+  const companyAllows = companySet.has(action);
+  return {
+    allowed: configured && companyAllows && !c.fixed,
+    configured, companyAllows, roleAllows,
+    exception: ex === undefined ? null : ex,
+    needsApproval: !!(APPROVAL[d.id] && APPROVAL[d.id][capId] && APPROVAL[d.id][capId][action]),
+    fixed: c.fixed,
+  };
+}
+const capPeople = (d, capId) => d.people.filter(p => ALL_CAPS[capId].actions.some(a => effective(p, capId, a).allowed));
+const toolPeople = (d, t) => d.people.filter(p => t.caps.some(c => c.actions.some(a => effective(p, c.id, a).allowed)));
+
+/* =====================================================================
+   STATE
+   ===================================================================== */
+const PERSONAS = {
+  member: { label:'Member',                 userId:'u7',  scopes:[] },
+  mgr1:   { label:'Manager · 1 dept',       userId:'u18', scopes:['ops'] },
+  mgr2:   { label:'Manager · 2 depts',      userId:'u10', scopes:['mkt','fin'] },
+  admin:  { label:'Company admin',          userId:'u1',  scopes:['company','fin','mkt','ops'] },
+};
+const S = { persona:'mgr2', scope:'mkt', route:{name:'index'}, notes:true, q:'', filter:'all', drawer:null };
+
+function me(){ return personOf(PERSONAS[S.persona].userId); }
+function scopeOptions(){
+  const p = PERSONAS[S.persona];
+  const opts = p.scopes.map(s => s === 'company'
+    ? { id:'company', label:'Company policy', hint:'What every department is allowed to grant' }
+    : { id:s, label:dept(s).name, hint:'Access inside this department' });
+  if (p.scopes.filter(s => s !== 'company').length > 1) opts.push({ id:'all', label:'All departments', hint:'Side-by-side comparison' });
+  return opts;
+}
+function setPersona(k){
+  S.persona = k;
+  const first = scopeOptions()[0];
+  S.scope = first ? first.id : '';
+  S.route = { name:'index' }; S.drawer = null; S.q=''; S.filter='all';
+  render();
+}
+function go(route){ S.route = route; S.drawer = null; window.scrollTo(0,0); render(); }
+
+/* =====================================================================
+   SMALL VIEW HELPERS
+   ===================================================================== */
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const initials = n => n.split(' ').slice(0,2).map(w => w[0]).join('');
+function tile(t, lg){ return `<span class="tile ${lg?'lg':''}" style="background:${t.color}22;color:${t.color}">${t.letter}</span>`; }
+function note(id, html){ return `<div class="note nt"><span class="q">${id}</span>${html}</div>`; }
+function statusChip(t){
+  if (t.connection.status === 'needed') return `<span class="chip warn"><span class="dot"></span>Needs connection</span>`;
+  if (t.connection.status === 'expiring') return `<span class="chip warn"><span class="dot"></span>Key expiring</span>`;
+  if (t.connection.status === 'connected') return `<span class="chip ok"><span class="dot"></span>Connected</span>`;
+  return `<span class="chip flat">Built in</span>`;
+}
+function coverageText(d, t){
+  if (!d) return '';
+  const n = toolPeople(d, t).length;
+  if (n === 0) return `<span class="dim">No one</span>`;
+  if (n === d.people.length) return `All ${n} people`;
+  return `${n} of ${d.people.length} people`;
+}
+function sw(on, locked, onclick){
+  return `<span class="sw ${on?'on':''} ${locked?'off-locked':''}" ${locked?'':`onclick="${onclick}"`}><i></i></span>`;
+}
+
+/* =====================================================================
+   RENDER
+   ===================================================================== */
+function render(){
+  document.getElementById('personaSeg').innerHTML = Object.entries(PERSONAS)
+    .map(([k,v]) => `<button class="${S.persona===k?'on':''}" onclick="setPersona('${k}')">${v.label}</button>`).join('');
+  document.getElementById('notesSeg').innerHTML =
+    `<button class="${S.notes?'on':''}" onclick="S.notes=true;render()">Show</button>
+     <button class="${!S.notes?'on':''}" onclick="S.notes=false;render()">Hide</button>`;
+  document.getElementById('railName').textContent = me().name;
+  document.getElementById('railAva').textContent = initials(me().name);
+
+  const app = document.getElementById('app');
+  app.innerHTML = S.route.name === 'index' ? viewIndex() : viewTool();
+
+  const old = document.querySelector('.scrim'); if (old) old.remove();
+  const oldD = document.querySelector('.drawer'); if (oldD) oldD.remove();
+  if (S.drawer) {
+    document.body.insertAdjacentHTML('beforeend', `<div class="scrim" onclick="S.drawer=null;render()"></div><div class="drawer">${drawerHTML()}</div>`);
+  }
+  if (!S.notes) document.querySelectorAll('.nt').forEach(n => n.classList.add('hidden'));
+  writeHash();
+}
+
+/* Deep links, so any screen in this spec can be sent to someone as a URL. */
+function writeHash(){
+  const p = { persona:S.persona, scope:S.scope, notes:S.notes?1:0 };
+  if (S.route.name === 'tool') Object.assign(p, { tool:S.route.toolId, tab:S.route.tab||'overview', cap:S.route.capId||'', view:S.route.view||'' });
+  const q = Object.entries(p).filter(([,v]) => v !== '' && v !== undefined).map(([k,v]) => `${k}=${v}`).join('&');
+  history.replaceState(null, '', '#' + q);
+}
+function readHash(){
+  const q = Object.fromEntries(location.hash.replace(/^#/,'').split('&').filter(Boolean).map(s => s.split('=')));
+  if (!q.persona || !PERSONAS[q.persona]) return false;
+  setPersona(q.persona);
+  if (q.scope) S.scope = q.scope;
+  if (q.notes !== undefined) S.notes = q.notes === '1';
+  if (q.tool) S.route = { name:'tool', toolId:q.tool, tab:q.tab || 'overview', capId:q.cap || undefined, view:q.view || undefined };
+  render();
+  return true;
+}
+
+/* ---------------------------------------------------------------- INDEX */
+function viewIndex(){
+  if (S.persona === 'member') return viewMemberIndex();
+  const opts = scopeOptions();
+  const d = (S.scope === 'company' || S.scope === 'all') ? null : dept(S.scope);
+  const scopeHint = (opts.find(o => o.id === S.scope) || {}).hint || '';
+
+  const head = `
+    <div class="between" style="align-items:flex-start">
+      <div>
+        <div class="h1">Tools</div>
+        <div class="sub">${S.persona === 'admin'
+          ? 'Set what the company allows, then manage any department in detail.'
+          : 'Give your people the access they need, inside what the company allows.'}</div>
+      </div>
+      <button class="btn sm"><span>↻</span>Refresh</button>
+    </div>`;
+
+  const scopeBar = opts.length > 1 ? `
+    <div class="row" style="margin-top:16px;gap:12px;flex-wrap:wrap">
+      <span class="seg">${opts.map(o => `<button class="${S.scope===o.id?'on':''}" onclick="S.scope='${o.id}';S.route={name:'index'};render()">${o.label}</button>`).join('')}</span>
+      <span class="xs dim">${scopeHint}</span>
+    </div>` : `<div class="row xs dim" style="margin-top:10px">${dept(S.scope).name} · you manage this department</div>`;
+
+  const n1 = note('Q1', `<b>One context switcher, at the top, always.</b> Today the department lives in a stat card that also shows counts, so it reads as a summary, not a control — and a company admin gets dropped into someone else's department with no company-level home. Here the first choice is <i>where am I working</i>: company policy, one department, or a comparison. <b>Open question:</b> should a company admin's default landing be <i>Company policy</i> (as here) or the department they most recently touched?`);
+
+  if (S.scope === 'all') return head + scopeBar + n1 + viewCompare();
+  if (S.scope === 'company') return head + scopeBar + n1 + viewCompanyIndex();
+  return head + scopeBar + n1 + viewDeptIndex(d);
+}
+
+function statBar(d){
+  const attention = TOOLS.filter(t => d.adopted.includes(t.id) && (t.connection.status === 'needed' || t.connection.status === 'expiring')).length;
+  const cells = [
+    ['People', d.people.length], ['Roles', d.roles.length],
+    ['Tools in use', d.adopted.length], ['Need attention', attention]];
+  return `<div class="card" style="margin-top:16px;display:grid;grid-template-columns:repeat(4,1fr)">
+    ${cells.map(([k,v],i) => `<div class="pad" style="${i?'border-left:1px solid var(--bd)':''}">
+      <div style="font-size:19px;font-weight:600;${k==='Need attention'&&v?'color:var(--warn)':''}">${v}</div>
+      <div class="xs dim">${k}</div></div>`).join('')}
+  </div>`;
+}
+
+function toolRow(d, t){
+  const attention = t.connection.status === 'needed' || t.connection.status === 'expiring';
+  const approvals = Object.keys((APPROVAL[d.id]||{})).filter(cid => CAP_TOOL[cid] === t).length;
+  return `<tr class="click" onclick="go({name:'tool',toolId:'${t.id}',tab:'overview'})">
+    <td><div class="row">${tile(t)}<div><div>${t.name}</div><div class="cellsub">${t.caps.length === 1 ? t.caps[0].name : t.caps.map(c=>c.name).slice(0,3).join(' · ') + (t.caps.length>3?` +${t.caps.length-3}`:'')}</div></div></div></td>
+    <td>${coverageText(d, t)}</td>
+    <td>${approvals ? `<span class="chip">${approvals} needs approval</span>` : '<span class="dim">—</span>'}</td>
+    <td>${attention ? statusChip(t) : (t.connection.style==='none' ? '<span class="dim xs">Built in</span>' : statusChip(t))}</td>
+    <td class="chev">›</td></tr>`;
+}
+
+function viewDeptIndex(d){
+  const attention = TOOLS.filter(t => d.adopted.includes(t.id) && (t.connection.status === 'needed' || t.connection.status === 'expiring'));
+  const match = t => !S.q || (t.name + ' ' + t.desc + ' ' + t.caps.map(c=>c.name).join(' ')).toLowerCase().includes(S.q.toLowerCase());
+  const inUse = TOOLS.filter(t => d.adopted.includes(t.id)).filter(match);
+  const notUsed = TOOLS.filter(t => !d.adopted.includes(t.id)).filter(match);
+
+  const n2 = note('Q2', `<b>One row, one destination.</b> "Manage access" and "Details" were two buttons where one was a strict subset of the other — the detail page already rendered the same access section the sheet did. The row itself is now the only target, and everything about a tool lives on its page. <b>Open question:</b> anything you genuinely want reachable in one click from this list without opening the tool?`);
+
+  return statBar(d) + n2 + `
+    <div style="margin-top:18px"><input class="search" placeholder="Search tools and capabilities" value="${esc(S.q)}" oninput="S.q=this.value;render()" /></div>
+    ${attention.length ? `<div class="banner" style="margin-top:14px">
+      <span style="color:var(--warn)">⚠</span>
+      <div><div class="bt">${attention.length} ${attention.length===1?'tool needs':'tools need'} a connection before ${d.name} can use ${attention.length===1?'it':'them'}</div>
+      <div class="bd">${attention.map(t=>t.name).join(', ')} — access is configured but there is no working account behind it.</div></div>
+    </div>` : ''}
+
+    <div class="sec-title"><div class="h2">In use by ${d.name}</div><div class="xs dim">${inUse.length} tools</div></div>
+    <div class="card"><table>
+      <thead><tr><th>Tool</th><th>Who can use it</th><th>Approval</th><th>Status</th><th></th></tr></thead>
+      <tbody>${inUse.map(t => toolRow(d,t)).join('') || `<tr><td colspan="5" class="dim" style="text-align:center;padding:26px">Nothing matches that search.</td></tr>`}</tbody>
+    </table></div>
+
+    ${notUsed.length ? `
+    <div class="sec-title"><div class="h2">Available, not turned on</div><div class="xs dim">${notUsed.length} tools</div></div>
+    ${note('Q3', `<b>"Not turned on" is a real state and deserves its own shelf.</b> Today every tool is one flat grid, so a manager cannot tell "my team uses this" from "this exists". <b>Open question:</b> should a manager be able to turn these on themselves (inside company policy), or should switching a tool on for a department stay a company-admin action?`)}
+    <div class="card"><table><tbody>
+      ${notUsed.map(t => `<tr class="click" onclick="go({name:'tool',toolId:'${t.id}',tab:'overview'})">
+        <td><div class="row">${tile(t)}<div><div>${t.name}</div><div class="cellsub">${t.desc}</div></div></div></td>
+        <td style="width:150px" class="dim">No one</td><td class="chev">›</td></tr>`).join('')}
+    </tbody></table></div>` : ''}`;
+}
+
+function viewCompare(){
+  const ds = PERSONAS[S.persona].scopes.filter(s => s !== 'company').map(dept);
+  const n = note('Q4', `<b>Managing more than one department is a first-class case, not a dropdown.</b> This is the only screen where you can see that Marketing has Canva unconnected while Finance does not use Canva at all. Every cell is a link straight into that department's tool. <b>Open question:</b> is a "copy access from Finance → Marketing" action worth building, or does it invite mistakes?`);
+  return n + `<div class="card" style="margin-top:8px"><table>
+    <thead><tr><th>Tool</th>${ds.map(d=>`<th class="num">${d.name}</th>`).join('')}<th>Status</th></tr></thead>
+    <tbody>${TOOLS.filter(t => ds.some(d => d.adopted.includes(t.id))).map(t => `
+      <tr><td><div class="row">${tile(t)}<div>${t.name}</div></div></td>
+      ${ds.map(d => {
+        if (!d.adopted.includes(t.id)) return `<td class="num dim">not in use</td>`;
+        const n = toolPeople(d,t).length;
+        return `<td class="num"><button class="btn sm" onclick="S.scope='${d.id}';go({name:'tool',toolId:'${t.id}',tab:'access'})">${n}/${d.people.length}</button></td>`;
+      }).join('')}
+      <td>${statusChip(t)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+function viewCompanyIndex(){
+  const n = note('Q5', `<b>The company admin finally has a home.</b> This layer answers one question only: <i>what may any department ever grant?</i> It is the ceiling — nothing here hands a tool to anybody. Departments do that. <b>Open question:</b> when an admin lowers a ceiling that departments have already granted past, do we (a) block the change and list what would break, (b) apply it and show what got clamped, or (c) apply silently?`);
+  return n + `<div class="card" style="margin-top:8px"><table>
+    <thead><tr><th>Tool</th><th>Members may use</th><th>Departments using it</th><th>Status</th><th></th></tr></thead>
+    <tbody>${TOOLS.map(t => {
+      const blocked = t.caps.filter(c => c.memberBlocked || c.adminOnly).length;
+      const using = DEPARTMENTS.filter(d => d.adopted.includes(t.id));
+      return `<tr class="click" onclick="go({name:'tool',toolId:'${t.id}',tab:'access'})">
+        <td><div class="row">${tile(t)}<div><div>${t.name}</div><div class="cellsub">${t.caps.length} ${t.caps.length===1?'capability':'capabilities'}</div></div></div></td>
+        <td>${blocked === 0 ? 'Everything' : blocked === t.caps.length ? `<span class="chip warn">Admins only</span>` : `${t.caps.length-blocked} of ${t.caps.length} capabilities`}</td>
+        <td class="${using.length?'':'dim'}">${using.length ? using.map(d=>d.name).join(', ') : 'None'}</td>
+        <td>${statusChip(t)}</td><td class="chev">›</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+function viewMemberIndex(){
+  const p = me(); const d = DEPARTMENTS.find(x => x.people.some(y => y.id === p.id));
+  const connectable = TOOLS.filter(t => t.connection.style === 'personal');
+  const rows = TOOLS.filter(t => d.adopted.includes(t.id)).map(t => {
+    const acts = t.caps.flatMap(c => c.actions.filter(a => effective(p,c.id,a).allowed).map(a => label(a, c.noun)));
+    return { t, acts };
+  });
+  const n = note('Q6', `<b>A member should never meet the permission model.</b> No departments, no roles, no matrices, no ceilings — two questions only: <i>what is connected</i> and <i>what can I do</i>. Anything they cannot do gets a "Request access" path that reaches their manager, instead of a greyed-out switch they can't explain. <b>Open question:</b> should "Request access" open a chat message to the manager, or file a real request record an admin can see and approve?`);
+  return `
+    <div class="h1">Tools</div>
+    <div class="sub">Connect the accounts you use with Divo, and see what you're allowed to do.</div>
+    ${n}
+    <div class="sec-title"><div class="h2">Your accounts</div></div>
+    <div class="grid2">${connectable.map(t => `
+      <div class="conncard">
+        <div class="between"><div class="row">${tile(t)}<div>${t.name}</div></div>${statusChip(t)}</div>
+        <div class="xs muted" style="margin:10px 0 12px;min-height:34px">${t.desc}</div>
+        ${t.connection.accounts.length
+          ? `<div class="xs dim">${t.connection.accounts.map(a=>a.label).join(', ')}</div>
+             <button class="btn sm" style="margin-top:10px" onclick="go({name:'tool',toolId:'${t.id}',tab:'connections'})">Manage</button>`
+          : `<button class="btn primary sm" onclick="go({name:'tool',toolId:'${t.id}',tab:'connections'})">Connect</button>`}
+      </div>`).join('')}</div>
+
+    <div class="sec-title"><div class="h2">What you can do</div><div class="xs dim">Set by ${d.name}</div></div>
+    <div class="card"><table>
+      <thead><tr><th>Tool</th><th>You can</th><th></th></tr></thead>
+      <tbody>${rows.map(({t,acts}) => `<tr class="click" onclick="go({name:'tool',toolId:'${t.id}',tab:'overview'})">
+        <td><div class="row">${tile(t)}<div>${t.name}</div></div></td>
+        <td class="${acts.length?'':'dim'}">${acts.length ? acts.slice(0,4).join(' · ') + (acts.length>4?` +${acts.length-4}`:'') : 'Nothing yet'}</td>
+        <td class="chev">›</td></tr>`).join('')}</tbody>
+    </table></div>`;
+}
+
+/* ---------------------------------------------------------------- TOOL */
+function viewTool(){
+  const t = tool(S.route.toolId);
+  const isCompany = S.scope === 'company';
+  const d = (isCompany || S.scope === 'all') ? null : dept(S.scope);
+  const tabs = S.persona === 'member'
+    ? [['overview','What you can do'],['connections','Accounts']]
+    : [['overview','Overview'],['access','Access'],...(t.connection.style!=='none'?[['connections','Connections']]:[]),['activity','Activity']];
+  const tab = tabs.some(x => x[0] === S.route.tab) ? S.route.tab : tabs[0][0];
+
+  const scopeLine = S.persona === 'member' ? ''
+    : isCompany ? 'Company policy'
+    : d ? `${d.name} · ${d.people.length} people · ${d.roles.length} roles`
+    : 'Pick a department';
+
+  return `
+    <div class="crumb"><button onclick="go({name:'index'})">Tools</button><span class="sep">/</span><span>${t.name}</span>
+      ${scopeLine ? `<span class="sep">·</span><span>${scopeLine}</span>` : ''}</div>
+
+    <div class="card pad">
+      <div class="between" style="align-items:flex-start">
+        <div class="row" style="align-items:flex-start;gap:14px">
+          ${tile(t,true)}
+          <div><div class="h1" style="font-size:19px">${t.name}</div>
+            <div class="sub" style="max-width:620px">${t.desc}</div>
+            <div class="gap8" style="margin-top:10px">${statusChip(t)}
+              ${t.caps.some(c=>c.fixed)?'<span class="chip">Fixed by Divo</span>':''}
+              ${t.caps.some(c=>c.adminOnly)?'<span class="chip warn">Company admins only</span>':''}</div>
+          </div>
+        </div>
+        ${primaryAction(t)}
+      </div>
+    </div>
+
+    ${note('Q15', `<b>Navigation lives in the page, never in the app sidebar.</b> The left rail is chat's; Tools never changes it. Depth is expressed by one breadcrumb that always names where you are — tool, department, capability — and Back always returns to the list you came from, with your department and search intact. Today a manager can lose their place by switching department mid-task. <b>Open question:</b> do you want the department to be remembered per person across sessions, or reset to the first one every launch?`)}
+
+    <div class="tabs">${tabs.map(([k,l]) => `<button class="${tab===k?'on':''}" onclick="go({name:'tool',toolId:'${t.id}',tab:'${k}'})">${l}</button>`).join('')}</div>
+    <div style="margin-top:18px">${
+      tab==='overview' ? tabOverview(t,d)
+      : tab==='access' ? tabAccess(t,d)
+      : tab==='connections' ? tabConnections(t)
+      : tabActivity(t)}</div>`;
+}
+
+function primaryAction(t){
+  if (t.connection.style === 'none') return '';
+  if (t.connection.status === 'needed') return `<button class="btn primary" onclick="go({name:'tool',toolId:'${t.id}',tab:'connections'})">Connect ${t.name}</button>`;
+  if (t.connection.style === 'personal') return `<button class="btn" onclick="go({name:'tool',toolId:'${t.id}',tab:'connections'})">Add account</button>`;
+  return '';
+}
+
+function tabOverview(t, d){
+  if (S.persona === 'member'){
+    const p = me();
+    return `<div class="card"><table><thead><tr><th>Capability</th><th>You can</th><th></th></tr></thead><tbody>
+      ${t.caps.map(c => {
+        const acts = c.actions.filter(a => effective(p,c.id,a).allowed);
+        const denied = c.actions.filter(a => !effective(p,c.id,a).allowed);
+        return `<tr><td>${c.name}</td>
+          <td>${acts.length ? acts.map(a=>`<span class="chip ok" style="margin-right:4px">${label(a,c.noun)}</span>`).join('') : '<span class="dim">Nothing</span>'}
+              ${denied.length ? `<div class="cellsub">Not allowed: ${denied.map(a=>label(a,c.noun)).join(', ')}</div>`:''}</td>
+          <td style="text-align:right">${denied.length?`<button class="btn sm">Request access</button>`:''}</td></tr>`;
+      }).join('')}
+    </tbody></table></div>`;
+  }
+  if (!d) return S.scope === 'company' ? companyOverview(t)
+    : `<div class="empty">Pick a department to see who can use ${t.name}.</div>`;
+  const people = toolPeople(d, t);
+  const withApproval = Object.entries(APPROVAL[d.id]||{}).filter(([cid]) => CAP_TOOL[cid] === t);
+  const blocked = t.caps.filter(c => c.memberBlocked || c.adminOnly);
+  return `
+    <div class="stack">
+      ${blocked.length ? `<div class="banner">
+        <span style="color:var(--warn)">⚠</span>
+        <div><div class="bt">Company policy limits ${blocked.length === t.caps.length ? 'this tool' : blocked.map(c=>c.name).join(', ')}</div>
+        <div class="bd">${blocked.map(c=>c.name).join(', ')} ${blocked.length===1?'is':'are'} off for members company-wide, so anything you grant here stays inactive until a company admin raises it.
+        ${S.persona==='admin' ? `<button class="btn sm" style="margin-left:6px" onclick="S.scope='company';go({name:'tool',toolId:'${t.id}',tab:'access'})">Change company policy</button>` : ''}</div></div>
+      </div>` : ''}
+
+      ${note('Q7', `<b>Overview answers "is this working, and who has it" — nothing you can break.</b> Every number is a link into the Access tab already filtered. The old detail page opened with connection errors and a wall of switches at the same time; here the two are separate jobs. <b>Open question:</b> is "last used" per tool worth showing here, or does that belong entirely in Activity?`)}
+
+      <div class="card"><table>
+        <thead><tr><th>Capability</th><th>Who can use it</th><th>What they can do</th><th>Approval</th><th></th></tr></thead>
+        <tbody>${t.caps.map(c => {
+          const ppl = capPeople(d, c.id);
+          const acts = [...new Set(d.roles.flatMap(r => [...GRANTS[d.id][c.id][r.id]]))];
+          const ap = Object.keys((APPROVAL[d.id]||{})[c.id] || {});
+          return `<tr class="click" onclick="go({name:'tool',toolId:'${t.id}',tab:'access',capId:'${c.id}'})">
+            <td>${c.name}${c.fixed?' <span class="chip">Fixed</span>':''}</td>
+            <td class="${ppl.length?'':'dim'}">${ppl.length ? `${ppl.length} of ${d.people.length}` : 'No one'}</td>
+            <td>${acts.length ? acts.map(a=>label(a,c.noun)).join(', ') : '<span class="dim">—</span>'}</td>
+            <td>${ap.length ? ap.map(a=>`<span class="chip">${VERB[a]}</span>`).join(' ') : '<span class="dim">—</span>'}</td>
+            <td class="chev">›</td></tr>`;
+        }).join('')}</tbody>
+      </table></div>
+
+      <div class="card pad">
+        <div class="h3">People with access in ${d.name}</div>
+        <div class="gap8" style="margin-top:10px">
+          ${people.length ? people.map(p => `<button class="chip" onclick="S.drawer={type:'person',pid:'${p.id}',toolId:'${t.id}'};render()">${p.name}</button>`).join('')
+            : '<span class="dim xs">Nobody in this department can use this tool yet.</span>'}
+        </div>
+      </div>
+    </div>`;
+}
+
+function companyOverview(t){
+  return `<div class="stack">
+    <div class="card"><table>
+      <thead><tr><th>Capability</th><th>Members</th><th>Company admins</th><th>Departments that granted it</th></tr></thead>
+      <tbody>${t.caps.map(c => {
+        const using = DEPARTMENTS.filter(d => d.adopted.includes(t.id) && capPeople(d,c.id).length);
+        return `<tr><td>${c.name}</td>
+          <td>${COMPANY[c.id].member.size ? `${COMPANY[c.id].member.size} of ${c.actions.length} actions` : '<span class="chip warn">Blocked</span>'}</td>
+          <td>${COMPANY[c.id].admin.size} of ${c.actions.length} actions</td>
+          <td class="${using.length?'':'dim'}">${using.length ? using.map(d=>d.name).join(', ') : 'None'}</td></tr>`;
+      }).join('')}</tbody></table></div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------ ACCESS TAB */
+function tabAccess(t, d){
+  if (S.scope === 'company') return accessCompany(t);
+  if (!d) return `<div class="empty">Pick a department to manage access.</div>`;
+
+  // level 1 — pick a capability (skipped automatically for single-capability tools)
+  const capId = S.route.capId || (t.caps.length === 1 ? t.caps[0].id : null);
+  if (!capId) return `
+    ${note('Q8', `<b>Access opens one level at a time.</b> Google Workspace is 11 capabilities × 5 actions × 4 roles × 8 people — rendering that at once is what makes today's page unusable. You choose a capability, then a group, then a person, and each step is a small table you can read in a glance. <b>Open question:</b> for an 11-capability tool like Google, do you want bulk actions here ("give Strategists View on everything")?`)}
+    <div class="card"><table>
+      <thead><tr><th>Capability</th><th>Who can use it</th><th>Actions granted</th><th></th></tr></thead>
+      <tbody>${t.caps.map(c => {
+        const ppl = capPeople(d, c.id);
+        const acts = [...new Set(d.roles.flatMap(r => [...GRANTS[d.id][c.id][r.id]]))];
+        return `<tr class="click" onclick="go({name:'tool',toolId:'${t.id}',tab:'access',capId:'${c.id}'})">
+          <td>${c.name}<div class="cellsub">${c.actions.map(a=>VERB[a]).join(' · ')}</div></td>
+          <td class="${ppl.length?'':'dim'}">${ppl.length ? `${ppl.length} of ${d.people.length} people` : 'No one'}</td>
+          <td>${acts.length ? acts.map(a=>label(a,c.noun)).join(', ') : '<span class="dim">Nothing granted</span>'}</td>
+          <td class="chev">›</td></tr>`;
+      }).join('')}</tbody>
+    </table></div>`;
+
+  const c = ALL_CAPS[capId];
+  const view = S.route.view || 'roles';
+  const backCrumb = t.caps.length > 1
+    ? `<div class="crumb" style="margin-bottom:12px"><button onclick="go({name:'tool',toolId:'${t.id}',tab:'access'})">← All capabilities</button><span class="sep">/</span><span>${c.name}</span></div>` : '';
+
+  if (c.fixed) return backCrumb + `<div class="empty"><b>${c.name} is fixed by Divo.</b><div style="margin-top:6px">${t.id==='terminal'
+      ? 'It runs on each person\'s own machine and every command is approved by them at the moment it runs, so there is nothing to configure here.'
+      : 'It is available to every signed-in member and has no per-department settings.'}</div></div>`;
+
+  const head = `
+    ${backCrumb}
+    <div class="between" style="margin-bottom:12px">
+      <span class="seg">
+        <button class="${view==='roles'?'on':''}" onclick="go({name:'tool',toolId:'${t.id}',tab:'access',capId:'${capId}',view:'roles'})">By group</button>
+        <button class="${view==='people'?'on':''}" onclick="go({name:'tool',toolId:'${t.id}',tab:'access',capId:'${capId}',view:'people'})">By person</button>
+      </span>
+      <span class="xs dim">${view==='roles' ? 'Set the rule once for a group. This is the normal way.' : 'Effective access per person, including exceptions.'}</span>
+    </div>`;
+
+  const n9 = note('Q9', `<b>Groups first, people second — and the same table shape in both.</b> Today "role access", "member exceptions" and "company ceiling" are three stacked lists with different vocabularies on one screen. Here it is one table, one axis switch, and the ceiling shows up where it actually bites: as a locked switch with a reason. <b>Open question:</b> should a personal exception be allowed to be set from the group view too, or only from a person's row (as here)?`);
+
+  return head + n9 + (view === 'roles' ? rolesTable(t,d,c) : peopleTable(t,d,c));
+}
+
+function rolesTable(t, d, c){
+  const admin = S.persona === 'admin';
+  // A ceiling that blocks the whole capability is one sentence, said once. Only
+  // a ceiling that varies action by action earns a label on each switch.
+  const blockedActions = c.actions.filter(a => !COMPANY[c.id].member.has(a));
+  const wholeBlocked = blockedActions.length === c.actions.length;
+  const ceilingBanner = !blockedActions.length ? '' : `
+    <div class="banner" style="margin-bottom:12px">
+      <span style="color:var(--warn)">⚠</span>
+      <div><div class="bt">Company policy ${wholeBlocked ? `keeps ${c.name} off for members` : `blocks ${blockedActions.map(a=>label(a,c.noun)).join(' and ')}`}</div>
+      <div class="bd">You can still set the rule for a group — it starts working the moment a company admin raises the policy. Until then only company admins are affected by it.
+      ${admin ? `<button class="btn sm" style="margin-left:6px" onclick="S.scope='company';go({name:'tool',toolId:'${t.id}',tab:'access'})">Change company policy</button>`
+              : `<button class="btn sm" style="margin-left:6px">Ask a company admin</button>`}</div></div>
+    </div>`;
+  return ceilingBanner + `<div class="card"><table>
+    <thead><tr><th>Group</th><th class="num">People</th>
+      ${c.actions.map(a => `<th class="num">${label(a,'')}<div class="cellsub" style="text-transform:none;letter-spacing:0">${c.noun}</div></th>`).join('')}
+      <th></th></tr></thead>
+    <tbody>${d.roles.map(r => {
+      const members = d.people.filter(p => p.role === r.id);
+      return `<tr>
+        <td><button style="text-align:left" onclick="S.drawer={type:'role',rid:'${r.id}',capId:'${c.id}'};render()">
+          <div>${r.name}${r.system?' <span class="chip" style="margin-left:4px">Built in</span>':''}</div>
+          <div class="cellsub">${members.slice(0,3).map(p=>p.name.split(' ')[0]).join(', ')}${members.length>3?` +${members.length-3}`:''}</div></button></td>
+        <td class="num">${members.length}</td>
+        ${c.actions.map(a => {
+          const on = GRANTS[d.id][c.id][r.id].has(a);
+          const ceilingBlocks = !COMPANY[c.id].member.has(a) && members.some(p => p.companyRole !== 'admin');
+          return `<td class="num"><span class="swwrap">
+            ${sw(on, ceilingBlocks, `toggleRole('${d.id}','${c.id}','${r.id}','${a}')`)}
+            ${ceilingBlocks && !wholeBlocked ? `<span class="why" onclick="S.drawer={type:'ceiling',capId:'${c.id}',action:'${a}',toolId:'${t.id}'};render()">company policy</span>` : ''}
+          </span></td>`;
+        }).join('')}
+        <td class="chev"><button onclick="S.drawer={type:'role',rid:'${r.id}',capId:'${c.id}'};render()">›</button></td></tr>`;
+    }).join('')}</tbody>
+  </table>
+  <div class="pad" style="border-top:1px solid var(--bd)">
+    <div class="between">
+      <div><div class="h3">Ask a manager first</div>
+        <div class="xs dim">Divo pauses and requests approval before doing these, even for people who are allowed.</div></div>
+      ${admin ? `<button class="btn sm" onclick="S.scope='company';go({name:'tool',toolId:'${t.id}',tab:'access'})">Company policy →</button>` : ''}
+    </div>
+    <div class="gap8" style="margin-top:12px">
+      ${c.approvable.length ? c.approvable.map(a => `<span class="chip" style="gap:9px;padding:5px 10px">${label(a,c.noun)} ${sw(!!(APPROVAL[d.id][c.id]||{})[a], false, `toggleApproval('${d.id}','${c.id}','${a}')`)}</span>`).join('')
+        : '<span class="xs dim">Nothing here is risky enough to need approval.</span>'}
+    </div>
+  </div></div>`;
+}
+
+function peopleTable(t, d, c){
+  return `<div class="card"><table>
+    <thead><tr><th>Person</th><th>Group</th>
+      ${c.actions.map(a => `<th class="num">${label(a,'')}</th>`).join('')}<th></th></tr></thead>
+    <tbody>${d.people.map(p => {
+      const role = d.roles.find(r => r.id === p.role);
+      return `<tr>
+        <td><button style="text-align:left" onclick="S.drawer={type:'person',pid:'${p.id}',toolId:'${t.id}',capId:'${c.id}'};render()">
+          <div>${p.name}${p.companyRole==='admin'?' <span class="chip">Company admin</span>':''}</div>
+          <div class="cellsub">${p.email}</div></button></td>
+        <td class="xs muted">${role.name}</td>
+        ${c.actions.map(a => {
+          const e = effective(p, c.id, a);
+          const mark = e.allowed
+            ? `<span style="color:var(--ok)">●</span>`
+            : e.configured && !e.companyAllows ? `<span style="color:var(--warn)">◐</span>`
+            : `<span class="dim">○</span>`;
+          const tip = e.exception !== null ? '<div class="cellsub">exception</div>' : '';
+          return `<td class="num">${mark}${tip}</td>`;
+        }).join('')}
+        <td class="chev"><button onclick="S.drawer={type:'person',pid:'${p.id}',toolId:'${t.id}',capId:'${c.id}'};render()">›</button></td></tr>`;
+    }).join('')}</tbody></table>
+    <div class="pad xs dim" style="border-top:1px solid var(--bd)">
+      <span style="color:var(--ok)">●</span> allowed &nbsp;&nbsp;
+      <span style="color:var(--warn)">◐</span> granted here but blocked by company policy &nbsp;&nbsp;
+      <span class="dim">○</span> not allowed
+    </div></div>`;
+}
+
+function accessCompany(t){
+  const ORDER = ['read','create','update','delete','send','execute'];
+  const cols = ORDER.filter(a => t.caps.some(c => c.actions.includes(a)));
+  return `${note('Q10', `<b>The ceiling is edited in exactly one place, and it never grants anything.</b> Turning a capability on here does not give it to anybody — it lets departments grant it. That distinction is invisible today and is why raising a default silently handed a tool to every new role. <b>Open question:</b> do you want a second axis here (per company role: Member vs Company admin, as shown) or is a single on/off per capability enough?`)}
+    <div class="card"><table>
+      <thead><tr><th>Capability</th><th>Company role</th>${cols.map(a=>`<th class="num">${VERB[a]}</th>`).join('')}</tr></thead>
+      <tbody>${t.caps.flatMap(c => ['member','admin'].map((cr,i) => `
+        <tr><td>${i===0?c.name+(c.fixed?' <span class="chip">Fixed</span>':''):''}</td>
+        <td class="xs muted">${cr==='member'?'Member':'Company admin'}</td>
+        ${cols.map(a => {
+          if (!c.actions.includes(a)) return `<td class="num dim">—</td>`;
+          const on = COMPANY[c.id][cr].has(a);
+          return `<td class="num">${sw(on, c.fixed, `toggleCompany('${c.id}','${cr}','${a}')`)}</td>`;
+        }).join('')}</tr>`)).join('')}
+      </tbody></table>
+    </div>
+    <div class="sec-title"><div class="h2">Departments</div><div class="xs dim">Who actually granted it</div></div>
+    <div class="card"><table><tbody>
+      ${DEPARTMENTS.map(d => {
+        const n = d.adopted.includes(t.id) ? toolPeople(d,t).length : 0;
+        return `<tr class="click" onclick="S.scope='${d.id}';go({name:'tool',toolId:'${t.id}',tab:'access'})">
+          <td>${d.name}<div class="cellsub">${d.people.length} people · ${d.roles.length} roles</div></td>
+          <td class="${n?'':'dim'}">${d.adopted.includes(t.id) ? `${n} of ${d.people.length} people can use it` : 'Not turned on'}</td>
+          <td class="chev">›</td></tr>`;
+      }).join('')}
+    </tbody></table></div>`;
+}
+
+/* --------------------------------------------------------- CONNECTIONS */
+function tabConnections(t){
+  const a = t.connection.accounts;
+  return `${note('Q11', `<b>Connections and permissions stopped sharing a screen.</b> A failing account used to render its error above a grid of switches that could not work until it was fixed. Now a broken connection is stated once, at the top of the tool, and fixed here. <b>Open question:</b> when a company-owned key (Serper, Semrush, OMS) is the connection, should a department manager see it at all, or only "the company handles this"?`)}
+    <div class="between" style="margin-bottom:12px">
+      <div><div class="h2">${t.connection.style==='company'?'Company connection':'Accounts'}</div>
+      <div class="xs dim">${t.connection.style==='company'?'Connected once for the whole company by an admin.':'Divo sees each account as a separate choice.'}</div></div>
+      ${t.connection.style==='personal' || S.persona==='admin' ? `<button class="btn primary sm">+ Add connection</button>`:''}
+    </div>
+    ${a.length ? `<div class="card"><table><tbody>${a.map(x => `
+      <tr><td><div class="row"><span class="dot" style="color:${x.state==='connected'?'var(--ok)':'var(--warn)'}"></span>
+        <div><div>${x.label}</div><div class="cellsub">${x.kind} · added ${x.added}</div></div></div></td>
+      <td style="width:130px">${x.state==='connected'?'<span class="chip ok">Working</span>':'<span class="chip warn">Expiring</span>'}</td>
+      <td style="width:190px;text-align:right"><button class="btn sm">Test</button> <button class="btn sm">Disconnect</button></td></tr>`).join('')}
+    </tbody></table></div>`
+    : `<div class="empty"><b>No ${t.name} account connected yet.</b>
+        <div style="margin-top:6px">Access can be configured now — it starts working the moment an account is connected.</div>
+        <div style="margin-top:14px"><button class="btn primary">Connect ${t.name}</button></div></div>`}`;
+}
+
+function tabActivity(t){
+  return `${note('Q12', `<b>Placeholder.</b> The value of a fourth tab is "did anyone actually use what I granted" — which is what tells a manager to revoke. <b>Open question:</b> is per-tool usage worth building now, or should Access simply show "last used" per person and skip this tab?`)}
+    <div class="empty">Usage, last-used-by, and denied attempts for ${t.name}.</div>`;
+}
+
+/* -------------------------------------------------------------- DRAWER */
+function drawerHTML(){
+  const dv = S.drawer;
+  const close = `<button class="btn ghost sm" onclick="S.drawer=null;render()">✕</button>`;
+
+  if (dv.type === 'ceiling'){
+    const c = ALL_CAPS[dv.capId];
+    return `<div class="dh"><div><div class="h2">Blocked by company policy</div>
+      <div class="xs dim">${c.name} · ${label(dv.action,c.noun)}</div></div>${close}</div>
+      <p class="xs muted">Company policy does not allow members to ${label(dv.action,c.noun).toLowerCase()}. You can still switch it on for a group here — it will start working the moment a company admin raises the policy, and until then it stays inactive for everyone except company admins.</p>
+      <div class="chain" style="margin-top:16px">
+        <div class="step"><b>Company policy</b> — ${label(dv.action,c.noun)}: not allowed for members</div>
+        <div class="step"><b>Department rule</b> — whatever you set here</div>
+        <div class="step"><b>Result</b> — blocked, because the company layer wins</div>
+      </div>
+      ${S.persona === 'admin' ? `<button class="btn primary" style="margin-top:18px" onclick="S.scope='company';go({name:'tool',toolId:'${dv.toolId}',tab:'access'})">Change company policy</button>`
+        : `<button class="btn" style="margin-top:18px">Ask a company admin</button>`}
+      ${note('Q13', `A manager hitting this today just sees a switch that does nothing, or a chip that says "Limited". <b>Open question:</b> should the manager's switch be locked (as here) or freely settable with a warning?`)}`;
+  }
+
+  if (dv.type === 'role'){
+    const c = ALL_CAPS[dv.capId]; const d = dept(S.scope);
+    const r = d.roles.find(x => x.id === dv.rid);
+    const members = d.people.filter(p => p.role === r.id);
+    return `<div class="dh"><div><div class="h2">${r.name}</div>
+      <div class="xs dim">${c.name} in ${d.name} · ${members.length} people</div></div>${close}</div>
+      <div class="h3" style="margin-bottom:8px">What this group can do</div>
+      ${c.actions.map(a => {
+        const on = GRANTS[d.id][c.id][r.id].has(a);
+        const blocked = !COMPANY[c.id].member.has(a) && members.some(p => p.companyRole !== 'admin');
+        return `<div class="kv"><span class="k">${label(a,c.noun)}
+          ${blocked?'<div class="xs" style="color:var(--warn)">Company policy blocks this</div>':''}
+          ${(APPROVAL[d.id][c.id]||{})[a]?'<div class="xs dim">Manager approves each time</div>':''}</span>
+          ${sw(on, blocked, `toggleRole('${d.id}','${c.id}','${r.id}','${a}')`)}</div>`;
+      }).join('')}
+      <div class="h3" style="margin:20px 0 8px">People in this group</div>
+      ${members.map(p => `<div class="kv"><span class="k">${p.name}</span>
+        <button class="btn sm" onclick="S.drawer={type:'person',pid:'${p.id}',toolId:'${CAP_TOOL[c.id].id}',capId:'${c.id}'};render()">View</button></div>`).join('')}`;
+  }
+
+  if (dv.type === 'person'){
+    const p = personOf(dv.pid);
+    const d = DEPARTMENTS.find(x => x.people.some(y => y.id === p.id));
+    const r = d.roles.find(x => x.id === p.role);
+    const t = tool(dv.toolId);
+    const caps = dv.capId ? [ALL_CAPS[dv.capId]] : t.caps;
+    const editable = S.persona !== 'member';
+    return `<div class="dh"><div class="row" style="align-items:flex-start;gap:11px">
+        <span class="ava" style="width:34px;height:34px">${initials(p.name)}</span>
+        <div><div class="h2">${p.name}</div><div class="xs dim">${r.name} in ${d.name} · ${p.email}</div></div>
+      </div>${close}</div>
+      ${caps.map(c => `
+        <div class="h3" style="margin:6px 0 8px">${c.name}</div>
+        ${c.actions.map(a => {
+          const e = effective(p, c.id, a);
+          const why = !e.companyAllows ? 'Blocked by company policy'
+            : e.exception === true ? 'Allowed by a personal exception'
+            : e.exception === false ? 'Removed by a personal exception'
+            : e.roleAllows ? `Allowed by the ${r.name} group` : `The ${r.name} group does not have this`;
+          return `<div class="kv"><span class="k">
+              <span style="color:${e.allowed?'var(--ok)':'var(--mut)'}">${label(a,c.noun)}</span>
+              <div class="xs dim">${why}${e.needsApproval && e.allowed ? ' · needs approval each time':''}</div>
+            </span>${editable ? sw(e.configured, !e.companyAllows, `toggleException('${p.id}','${c.id}','${a}')`) : ''}</div>`;
+        }).join('')}`).join('')}
+      ${editable ? note('Q14', `Toggling here writes a <b>personal exception</b> — it deliberately looks different from a group rule, and the person's row in the table is marked so nobody forgets it exists. <b>Open question:</b> should exceptions expire automatically (say 30 days) unless renewed?`) : ''}`;
+  }
+  return '';
+}
+
+/* ------------------------------------------------------------- MUTATION */
+function toggleRole(did, cid, rid, a){
+  const s = GRANTS[did][cid][rid];
+  s.has(a) ? s.delete(a) : s.add(a);
+  render();
+}
+function toggleException(pid, cid, a){
+  const p = personOf(pid);
+  const d = DEPARTMENTS.find(x => x.people.some(y => y.id === pid));
+  const roleAllows = GRANTS[d.id][cid][p.role].has(a);
+  EXCEPTIONS[pid] = EXCEPTIONS[pid] || {}; EXCEPTIONS[pid][cid] = EXCEPTIONS[pid][cid] || {};
+  const cur = EXCEPTIONS[pid][cid][a];
+  const next = cur === undefined ? !roleAllows : (cur === !roleAllows ? undefined : !cur);
+  if (next === undefined) delete EXCEPTIONS[pid][cid][a]; else EXCEPTIONS[pid][cid][a] = next;
+  render();
+}
+function toggleApproval(did, cid, a){
+  APPROVAL[did][cid] = APPROVAL[did][cid] || {};
+  APPROVAL[did][cid][a] ? delete APPROVAL[did][cid][a] : APPROVAL[did][cid][a] = true;
+  render();
+}
+function toggleCompany(cid, cr, a){
+  const s = COMPANY[cid][cr];
+  s.has(a) ? s.delete(a) : s.add(a);
+  render();
+}
+
+if (!readHash()) setPersona('mgr2');
+</script>
+</body>
+</html>

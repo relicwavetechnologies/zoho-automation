@@ -165,7 +165,10 @@ export class ApprovalGateService {
           approvalAuthority:      requirement.authority,
           execution: execution ?? null,
         },
-        channel:        'lark',
+        // How this request will reach the approver. Lark when Divo can card
+        // them, the desktop approval inbox when it cannot. The row is the
+        // source of truth either way; delivery is a side effect of it.
+        channel:        manager.larkOpenId ? 'lark' : 'desktop',
         requestedBy:    requesterId,
         idempotencyKey: idemKey,
         expiresAt:      new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -199,6 +202,27 @@ export class ApprovalGateService {
         compatibilityScopes,
         execution,
       });
+    }
+
+    // No card address — the request is live and waiting in their approval
+    // inbox. This used to be `misconfigured`, which failed the tool call
+    // outright and made a Lark account a precondition for approvals working
+    // at all.
+    if (!manager.larkOpenId) {
+      this.logger.info('approval.gate.pending_created_inbox', {
+        approvalId: approval.id,
+        toolId,
+        action,
+        approver: manager.displayName,
+      });
+      return pendingDecision(
+        approval.id,
+        requirement,
+        replacedExpired ? 'replaced_expired' : 'created',
+        replacedExpired
+          ? `The previous approval expired. ${manager.displayName} has a fresh request waiting in Divo (id: ${approval.id}).`
+          : `${manager.displayName} has an approval request waiting in Divo. Waiting on their response (id: ${approval.id}).`,
+      );
     }
 
     // Build and send the approval card to the manager
