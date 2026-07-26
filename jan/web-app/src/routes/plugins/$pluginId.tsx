@@ -24,7 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
-import { ToolAccessSection } from '@/components/tool-access/ToolAccessSection'
+import { ToolAccessBlock } from '@/components/tool-access/ToolAccessPanel'
 import { AccessScopeSkeleton, ConnectionRowsSkeleton } from '@/components/tool-catalogue/ToolSkeletons'
 import {
   Dialog,
@@ -594,7 +594,7 @@ export function PluginDetailRoute() {
 
   if (pluginId === 'zoho' && plugin) {
     return (
-      <ZohoPluginDetail plugin={plugin!} onBack={() => navigate({ to: route.plugins.index } as any)} onReconnectDivo={() => navigate({ to: route.settings.divo } as any)} accessContent={<ToolAccessSection items={liveGroup.childTools} embedded onUpdated={() => void loadToolInventory()} />} />
+      <ZohoPluginDetail plugin={plugin!} onBack={() => navigate({ to: route.plugins.index } as any)} onReconnectDivo={() => navigate({ to: route.settings.divo } as any)} accessContent={<ToolAccessBlock items={liveGroup.childTools} onUpdated={() => void loadToolInventory()} />} />
     )
   }
 
@@ -681,7 +681,7 @@ export function PluginDetailRoute() {
                   size="sm"
                   onClick={openFirstManageableConnection}
                 >
-                  Manage access
+                  Share connection
                   <ChevronRight className="size-4" />
                 </Button>
               ) : null}
@@ -829,7 +829,7 @@ export function PluginDetailRoute() {
             <PiContextCard connections={connections} />
           </aside>
         </section>
-        <ToolAccessSection items={liveGroup.childTools} onUpdated={() => void loadToolInventory()} />
+        <ToolAccessBlock items={liveGroup.childTools} onUpdated={() => void loadToolInventory()} />
       </main>
 
       <AddConnectionDialog
@@ -887,7 +887,7 @@ function FallbackToolDetail({ group, onBack, onUpdated }: { group: NonNullable<R
             </div>
           </div>
         </header>
-        <ToolAccessSection items={group.childTools} embedded onUpdated={onUpdated} />
+        <ToolAccessBlock items={group.childTools} onUpdated={onUpdated} />
       </main>
     </div>
   )
@@ -977,7 +977,7 @@ function WebSearchPluginDetail({ group, onBack, onUpdated }: { group: NonNullabl
     <header className="rounded-lg border border-border/70 bg-card/30 p-5"><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="size-4" />Back to Tools</Button><div className="mt-5 flex items-center gap-4"><span className="flex size-14 items-center justify-center rounded-lg border border-border/70 bg-muted/40"><Icon className="size-7" /></span><div><h1 className="text-2xl font-medium">Web Search</h1><p className="mt-2 text-sm text-muted-foreground">Company-authorised Serper connections. Divo uses the first healthy key, records its successful searches, and falls back when a key is rate-limited or rejected.</p></div></div></header>
     <section className="rounded-lg border border-border/70 p-5"><h2 className="text-lg font-medium">Add company connection</h2><p className="mt-1 text-sm text-muted-foreground">Only company admins can add keys. A live Serper test is required before the encrypted key can be saved; the test itself may use one Serper credit.</p><div className="mt-5 grid gap-3"><input value={label} onChange={e => setLabel(e.target.value)} placeholder="Connection label" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><input value={apiKey} onChange={e => { setApiKey(e.target.value); setVerificationToken(null) }} type="password" placeholder="Serper API key" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><input value={remainingCredits} onChange={e => setRemainingCredits(e.target.value)} inputMode="numeric" placeholder="Current Serper balance after test (optional)" className="h-10 rounded-md border border-border bg-background px-3 text-sm" /><p className="text-xs text-muted-foreground">Serper does not provide Divo a supported live-balance API. Copy the balance after testing from Serper’s dashboard; Divo then shows an estimate after subtracting searches it observes.</p><div className="flex gap-2"><Button variant="outline" disabled={busy} onClick={() => void test()}>{verificationToken ? <Check className="size-4" /> : <KeyRound className="size-4" />}{verificationToken ? 'Verified' : 'Test key'}</Button><Button disabled={busy || !verificationToken} onClick={() => void save()}><Plus className="size-4" />Save connection</Button></div></div></section>
     <section className="rounded-lg border border-border/70 p-5"><div className="flex items-center justify-between"><div><h2 className="text-lg font-medium">Company connections</h2><p className="mt-1 text-sm text-muted-foreground">Keys remain encrypted on the backend. Usage is Divo-observed; estimated remaining credits begin from the balance you last copied from Serper.</p></div><Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4" />Refresh</Button></div><div className="mt-4 space-y-3">{connections.map((connection, index) => <div key={connection.id} className="flex flex-col gap-4 rounded-md border border-border/70 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-2 font-medium"><span className={cn('size-2 rounded-full', connection.status === 'connected' && !connection.unavailableUntil ? 'bg-emerald-400' : 'bg-muted-foreground')} />{connection.label}{index === 0 && connection.status === 'connected' ? <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">Default</span> : null}</div><p className="mt-1 text-xs text-muted-foreground">{connection.unavailableUntil ? `Temporarily skipped until ${new Date(connection.unavailableUntil).toLocaleString()}` : connection.lastFailureCode ? `Last issue: ${connection.lastFailureCode}` : connection.lastSucceededAt ? 'Validated and ready' : 'Not yet used'}</p><p className="mt-1 text-xs text-muted-foreground">Divo-observed successful searches: {connection.successfulRequestCount}</p>{connection.creditsAtLastSync !== null ? <p className="mt-1 text-xs text-muted-foreground">Estimated remaining: {connection.estimatedCreditsRemaining ?? 0} credits ({connection.observedRequestsSinceCreditSync} observed since the balance update)</p> : <p className="mt-1 text-xs text-muted-foreground">No Serper balance recorded yet.</p>}</div><div className="flex flex-wrap items-center gap-2"><input value={creditDrafts[connection.id] ?? ''} onChange={e => setCreditDrafts(drafts => ({ ...drafts, [connection.id]: e.target.value }))} inputMode="numeric" placeholder="Current credits" aria-label={`Current Serper credits for ${connection.label}`} className="h-8 w-36 rounded-md border border-border bg-background px-2 text-xs" /><Button size="sm" variant="outline" disabled={busy} onClick={() => void saveRemainingCredits(connection)}>Update balance</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => void toggle(connection)}>{connection.status === 'connected' ? 'Disable' : 'Enable'}</Button><Button size="sm" variant="ghost" disabled={busy} className="text-destructive hover:text-destructive" onClick={() => void remove(connection.id)}><Trash2 className="size-4" />Disconnect</Button></div></div>)}{!loading && connections.length === 0 ? <p className="py-6 text-center text-sm text-muted-foreground">No company Web Search connection yet.</p> : null}</div></section>
-    <ToolAccessSection items={group.childTools} embedded onUpdated={onUpdated} />
+    <ToolAccessBlock items={group.childTools} onUpdated={onUpdated} />
   </main></div>
 }
 
@@ -1808,7 +1808,7 @@ function ConnectionOperatingControls({
         <div>
           <h3 className="text-sm font-medium">Connection-wide controls</h3>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            Rate budgets and approvals for everyone using this connection. They do not grant access, and company-admin overrides take precedence.
+            Approval rules for everyone using this connection. They do not grant access, and company-admin overrides take precedence.
           </p>
         </div>
         {governance.adminOverride ? <Badge tone="amber">Company override active</Badge> : null}
@@ -1869,32 +1869,13 @@ function ConnectionActionControl({
           <option value="enforced">Control this action</option>
         </select>
       </label>
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <label className="grid gap-1 text-xs text-muted-foreground">
-          Per minute
-          <input
-            className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:opacity-50"
-            type="number"
-            min="1"
-            placeholder="No cap"
-            value={policy.requestsPerMinute ?? ''}
-            onChange={(event) => onPolicyChange(action, { requestsPerMinute: positiveIntegerOrNull(event.target.value) })}
-            disabled={!enforced || isSaving}
-          />
-        </label>
-        <label className="grid gap-1 text-xs text-muted-foreground">
-          Per day
-          <input
-            className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:opacity-50"
-            type="number"
-            min="1"
-            placeholder="No cap"
-            value={policy.requestsPerDay ?? ''}
-            onChange={(event) => onPolicyChange(action, { requestsPerDay: positiveIntegerOrNull(event.target.value) })}
-            disabled={!enforced || isSaving}
-          />
-        </label>
-      </div>
+      {/*
+        Per-minute and per-day caps are set centrally rather than here. Asking a
+        manager to reason about request budgets per action, per connection, was
+        six numbers of noise around the one control they actually use — whether
+        the action needs approval. The stored values are untouched and the
+        backend still enforces them.
+      */}
       <label className="mt-3 grid gap-1 text-xs text-muted-foreground">
         Approval
         <select
@@ -1941,9 +1922,19 @@ function ConnectionPeopleList({ people, onSelect }: { people: ConnectionPerson[]
 function ConnectionPersonProfile({ person, data }: { person: ConnectionPerson; data: GoogleManageData }) {
   const actions = actionsForConnectionAccess(person.access)
   const policySource = data.governance.source === 'company_admin_override' ? 'Company admin override' : data.governance.source === 'manager_policy' ? 'Connection-wide manager policy' : 'Platform default'
-  const rateLimits = connectionActions
+  // Rate limits are deliberately absent. They are a platform concern the company
+  // tunes centrally, and a per-action cap grid buried the one rule a manager can
+  // actually act on. Approval survives, because "this needs sign-off first"
+  // changes what a person should expect to happen; a shared throughput cap does
+  // not. Only actions that genuinely require sign-off are listed, so the common
+  // case collapses to a single reassuring line instead of a wall of "None".
+  const approvalRules = connectionActions
     .filter(({ label }) => actions.includes(label))
-    .map(({ id, label }) => ({ action: id, label, effective: effectiveConnectionActionPolicy(data.governance, id) }))
+    .map(({ id, label }) => ({
+      label,
+      approval: formatConnectionApproval(effectiveConnectionActionPolicy(data.governance, id).policy),
+    }))
+    .filter(({ approval }) => approval !== NO_EXTRA_APPROVAL)
   return (
     <div className="space-y-4">
       <section className="rounded-lg border border-border/70 bg-card/30 p-4">
@@ -1966,27 +1957,32 @@ function ConnectionPersonProfile({ person, data }: { person: ConnectionPerson; d
         <h3 className="text-sm font-medium">Safety rules this person inherits</h3>
         <dl className="mt-3 grid gap-3 text-sm">
           <div><dt className="text-xs text-muted-foreground">Policy source</dt><dd className="mt-1">{policySource}</dd></div>
-          <div><dt className="text-xs text-muted-foreground">Individual override</dt><dd className="mt-1">None — connection-wide limits and approval rules apply.</dd></div>
+          <div><dt className="text-xs text-muted-foreground">Individual override</dt><dd className="mt-1">None — connection-wide rules apply.</dd></div>
+          {/*
+            Department approval is owned by "Ask a manager first" on this page
+            and is not repeated here. This row is a different gate — a policy on
+            the connection itself — and it appears only when someone has actually
+            enforced one. Left always-on it would read as a duplicate of the
+            control above; removed entirely it would become an invisible pause,
+            with a manager switching department approval off and still being
+            stopped by a rule nothing on screen mentions.
+          */}
+          {approvalRules.length > 0 ? (
+            <div>
+              <dt className="text-xs text-muted-foreground">This connection also requires approval</dt>
+              <dd className="mt-1">
+                <ul className="space-y-1">
+                  {approvalRules.map(({ label, approval }) => (
+                    <li key={label}>{label} — {approval.toLowerCase()}</li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                  Set on the connection, separately from the department rules in “Ask a manager first”.
+                </p>
+              </dd>
+            </div>
+          ) : null}
         </dl>
-      </section>
-      <section className="rounded-lg border border-border/70 bg-card/30 p-4">
-        <h3 className="text-sm font-medium">Rate limits and personal allowance</h3>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          The connection cap is shared across everyone using it. A personal allowance appears here only when this person has an explicit exception.
-        </p>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          {rateLimits.map(({ action, label, effective }) => (
-            <article key={action} className="rounded-md border border-border/70 bg-background/40 p-3">
-              <h4 className="text-sm font-medium">{label}</h4>
-              <dl className="mt-3 grid gap-2 text-sm">
-                <div><dt className="text-xs text-muted-foreground">Shared connection cap</dt><dd className="mt-1">{formatConnectionRateLimit(effective.policy)}</dd></div>
-                <div><dt className="text-xs text-muted-foreground">Approval</dt><dd className="mt-1">{formatConnectionApproval(effective.policy)}</dd></div>
-                <div><dt className="text-xs text-muted-foreground">Personal allowance</dt><dd className="mt-1">None — no extra or lower individual allowance.</dd></div>
-                <div><dt className="text-xs text-muted-foreground">Policy source</dt><dd className="mt-1">{effective.source}</dd></div>
-              </dl>
-            </article>
-          ))}
-        </div>
       </section>
     </div>
   )
@@ -2003,17 +1999,11 @@ function effectiveConnectionActionPolicy(
   return { source: 'Platform default', policy: null }
 }
 
-function formatConnectionRateLimit(policy: ConnectionActionPolicy | null): string {
-  if (!policy) return 'Platform default'
-  const limits = [
-    policy.requestsPerMinute ? `${policy.requestsPerMinute}/minute` : null,
-    policy.requestsPerDay ? `${policy.requestsPerDay}/day` : null,
-  ].filter(Boolean)
-  return limits.length ? limits.join(' · ') : 'No explicit connection cap'
-}
+/** The one approval verdict that means "nothing to say", so it is filtered out. */
+const NO_EXTRA_APPROVAL = 'No extra approval'
 
 function formatConnectionApproval(policy: ConnectionActionPolicy | null): string {
-  if (!policy || policy.approval === 'none' || !policy.approval) return 'No extra approval'
+  if (!policy || policy.approval === 'none' || !policy.approval) return NO_EXTRA_APPROVAL
   return policy.approval === 'connection_owner' ? 'Connection owner on Lark' : 'Company admin on Lark'
 }
 
@@ -2060,12 +2050,6 @@ function actionsForConnectionAccess(access: DivoConnectionAccess): string[] {
 function initialsForPerson(person: Pick<ConnectionPerson, 'name' | 'email'>): string {
   const initials = person.name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase() ?? '').join('')
   return initials || person.email.slice(0, 1).toUpperCase()
-}
-
-function positiveIntegerOrNull(value: string): number | null {
-  if (!value.trim()) return null
-  const parsed = Number(value)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
 }
 
 function getCandidatesForType(data: GoogleManageData, type: GoogleManageGranteeType): GoogleManageCandidate[] {

@@ -145,7 +145,7 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
 
     expect((await screen.findAllByText('Work Gmail')).length).toBeGreaterThan(0)
     expect(screen.getByText('Gmail read/write')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Tool access' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Access' })).toBeInTheDocument()
     view.rerender(<PluginDetailRoute />)
     await waitFor(() => {
       expect(commandCalls('divo_get_session_status')).toHaveLength(1)
@@ -258,7 +258,7 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
 
     expect((await screen.findAllByText('Zoho Finance')).length).toBeGreaterThan(0)
     expect(screen.getByText('ZohoCRM.modules.ALL')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Tool access' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Access' })).toBeInTheDocument()
     view.rerender(<PluginDetailRoute />)
     await waitFor(() => {
       expect(commandCalls('divo_get_session_status')).toHaveLength(1)
@@ -344,9 +344,11 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
     render(<PluginDetailRoute />)
 
     expect(await screen.findByRole('heading', { name: 'Custom Tool', level: 1 })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Tool access' })).toBeInTheDocument()
-    expect(screen.getByText('Origin · Global · read')).toBeInTheDocument()
-    expect(screen.getByText('Actions · read')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Access' })).toBeInTheDocument()
+    // Someone who cannot configure a tool is told what they can do with it,
+    // in words — not "Origin · Global · read".
+    expect(screen.getByText('What you can do')).toBeInTheDocument()
+    expect(screen.getByText('View')).toBeInTheDocument()
     const back = screen.getByRole('button', { name: 'Back to Tools' })
     back.click()
     expect(h.navigate).toHaveBeenCalledWith({ to: '/plugins' })

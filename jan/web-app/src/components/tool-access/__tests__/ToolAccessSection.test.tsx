@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   setDepartmentMember: vi.fn(),
   onUpdated: vi.fn(),
   navigate: vi.fn(),
+  getCoverage: vi.fn(),
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -41,6 +42,8 @@ vi.mock('@/lib/divo-tools', async importOriginal => ({
   setDivoGlobalToolAction: h.setGlobal,
   setDivoDepartmentRoleToolAction: vi.fn(),
   setDivoDepartmentMemberToolAction: h.setDepartmentMember,
+  getDivoDepartmentToolCoverage: h.getCoverage,
+  getDivoDepartmentManagerApproval: vi.fn().mockResolvedValue({ enabled: false, requiredActions: [] }),
 }))
 vi.mock('@/lib/utils', () => ({ cn: (...values: string[]) => values.filter(Boolean).join(' ') }))
 
@@ -352,37 +355,24 @@ describe('ToolAccessSection lifecycle and presentation', () => {
     expect(screen.getByText('Origin · Local · Terminal commands require user approval.')).toBeInTheDocument()
   })
 
-  it('renders a concise live-derived card summary and navigates to its detail route', async () => {
-    const completeItem: DivoToolInventoryItem = {
-      ...item,
-      tool: { ...item.tool, hitlRequired: true },
-      origins: [
-        { kind: 'global', allowedActions: ['read'] },
-        { kind: 'department', department: { id: 'operations', name: 'Operations' }, allowedActions: ['create'] },
-        { kind: 'local', reason: 'Local approval policy.' },
-        { kind: 'system', allowedActions: ['approve'], reason: 'System-owned policy.' },
-      ],
-      readiness: 'admin_connection_required',
-    }
-    h.getInventory.mockResolvedValueOnce({ tools: [completeItem] })
+  // The tools list used to put two buttons on every card — "Manage access" and
+  // "Details" — where one was a strict subset of the other. One row, one
+  // destination now, so there is nothing to choose between.
+  it('opens a tool by clicking its row, with no competing per-row buttons', async () => {
+    h.getInventory.mockResolvedValueOnce({
+      tools: [{ ...item, readiness: 'admin_connection_required' }],
+    })
     render(<PluginsRoute />)
 
-    const card = (await screen.findByText('Google Workspace')).closest('[data-tool-card]')!
-    expect(screen.getByRole('img', { name: 'Google' })).toBeInTheDocument()
-    expect(card).toHaveAttribute('data-child-count', '1')
-    expect(card).toHaveClass('min-h-56', 'overflow-hidden')
-    expect(card).toHaveTextContent('3 action groups')
-    expect(card).toHaveTextContent('1 approval-gated')
-    expect(card).toHaveTextContent('Admin connection needed')
-    expect(card).toHaveTextContent('Manage access')
-    expect(card).toHaveTextContent('Details')
-    expect(card).not.toHaveTextContent('Local approval policy.')
+    const row = (await screen.findByText('Google Workspace')).closest('tr')!
+    expect(screen.queryByRole('button', { name: 'Manage access' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Details' })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
+    fireEvent.click(row)
     expect(h.navigate).toHaveBeenCalledWith({ to: '/plugins/$pluginId', params: { pluginId: 'google-workspace' } })
   })
 
-  it('keeps a high-child-count provider card fixed and bounds its preview', async () => {
+  it('names a provider\'s first few capabilities and counts the rest', async () => {
     const childTools = [
       ['larkMessaging', 'Lark Messaging'],
       ['larkContacts', 'Lark Contacts'],
@@ -395,35 +385,19 @@ describe('ToolAccessSection lifecycle and presentation', () => {
     h.getInventory.mockResolvedValueOnce({ tools: childTools })
     render(<PluginsRoute />)
 
-    const card = (await screen.findByText('Lark')).closest('[data-tool-card]')!
-    expect(card).toHaveAttribute('data-child-count', '7')
-    expect(card).toHaveClass('min-h-56', 'overflow-hidden')
-    expect(card).toHaveTextContent('Lark Messaging · Lark Contacts · Lark Tasks · +4 more')
-    expect(card).not.toHaveTextContent('Lark Calendar')
-    expect(card).toHaveTextContent('1 action groups')
-    expect(card).toHaveTextContent('Manage access')
-    expect(card.querySelectorAll('[data-tool-id]')).toHaveLength(0)
+    const row = (await screen.findByText('Lark')).closest('tr')!
+    expect(row).toHaveTextContent('Lark Messaging · Lark Contacts · Lark Tasks +4')
+    expect(row).not.toHaveTextContent('Lark Calendar')
   })
 
-  it('bounds pathological live strings at mobile and desktop widths while protecting the CTA', async () => {
-    const longTitle = `Tool${'WithoutBreaks'.repeat(40)}`
-    const longDescription = `Purpose${'UnbrokenServerContent'.repeat(40)}`
+  it('says a tool needs a connection before anything else about it', async () => {
     h.getInventory.mockResolvedValueOnce({
-      tools: [{ ...item, tool: { ...item.tool, toolId: 'pathologicalTool', name: longTitle, description: longDescription } }],
+      tools: [{ ...item, readiness: 'connection_required' }],
     })
     render(<PluginsRoute />)
 
-    await waitFor(() => expect(document.querySelector('[data-tool-card]')).toBeInTheDocument())
-    const card = document.querySelector('[data-tool-card]')!
-    expect(card).toHaveClass('min-h-56', 'overflow-hidden')
-    expect(card.querySelector('[data-card-content]')).toHaveClass('min-h-0', 'overflow-hidden')
-    expect(card.querySelector('[data-card-title]')).toHaveClass('line-clamp-2', 'break-all')
-    expect(card.querySelector('[data-card-purpose]')).toHaveClass('line-clamp-2', 'break-all')
-    expect(card.querySelector('[data-card-preview]')).toHaveClass('line-clamp-2', 'break-all')
-    expect(card.querySelector('[data-card-action]')).toHaveTextContent('Details')
-
-    fireEvent.click(card.querySelector('[data-card-action]')!)
-    expect(h.navigate).toHaveBeenCalledWith({ to: '/plugins/$pluginId', params: { pluginId: 'tool-pathologicalTool' } })
+    const row = (await screen.findByText('Google Workspace')).closest('tr')!
+    expect(row).toHaveTextContent('Needs connection')
   })
 
   it('does not let an older inventory response replace a newer refresh', async () => {

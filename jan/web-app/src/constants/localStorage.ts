@@ -31,6 +31,9 @@ export const localStorageKey = {
   latestJanModel: 'latest-jan-model',
   defaultEmbeddingModel: 'default-embedding-model',
   pausedDownloads: 'paused-downloads',
+  // Which scope the Tools screens are working in — company policy or one
+  // department. Kept so opening a tool does not lose the context you chose.
+  toolAccessScope: 'tool-access-scope',
 }
 
 export const CACHE_EXPIRY_MS = 1000 * 60 * 60 * 24

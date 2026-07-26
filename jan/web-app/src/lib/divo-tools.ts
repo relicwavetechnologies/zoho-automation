@@ -65,6 +65,8 @@ export type GlobalToolManageSnapshot = {
   tool: DivoTool
   scope: { kind: 'global'; label: 'Global' }
   supportedActions: string[]
+  /** Backend-phrased action names — "Send email", "Delete records". */
+  actionLabels: Record<string, string>
   roles: ToolRoleSnapshot[]
 }
 
@@ -72,6 +74,7 @@ export type DepartmentToolManageSnapshot = {
   tool: DivoTool
   scope: { kind: 'department'; department: { id: string; name: string } }
   supportedActions: string[]
+  actionLabels: Record<string, string>
   roles: DepartmentRole[]
   members: DepartmentMember[]
   roleActions: DepartmentAction[]
@@ -126,8 +129,34 @@ export type DepartmentCandidate = {
   larkSourceRoles: string[]
 }
 
+/**
+ * What one department has actually configured, for every tool at once.
+ * The tools list needs this per row; the manage snapshot is the drill-down.
+ */
+export type DepartmentToolCoverage = {
+  tool: DivoTool
+  supportedActions: string[]
+  actionLabels: Record<string, string>
+  actionsGranted: string[]
+  approvalActions: string[]
+  peopleWithAccess: number
+  /** Actions company policy is holding down for ordinary members. */
+  blockedActions: string[]
+  exceptionCount: number
+}
+
+export type DepartmentCoverage = {
+  department: { id: string; name: string }
+  totalPeople: number
+  tools: DepartmentToolCoverage[]
+}
+
 export function getDivoToolsInventory(): Promise<DivoToolInventory> {
   return invoke<DivoToolInventory>('divo_tools_inventory')
+}
+
+export function getDivoDepartmentToolCoverage(departmentId: string): Promise<DepartmentCoverage> {
+  return invoke<DepartmentCoverage>('divo_tool_coverage', { departmentId })
 }
 
 export function getDivoToolManageSnapshot(
