@@ -40,9 +40,24 @@ describe('AirtableMcpOAuthService callback origin policy', () => {
     assert.equal(svc.isConnectConfigured(undefined), false);
   });
 
-  it('lets a configured redirect URI override the request-derived one', () => {
+  it('sends the callback to the backend origin the request arrived on', () => {
+    // AIRTABLE_MCP_REDIRECT_URI used to win unconditionally, so one env var
+    // pinned every company's callback to a single origin — a tunnel URL set for
+    // an afternoon's testing kept catching real callbacks long after the tunnel
+    // was gone.
+    const svc = service({ AIRTABLE_MCP_REDIRECT_URI: 'https://stale-tunnel.example.com/cb' });
+    assert.equal(
+      svc.resolveRedirectUri('https://app-dev.example.com/api/desktop/auth/airtable/callback'),
+      'https://app-dev.example.com/api/desktop/auth/airtable/callback',
+    );
+  });
+
+  it('falls back to the configured redirect only when the caller has none', () => {
     const svc = service({ AIRTABLE_MCP_REDIRECT_URI: 'https://api.example.com/cb' });
-    assert.equal(svc.resolveRedirectUri('http://localhost:8000/other'), 'https://api.example.com/cb');
+    assert.equal(svc.resolveRedirectUri(), 'https://api.example.com/cb');
+    // Blank is "no callback", not a callback of empty string.
+    assert.equal(svc.resolveRedirectUri('   '), 'https://api.example.com/cb');
+    assert.equal(service().resolveRedirectUri(), '');
   });
 
   it('keeps refresh working even when no callback origin is resolvable', () => {

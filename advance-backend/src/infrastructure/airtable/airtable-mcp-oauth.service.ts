@@ -113,8 +113,19 @@ export class AirtableMcpOAuthService {
     }
   }
 
+  /**
+   * The callback the caller derived from the backend origin Desktop signed in
+   * against wins; `AIRTABLE_MCP_REDIRECT_URI` is only a fallback for callers
+   * that have no request to derive one from.
+   *
+   * It used to be the other way round, which meant a single env var pinned
+   * every company's Airtable callback to one origin: a tunnel URL set for one
+   * afternoon's testing kept catching real callbacks afterwards, on a host that
+   * no longer pointed anywhere. Every other provider here (Lark, Google, Canva,
+   * Zoho) already resolves its callback per request; Airtable now matches.
+   */
   resolveRedirectUri(requested?: string): string {
-    return (this.configuredRedirectUri ?? requested ?? '').trim();
+    return (requested?.trim() || this.configuredRedirectUri || '').trim();
   }
 
   async beginAuthorization(input: {
