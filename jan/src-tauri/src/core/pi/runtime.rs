@@ -36,7 +36,7 @@ const COMPANY_EXTENSION_NAMES: [&str; 6] = [
     "divo-chat-history",
 ];
 const COMPANY_TOOL_ALLOWLIST: &str =
-    "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat";
+    "read,write,edit,bash,divo_gateway,divo_skill_view,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat";
 
 /// Every company Pi process has its own lifecycle lock, but its agent-dir
 /// bootstrap is shared by the whole desktop process. Keep all mutation of that
@@ -751,7 +751,7 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair == [
                 "--tools",
-                "read,write,edit,bash,divo_gateway,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat",
+                "read,write,edit,bash,divo_gateway,divo_skill_view,divo_skill_resolve,divo_memory_review,divo_teach_clarify,memory,divo_subagents,divo_artifact,divo_search_chats,divo_read_chat",
             ]
         }));
         assert_eq!(args.iter().filter(|arg| *arg == "--extension").count(), 6);
