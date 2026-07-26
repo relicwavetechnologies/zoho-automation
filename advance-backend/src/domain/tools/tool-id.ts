@@ -163,6 +163,10 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   documentRag:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   dataProcessor:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   scheduledWorkflows: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  // A ceiling, not a grant. Semrush is a metered company subscription, so it is
+  // department-grant-only in tool-policy: this permissive default is what lets
+  // an admin grant it to a department at all, and the grant-only list is what
+  // stops it reaching everyone who has no department selected.
   semrush: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   // OMS inventory access is deliberately fixed to live company administrators.
   // PermissionService strips normal role overrides before applying that rule.

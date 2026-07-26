@@ -47,7 +47,7 @@ export function isFixedToolPolicy(toolId: string): boolean {
  * grant rather than a ceiling has to skip them: the department-less permission
  * path, and the MEMBER template that seeds new role matrices.
  */
-export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = ['omsSiteData'];
+export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = ['omsSiteData', 'semrush'];
 
 export function isDepartmentGrantOnlyTool(toolId: string): boolean {
   return DEPARTMENT_GRANT_ONLY_TOOLS.includes(toolId as CanonicalToolId);

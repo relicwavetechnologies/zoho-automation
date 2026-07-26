@@ -166,20 +166,27 @@ describe('PermissionService', () => {
       assert.equal(admin.value.decisions.find(decision => String(decision.toolId) === 'omsSiteData')?.source, 'company_default');
     });
 
-    it('allows Semrush through ordinary role defaults and ordinary RBAC overrides', async () => {
+    // Semrush is a metered company subscription. Its permissive company default
+    // is the ceiling that lets an admin grant it to a department at all — read
+    // as a grant, it handed the whole company a paid tool nobody chose to give.
+    it('does not hand Semrush to a member with no department', async () => {
+      const result = await new PermissionServiceImpl(buildDeps()).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('semrush')), false);
+    });
+
+    it('keeps the company Semrush switch authoritative as a ceiling', async () => {
       const toolPermRepo: ToolPermissionRepoPort = {
         getForCompany: async () => ok([
           { companyId: COMPANY_ID, toolId: 'semrush', role: 'MEMBER', enabled: false } as ToolPermissionRow,
         ]),
         upsert: async () => ok({} as any),
       };
-      const defaultResult = await new PermissionServiceImpl(buildDeps()).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
-      const overriddenResult = await new PermissionServiceImpl(buildDeps({ toolPermRepo })).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
+      const result = await new PermissionServiceImpl(buildDeps({ toolPermRepo })).resolve(baseQuery({ companyRole: 'MEMBER' as any }));
 
-      assert.ok(defaultResult.ok);
-      assert.deepEqual([...(defaultResult.value.allowedActionsByTool.get(asToolId('semrush')) ?? [])], ['read']);
-      assert.ok(overriddenResult.ok);
-      assert.equal(overriddenResult.value.allowedToolIds.has(asToolId('semrush')), false);
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('semrush')), false);
     });
 
     it('SUPER_ADMIN gets every tool', async () => {
@@ -614,6 +621,36 @@ describe('PermissionService', () => {
 
       assert.ok(result.ok);
       assert.equal(result.value.allowedToolIds.has(asToolId('omsSiteData')), false);
+    });
+
+    it('honours an explicit department grant of Semrush for an ordinary member', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'semrush', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('semrush')) ?? [])], ['read']);
+    });
+
+    it('still denies Semrush to a department member with no explicit grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({ companyRole: 'MEMBER' as any, departmentId: DEPT_ID as any }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('semrush')), false);
     });
 
     it('keeps Airtable available to a company admin in a department context without a department grant', async () => {
