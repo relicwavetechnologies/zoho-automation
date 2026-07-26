@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { AlertTriangle, Building2, MoreHorizontal, RefreshCw, Search, ShieldCheck, UserPlus } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { ApprovalInbox } from '@/components/approvals/ApprovalInbox'
 import { ToolCatalogueCard } from '@/components/tool-catalogue/ToolCatalogueCard'
 import { PeopleTableSkeleton, RoleCardGridSkeleton, ToolCardGridSkeleton } from '@/components/tool-catalogue/ToolSkeletons'
 import { DepartmentAccessMatrix } from '@/components/tool-access/DepartmentAccessMatrix'
@@ -134,6 +135,11 @@ export function PluginsRoute() {
             Refresh
           </Button>
         </header>
+
+        {/* A paused action outranks the catalogue: it is work someone is
+            blocked on, not something to browse. It sits above everything and
+            disappears when there is nothing waiting. */}
+        {inventory !== null && !error ? <ApprovalInbox /> : null}
 
         {inventory !== null && !error && hasManagementAccess && selectedDepartment ? (
           <DepartmentScopeBar department={selectedDepartment} departments={departments} snapshot={selectedSnapshot} attentionCount={attentionCount} onDepartmentChange={setSelectedDepartmentId} />

@@ -2093,6 +2093,46 @@ pub async fn divo_department_manage_snapshot<R: Runtime>(
     .await
 }
 
+/// Everything waiting on this member, and everything they are waiting on.
+#[tauri::command]
+pub async fn divo_approval_inbox<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        reqwest::Method::GET,
+        "/approvals",
+        None,
+        "Divo approval inbox",
+        true,
+    )
+    .await
+}
+
+/// Approve or reject one request. Authority is checked on the backend against
+/// the approval row, so this only carries who is asking and what they said.
+#[tauri::command]
+pub async fn divo_approval_decide<R: Runtime>(
+    app: AppHandle<R>,
+    approval_id: String,
+    decision: String,
+) -> Result<Value, String> {
+    let approval_id = require_divo_tool_identifier(&approval_id, "approvalId")?;
+    let decision = require_divo_tool_identifier(&decision, "decision")?;
+    if decision != "approved" && decision != "rejected" {
+        return Err("decision must be approved or rejected".to_string());
+    }
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        reqwest::Method::POST,
+        &format!("/approvals/{approval_id}/decision"),
+        Some(json!({ "decision": decision })),
+        "Divo approval decision",
+        true,
+    )
+    .await
+}
+
 /// Load the per-department manager approval policy shown in the Access Map.
 #[tauri::command]
 pub async fn divo_department_manager_approval<R: Runtime>(
