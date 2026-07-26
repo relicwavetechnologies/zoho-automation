@@ -531,6 +531,80 @@ pub struct DivoSessionStatus {
     pub departments: Vec<DivoDepartment>,
 }
 
+fn non_empty_string(value: Option<&Value>) -> Option<String> {
+    let text = value?.as_str()?.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
+/// Fold a fresh `GET /me` payload into the stored session, returning the new
+/// session only when something actually moved.
+///
+/// The backend resolves a member's role from their live company membership on
+/// every request — the same source the admin console reads — but the desktop
+/// only ever recorded the role it was handed at sign-in and then validated the
+/// session without reading the answer. A member promoted or demoted after
+/// signing in therefore kept seeing their old role until they signed out, and
+/// the two consoles disagreed about the same person.
+///
+/// Only fields the payload actually carries are applied: a null name in the
+/// response means "unknown", not "erase the name we have".
+fn reconcile_session(session: &DivoSession, me: &Value) -> Option<DivoSession> {
+    let data = me.get("data")?;
+    let mut next = session.clone();
+    let mut changed = false;
+
+    for (fresh, current) in [
+        (non_empty_string(data.get("role")), &mut next.role),
+        (non_empty_string(data.get("email")), &mut next.email),
+        (non_empty_string(data.get("name")), &mut next.name),
+    ] {
+        if let Some(value) = fresh {
+            if current.as_deref() != Some(value.as_str()) {
+                *current = Some(value);
+                changed = true;
+            }
+        }
+    }
+
+    // An empty array is a real answer — the member belongs to no department —
+    // so the list is replaced whenever the payload carries one.
+    if let Some(entries) = data.get("departments").and_then(Value::as_array) {
+        let departments: Vec<DivoDepartment> = entries
+            .iter()
+            .filter_map(|entry| {
+                Some(DivoDepartment {
+                    id: non_empty_string(entry.get("id"))?,
+                    name: non_empty_string(entry.get("name")).unwrap_or_default(),
+                })
+            })
+            .collect();
+
+        if next.departments != departments {
+            next.departments = departments;
+            changed = true;
+        }
+
+        // A department the member has left must not stay selected: it is what
+        // the gateway and Pi resolve permissions against.
+        if let Some(selected) = next.department_id.as_deref() {
+            if !next.departments.iter().any(|d| d.id == selected) {
+                next.department_id = None;
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        Some(next)
+    } else {
+        None
+    }
+}
+
 fn disconnected_session_status() -> DivoSessionStatus {
     DivoSessionStatus {
         configured: false,
@@ -669,6 +743,22 @@ pub async fn divo_validate_session<R: Runtime>(
         return Err("Divo session validation returned an unsuccessful response".into());
     }
 
+    // The backend just told us who this member is now. The stored copy is only
+    // a cache of sign-in time, so take the fresh answer before anything else
+    // reads it — the runtime context refresh below resolves against it.
+    if let Some(session) = load_divo_session(&app)? {
+        if let Some(updated) = reconcile_session(&session, &response) {
+            log::info!(
+                "divo.session.reconciled role={:?} departments={}",
+                updated.role,
+                updated.departments.len()
+            );
+            save_divo_session(&app, &updated)?;
+            sync_pi_divo_env(&app)?;
+            emit_divo_session_changed(&app, true);
+        }
+    }
+
     if let Err(error) = refresh_runtime_context(&app).await {
         log::warn!("divo.runtime_context.refresh_failed after=session_validation error={error}");
         if is_runtime_context_access_denied(&error) {
@@ -684,10 +774,33 @@ pub async fn divo_validate_session<R: Runtime>(
 mod tests {
     use super::{
         department_management_request, is_runtime_context_access_denied,
-        member_departments_runtime_context, thread_title_request_body,
+        member_departments_runtime_context, reconcile_session, thread_title_request_body,
         DepartmentManagementOperation, DivoDepartment, DivoSession,
     };
     use serde_json::json;
+
+    fn signed_in_as_member() -> DivoSession {
+        DivoSession {
+            backend_url: "https://example.test".to_string(),
+            member_token: "member-token".to_string(),
+            department_id: Some("dept-finance".to_string()),
+            email: Some("anish@example.test".to_string()),
+            name: Some("Anish Suman".to_string()),
+            user_id: Some("user-1".to_string()),
+            company_id: Some("company-1".to_string()),
+            role: Some("MEMBER".to_string()),
+            expires_at: None,
+            avatar_url: None,
+            departments: vec![DivoDepartment {
+                id: "dept-finance".to_string(),
+                name: "Finance".to_string(),
+            }],
+        }
+    }
+
+    fn me(data: serde_json::Value) -> serde_json::Value {
+        json!({ "success": true, "data": data })
+    }
 
     #[test]
     fn recognizes_runtime_context_access_denied() {
@@ -836,6 +949,97 @@ mod tests {
         assert_eq!(context.department_name, None);
         assert!(context.persona_prompt.is_empty());
         assert_eq!(context.departments, vec!["Finance", "Operations"]);
+    }
+
+    #[test]
+    fn takes_the_live_role_the_backend_reports() {
+        // The admin console read the live company membership while the desktop
+        // showed the role baked in at sign-in, so the two disagreed about the
+        // same person until they signed out.
+        let session = signed_in_as_member();
+        let updated = reconcile_session(
+            &session,
+            &me(json!({
+                "role": "COMPANY_ADMIN",
+                "departments": [{ "id": "dept-finance", "name": "Finance" }],
+            })),
+        )
+        .expect("a changed role must be persisted");
+
+        assert_eq!(updated.role.as_deref(), Some("COMPANY_ADMIN"));
+        assert_eq!(updated.department_id.as_deref(), Some("dept-finance"));
+    }
+
+    #[test]
+    fn leaves_an_unchanged_session_alone() {
+        // No write, no session-changed event, no Pi env rewrite on every poll.
+        let session = signed_in_as_member();
+        assert!(reconcile_session(
+            &session,
+            &me(json!({
+                "role": "MEMBER",
+                "email": "anish@example.test",
+                "name": "Anish Suman",
+                "departments": [{ "id": "dept-finance", "name": "Finance" }],
+            })),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn keeps_what_the_payload_does_not_carry() {
+        // A null name means "unknown", not "erase the name we have".
+        let session = signed_in_as_member();
+        let updated = reconcile_session(
+            &session,
+            &me(json!({ "role": "COMPANY_ADMIN", "name": null, "email": "" })),
+        )
+        .expect("the role still changed");
+
+        assert_eq!(updated.name.as_deref(), Some("Anish Suman"));
+        assert_eq!(updated.email.as_deref(), Some("anish@example.test"));
+        // No departments key at all: the stored list stands.
+        assert_eq!(updated.departments, session.departments);
+        assert_eq!(updated.department_id.as_deref(), Some("dept-finance"));
+    }
+
+    #[test]
+    fn drops_a_department_the_member_has_left() {
+        // department_id is what the gateway and Pi resolve permissions against,
+        // so a stale selection is worse than none.
+        let session = signed_in_as_member();
+        let updated = reconcile_session(
+            &session,
+            &me(json!({ "departments": [{ "id": "dept-ops", "name": "Operations" }] })),
+        )
+        .expect("the department list changed");
+
+        assert_eq!(updated.department_id, None);
+        assert_eq!(
+            updated.departments,
+            vec![DivoDepartment {
+                id: "dept-ops".to_string(),
+                name: "Operations".to_string(),
+            }]
+        );
+        // The role was not in the payload, so it is untouched.
+        assert_eq!(updated.role.as_deref(), Some("MEMBER"));
+    }
+
+    #[test]
+    fn treats_an_empty_department_list_as_an_answer() {
+        let session = signed_in_as_member();
+        let updated = reconcile_session(&session, &me(json!({ "departments": [] })))
+            .expect("losing every department is a change");
+
+        assert!(updated.departments.is_empty());
+        assert_eq!(updated.department_id, None);
+    }
+
+    #[test]
+    fn ignores_a_response_without_a_data_object() {
+        let session = signed_in_as_member();
+        assert!(reconcile_session(&session, &json!({ "success": true })).is_none());
     }
 }
 

@@ -5,7 +5,7 @@ use tauri_plugin_store::StoreExt;
 const STORE_NAME: &str = "divo-session.json";
 const SESSION_KEY: &str = "member_session";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DivoDepartment {
     pub id: String,
