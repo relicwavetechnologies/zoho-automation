@@ -26,6 +26,7 @@ import {
   GoogleSheetsIcon,
   GoogleSlidesIcon,
   GoogleTasksIcon,
+  AirtableIcon,
   CanvaIcon,
   LarkIcon,
   ZohoIcon,
@@ -106,6 +107,16 @@ export const divoPlugins: DivoPlugin[] = [
     category: 'connector',
     description: 'Connect and share Canva design workspaces through Divo.',
     icon: CanvaIcon,
+    accentClassName: 'bg-card border-border/70',
+    featured: true,
+    enabled: true,
+  },
+  {
+    id: 'airtable',
+    name: 'Airtable',
+    category: 'connector',
+    description: 'Connect Airtable bases so Divo can read and edit records, schema, and automations.',
+    icon: AirtableIcon,
     accentClassName: 'bg-card border-border/70',
     featured: true,
     enabled: true,
@@ -253,6 +264,14 @@ export const pluginAutomationCards = [
     accentClassName: 'text-violet-300 bg-violet-300/10 border-violet-300/20',
   },
 ]
+
+/**
+ * Tool groups a member without management scope may connect for themselves.
+ * Kept here, beside the plugin catalogue, because the connect flow is spread
+ * across three registries and each one that drifted silently cost a provider
+ * its Connect button.
+ */
+export const PERSONAL_CONNECTABLE_PLUGIN_IDS: readonly string[] = ['google-workspace', 'canva', 'airtable']
 
 export function getPlugin(pluginId: string) {
   return divoPlugins.find((plugin) => plugin.id === pluginId)

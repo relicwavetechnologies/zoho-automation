@@ -28,6 +28,7 @@ import {
   type DepartmentManagementSnapshot,
   type DivoToolInventoryItem,
 } from '@/lib/divo-tools'
+import { PERSONAL_CONNECTABLE_PLUGIN_IDS } from '@/lib/plugins'
 import { groupToolInventory, type ToolPresentationGroup } from '@/lib/tool-presentation'
 import { cn } from '@/lib/utils'
 
@@ -97,7 +98,7 @@ export function PluginsRoute() {
   // role to decide whether to expose the administration workspace.
   const hasManagementAccess = (inventory ?? []).some(item => item.managementScopes.length > 0)
   const personalGroups = useMemo(
-    () => allGroups.filter(group => group.id === 'google-workspace' || group.id === 'canva'),
+    () => allGroups.filter(group => PERSONAL_CONNECTABLE_PLUGIN_IDS.includes(group.id)),
     [allGroups],
   )
   const managedGroup = managedGroupId ? allGroups.find(group => group.id === managedGroupId) ?? null : null

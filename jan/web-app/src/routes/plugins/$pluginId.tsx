@@ -203,7 +203,13 @@ type CloudProviderConfig = {
   }
 }
 
-const cloudProviders: Record<CloudProviderConfig['pluginId'], CloudProviderConfig> = {
+/**
+ * Exported so the registry invariant can be asserted: the detail page renders
+ * the connect flow only when this record AND the `divoPlugins` catalogue both
+ * know the id. Airtable was in neither, then in only one, and both times fell
+ * through to the read-only access page with no way to connect.
+ */
+export const cloudProviders: Record<CloudProviderConfig['pluginId'], CloudProviderConfig> = {
   'google-workspace': {
     provider: 'google',
     pluginId: 'google-workspace',
@@ -247,7 +253,6 @@ const cloudProviders: Record<CloudProviderConfig['pluginId'], CloudProviderConfi
     label: 'Airtable',
     connectionLabel: 'Airtable',
     accountFallback: 'Airtable account',
-    supportsLabel: true,
     commands: {
       authorize: 'divo_airtable_authorize_url',
       status: 'divo_airtable_status',
