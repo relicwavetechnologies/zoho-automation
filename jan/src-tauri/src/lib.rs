@@ -174,6 +174,7 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_tool_set_department_role_action,
         core::divo::commands::divo_tool_set_department_member_action,
         core::divo::commands::divo_department_manage_snapshot,
+        core::divo::commands::divo_tool_coverage,
         core::divo::commands::divo_approval_inbox,
         core::divo::commands::divo_approval_decide,
         core::divo::commands::divo_department_manager_approval,

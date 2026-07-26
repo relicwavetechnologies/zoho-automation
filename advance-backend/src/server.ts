@@ -393,7 +393,6 @@ export const createServer = (c: Container) => {
     }),
   );
 
-  // Desktop auth (Lark OAuth, handoff, session management)
   app.use(
     '/api/desktop',
     createDesktopApprovalRoutes({
@@ -404,7 +403,7 @@ export const createServer = (c: Container) => {
     }),
   );
   app.use(
-    '/api/desktop/auth',
+    '/api/desktop',
     createDesktopToolsRoutes({
       prisma:                 c.prisma,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
@@ -433,6 +432,7 @@ export const createServer = (c: Container) => {
       service:         c.desktopDepartmentManagementService,
     }),
   );
+  // Desktop auth (Lark OAuth, handoff, session management)
   app.use(
     '/api/desktop/auth',
     createDesktopAuthRoutes({

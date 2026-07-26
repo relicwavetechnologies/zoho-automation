@@ -2093,6 +2093,27 @@ pub async fn divo_department_manage_snapshot<R: Runtime>(
     .await
 }
 
+/// Configured reach of the whole tool catalogue in one department, in one call.
+#[tauri::command]
+pub async fn divo_tool_coverage<R: Runtime>(
+    app: AppHandle<R>,
+    department_id: String,
+) -> Result<Value, String> {
+    let department_id = require_divo_tool_identifier(&department_id, "departmentId")?;
+    divo_member_json_request(
+        &app,
+        "/api/desktop",
+        reqwest::Method::GET,
+        &format!("/tools/coverage/{department_id}"),
+        None,
+        "Divo department tool coverage",
+        // Supplementary data for the tools list, not proof of a session. A
+        // backend without this endpoint yet must not sign the member out.
+        false,
+    )
+    .await
+}
+
 /// Everything waiting on this member, and everything they are waiting on.
 #[tauri::command]
 pub async fn divo_approval_inbox<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {
@@ -2103,7 +2124,9 @@ pub async fn divo_approval_inbox<R: Runtime>(app: AppHandle<R>) -> Result<Value,
         "/approvals",
         None,
         "Divo approval inbox",
-        true,
+        // Same: the inbox is additive. Losing it costs a section on one page,
+        // and is never a reason to end someone's session.
+        false,
     )
     .await
 }
@@ -2128,7 +2151,7 @@ pub async fn divo_approval_decide<R: Runtime>(
         &format!("/approvals/{approval_id}/decision"),
         Some(json!({ "decision": decision })),
         "Divo approval decision",
-        true,
+        false,
     )
     .await
 }
