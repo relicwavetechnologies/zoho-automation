@@ -131,7 +131,13 @@ describe('governed DB skill tools', () => {
       chatId: 'chat-1',
     }, new Set(['larkDoc']), undefined, runtimeExecutor);
 
-    const output = await executeDynamic(tool, { toolId: 'larkDoc', args: { op: 'create' } });
+    // Backend-hosted channels must name the connected account they act as.
+    // This test is about executor routing, not account discovery, so it
+    // supplies the connection rather than wiring a connection registry.
+    const output = await executeDynamic(tool, {
+      toolId: 'larkDoc',
+      args: { op: 'create', connectionId: 'lark-conn-1' },
+    });
 
     assert.equal(calls, 1);
     assert.match(output, /"created":true/);
