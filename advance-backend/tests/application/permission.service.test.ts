@@ -577,6 +577,69 @@ describe('PermissionService', () => {
       assert.deepEqual([...(result.value.allowedActionsByTool.get(asToolId('omsSiteData')) ?? [])], ['read']);
     });
 
+    it('keeps Airtable available to a company admin in a department context without a department grant', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'COMPANY_ADMIN' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      for (const toolId of ['airtableRecords', 'airtableSchema', 'airtableAutomation']) {
+        assert.deepEqual(
+          [...(result.value.allowedActionsByTool.get(asToolId(toolId)) ?? [])].sort(),
+          ['create', 'read', 'update'],
+          `${toolId} should be granted to a company admin outright`,
+        );
+      }
+    });
+
+    it('denies Airtable to a department member with no grant, unlike the company admin', async () => {
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo: emptyDeptToolPermRepo(),
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedToolIds.has(asToolId('airtableRecords')), false);
+    });
+
+    // The admin grant is a floor. OMS is exclusive and replaces whatever the
+    // department says; Airtable must not, or opening it to a role later would
+    // be silently overwritten by the admin's narrower action set.
+    it('keeps a department grant that reaches further than the Airtable admin floor', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_001', toolId: 'airtableRecords', actionGroup: 'delete', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+        deptUserOverrideRepo: emptyUserOverrideRepo(),
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'COMPANY_ADMIN' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.deepEqual(
+        [...(result.value.allowedActionsByTool.get(asToolId('airtableRecords')) ?? [])].sort(),
+        ['create', 'delete', 'read', 'update'],
+      );
+    });
+
     it('dept cache: second call with same params does not re-query dept repos', async () => {
       let membershipCalls = 0;
       const svc = new PermissionServiceImpl(buildDeps({

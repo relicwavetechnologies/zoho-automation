@@ -75,14 +75,14 @@ export class PermissionServiceImpl implements PermissionService {
 
     // ── No department: pure company-axis ──────────────────────────────
     if (!departmentId) {
-      return this.applyOmsCompanyAdminAccess(companyRole, await this.resolveCompanyOnly(companyId, companyRole));
+      return this.applyCompanyAdminFixedAccess(companyRole, await this.resolveCompanyOnly(companyId, companyRole));
     }
 
     // ── With department: check dept cache first ────────────────────────
     const cached = await this.permCache.getDept(companyId, departmentId, userId, companyRole);
     if (cached.ok && cached.value !== null) {
       this.deps.logger.debug('perm.cache.hit.dept', { companyId, departmentId, userId });
-      return this.applyOmsCompanyAdminAccess(companyRole, ok(deserializePermissionResult(cached.value)));
+      return this.applyCompanyAdminFixedAccess(companyRole, ok(deserializePermissionResult(cached.value)));
     }
 
     // ── Company axis (the ceiling) ─────────────────────────────────────
@@ -224,7 +224,7 @@ export class PermissionServiceImpl implements PermissionService {
     // Cache the result
     await this.permCache.setDept(companyId, departmentId, userId, companyRole, serializePermissionResult(result));
 
-    return this.applyOmsCompanyAdminAccess(companyRole, ok(result));
+    return this.applyCompanyAdminFixedAccess(companyRole, ok(result));
   }
 
   // ── Public: canInvoke ────────────────────────────────────────────────
@@ -382,7 +382,7 @@ export class PermissionServiceImpl implements PermissionService {
       decisions,
     };
 
-    const safeResult = stripOmsAccess(result);
+    const safeResult = stripCompanyAdminFixedAccess(result);
 
     // Cache before returning
     await this.permCache.setCompany(companyId, companyRole, serializePermissionResult(safeResult));
@@ -390,35 +390,73 @@ export class PermissionServiceImpl implements PermissionService {
     return ok(safeResult);
   }
 
-  /** OMS inventory access is fixed to live company administrators, even when a department is selected. */
-  private applyOmsCompanyAdminAccess(
+  /**
+   * Tools fixed to live company administrators, whatever department is
+   * selected and whatever the department overlay says. The overlay is
+   * default-deny per department role, so a company-wide integration that is
+   * still being piloted by its admin would otherwise be denied everywhere
+   * until each role is granted one by one.
+   */
+  private applyCompanyAdminFixedAccess(
     companyRole: CompanyRoleSlug,
     result: Result<PermissionResult, PermissionError>,
   ): Result<PermissionResult, PermissionError> {
     if (!result.ok) return result;
-    const base = stripOmsAccess(result.value);
+    const base = stripCompanyAdminFixedAccess(result.value);
     if (!['COMPANY_ADMIN', 'SUPER_ADMIN'].includes(companyRole)) return ok(base);
+
     const allowedActionsByTool = new Map(base.allowedActionsByTool);
-    allowedActionsByTool.set(asToolId('omsSiteData'), new Set<ToolActionGroup>(['read']));
-    return ok({
-      ...base,
-      allowedToolIds: new Set([...base.allowedToolIds, asToolId('omsSiteData')]),
-      allowedActionsByTool,
-      decisions: [...base.decisions, { toolId: 'omsSiteData', actionGroup: 'read', allowed: true, source: 'company_default' }],
-    });
+    const allowedToolIds = new Set(base.allowedToolIds);
+    const decisions = [...base.decisions];
+    for (const [toolId, actions] of COMPANY_ADMIN_FIXED_TOOLS) {
+      // A floor, not a replacement: a department grant that already allows
+      // more keeps it, so opening one of these to a role later still works.
+      const granted = new Set<ToolActionGroup>(allowedActionsByTool.get(asToolId(toolId)) ?? []);
+      for (const actionGroup of actions) {
+        if (granted.has(actionGroup)) continue;
+        granted.add(actionGroup);
+        decisions.push({ toolId, actionGroup, allowed: true, source: 'company_default' });
+      }
+      allowedActionsByTool.set(asToolId(toolId), granted);
+      allowedToolIds.add(asToolId(toolId));
+    }
+    return ok({ ...base, allowedToolIds, allowedActionsByTool, decisions });
   }
 }
 
-function stripOmsAccess(result: PermissionResult): PermissionResult {
-  if (!result.allowedToolIds.has(asToolId('omsSiteData'))) return result;
+/**
+ * Tool → actions a company administrator holds outright. Airtable is here for
+ * the same reason OMS is: a company-wide connection its admin is piloting,
+ * which the default-deny department overlay refuses until every role is
+ * granted by hand.
+ */
+const COMPANY_ADMIN_FIXED_TOOLS: ReadonlyArray<readonly [CanonicalToolId, readonly ToolActionGroup[]]> = [
+  ['omsSiteData', ['read']],
+  ['airtableRecords', ['read', 'create', 'update']],
+  ['airtableSchema', ['read', 'create', 'update']],
+  ['airtableAutomation', ['read', 'create', 'update']],
+];
+
+/**
+ * Tools whose access is the company-admin grant and nothing else, stripped
+ * before the admin floor is applied so no department row can widen them.
+ * Airtable is deliberately absent: its department grants are real, and the
+ * team is meant to get it once the pilot ends.
+ */
+const COMPANY_ADMIN_EXCLUSIVE_TOOLS: readonly CanonicalToolId[] = ['omsSiteData'];
+
+function stripCompanyAdminFixedAccess(result: PermissionResult): PermissionResult {
+  if (!COMPANY_ADMIN_EXCLUSIVE_TOOLS.some(toolId => result.allowedToolIds.has(asToolId(toolId)))) return result;
   const allowedToolIds = new Set(result.allowedToolIds);
-  allowedToolIds.delete(asToolId('omsSiteData'));
   const allowedActionsByTool = new Map(result.allowedActionsByTool);
-  allowedActionsByTool.delete(asToolId('omsSiteData'));
+  for (const toolId of COMPANY_ADMIN_EXCLUSIVE_TOOLS) {
+    allowedToolIds.delete(asToolId(toolId));
+    allowedActionsByTool.delete(asToolId(toolId));
+  }
   return {
     ...result,
     allowedToolIds,
     allowedActionsByTool,
-    decisions: result.decisions.filter(decision => decision.toolId !== 'omsSiteData'),
+    decisions: result.decisions.filter(decision => !COMPANY_ADMIN_EXCLUSIVE_TOOLS.includes(decision.toolId as CanonicalToolId)),
   };
 }
