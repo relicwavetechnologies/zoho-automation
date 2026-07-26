@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import {
   createLarkWebhookRoutes,
   processAcceptedLarkReceipt,
+  replayLarkMessageAfterLogin,
 } from '../../../src/infrastructure/channels/lark/lark.webhook.routes.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
 import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
@@ -116,6 +117,14 @@ async function runWebhook(body: unknown, options: {
    * turn runs with its own sender's authority rather than the room's.
    */
   identity?: LarkTestIdentity | ((openId: string) => LarkTestIdentity);
+  /** Model a first-time user: identity resolution finds nobody. */
+  unknownUser?: boolean;
+  /** What `prepareLarkLogin` reports for that unknown user. */
+  pendingLogin?: Record<string, unknown> | null;
+  /** Whether first-touch bootstrap succeeded (workspace bound + directory ok). */
+  bootstrapped?: boolean;
+  /** Whether Lark OAuth is configured on this deployment. */
+  oauthConfigured?: boolean;
   setupAdapter?: (adapter: LarkChannelAdapter) => void;
   shareResolverService?: {
     isShareAction(cardEvent: unknown): boolean;
@@ -195,6 +204,7 @@ async function runWebhook(body: unknown, options: {
         const resolved = typeof options.identity === 'function'
           ? options.identity(openId)
           : options.identity;
+        if (options.unknownUser) return ok(null);
         return ok(resolved ?? {
           userId: 'user-1',
           companyId: 'company-1',
@@ -202,7 +212,7 @@ async function runWebhook(body: unknown, options: {
           channel: 'lark',
         });
       },
-      prepareLarkLogin: async () => ok(null),
+      prepareLarkLogin: async () => ok(options.pendingLogin ?? null),
     } as any,
     conversationRepo: {
       // Only `appendTurn` is exercised here: it is how an attachment with no
@@ -263,7 +273,34 @@ async function runWebhook(body: unknown, options: {
     ...(options.channelDeliveryRepo
       ? { channelDeliveryRepo: options.channelDeliveryRepo as any }
       : {}),
-    cache: { setNx: async () => ok(true) } as any,
+    cache: { setNx: async () => ok(true), set: async () => ok(true) } as any,
+    ...(options.bootstrapped
+      ? {
+          // Enough of the real bootstrap for it to succeed: a bound workspace,
+          // a directory that agrees about the tenant, and a user it can see.
+          prisma: {
+            larkTenantBinding: { findFirst: async () => ({ companyId: 'company-1' }) },
+            channelIdentity: { upsert: async () => ({}) },
+            adminControlState: { findMany: async () => options.companyControls ?? [] },
+            runtimeConversation: { upsert: async () => ({}) },
+          } as any,
+          larkContactsClient: {
+            getTenantKey: async () => 'tenant-1',
+            getUser: async (openId: string) => ({
+              openId, displayName: 'Alice', email: 'alice@example.com',
+            }),
+          } as any,
+        }
+      : {}),
+    ...(options.oauthConfigured
+      ? {
+          larkOAuthService: {
+            isConfigured: () => true,
+            generateNonce: () => 'nonce-1',
+            getAuthorizeUrl: (state: string) => `https://lark.example/authorize?state=${state}`,
+          } as any,
+        }
+      : {}),
     serializer: options.serializer ?? {
       run: (key: string, task: (signal: AbortSignal) => Promise<void>) => {
         serializerKeys.push(key);
@@ -322,6 +359,7 @@ async function runWebhook(body: unknown, options: {
     await Promise.all(background);
   }
   return {
+    routeDeps,
     status,
     responseBody,
     order,
@@ -733,6 +771,182 @@ function attemptedDownloads(
     .filter(entry => entry.event.startsWith('webhook.attachment.download.'))
     .map(entry => String(entry.fields['fileName']));
 }
+
+/** Plain-text notices Divo sent to the chat, in order. */
+function noticesSent(adapter: any): string[] {
+  return adapter.__sentTexts ?? [];
+}
+
+/** Record every unreserved send and card so a first-touch branch is observable. */
+function captureOutbound(adapter: any): void {
+  adapter.__sentTexts = [];
+  adapter.__sentCards = [];
+  adapter.sendToChatId = async (_chatId: string, text: string) => {
+    adapter.__sentTexts.push(text);
+    return ok('om_notice');
+  };
+  adapter.sendCardToChat = async (_chatId: string, card: string) => {
+    adapter.__sentCards.push(card);
+    return ok({ messageId: 'om_card' });
+  };
+}
+
+describe('Lark first contact', () => {
+  const firstTimer = () => makeEvent({ chatType: 'p2p', text: 'hello' });
+
+  it('says the workspace is not connected instead of going quiet', async () => {
+    let adapter: any;
+    const result = await runWebhook(firstTimer(), {
+      unknownUser: true,
+      pendingLogin: null,
+      setupAdapter: a => { adapter = a; captureOutbound(a); },
+    });
+
+    // The state every new customer starts in. Silence here is indistinguishable
+    // from Divo being down, which is the worst possible first impression.
+    assert.equal(result.status, 200);
+    assert.equal(noticesSent(adapter).length, 1, 'exactly one notice');
+    assert.match(noticesSent(adapter)[0]!, /not connected to this Lark workspace/i);
+    assert.ok(!result.order.includes('engine'), 'and no agent run');
+  });
+
+  it('distinguishes a directory failure from an unconnected workspace', async () => {
+    let adapter: any;
+    await runWebhook(firstTimer(), {
+      unknownUser: true,
+      bootstrapped: true,
+      pendingLogin: null,
+      setupAdapter: a => { adapter = a; captureOutbound(a); },
+    });
+
+    // Bootstrap succeeded, so the workspace *is* connected — telling them to go
+    // connect it would send an admin chasing something that is already done.
+    assert.match(noticesSent(adapter)[0]!, /couldn't verify your account/i);
+  });
+
+  it('admits when sign-in is not configured on this deployment', async () => {
+    let adapter: any;
+    await runWebhook(firstTimer(), {
+      unknownUser: true,
+      pendingLogin: {
+        status: 'ready', companyId: 'company-1', userId: 'user-1',
+        larkOpenId: 'ou_sender', displayName: 'Alice', email: 'alice@example.com',
+      },
+      // oauthConfigured omitted: createLarkLoginUrl returns null.
+      setupAdapter: a => { adapter = a; captureOutbound(a); },
+    });
+
+    // This used to fall through to a silent return, so a deployment missing its
+    // OAuth credentials ignored every new user and looked identical to a bug.
+    assert.match(noticesSent(adapter)[0]!, /sign-in isn't configured/i);
+  });
+
+  it('explains a profile with no email', async () => {
+    let adapter: any;
+    await runWebhook(firstTimer(), {
+      unknownUser: true,
+      pendingLogin: { status: 'missing_email', companyId: 'company-1', larkOpenId: 'ou_sender' },
+      setupAdapter: a => { adapter = a; captureOutbound(a); },
+    });
+
+    assert.match(noticesSent(adapter)[0]!, /no email address/i);
+  });
+
+  it('sends a card with a Connect button when sign-in is possible', async () => {
+    let adapter: any;
+    await runWebhook(firstTimer(), {
+      unknownUser: true,
+      oauthConfigured: true,
+      pendingLogin: {
+        status: 'ready', companyId: 'company-1', userId: 'user-1',
+        larkOpenId: 'ou_sender', displayName: 'Alice', email: 'alice@example.com',
+      },
+      setupAdapter: a => { adapter = a; captureOutbound(a); },
+    });
+
+    assert.equal(adapter.__sentCards.length, 1, 'a card, not a raw link');
+    const card = JSON.parse(JSON.parse(adapter.__sentCards[0]).card);
+    const button = card.body.elements.find((e: any) => e.tag === 'button');
+    assert.equal(button.behaviors[0].type, 'open_url');
+    assert.deepEqual(noticesSent(adapter), [], 'no duplicate plain-text prompt');
+  });
+
+  it('falls back to a plain link when the card cannot be sent', async () => {
+    let adapter: any;
+    await runWebhook(firstTimer(), {
+      unknownUser: true,
+      oauthConfigured: true,
+      pendingLogin: {
+        status: 'ready', companyId: 'company-1', userId: 'user-1',
+        larkOpenId: 'ou_sender', displayName: 'Alice', email: 'alice@example.com',
+      },
+      setupAdapter: a => {
+        adapter = a;
+        captureOutbound(a);
+        a.sendCardToChat = async () => ({
+          ok: false, error: { message: 'card rejected' },
+        });
+      },
+    });
+
+    // A working link in an ugly message beats a button nobody received.
+    assert.equal(noticesSent(adapter).length, 1);
+    assert.match(noticesSent(adapter)[0]!, /https:\/\/lark\.example\/authorize/);
+  });
+});
+
+describe('Post-login replay', () => {
+  it('answers the message the user sent before signing in', async () => {
+    const base = await runWebhook(makeEvent({ chatType: 'p2p', text: 'what is my quota' }));
+    const event = makeEvent({ chatType: 'p2p', text: 'what is my quota' });
+
+    await replayLarkMessageAfterLogin(event as any, base.routeDeps as any);
+
+    // The whole reason the sign-in card can promise "no need to send it again".
+    const replayed = base.engineInputs.at(-1) as Record<string, any>;
+    assert.match(String(replayed?.['incoming']?.text ?? ''), /what is my quota/);
+  });
+
+  it('runs under a distinct trace ID so the sign-in prompt has not spent its reservation', async () => {
+    const base = await runWebhook(makeEvent({ chatType: 'p2p', text: 'hello' }));
+    const before = base.engineInputs.length;
+    const event = makeEvent({ chatType: 'p2p', text: 'hello' });
+
+    await replayLarkMessageAfterLogin(event as any, base.routeDeps as any);
+
+    const original = (base.engineInputs[0] as any)?.incoming?.traceId;
+    const replay = (base.engineInputs[before] as any)?.incoming?.traceId;
+
+    // Wave 5 keys a delivery on the trace ID. The sign-in prompt was delivered
+    // under the original one, so replaying with it would find the reservation
+    // already `delivered` and swallow the answer — the user would connect and
+    // then get silence.
+    assert.notEqual(String(replay), String(original));
+    assert.match(String(replay), /:replay$/);
+  });
+
+  it('is stable across repeats, so a retried replay still deduplicates', async () => {
+    const base = await runWebhook(makeEvent({ chatType: 'p2p', text: 'hello' }));
+    const event = makeEvent({ chatType: 'p2p', text: 'hello' });
+
+    await replayLarkMessageAfterLogin(event as any, base.routeDeps as any);
+    const first = (base.engineInputs.at(-1) as any)?.incoming?.traceId;
+    await replayLarkMessageAfterLogin(event as any, base.routeDeps as any);
+    const second = (base.engineInputs.at(-1) as any)?.incoming?.traceId;
+
+    assert.equal(String(first), String(second));
+  });
+
+  it('ignores a payload it cannot parse rather than throwing into the callback', async () => {
+    const base = await runWebhook(makeEvent({ chatType: 'p2p', text: 'hello' }));
+    const before = base.engineInputs.length;
+
+    // The OAuth callback is best-effort and the browser is waiting on it.
+    await replayLarkMessageAfterLogin({ nonsense: true } as any, base.routeDeps as any);
+
+    assert.equal(base.engineInputs.length, before, 'no run started');
+  });
+});
 
 describe('Lark document attachments', () => {
   it('never fetches a document out of Lark, even when Divo is addressed', async () => {

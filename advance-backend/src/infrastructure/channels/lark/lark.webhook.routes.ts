@@ -68,6 +68,14 @@ import {
   MAX_INLINE_IMAGE_BYTES,
 } from './lark-media-support';
 import { conversationKeyForMessage } from '../../../domain/conversation/conversation-key';
+import {
+  buildSignInCard,
+  signInFallbackText,
+  SIGN_IN_WORKSPACE_NOT_CONNECTED,
+  SIGN_IN_DIRECTORY_UNAVAILABLE,
+  SIGN_IN_NOT_CONFIGURED,
+  SIGN_IN_MISSING_EMAIL,
+} from './lark-signin';
 import type {
   IngressReceipt,
   IngressReceiptRepoPort,
@@ -402,6 +410,72 @@ function createLarkRequestLog(
 }
 
 /**
+ * Answer the message someone sent before they were signed in.
+ *
+ * Runs under a derived trace ID. That is the whole trick: the sign-in prompt
+ * was itself delivered under the original `messageId-createTime`, so replaying
+ * with that key would find the Wave 5 reservation already `delivered` and
+ * suppress the real answer — the user would connect and then get silence.
+ * `:replay` is stable across retries of the replay, so it still deduplicates
+ * itself.
+ *
+ * Best-effort by construction. It is triggered by an OAuth callback, not by a
+ * durable receipt, so there is nothing to retry it and nothing to fail: the
+ * user's original message is already answered or already lost by this point,
+ * and the worst case is that they resend it as before.
+ */
+export async function replayLarkMessageAfterLogin(
+  rawEvent: Record<string, unknown>,
+  deps: LarkWebhookDeps,
+): Promise<void> {
+  const parsed = deps.adapter.parseIncoming(rawEvent);
+  if (!parsed.ok) {
+    deps.logger.warn('webhook.replay.unparseable', { reason: parsed.error.payload.reason });
+    return;
+  }
+  if (!isLarkHumanMessage(parsed.value)) return;
+
+  const incoming: IncomingMessage = {
+    ...parsed.value,
+    traceId: asCorrelationId(`${String(parsed.value.traceId)}:replay`),
+  };
+  const log = createLarkRequestLog(
+    deps.logger.child({ route: 'lark-webhook', trigger: 'post_login_replay' }),
+    incoming,
+  );
+  const laneKey = buildLarkIngressLaneKey(incoming);
+
+  log.info('webhook.replay.started', { laneKey });
+  await deps.serializer.runAndWait(laneKey, async signal => {
+    const run = (adapter: LarkChannelAdapter, turnSignal: AbortSignal) =>
+      processInBackground(
+        incoming, rawEvent, { ...deps, adapter }, log,
+        deps.approvalGate, deps.knowledgeShareService, turnSignal,
+      );
+
+    if (!deps.laneLeaseHolder) {
+      await run(deps.adapter, signal);
+      return;
+    }
+
+    const outcome = await deps.laneLeaseHolder.withLane(
+      laneKey,
+      (lease, leaseSignal) => run(
+        fenceFinalReplies(deps.adapter, () => deps.laneLeaseHolder!.holdsLane(lease), log),
+        leaseSignal,
+      ),
+      signal,
+    );
+    // Deferring is the end of it. Unlike an ingress job there is no retry to
+    // schedule, and re-answering later out of order would be worse than not
+    // answering at all.
+    if (outcome.outcome === 'deferred') {
+      log.warn('webhook.replay.lane_busy', { laneKey, heldBy: outcome.ownerId });
+    }
+  }).catch(e => log.error('webhook.replay.failed', { error: String(e) }));
+}
+
+/**
  * Execute one payload already admitted by the durable ingress worker.
  * This is deliberately separate from the HTTP handler: Lark receives an ACK
  * only after durable queue admission, while retries and restart recovery own
@@ -646,6 +720,8 @@ async function createLarkLoginUrl(input: {
   userId: string;
   larkOpenId: string;
   tenantKey: string;
+  /** The message that triggered the prompt, answered once sign-in completes. */
+  pendingEvent?: Record<string, unknown>;
   deps: {
     larkOAuthService?: LarkOAuthService;
     cache: CachePort;
@@ -662,6 +738,7 @@ async function createLarkLoginUrl(input: {
       userId:     input.userId,
       larkOpenId: input.larkOpenId,
       tenantKey:  input.tenantKey,
+      ...(input.pendingEvent ? { pendingEvent: input.pendingEvent } : {}),
     },
     LARK_OAUTH_NONCE_TTL_SECONDS,
   );
@@ -727,60 +804,86 @@ async function processInBackground(
       return;
     }
 
-    const conversation: ConversationHandle = {
-      channel:            'lark',
-      chatId:             incoming.chatId,
-      replyToMessageId:   incoming.messageId,
-      replyInThread:      incoming.chatType === 'group',
-      correlationId,
-    };
+    // Say something on every path out of here. These branches used to log and
+    // return, so a new customer — whose workspace is by definition not yet
+    // connected — got silence that looked exactly like Divo being broken.
+    const tell = (text: string) =>
+      deps.adapter.sendToChatId(String(incoming.chatId), text, String(incoming.messageId))
+        .catch(e => log.warn('webhook.first_touch.notice_failed', {
+          error: String(e), correlationId,
+        }));
 
-    await bootstrapLarkFirstTouchIdentity(incoming.userExternalId, rawEvent, deps, log);
+    const bootstrapped = await bootstrapLarkFirstTouchIdentity(
+      incoming.userExternalId, rawEvent, deps, log,
+    );
     const pending = await deps.channelIdentityRepo.prepareLarkLogin(
       incoming.userExternalId,
       tenantKey,
     );
+
     if (pending.ok && pending.value?.status === 'ready') {
       const loginUrl = await createLarkLoginUrl({
         companyId:  pending.value.companyId,
         userId:     pending.value.userId,
         larkOpenId: pending.value.larkOpenId,
         tenantKey,
+        // Kept with the one-time nonce so the question survives sign-in. The
+        // whole point of the replay is that nobody has to retype what they
+        // already sent.
+        pendingEvent: rawEvent,
         deps,
       });
 
       if (loginUrl) {
         const name = pending.value.displayName ?? pending.value.email;
-        await deps.adapter.sendFinalReply(conversation, {
-          kind: 'final',
-          text:
-            `Hi ${name}, I know you in this workspace, but I need a one-time account connection before I can run tools for you.\n\n` +
-            `Open this link to connect Lark:\n\n${loginUrl}\n\n` +
-            `After authorising, send your request again. The link expires in 10 minutes.`,
-          format: 'text',
-        }).catch(e => log.warn('webhook.login_prompt.reply_failed', { error: String(e), correlationId }));
+        const card = await deps.adapter.sendCardToChat(
+          String(incoming.chatId),
+          buildSignInCard({ name, url: loginUrl }),
+        );
+        if (!card.ok) {
+          // A working link in a plain message beats a button nobody received.
+          log.warn('webhook.login_prompt.card_failed', {
+            error: card.error.message, correlationId,
+          });
+          await tell(signInFallbackText({ name, url: loginUrl }));
+        }
         log.info('webhook.login_prompt.sent', {
           larkOpenId: incoming.userExternalId,
           companyId:  pending.value.companyId,
           userId:     pending.value.userId,
           createdUser: pending.value.createdUser,
+          rendered: card.ok ? 'card' : 'text',
           correlationId,
         });
         return;
       }
+
+      // Recognised, but this deployment cannot complete a sign-in.
+      await tell(SIGN_IN_NOT_CONFIGURED);
+      log.error('webhook.login_prompt.oauth_unconfigured', {
+        larkOpenId: incoming.userExternalId,
+        companyId: pending.value.companyId,
+        correlationId,
+      });
+      return;
     }
 
     if (pending.ok && pending.value?.status === 'missing_email') {
-      await deps.adapter.sendFinalReply(conversation, {
-        kind: 'final',
-        text: 'I found your Lark profile, but it has no email address synced into Divo. Ask an admin to sync or invite your account, then try again.',
-        format: 'text',
-      }).catch(e => log.warn('webhook.login_prompt.reply_failed', { error: String(e), correlationId }));
+      await tell(SIGN_IN_MISSING_EMAIL);
       log.warn('webhook.identity.missing_email', { larkOpenId: incoming.userExternalId, correlationId });
       return;
     }
 
-    log.warn('webhook.identity.not_found', { larkOpenId: incoming.userExternalId });
+    // `prepareLarkLogin` returns null both when the workspace has no active
+    // binding and when it has one but this person is not in it. The bootstrap
+    // above already distinguishes them: it only succeeds when the workspace is
+    // bound and the directory confirmed the user.
+    await tell(bootstrapped ? SIGN_IN_DIRECTORY_UNAVAILABLE : SIGN_IN_WORKSPACE_NOT_CONNECTED);
+    log.warn('webhook.identity.not_found', {
+      larkOpenId: incoming.userExternalId,
+      bootstrapped,
+      correlationId,
+    });
     return;
   }
 

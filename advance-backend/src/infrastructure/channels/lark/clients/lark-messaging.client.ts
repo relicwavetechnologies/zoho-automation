@@ -7,6 +7,31 @@ import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 import type { Logger } from '../../../../shared/logger';
 import { planFinalCards } from '../lark-card.builder';
 
+/**
+ * Accept either a raw card body or the `{ msg_type, card }` envelope the card
+ * builders produce, and return what the messages API wants. Shared so a card
+ * sent to a chat and the same card sent to a person cannot disagree about how
+ * to unwrap it.
+ */
+function unwrapCardPayload(cardContent: string): { msgType: string; apiContent: string } {
+  try {
+    const wrapper = JSON.parse(cardContent) as Record<string, unknown>;
+    if (typeof wrapper['msg_type'] === 'string') {
+      const msgType = wrapper['msg_type'];
+      if (msgType === 'interactive' && wrapper['card'] !== undefined) {
+        return {
+          msgType,
+          apiContent: typeof wrapper['card'] === 'string'
+            ? wrapper['card']
+            : JSON.stringify(wrapper['card']),
+        };
+      }
+      return { msgType, apiContent: cardContent };
+    }
+  } catch { /* send as-is */ }
+  return { msgType: 'interactive', apiContent: cardContent };
+}
+
 interface LarkMessagingClientDeps {
   appId: string;
   appSecret: string;
@@ -140,19 +165,7 @@ export class LarkMessagingClient {
    * Uses receive_id_type=open_id so we don't need a chat_id.
    */
   async sendCardToOpenId(openId: string, cardContent: string): Promise<{ messageId: string }> {
-    let msgType = 'interactive';
-    let apiContent = cardContent;
-    try {
-      const wrapper = JSON.parse(cardContent) as Record<string, unknown>;
-      if (typeof wrapper['msg_type'] === 'string') {
-        msgType = wrapper['msg_type'];
-        if (msgType === 'interactive' && wrapper['card'] !== undefined) {
-          apiContent = typeof wrapper['card'] === 'string'
-            ? wrapper['card']
-            : JSON.stringify(wrapper['card']);
-        }
-      }
-    } catch { /* send as-is */ }
+    const { msgType, apiContent } = unwrapCardPayload(cardContent);
 
     const data = await this.sdk.request<{ message_id?: string }>(
       'POST',
@@ -160,6 +173,26 @@ export class LarkMessagingClient {
       {
         query: { receive_id_type: 'open_id' },
         body: { receive_id: openId, content: apiContent, msg_type: msgType },
+      },
+    );
+    return { messageId: data.message_id ?? '' };
+  }
+
+  /**
+   * Send a prebuilt interactive card to a chat.
+   *
+   * Same payload handling as `sendCardToOpenId`, addressed by `chat_id` so one
+   * caller works for a DM and a group alike — a card that only reaches direct
+   * chats would silently degrade to nothing in the group case.
+   */
+  async sendCardToChat(chatId: string, cardContent: string): Promise<{ messageId: string }> {
+    const { msgType, apiContent } = unwrapCardPayload(cardContent);
+    const data = await this.sdk.request<{ message_id?: string }>(
+      'POST',
+      '/open-apis/im/v1/messages',
+      {
+        query: { receive_id_type: 'chat_id' },
+        body: { receive_id: chatId, content: apiContent, msg_type: msgType },
       },
     );
     return { messageId: data.message_id ?? '' };

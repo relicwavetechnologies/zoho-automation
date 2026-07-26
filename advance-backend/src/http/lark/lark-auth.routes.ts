@@ -120,6 +120,12 @@ async function sendLarkDm(
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
 export function createLarkAuthRoutes(deps: {
+  /**
+   * Answer the message the user sent before signing in. Optional so the routes
+   * stay usable without the webhook wiring; absent simply means they have to
+   * resend, which is the behaviour this replaced.
+   */
+  onLinked?:             (pendingEvent: Record<string, unknown>) => Promise<void>;
   larkOAuthService:      LarkOAuthService;
   connectionRepo:        IntegrationConnectionRepository;
   cache:                 CachePort;
@@ -222,6 +228,7 @@ export function createLarkAuthRoutes(deps: {
       userId: string;
       larkOpenId: string;
       tenantKey: string;
+      pendingEvent?: Record<string, unknown>;
     }>(
       larkOAuthNonceKey(state.nonce),
     );
@@ -333,6 +340,15 @@ export function createLarkAuthRoutes(deps: {
           `✅ Connected! I can now act on your behalf in Lark — tasks, calendar, and more will show as created by you. Type /status to check your connection.`,
           deps.apiBase,
         ).catch(e => log.warn('lark.auth.dm_failed', { error: String(e) }));
+      }
+
+      // Answer what they asked before signing in. Deliberately not awaited: the
+      // browser is waiting on this response, and an agent run takes far longer
+      // than a page load should. Failures are logged inside the replay.
+      const pendingEvent = stored.value.pendingEvent;
+      if (pendingEvent && deps.onLinked) {
+        void deps.onLinked(pendingEvent).catch(e =>
+          log.warn('lark.auth.replay_failed', { error: String(e), companyId: state.companyId }));
       }
 
       res.send(successHtml(displayName));

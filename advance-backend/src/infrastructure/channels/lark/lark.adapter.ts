@@ -612,6 +612,30 @@ export class LarkChannelAdapter implements ChannelAdapter {
   // ── sendDirectCard ───────────────────────────────────────────────────
   // Sends an interactive card to a user by Lark open_id (DM).
 
+  /**
+   * Send a prebuilt card to a chat.
+   *
+   * Deliberately outside the delivery reservation. This carries system notices
+   * — sign-in, "I can't reach your workspace" — not the answer to a question,
+   * and reserving it would consume the run's `final` key and suppress the reply
+   * that follows.
+   */
+  async sendCardToChat(
+    chatId: string,
+    cardContent: string,
+  ): Promise<Result<{ messageId: string }, ChannelError>> {
+    try {
+      return ok(await this.messagingClient.sendCardToChat(chatId, cardContent));
+    } catch (e) {
+      return err(new ChannelError({
+        channel: 'lark',
+        stage: 'send_status',
+        reason: directCardFailureReason(e),
+        cause: e,
+      }));
+    }
+  }
+
   async sendDirectCard(openId: string, cardContent: string): Promise<Result<{ messageId: string }, ChannelError>> {
     try {
       const result = await this.messagingClient.sendCardToOpenId(openId, cardContent);

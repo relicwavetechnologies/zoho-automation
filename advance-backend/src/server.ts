@@ -6,6 +6,7 @@ import { createErrorBoundary } from './http/error-boundary';
 import {
   createLarkWebhookRoutes,
   processAcceptedLarkReceipt,
+  replayLarkMessageAfterLogin,
   type LarkWebhookDeps,
 } from './infrastructure/channels/lark/lark.webhook.routes';
 import { createAdminAuthRoutes } from './http/admin/admin-auth.routes';
@@ -331,6 +332,10 @@ export const createServer = (c: Container) => {
       appSecret:           c.env.LARK_APP_SECRET,
       apiBase:             c.env.LARK_API_BASE_URL,
       channelIdentityRepo: c.channelIdentityRepo,
+      // Shares the webhook's deps so the replayed turn runs through exactly the
+      // same lane, lease, and delivery path as any other message.
+      onLinked:            pendingEvent =>
+        replayLarkMessageAfterLogin(pendingEvent, larkWebhookDeps),
     }),
   );
 
