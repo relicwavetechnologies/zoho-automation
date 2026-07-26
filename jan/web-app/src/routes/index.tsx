@@ -15,8 +15,9 @@ type ThreadModel = {
 type SearchParams = {
   threadModel?: ThreadModel
 }
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { useThreads } from '@/hooks/useThreads'
+import { useWorkspaceMode } from '@/hooks/useWorkspaceMode'
 import DivoWorkspaceSelector from '@/containers/DivoWorkspaceSelector'
 import { TeachMode } from '@/components/teach/TeachMode'
 import { HomeGreeting } from '@/components/home/HomeGreeting'
@@ -39,7 +40,10 @@ function Index() {
   const search = useSearch({ from: route.home as any })
   const threadModel = search.threadModel
   const { setCurrentThreadId } = useThreads()
-  const [mode, setMode] = useState<'ask' | 'teach'>('ask')
+  // App-wide so the background Teach indicator can bring the manager back to
+  // a recording or upload that is still running.
+  const mode = useWorkspaceMode((state) => state.mode)
+  const setMode = useWorkspaceMode((state) => state.setMode)
   useTools()
 
   useEffect(() => {

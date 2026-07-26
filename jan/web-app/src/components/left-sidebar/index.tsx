@@ -2,6 +2,7 @@ import { DownloadManagement } from '@/containers/DownloadManegement'
 import { NavChats } from './NavChats'
 import { NavMain } from './NavMain'
 import { NavProjects } from './NavProjects'
+import { TeachBackgroundCard } from '@/components/teach/TeachBackgroundCard'
 import { useLeftPanel } from '@/hooks/useLeftPanel'
 import { useEffect, useState } from 'react'
 import { UserRound, LogOut, Settings2, ChevronsUpDown, Building2, Search } from 'lucide-react'
@@ -256,6 +257,9 @@ export function LeftSidebar() {
           <NavProjects />
           <NavChats />
         </SidebarContent>
+        {/* Sits directly above the account row so work still running in the
+            background is visible from every route, not just the Teach screen. */}
+        <TeachBackgroundCard />
         <DivoProfileFooter />
         <SidebarRail />
       </Sidebar>
