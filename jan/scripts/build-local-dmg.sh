@@ -24,6 +24,13 @@ APPLE_KEYCHAIN_PROFILE="${APPLE_KEYCHAIN_PROFILE:-airnote-deploy}"
 NOTARY_TIMEOUT="${NOTARY_TIMEOUT:-45m}"
 DEPLOY_AIRNOTE_SKILL="${DEPLOY_AIRNOTE_SKILL:-$HOME/.codex/skills/deploy-airnote/SKILL.md}"
 
+# Notarization is the slow half of a build (an Apple round trip). A DMG built on
+# this Mac carries no com.apple.quarantine attribute, so an un-notarized build
+# opens fine here and is enough to test a change. It must never leave this Mac:
+# on any other machine Gatekeeper has only the download quarantine flag to go on
+# and will refuse it.
+SKIP_NOTARIZATION="${DIVO_SKIP_NOTARIZATION:-0}"
+
 ACTIVE_MOUNT_POINT=""
 
 cleanup() {
@@ -73,32 +80,39 @@ if ! security find-identity -v -p codesigning | grep -Fq "\"$APPLE_SIGNING_IDENT
   fail "Developer ID identity '$APPLE_SIGNING_IDENTITY' is not available in the login Keychain"
 fi
 
-APPLE_NOTARY_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-${APPLE_PASSWORD:-}}"
-if [ -z "$APPLE_NOTARY_PASSWORD" ]; then
-  APPLE_NOTARY_PASSWORD="$(
-    security find-generic-password -a "$APPLE_ID" -s airnote-apple-app-password -w 2>/dev/null \
-      || awk '
-        /Known working Apple app-specific password/ {getline; gsub(/^[[:space:]]*`|`[[:space:]]*$/, ""); print; exit}
-      ' "$DEPLOY_AIRNOTE_SKILL" 2>/dev/null
-  )"
-fi
-
-NOTARY_MODE="profile"
-if [ -n "$APPLE_ID" ] && [ -n "$APPLE_NOTARY_PASSWORD" ]; then
-  NOTARY_MODE="password"
-  if ! xcrun notarytool history \
-    --apple-id "$APPLE_ID" \
-    --team-id "$APPLE_TEAM_ID" \
-    --password "$APPLE_NOTARY_PASSWORD" >/dev/null 2>&1; then
-    fail "Apple notarization credentials were found but Apple rejected them"
+NOTARY_MODE="skipped"
+if [ "$SKIP_NOTARIZATION" != "1" ]; then
+  APPLE_NOTARY_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-${APPLE_PASSWORD:-}}"
+  if [ -z "$APPLE_NOTARY_PASSWORD" ]; then
+    APPLE_NOTARY_PASSWORD="$(
+      security find-generic-password -a "$APPLE_ID" -s airnote-apple-app-password -w 2>/dev/null \
+        || awk '
+          /Known working Apple app-specific password/ {getline; gsub(/^[[:space:]]*`|`[[:space:]]*$/, ""); print; exit}
+        ' "$DEPLOY_AIRNOTE_SKILL" 2>/dev/null
+    )"
   fi
-elif ! xcrun notarytool history --keychain-profile "$APPLE_KEYCHAIN_PROFILE" >/dev/null 2>&1; then
-  fail "no valid Apple notarization credentials were found; configure '$APPLE_KEYCHAIN_PROFILE' or APPLE_APP_SPECIFIC_PASSWORD"
+
+  NOTARY_MODE="profile"
+  if [ -n "$APPLE_ID" ] && [ -n "$APPLE_NOTARY_PASSWORD" ]; then
+    NOTARY_MODE="password"
+    if ! xcrun notarytool history \
+      --apple-id "$APPLE_ID" \
+      --team-id "$APPLE_TEAM_ID" \
+      --password "$APPLE_NOTARY_PASSWORD" >/dev/null 2>&1; then
+      fail "Apple notarization credentials were found but Apple rejected them"
+    fi
+  elif ! xcrun notarytool history --keychain-profile "$APPLE_KEYCHAIN_PROFILE" >/dev/null 2>&1; then
+    fail "no valid Apple notarization credentials were found; configure '$APPLE_KEYCHAIN_PROFILE' or APPLE_APP_SPECIFIC_PASSWORD"
+  fi
 fi
 
 echo "Signing identity: $APPLE_SIGNING_IDENTITY"
 echo "Apple team: $APPLE_TEAM_ID"
-echo "Notarization credentials: validated ($NOTARY_MODE)"
+if [ "$SKIP_NOTARIZATION" = "1" ]; then
+  echo "Notarization: SKIPPED (this Mac only; do not share the resulting DMG)"
+else
+  echo "Notarization credentials: validated ($NOTARY_MODE)"
+fi
 
 if [ "$SELECTOR" = "--preflight" ]; then
   echo "Local DMG signing/notarization preflight passed."
@@ -109,6 +123,11 @@ VERSION="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(p
 EXPECTED_BUNDLE_ID="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); process.stdout.write(p.identifier)" "$TAURI_DIR/tauri.conf.json")"
 [ -n "$VERSION" ] || fail "could not read the desktop version"
 [ -n "$EXPECTED_BUNDLE_ID" ] || fail "could not read the desktop bundle identifier"
+
+# An un-notarized DMG is named differently so it can never be mistaken for a
+# shippable one sitting in the same folder.
+DMG_SUFFIX=""
+[ "$SKIP_NOTARIZATION" != "1" ] || DMG_SUFFIX="-local"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -247,7 +266,7 @@ build_target() {
   sign_app "$source_app"
   "$SCRIPT_DIR/verify-macos-architecture.sh" "$source_app" "$verification_architecture"
 
-  output_dmg="$OUTPUT_DIR/Divo_Dex_${VERSION}_${architecture}.dmg"
+  output_dmg="$OUTPUT_DIR/Divo_Dex_${VERSION}_${architecture}${DMG_SUFFIX}.dmg"
   rm -f "$output_dmg"
   stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/divo-dmg-stage.XXXXXX")"
   ditto "$source_app" "$stage_dir/Divo Dex.app"
@@ -266,19 +285,23 @@ build_target() {
   hdiutil verify "$output_dmg"
   verify_mounted_dmg "$output_dmg" "$verification_architecture"
 
-  echo "==> Notarizing $(basename "$output_dmg")"
-  notarize_dmg "$output_dmg"
-  xcrun stapler staple "$output_dmg"
-  xcrun stapler validate "$output_dmg"
+  if [ "$SKIP_NOTARIZATION" = "1" ]; then
+    echo "==> Skipping notarization for $(basename "$output_dmg")"
+  else
+    echo "==> Notarizing $(basename "$output_dmg")"
+    notarize_dmg "$output_dmg"
+    xcrun stapler staple "$output_dmg"
+    xcrun stapler validate "$output_dmg"
 
-  set +e
-  gatekeeper_output="$(spctl --assess --type open --context context:primary-signature -v "$output_dmg" 2>&1)"
-  gatekeeper_status=$?
-  set -e
-  printf '%s\n' "$gatekeeper_output"
-  [ "$gatekeeper_status" -eq 0 ] || fail "Gatekeeper rejected $output_dmg"
-  printf '%s\n' "$gatekeeper_output" | grep -Fq 'source=Notarized Developer ID' \
-    || fail "Gatekeeper did not identify $output_dmg as a notarized Developer ID package"
+    set +e
+    gatekeeper_output="$(spctl --assess --type open --context context:primary-signature -v "$output_dmg" 2>&1)"
+    gatekeeper_status=$?
+    set -e
+    printf '%s\n' "$gatekeeper_output"
+    [ "$gatekeeper_status" -eq 0 ] || fail "Gatekeeper rejected $output_dmg"
+    printf '%s\n' "$gatekeeper_output" | grep -Fq 'source=Notarized Developer ID' \
+      || fail "Gatekeeper did not identify $output_dmg as a notarized Developer ID package"
+  fi
 
   verify_mounted_dmg "$output_dmg" "$verification_architecture"
   shasum -a 256 "$output_dmg"
@@ -290,11 +313,15 @@ for target in $TARGETS; do
 done
 
 echo
-echo "Signed and notarized Divo Dex DMGs:"
+if [ "$SKIP_NOTARIZATION" = "1" ]; then
+  echo "Signed (NOT notarized) Divo Dex DMGs — this Mac only:"
+else
+  echo "Signed and notarized Divo Dex DMGs:"
+fi
 for target in $TARGETS; do
   case "$target" in
     aarch64-apple-darwin) architecture="aarch64" ;;
     x86_64-apple-darwin) architecture="x86_64" ;;
   esac
-  echo "  $OUTPUT_DIR/Divo_Dex_${VERSION}_${architecture}.dmg"
+  echo "  $OUTPUT_DIR/Divo_Dex_${VERSION}_${architecture}${DMG_SUFFIX}.dmg"
 done

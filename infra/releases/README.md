@@ -29,6 +29,36 @@ installed app --> polls latest.json --> verifies minisign against embedded
               --> installs on restart --> relaunches
 ```
 
+## The three commands
+
+They differ by blast radius, which is why they stay separate.
+
+| Command | Notarized | Uploaded | Bumps version | Who is affected |
+| --- | --- | --- | --- | --- |
+| `just dmg` | no | no | no | you |
+| `just share` | yes | to `testing/` | no | whoever you send the link to |
+| `just release` | yes | to a channel feed | yes | every install on that channel |
+
+**`just dmg [aarch64\|x86_64\|all]`** — the iteration loop. Skipping notarization
+removes an Apple round trip from every build. A DMG built locally has no
+`com.apple.quarantine` attribute, so Gatekeeper never evaluates it here; on any
+other Mac it arrives quarantined and is refused. The output is named
+`…_aarch64-local.dmg` so it cannot be confused with a shippable one.
+
+**`just share [aarch64\|x86_64\|all]`** — hand a build to a person. Notarized and
+stapled, because it will be downloaded elsewhere. Published to
+`/desktop-updates/testing/<version>-<commit>/`, a prefix no updater polls, so no
+`latest.json` changes and nothing already installed reacts. It accepts a dirty
+tree and marks the build `-dirty` when the tree is not clean. Keeps the newest
+`DIVO_SHARE_RETENTION` (default 5) builds.
+
+A shared build still polls whatever channel `tauri.conf.json` names — `stable` by
+default — so a tester will eventually be offered the next real release. That is
+usually what you want; it is not a way to pin someone to a build.
+
+**`just release <bump> <channel>`** — the only command that rewrites a feed. See
+[Publishing](#publishing).
+
 ## Channels
 
 Two independent channels, `stable` and `dev`. They are deliberately
@@ -66,10 +96,18 @@ includes it in the `app-dev` vhost:
 ├── stable/
 │   ├── latest.json
 │   └── <version>/
-└── dev/
-    ├── latest.json
-    └── <version>/
+├── dev/
+│   ├── latest.json
+│   └── <version>/
+└── testing/           # just share; no manifest, no updater polls it
+    └── <version>-<commit>/
 ```
+
+Published directories are explicitly `chmod 0755` on the host after upload.
+rsync carries the *local* directory's mode across, so without that a strict
+local umask — or a staging directory created by `mktemp -d`, which is `0700` —
+produces files Nginx can read but sitting in a directory it cannot traverse. The
+symptom is a `403` on every artifact while the manifest still serves fine.
 
 Nginx (`/etc/nginx/snippets/divo-desktop-updates.conf`) serves manifests with
 `no-store` so an update decision is never made from a cached manifest, and
@@ -175,6 +213,7 @@ ssh deploy@103.172.92.187 'cat /srv/divo-releases/dev/latest.json'
 | `justfile` | public release commands |
 | `jan/scripts/setup-updater-key.sh` | generates the local-only signing key |
 | `jan/scripts/release-local.sh` | channel endpoint, build, sign, manifest, upload, retention |
+| `jan/scripts/share-dmg.sh` | notarized build uploaded to `testing/`, no feed change |
 | `jan/scripts/build-local-dmg.sh` | build, sign, notarize, staple, Gatekeeper check |
 | `jan/src-tauri/tauri.conf.json` | updater public key, default endpoint, app version |
 | `infra/releases/setup-vps-release-host.sh` | one-time VPS provisioning |

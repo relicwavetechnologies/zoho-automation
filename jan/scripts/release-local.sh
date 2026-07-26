@@ -178,6 +178,9 @@ test -s latest.json
 release_dir="$release_root/$channel/$version"
 test ! -e "$release_dir"
 mv "$stage_dir" "$release_dir"
+# rsync carries the local release directory's mode across, so this depends on
+# the umask of whoever ran the build. Nginx has to traverse it; set it here.
+chmod 0755 "$release_dir"
 install -m 0644 "$release_dir/latest.json" "$release_root/$channel/.latest.json.$$"
 mv -f "$release_root/$channel/.latest.json.$$" "$release_root/$channel/latest.json"
 mapfile -t old_releases < <(find "$release_root/$channel" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | head -n -"$retention")
