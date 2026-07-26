@@ -1,5 +1,24 @@
 import { describe, it, expect } from 'vitest'
-import { resolveToolIdentity, resolveToolLabel } from '../tool-label'
+import {
+  humanizeToolId,
+  resolveToolIdentity,
+  resolveToolLabel,
+} from '../tool-label'
+
+describe('humanizeToolId', () => {
+  it('keeps initialisms upper-case so the row does not read "Oms Site Data"', () => {
+    // Callers render through CSS `capitalize`/`titleCase`, which only raise a
+    // word's first letter — so the casing has to be correct here.
+    expect(humanizeToolId('omsSiteData')).toBe('OMS site data')
+    expect(humanizeToolId('zohoCrm')).toBe('zoho CRM')
+    expect(humanizeToolId('documentRag')).toBe('document RAG')
+  })
+
+  it('still spaces ordinary camelCase ids unchanged', () => {
+    expect(humanizeToolId('googleSheets')).toBe('google sheets')
+    expect(humanizeToolId('scheduledWorkflows')).toBe('scheduled workflows')
+  })
+})
 
 describe('resolveToolLabel', () => {
   it('surfaces the gateway op instead of the dispatcher name', () => {

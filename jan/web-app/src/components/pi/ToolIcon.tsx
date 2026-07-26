@@ -2,6 +2,7 @@ import {
   BicepsFlexedIcon,
   BookOpenIcon,
   CalendarClockIcon,
+  DatabaseIcon,
   FileCode2Icon,
   FilePlusIcon,
   FolderOpenIcon,
@@ -18,6 +19,7 @@ import {
 import type { ComponentType } from 'react'
 
 import {
+  AirtableIcon,
   CanvaIcon,
   GmailIcon,
   GoogleAppsScriptIcon,
@@ -107,6 +109,10 @@ const EXACT_ICONS: Record<string, IconComponent> = {
   runcommand: SquareTerminalIcon,
   dataprocessor: TableIcon,
   scheduledworkflows: CalendarClockIcon,
+  // The governed OMS website inventory. It is a read-only query against a
+  // company database rather than a vendor app, so it takes the database glyph
+  // — the same mark its expanded tool card uses in `tool-cards/vendors.ts`.
+  omssitedata: DatabaseIcon,
   mediaimageocr: ScanTextIcon,
   toolslist: ListChecksIcon,
   // Teach owns the graduation cap wherever it appears — clarification prompts
@@ -169,6 +175,7 @@ export function resolveToolIconComponent(
   if (key.startsWith('zoho')) return ZohoIcon
   if (key.startsWith('lark')) return LarkIcon
   if (key.startsWith('canva')) return CanvaIcon
+  if (key.startsWith('airtable')) return AirtableIcon
   // Ahead of the lookup rule below on purpose. Semrush IS a research tool, so
   // once its ops grow names like `semrushKeywordSearch` the magnifier would
   // start winning and the vendor would vanish from the log mid-family.

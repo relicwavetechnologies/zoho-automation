@@ -77,12 +77,23 @@ function extractGatewayCall(input: unknown): { op?: string; toolId?: string } {
   return {}
 }
 
+/**
+ * Initialisms that must not be sentence-cased. The callers render through CSS
+ * `capitalize` or `titleCase`, and both only ever raise a word's first letter —
+ * so lowercasing the whole id turned `omsSiteData` into "Oms Site Data" and
+ * `zohoCrm` into "Zoho Crm". Upper-casing them here survives both.
+ */
+const ACRONYMS = new Set(['oms', 'crm', 'rag', 'ocr'])
+
 /** camelCase → spaced words, so the header's capitalize reads them cleanly. */
 export function humanizeToolId(id: string): string {
   return id
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_-]+/g, ' ')
     .toLowerCase()
+    .split(' ')
+    .map((word) => (ACRONYMS.has(word) ? word.toUpperCase() : word))
+    .join(' ')
 }
 
 /**
