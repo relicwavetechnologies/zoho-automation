@@ -902,6 +902,36 @@ model ChannelDelivery {
   @@index([channel, status, firstAttemptAt])
 }
 
+/// One row per execution lane, holding at most one live owner.
+///
+/// The unique key is the mutual exclusion: two replicas cannot both hold the
+/// same lane, because the second insert collides. Ownership is a lease rather
+/// than a flag so that a replica killed mid-run releases the lane by ceasing to
+/// heartbeat, instead of blocking it forever.
+model ExecutionLaneLease {
+  id           String    @id @default(uuid())
+  channel      String
+  /// Canonical lane identity — see `buildLarkIngressLaneKey`.
+  laneKey      String
+  /// Identifies the process that holds the lane, so only it can renew or release.
+  ownerId      String
+  /// Increments on every acquisition. A holder whose token is behind the
+  /// lane's current one has been superseded and must not publish.
+  fencingToken Int       @default(1)
+  acquiredAt   DateTime  @default(now())
+  heartbeatAt  DateTime  @default(now())
+  /// Past this instant any worker may take the lane from its current owner.
+  expiresAt    DateTime
+  /// Set when an owner finishes cleanly; a released lane is free immediately
+  /// rather than at expiry.
+  releasedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([channel, laneKey])
+  @@index([channel, expiresAt])
+}
+
 model IngressIdempotencyKey {
   id          String    @id @default(uuid())
   channel     String
@@ -909,6 +939,10 @@ model IngressIdempotencyKey {
   eventId     String?
   messageId   String
   payloadJson Json
+  /// Execution lane this event belongs to, recorded at acceptance so a burst
+  /// can be found without re-parsing every pending payload. Nullable because
+  /// receipts accepted before batching existed have no lane recorded.
+  laneKey     String?
   status      String    @default("accepted")
   attempts    Int       @default(0)
   companyId   String?
@@ -925,6 +959,7 @@ model IngressIdempotencyKey {
   @@index([channel, tenantKey, eventId])
   @@index([status, createdAt])
   @@index([channel, status, acceptedAt])
+  @@index([channel, laneKey, status, acceptedAt])
 }
 
 model RbacPermission {

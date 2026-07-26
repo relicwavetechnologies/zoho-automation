@@ -55,6 +55,10 @@ import { CanvaMcpOAuthService } from './infrastructure/canva/canva-mcp-oauth.ser
 import { CanvaMcpClient } from './infrastructure/canva/canva-mcp.client';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
 import { ChannelDeliveryRepository } from './infrastructure/persistence/channel-delivery.repository';
+import { ExecutionLaneLeaseRepository } from './infrastructure/persistence/execution-lane-lease.repository';
+import { LaneLeaseHolder } from './application/orchestration/lane-lease.holder';
+import { BusyLaneNotices } from './infrastructure/channels/lark/lark-busy-notice';
+import { randomUUID } from 'node:crypto';
 import {
   publicConnectionChoices,
   selectAccessibleConnection,
@@ -299,6 +303,10 @@ export interface Container {
   // Group chat context
   chatContextService: LarkChatContextService;
   channelDeliveryRepo: ChannelDeliveryRepository;
+  /** Cross-replica execution lane ownership. */
+  laneLeaseHolder: LaneLeaseHolder;
+  /** One queued-message notice per busy stretch of a lane. */
+  busyLaneNotices: BusyLaneNotices;
   // Lark contacts (for directory sync)
   larkContactsClient: LarkContactsClient;
   // Pi/Desktop capability gateway
@@ -1411,6 +1419,17 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Channels ───────────────────────────────────────────────────────────
   const channelDeliveryRepo = new ChannelDeliveryRepository(prisma);
+  // Owner identity must be unique per process and stable for its lifetime: a
+  // lease is renewed and released by matching on it, so two replicas sharing an
+  // ID could renew each other's lanes.
+  const laneOwnerId = `${env.NODE_ENV ?? 'dev'}-${process.pid}-${randomUUID().slice(0, 8)}`;
+  const laneLeaseHolder = new LaneLeaseHolder({
+    repo: new ExecutionLaneLeaseRepository(prisma),
+    channel: 'lark',
+    ownerId: laneOwnerId,
+    logger: logger.child({ component: 'lane-lease' }),
+  });
+  const busyLaneNotices = new BusyLaneNotices();
   const larkAdapter = new LarkChannelAdapter({
     env,
     logger: logger.child({ channel: 'lark' }),
@@ -1615,6 +1634,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Group chat context
     chatContextService,
     channelDeliveryRepo,
+    laneLeaseHolder,
+    busyLaneNotices,
     // Lark contacts (for directory sync)
     larkContactsClient,
     // Pi/Desktop capability gateway

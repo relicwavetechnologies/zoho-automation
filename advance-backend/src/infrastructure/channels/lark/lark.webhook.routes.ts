@@ -17,6 +17,14 @@ import type {
 import type { ShareResolverService } from '../../../application/knowledge-share/share-resolver.service';
 import type { KnowledgeShareService } from '../../../application/knowledge-share/knowledge-share.service';
 import type { ChatMessageSerializer } from '../../../application/orchestration/chat-message-serializer';
+import type { LaneLeaseHolder } from '../../../application/orchestration/lane-lease.holder';
+import { fenceFinalReplies } from './lark-lane-fence';
+import { BusyLaneNotices, BUSY_NOTICE_TEXT } from './lark-busy-notice';
+import {
+  absorbLaneBurst,
+  completeAbsorbedReceipts,
+  toBatchableMessage,
+} from './lark-message-batch';
 import type { Mem0Service } from '../../../application/memory/mem0.service';
 import type { LarkOAuthService } from '../../lark/lark-oauth.service';
 import type { IntegrationConnectionRepository } from '../../persistence/integration-connection.repository';
@@ -82,6 +90,20 @@ export interface LarkWebhookDeps {
   cache: CachePort;
   /** Per-lane serializer — preserves FIFO within one DM, thread, or group requester. */
   serializer: ChatMessageSerializer;
+  /**
+   * Cross-replica lane ownership. Absent means single-replica behaviour, where
+   * the serializer alone is the ordering guarantee — correct for one process
+   * and unsafe for two.
+   */
+  laneLeaseHolder?: LaneLeaseHolder;
+  /** Tells a user their message is queued, once per busy stretch of a lane. */
+  busyNotices?: BusyLaneNotices;
+  /**
+   * Merge a burst of compatible messages from one sender into a single turn.
+   * Off by default: it changes how many replies a user gets, so it is opted
+   * into rather than inherited.
+   */
+  batchingEnabled?: boolean;
   chatContextService?: LarkChatContextService;
   prisma?: PrismaClient;
   /** Optional: absent means a retried run re-runs the agent, as before Wave 5. */
@@ -272,6 +294,10 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
       tenantKey,
       messageId: String(incoming.messageId),
       payload: event,
+      // Recorded here rather than derived later so a run can find the rest of
+      // its burst with one indexed read instead of re-parsing every pending
+      // payload in the channel.
+      laneKey: buildLarkIngressLaneKey(incoming),
       ...(typeof eventHeader?.['event_id'] === 'string'
         ? { eventId: eventHeader['event_id'] }
         : {}),
@@ -429,28 +455,133 @@ export async function processAcceptedLarkReceipt(
   }
 
   const executionLaneKey = buildLarkIngressLaneKey(incoming);
+
+  // Decided before queueing, because "is this lane busy" is only true while the
+  // previous turn is still running — asking after `runAndWait` has admitted
+  // this task would always answer yes, and every message would look queued.
+  if (deps.busyNotices) {
+    const decision = deps.busyNotices.decide(executionLaneKey, {
+      laneBusy: deps.serializer.isActive(executionLaneKey),
+      isCommand: (incoming.text ?? '').trim().startsWith('/'),
+    });
+    if (decision.notify) {
+      // Deliberately not `sendFinalReply`. That path reserves a delivery keyed
+      // on this run, and the notice would consume the reservation belonging to
+      // the answer that follows it — the user would get "I'll come back to
+      // this" and then nothing, because their real reply would be recorded as
+      // already delivered. A dropped notice is a cosmetic loss; a dropped
+      // answer is not.
+      const sent = await deps.adapter.sendToChatId(
+        String(incoming.chatId),
+        BUSY_NOTICE_TEXT,
+        String(incoming.messageId),
+      );
+      if (!sent.ok) {
+        requestLog.warn('webhook.busy_notice.failed', { error: sent.error.message });
+      } else {
+        requestLog.info('webhook.busy_notice.sent', { laneKey: executionLaneKey });
+      }
+    }
+  }
+
   await deps.serializer.runAndWait(executionLaneKey, async signal => {
     const startedAtMs = Date.now();
-    requestLog.info('webhook.background.started');
-    try {
-      await processInBackground(
-        incoming,
-        event,
-        deps,
-        requestLog,
-        deps.approvalGate,
-        deps.knowledgeShareService,
-        signal,
-      );
-      requestLog.info('webhook.background.completed', {
-        runMs: Date.now() - startedAtMs,
+    let absorbedReceiptIds: readonly string[] = [];
+
+    const runTurn = async (
+      turnSignal: AbortSignal,
+      adapter: LarkChannelAdapter,
+    ): Promise<void> => {
+      // Inside the lane, so the burst being absorbed cannot grow a new owner
+      // between the read and the claim.
+      let turnMessage = incoming;
+      if (deps.batchingEnabled && deps.ingressReceiptRepo) {
+        const absorbed = await absorbLaneBurst({
+          anchor: toBatchableMessage(incoming, event, receipt.acceptedAt.getTime()),
+          anchorReceiptId: receipt.receiptId,
+          repo: deps.ingressReceiptRepo,
+          adapter: deps.adapter,
+          log: requestLog,
+        });
+        absorbedReceiptIds = absorbed.absorbedReceiptIds;
+        if (absorbed.batch.merged.length > 0) {
+          turnMessage = { ...incoming, text: absorbed.batch.text };
+        }
+      }
+
+      requestLog.info('webhook.background.started', {
+        ...(absorbedReceiptIds.length > 0
+          ? { batchedMessageCount: absorbedReceiptIds.length + 1 }
+          : {}),
       });
-    } catch (error) {
-      requestLog.error('webhook.background.failed', {
-        error: String(error),
-        runMs: Date.now() - startedAtMs,
+      try {
+        await processInBackground(
+          turnMessage,
+          event,
+          { ...deps, adapter },
+          requestLog,
+          deps.approvalGate,
+          deps.knowledgeShareService,
+          turnSignal,
+        );
+        // Only now: a receipt completed before the answer exists is a message
+        // silently dropped if this run then fails.
+        if (absorbedReceiptIds.length > 0 && deps.ingressReceiptRepo) {
+          await completeAbsorbedReceipts(absorbedReceiptIds, deps.ingressReceiptRepo, requestLog);
+        }
+        requestLog.info('webhook.background.completed', {
+          runMs: Date.now() - startedAtMs,
+        });
+      } catch (error) {
+        requestLog.error('webhook.background.failed', {
+          error: String(error),
+          runMs: Date.now() - startedAtMs,
+          ...(absorbedReceiptIds.length > 0
+            ? { absorbedReceiptsLeftOpen: absorbedReceiptIds.length }
+            : {}),
+        });
+        throw error;
+      }
+    };
+
+    // Without a lease holder this is the single-replica behaviour: the
+    // serializer alone keeps a lane in order, which is correct for one process
+    // and wrong for two.
+    if (!deps.laneLeaseHolder) {
+      await runTurn(signal, deps.adapter);
+      return;
+    }
+
+    const outcome = await deps.laneLeaseHolder.withLane(
+      executionLaneKey,
+      (lease, leaseSignal) => runTurn(
+        leaseSignal,
+        fenceFinalReplies(
+          deps.adapter,
+          () => deps.laneLeaseHolder!.holdsLane(lease),
+          requestLog,
+        ),
+      ),
+      signal,
+    );
+
+    if (outcome.outcome === 'deferred') {
+      // Another replica is running this lane. Throwing fails the job so it is
+      // retried once that owner has finished or gone stale — returning would
+      // complete the receipt and drop the message, which is the one outcome
+      // durable ingress exists to prevent.
+      requestLog.info('webhook.lane.deferred', {
+        laneKey: executionLaneKey,
+        heldBy: outcome.ownerId,
       });
-      throw error;
+      throw new Error(`Lark execution lane is held by ${outcome.ownerId}`);
+    }
+  }).finally(() => {
+    // Only once this lane is genuinely idle. Clearing on every turn would
+    // re-announce for each message in one backlog, which is the noise the
+    // single-notice rule exists to avoid.
+    if (deps.busyNotices && !deps.serializer.isActive(executionLaneKey)) {
+      deps.busyNotices.clear(executionLaneKey);
     }
   });
 }

@@ -9,6 +9,16 @@ export interface AcceptIngressReceiptInput {
   eventId?: string;
   messageId: string;
   payload: Record<string, unknown>;
+  /** Execution lane, recorded so a burst in one lane can be found cheaply. */
+  laneKey?: string;
+}
+
+/** A receipt still waiting in a lane, as seen by the run that may absorb it. */
+export interface PendingLaneReceipt {
+  receiptId: string;
+  messageId: string;
+  payload: Record<string, unknown>;
+  acceptedAt: Date;
 }
 
 export interface AcceptedIngressReceipt {
@@ -95,6 +105,10 @@ export interface IngressReceiptRepoPort {
     limit: number,
     options?: ListRecoverableOptions,
   ): Promise<Result<string[], InfraError>>;
+  listBatchable(
+    laneKey: string,
+    options: { channel?: string; excludeReceiptId: string; limit: number },
+  ): Promise<Result<PendingLaneReceipt[], InfraError>>;
 }
 
 /** Statuses that must never be re-claimed or re-queued by recovery. */
@@ -117,6 +131,7 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
           messageId: input.messageId,
           payloadJson: input.payload as Prisma.InputJsonObject,
           ...(input.eventId ? { eventId: input.eventId } : {}),
+          ...(input.laneKey ? { laneKey: input.laneKey } : {}),
         },
         select: { id: true },
       });
@@ -263,6 +278,41 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
       return ok(undefined);
     } catch (cause) {
       return err(wrapInfra('prisma', 'ingressReceipt.markFailed', cause));
+    }
+  }
+
+  /**
+   * Other messages waiting in the same lane, oldest first.
+   *
+   * Only `accepted` rows are returned: a `processing` receipt has an owner and
+   * a `failed` one is mid-retry, and absorbing either would answer a message
+   * that something else is still responsible for. The caller must still claim
+   * each one before merging it — this read only narrows the field.
+   */
+  async listBatchable(
+    laneKey: string,
+    options: { channel?: string; excludeReceiptId: string; limit: number },
+  ): Promise<Result<PendingLaneReceipt[], InfraError>> {
+    try {
+      const rows = await this.db.ingressIdempotencyKey.findMany({
+        where: {
+          channel: options.channel ?? 'lark',
+          laneKey,
+          status: 'accepted',
+          id: { not: options.excludeReceiptId },
+        },
+        orderBy: { acceptedAt: 'asc' },
+        take: options.limit,
+        select: { id: true, messageId: true, payloadJson: true, acceptedAt: true },
+      });
+      return ok(rows.map(row => ({
+        receiptId: row.id,
+        messageId: row.messageId,
+        payload: (row.payloadJson ?? {}) as Record<string, unknown>,
+        acceptedAt: row.acceptedAt,
+      })));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'ingressReceipt.listBatchable', cause));
     }
   }
 

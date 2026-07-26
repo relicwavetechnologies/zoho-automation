@@ -11,7 +11,9 @@
  * • Graceful error isolation — if task N throws, task N+1 still runs.
  * • Self-cleaning            — map entries are deleted when the chain is idle.
  *
- * Limitation: single-process only. At horizontal scale, replace with Redis FIFO.
+ * Scope: this orders work *within one process*. Across replicas, mutual
+ * exclusion comes from `ExecutionLaneLease` — two processes each have their own
+ * chain map and would otherwise both run the same lane.
  */
 
 export interface SerializerOptions {
@@ -33,10 +35,21 @@ export interface SerializerOptions {
   /**
    * Maximum number of engine.run() calls allowed across all chats.
    * Additional tasks wait until a slot opens.
-   * Default: Infinity (no limit).
+   *
+   * Default: `DEFAULT_MAX_CONCURRENT`. Deliberately not Infinity — group lanes
+   * are per-requester, so a busy room opens one lane per person and an
+   * unbounded default lets a single burst start as many concurrent agent runs
+   * as there are people talking.
    */
   maxConcurrent?: number;
 }
+
+/**
+ * Chosen to bound model spend and memory rather than to maximise throughput.
+ * Work above this waits rather than failing, so the cost of it being too low is
+ * latency, while the cost of it being too high is an outage.
+ */
+export const DEFAULT_MAX_CONCURRENT = 10;
 
 export class ChatMessageSerializer {
   private readonly chains = new Map<string, Promise<void>>();
@@ -49,7 +62,7 @@ export class ChatMessageSerializer {
   constructor(opts: SerializerOptions = {}) {
     this.timeoutMs = opts.timeoutMs ?? 120_000;
     this.onTimeout = opts.onTimeout;
-    this.maxConcurrent = opts.maxConcurrent ?? Infinity;
+    this.maxConcurrent = opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
   }
 
   private acquireSlot(): Promise<void> {

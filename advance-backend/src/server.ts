@@ -89,6 +89,9 @@ export const createServer = (c: Container) => {
     serializer:            c.chatSerializer,
     chatContextService:    c.chatContextService,
     channelDeliveryRepo:   c.channelDeliveryRepo,
+    laneLeaseHolder:       c.laneLeaseHolder,
+    busyNotices:           c.busyLaneNotices,
+    batchingEnabled:       c.env.LARK_MESSAGE_BATCHING === 'on',
     prisma:                c.prisma,
     larkContactsClient:    c.larkContactsClient,
   };

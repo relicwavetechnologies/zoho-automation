@@ -119,6 +119,11 @@ const EnvSchema = z.object({
   LARK_UNTAGGED_GROUP_TEXT_RETENTION: z.enum(['retain', 'off']).default('retain'),
   LARK_UNTAGGED_GROUP_ATTACHMENTS:    z.enum(['ignore', 'process']).default('ignore'),
 
+  // Merge a rapid burst from one sender into a single turn. Kept as a switch
+  // rather than a constant because it changes how many replies a user gets,
+  // and the fastest safe rollback for that is a restart, not a deploy.
+  LARK_MESSAGE_BATCHING: z.enum(['on', 'off']).default('on'),
+
   // ── Qdrant vector store ───────────────────────────────────────────────────
   QDRANT_URL:                  z.string().default('http://127.0.0.1:6333'),
   QDRANT_API_KEY:              z.string().optional(),
