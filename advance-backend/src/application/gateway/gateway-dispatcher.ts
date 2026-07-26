@@ -51,7 +51,8 @@ import {
   type GoogleVendorOnboardingResolution,
 } from './google-orchestration.service';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
-import { TOOL_PERMISSION_POLICY_REVISION } from '../../domain/tools/tool-id';
+import { AIRTABLE_TOOL_IDS } from '../airtable/airtable-mcp-manifest';
+import { TOOL_PERMISSION_POLICY_REVISION, type CanonicalToolId } from '../../domain/tools/tool-id';
 import {
   WorkResolutionService,
   withWorkDiscoveryPermissions as withGatewayDiscoveryPermissions,
@@ -736,6 +737,8 @@ export class GatewayDispatcher {
         providers.add('zoho');
       } else if (toolId === 'canvaDesign') {
         providers.add('canva');
+      } else if (AIRTABLE_TOOL_IDS.includes(toolId)) {
+        providers.add('airtable');
       } else if (LARK_CONNECTION_TOOL_IDS.has(toolId)) {
         providers.add('lark');
       }
@@ -752,6 +755,8 @@ export class GatewayDispatcher {
         return this.deps.connectionRegistry!.listAccessibleZohoConnections(input);
       case 'canva':
         return this.deps.connectionRegistry!.listAccessibleCanvaConnections(input);
+      case 'airtable':
+        return this.deps.connectionRegistry!.listAccessibleAirtableConnections(input);
       case 'lark':
         return this.deps.connectionRegistry!.listAccessibleLarkConnections(input);
     }
@@ -1062,40 +1067,26 @@ export class GatewayDispatcher {
       perm.allowedToolIds.has(asToolId(toolId)),
     );
     const canUseCanva = perm.allowedToolIds.has(asToolId('canvaDesign'));
+    const canUseAirtable = AIRTABLE_TOOL_IDS.some((toolId) =>
+      perm.allowedToolIds.has(asToolId(toolId as CanonicalToolId)),
+    );
     const canUseLark = [...LARK_CONNECTION_TOOL_IDS]
       .some((toolId) => perm.allowedToolIds.has(asToolId(toolId)));
-    if (provider === 'google_workspace' && !canUseGoogle) {
-      return gatewaySuccess({ connections: [] });
-    }
-    if (provider === 'zoho' && !canUseZoho) {
-      return gatewaySuccess({ connections: [] });
-    }
-    if (provider === 'canva' && !canUseCanva) {
-      return gatewaySuccess({ connections: [] });
-    }
-    if (provider === 'lark' && !canUseLark) {
+
+    // Exhaustive on ConnectionProvider so a newly added provider fails the
+    // build here rather than silently listing another provider's accounts.
+    const permitted: Record<ConnectionProvider, boolean> = {
+      google_workspace: canUseGoogle,
+      zoho:             canUseZoho,
+      canva:            canUseCanva,
+      airtable:         canUseAirtable,
+      lark:             canUseLark,
+    };
+    if (!permitted[provider]) {
       return gatewaySuccess({ connections: [] });
     }
 
-    const result = provider === 'zoho'
-      ? await this.deps.connectionRegistry.listAccessibleZohoConnections({
-        companyId: member.companyId,
-        userId:    member.userId,
-      })
-      : provider === 'canva'
-        ? await this.deps.connectionRegistry.listAccessibleCanvaConnections({
-          companyId: member.companyId,
-          userId:    member.userId,
-        })
-        : provider === 'lark'
-          ? await this.deps.connectionRegistry.listAccessibleLarkConnections({
-            companyId: member.companyId,
-            userId:    member.userId,
-          })
-      : await this.deps.connectionRegistry.listAccessibleGoogleConnections({
-        companyId: member.companyId,
-        userId:    member.userId,
-        });
+    const result = await this.listAccessibleConnections(member, provider);
     if (!result.ok) {
       return gatewayFailure('tool_error', result.error.message);
     }

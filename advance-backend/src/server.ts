@@ -425,6 +425,7 @@ export const createServer = (c: Container) => {
       larkOAuthService:       c.larkOAuthService,
       googleOAuthService:     c.googleOAuthService,
       canvaMcpOAuthService:   c.canvaMcpOAuthService,
+      airtableMcpOAuthService: c.airtableMcpOAuthService,
       zohoTokenService:       c.zohoTokenService,
       zohoConnectionRepo:     c.zohoConnectionRepo,
       connectionRepo:         c.integrationConnectionRepo,

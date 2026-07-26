@@ -4,7 +4,7 @@ import { encryptToken, decryptToken } from '../shared/token.crypto';
 import { err, ok, type Result } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 
-export type IntegrationProvider = 'google_workspace' | 'zoho' | 'canva' | 'lark';
+export type IntegrationProvider = 'google_workspace' | 'zoho' | 'canva' | 'airtable' | 'lark';
 export type IntegrationOwnerType = 'user' | 'company';
 export type IntegrationGrantAccess = 'read_only' | 'read_write' | 'admin';
 export type IntegrationGranteeType = 'user' | 'department' | 'role' | 'company';
@@ -89,6 +89,30 @@ export interface UpsertCanvaConnectionInput {
   readonly initialAccess?: IntegrationGrantAccess;
 }
 
+/**
+ * An OAuth authorization to Airtable's hosted MCP server. Airtable registers
+ * clients dynamically, so the resulting client registration and OAuth server
+ * discovery state travel with the connection in `tokenMetadata` — they are what
+ * lets a later token refresh rebuild the exact client that received the grant.
+ */
+export interface UpsertAirtableConnectionInput {
+  readonly companyId: string;
+  readonly ownerType: IntegrationOwnerType;
+  readonly ownerUserId?: string;
+  readonly createdBy?: string;
+  readonly label?: string;
+  readonly externalAccountId: string;
+  readonly accountEmail?: string;
+  readonly accountName?: string;
+  readonly accessToken: string;
+  readonly refreshToken?: string;
+  readonly tokenType?: string;
+  readonly accessTokenExpiresAt?: Date;
+  readonly scopes?: string[];
+  readonly tokenMetadata?: Record<string, unknown>;
+  readonly initialAccess?: IntegrationGrantAccess;
+}
+
 /** A user-authorised Lark account. One Divo member may own multiple accounts. */
 export interface UpsertLarkConnectionInput {
   readonly companyId: string;
@@ -113,6 +137,7 @@ export interface UpsertLarkConnectionInput {
 const GOOGLE_PROVIDER: IntegrationProvider = 'google_workspace';
 const ZOHO_PROVIDER: IntegrationProvider = 'zoho';
 const CANVA_PROVIDER: IntegrationProvider = 'canva';
+const AIRTABLE_PROVIDER: IntegrationProvider = 'airtable';
 const LARK_PROVIDER: IntegrationProvider = 'lark';
 
 const splitScopes = (scope?: string | null): string[] =>
@@ -976,6 +1001,219 @@ export class IntegrationConnectionRepository {
     } catch (e) {
       return err(wrapInfra('prisma', 'IntegrationConnection.listAccessibleCanvaConnections', e));
     }
+  }
+
+  async listAccessibleAirtableConnections(input: {
+    readonly companyId: string;
+    readonly userId: string;
+  }): Promise<Result<ConnectionSummary[], InfraError>> {
+    try {
+      const grantOr = await this.grantScopeFor(input.companyId, input.userId);
+      const rows = await this.db.integrationConnection.findMany({
+        where: {
+          companyId: input.companyId,
+          provider:  AIRTABLE_PROVIDER,
+          revokedAt: null,
+          status:    'connected',
+          OR: [
+            { ownerUserId: input.userId },
+            { grants: { some: { revokedAt: null, OR: grantOr } } },
+          ],
+        },
+        include: {
+          grants: {
+            where: { revokedAt: null, OR: grantOr },
+            select: { access: true },
+          },
+        },
+        orderBy: [{ ownerType: 'asc' }, { updatedAt: 'desc' }],
+      });
+
+      return ok(rows.map(row => {
+        const directOwnerAccess: IntegrationGrantAccess[] = row.ownerUserId === input.userId ? ['admin'] : [];
+        const grantAccess = row.grants.map(g => g.access as IntegrationGrantAccess);
+        return {
+          connectionId: row.id,
+          provider:     row.provider as IntegrationProvider,
+          label:        row.label,
+          ...(row.accountEmail ? { accountEmail: row.accountEmail } : {}),
+          ...(row.accountName ? { accountName: row.accountName } : {}),
+          ownerType:    row.ownerType as IntegrationOwnerType,
+          ...(row.ownerUserId ? { ownerUserId: row.ownerUserId } : {}),
+          access:       bestAccess([...directOwnerAccess, ...grantAccess]),
+          scopes:       row.scopes,
+          connectedAt:  row.connectedAt,
+          ...(row.lastUsedAt ? { lastUsedAt: row.lastUsedAt } : {}),
+        };
+      }));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.listAccessibleAirtableConnections', e));
+    }
+  }
+
+  async findAccessibleAirtableConnection(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: IntegrationGrantAccess;
+  }): Promise<Result<DecryptedIntegrationConnection | null, InfraError>> {
+    try {
+      const accessible = await this.listAccessibleAirtableConnections({
+        companyId: input.companyId,
+        userId:    input.userId,
+      });
+      if (!accessible.ok) return accessible;
+      const summary = accessible.value.find(c => c.connectionId === input.connectionId);
+      if (!summary || accessRank[summary.access] < accessRank[input.minimumAccess]) return ok(null);
+
+      const record = await this.db.integrationConnection.findFirst({
+        where: {
+          id:        input.connectionId,
+          companyId: input.companyId,
+          provider:  AIRTABLE_PROVIDER,
+          revokedAt: null,
+          status:    'connected',
+        },
+      });
+      return ok(record ? this.decrypt(record) : null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.findAccessibleAirtableConnection', e));
+    }
+  }
+
+  async upsertAirtableConnection(
+    input: UpsertAirtableConnectionInput,
+  ): Promise<Result<DecryptedIntegrationConnection, InfraError>> {
+    try {
+      const encryptedAccess = encryptToken(input.accessToken, this.key);
+      const encryptedRefresh = input.refreshToken ? encryptToken(input.refreshToken, this.key) : undefined;
+      const externalAccountId = input.externalAccountId.trim();
+      const accountEmail = input.accountEmail?.trim().toLowerCase() ?? null;
+      const accountName = input.accountName?.trim() ?? null;
+      const label = input.label?.trim()
+        || `${accountName ?? accountEmail ?? 'Airtable'} connection`;
+      const key = dedupeKey({
+        provider: AIRTABLE_PROVIDER,
+        ownerType: input.ownerType,
+        ownerUserId: input.ownerUserId,
+        accountEmail: input.accountEmail,
+        externalAccountId,
+      });
+
+      const record = await this.db.integrationConnection.upsert({
+        where: { companyId_dedupeKey: { companyId: input.companyId, dedupeKey: key } },
+        create: {
+          companyId:             input.companyId,
+          provider:              AIRTABLE_PROVIDER,
+          ownerType:             input.ownerType,
+          ownerUserId:           input.ownerType === 'user' ? input.ownerUserId ?? null : null,
+          label,
+          accountEmail,
+          accountName,
+          externalAccountId,
+          dedupeKey:             key,
+          status:                'connected',
+          scopes:                input.scopes ?? [],
+          accessTokenEncrypted:  encryptedAccess.cipherText,
+          ...(encryptedRefresh ? { refreshTokenEncrypted: encryptedRefresh.cipherText } : {}),
+          tokenType:             input.tokenType ?? null,
+          accessTokenExpiresAt:  input.accessTokenExpiresAt ?? null,
+          ...(input.tokenMetadata ? { tokenMetadata: input.tokenMetadata as Prisma.InputJsonValue } : {}),
+          createdBy:             input.createdBy ?? input.ownerUserId ?? null,
+          connectedAt:           new Date(),
+        },
+        update: {
+          label,
+          accountEmail,
+          accountName,
+          externalAccountId,
+          status:                'connected',
+          scopes:                input.scopes ?? [],
+          accessTokenEncrypted:  encryptedAccess.cipherText,
+          ...(encryptedRefresh ? { refreshTokenEncrypted: encryptedRefresh.cipherText } : {}),
+          tokenType:             input.tokenType ?? null,
+          accessTokenExpiresAt:  input.accessTokenExpiresAt ?? null,
+          ...(input.tokenMetadata ? { tokenMetadata: input.tokenMetadata as Prisma.InputJsonValue } : {}),
+          revokedAt:             null,
+          connectedAt:           new Date(),
+        },
+      });
+
+      const initialUserGrant = input.ownerType === 'user' ? input.ownerUserId : input.createdBy;
+      if (initialUserGrant) {
+        await this.grantConnection({
+          companyId:    input.companyId,
+          connectionId: record.id,
+          granteeType:  'user',
+          granteeId:    initialUserGrant,
+          access:       input.initialAccess ?? 'admin',
+          grantedBy:    input.createdBy ?? initialUserGrant,
+        });
+      }
+
+      return ok(this.decrypt(record));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.upsertAirtableConnection', e));
+    }
+  }
+
+  /**
+   * Airtable rotates the refresh token on every refresh and kills the previous
+   * one immediately, so both tokens are written in a single update. A partial
+   * write would strand the connection.
+   */
+  async updateAirtableTokens(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+    readonly accessToken?: string;
+    readonly refreshToken?: string;
+    readonly tokenType?: string;
+    readonly accessTokenExpiresAt?: Date;
+    readonly scopes?: string[];
+    readonly tokenMetadata?: Record<string, unknown>;
+  }): Promise<Result<void, InfraError>> {
+    try {
+      const data: Prisma.IntegrationConnectionUpdateInput = {};
+      if (input.accessToken) data.accessTokenEncrypted = encryptToken(input.accessToken, this.key).cipherText;
+      if (input.refreshToken) data.refreshTokenEncrypted = encryptToken(input.refreshToken, this.key).cipherText;
+      if (input.tokenType) data.tokenType = input.tokenType;
+      if (input.accessTokenExpiresAt) data.accessTokenExpiresAt = input.accessTokenExpiresAt;
+      if (input.scopes) data.scopes = input.scopes;
+      if (input.tokenMetadata) data.tokenMetadata = input.tokenMetadata as Prisma.InputJsonValue;
+      if (Object.keys(data).length === 0) return ok(undefined);
+      await this.db.integrationConnection.update({
+        where: { id: input.connectionId, companyId: input.companyId },
+        data,
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.updateAirtableTokens', e));
+    }
+  }
+
+  /**
+   * Grant-matching predicate shared by accessible-connection queries: direct
+   * user grants, company-wide grants, the caller's departments, their
+   * department roles, and their admin role.
+   */
+  private async grantScopeFor(companyId: string, userId: string) {
+    const memberships = await this.db.departmentMembership.findMany({
+      where:  { userId, status: 'active', department: { companyId, status: 'active' } },
+      select: { departmentId: true, roleId: true },
+    });
+    const departmentIds = memberships.map(m => m.departmentId);
+    const departmentRoleIds = memberships.map(m => m.roleId);
+    const adminMembership = await this.db.adminMembership.findFirst({
+      where:  { userId, companyId, isActive: true },
+      select: { role: true },
+    });
+    return [
+      { granteeType: 'user', granteeId: userId },
+      { granteeType: 'company', granteeId: companyId },
+      ...(departmentIds.length ? [{ granteeType: 'department', granteeId: { in: departmentIds } }] : []),
+      ...(departmentRoleIds.length ? [{ granteeType: 'role', granteeId: { in: departmentRoleIds } }] : []),
+      ...(adminMembership?.role ? [{ granteeType: 'role', granteeId: adminMembership.role }] : []),
+    ];
   }
 
   async findAccessibleCanvaConnection(input: {

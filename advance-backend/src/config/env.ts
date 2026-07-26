@@ -21,7 +21,14 @@ const EnvSchema = z.object({
 
   // ── URLs ──────────────────────────────────────────────────────────────────
   APP_BASE_URL:     z.string().default('http://localhost:5173'),
+  // Last-resort fallback only. OAuth callbacks are built from the backend URL
+  // the Desktop signed in against (its request Host), vetted by the allowlist
+  // below — do NOT pin a deployment URL here.
   BACKEND_PUBLIC_URL: z.string().default('http://localhost:8000'),
+  // Comma-separated full origins this deployment may build OAuth callbacks for,
+  // e.g. "https://app-dev.example.io,https://app.example.io". Loopback hosts are
+  // always allowed; BACKEND_PUBLIC_URL is implicitly included.
+  BACKEND_PUBLIC_URL_ALLOWLIST: z.string().default(''),
 
   // ── Database + Redis ──────────────────────────────────────────────────────
   DATABASE_URL:     z.string().min(1),
@@ -162,6 +169,15 @@ const EnvSchema = z.object({
   CANVA_MCP_URL:                 z.string().default('https://mcp.canva.com/mcp'),
   CANVA_MCP_REDIRECT_URI:        z.string().optional(),
   CANVA_MCP_CLIENT_METADATA_URL: z.string().optional(),
+
+  // ── Airtable remote MCP OAuth ────────────────────────────────────────────
+  // Airtable hosts its own MCP and registers OAuth clients dynamically, so no
+  // developer-console app is required and there is no client secret (clients
+  // are public and authenticate with PKCE). Set AIRTABLE_CLIENT_ID only to
+  // adopt a pre-registered, branded Airtable integration instead of DCR.
+  AIRTABLE_MCP_URL:          z.string().default('https://mcp.airtable.com/mcp'),
+  AIRTABLE_MCP_REDIRECT_URI: z.string().optional(),
+  AIRTABLE_CLIENT_ID:        z.string().optional(),
 
   // ── Zoho OAuth ────────────────────────────────────────────────────────────
   ZOHO_CLIENT_ID:            z.string().optional(),

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { PrismaClient } from '../src/generated/prisma';
 import { MEMORY_PUBLISHING_REGISTERED_TOOL } from '../src/application/skills/share-memory-provisioning';
 import { GOOGLE_WORKSPACE_PRODUCTS } from '../src/application/google/google-workspace-mcp-manifest';
+import { AIRTABLE_PRODUCTS } from '../src/application/airtable/airtable-mcp-manifest';
 
 /**
  * Seeds the RegisteredTool catalog (the table the admin panel lists tools from).
@@ -57,6 +58,21 @@ const TOOLS: ToolSeed[] = [
       'Each operation is authorized by the backend before the Canva MCP is called',
     ],
   },
+  ...AIRTABLE_PRODUCTS.map((product): ToolSeed => ({
+    toolId: product.toolId,
+    name: product.name,
+    description: product.description,
+    category: product.category,
+    domain: 'airtable',
+    // Schema and automation reshape a base and include destructive operations.
+    hitlRequired: product.toolId !== 'airtableRecords',
+    guardrails: [
+      'Uses a Divo OAuth connection selected by connection ID',
+      'Airtable credentials remain server-side',
+      'Only manifest-approved Airtable operations are callable',
+      'Airtable enforces its own base permissions on top of Divo RBAC',
+    ],
+  })),
   { toolId: 'zohoCrm', name: 'Zoho CRM', description: 'Read and write Zoho CRM records, pipeline and lead reports.', category: 'crm', domain: 'zoho' },
   { toolId: 'zohoBooks', name: 'Zoho Books', description: 'Read and write invoices, bills and expenses; financial reports.', category: 'finance', domain: 'zoho' },
   { toolId: 'contextSearch', name: 'Context Search', description: 'RAG search over ingested company documents.', category: 'knowledge', domain: 'context' },

@@ -23,6 +23,9 @@ export const CANONICAL_TOOL_IDS = [
   'googleChat',
   'googleAppsScript',
   'canvaDesign',
+  'airtableRecords',
+  'airtableSchema',
+  'airtableAutomation',
   'zohoCrm',
   'zohoBooks',
   'contextSearch',
@@ -43,7 +46,7 @@ export const CANONICAL_TOOL_IDS = [
 
 export type CanonicalToolId = typeof CANONICAL_TOOL_IDS[number];
 
-export type ToolFamily = 'lark' | 'google' | 'canva' | 'zoho' | 'context' | 'skills' | 'memory' | 'rag' | 'data' | 'execution' | 'scheduling' | 'semrush' | 'oms';
+export type ToolFamily = 'lark' | 'google' | 'canva' | 'airtable' | 'zoho' | 'context' | 'skills' | 'memory' | 'rag' | 'data' | 'execution' | 'scheduling' | 'semrush' | 'oms';
 
 export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   larkMessaging:  'lark',
@@ -66,6 +69,9 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   googleChat:     'google',
   googleAppsScript: 'google',
   canvaDesign:    'canva',
+  airtableRecords:    'airtable',
+  airtableSchema:     'airtable',
+  airtableAutomation: 'airtable',
   zohoCrm:        'zoho',
   zohoBooks:      'zoho',
   contextSearch:  'context',
@@ -102,6 +108,9 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   googleChat:     ['read', 'send', 'update'],
   googleAppsScript: ['read', 'create', 'update', 'delete', 'execute'],
   canvaDesign:    ['read', 'create', 'update'],
+  airtableRecords:    ['read', 'create', 'update', 'delete'],
+  airtableSchema:     ['read', 'create', 'update', 'delete'],
+  airtableAutomation: ['read', 'create', 'update', 'delete'],
   zohoCrm:        ['read', 'create', 'update', 'delete'],
   zohoBooks:      ['read', 'create', 'update', 'delete'],
   contextSearch:  ['read'],
@@ -138,6 +147,12 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   googleChat:     { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   googleAppsScript: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   canvaDesign:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
+  // Records are ordinary day-to-day work. Schema and automation edit the shape
+  // of a base — including delete_table / delete_automation — so they follow the
+  // larkBase precedent and stay off for members until an admin grants them.
+  airtableRecords:    { MEMBER: true,  COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  airtableSchema:     { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  airtableAutomation: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   zohoCrm:        { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   zohoBooks:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   contextSearch:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },

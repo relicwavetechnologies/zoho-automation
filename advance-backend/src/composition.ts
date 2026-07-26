@@ -53,6 +53,9 @@ import { GoogleWorkspaceMcpSchemaCatalog } from './infrastructure/google/google-
 import { GoogleWorkspaceGatewayClient } from './infrastructure/google/google-workspace-gateway.client';
 import { CanvaMcpOAuthService } from './infrastructure/canva/canva-mcp-oauth.service';
 import { CanvaMcpClient } from './infrastructure/canva/canva-mcp.client';
+import { AirtableMcpOAuthService } from './infrastructure/airtable/airtable-mcp-oauth.service';
+import { AirtableMcpClient } from './infrastructure/airtable/airtable-mcp.client';
+import { AirtableMcpSchemaCatalog } from './infrastructure/airtable/airtable-mcp-schema.catalog';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
 import { ChannelDeliveryRepository } from './infrastructure/persistence/channel-delivery.repository';
 import { ExecutionLaneLeaseRepository } from './infrastructure/persistence/execution-lane-lease.repository';
@@ -158,6 +161,8 @@ import { createLarkBaseTool } from './application/orchestration/tools/families/l
 import { createLarkApprovalTool } from './application/orchestration/tools/families/lark-approval.tool';
 import { createGoogleWorkspaceMcpTools } from './application/orchestration/tools/families/google-workspace-mcp.tool';
 import { createCanvaDesignTool } from './application/orchestration/tools/families/canva-design.tool';
+import { createAirtableMcpTools } from './application/orchestration/tools/families/airtable-mcp.tool';
+import { hasAirtableScopeGroups } from './application/airtable/airtable-mcp-manifest';
 import { createZohoCrmTool } from './application/orchestration/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/orchestration/tools/families/zoho-books.tool';
 import { createContextSearchTool } from './application/orchestration/tools/families/context-search.tool';
@@ -258,6 +263,7 @@ export interface Container {
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
   canvaMcpOAuthService: CanvaMcpOAuthService;
+  airtableMcpOAuthService: AirtableMcpOAuthService;
   integrationConnectionRepo: IntegrationConnectionRepository;
   companySerperConnectionRepo: CompanySerperConnectionRepository;
   companySerperService: CompanySerperService;
@@ -689,6 +695,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const googleOAuthService        = new GoogleOAuthService({ env, cache, logger: logger.child({ service: 'google-oauth' }) });
   const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog();
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: memoryCache, logger });
+  const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: memoryCache, logger });
+  const airtableMcpSchemas        = new AirtableMcpSchemaCatalog();
 
   async function getGoogleWorkspaceMcpConnection(input: {
     readonly companyId: string;
@@ -785,6 +793,126 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       });
       return { status: 'unavailable' as const };
     }
+  }
+
+  /**
+   * Resolve one Airtable account for a tool call, refreshing its token first
+   * when needed. Airtable rotates the refresh token on every refresh and kills
+   * the previous one, so the rotated pair is persisted before the client is
+   * handed out — a dropped write would strand the connection.
+   */
+  async function getAirtableMcpConnection(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId?: string;
+    readonly minimumAccess: 'read_only' | 'read_write';
+    readonly requiredScopeGroups: readonly (readonly string[])[];
+  }) {
+    if (!airtableMcpOAuthService.isConfigured()) return { status: 'unavailable' as const };
+
+    const accessible = await integrationConnectionRepo.listAccessibleAirtableConnections({
+      companyId: input.companyId,
+      userId: input.userId,
+    });
+    if (!accessible.ok) return { status: 'unavailable' as const };
+    const scopeEligible = accessible.value.filter((connection) =>
+      hasAirtableScopeGroups(connection.scopes, input.requiredScopeGroups),
+    );
+    const selection = selectAccessibleConnection({
+      connections: scopeEligible,
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+      minimumAccess: input.minimumAccess,
+    });
+    if (selection.status === 'choose_connection') {
+      return {
+        status: 'choose_connection' as const,
+        connections: publicConnectionChoices(selection.connections),
+      };
+    }
+    if (selection.status === 'unavailable') {
+      const requested = input.connectionId
+        ? accessible.value.find((connection) => connection.connectionId === input.connectionId)
+        : undefined;
+      if (requested && !hasAirtableScopeGroups(requested.scopes, input.requiredScopeGroups)) {
+        logger.warn('airtable.connection.missing_required_scope', {
+          companyId: input.companyId,
+          userId: input.userId,
+          connectionId: input.connectionId,
+          requiredScopeGroups: input.requiredScopeGroups,
+        });
+      }
+      return { status: 'unavailable' as const };
+    }
+
+    const selectedConnectionId = selection.connection.connectionId;
+    const connection = await integrationConnectionRepo.findAccessibleAirtableConnection({
+      companyId: input.companyId,
+      userId: input.userId,
+      connectionId: selectedConnectionId,
+      minimumAccess: input.minimumAccess,
+    });
+    if (!connection.ok || !connection.value?.accessToken) {
+      return { status: 'unavailable' as const };
+    }
+
+    let accessToken = connection.value.accessToken;
+    const expiresSoon = connection.value.accessTokenExpiresAt
+      ? connection.value.accessTokenExpiresAt.getTime() <= Date.now() + 60_000
+      : false;
+    if (expiresSoon && connection.value.refreshToken) {
+      try {
+        const metadata = connection.value.tokenMetadata ?? {};
+        const refreshed = await airtableMcpOAuthService.refreshConnectionTokens({
+          accessToken,
+          refreshToken: connection.value.refreshToken,
+          ...(connection.value.tokenType ? { tokenType: connection.value.tokenType } : {}),
+          scopes: connection.value.scopes,
+          ...(metadata['oauthClientInformation'] ? { clientInformation: metadata['oauthClientInformation'] as any } : {}),
+          ...(metadata['oauthDiscoveryState'] ? { discoveryState: metadata['oauthDiscoveryState'] as any } : {}),
+        });
+        const persisted = await integrationConnectionRepo.updateAirtableTokens({
+          companyId: input.companyId,
+          connectionId: selectedConnectionId,
+          accessToken: refreshed.accessToken,
+          ...(refreshed.refreshToken ? { refreshToken: refreshed.refreshToken } : {}),
+          tokenType: refreshed.tokenType,
+          ...(refreshed.expiresIn ? { accessTokenExpiresAt: new Date(Date.now() + refreshed.expiresIn * 1000) } : {}),
+          scopes: refreshed.scopes,
+          tokenMetadata: {
+            ...(refreshed.clientInformation ? { oauthClientInformation: refreshed.clientInformation } : {}),
+            ...(refreshed.discoveryState ? { oauthDiscoveryState: refreshed.discoveryState } : {}),
+          },
+        });
+        // Airtable already invalidated the previous refresh token. Using the
+        // new access token without having stored its partner would leave the
+        // connection unrecoverable, so fail closed and let the member retry.
+        if (!persisted.ok) {
+          logger.error('airtable.connection.rotated_token_persist_failed', {
+            companyId: input.companyId,
+            connectionId: selectedConnectionId,
+            error: persisted.error.message,
+          });
+          return { status: 'unavailable' as const };
+        }
+        accessToken = refreshed.accessToken;
+      } catch (error) {
+        logger.warn('airtable.connection.refresh_failed', {
+          companyId: input.companyId,
+          userId: input.userId,
+          connectionId: selectedConnectionId,
+          error: String(error),
+        });
+        return { status: 'unavailable' as const };
+      }
+    }
+
+    await integrationConnectionRepo.touchLastUsed(selectedConnectionId);
+    return {
+      status: 'resolved' as const,
+      connection: {
+        client: new AirtableMcpClient(accessToken, airtableMcpSchemas, env.AIRTABLE_MCP_URL),
+      },
+    };
   }
 
   async function getCanvaMcpClient(input: {
@@ -1261,6 +1389,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     toolRegistry.register(tool);
   }
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
+  for (const tool of createAirtableMcpTools({ getConnection: getAirtableMcpConnection })) {
+    toolRegistry.register(tool);
+  }
   toolRegistry.register(createZohoCrmTool({
     getClient:   getZohoCrmClient,
     crmClient:   zohoPaginatedCrmClient,
@@ -1589,6 +1720,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // OAuth surfaces
     googleOAuthService,
     canvaMcpOAuthService,
+    airtableMcpOAuthService,
     integrationConnectionRepo,
     companySerperConnectionRepo,
     companySerperService,
