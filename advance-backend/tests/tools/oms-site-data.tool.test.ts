@@ -40,7 +40,92 @@ describe('OMS Site Data tool', () => {
     assert.equal(result.value.rows.length, 50);
     assert.equal(result.value.artifact?.id, 'temp_exports/co/oms');
     assert.equal(uploads.length, 1);
-    assert.match(result.value.message, /may be truncated/i);
+    assert.match(result.value.message, /arbitrary subset/i);
+  });
+
+  it('warns that an unsorted capped result is not the best sites, and names the ranking when sorted', async () => {
+    const rows = Array.from({ length: 100 }, (_, index) => ({ website: `site-${index}.com`, domainAuthority: index }));
+    const tool = createTool({
+      service: { execute: async () => ({ operation: 'search_sites', status: 'partial', coverage: {}, rows }) },
+    });
+
+    const unsorted = await tool.execute({ operation: 'search_sites', niche: 'Technology' }, makeCtx('omsSiteData', ['read']));
+    assert.equal(unsorted.ok, true);
+    if (!unsorted.ok) return;
+    assert.match(unsorted.value.message, /arbitrary subset/i);
+    assert.doesNotMatch(unsorted.value.message, /top 100 by/i);
+
+    const sorted = await tool.execute(
+      { operation: 'search_sites', niche: 'Technology', sortBy: 'domainAuthority', sortDirection: 'DESC' },
+      makeCtx('omsSiteData', ['read']),
+    );
+    assert.equal(sorted.ok, true);
+    if (!sorted.ok) return;
+    assert.match(sorted.value.message, /top 100 by domainAuthority DESC/i);
+    assert.doesNotMatch(sorted.value.message, /arbitrary subset/i);
+  });
+
+  it('gives capped-result advice the operation can actually act on', async () => {
+    const rows = Array.from({ length: 100 }, (_, index) => ({ niche: `niche-${index}` }));
+    const tool = createTool({
+      service: { execute: async () => ({ operation: 'list_catalog_values', status: 'partial', coverage: {}, rows }) },
+    });
+
+    // sortBy and filters are rejected by the schema for both non-search
+    // operations, so advising them would send the agent into a dead end.
+    const catalog = await tool.execute({ operation: 'list_catalog_values', field: 'niche' }, makeCtx('omsSiteData', ['read']));
+    assert.equal(catalog.ok, true);
+    if (!catalog.ok) return;
+    assert.doesNotMatch(catalog.value.message, /sortBy|narrow the filters/i);
+    assert.match(catalog.value.message, /distinct values/i);
+    // Exactly 100 rows may also be a complete result, so the message must not
+    // assert that values are missing.
+    assert.match(catalog.value.message, /completeness cannot be confirmed/i);
+
+    const profiles = await tool.execute({ operation: 'get_site_profiles', websites: ['example.com'] }, makeCtx('omsSiteData', ['read']));
+    assert.equal(profiles.ok, true);
+    if (!profiles.ok) return;
+    assert.doesNotMatch(profiles.value.message, /sortBy|narrow the filters/i);
+    assert.match(profiles.value.message, /fewer hostnames/i);
+    assert.match(profiles.value.message, /completeness cannot be confirmed/i);
+  });
+
+  it('discloses the unmeasured-spam-score exclusion, including when nothing matched', async () => {
+    // Divo narrows the request itself, so "complete" and "no matches" would
+    // otherwise overstate what was actually searched.
+    const complete = createTool({
+      service: { execute: async () => ({ operation: 'search_sites', status: 'complete', coverage: {}, rows: [{ website: 'a.com' }] }) },
+    });
+    const constrained = await complete.execute({ operation: 'search_sites', niche: 'Casino', maxSpamScore: 2 }, makeCtx('omsSiteData', ['read']));
+    assert.equal(constrained.ok, true);
+    if (!constrained.ok) return;
+    assert.match(constrained.value.message, /no measured spam score were excluded/i);
+
+    const unconstrained = await complete.execute({ operation: 'search_sites', niche: 'Casino' }, makeCtx('omsSiteData', ['read']));
+    assert.equal(unconstrained.ok, true);
+    if (!unconstrained.ok) return;
+    assert.doesNotMatch(unconstrained.value.message, /measured spam score/i);
+
+    const none = createTool({
+      service: { execute: async () => ({ operation: 'search_sites', status: 'empty', coverage: {}, rows: [] }) },
+    });
+    const empty = await none.execute({ operation: 'search_sites', niche: 'Casino', maxSpamScore: 2 }, makeCtx('omsSiteData', ['read']));
+    assert.equal(empty.ok, true);
+    if (!empty.ok) return;
+    assert.match(empty.value.message, /no measured spam score were excluded/i);
+  });
+
+  it('states the row cap and the absence of totals even when the result is under the cap', async () => {
+    const tool = createTool({
+      service: { execute: async () => ({ operation: 'search_sites', status: 'complete', coverage: {}, rows: [{ website: 'example.com' }] }) },
+    });
+    const result = await tool.execute({ operation: 'search_sites', niche: 'Technology' }, makeCtx('omsSiteData', ['read']));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    // A small result must not read as "these are all the sites that exist".
+    assert.match(result.value.message, /100-row cap/i);
+    assert.match(result.value.message, /never paginates and never reports a total count/i);
+    assert.match(result.value.message, /complete set of matches for this request/i);
   });
 
   it('returns a blocked result for the provider empty-body ambiguity', async () => {

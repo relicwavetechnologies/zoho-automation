@@ -10,7 +10,7 @@ import type { CloudinaryAdapter } from '../../../../infrastructure/cloudinary/cl
 import type { AuditService } from '../../../observability/audit.service';
 import { arrayToCsv } from '../shared/sandbox-runner';
 import { CompanyOmsSiteDataService } from '../../../oms/company-oms-site-data.service';
-import { OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, type OmsSiteDataToolArgs } from '../../../oms/oms-site-data.types';
+import { defaultSortDirection, excludesUnmeasuredSpamScore, OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, type OmsSiteDataToolArgs } from '../../../oms/oms-site-data.types';
 
 const MAX_MODEL_ROWS = 50;
 
@@ -41,6 +41,12 @@ export const createOmsSiteDataTool = (deps: {
   parameterDocs: [
     'operation: search_sites, get_site_profiles, or list_catalog_values.',
     'search_sites: use one or more vetted website, niche, classification, price, quality, traffic, or authority criteria; returns the standard inventory view.',
+    'search_sites quality filters: maxSpamScore (lower is better, use it for clean/safe site requests), minDomainRating, minDomainAuthority, minPageAuthority.',
+    'search_sites spam score: OMS stores "never measured" as a negative spam score. Setting maxSpamScore, or ranking cleanest-first, automatically excludes those unmeasured sites, so such a result is the set of sites with a MEASURED spam score, not every matching site. Set minSpamScore yourself to override.',
+    'search_sites traffic filters, all min/max: minOrganicTraffic is Semrush ORGANIC traffic, minSemrushTraffic is Semrush TOTAL traffic; minAhrefTraffic and minSimilarwebTraffic are separate vendor estimates. They disagree, so pick the one the user named and never blend them.',
+    'search_sites accepts at most 20 criteria per call.',
+    'search_sites sortBy: set it whenever the user wants best/top/cheapest sites. OMS sorts before applying its 100-row cap, so sorting changes which rows come back, not just their order.',
+    'search_sites sortDirection: defaults to DESC, except spamScore, sellingPrice, costPrice and turnAroundTime, which default to ASC because lower is better for those. Pass it explicitly when the user wants the opposite.',
     'get_site_profiles: look up 1–20 exact bare website hostnames and return the standard full profile view.',
     'list_catalog_values: list distinct current values for a supported inventory field before narrowing a search.',
     'Divo rejects SQL, webhook URLs, headers, API keys, raw OMS columns, raw filters, sorting expressions, and provider request bodies.',
@@ -82,7 +88,7 @@ export const createOmsSiteDataTool = (deps: {
         coverage: data.coverage,
         rows,
         ...(artifact ? { artifact } : {}),
-        message: messageFor(data.status, data.rows.length, rows.length, Boolean(artifact)),
+        message: messageFor(data.status, data.rows.length, rows.length, Boolean(artifact), args),
       };
       deps.audit?.record({
         actorId: ctx.runContext.userId,
@@ -130,13 +136,66 @@ function headersFor(rows: Array<Record<string, unknown>>): string[] {
   return [...new Set(rows.flatMap(row => Object.keys(row)))].slice(0, 25);
 }
 
-function messageFor(status: 'complete' | 'empty' | 'partial', rowCount: number, returnedRows: number, artifact: boolean): string {
-  if (status === 'empty') return 'OMS returned a valid empty JSON array; no matching sites were found.';
+/**
+ * The agent reads this after every call, so the 100-row provider cap is stated
+ * unconditionally rather than only when it is hit. Without that, a 40-row
+ * result reads as "there are 40 such sites" when it only means "40 matched
+ * within a capped window".
+ *
+ * The cap is also not uniformly lossy. OMS applies ORDER BY server-side before
+ * truncating (verified against the live endpoint), so a sorted 100-row response
+ * is a true top-100 ranking, while an unsorted one is an arbitrary subset.
+ * Those two cases warrant different follow-up, so they are described separately.
+ */
+function messageFor(
+  status: 'complete' | 'empty' | 'partial',
+  rowCount: number,
+  returnedRows: number,
+  artifact: boolean,
+  args: OmsSiteDataToolArgs,
+): string {
+  // Divo injects a spamScore >= 0 filter to drop the unmeasured sentinel, which
+  // changes the result set. Saying so keeps "complete" and "no matches" honest.
+  const spamNote = args.operation === 'search_sites' && excludesUnmeasuredSpamScore(args)
+    ? ' Sites with no measured spam score were excluded from this request.'
+    : '';
+  if (status === 'empty') return `OMS returned a valid empty JSON array; no matching sites were found.${spamNote}`;
   const parts = [`Retrieved ${rowCount} site row${rowCount === 1 ? '' : 's'}.`];
-  if (status === 'partial') parts.push('OMS caps responses at 100 rows, so the result may be truncated.');
+
+  if (status === 'partial') {
+    // Only search_sites accepts sortBy or filters, so the remedy offered has to
+    // match the operation. Suggesting sortBy elsewhere sends the agent into a
+    // schema rejection it cannot resolve.
+    parts.push(partialAdviceFor(args));
+  } else if (args.operation === 'list_catalog_values') {
+    parts.push('This is under the OMS 100-row cap, so it is the complete list of distinct values for that field.');
+  } else {
+    parts.push('This is under the OMS 100-row cap, so it is the complete set of matches for this request.');
+  }
+
+  parts.push(`OMS never paginates and never reports a total count.${spamNote}`);
   if (rowCount > returnedRows) parts.push(`Showing the first ${returnedRows} rows in chat.`);
   if (artifact) parts.push('The complete normalized result is available as a temporary CSV download.');
   return parts.join(' ');
+}
+
+/**
+ * Per-operation guidance for a result that came back at the provider's 100-row
+ * cap. The provider returns no total and no pagination, so "was truncated" and
+ * "happened to match exactly 100" are indistinguishable. The wording therefore
+ * says completeness cannot be confirmed rather than asserting rows are missing.
+ */
+function partialAdviceFor(args: OmsSiteDataToolArgs): string {
+  const capped = 'This came back at the OMS 100-row cap, and OMS reports no total, so it may be truncated and completeness cannot be confirmed.';
+  if (args.operation === 'list_catalog_values') {
+    return `${capped} The field may have further distinct values, and this operation supports no sorting, filtering, or paging to reach them, so do not present it as the full set of options.`;
+  }
+  if (args.operation === 'get_site_profiles') {
+    return `${capped} Sites are stored per listing, so some listings for the requested hostnames may be missing. Request fewer hostnames if you need every listing.`;
+  }
+  return args.sortBy
+    ? `${capped} OMS sorts before it truncates, so these are genuinely the top 100 by ${args.sortBy} ${args.sortDirection ?? defaultSortDirection(args.sortBy)}; any lower-ranked matches are excluded. Narrow the filters to see past them.`
+    : `${capped} No sort was requested, so these 100 rows are an arbitrary subset of the matches rather than the best ones. Re-run with sortBy, or narrow the filters, before drawing any conclusion.`;
 }
 
 function toToolError(error: unknown): ToolError {

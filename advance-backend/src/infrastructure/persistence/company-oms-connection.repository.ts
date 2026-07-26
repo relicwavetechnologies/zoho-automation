@@ -68,11 +68,22 @@ export class CompanyOmsConnectionRepository {
   async setStatus(companyId: string, id: string, status: 'connected' | 'disabled'): Promise<SafeOmsConnection | null> {
     const existing = await this.prisma.companyOmsConnection.findFirst({ where: { id, companyId, revokedAt: null } });
     if (!existing) return null;
-    const row = await this.prisma.companyOmsConnection.update({
-      where: { id },
-      data: { status, ...(status === 'connected' ? { unavailableUntil: null } : {}) },
+    return this.prisma.$transaction(async (tx) => {
+      const row = await tx.companyOmsConnection.update({
+        where: { id },
+        data: { status, ...(status === 'connected' ? { unavailableUntil: null } : {}) },
+      });
+      // OMS is a single company-wide connection, so re-enabling one credential
+      // must retire the rest exactly as saving a new one does. Without this an
+      // admin can leave two rows connected and silently run on the wrong key.
+      if (status === 'connected') {
+        await tx.companyOmsConnection.updateMany({
+          where: { companyId, id: { not: id }, revokedAt: null, status: 'connected' },
+          data: { status: 'disabled' },
+        });
+      }
+      return toSafeConnection(row);
     });
-    return toSafeConnection(row);
   }
 
   async revoke(companyId: string, id: string): Promise<boolean> {
@@ -91,7 +102,9 @@ export class CompanyOmsConnectionRepository {
         revokedAt: null,
         OR: [{ unavailableUntil: null }, { unavailableUntil: { lte: new Date() } }],
       },
-      orderBy: { createdAt: 'asc' },
+      // Writes keep a single connected row, but if one ever slipped through,
+      // the most recently saved credential is the safer choice.
+      orderBy: { createdAt: 'desc' },
     });
     if (!row) return null;
     return { ...toSafeConnection(row), apiKey: decryptToken(row.apiKeyEncrypted, this.encryptionKey) };

@@ -32,16 +32,57 @@ const website = z.string().trim().toLowerCase().min(3).max(253)
 
 const metric = z.number().finite().min(0).max(10_000_000_000);
 
-const searchSortField = z.enum([
+/** The provider AND-combines filters and documents a hard ceiling of 20. */
+export const MAX_PROVIDER_FILTERS = 20;
+
+/**
+ * Fields where a smaller value is the better result. The provider sorts before
+ * it truncates to 100 rows, so an unqualified DESC on one of these returns the
+ * 100 worst matches and discards every good one. "Cleanest sites" must not be
+ * answered with the spammiest inventory, so the default direction is per-field
+ * rather than a blanket DESC. An explicit sortDirection always wins.
+ */
+const LOWER_IS_BETTER = new Set<string>(['spamScore', 'sellingPrice', 'costPrice', 'turnAroundTime']);
+
+export function defaultSortDirection(field: string): 'ASC' | 'DESC' {
+  return LOWER_IS_BETTER.has(field) ? 'ASC' : 'DESC';
+}
+
+/**
+ * spamScore is NOT NULL upstream, so "never measured" is stored as -1 rather
+ * than null. Left alone that sentinel is actively misleading: it sorts first
+ * under ASC, so "cleanest sites" returns unmeasured inventory, and it satisfies
+ * any maxSpamScore bound, so a "spam score under 2" shortlist quietly includes
+ * sites whose spam score is unknown. Whenever the caller constrains or ranks by
+ * spam score without setting their own floor, the sentinel is excluded so an
+ * unmeasured site is never presented as a clean one.
+ */
+export function excludesUnmeasuredSpamScore(value: {
+  minSpamScore?: number | undefined; maxSpamScore?: number | undefined;
+  sortBy?: string | undefined; sortDirection?: 'ASC' | 'DESC' | undefined;
+}): boolean {
+  if (value.minSpamScore !== undefined) return false;
+  if (value.maxSpamScore !== undefined) return true;
+  return value.sortBy === 'spamScore' && (value.sortDirection ?? defaultSortDirection('spamScore')) === 'ASC';
+}
+
+/** Every value here must also appear in OMS_SEARCH_COLUMNS: the provider
+ *  rejects an orderBy on a column it was not asked to select. */
+export const SEARCH_SORT_FIELDS = [
   'domainAuthority',
   'pageAuthority',
+  'domainRating',
+  'spamScore',
   'semrushOrganicTraffic',
   'semrushTraffic',
   'ahrefTraffic',
+  'similarwebTraffic',
   'sellingPrice',
   'costPrice',
   'turnAroundTime',
-]);
+] as const;
+
+const searchSortField = z.enum(SEARCH_SORT_FIELDS);
 
 const SearchSitesSchema = z.object({
   operation: z.literal('search_sites'),
@@ -59,8 +100,20 @@ const SearchSitesSchema = z.object({
   maxDomainAuthority: metric.optional(),
   minPageAuthority: metric.optional(),
   maxPageAuthority: metric.optional(),
+  minDomainRating: metric.optional(),
+  maxDomainRating: metric.optional(),
+  // Spam score is inverted: lower is better, so maxSpamScore is the filter
+  // that matters for shortlisting. Both bounds exist for range symmetry.
+  minSpamScore: metric.optional(),
+  maxSpamScore: metric.optional(),
   minOrganicTraffic: metric.optional(),
   maxOrganicTraffic: metric.optional(),
+  minSemrushTraffic: metric.optional(),
+  maxSemrushTraffic: metric.optional(),
+  minAhrefTraffic: metric.optional(),
+  maxAhrefTraffic: metric.optional(),
+  minSimilarwebTraffic: metric.optional(),
+  maxSimilarwebTraffic: metric.optional(),
   minSellingPrice: metric.optional(),
   maxSellingPrice: metric.optional(),
   sortBy: searchSortField.optional(),
@@ -70,10 +123,33 @@ const SearchSitesSchema = z.object({
   if (criteria.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Provide at least one search criterion.' });
   }
+  // Each criterion becomes exactly one provider filter, and OMS accepts at most
+  // 20. Rejecting here keeps the failure legible: an over-limit request is
+  // rejected by OMS with an empty 200 body, which is indistinguishable from
+  // "no matches" and would surface as an unexplained blocked result.
+  // The spam-score sentinel guard becomes a real filter, so it counts against
+  // the provider ceiling even though the caller did not supply it.
+  const reservesSpamGuard = excludesUnmeasuredSpamScore(value);
+  const emittedFilters = criteria.length + (reservesSpamGuard ? 1 : 0);
+  if (emittedFilters > MAX_PROVIDER_FILTERS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      // Naming the reserved slot keeps the message true: with the guard in play
+      // a 20-criterion request really does exceed the ceiling.
+      message: reservesSpamGuard
+        ? `Use at most ${MAX_PROVIDER_FILTERS} search criteria; OMS rejects a request with more, and constraining or ranking by spam score reserves one of them.`
+        : `Use at most ${MAX_PROVIDER_FILTERS} search criteria; OMS rejects a request with more.`,
+    });
+  }
   for (const [minimum, maximum, label] of [
     [value.minDomainAuthority, value.maxDomainAuthority, 'domain authority'],
     [value.minPageAuthority, value.maxPageAuthority, 'page authority'],
+    [value.minDomainRating, value.maxDomainRating, 'domain rating'],
+    [value.minSpamScore, value.maxSpamScore, 'spam score'],
     [value.minOrganicTraffic, value.maxOrganicTraffic, 'organic traffic'],
+    [value.minSemrushTraffic, value.maxSemrushTraffic, 'Semrush traffic'],
+    [value.minAhrefTraffic, value.maxAhrefTraffic, 'Ahrefs traffic'],
+    [value.minSimilarwebTraffic, value.maxSimilarwebTraffic, 'Similarweb traffic'],
     [value.minSellingPrice, value.maxSellingPrice, 'selling price'],
   ] as const) {
     if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
@@ -122,15 +198,20 @@ export const OmsSiteDataToolArgsSchema = z.union([
 ]);
 export type OmsSiteDataToolArgs = z.infer<typeof OmsSiteDataToolArgsSchema>;
 
+// The provider allows up to 25 columns per request. Every filterable metric is
+// also selected so a shortlist always shows the fields it was filtered on.
 export const OMS_SEARCH_COLUMNS = [
   'website',
   'niche',
   'contentCategories',
   'domainAuthority',
   'pageAuthority',
+  'domainRating',
+  'spamScore',
   'semrushOrganicTraffic',
   'semrushTraffic',
   'ahrefTraffic',
+  'similarwebTraffic',
   'sellingPrice',
   'costPrice',
   'websiteStatus',
@@ -213,14 +294,24 @@ export function buildOmsProviderRequest(args: OmsSiteDataToolArgs): OmsProviderR
       addComparison(filters, 'domainAuthority', 'lte', args.maxDomainAuthority);
       addComparison(filters, 'pageAuthority', 'gte', args.minPageAuthority);
       addComparison(filters, 'pageAuthority', 'lte', args.maxPageAuthority);
+      addComparison(filters, 'domainRating', 'gte', args.minDomainRating);
+      addComparison(filters, 'domainRating', 'lte', args.maxDomainRating);
+      addComparison(filters, 'spamScore', 'gte', excludesUnmeasuredSpamScore(args) ? 0 : args.minSpamScore);
+      addComparison(filters, 'spamScore', 'lte', args.maxSpamScore);
       addComparison(filters, 'semrushOrganicTraffic', 'gte', args.minOrganicTraffic);
       addComparison(filters, 'semrushOrganicTraffic', 'lte', args.maxOrganicTraffic);
+      addComparison(filters, 'semrushTraffic', 'gte', args.minSemrushTraffic);
+      addComparison(filters, 'semrushTraffic', 'lte', args.maxSemrushTraffic);
+      addComparison(filters, 'ahrefTraffic', 'gte', args.minAhrefTraffic);
+      addComparison(filters, 'ahrefTraffic', 'lte', args.maxAhrefTraffic);
+      addComparison(filters, 'similarwebTraffic', 'gte', args.minSimilarwebTraffic);
+      addComparison(filters, 'similarwebTraffic', 'lte', args.maxSimilarwebTraffic);
       addComparison(filters, 'sellingPrice', 'gte', args.minSellingPrice);
       addComparison(filters, 'sellingPrice', 'lte', args.maxSellingPrice);
       return {
         columns: OMS_SEARCH_COLUMNS,
         filters,
-        ...(args.sortBy ? { orderBy: [{ field: args.sortBy, direction: args.sortDirection ?? 'DESC' }] } : {}),
+        ...(args.sortBy ? { orderBy: [{ field: args.sortBy, direction: args.sortDirection ?? defaultSortDirection(args.sortBy) }] } : {}),
       };
     }
     case 'get_site_profiles':

@@ -86,6 +86,19 @@ async function parseRows(response: Response): Promise<Array<Record<string, unkno
   } catch {
     throw new OmsSiteDataServiceError('provider_failure', 'OMS returned malformed JSON.');
   }
+  // The webhook signals a rejected key as HTTP 200 with an error envelope
+  // object rather than a 401/403, so status codes alone cannot classify it.
+  if (isRecord(parsed) && parsed.success === false) {
+    const reason = typeof parsed.error === 'string' ? parsed.error : '';
+    // Classify on `error` only. Misreading a validation failure as an auth
+    // failure marks the company connection unavailable for 15 minutes and
+    // pages admins, so the human-readable `message` — which may mention the
+    // API key for unrelated reasons — must not drive this decision.
+    if (/unauthor|forbidden/i.test(reason)) {
+      throw new OmsSiteDataServiceError('provider_auth_failed', 'OMS rejected the configured Site Data API key.');
+    }
+    throw new OmsSiteDataServiceError('provider_failure', `OMS rejected the request${reason ? `: ${reason}` : '.'}`);
+  }
   if (!Array.isArray(parsed) || !parsed.every(isRecord)) {
     throw new OmsSiteDataServiceError('provider_failure', 'OMS returned a response outside its documented JSON-array contract.');
   }
