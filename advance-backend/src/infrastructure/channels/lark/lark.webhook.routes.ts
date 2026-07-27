@@ -610,7 +610,20 @@ export async function processAcceptedLarkReceipt(
         await processInBackground(
           turnMessage,
           event,
-          { ...deps, adapter },
+          {
+            ...deps,
+            adapter,
+            onRetryableDelivery: async () => {
+              if (absorbedReceiptIds.length > 0 && deps.ingressReceiptRepo) {
+                await completeAbsorbedReceipts(
+                  absorbedReceiptIds,
+                  deps.ingressReceiptRepo,
+                  requestLog,
+                );
+                absorbedReceiptIds = [];
+              }
+            },
+          },
           requestLog,
           deps.approvalGate,
           deps.knowledgeShareService,
@@ -714,6 +727,37 @@ async function resumeLarkDelivery(
   log.info('webhook.delivery.resumed', { deliveryId: resumable.deliveryId });
 }
 
+async function rethrowIfDeliveryNeedsRetry(
+  error: Error,
+  incoming: IncomingMessage,
+  deps: {
+    channelDeliveryRepo?: ChannelDeliveryRepoPort;
+    onRetryableDelivery?: () => Promise<void>;
+  },
+  log: Logger,
+): Promise<void> {
+  if (!deps.channelDeliveryRepo) return;
+
+  const resumable = await deps.channelDeliveryRepo.findResumable(
+    'lark',
+    String(incoming.traceId),
+  );
+  if (!resumable.ok) {
+    log.warn('webhook.delivery.retry_lookup_failed', {
+      error: resumable.error.message,
+    });
+    throw error;
+  }
+  if (!resumable.value) return;
+
+  log.warn('webhook.delivery.retry_pending', {
+    deliveryId: resumable.value.deliveryId,
+    attempts: resumable.value.attempts,
+  });
+  await deps.onRetryableDelivery?.();
+  throw error;
+}
+
 const LARK_OAUTH_NONCE_TTL_SECONDS = 600;
 
 function larkOAuthNonceKey(nonce: string): string {
@@ -784,6 +828,8 @@ async function processInBackground(
     larkOAuthService?: LarkOAuthService;
     connectionRepo?: IntegrationConnectionRepository;
     cache: CachePort;
+    channelDeliveryRepo?: ChannelDeliveryRepoPort;
+    onRetryableDelivery?: () => Promise<void>;
     chatContextService?: LarkChatContextService;
     ingestionQueue?: Pick<IngestionQueue, 'enqueue'>;
     prisma?: PrismaClient;
@@ -814,19 +860,28 @@ async function processInBackground(
 
   if (identity?.activeDepartmentId && deps.prisma && deps.connectionRepo) {
     const activeDepartmentId = identity.activeDepartmentId;
-    const activeMemberships = await deps.prisma.departmentMembership.findMany({
+    const selectedMembership = await deps.prisma.departmentMembership.findFirst({
       where: {
         userId: identity.userId,
+        departmentId: activeDepartmentId,
         status: 'active',
         department: { companyId: identity.companyId, status: 'active' },
       },
       select: { departmentId: true },
-      take: 2,
     });
 
-    if (!activeMemberships.some(({ departmentId }) => departmentId === activeDepartmentId)) {
-      const nextDepartmentId = activeMemberships.length === 1
-        ? activeMemberships[0]!.departmentId
+    if (!selectedMembership) {
+      const remainingMemberships = await deps.prisma.departmentMembership.findMany({
+        where: {
+          userId: identity.userId,
+          status: 'active',
+          department: { companyId: identity.companyId, status: 'active' },
+        },
+        select: { departmentId: true },
+        take: 2,
+      });
+      const nextDepartmentId = remainingMemberships.length === 1
+        ? remainingMemberships[0]!.departmentId
         : null;
       const revoked = await deps.connectionRepo.revokeLarkConnectionsForUser(
         identity.companyId,
@@ -1219,6 +1274,7 @@ async function processInBackground(
 
     if (!result.ok) {
       log.error('webhook.engine.failed', { error: result.error.message, correlationId });
+      await rethrowIfDeliveryNeedsRetry(result.error, incoming, deps, log);
     }
     await storeGroupAssistantSnapshot({ incoming, identity, deps, result, log });
     return;
@@ -1291,6 +1347,7 @@ async function processInBackground(
 
   if (!result.ok) {
     log.error('webhook.engine.failed', { error: result.error.message, correlationId });
+    await rethrowIfDeliveryNeedsRetry(result.error, incoming, deps, log);
   }
 
   await storeGroupAssistantSnapshot({ incoming, identity, deps, result, log });

@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Divo Lark Channel — Architecture &amp; UX Sanity Audit</title>
+  <style>
+    :root {
+      --bg: #09090b;
+      --panel: #101014;
+      --panel-2: #15151a;
+      --panel-3: #1b1b21;
+      --ink: #f1f0ea;
+      --body: #b7b5ae;
+      --muted: #77756f;
+      --line: #29292f;
+      --line-strong: #3a393f;
+      --orange: #f54e00;
+      --red: #ff5370;
+      --amber: #e6a93d;
+      --cyan: #5ccfe6;
+      --green: #79c99e;
+      --violet: #a78bfa;
+      --mono: "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 78% -10%, rgba(245, 78, 0, .10), transparent 28rem),
+        var(--bg);
+      color: var(--ink);
+      font: 14px/1.62 var(--sans);
+    }
+    a { color: var(--ink); text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+    code, pre, .mono { font-family: var(--mono); }
+    code { color: #d8d6ce; }
+    button { font: inherit; }
+    .shell { max-width: 1240px; margin: 0 auto; padding: 32px 24px 96px; }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 10px 0 28px;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; }
+    .mark { width: 18px; height: 18px; border-radius: 5px; background: var(--orange); }
+    .branch {
+      color: var(--muted);
+      font: 12px var(--mono);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 6px 9px;
+    }
+    .hero { display: grid; grid-template-columns: 1.7fr .9fr; gap: 34px; padding: 66px 0 48px; }
+    .eyebrow { color: var(--orange); font: 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    h1, h2, h3 { font-weight: 400; letter-spacing: -.025em; }
+    h1 { max-width: 820px; margin: 14px 0 18px; font-size: clamp(38px, 6vw, 76px); line-height: .98; }
+    h2 { margin: 0 0 18px; font-size: 27px; }
+    h3 { margin: 7px 0 9px; font-size: 19px; }
+    p { color: var(--body); }
+    .lede { max-width: 760px; margin: 0; font-size: 17px; }
+    .verdict {
+      align-self: end;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 22px;
+    }
+    .risk-row { display: flex; align-items: center; gap: 18px; }
+    .risk {
+      width: 84px; height: 84px; flex: 0 0 auto;
+      border-radius: 50%;
+      display: grid; place-items: center;
+      background: conic-gradient(var(--amber) 0 54%, var(--panel-3) 54%);
+      position: relative;
+      font: 22px var(--mono);
+    }
+    .risk::before { content: ""; position: absolute; inset: 8px; border-radius: 50%; background: var(--panel); }
+    .risk span { position: relative; }
+    .verdict strong { display: block; font-size: 18px; font-weight: 500; }
+    .verdict small { color: var(--muted); }
+    .nav {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; gap: 7px; flex-wrap: wrap;
+      margin: 0 -12px 42px;
+      padding: 10px 12px;
+      background: rgba(9, 9, 11, .92);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--line);
+    }
+    .nav a, .chip {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 7px 10px;
+      color: var(--body);
+      background: var(--panel);
+      text-decoration: none;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .nav a:hover, .chip:hover { border-color: var(--line-strong); color: var(--ink); }
+    .chip.active { background: var(--orange); border-color: var(--orange); color: white; }
+    .section { padding: 34px 0; border-top: 1px solid var(--line); }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 20px; }
+    .section-head p { max-width: 650px; margin: 0; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
+    .metric, .card, .finding, .code-card, .architecture {
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+    .metric { grid-column: span 3; padding: 18px; }
+    .metric .value { font: 30px/1 var(--mono); }
+    .metric .label { margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .metric.danger .value { color: var(--red); }
+    .metric.good .value { color: var(--green); }
+    .metric.warn .value { color: var(--amber); }
+    .scope-card { grid-column: span 4; padding: 19px; }
+    .scope-card p { margin-bottom: 0; }
+    .scope-card .tag { font: 10px var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .architecture { padding: 22px; overflow: auto; }
+    .flow {
+      min-width: 980px;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 26px;
+      align-items: stretch;
+    }
+    .node {
+      position: relative;
+      min-height: 128px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      padding: 15px;
+      background: #111116;
+    }
+    .node:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -22px;
+      top: 46px;
+      color: var(--muted);
+      font: 20px var(--mono);
+    }
+    .node .n { color: var(--orange); font: 10px var(--mono); }
+    .node strong { display: block; margin: 9px 0 6px; font-weight: 500; }
+    .node span { color: var(--muted); font-size: 11px; }
+    .node.hot { border-color: rgba(255,83,112,.65); box-shadow: inset 0 0 0 1px rgba(255,83,112,.08); }
+    .node.good { border-color: rgba(121,201,158,.45); }
+    .gap-note {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px;
+    }
+    .gap {
+      padding: 14px 16px;
+      border: 1px dashed var(--line-strong);
+      border-radius: 9px;
+      color: var(--body);
+    }
+    .gap strong { color: var(--ink); font-weight: 500; }
+    .filters { display: flex; gap: 7px; flex-wrap: wrap; margin: 0 0 16px; }
+    .findings { display: grid; gap: 10px; }
+    .finding {
+      display: grid;
+      grid-template-columns: 96px 1fr;
+      gap: 18px;
+      padding: 20px;
+      border-left: 3px solid var(--line-strong);
+    }
+    .finding[data-severity="critical"] { border-left-color: var(--red); }
+    .finding[data-severity="resolved"] { border-left-color: var(--green); }
+    .finding[data-severity="high"] { border-left-color: var(--amber); }
+    .finding[data-severity="medium"] { border-left-color: var(--cyan); }
+    .finding[data-severity="positive"] { border-left-color: var(--green); }
+    .severity { font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    [data-severity="critical"] .severity { color: var(--red); }
+    [data-severity="resolved"] .severity { color: var(--green); }
+    [data-severity="high"] .severity { color: var(--amber); }
+    [data-severity="medium"] .severity { color: var(--cyan); }
+    [data-severity="positive"] .severity { color: var(--green); }
+    .finding p { margin: 5px 0 8px; }
+    .file { color: var(--muted); font: 11px/1.5 var(--mono); word-break: break-word; }
+    details { margin-top: 11px; }
+    summary { color: var(--body); cursor: pointer; }
+    details p { padding-left: 14px; border-left: 1px solid var(--line); }
+    .code-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .code-card { overflow: hidden; }
+    .code-card header { display: flex; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    .code-card header span { color: var(--muted); font: 10px var(--mono); }
+    pre { margin: 0; padding: 16px; overflow: auto; color: #c7c5bd; font: 11px/1.65 var(--mono); }
+    .bad { color: var(--red); }
+    .good-text { color: var(--green); }
+    .comment { color: var(--muted); }
+    .priority { display: grid; grid-template-columns: 82px 1fr; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+    .priority:last-child { border-bottom: 0; }
+    .p0, .p1, .p2 { width: max-content; height: max-content; padding: 5px 8px; border-radius: 6px; font: 10px var(--mono); }
+    .p0 { color: var(--red); background: rgba(255,83,112,.10); }
+    .resolved { color: var(--green); background: rgba(121,201,158,.10); }
+    .p1 { color: var(--amber); background: rgba(230,169,61,.10); }
+    .p2 { color: var(--cyan); background: rgba(92,207,230,.10); }
+    .priority strong { font-weight: 500; }
+    .priority p { margin: 4px 0 0; }
+    .validation { display: grid; grid-template-columns: 1.3fr .7fr; gap: 12px; }
+    .validation .card { padding: 20px; }
+    .check { display: flex; gap: 10px; margin: 9px 0; color: var(--body); }
+    .check::before { content: "✓"; color: var(--green); font-family: var(--mono); }
+    .limit::before { content: "○"; color: var(--amber); }
+    .callout {
+      border: 1px solid rgba(245,78,0,.35);
+      background: rgba(245,78,0,.06);
+      border-radius: 10px;
+      padding: 16px;
+      color: var(--body);
+    }
+    .copy {
+      border: 0; border-radius: 8px; padding: 10px 13px;
+      color: white; background: var(--orange); cursor: pointer;
+    }
+    .copy.done { background: var(--green); color: #09100c; }
+    footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font: 11px var(--mono); }
+    [hidden] { display: none !important; }
+
+    @media (max-width: 900px) {
+      .hero, .validation { grid-template-columns: 1fr; }
+      .metric { grid-column: span 6; }
+      .scope-card { grid-column: span 6; }
+      .code-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .shell { padding: 20px 14px 64px; }
+      .topbar { align-items: flex-start; }
+      .hero { padding-top: 44px; }
+      .metric, .scope-card { grid-column: span 12; }
+      .finding { grid-template-columns: 1fr; gap: 6px; }
+      .gap-note { grid-template-columns: 1fr; }
+      .section-head { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+<main class="shell">
+  <header class="topbar">
+    <div class="brand"><span class="mark"></span>Divo engineering</div>
+    <div class="branch">dev @ f2f7cb45 · 27 Jul 2026</div>
+  </header>
+
+  <section class="hero">
+    <div>
+      <div class="eyebrow">Architecture cross-check · Lark channel</div>
+      <h1>Strong foundation.<br>Recovery loop closed.</h1>
+      <p class="lede">The critical final-delivery gap is now fixed locally: a stored answer remains retryable and is resent without rerunning tools. The broader rollout still needs the remaining memory, skill, approval, auth, and media authority edges addressed.</p>
+    </div>
+    <aside class="verdict">
+      <div class="risk-row">
+        <div class="risk"><span>54</span></div>
+        <div>
+          <strong>Elevated operational risk</strong>
+          <small>0 open critical · 2 resolved · 6 high · 12 medium</small>
+        </div>
+      </div>
+      <p>Recommendation: keep the verified recovery fix, then close the remaining P0 authority and inbound-resource findings before broad rollout.</p>
+    </aside>
+  </section>
+
+  <nav class="nav">
+    <a href="#summary">Summary</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#findings">Findings</a>
+    <a href="#evidence">Evidence</a>
+    <a href="#priorities">Priorities</a>
+    <a href="#validation">Validation</a>
+  </nav>
+
+  <section id="summary" class="section">
+    <div class="section-head">
+      <div><div class="eyebrow">Audit summary</div><h2>What is true today</h2></div>
+      <p>This is a static architecture and code audit of the current <code>dev</code> branch, backed by focused tests. It is not a live Lark tenant acceptance test.</p>
+    </div>
+    <div class="grid">
+      <article class="metric good"><div class="value">0</div><div class="label">Open critical findings</div></article>
+      <article class="metric warn"><div class="value">18</div><div class="label">Open actionable findings</div></article>
+      <article class="metric good"><div class="value">577</div><div class="label">Focused tests passed</div></article>
+      <article class="metric good"><div class="value">0</div><div class="label">Type errors</div></article>
+      <article class="card scope-card">
+        <div class="tag">Architecture</div>
+        <h3>Keep the authority boundary</h3>
+        <p>Identity, department context, tool credentials, RBAC, approvals, memory, and skill grants remain backend-owned. This is the correct center of gravity.</p>
+      </article>
+      <article class="card scope-card">
+        <div class="tag">Reliability</div>
+        <h3>Ingress and final delivery now share recovery</h3>
+        <p>A failed final delivery rejects durable ingress, preserving the receipt for retry. The stored payload is resent on the next attempt without rerunning the agent or its tools.</p>
+      </article>
+      <article class="card scope-card">
+        <div class="tag">UX</div>
+        <h3>Happy paths are polished; failure states collapse</h3>
+        <p>Sign-in cards, status cards, synthesis recovery, and file excerpts are strong. Missing scopes, unsupported media, stale grants, and legacy commands remain inconsistent.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="architecture" class="section">
+    <div class="section-head">
+      <div><div class="eyebrow">System map</div><h2>Current Lark request path</h2></div>
+      <p>Green boundaries are healthy or verified by the recovery fix. Remaining rollout risk sits in authority, auth readiness, and resource limits.</p>
+    </div>
+    <div class="architecture">
+      <div class="flow">
+        <div class="node good"><span class="n">01</span><strong>Lark webhook</strong><span>Signature, token, tenant and sender validation</span></div>
+        <div class="node good"><span class="n">02</span><strong>Durable ingress</strong><span>Receipt persisted before ACK; stable BullMQ identity</span></div>
+        <div class="node"><span class="n">03</span><strong>Identity + context</strong><span>Tenant mapping, department, OAuth, chat/thread lane</span></div>
+        <div class="node"><span class="n">04</span><strong>Governed runtime</strong><span>PermissionService, skills, memory, tools, HITL</span></div>
+        <div class="node good"><span class="n">05</span><strong>Lark delivery</strong><span>Status finalization, card segments, plain-text fallback</span></div>
+        <div class="node good"><span class="n">06</span><strong>Recovery</strong><span>Stored payload is resent through durable ingress; tools run once</span></div>
+      </div>
+      <div class="gap-note">
+        <div class="gap"><strong>Authority gap:</strong> skill department targeting and approval authority are not always revalidated against current state.</div>
+        <div class="gap"><strong>UX gap:</strong> connection failures compress missing scope, expired refresh, registry outage, and no connection into the same advice.</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="findings" class="section">
+    <div class="section-head">
+      <div><div class="eyebrow">Evidence-ranked review</div><h2>Findings</h2></div>
+      <p>Filter by severity. Every item points to the current source location and proposes a bounded fix.</p>
+    </div>
+    <div class="filters">
+      <button class="chip active" data-filter="all">All (23)</button>
+      <button class="chip" data-filter="critical">Critical (0)</button>
+      <button class="chip" data-filter="resolved">Resolved (2)</button>
+      <button class="chip" data-filter="high">High (6)</button>
+      <button class="chip" data-filter="medium">Medium (12)</button>
+      <button class="chip" data-filter="positive">Positive (3)</button>
+    </div>
+    <div class="findings">
+      <article class="finding" data-severity="resolved">
+        <div class="severity">Resolved</div>
+        <div><h3>Completed answers remain retryable after final-delivery failure</h3>
+          <div class="file">lark.webhook.routes.ts:610–630, 730–759, 1266–1278, 1338–1351 · lark.webhook.routes.test.ts:1875–1935</div>
+          <p>Both engine call sites now inspect the persisted delivery state after an error. When a resendable payload remains, processing rejects so the ingress worker keeps the receipt retryable; the next attempt sends the stored answer before considering a new agent run.</p>
+          <details><summary>Implemented and verified</summary><p>The regression proves: tools run once → first delivery fails → the stored payload is resent → tools do not rerun. Default-on rapid-message batching is covered too, so absorbed receipts close with the stored answer instead of later executing separately. Validation: 70 webhook-route tests, 36 worker/repository/adapter tests, and TypeScript typecheck passed.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="resolved">
+        <div class="severity">Resolved</div>
+        <div><h3>Department changes no longer falsely sign out valid multi-department users</h3>
+          <div class="file">lark.webhook.routes.ts:861–910 · lark.webhook.routes.test.ts:963–1014</div>
+          <p>The selected department is now validated with an exact company-scoped <code>findFirst</code>. Only when that lookup proves the selection stale does the route fetch up to two remaining memberships, choose an unambiguous replacement, revoke the old connection, and offer reconnect.</p>
+          <details><summary>Implemented and verified</summary><p>A three-membership regression places the selected Finance department after Tech and Operations and proves the agent continues without revocation. The existing genuine-removal test still proves that stale Finance access signs out, switches to the sole Tech membership, invalidates identity cache, and renders the Connect card.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="high">
+        <div class="severity">High</div>
+        <div><h3>A manager can publish a skill into another department’s namespace</h3>
+          <div class="file">skill-publishing.tool.ts:249–281 · gateway/tool-executor.ts:720–769</div>
+          <p>The tool accepts a supplied department ID but tests authority using the current permission object. It never requires the requested department to equal the active run-context department before writing the skill and grant.</p>
+          <details><summary>Exact fix</summary><p>Apply the same invariant already used by <code>memoryPublishing</code>: the requested department must equal both run context and permission department, or permissions must be freshly resolved for that exact target.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="high">
+        <div class="severity">High</div>
+        <div><h3>Company skill publishing reports success but creates no discoverable grant</h3>
+          <div class="file">skill-publishing.tool.ts:148–218 · skill-access.repository.ts:8–38</div>
+          <p>A company skill is stored as global with no department. The transaction creates an access grant only when a department exists, while runtime discovery requires an explicit company, department, role, or user grant.</p>
+          <details><summary>Exact fix</summary><p>Create a company grant in the same transaction for company scope. Test the full path from publish result to <code>listGrantedSkillIds</code> and Lark discovery.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="high">
+        <div class="severity">High</div>
+        <div><h3><code>/remember</code> bypasses reviewed, secret-safe memory publishing</h3>
+          <div class="file">lark.webhook.routes.ts:1517–1550 · share-memory-system-skill.ts:13–18</div>
+          <p>The legacy command chooses company, department, or personal scope from role and writes directly to Mem0. It skips the review card, credential-like fact rejection, current target selection, live authority recheck, and “no silent downgrade” contract.</p>
+          <details><summary>Exact fix</summary><p>Route <code>/remember</code> through the same requester-owned review service as conversational Share Memory, or retire the command. Do not maintain a second memory-write authority.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="high">
+        <div class="severity">High</div>
+        <div><h3>Inbound files are buffered without a byte ceiling</h3>
+          <div class="file">clients/lark-file.client.ts:29–43 · lark.webhook.routes.ts:1893–1925</div>
+          <p>The file client accumulates every stream chunk and concatenates the full payload before the 4 MB inline-image check. Several concurrent large Office/PDF files can create memory and parser pressure.</p>
+          <details><summary>Exact fix</summary><p>Stop the stream at a configured byte limit before buffering or parsing, return an actionable “file too large” context, and reuse the bounded streaming pattern already present for quoted parent images.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="high">
+        <div class="severity">High</div>
+        <div><h3>Approval authority can become stale before the click</h3>
+          <div class="file">approval-gate.service.ts:140–175 · lark-approval-card.handler.ts:150–221</div>
+          <p>The approval stores the chosen manager for up to 24 hours. The click handler proves actor identity, company, tenant, and stored IDs, but does not re-check that the person is still a manager/admin/connection owner.</p>
+          <details><summary>Exact fix</summary><p>Resolve the required authority again immediately before <code>atomicResolve</code>. Cover revoked role, removed department membership, and lost connection ownership.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="high">
+        <div class="severity">High</div>
+        <div><h3>Approved work can be stranded in a crash window</h3>
+          <div class="file">lark-approval-card.handler.ts:216–250 · approval-inbox.service.ts:127</div>
+          <p>After the decision is atomically recorded, resume is launched fire-and-forget. A crash after resolution but before or during resume leaves approved/executing work without a durable owner or startup scanner.</p>
+          <details><summary>Exact fix</summary><p>Write a durable execution job/outbox keyed by approval ID in the decision transaction, consume it idempotently, and recover stale executions.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>Missing auth states collapse into a generic connect loop</h3>
+          <div class="file">composition.ts:1405–1452 · lark-user-connection.ts:74–75 · lark.webhook.routes.ts:1655–1661</div>
+          <p>No connection, insufficient shared access, missing token, failed refresh, repository outage, and missing OAuth scope all become “connect a Lark account.” Stored scopes are not preflighted per tool operation, so some failures arrive late as provider errors.</p>
+          <details><summary>Exact fix</summary><p>Return typed readiness states—<code>not_connected</code>, <code>missing_scope</code>, <code>refresh_expired</code>, <code>insufficient_access</code>, <code>registry_unavailable</code>—and render the correct retry, reauth, account-choice, or admin path.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>One monolithic OAuth grant makes basic sign-in brittle</h3>
+          <div class="file">lark-oauth.service.ts:54–89, 129–137</div>
+          <p>Identity linking requests a large all-capabilities scope set. One invalid or unpublished capability scope can block the entire sign-in flow, including basic identity and offline access.</p>
+          <details><summary>Exact fix</summary><p>Separate base identity/offline access from incremental capability grants, or add boot-time compatibility checks that disable only the affected tool family and produce an admin-actionable diagnostic.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>Post-login “no need to resend” replay is best-effort</h3>
+          <div class="file">lark-auth.routes.ts:345–351 · lark.webhook.routes.ts:442–489 · lark-signin.ts:44–52</div>
+          <p>The UX promises to answer the pre-login question, but callback replay is fire-and-forget and explicitly has no durable retry if its lane is busy or the process exits.</p>
+          <details><summary>Exact fix</summary><p>Persist a replay job/outbox using the original event identity and enqueue it after the OAuth transaction. Reuse the normal lane and delivery idempotency path.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>Unknown slash commands disappear silently</h3>
+          <div class="file">lark.webhook.routes.ts:1227–1242, 1787–1789</div>
+          <p>The command handler logs that an unknown command is routed to the engine, but its caller always returns immediately afterward. The engine never receives the message and the user gets no reply.</p>
+          <details><summary>Exact fix</summary><p>Return a handled boolean from the command handler. Continue to normal orchestration when false, or reply with command help.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>Audio, video, and other media can be silently ignored</h3>
+          <div class="file">lark-attachment.parser.ts:1–8, 70–104 · lark.webhook.routes.ts:1265–1267</div>
+          <p>The parser understands files, images, and images inside rich posts. Other message types can produce neither text nor attachments, after which the webhook returns without a user-facing refusal.</p>
+          <details><summary>Exact fix</summary><p>Declare the product policy per media type: support/transcribe it, or respond immediately with supported formats. Add DM and mentioned-group cases.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>A failed document download is described as an image failure</h3>
+          <div class="file">lark.webhook.routes.ts:1954–1961 · lark-media-support.ts:176–186</div>
+          <p>The generic fallback always calls <code>unreadableImageNotice</code>. A failed PDF or spreadsheet download therefore gives the model an “Image” notice and asks the user to resend an image.</p>
+          <details><summary>Exact fix</summary><p>Use a type-aware unreadable attachment notice and assert the engine prompt for a failed document download.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>Indexing admission failure leaves the transcript at “processing”</h3>
+          <div class="file">lark.webhook.routes.ts:1950–1982, 2004–2075</div>
+          <p>The transcript status is set before enqueue. Missing queue wiring or an enqueue exception returns false, but the caller ignores it; no worker exists to later replace “processing.”</p>
+          <details><summary>Exact fix</summary><p>On enqueue failure, update the stored attachment to <code>inline_only</code> or <code>failed</code> and preserve the inline excerpt.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>Long replies are not idempotent per continuation segment</h3>
+          <div class="file">domain/channel/delivery-key.ts:13–16 · lark.adapter.ts:316–327, 752–768</div>
+          <p>The domain models a segment index, but the adapter reserves the entire answer once and sends continuation cards without deterministic provider keys. A partial-send recovery can duplicate previously delivered continuations.</p>
+          <details><summary>Exact fix</summary><p>Reserve, send, and mark every planned segment independently with a deterministic segment idempotency key.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3><code>/clear</code> promises more forgetting than it performs</h3>
+          <div class="file">lark.webhook.routes.ts:1487–1513 · engine/core.ts:331–340, 713+</div>
+          <p>The command clears chat history and group context, then says Divo will “start fresh.” Persistent personal, department, and company memories remain searchable, and Lark has no inspect/forget/disable lifecycle.</p>
+          <details><summary>Exact fix</summary><p>Rename the outcome to “chat history cleared” and add explicit memory list, forget, and disable controls with confirmation before describing the experience as fresh.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>Instruction-only skills are valid but hidden from Lark</h3>
+          <div class="file">skill-catalog.service.ts:149–165 · supervisor.ts:296–318</div>
+          <p>The catalog deliberately accepts a granted skill with zero tools, but Lark filters visible skills using <code>toolIds.some(...)</code>, which excludes every instruction-only recipe.</p>
+          <details><summary>Exact fix</summary><p>Include granted zero-tool skills. Keep the executable-tool intersection only for recipes that declare tools.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>Dead-letter recovery remains operator-only</h3>
+          <div class="file">lark-ingress.worker.ts:110–133</div>
+          <p>Receipts are correctly retained and dead-lettered after the six-hour retry window, but there is no operator replay surface or user notification. Recovery is manual.</p>
+          <details><summary>Exact fix</summary><p>Add an authenticated inspection/replay command with audit history and a safe user-facing failure notice for terminal delivery cases.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="medium">
+        <div class="severity">Medium</div>
+        <div><h3>The 2,195-line webhook module is a change-conflict hotspot</h3>
+          <div class="file">lark.webhook.routes.ts:1–2195</div>
+          <p>One module owns HTTP admission, identity bootstrap, auth commands, media preparation, transcript snapshots, indexing, routing, and orchestration. Its tests are strong, but unrelated Lark work repeatedly collides here.</p>
+          <details><summary>Exact fix</summary><p>After behavioral blockers are fixed, split only on existing seams: admission, identity/login, commands, attachment preparation, and turn execution. Keep one backend authority path.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="positive">
+        <div class="severity">Positive</div>
+        <div><h3>Ingress durability and ordering are thoughtfully engineered</h3>
+          <div class="file">lark.webhook.routes.ts:317–373, 499–685 · lark-ingress.worker.ts</div>
+          <p>The receipt is persisted before ACK, queue identity is stable, unfinished work is reconciled, distributed lane leases fence final replies, and message bursts preserve sender/thread boundaries.</p>
+          <details><summary>Keep this</summary><p>Do not replace this with an in-memory webhook worker. Extend the same durable ownership model to final delivery and approval resume.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="positive">
+        <div class="severity">Positive</div>
+        <div><h3>Memory review is fail-closed and requester-owned</h3>
+          <div class="file">share-resolver.service.ts:264–522 · memory-publishing.tool.ts</div>
+          <p>The reviewed flow binds the card to the requester, bounds exact facts, rejects credential-like content, atomically claims clicks, rechecks authority, and never silently downgrades scope.</p>
+          <details><summary>Keep this</summary><p>Make it the only explicit memory publication path, including slash commands and future desktop/Lark surfaces.</p></details>
+        </div>
+      </article>
+
+      <article class="finding" data-severity="positive">
+        <div class="severity">Positive</div>
+        <div><h3>Delivery presentation and media privacy have strong local safeguards</h3>
+          <div class="file">reply-quality.ts · lark.adapter.ts · lark-media-support.ts · lark-parent-message.ts</div>
+          <p>Trivial “Done.” replies get two synthesis attempts plus a deterministic link fallback; cards split cleanly with text fallback; quoted content fails closed across chats; image bytes are stripped before persistence; unsupported documents are refused before download.</p>
+          <details><summary>Keep this</summary><p>Retain the layered fallback and durable retry approach. The remaining bounded fix here is enforcing hard input byte limits.</p></details>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section id="evidence" class="section">
+    <div class="section-head">
+      <div><div class="eyebrow">Annotated evidence</div><h2>Why the top findings are real</h2></div>
+      <p>Condensed excerpts show the control-flow mismatch without reproducing full source files.</p>
+    </div>
+    <div class="code-grid">
+      <article class="code-card">
+        <header><strong>Final delivery — fixed</strong><span>engine/core.ts → webhook → ingress</span></header>
+        <pre><span class="comment">// Engine reports that final delivery failed.</span>
+const result = await deps.engine.run(...);
+if (!result.ok) {
+  log.error('webhook.engine.failed', ...);
+  <span class="good-text">await rethrowIfDeliveryNeedsRetry(...);</span>
+}
+
+<span class="comment">// A stored payload keeps the receipt open.</span>
+if (resumable.value) {
+  <span class="good-text">throw error; // worker retries delivery only</span>
+}</pre>
+      </article>
+      <article class="code-card">
+        <header><strong>Department validity — fixed</strong><span>lark.webhook.routes.ts</span></header>
+        <pre>const selectedMembership =
+  await prisma.departmentMembership.findFirst({
+    where: {
+      userId,
+      <span class="good-text">departmentId: activeDepartmentId,</span>
+      status: 'active',
+      department: { companyId, status: 'active' }
+    }
+  });
+
+if (!selectedMembership) {
+  <span class="good-text">const remaining = await findMany({ take: 2 });</span>
+  await revokeLarkConnectionsForUser(...);
+}</pre>
+      </article>
+      <article class="code-card">
+        <header><strong>Skill sharing</strong><span>skill-publishing.tool.ts</span></header>
+        <pre>const scope =
+  args.scope === 'company' ? 'global' : 'department';
+
+const created = await tx.skill.create(...);
+<span class="bad">if (departmentId) {</span>
+  await tx.skillAccessGrant.upsert(...);
+}
+<span class="comment">// Global skill: successful create, no company grant.</span></pre>
+      </article>
+      <article class="code-card">
+        <header><strong>Healthy reference pattern</strong><span>memory review + ingress</span></header>
+        <pre><span class="good-text">persist receipt → enqueue → ACK</span>
+<span class="good-text">bind review to requester</span>
+<span class="good-text">atomically claim click</span>
+<span class="good-text">recheck current authority</span>
+<span class="good-text">publish exact reviewed facts</span>
+
+<span class="comment">// Reuse these ownership rules elsewhere.</span></pre>
+      </article>
+    </div>
+  </section>
+
+  <section id="priorities" class="section">
+    <div class="section-head">
+      <div><div class="eyebrow">Recommended sequence</div><h2>Smallest safe rollout plan</h2></div>
+      <button id="copy-plan" class="copy">Copy priorities</button>
+    </div>
+    <div class="card" style="padding: 4px 20px">
+      <div class="priority"><span class="p0 resolved">DONE</span><div><strong>Final-delivery retry loop closed.</strong><p>Delivery failure now propagates to durable ingress; the stored answer is retried while tools and merged message work remain single-execution.</p></div></div>
+      <div class="priority"><span class="p0">P0</span><div><strong>Fix authority invariants before sharing rollout.</strong><p>Bind skill publication to the exact active department, grant company skills transactionally, and revalidate approval authority at click time.</p></div></div>
+      <div class="priority"><span class="p0">P0</span><div><strong>Bound every inbound resource stream.</strong><p>Reject oversized attachments before buffering/extraction, with a clear user response.</p></div></div>
+      <div class="priority"><span class="p1">P1</span><div><strong>Unify memory and skill UX.</strong><p>Remove the direct <code>/remember</code> authority, expose memory lifecycle controls, and design an explicit requester review surface for skill sharing.</p></div></div>
+      <div class="priority"><span class="p1">P1</span><div><strong>Make auth readiness typed and incremental.</strong><p>Differentiate missing scopes, expired refresh, no grant, no connection, and outages; avoid making every tool depend on one huge consent grant.</p></div></div>
+      <div class="priority"><span class="p1">P1</span><div><strong>Make approval and login replay durable.</strong><p>Use outbox jobs with idempotent consumers for post-click execution and post-login replay.</p></div></div>
+      <div class="priority"><span class="p2">P2</span><div><strong>Finish media and command failure UX.</strong><p>Handle unsupported audio/video explicitly, correct document failure labels, repair indexing status, and stop swallowing unknown commands.</p></div></div>
+      <div class="priority"><span class="p2">P2</span><div><strong>Split the webhook only after behavior is locked.</strong><p>Extract existing seams without moving RBAC, credentials, or policy outside the backend.</p></div></div>
+    </div>
+  </section>
+
+  <section id="validation" class="section">
+    <div class="section-head">
+      <div><div class="eyebrow">Confidence</div><h2>What was actually verified</h2></div>
+      <p>Confidence: <strong style="color:var(--ink)">92%</strong> for static architecture and focused local behavior.</p>
+    </div>
+    <div class="validation">
+      <article class="card">
+        <div class="check">Current branch inspected: <code>dev @ f2f7cb45</code>.</div>
+        <div class="check">577 focused tests passed across 48 Lark, memory, skill, approval, gateway, media, and ingress files.</div>
+        <div class="check">Recovery and department-change fixes passed 70 webhook-route and 36 delivery pipeline tests, including single tool execution, batched receipts, valid third membership, and genuine removal.</div>
+        <div class="check">TypeScript <code>tsc --noEmit</code> passed.</div>
+        <div class="check">Three independent read-only audit tracks were cross-checked against callers and tests.</div>
+        <div class="check limit">No live Lark tenant end-to-end run was performed.</div>
+        <div class="check limit">No live Mem0/Qdrant, OAuth consent, provider-scope, or large-file stress run was performed.</div>
+        <div class="check limit">No deployment was triggered. The manual dev deployment gate means branch state is not proof of live runtime state.</div>
+      </article>
+      <aside class="card">
+        <h3>Code-quality judgment</h3>
+        <p><strong style="color:var(--green);font-weight:500">Architecture: strong.</strong><br>Backend authority and fail-closed boundaries are directionally right.</p>
+        <p><strong style="color:var(--green);font-weight:500">Recovery: verified locally.</strong><br>Ingress now owns retry of stored final replies without rerunning tools.</p>
+        <p><strong style="color:var(--amber);font-weight:500">Maintainability: pressured.</strong><br>Excellent tests offset a very large transport coordinator, but do not remove its coupling.</p>
+      </aside>
+    </div>
+    <div class="callout" style="margin-top:12px">
+      <strong style="color:var(--ink);font-weight:500">Decision:</strong> the recovery blocker is closed locally. Continue Lark UX work as a sequenced hardening program, with authority and inbound-resource P0 findings still blocking broad rollout.
+    </div>
+  </section>
+
+  <footer>Generated from the local workspace · Critical recovery finding resolved and locally verified · No deployment triggered</footer>
+</main>
+
+<script>
+  const buttons = [...document.querySelectorAll('[data-filter]')];
+  const findings = [...document.querySelectorAll('.finding[data-severity]')];
+  buttons.forEach(button => {
+    button.addEventListener('click', () => {
+      buttons.forEach(item => item.classList.remove('active'));
+      button.classList.add('active');
+      const filter = button.dataset.filter;
+      findings.forEach(item => {
+        item.hidden = filter !== 'all' && item.dataset.severity !== filter;
+      });
+    });
+  });
+
+  const plan = `Divo Lark hardening priorities
+DONE — Final-delivery retry loop closed and verified.
+P0 — Bind skill and approval authority to current exact scope.
+P0 — Bound inbound Lark resource streams before buffering.
+P1 — Unify reviewed memory/skill sharing and memory lifecycle UX.
+P1 — Return typed auth readiness and reduce monolithic consent.
+P1 — Make approval resume and post-login replay durable.
+P2 — Finish unsupported-media, indexing, command, and dead-letter UX.
+P2 — Split the webhook module along existing seams after behavior is locked.`;
+
+  document.getElementById('copy-plan').addEventListener('click', async event => {
+    await navigator.clipboard.writeText(plan);
+    event.currentTarget.textContent = 'Copied';
+    event.currentTarget.classList.add('done');
+    setTimeout(() => {
+      event.currentTarget.textContent = 'Copy priorities';
+      event.currentTarget.classList.remove('done');
+    }, 1500);
+  });
+</script>
+</body>
+</html>

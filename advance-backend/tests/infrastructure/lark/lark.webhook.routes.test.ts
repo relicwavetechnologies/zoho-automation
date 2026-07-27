@@ -9,7 +9,8 @@ import {
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
 import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
 import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
-import { ok } from '../../../src/shared/result.ts';
+import { err, ok } from '../../../src/shared/result.ts';
+import { ChannelError, OrchestrationError } from '../../../src/shared/errors.ts';
 import type { Logger } from '../../../src/shared/logger.ts';
 
 const noopLogger: Logger = {
@@ -165,6 +166,13 @@ async function runWebhook(body: unknown, options: {
   companyControls?: Array<{ controlKey: string; value: string }>;
   /** Delivery outbox, consulted before the agent runs. */
   channelDeliveryRepo?: unknown;
+  /** Pending same-lane receipts available for rapid-message batching. */
+  batchCandidates?: Array<{
+    receiptId: string;
+    messageId: string;
+    payload: Record<string, unknown>;
+    acceptedAt: Date;
+  }>;
   /** Optional busy-lane notice state. */
   busyNotices?: BusyLaneNotices;
 } = {}) {
@@ -179,6 +187,7 @@ async function runWebhook(body: unknown, options: {
   const invalidatedIdentities: string[] = [];
   const revokedLarkUsers: Array<{ companyId: string; userId: string }> = [];
   const departmentPreferenceUpdates: unknown[] = [];
+  const completedBatchReceipts: string[] = [];
   const background: Promise<void>[] = [];
   const logEvents: Array<{ event: string; fields: Record<string, unknown> }> = [];
   let status = 200;
@@ -256,6 +265,12 @@ async function runWebhook(body: unknown, options: {
           ? options.markQueuedReceipt(receiptId, queueJobId)
           : { ok: true, value: undefined };
       },
+      listBatchable: async () => ok(options.batchCandidates ?? []),
+      claim: async () => ok({ outcome: 'claimed' as const, receipt: {} as any }),
+      markCompleted: async (receiptId: string) => {
+        completedBatchReceipts.push(receiptId);
+        return ok(undefined);
+      },
     } as any,
     ingressQueue: {
       enqueue: async (receiptId: string) => {
@@ -300,6 +315,7 @@ async function runWebhook(body: unknown, options: {
     ...(options.channelDeliveryRepo
       ? { channelDeliveryRepo: options.channelDeliveryRepo as any }
       : {}),
+    batchingEnabled: Boolean(options.batchCandidates),
     ...(options.busyNotices ? { busyNotices: options.busyNotices } : {}),
     cache: { setNx: async () => ok(true), set: async () => ok(true) } as any,
     ...(options.bootstrapped
@@ -326,8 +342,14 @@ async function runWebhook(body: unknown, options: {
             ? {
                 prisma: {
                   departmentMembership: {
-                    findMany: async () =>
-                      options.changedDepartmentMemberships!.map(departmentId => ({ departmentId })),
+                    findFirst: async ({ where }: any) =>
+                      options.changedDepartmentMemberships!.includes(where.departmentId)
+                        ? { departmentId: where.departmentId }
+                        : null,
+                    findMany: async ({ take }: any) =>
+                      options.changedDepartmentMemberships!
+                        .slice(0, take)
+                        .map(departmentId => ({ departmentId })),
                   },
                   userDepartmentPreference: {
                     updateMany: async (input: unknown) => {
@@ -397,6 +419,7 @@ async function runWebhook(body: unknown, options: {
     await processAcceptedLarkReceipt({
       receiptId: queuedReceiptId,
       tenantKey: 'tenant-1',
+      acceptedAt: new Date('2026-07-26T00:00:00.000Z'),
       // Taken from the event rather than hardcoded: the worker refuses a
       // receipt whose stored identity disagrees with its payload, so a fixed ID
       // here would silently restrict every test to one message.
@@ -429,6 +452,7 @@ async function runWebhook(body: unknown, options: {
     ingestionJobs,
     appendedTurns,
     acceptedPayloads,
+    completedBatchReceipts,
     processQueuedReceipt,
   };
 }
@@ -968,6 +992,25 @@ describe('Lark first contact', () => {
     }]);
     const card = JSON.parse(JSON.parse(adapter.__sentCards[0]).card);
     assert.match(card.body.elements[0].content, /department access changed/i);
+  });
+
+  it('keeps a selected department that is valid beyond the first two memberships', async () => {
+    const result = await runWebhook(firstTimer(), {
+      identity: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MANAGER',
+        channel: 'lark',
+        activeDepartmentId: 'dept-finance',
+      },
+      changedDepartmentMemberships: ['dept-tech', 'dept-ops', 'dept-finance'],
+      setupAdapter: captureOutbound,
+    });
+
+    assert.ok(result.order.includes('engine'), 'valid authority reaches the agent');
+    assert.deepEqual(result.revokedLarkUsers, []);
+    assert.deepEqual(result.invalidatedIdentities, []);
+    assert.deepEqual(result.departmentPreferenceUpdates, []);
   });
 
   it('falls back to a plain link when the card cannot be sent', async () => {
@@ -1827,6 +1870,69 @@ describe('Lark delivery resume', () => {
     // The answer exists and the user still has not seen it, so this must not be
     // reported as done.
     await assert.rejects(() => result.processQueuedReceipt(), /resume failed/i);
+  });
+
+  it('retries a stored first-delivery failure without re-running the agent', async () => {
+    const finalReply = { kind: 'final', text: 'already computed', format: 'text' };
+    let resumablePayload: Record<string, unknown> | null = null;
+    let engineRuns = 0;
+    const delivered: unknown[] = [];
+    const { repo } = repoWithResumable(null);
+    const batchedEvent = makeEvent({
+      chatType: 'p2p',
+      messageId: 'om_2',
+      text: 'and include the second item',
+    });
+    repo.findResumable = async () => ok(resumablePayload
+      ? {
+          deliveryId: 'd-1',
+          purpose: 'final' as const,
+          segmentIndex: 0,
+          attempts: 1,
+          firstAttemptAt: new Date('2026-07-26T00:00:00.000Z'),
+          payload: resumablePayload,
+        }
+      : null);
+
+    const result = await runWebhook(makeEvent({ chatType: 'p2p' }), {
+      channelDeliveryRepo: repo,
+      processQueued: false,
+      batchCandidates: [{
+        receiptId: 'receipt-2',
+        messageId: 'om_2',
+        payload: batchedEvent,
+        acceptedAt: new Date('2026-07-26T00:00:00.100Z'),
+      }],
+      engineRun: async () => {
+        engineRuns += 1;
+        resumablePayload = finalReply;
+        const deliveryError = new ChannelError({
+          channel: 'lark',
+          stage: 'send_final',
+          reason: 'upstream_5xx',
+        });
+        return err(new OrchestrationError({
+          stage: 'compose',
+          reason: 'step_failed',
+          cause: deliveryError,
+        }));
+      },
+      setupAdapter: adapter => {
+        (adapter as any).sendFinalReply = async (_conversation: unknown, reply: unknown) => {
+          delivered.push(reply);
+          resumablePayload = null;
+          return ok({ channel: 'lark', messageId: 'om_resent' });
+        };
+      },
+    });
+
+    await assert.rejects(() => result.processQueuedReceipt(), /orchestration failed/i);
+    await result.processQueuedReceipt();
+
+    assert.equal(engineRuns, 1, 'tools were not re-run to resend the answer');
+    assert.equal(delivered.length, 1);
+    assert.equal((delivered[0] as any).text, 'already computed');
+    assert.deepEqual(result.completedBatchReceipts, ['receipt-2']);
   });
 
   it('runs the agent when the resume lookup is unavailable', async () => {
