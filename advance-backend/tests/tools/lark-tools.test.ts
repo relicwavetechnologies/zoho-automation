@@ -648,11 +648,18 @@ describe('larkCalendar tool', () => {
 // ─── lark-doc ─────────────────────────────────────────────────────────────────
 
 describe('larkDoc tool', () => {
+  const appendedBatches: unknown[] = [];
+  const insertedTables: unknown[] = [];
   const fakeClient = {
     getDoc:       async () => ({ title: 'Doc', content: '...' }),
     createDoc:    async () => ({ docToken: 'doc-abc', url: 'https://example.larksuite.com/docx/doc-abc' }),
     appendBlock:  async () => {},
+    appendBlocks: async (_docToken: string, blocks: unknown[]) => { appendedBatches.push(blocks); },
     listBlocks:   async () => [{ type: 'text', content: 'hello' }],
+    updateBlock:  async () => {},
+    deleteBlock:  async () => {},
+    insertTable:  async (_docToken: string, params: unknown) => { insertedTables.push(params); },
+    shareDoc:     async () => ({}),
   };
 
   describe('permissionCheck', () => {
@@ -731,6 +738,49 @@ describe('larkDoc tool', () => {
       const tool = createLarkDocTool({ client: fakeClient });
       const r = await tool.execute({ op: 'append_block', content: 'hello' }, ctx);
       assert.equal(r.ok, false);
+    });
+
+    it('append_blocks: appends a structured block batch', async () => {
+      appendedBatches.length = 0;
+      const tool = createLarkDocTool({ client: fakeClient });
+      const blocks = [
+        { content: 'Overview', blockType: 'heading1' as const },
+        { content: 'First point', blockType: 'bullet' as const },
+      ];
+      const r = await tool.execute({ op: 'append_blocks', docToken: 'doc-abc', blocks }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.deepEqual(appendedBatches, [blocks]);
+    });
+
+    it('insert_table: passes body data and rejects rows outside declared dimensions', async () => {
+      insertedTables.length = 0;
+      const tool = createLarkDocTool({ client: fakeClient });
+      const valid = await tool.execute({
+        op: 'insert_table',
+        docToken: 'doc-abc',
+        rows: 2,
+        cols: 2,
+        headers: ['Owner', 'Status'],
+        data: [['Abhishek', 'Open']],
+      }, ctx);
+      const invalid = await tool.execute({
+        op: 'insert_table',
+        docToken: 'doc-abc',
+        rows: 2,
+        cols: 2,
+        headers: ['Owner', 'Status'],
+        data: [['A', 'Open'], ['B', 'Done']],
+      }, ctx);
+
+      assert.equal(valid.ok, true);
+      assert.deepEqual(insertedTables, [{
+        rows: 2,
+        cols: 2,
+        headers: ['Owner', 'Status'],
+        data: [['Abhishek', 'Open']],
+      }]);
+      assert.equal(invalid.ok, false);
     });
 
     it('infra throws → upstream_failure', async () => {

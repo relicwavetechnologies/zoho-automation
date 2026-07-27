@@ -95,6 +95,37 @@ export function buildPresentationContext(input: ReplyQualityInput): string {
   return sections.join('\n\n---\n\n') || '(no tool data returned)';
 }
 
+export function buildCompactPresentationContext(input: ReplyQualityInput): string {
+  const unique = new Map<string, { toolName: string; output: string }>();
+  for (const result of input.toolResults) {
+    const output = stripTraceMarker(result.output).trim();
+    unique.set(`${result.toolName}\n${output}`, { toolName: result.toolName, output });
+  }
+  const results = [...unique.values()];
+  const withLinks = results.filter(result => /https?:\/\//i.test(result.output));
+  const tail = results.filter(result => !withLinks.includes(result)).slice(-12);
+  return buildPresentationContext({
+    ...input,
+    toolResults: [...withLinks, ...tail].map(result => ({
+      ...result,
+      output: result.output.slice(0, 4_000),
+    })),
+  }).slice(0, 16_000);
+}
+
+export function buildDeterministicRecoveryReply(toolResults: ReplyQualityInput['toolResults']): string {
+  const urls = new Set<string>();
+  for (const result of toolResults) {
+    for (const match of stripTraceMarker(result.output).matchAll(/https?:\/\/[^\s"'<>\\]+/g)) {
+      urls.add(match[0]!.replace(/[),.;]+$/, ''));
+    }
+  }
+  if (urls.size > 0) {
+    return `I completed the requested work.\n\n${[...urls].map(url => `Result: ${url}`).join('\n')}`;
+  }
+  return 'I completed the requested work, but the detailed completion summary could not be generated.';
+}
+
 function isLarkTaskCapableTool(toolName: string): boolean {
   return toolName === 'larkTask'
     || toolName === 'larkAgent'

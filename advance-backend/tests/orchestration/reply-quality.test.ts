@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   assessReplyQuality,
+  buildCompactPresentationContext,
+  buildDeterministicRecoveryReply,
   buildPresentationContext,
   cleanReplyText,
 } from '../../src/application/orchestration/engine/reply-quality.ts';
@@ -98,5 +100,34 @@ describe('reply quality assessment', () => {
       cleanReplyText('Done.\n<!--TOOL_TRACE:[{"toolName":"x"}]-->'),
       'Done.',
     );
+  });
+
+  it('compacts duplicate tool results while retaining created-resource links', () => {
+    const context = buildCompactPresentationContext({
+      userMessage: 'make a report',
+      replyText: 'Done.',
+      toolsCalled: ['larkDoc'],
+      toolResults: [
+        { toolName: 'larkDoc', output: '{"success":true,"message":"Block appended"}' },
+        { toolName: 'larkDoc', output: '{"success":true,"message":"Block appended"}' },
+        { toolName: 'larkDoc', output: '{"url":"https://example.larksuite.com/docx/doc-1"}' },
+      ],
+    });
+
+    assert.equal(context.match(/Block appended/g)?.length, 1);
+    assert.match(context, /https:\/\/example\.larksuite\.com\/docx\/doc-1/);
+  });
+
+  it('builds a deterministic completion reply that preserves result links', () => {
+    const reply = buildDeterministicRecoveryReply([
+      {
+        toolName: 'larkDoc',
+        output: '{"success":true,"url":"https://example.larksuite.com/docx/doc-1"}',
+      },
+    ]);
+
+    assert.match(reply, /completed the requested work/i);
+    assert.match(reply, /https:\/\/example\.larksuite\.com\/docx\/doc-1/);
+    assert.notEqual(reply, 'Done.');
   });
 });

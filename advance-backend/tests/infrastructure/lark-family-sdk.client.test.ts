@@ -236,7 +236,20 @@ describe('Lark family clients through the official SDK boundary', () => {
     }
   });
 
-  it('creates a table using the documented payload and populates header cells', async () => {
+  it('removes a duplicate marker from native bullet blocks', async () => {
+    const { sdkClient, requests } = sdkStub(request => request.method === 'GET'
+      ? { document: { document_id: 'doc-root' } }
+      : {});
+
+    await new LarkDocClient(deps(sdkClient)).appendBlock('doc-1', '• Customer risk', 'bullet');
+
+    assert.equal(
+      (requests[1]?.data as any).children[0].bullet.elements[0].text_run.content,
+      'Customer risk',
+    );
+  });
+
+  it('creates a table using the documented payload and populates header and body cells', async () => {
     const { sdkClient, requests } = sdkStub(request => {
       if (request.method === 'GET') return { document: { document_id: 'doc-root' } };
       if (request.url.endsWith('/blocks/doc-root/children')) {
@@ -256,6 +269,7 @@ describe('Lark family clients through the official SDK boundary', () => {
       rows: 2,
       cols: 2,
       headers: ['Owner', 'Status'],
+      data: [['Abhishek', 'Open']],
     });
 
     assert.deepEqual(requests, [
@@ -285,6 +299,22 @@ describe('Lark family clients through the official SDK boundary', () => {
         params: { document_revision_id: -1 },
         data: {
           children: [{ block_type: 2, text: { elements: [{ text_run: { content: 'Status' } }], style: {} } }],
+        },
+      },
+      {
+        method: 'POST',
+        url: '/open-apis/docx/v1/documents/doc-1/blocks/cell-3/children',
+        params: { document_revision_id: -1 },
+        data: {
+          children: [{ block_type: 2, text: { elements: [{ text_run: { content: 'Abhishek' } }], style: {} } }],
+        },
+      },
+      {
+        method: 'POST',
+        url: '/open-apis/docx/v1/documents/doc-1/blocks/cell-4/children',
+        params: { document_revision_id: -1 },
+        data: {
+          children: [{ block_type: 2, text: { elements: [{ text_run: { content: 'Open' } }], style: {} } }],
         },
       },
     ]);

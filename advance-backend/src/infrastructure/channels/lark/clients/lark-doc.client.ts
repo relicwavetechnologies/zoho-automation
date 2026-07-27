@@ -79,6 +79,13 @@ export class LarkDocClient implements LarkDocClientPort {
   }
 
   async appendBlock(docToken: string, content: string, blockType?: string): Promise<void> {
+    await this.appendBlocks(docToken, [{ content, ...(blockType ? { blockType } : {}) }]);
+  }
+
+  async appendBlocks(
+    docToken: string,
+    blocks: Array<{ content: string; blockType?: string }>,
+  ): Promise<void> {
     const docData = await this.http.request<{ document: DocRecord }>(
       'GET',
       `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}`,
@@ -87,7 +94,7 @@ export class LarkDocClient implements LarkDocClientPort {
     await this.http.request(
       'POST',
       `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/blocks/${encodeURIComponent(rootBlockId)}/children`,
-      { body: { children: [buildRichTextBlock(content, blockType)] } },
+      { body: { children: blocks.map(block => buildRichTextBlock(block.content, block.blockType)) } },
     );
   }
 
@@ -149,7 +156,7 @@ export class LarkDocClient implements LarkDocClientPort {
 
   async insertTable(
     docToken: string,
-    params: { afterBlockId?: string; rows: number; cols: number; headers?: string[] },
+    params: { afterBlockId?: string; rows: number; cols: number; headers?: string[]; data?: string[][] },
   ): Promise<void> {
     const docData = await this.http.request<{ document: DocRecord }>(
       'GET',
@@ -179,24 +186,33 @@ export class LarkDocClient implements LarkDocClientPort {
       },
     );
 
-    const headers = params.headers?.slice(0, params.cols) ?? [];
-    if (headers.length === 0) return;
+    const values = [
+      ...(params.headers?.length ? [params.headers.slice(0, params.cols)] : []),
+      ...(params.data ?? []).map(row => row.slice(0, params.cols)),
+    ];
+    const populatedCells = values.flatMap((row, rowIndex) =>
+      row.map((value, columnIndex) => ({
+        value,
+        cellIndex: (rowIndex * params.cols) + columnIndex,
+      })),
+    ).filter(cell => cell.value.length > 0);
+    if (populatedCells.length === 0) return;
 
     const cells = created.children?.[0]?.table?.cells ?? [];
-    if (cells.length < headers.length) {
+    if (cells.length < params.rows * params.cols) {
       throw new LarkApiError(
-        'Lark created the table but did not return enough cell IDs to populate its headers',
+        'Lark created the table but did not return enough cell IDs to populate it',
         200,
       );
     }
-    for (const [index, header] of headers.entries()) {
-      const cellId = cells[index]!;
+    for (const { value, cellIndex } of populatedCells) {
+      const cellId = cells[cellIndex]!;
       await this.http.request(
         'POST',
         `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/blocks/${encodeURIComponent(cellId)}/children`,
         {
           query: { document_revision_id: -1 },
-          body: { children: [buildRichTextBlock(header, 'text')] },
+          body: { children: [buildRichTextBlock(value, 'text')] },
         },
       );
     }
@@ -234,10 +250,14 @@ function buildRichTextBlock(content: string, requestedType?: string): DocRecord 
   return {
     block_type: BLOCK_TYPE_NUM[blockType],
     [blockType]: {
-      elements: [{ text_run: { content } }],
+      elements: [{ text_run: { content: blockType === 'bullet' ? stripLeadingBullet(content) : content } }],
       style: {},
     },
   };
+}
+
+function stripLeadingBullet(content: string): string {
+  return content.replace(/^\s*(?:[•●▪◦]|\*|-)\s+/, '');
 }
 
 function isSupportedBlockType(value: string | undefined): value is SupportedBlockType {

@@ -28,7 +28,13 @@ import type { LanguageModel } from 'ai';
 import { classifyMessage, runFastPath } from './fast-path';
 import { buildExecutionSummary } from './execution-summary';
 import { LARK_ENGLISH_OUTPUT_POLICY } from '../lark-language-policy';
-import { assessReplyQuality, buildPresentationContext, cleanReplyText } from './reply-quality';
+import {
+  assessReplyQuality,
+  buildCompactPresentationContext,
+  buildDeterministicRecoveryReply,
+  buildPresentationContext,
+  cleanReplyText,
+} from './reply-quality';
 import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
 import type { LarkInferenceService } from '../../proxy/lark-inference.service';
 import { formatGroupContextForPrompt, formatGroupContextMultimodal } from '../../chat-context/group-context-formatter';
@@ -503,7 +509,7 @@ export class OrchestrationEngine {
     });
 
     // ── 5b. Post-pipeline safety net — if tools ran but reply is useless,
-    //    make one more LLM call to present the results properly.
+    //    retry presentation with compact evidence before a deterministic fallback.
     const replyAssessment = assessReplyQuality({
       userMessage: incoming.text,
       replyText:   supervisorResult.value.finalReply.text,
@@ -523,16 +529,22 @@ export class OrchestrationEngine {
         toolsCalled,
         toolResultCount: toolResults?.length ?? 0,
       });
-      try {
-        const toolContext = buildPresentationContext({
-          userMessage: incoming.text,
-          replyText:   supervisorResult.value.finalReply.text,
-          toolsCalled,
-          toolResults,
-        });
-        const synthesized = await generateText({
-          model: larkModel ?? this.deps.supervisor.getModel(),
-          system: `You are presenting the results of completed actions to the user. Rules:
+      const synthesisInput = {
+        userMessage: incoming.text,
+        replyText:   supervisorResult.value.finalReply.text,
+        toolsCalled,
+        toolResults,
+      };
+      const contexts = [
+        buildPresentationContext(synthesisInput),
+        buildCompactPresentationContext(synthesisInput),
+      ];
+      let synthesizedReply = '';
+      for (const [attemptIndex, toolContext] of contexts.entries()) {
+        try {
+          const synthesized = await generateText({
+            model: larkModel ?? this.deps.supervisor.getModel(),
+            system: `You are presenting the results of completed actions to the user. Rules:
 - Write the final user-facing outcome, not a process update.
 - Use completed/past-tense language for actions that already ran.
 - If Lark tasks were created, list the task titles and include owner/location when available.
@@ -543,23 +555,41 @@ export class OrchestrationEngine {
 - Be direct — no filler phrases.
 - If no meaningful data was returned by tools, say so plainly.
 ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
-          messages: [
-            { role: 'user' as const, content: incoming.text },
-            { role: 'assistant' as const, content: `Actions completed. Results:\n\n${toolContext || '(no data returned)'}` },
-            { role: 'user' as const, content: 'Present these results to me.' },
-          ],
-          temperature: 0.3,
-          abortSignal: AbortSignal.any([
-            AbortSignal.timeout(30_000),
-            abortController.signal,
-          ]),
-        });
-        if (synthesized.text.trim()) {
-          presentedReply = { ...supervisorResult.value.finalReply, text: synthesized.text.trim() };
-          log.info('engine.reply_useless.synthesis_done', { textLength: synthesized.text.length });
+            messages: [
+              { role: 'user' as const, content: incoming.text },
+              { role: 'assistant' as const, content: `Actions completed. Results:\n\n${toolContext || '(no data returned)'}` },
+              { role: 'user' as const, content: 'Present these results to me.' },
+            ],
+            temperature: 0.3,
+            abortSignal: AbortSignal.any([
+              AbortSignal.timeout(30_000),
+              abortController.signal,
+            ]),
+          });
+          synthesizedReply = synthesized.text.trim();
+          if (synthesizedReply) {
+            presentedReply = { ...supervisorResult.value.finalReply, text: synthesizedReply };
+            log.info('engine.reply_useless.synthesis_done', {
+              attempt: attemptIndex + 1,
+              textLength: synthesizedReply.length,
+            });
+            break;
+          }
+        } catch (e) {
+          log.warn('engine.reply_useless.synthesis_failed', {
+            attempt: attemptIndex + 1,
+            error: String(e),
+          });
         }
-      } catch (e) {
-        log.warn('engine.reply_useless.synthesis_failed', { error: String(e) });
+      }
+      if (!synthesizedReply) {
+        presentedReply = {
+          ...supervisorResult.value.finalReply,
+          text: buildDeterministicRecoveryReply(toolResults),
+        };
+        log.warn('engine.reply_useless.deterministic_fallback', {
+          textLength: presentedReply.text.length,
+        });
       }
     }
 
