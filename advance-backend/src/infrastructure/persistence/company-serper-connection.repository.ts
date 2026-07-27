@@ -183,4 +183,18 @@ export class CompanySerperConnectionRepository {
       data: { lastFailureAt: new Date(), lastFailureCode: code, unavailableUntil },
     });
   }
+
+  async markCreditsExhausted(id: string, code: string): Promise<void> {
+    const now = new Date();
+    await this.prisma.companySerperConnection.update({
+      where: { id },
+      data: {
+        creditsAtLastSync: 0,
+        creditsSyncedAt: now,
+        lastFailureAt: now,
+        lastFailureCode: code,
+        unavailableUntil: null,
+      },
+    });
+  }
 }

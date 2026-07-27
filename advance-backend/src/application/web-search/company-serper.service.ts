@@ -93,11 +93,16 @@ export class CompanySerperService {
       } catch (error) {
         lastError = error;
         const code = error instanceof SearchIntegrationError ? error.code : 'search_unavailable';
-        const shouldFailOver = code === 'search_rate_limited' || code === 'search_auth_failed';
-        const unavailableUntil = candidate.id !== 'legacy-env' && shouldFailOver ? cooldownUntil(error) : undefined;
-        if (unavailableUntil) {
+        const creditsExhausted = code === 'search_credits_exhausted';
+        const shouldFailOver = creditsExhausted || code === 'search_rate_limited' || code === 'search_auth_failed';
+        const unavailableUntil = candidate.id !== 'legacy-env' && shouldFailOver && !creditsExhausted ? cooldownUntil(error) : undefined;
+        if (candidate.id !== 'legacy-env' && shouldFailOver) {
           try {
-            await this.connections.markFailure(candidate.id, code, unavailableUntil);
+            if (creditsExhausted) {
+              await this.connections.markCreditsExhausted(candidate.id, code);
+            } else {
+              await this.connections.markFailure(candidate.id, code, unavailableUntil!);
+            }
           } catch (markError) {
             this.logger.error('serper.connection.failure_record_failed', {
               companyId,

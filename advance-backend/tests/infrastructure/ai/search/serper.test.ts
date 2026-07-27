@@ -143,6 +143,14 @@ describe('SerperClient.search', () => {
     );
   });
 
+  it('recognizes Serper credit exhaustion returned as HTTP 400', async () => {
+    mockResponses.push({ status: 400, body: { message: 'Not enough credits', statusCode: 400 } });
+    await assert.rejects(
+      () => makeClient().search({ query: 'test' }),
+      (e: SearchIntegrationError) => e.code === 'search_credits_exhausted',
+    );
+  });
+
   it('throws SearchIntegrationError on HTTP 5xx', async () => {
     mockResponses.push({ status: 503, body: 'Service Unavailable' });
     await assert.rejects(

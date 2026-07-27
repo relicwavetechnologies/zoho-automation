@@ -37,7 +37,7 @@ export interface SerperSearchInput {
 
 // ─── Error ────────────────────────────────────────────────────────────────────
 
-export type SearchErrorCode = 'search_unavailable' | 'search_invalid_response' | 'search_not_configured' | 'search_auth_failed' | 'search_rate_limited';
+export type SearchErrorCode = 'search_unavailable' | 'search_invalid_response' | 'search_not_configured' | 'search_auth_failed' | 'search_rate_limited' | 'search_credits_exhausted';
 
 export class SearchIntegrationError extends Error {
   readonly code: SearchErrorCode;
@@ -62,6 +62,18 @@ const retryAfterMs = (header: string | null): number | undefined => {
   const retryAt = Date.parse(header);
   if (Number.isNaN(retryAt)) return undefined;
   return Math.max(0, retryAt - Date.now());
+};
+
+const isCreditExhaustionResponse = (status: number, raw: string): boolean => {
+  if (status === 402) return true;
+  const message = raw.toLowerCase();
+  return (
+    message.includes('not enough credits') ||
+    message.includes('insufficient credits') ||
+    message.includes('out of credits') ||
+    message.includes('no credits') ||
+    (message.includes('credits') && (message.includes('exhaust') || message.includes('deplet')))
+  );
 };
 
 function coerceResponse(raw: unknown): SerperSearchResponse {
@@ -151,7 +163,9 @@ export class SerperClient {
     const raw = await res.text();
 
     if (!res.ok) {
-      const code: SearchErrorCode = res.status === 429
+      const code: SearchErrorCode = isCreditExhaustionResponse(res.status, raw)
+        ? 'search_credits_exhausted'
+        : res.status === 429
         ? 'search_rate_limited'
         : res.status === 401 || res.status === 403
           ? 'search_auth_failed'

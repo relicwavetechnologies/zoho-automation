@@ -21,6 +21,7 @@ describe('isApiKeyExhausted', () => {
     assert.equal(isApiKeyExhausted({ code: 'provider_insufficient_units' }), true);
     assert.equal(isApiKeyExhausted({ httpStatus: 402 }), true);
     assert.equal(isApiKeyExhausted({ message: 'insufficient_quota' }), true);
+    assert.equal(isApiKeyExhausted({ code: 'search_credits_exhausted', message: 'Not enough credits' }), true);
     assert.equal(isApiKeyExhausted({ httpStatus: 429, message: 'quota exceeded' }), true);
   });
 
@@ -32,6 +33,7 @@ describe('isApiKeyExhausted', () => {
 
   it('marks Serper pool failures as exhausted', () => {
     assert.equal(isSerperPoolExhausted({ code: 'search_rate_limited' }), true);
+    assert.equal(isSerperPoolExhausted({ code: 'search_credits_exhausted' }), true);
     assert.equal(isSerperPoolExhausted({ code: 'search_unavailable' }), true);
     assert.equal(isSerperPoolExhausted({ code: 'search_invalid_response' }), false);
   });

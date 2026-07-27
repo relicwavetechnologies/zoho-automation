@@ -32,6 +32,7 @@ export const API_KEY_PROVIDER_LABELS: Record<ApiKeyProvider, string> = {
 const EXHAUSTION_CODES = new Set([
   'search_rate_limited',
   'search_auth_failed',
+  'search_credits_exhausted',
   'provider_insufficient_units',
   'provider_auth_failed',
   'insufficient_quota',
@@ -67,6 +68,7 @@ export function isApiKeyExhausted(signal: ExhaustionSignal): boolean {
     message.includes('insufficient api units') ||
     message.includes('out of credits') ||
     message.includes('no credits') ||
+    message.includes('not enough credits') ||
     (message.includes('credits') && (message.includes('exhaust') || message.includes('deplet') || message.includes('balance'))) ||
     (message.includes('billing') && (message.includes('limit') || message.includes('hard') || message.includes('exceed'))) ||
     (message.includes('quota') && (message.includes('exceed') || message.includes('exhaust') || message.includes('reached')))
@@ -93,5 +95,5 @@ export function isApiKeyExhausted(signal: ExhaustionSignal): boolean {
 /** Serper: exhaustion only after the whole key pool failed (not mid-failover). */
 export function isSerperPoolExhausted(lastError: ExhaustionSignal): boolean {
   const code = (lastError.code ?? '').trim().toLowerCase();
-  return code === 'search_rate_limited' || code === 'search_auth_failed' || code === 'search_unavailable';
+  return code === 'search_rate_limited' || code === 'search_auth_failed' || code === 'search_credits_exhausted' || code === 'search_unavailable';
 }

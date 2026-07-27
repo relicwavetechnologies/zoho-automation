@@ -22,6 +22,7 @@ function makeService(connections: {
   hasConnection: (companyId: string) => Promise<boolean>;
   markSuccess: (id: string) => Promise<void>;
   markFailure: (id: string, code: string, unavailableUntil: Date) => Promise<void>;
+  markCreditsExhausted?: (id: string, code: string) => Promise<void>;
 }) {
   return new CompanySerperService(
     connections as any,
@@ -69,6 +70,42 @@ describe('CompanySerperService.search', () => {
     assert.equal(failures[0]?.id, 'first');
     assert.equal(failures[0]?.code, 'search_rate_limited');
     assert.ok((failures[0]?.unavailableUntil.getTime() ?? 0) >= startedAt + 14_900);
+  });
+
+  it('retires a credit-exhausted key and uses the next healthy key', async () => {
+    const exhausted: Array<{ id: string; code: string }> = [];
+    const receivedKeys: string[] = [];
+    globalThis.fetch = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const key = new Headers(init?.headers).get('X-API-KEY') ?? '';
+      receivedKeys.push(key);
+      if (key === 'exhausted-key') {
+        return {
+          ok: false,
+          status: 400,
+          headers: new Headers(),
+          text: async () => JSON.stringify({ message: 'Not enough credits', statusCode: 400 }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: async () => JSON.stringify({ organic: [] }),
+      } as Response;
+    };
+
+    const service = makeService({
+      activeKeys: async () => [{ id: 'first', apiKey: 'exhausted-key' }, { id: 'second', apiKey: 'healthy-key' }],
+      hasConnection: async () => true,
+      markSuccess: async () => {},
+      markFailure: async () => {},
+      markCreditsExhausted: async (id, code) => { exhausted.push({ id, code }); },
+    });
+
+    await service.search('company-1', { query: 'Divo' });
+
+    assert.deepEqual(receivedKeys, ['exhausted-key', 'healthy-key']);
+    assert.deepEqual(exhausted, [{ id: 'first', code: 'search_credits_exhausted' }]);
   });
 
   it('uses the legacy environment key only when the company has no active connection', async () => {
