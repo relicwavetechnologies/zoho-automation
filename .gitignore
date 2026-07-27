@@ -38,3 +38,6 @@ advance-backend/.data/
 lark-im-resources/
 lark-search-message-auth.png
 plan-divo-*.html
+
+# Local-only handover/context notes. Never committed.
+*.local.md
