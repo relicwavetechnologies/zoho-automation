@@ -1404,7 +1404,7 @@ function ZohoPluginDetail({
                 <input className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none" type="password" value={selfClientGrant} onChange={(event) => setSelfClientGrant(event.target.value)} autoComplete="off" />
               </label>
               <div className="rounded-lg border border-border/70 bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
-                Generate the grant with exactly: ZohoCRM.modules.READ, ZohoCRM.settings.READ, ZohoBooks.fullaccess.READ. Submit it before its short expiry.
+                Any Zoho scopes are accepted, including full access. Divo still enforces read-only use for this connection. Submit the grant before its short expiry.
               </div>
             </div>
           )}

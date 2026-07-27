@@ -436,6 +436,7 @@ export class IntegrationConnectionRepository {
         ...(input.accountsBaseUrl ? { accountsBaseUrl: input.accountsBaseUrl } : {}),
         ...(input.apiBaseUrl ? { apiBaseUrl: input.apiBaseUrl } : {}),
         ...(input.selfClientOAuth ? {
+          enforcedAccess: 'read_only',
           zohoClient: {
             clientId: input.selfClientOAuth.clientId.trim(),
             clientSecretEncrypted: encryptToken(input.selfClientOAuth.clientSecret.trim(), this.key).cipherText,

@@ -329,12 +329,7 @@ describe('desktop auth routes', () => {
               accessToken: 'access-1',
               refreshToken: 'refresh-1',
               expiresIn: 3600,
-              scopes: [
-                'ZohoCRM.modules.read',
-                'ZohoCRM.settings.READ',
-                'ZohoBooks.fullaccess.READ',
-                'AaaServer.profile.READ',
-              ],
+              scopes: ['ZohoCRM.modules.ALL', 'ZohoBooks.fullaccess.all'],
               accountsBaseUrl: 'https://accounts.zoho.in',
               apiDomain: 'https://www.zohoapis.in',
               tokenType: 'Bearer',
@@ -370,53 +365,12 @@ describe('desktop auth routes', () => {
         clientSecret: 'client-secret-1234',
       });
       assert.deepEqual(storedConnection?.['scopes'], [
-        'ZohoCRM.modules.read',
-        'ZohoCRM.settings.READ',
-        'ZohoBooks.fullaccess.READ',
-        'AaaServer.profile.READ',
+        'ZohoCRM.modules.ALL',
+        'ZohoBooks.fullaccess.all',
       ]);
     } finally {
       globalThis.fetch = originalFetch;
     }
-  });
-
-  it('rejects a Self Client exchange that explicitly reports write-capable scopes', async () => {
-    let stored = false;
-    const router = createDesktopAuthRoutes(makeDeps({
-      env: {
-        ZOHO_API_BASE_URL: 'https://www.zohoapis.in',
-        ZOHO_ACCOUNTS_BASE_URL: 'https://accounts.zoho.in',
-      },
-      zohoTokenService: {
-        exchangeSelfClientGrant: async () => ({
-          accessToken: 'access-1',
-          refreshToken: 'refresh-1',
-          expiresIn: 3600,
-          scopes: ['ZohoCRM.modules.ALL'],
-          accountsBaseUrl: 'https://accounts.zoho.in',
-          apiDomain: 'https://www.zohoapis.in',
-        }),
-      },
-      connectionRepo: {
-        upsertZohoConnection: async () => {
-          stored = true;
-          return { ok: true, value: { id: 'connection-1', label: 'Zoho' } };
-        },
-      },
-    }));
-
-    const result = await callRoute(router, 'POST', '/zoho/self-client', {
-      body: {
-        clientId: 'client-id-1234',
-        clientSecret: 'client-secret-1234',
-        grantToken: 'short-lived-grant-1234',
-        accountsBaseUrl: 'https://accounts.zoho.in',
-      },
-      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
-    });
-
-    assert.equal(result.status, 400);
-    assert.equal(stored, false);
   });
 
   it('isolates refresh credentials between OAuth and Self Client Zoho connections', async () => {

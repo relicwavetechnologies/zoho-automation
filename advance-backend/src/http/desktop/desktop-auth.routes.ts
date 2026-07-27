@@ -333,6 +333,16 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       name: companyRole.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()),
     }));
     const companyRolesById = new Map(companyRoles.map(companyRole => [companyRole.id, companyRole]));
+    const tokenMetadata = connection.tokenMetadata
+      && typeof connection.tokenMetadata === 'object'
+      && !Array.isArray(connection.tokenMetadata)
+      ? connection.tokenMetadata as Record<string, unknown>
+      : {};
+    const zohoReadOnlyEnforced = provider === 'zoho'
+      && (
+        tokenMetadata['enforcedAccess'] === 'read_only'
+        || (connection.scopes.length > 0 && connection.scopes.every(scope => /\.READ$/i.test(scope)))
+      );
 
     return {
       connection: {
@@ -344,6 +354,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         ownerUser:    connection.ownerUser ?? null,
         access:       summary.access,
         scopes:       connection.scopes,
+        readOnlyEnforced: zohoReadOnlyEnforced,
         connectedAt:  connection.connectedAt.toISOString(),
       },
       grants: connection.grants.map(grant => {
@@ -388,9 +399,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         ],
         company: company ? { id: company.id, name: company.name } : null,
       },
-      accessLevels: provider === 'zoho'
-        && connection.scopes.length > 0
-        && connection.scopes.every(scope => /\.READ$/i.test(scope))
+      accessLevels: zohoReadOnlyEnforced
         ? [{
             value: 'read_only',
             label: 'Read-only',
@@ -2376,14 +2385,6 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         });
         return;
       }
-      const nonReadScopes = tokens.scopes.filter(scope => !/\.READ$/i.test(scope));
-      if (nonReadScopes.length > 0) {
-        res.status(400).json({
-          success: false,
-          message: `Zoho reported write-capable scopes: ${nonReadScopes.join(', ')}`,
-        });
-        return;
-      }
       const grantedScopes = tokens.scopes.length > 0
         ? tokens.scopes
         : ZOHO_SELF_CLIENT_READ_SCOPES;
@@ -2640,8 +2641,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
       if (
         access !== 'read_only'
-        && manageable.connection.scopes.length > 0
-        && manageable.connection.scopes.every(scope => /\.READ$/i.test(scope))
+        && manageable.connection.readOnlyEnforced
       ) {
         res.status(400).json({ success: false, message: 'This Zoho connection is read-only' });
         return;
