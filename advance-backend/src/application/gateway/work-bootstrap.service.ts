@@ -11,6 +11,8 @@ import {
   TOOL_FAMILY_DEFINITIONS,
   TOOL_FAMILY_MAP,
   isCanonicalToolId,
+  toolFamiliesForQuery,
+  toolIdsForFamily,
 } from '../../domain/tools/tool-id';
 import { withWorkDiscoveryPermissions } from './work-resolution.service';
 import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
@@ -78,7 +80,13 @@ export class WorkBootstrapService {
     readonly toolIds: readonly string[];
   }): Promise<WorkBootstrap> {
     const discoveryPerm = withWorkDiscoveryPermissions(input.permission);
-    const requestedToolIds = new Set(input.toolIds);
+    const requestedToolIds = new Set(
+      input.toolIds.length > 0
+        ? input.toolIds
+        : input.query
+          ? toolFamiliesForQuery(input.query).flatMap(toolIdsForFamily)
+          : [],
+    );
     const tools = this.deps.toolRegistry
       .forRuntime(discoveryPerm)
       .filter(tool => tool.id !== 'runCommand' && requestedToolIds.has(tool.id))

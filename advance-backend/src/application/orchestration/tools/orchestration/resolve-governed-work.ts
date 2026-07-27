@@ -64,7 +64,7 @@ export function createResolveGovernedWorkTool(input: {
               resolution,
             })
           : '';
-        return [formatWorkResolution(resolution), brief].filter(Boolean).join('\n\n');
+        return [formatWorkResolution(resolution, Boolean(brief)), brief].filter(Boolean).join('\n\n');
       } catch (error) {
         input.onResolution?.({ query: parsed.data.query, outcome: 'failure' });
         return `error: work context could not be resolved — ${error instanceof Error ? error.message : String(error)}`;
@@ -90,7 +90,6 @@ async function buildBootstrapBrief(input: {
     ...input.resolution.persona.linkedSkills.flatMap(item => item.skill.toolIds),
     ...input.resolution.additionalSkills.flatMap(item => item.skill.toolIds),
   ];
-  if (toolIds.length === 0) return '';
   try {
     const bootstrap = await input.service.build({
       companyId: input.companyId,
@@ -106,7 +105,7 @@ async function buildBootstrapBrief(input: {
   }
 }
 
-function formatWorkResolution(resolution: WorkResolution): string {
+function formatWorkResolution(resolution: WorkResolution, hasCanonicalBootstrap: boolean): string {
   const lines = [
     `[Divo work context resolved for: ${resolution.originalQuery}]`,
     'Apply the current user request and backend policy first. Do not use rejected recipes.',
@@ -139,7 +138,12 @@ function formatWorkResolution(resolution: WorkResolution): string {
       }
     }
   } else {
-    lines.push('', 'No exact or strong company recipe matched. Use discover_skill only as a bounded fallback, then use call_tool only for permitted capabilities.');
+    lines.push(
+      '',
+      hasCanonicalBootstrap
+        ? 'No approved recipe matched. Canonical capability contracts and accounts for the explicitly named provider are loaded below. Use that context directly; do not load an unrelated skill.'
+        : 'No exact or strong company recipe matched. Use discover_skill only as a bounded fallback, then use call_tool only for permitted capabilities.',
+    );
   }
 
   if (resolution.rejectedSkills.length > 0) {

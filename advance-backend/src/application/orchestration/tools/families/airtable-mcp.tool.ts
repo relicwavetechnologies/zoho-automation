@@ -120,7 +120,7 @@ function createProductTool(
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [
-      'connectionId: reuse the exact run-bootstrap Airtable account when supplied. In backend-hosted channels, omit it when no account was supplied; the backend selects only one eligible account or returns safe choices. Reuse the same connectionId for describe and call.',
+      'connectionId: required for call. Reuse an exact run-bootstrap Airtable connectionId. If no account was supplied, do not call the provider; report that Airtable must be connected or shared. Describe may omit connectionId only to inspect an approved operation schema.',
       'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent; input may be omitted for describe.',
       `nativeTool: one of ${nativeToolNames.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${AIRTABLE_MCP_AUTH_CONTRACT.agentGuidance}`,

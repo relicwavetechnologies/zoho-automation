@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import { z } from 'zod';
 import { WorkBootstrapService } from '../../src/application/gateway/work-bootstrap.service';
 import { createGovernedDiscoverSkillTool } from '../../src/application/orchestration/tools/orchestration/discover-governed-skill';
 import { createResolveGovernedWorkTool } from '../../src/application/orchestration/tools/orchestration/resolve-governed-work';
 import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry';
+import { createAirtableMcpTools } from '../../src/application/orchestration/tools/families/airtable-mcp.tool';
+import {
+  TOOL_FAMILY_DEFINITIONS,
+  TOOL_FAMILY_IDS,
+  toolFamiliesForQuery,
+  type ToolFamily,
+} from '../../src/domain/tools/tool-id';
 import { asToolId } from '../../src/shared/ids';
 import { ok } from '../../src/shared/result';
 import type { PermissionResult } from '../../src/application/permissions/permission.types';
@@ -11,7 +20,9 @@ import type { AccessibleConnection } from '../../src/application/connections/con
 import type { Tool } from '../../src/application/orchestration/tools/tool.contract';
 
 const GMAIL_TOOL_ID = 'googleGmail';
+const AIRTABLE_TOOL_ID = 'airtableRecords';
 const SHARED_CONNECTION_ID = '8bba6aac-79aa-4729-9dd6-806f0238359e';
+const SHARED_AIRTABLE_CONNECTION_ID = '26834d04-6276-4b46-bbf8-ca46a7a7ee61';
 
 function permissionFor(toolId: string): PermissionResult {
   return {
@@ -21,16 +32,25 @@ function permissionFor(toolId: string): PermissionResult {
   };
 }
 
-function registryWith(toolId: string): ToolRegistry {
+function registryWith(
+  toolId: string,
+  family: ToolFamily = 'google',
+  parameterDocs = 'connectionId: required.',
+): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register({
     id: asToolId(toolId),
-    family: 'google',
+    family,
     actionGroups: new Set(['read' as const]),
-    argsSchema: { _def: {} },
-    resultSchema: { _def: {} },
-    description: 'Gmail',
-    parameterDocs: 'connectionId: required.',
+    argsSchema: z.object({
+      connectionId: z.string().uuid(),
+      op: z.enum(['describe', 'call']),
+      nativeTool: z.string(),
+      input: z.record(z.unknown()).optional(),
+    }),
+    resultSchema: z.object({}),
+    description: `${family} capability`,
+    parameterDocs,
     permissionCheck: () => ok('read' as const),
     execute: async () => ok({}),
   } as unknown as Tool<unknown, unknown>);
@@ -49,16 +69,33 @@ const sharedGoogleAccount: AccessibleConnection = {
   connectedAt: new Date('2026-07-07T19:17:26.583Z'),
 };
 
-function bootstrapService(connections: AccessibleConnection[]): WorkBootstrapService {
+const sharedAirtableAccount: AccessibleConnection = {
+  connectionId: SHARED_AIRTABLE_CONNECTION_ID,
+  provider: 'airtable',
+  label: 'EMTL Airtable',
+  accountEmail: 'abhishek@emiactech.com',
+  ownerType: 'user',
+  ownerUserId: 'owner-user',
+  access: 'read_only',
+  scopes: ['data.records:read'],
+  connectedAt: new Date('2026-07-25T19:17:26.583Z'),
+};
+
+function bootstrapService(
+  connections: AccessibleConnection[],
+  toolId = GMAIL_TOOL_ID,
+  family: ToolFamily = 'google',
+  parameterDocs?: string,
+): WorkBootstrapService {
   return new WorkBootstrapService({
-    toolRegistry: registryWith(GMAIL_TOOL_ID),
+    toolRegistry: registryWith(toolId, family, parameterDocs),
     connectionRegistry: {
-      listAccessibleGoogleConnections: async () => ok(connections),
-      listAccessibleZohoConnections: async () => ok([]),
-      listAccessibleCanvaConnections: async () => ok([]),
-      listAccessibleAirtableConnections: async () => ok([]),
-      listAccessibleAitableConnections: async () => ok([]),
-      listAccessibleLarkConnections: async () => ok([]),
+      listAccessibleGoogleConnections: async () => ok(connections.filter(item => item.provider === 'google_workspace')),
+      listAccessibleZohoConnections: async () => ok(connections.filter(item => item.provider === 'zoho')),
+      listAccessibleCanvaConnections: async () => ok(connections.filter(item => item.provider === 'canva')),
+      listAccessibleAirtableConnections: async () => ok(connections.filter(item => item.provider === 'airtable')),
+      listAccessibleAitableConnections: async () => ok(connections.filter(item => item.provider === 'aitable')),
+      listAccessibleLarkConnections: async () => ok(connections.filter(item => item.provider === 'lark')),
     },
   });
 }
@@ -185,5 +222,96 @@ describe('Lark work resolution carries the same account context desktop gets', (
     assert.match(output, /Divo work context resolved for/);
     assert.match(output, /Use googleGmail\./);
     assert.doesNotMatch(output, /connection registry is down/);
+  });
+
+  it('derives provider contracts and accounts when no recipe row exists', async () => {
+    const query = 'Show me the Airtable connections available to me. Read only.';
+    const tool = createResolveGovernedWorkTool({
+      resolver: {
+        resolve: async () => ({
+          originalQuery: query,
+          queries: [query],
+          registryRevision: 3,
+          persona: { rules: [], linkedSkills: [] },
+          additionalSkills: [],
+          rejectedSkills: [],
+        }),
+      } as never,
+      companyId: 'company-1',
+      userId: 'anish',
+      permission: permissionFor(AIRTABLE_TOOL_ID),
+      workBootstrap: bootstrapService(
+        [sharedAirtableAccount],
+        AIRTABLE_TOOL_ID,
+        'airtable',
+        'op: describe|call. nativeTool: list_bases.',
+      ),
+    });
+
+    const output = await (tool as unknown as {
+      execute: (input: unknown) => Promise<string>;
+    }).execute({ query });
+
+    assert.match(output, /Canonical capability contracts and accounts/);
+    assert.match(output, /airtableRecords · airtable/);
+    assert.match(output, /op: describe\|call/);
+    assert.match(output, /Wrapper args schema/);
+    assert.match(output, new RegExp(SHARED_AIRTABLE_CONNECTION_ID));
+    assert.doesNotMatch(output, /Use discover_skill only/);
+  });
+});
+
+describe('canonical family routing metadata', () => {
+  it('reconciles capabilities before both local and production startup', () => {
+    const packageJson = JSON.parse(
+      readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+
+    assert.equal(packageJson.scripts?.predev, 'pnpm capabilities:reconcile');
+    assert.equal(packageJson.scripts?.prestart, 'pnpm capabilities:reconcile');
+  });
+
+  it('recognizes every configured provider alias without provider-specific branches', () => {
+    for (const family of TOOL_FAMILY_IDS) {
+      for (const alias of TOOL_FAMILY_DEFINITIONS[family].routingAliases) {
+        assert.ok(
+          toolFamiliesForQuery(`Use ${alias} for this work`).includes(family),
+          `${alias} should route to ${family}`,
+        );
+      }
+    }
+  });
+
+  it('does not tell backend channels to omit a required Airtable connection ID', () => {
+    const [tool] = createAirtableMcpTools({
+      getConnection: async () => ({ status: 'unavailable' }),
+    });
+
+    assert.match(tool!.parameterDocs, /connectionId: required for call/);
+    assert.doesNotMatch(tool!.parameterDocs, /backend selects only one eligible account/);
+  });
+
+  it('uses family-derived tools only as a no-recipe fallback', async () => {
+    const registry = registryWith(GMAIL_TOOL_ID);
+    registry.register(registryWith(AIRTABLE_TOOL_ID, 'airtable').byId(asToolId(AIRTABLE_TOOL_ID))!);
+    const permission: PermissionResult = {
+      allowedToolIds: new Set([asToolId(GMAIL_TOOL_ID), asToolId(AIRTABLE_TOOL_ID)]),
+      allowedActionsByTool: new Map([
+        [asToolId(GMAIL_TOOL_ID), new Set(['read' as const])],
+        [asToolId(AIRTABLE_TOOL_ID), new Set(['read' as const])],
+      ]),
+      decisions: [],
+    };
+
+    const result = await new WorkBootstrapService({ toolRegistry: registry }).build({
+      companyId: 'company-1',
+      userId: 'anish',
+      permission,
+      registryRevision: 1,
+      query: 'Use Airtable after reading Gmail',
+      toolIds: [GMAIL_TOOL_ID],
+    });
+
+    assert.deepEqual(result.tools.map(tool => tool.id), [GMAIL_TOOL_ID]);
   });
 });

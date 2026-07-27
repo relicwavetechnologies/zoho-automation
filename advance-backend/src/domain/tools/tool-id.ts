@@ -59,6 +59,23 @@ export function isToolFamily(value: string): value is ToolFamily {
   return Object.prototype.hasOwnProperty.call(TOOL_FAMILY_DEFINITIONS, value);
 }
 
+export function toolFamiliesForQuery(query: string): ToolFamily[] {
+  const normalized = normalizeRoutingText(query);
+  return TOOL_FAMILY_IDS.filter(family =>
+    TOOL_FAMILY_DEFINITIONS[family].routingAliases.some(alias =>
+      includesRoutingPhrase(normalized, normalizeRoutingText(alias)),
+    ),
+  );
+}
+
+function normalizeRoutingText(value: string): string {
+  return value.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).join(' ');
+}
+
+function includesRoutingPhrase(text: string, phrase: string): boolean {
+  return Boolean(phrase) && ` ${text} `.includes(` ${phrase} `);
+}
+
 export function isCanonicalToolId(value: string): value is CanonicalToolId {
   return Object.prototype.hasOwnProperty.call(TOOL_CAPABILITY_DEFINITIONS, value);
 }

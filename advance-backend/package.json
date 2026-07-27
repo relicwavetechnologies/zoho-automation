@@ -4,8 +4,11 @@
   "private": true,
   "packageManager": "pnpm@10.33.4",
   "scripts": {
+    "predev": "pnpm capabilities:reconcile",
     "dev": "bash scripts/dev-server.sh",
+    "prestart": "pnpm capabilities:reconcile",
     "start": "node --import tsx src/index.ts",
+    "capabilities:reconcile": "tsx scripts/reconcile-capabilities.ts",
     "build": "prisma generate",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",

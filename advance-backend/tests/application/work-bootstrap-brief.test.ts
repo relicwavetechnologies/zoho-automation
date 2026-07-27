@@ -115,13 +115,25 @@ describe('renderWorkBootstrapBrief', () => {
     assert.doesNotMatch(brief, /Background detail\./);
   });
 
-  it('never promises content the brief does not carry', () => {
-    // The gateway's `contracts_loaded` advisory says tool contracts are "loaded
-    // below" and forbids `tools.list`. The brief renders no tools, and
-    // `tools.list` is a gateway op the engine cannot call, so passing it
-    // through points the model at content that is not there.
+  it('carries the exact governed wrapper contract into backend-hosted channels', () => {
+    // Lark exposes only call_tool's generic SDK schema. Without this underlying
+    // contract a no-recipe fallback knows the tool ID but must guess its args.
     const brief = renderWorkBootstrapBrief(bootstrap({
-      tools: [{ id: 'googleGmail' }],
+      tools: [{
+        id: 'airtableRecords',
+        family: 'airtable',
+        description: 'Read Airtable records.',
+        allowedActions: ['read'],
+        parameterDocs: 'op: describe|call. nativeTool: list_bases.',
+        argsSchema: {
+          type: 'object',
+          properties: {
+            op: { enum: ['describe', 'call'] },
+            nativeTool: { type: 'string' },
+          },
+          required: ['op', 'nativeTool'],
+        },
+      }],
       advisories: [{
         code: 'contracts_loaded',
         level: 'required',
@@ -129,7 +141,11 @@ describe('renderWorkBootstrapBrief', () => {
       }],
     }));
 
-    assert.equal(brief, '');
+    assert.match(brief, /Governed tool contracts already loaded/);
+    assert.match(brief, /airtableRecords · airtable/);
+    assert.match(brief, /op: describe\|call/);
+    assert.match(brief, /"required":\["op","nativeTool"\]/);
+    assert.doesNotMatch(brief, /tools\.list/);
   });
 
   it('does not forbid describing contracts it had to drop', () => {

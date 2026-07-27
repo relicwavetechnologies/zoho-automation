@@ -7,25 +7,17 @@ import type { WorkBootstrap } from '../../../gateway/work-bootstrap.service';
  * an oversized contract is dropped and named instead.
  */
 const MAX_CONTRACT_SCHEMA_CHARS = 4_000;
+const MAX_TOOL_SCHEMA_CHARS = 4_000;
 
 /**
- * Advisories whose payload this brief does not carry.
- *
- * `contracts_loaded` promises tool contracts "loaded below" and forbids
- * `tools.list`. Neither survives the trip: the brief omits `bootstrap.tools`
- * because the engine already hands the model its tool schemas through the SDK
- * definitions and discover_skill's own tool section, and `tools.list` is a
- * gateway op no backend-hosted channel can call. Passed through verbatim it is
- * an instruction pointing at absent content — precisely the failure mode the
- * bootstrap is meant to end.
- */
-const ADVISORIES_WITHOUT_PAYLOAD_HERE = new Set(['contracts_loaded']);
-
-/**
- * Advisory text written for the desktop sidecar names gateway ops the engine
- * cannot reach. Same instruction, minus the dead reference.
+ * A backend-hosted channel exposes only the generic `call_tool` SDK schema.
+ * The governed capability's wrapper schema therefore has to survive this text
+ * boundary; otherwise a run with no matching recipe can see a tool ID but has
+ * to guess its arguments.
  */
 const ENGINE_ADVISORY_TEXT: Readonly<Record<string, string>> = {
+  contracts_loaded:
+    'Exact governed wrapper contracts for this work are listed below. Use their field names exactly.',
   connections_loaded:
     'The accounts this work needs are listed below. Reuse one of those exact connectionId values; do not try to rediscover accounts.',
 };
@@ -43,6 +35,27 @@ const ENGINE_ADVISORY_TEXT: Readonly<Record<string, string>> = {
  * every call anyway.
  */
 export function renderWorkBootstrapBrief(bootstrap: WorkBootstrap): string {
+  const toolContracts: string[] = [];
+  const oversizedTools: string[] = [];
+  for (const tool of bootstrap.tools) {
+    const toolId = String(tool.id);
+    const schema = tool.argsSchema === undefined ? '' : JSON.stringify(tool.argsSchema);
+    if (!schema || schema.length > MAX_TOOL_SCHEMA_CHARS) {
+      oversizedTools.push(toolId);
+      continue;
+    }
+    const allowedActions = Array.isArray(tool.allowedActions)
+      ? tool.allowedActions.map(String).join(', ')
+      : '';
+    toolContracts.push([
+      `### ${toolId}${tool.family ? ` · ${String(tool.family)}` : ''}`,
+      ...(tool.description ? [String(tool.description)] : []),
+      ...(allowedActions ? [`Allowed actions: ${allowedActions}`] : []),
+      ...(tool.parameterDocs ? [`Parameter documentation: ${String(tool.parameterDocs)}`] : []),
+      `Wrapper args schema: ${schema}`,
+    ].join('\n'));
+  }
+
   // Contracts are rendered before the instructions are chosen, because whether
   // "do not describe again" is honest depends on what actually survived the
   // size cap. Deciding first let a bootstrap whose every schema was dropped
@@ -64,7 +77,7 @@ export function renderWorkBootstrapBrief(bootstrap: WorkBootstrap): string {
   }
 
   const carriesNoPayload = (code: string): boolean =>
-    ADVISORIES_WITHOUT_PAYLOAD_HERE.has(code)
+    (code === 'contracts_loaded' && toolContracts.length !== bootstrap.tools.length)
     || (code === 'native_contracts_loaded' && renderable.length === 0)
     || (code === 'connections_loaded' && bootstrap.connections.length === 0);
 
@@ -75,6 +88,15 @@ export function renderWorkBootstrapBrief(bootstrap: WorkBootstrap): string {
     .map(advisory => `- ${ENGINE_ADVISORY_TEXT[advisory.code] ?? advisory.instruction}`);
   if (instructions.length > 0) {
     sections.push(['## Operating instructions for this work', ...instructions].join('\n'));
+  }
+
+  if (toolContracts.length > 0) {
+    sections.push(['## Governed tool contracts already loaded', ...toolContracts].join('\n\n'));
+  }
+  if (oversizedTools.length > 0) {
+    sections.push(
+      `## Wrapper contracts too large to preload\nLoad an approved recipe before using: ${oversizedTools.join(', ')}`,
+    );
   }
 
   if (bootstrap.connections.length > 0) {
