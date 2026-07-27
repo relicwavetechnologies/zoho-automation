@@ -10,9 +10,10 @@
  * Usage:
  *   pnpm tsx scripts/run-engine-harness.ts                     # Abhishek → Abhishek DM
  *   pnpm tsx scripts/run-engine-harness.ts "your prompt here"
+ *   pnpm tsx scripts/run-engine-harness.ts --model pro "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --allow-impersonation --user "Anish Suman" "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --chat-id oc_x --chat-type group "your prompt"
- *   pnpm tsx scripts/run-engine-harness.ts --debug-sigs        # dump every transformParams call
+ *   pnpm tsx scripts/run-engine-harness.ts --full-debug        # detailed latest-agent-run.log
  *
  * `--user` selects a DB-linked Lark identity by exact email, exact display
  * name, or open_id. It changes the authenticated principal, never exposes or
@@ -22,25 +23,39 @@
  */
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
+import { writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { buildContainer } from '../src/composition';
 import { loadAndValidateEnv } from '../src/config/env';
+import {
+  LARK_MODEL_IDS,
+  type LarkModelId,
+} from '../src/application/proxy/lark-inference.service';
+import type { PrismaClient } from '../src/generated/prisma';
 import { asMessageId, asChatId, asCorrelationId, asCompanyId, asUserId, asDepartmentId } from '../src/shared/ids';
 import { asCompanyRoleSlug } from '../src/domain/permissions/company-role';
 import type { IncomingMessage } from '../src/domain/channel/incoming-message';
 import type { RunContext } from '../src/domain/orchestration/run-context';
 import type { ConversationHandle } from '../src/application/channels/channel.adapter';
 
-const DEFAULT_PROMPT = "make a task 'hrm8 deployment' and assign it to anish";
+const DEFAULT_PROMPT = 'Reply with exactly: Divo Flash harness is working. Do not call any tools.';
 const DEFAULT_USER_SELECTOR = 'abhishek@emiactech.com';
 const P2P_CHAT_ID      = 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50';
 const GROUP_CHAT_ID    = 'oc_b9169aab0765f46b2fe9147068e3c79f';
+const TRACE_PATH       = join(tmpdir(), 'divo-harness-latest.jsonl');
+
+export type HarnessModel = keyof typeof LARK_MODEL_IDS;
 
 export interface EngineHarnessOptions {
   readonly userSelector: string;
   readonly chatId: string;
   readonly chatType: 'p2p' | 'group';
+  readonly model: HarnessModel;
   readonly prompt: string;
   readonly debugSigs: boolean;
+  readonly trace: boolean;
+  readonly fullDebug: boolean;
   readonly allowImpersonation: boolean;
   readonly help: boolean;
 }
@@ -52,7 +67,10 @@ export function parseEngineHarnessArgs(
   let userSelector = DEFAULT_USER_SELECTOR;
   let explicitChatId: string | undefined;
   let chatType: 'p2p' | 'group' = 'p2p';
+  let model: HarnessModel = 'flash';
   let debugSigs = false;
+  let trace = true;
+  let fullDebug = false;
   let allowImpersonation = false;
   let help = false;
   const promptParts: string[] = [];
@@ -65,6 +83,14 @@ export function parseEngineHarnessArgs(
     }
     if (value === '--debug-sigs') {
       debugSigs = true;
+      continue;
+    }
+    if (value === '--no-trace') {
+      trace = false;
+      continue;
+    }
+    if (value === '--full-debug') {
+      fullDebug = true;
       continue;
     }
     if (value === '--allow-impersonation') {
@@ -83,11 +109,17 @@ export function parseEngineHarnessArgs(
       help = true;
       continue;
     }
-    if (value === '--user' || value === '--chat-id' || value === '--chat-type') {
+    if (value === '--user' || value === '--chat-id' || value === '--chat-type' || value === '--model') {
       const optionValue = args[++index]?.trim();
       if (!optionValue) throw new Error(`${value} requires a value`);
       if (value === '--user') userSelector = optionValue;
       if (value === '--chat-id') explicitChatId = optionValue;
+      if (value === '--model') {
+        if (optionValue !== 'flash' && optionValue !== 'pro') {
+          throw new Error('--model must be flash or pro');
+        }
+        model = optionValue;
+      }
       if (value === '--chat-type') {
         if (optionValue !== 'p2p' && optionValue !== 'group') {
           throw new Error('--chat-type must be p2p or group');
@@ -123,8 +155,11 @@ export function parseEngineHarnessArgs(
     userSelector,
     chatId: resolvedChatId,
     chatType,
+    model,
     prompt: promptParts.join(' ').trim() || DEFAULT_PROMPT,
     debugSigs,
+    trace,
+    fullDebug,
     allowImpersonation,
     help,
   };
@@ -170,6 +205,141 @@ export async function resolveHarnessOpenId(
   return matches[0]!.larkOpenId!;
 }
 
+type HarnessTrace = {
+  id: string;
+  status: string;
+  latestSummary: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  startedAt: Date;
+  finishedAt: Date | null;
+  events: Array<{
+    sequence: number;
+    phase: string;
+    eventType: string;
+    actorType: string;
+    actorKey: string | null;
+    title: string;
+    status: string | null;
+    payload: unknown;
+    createdAt: Date;
+  }>;
+  stepResults: Array<{
+    sequence: number;
+    toolName: string;
+    success: boolean;
+    status: string | null;
+    summary: string | null;
+    createdAt: Date;
+  }>;
+};
+
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+function compactTracePayload(payload: unknown): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
+  const source = payload as Record<string, unknown>;
+  const compact = Object.fromEntries(
+    ['provider', 'model', 'agentTarget', 'toolName', 'operation', 'reason', 'durationMs', 'stepCount', 'replyLength', 'toolsCalled']
+      .filter(key => source[key] !== undefined)
+      .map(key => [key, source[key]]),
+  );
+  return Object.keys(compact).length > 0 ? ` ${JSON.stringify(compact)}` : '';
+}
+
+async function printPersistedTrace(input: {
+  db: Pick<PrismaClient, 'executionRun'>;
+  requestId: string;
+  traceId: string;
+  requestedModelId: LarkModelId;
+}): Promise<void> {
+  let run: HarnessTrace | null = null;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    run = await input.db.executionRun.findUnique({
+      where: { requestId: input.requestId },
+      select: {
+        id: true,
+        status: true,
+        latestSummary: true,
+        errorCode: true,
+        errorMessage: true,
+        startedAt: true,
+        finishedAt: true,
+        events: {
+          orderBy: { sequence: 'asc' },
+          select: {
+            sequence: true,
+            phase: true,
+            eventType: true,
+            actorType: true,
+            actorKey: true,
+            title: true,
+            status: true,
+            payload: true,
+            createdAt: true,
+          },
+        },
+        stepResults: {
+          orderBy: { sequence: 'asc' },
+          select: {
+            sequence: true,
+            toolName: true,
+            success: true,
+            status: true,
+            summary: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+    if (run && run.status !== 'running' && run.events.length > 0) break;
+    await delay(100);
+  }
+
+  console.log('\n=== persisted agent lifecycle ===');
+  if (!run) {
+    console.log(`trace unavailable for requestId=${input.requestId}`);
+    return;
+  }
+
+  const records = [
+    {
+      kind: 'run',
+      traceId: input.traceId,
+      requestId: input.requestId,
+      requestedModelId: input.requestedModelId,
+      executionRunId: run.id,
+      status: run.status,
+      latestSummary: run.latestSummary,
+      errorCode: run.errorCode,
+      errorMessage: run.errorMessage,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+    },
+    ...run.events.map(event => ({ kind: 'event', traceId: input.traceId, ...event })),
+    ...run.stepResults.map(step => ({ kind: 'step', traceId: input.traceId, ...step })),
+  ];
+  writeFileSync(TRACE_PATH, `${records.map(record => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+
+  console.log(`run: ${run.id} status=${run.status} events=${run.events.length} steps=${run.stepResults.length}`);
+  for (const event of run.events) {
+    const actor = event.actorKey ?? event.actorType;
+    console.log(
+      `[trace ${String(event.sequence).padStart(3, '0')}] ${event.phase}/${event.eventType}`
+      + ` actor=${actor} status=${event.status ?? 'info'}`
+      + compactTracePayload(event.payload),
+    );
+  }
+  for (const step of run.stepResults) {
+    console.log(
+      `[step  ${String(step.sequence).padStart(3, '0')}] ${step.toolName}`
+      + ` status=${step.status ?? (step.success ? 'success' : 'failed')}`,
+    );
+  }
+  console.log(`trace jsonl: ${TRACE_PATH}`);
+  console.log(`grep: rg -n 'model_call|tool_call|specialist|run_complete|run_failed' ${TRACE_PATH}`);
+}
+
 // Optional: install global hook so we can trace what hits Gemini.
 function installGeminiSignatureTrace() {
   const realFetch = global.fetch;
@@ -198,17 +368,21 @@ function installGeminiSignatureTrace() {
 async function main() {
   const options = parseEngineHarnessArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--debug-sigs] [prompt]');
+    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--no-trace] [--full-debug] [prompt]');
     return;
   }
   if (options.debugSigs) installGeminiSignatureTrace();
+  if (options.fullDebug) process.env.DEBUG_AGENT_RUN = 'true';
+  const requestedModelId = LARK_MODEL_IDS[options.model];
 
   console.log('\n=== run-engine-harness ===');
   console.log(`mode:   ${options.chatType}`);
+  console.log(`model:  ${options.model} (${requestedModelId})`);
   console.log(`user selector: ${options.userSelector}`);
   console.log(`chatId: ${options.chatId}`);
   console.log(`prompt: ${JSON.stringify(options.prompt)}`);
-  console.log(`debug-sigs: ${options.debugSigs}\n`);
+  console.log(`persisted trace: ${options.trace}`);
+  console.log(`full debug: ${options.fullDebug}\n`);
 
   const env       = loadAndValidateEnv(process.env);
   const container = await buildContainer(env);
@@ -316,6 +490,7 @@ async function main() {
     conversation,
     channelAdapter: larkAdapter,
     approvalGate,
+    larkModelId: requestedModelId,
   });
   const elapsedMs = Date.now() - start;
 
@@ -323,12 +498,32 @@ async function main() {
   if (!result.ok) {
     console.error('FAILED:', result.error.message);
     console.error(result.error);
+    if (options.trace) {
+      await printPersistedTrace({
+        db: prisma,
+        requestId: messageId,
+        traceId: String(traceId),
+        requestedModelId,
+      });
+    }
+    await prisma.$disconnect();
     process.exit(1);
   }
   console.log(`tools called: [${result.value.toolsCalled.join(', ')}]`);
   console.log(`reply length: ${result.value.finalReply.text.length}`);
   console.log(`reply text  : ${result.value.finalReply.text.slice(0, 200)}${result.value.finalReply.text.length > 200 ? '…' : ''}`);
 
+  if (options.trace) {
+    await printPersistedTrace({
+      db: prisma,
+      requestId: messageId,
+      traceId: String(traceId),
+      requestedModelId,
+    });
+  }
+  if (options.fullDebug) {
+    console.log(`full debug log: ${join(process.cwd(), 'latest-agent-run.log')}`);
+  }
   await prisma.$disconnect();
   process.exit(0);
 }

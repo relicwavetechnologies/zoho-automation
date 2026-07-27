@@ -22,6 +22,13 @@ type DeepSeekModel = ReturnType<ReturnType<typeof createDeepSeek>>;
  */
 export const LARK_MODEL_ID = 'deepseek-v4-pro';
 
+export const LARK_MODEL_IDS = {
+  pro: 'deepseek-v4-pro',
+  flash: 'deepseek-v4-flash',
+} as const;
+
+export type LarkModelId = typeof LARK_MODEL_IDS[keyof typeof LARK_MODEL_IDS];
+
 /**
  * Which model Lark runs on, best first.
  *
@@ -32,7 +39,7 @@ export const LARK_MODEL_ID = 'deepseek-v4-pro';
  * expects from a per-model permission and the difference between Divo working
  * and not.
  */
-export const LARK_MODEL_PREFERENCE = ['deepseek-v4-pro', 'deepseek-v4-flash'] as const;
+export const LARK_MODEL_PREFERENCE = [LARK_MODEL_IDS.pro, LARK_MODEL_IDS.flash] as const;
 
 export interface LarkInferenceContext {
   runContext: RunContext;
@@ -40,6 +47,8 @@ export interface LarkInferenceContext {
   threadId?: string;
   agentTarget?: string;
   tracer?: OrchestrationTracer;
+  /** Explicit internal per-run selection; policy still authorizes the model. */
+  requestedModelId?: LarkModelId;
 }
 
 export interface LarkInferenceServiceDeps {
@@ -75,9 +84,10 @@ function toDeepSeekUsage(usage: {
 }
 
 /**
- * Creates a per-run DeepSeek model for Lark. The model is deliberately pinned:
- * agent/company model overrides cannot move Lark away from Pro. Credentials,
- * block/model/rate/budget policy, audit rows and token usage remain backend-owned.
+ * Creates a per-run DeepSeek model for Lark. Normal runs choose the best model
+ * the member holds; an internal caller may request Flash or Pro explicitly.
+ * The same backend model gate still authorizes that exact choice. Credentials,
+ * rate/budget policy, audit rows, and token usage remain backend-owned.
  */
 export class LarkInferenceService {
   private readonly log: Logger;
@@ -93,7 +103,8 @@ export class LarkInferenceService {
    * of them, so the refusal comes from `gate` — one place that audits the
    * denial and phrases it — rather than from two.
    */
-  private async resolveModelId(userId: string): Promise<string> {
+  private async resolveModelId(userId: string, requestedModelId?: LarkModelId): Promise<string> {
+    if (requestedModelId) return requestedModelId;
     try {
       const allowed = await this.deps.policy.allowedModelsFor(String(userId));
       return LARK_MODEL_PREFERENCE.find(model => allowed.includes(model))
@@ -105,7 +116,10 @@ export class LarkInferenceService {
   }
 
   async createModel(context: LarkInferenceContext): Promise<LanguageModel> {
-    const modelId = await this.resolveModelId(String(context.runContext.userId));
+    const modelId = await this.resolveModelId(
+      String(context.runContext.userId),
+      context.requestedModelId,
+    );
     this.log.info('model.selected', {
       modelId,
       companyId: String(context.runContext.companyId),

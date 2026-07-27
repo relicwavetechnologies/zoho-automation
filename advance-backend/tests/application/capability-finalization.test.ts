@@ -160,9 +160,14 @@ describe('capability catalogue reconciliation', () => {
 
 describe('Lark engine harness controls', () => {
   it('defaults to Abhishek and accepts an explicit principal and destination', () => {
-    assert.equal(parseEngineHarnessArgs([], {}).userSelector, 'abhishek@emiactech.com');
+    const defaults = parseEngineHarnessArgs([], {});
+    assert.equal(defaults.userSelector, 'abhishek@emiactech.com');
+    assert.equal(defaults.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
+    assert.equal(defaults.model, 'flash');
+    assert.equal(defaults.trace, true);
     assert.deepEqual(
       parseEngineHarnessArgs([
+        '--model', 'pro',
         '--allow-impersonation',
         '--user', 'Anish Suman',
         '--chat-id', 'oc_custom',
@@ -173,8 +178,11 @@ describe('Lark engine harness controls', () => {
         userSelector: 'Anish Suman',
         chatId: 'oc_custom',
         chatType: 'group',
+        model: 'pro',
         prompt: 'list Airtable bases',
         debugSigs: false,
+        trace: true,
+        fullDebug: false,
         allowImpersonation: true,
         help: false,
       },
@@ -189,6 +197,10 @@ describe('Lark engine harness controls', () => {
     assert.throws(
       () => parseEngineHarnessArgs(['--user', 'Anish Suman'], {}),
       /--allow-impersonation/,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--model', 'ultra'], {}),
+      /flash or pro/,
     );
     assert.throws(
       () => parseEngineHarnessArgs(['--chat-id', 'oc_untrusted'], {}),

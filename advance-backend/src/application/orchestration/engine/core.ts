@@ -36,7 +36,10 @@ import {
   cleanReplyText,
 } from './reply-quality';
 import type { LarkChatContextService } from '../../chat-context/lark-chat-context.service';
-import type { LarkInferenceService } from '../../proxy/lark-inference.service';
+import type {
+  LarkInferenceService,
+  LarkModelId,
+} from '../../proxy/lark-inference.service';
 import { formatGroupContextForPrompt, formatGroupContextMultimodal } from '../../chat-context/group-context-formatter';
 import type { GroupChatWindow } from '../../../domain/conversation/group-context';
 import {
@@ -75,6 +78,8 @@ export interface EngineInput {
   approvalGate?: ApprovalGateService;
   /** Pre-seeded statusMessageId for resume flows (so same bubble is updated). */
   existingStatusMessageId?: string;
+  /** Internal test/run control. LarkInferenceService still enforces model policy. */
+  larkModelId?: LarkModelId;
 }
 
 export interface EngineOutput {
@@ -193,8 +198,8 @@ export class OrchestrationEngine {
       }
     }
 
-    // Lark is intentionally pinned to DeepSeek V4 Pro. This per-run wrapper
-    // resolves backend-held credentials, enforces shared policy and records every
+    // This per-run wrapper resolves backend-held credentials, enforces the
+    // exact requested/default model through shared policy, and records every
     // model call against the same ExecutionRun created above.
     const larkModel = runContext.channel === 'lark' && this.deps.larkInference
       ? await this.deps.larkInference.createModel({
@@ -203,6 +208,7 @@ export class OrchestrationEngine {
         ...(tracer ? { tracer } : {}),
         threadId: String(incoming.chatId),
         agentTarget: 'lark.orchestration',
+        ...(input.larkModelId ? { requestedModelId: input.larkModelId } : {}),
       })
       : undefined;
 

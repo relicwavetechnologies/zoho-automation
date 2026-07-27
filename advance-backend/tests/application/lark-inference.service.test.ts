@@ -4,6 +4,7 @@ import type { LanguageModel } from 'ai';
 import {
   LarkInferenceService,
   LARK_MODEL_ID,
+  LARK_MODEL_IDS,
   LARK_MODEL_PREFERENCE,
 } from '../../src/application/proxy/lark-inference.service.ts';
 import { asCompanyId, asUserId } from '../../src/shared/ids.ts';
@@ -148,6 +149,38 @@ describe('LarkInferenceService', () => {
     const model = await service.createModel({ runContext, executionRunId: 'run-4' });
 
     assert.equal((model as any).modelId, LARK_MODEL_PREFERENCE[0]);
+  });
+
+  it('honors an explicit Flash run even when the account also holds Pro', async () => {
+    const { service, calls } = serviceWithAllowed([
+      LARK_MODEL_IDS.flash,
+      LARK_MODEL_IDS.pro,
+    ]);
+
+    const model = await service.createModel({
+      runContext,
+      executionRunId: 'run-explicit-flash',
+      requestedModelId: LARK_MODEL_IDS.flash,
+    });
+    await (model as any).doGenerate({});
+
+    assert.equal((model as any).modelId, LARK_MODEL_IDS.flash);
+    assert.equal(calls.find(c => c.name === 'gate')?.input.model, LARK_MODEL_IDS.flash);
+  });
+
+  it('does not bypass policy when Pro is explicitly requested', async () => {
+    const { service } = serviceWithAllowed([LARK_MODEL_IDS.flash]);
+
+    const model = await service.createModel({
+      runContext,
+      executionRunId: 'run-explicit-pro',
+      requestedModelId: LARK_MODEL_IDS.pro,
+    });
+
+    await assert.rejects(
+      () => (model as any).doGenerate({}),
+      /is not enabled for this account/,
+    );
   });
 
   it('bills and traces the model it actually ran, not the preferred one', async () => {
