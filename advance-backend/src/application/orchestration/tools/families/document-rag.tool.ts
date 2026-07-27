@@ -58,6 +58,7 @@ export interface DocumentRagBrokerPort {
     requesterUserId: string;
     requesterAiRole: string;
     fileAssetId?:  string;
+    larkChatId?:   string;
     limit?:        number;
   }): Promise<DocumentRagResult['results']>;
 
@@ -65,6 +66,7 @@ export interface DocumentRagBrokerPort {
     fileAssetId:   string;
     companyId:     string;
     requesterUserId: string;
+    larkChatId?:   string;
   }): Promise<{ text: string; fileName: string; cloudinaryUrl: string; truncated: boolean } | null>;
 
   listFiles(input: {
@@ -134,7 +136,12 @@ limit: (optional) max chunks for search, default 6.
           return err(new ToolError({ toolId: 'documentRag', reason: 'bad_args', message: 'fileAssetId is required for readFull' }));
         }
         ctx.onProgress?.('Reading document…');
-        const doc = await this.broker.readFull({ fileAssetId: args.fileAssetId, companyId, requesterUserId });
+        const doc = await this.broker.readFull({
+          fileAssetId: args.fileAssetId, companyId, requesterUserId,
+          ...(runContext.chatId && runContext.channel === 'lark'
+            ? { larkChatId: String(runContext.chatId) }
+            : {}),
+        });
         if (!doc) {
           return ok({ success: false, operation: 'readFull', results: [], message: 'Document not found or not indexed.' });
         }
@@ -160,6 +167,12 @@ limit: (optional) max chunks for search, default 6.
         query: args.query, companyId, requesterUserId, requesterAiRole,
         limit: args.limit ?? 6,
         ...(args.fileAssetId ? { fileAssetId: args.fileAssetId } : {}),
+        // Access scope from the run, never from the model — same rule as
+        // contextSearch. A model-supplied chat id would be a way to read
+        // another room's documents.
+        ...(runContext.chatId && runContext.channel === 'lark'
+          ? { larkChatId: String(runContext.chatId) }
+          : {}),
       });
 
       return ok({

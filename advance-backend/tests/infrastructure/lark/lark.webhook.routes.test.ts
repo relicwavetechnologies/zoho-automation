@@ -134,6 +134,9 @@ async function runWebhook(body: unknown, options: {
   /** Number of user-owned Lark connections revoked by an auth command. */
   larkConnectionCount?: number;
   setupAdapter?: (adapter: LarkChannelAdapter) => void;
+  /** Observe the transcript write / ingestion enqueue ordering. */
+  onRetain?: () => void;
+  onEnqueue?: () => void;
   shareResolverService?: {
     isMemoryReviewAction(cardEvent: unknown): boolean;
     isShareAction(cardEvent: unknown): boolean;
@@ -165,6 +168,7 @@ async function runWebhook(body: unknown, options: {
 } = {}) {
   const order: string[] = [];
   const retainedMessages: Array<Record<string, unknown>> = [];
+  const ingestionJobs: Array<Record<string, unknown>> = [];
   const appendedTurns: Array<Record<string, unknown>> = [];
   const acceptedPayloads: unknown[] = [];
   const engineInputs: unknown[] = [];
@@ -261,15 +265,22 @@ async function runWebhook(body: unknown, options: {
     },
     logger,
     env,
-    // Divo no longer indexes Lark attachments, so the side effect the untagged
-    // policy governs is the download itself — observed through the stubbed
-    // fetch, not here. `chatContextService` remains the spy for the other half:
-    // whether a message enters the room transcript.
+    // Two spies for the two side effects the untagged policy governs: whether
+    // a message enters the room transcript, and whether its documents are
+    // queued for indexing.
     chatContextService: {
       appendMessage: async (message: Record<string, unknown>) => {
         order.push('retain');
+        options.onRetain?.();
         retainedMessages.push(message);
         return ok(null);
+      },
+    } as any,
+    ingestionQueue: {
+      enqueue: async (payload: Record<string, unknown>) => {
+        options.onEnqueue?.();
+        ingestionJobs.push(payload);
+        return 'job-1';
       },
     } as any,
     ...(options.companyControls
@@ -411,6 +422,7 @@ async function runWebhook(body: unknown, options: {
     departmentPreferenceUpdates,
     logEvents,
     retainedMessages,
+    ingestionJobs,
     appendedTurns,
     acceptedPayloads,
     processQueuedReceipt,
@@ -1072,40 +1084,122 @@ describe('Post-login replay', () => {
 });
 
 describe('Lark document attachments', () => {
-  it('never fetches a document out of Lark, even when Divo is addressed', async () => {
+  it('fetches a readable document out of Lark instead of refusing it', async () => {
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
-      chatType: 'p2p',
+      chatType: 'group',
+      mentionsBot: true,
       file: { key: 'file_v3_budget', name: 'budget.xlsx' },
     })));
 
-    // The refusal has to happen before the download, not after it. Fetching a
-    // file we then decline to read is the worst of both: the bytes left Lark
-    // and the user got nothing for it.
-    assert.deepEqual(attemptedDownloads(result.logEvents), [], 'the document never left Lark');
+    assert.deepEqual(
+      attemptedDownloads(result.logEvents), ['budget.xlsx'],
+      'the document is pulled for the inline excerpt',
+    );
     assert.ok(
-      result.logEvents.some(entry => entry.event === 'webhook.attachment.unsupported'),
-      'and the refusal is recorded',
+      !result.logEvents.some(entry => entry.event === 'webhook.attachment.unsupported'),
+      'and is not recorded as a refusal',
     );
     assert.equal(result.status, 200);
-    assert.ok(result.order.includes('engine'), 'Divo still answers the message');
+    assert.ok(result.order.includes('engine'), 'Divo answers the message');
   });
 
-  it('tells the model it did not read the document, and not to pretend it did', async () => {
+  it('waits for the question when a DM carries only a document', async () => {
+    // The upload-then-ask pattern, which is how people send a PDF they want
+    // read. This only became reachable for documents once they were supported:
+    // an unreadable format still gets its refusal immediately, because no
+    // follow-up question would change the answer.
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'p2p',
+      file: { key: 'file_v3_budget', name: 'budget.xlsx' },
+      text: '',
+    })));
+
+    assert.ok(!result.order.includes('engine'), 'no agent run');
+    assert.ok(
+      result.logEvents.some(e => e.event === 'webhook.attachment.awaiting_question'),
+      'and the wait is recorded',
+    );
+    // Silence is only acceptable if the document is still on its way into the
+    // index — otherwise the follow-up question has nothing to retrieve.
+    assert.equal(result.ingestionJobs.length, 1);
+  });
+
+  it('queues the document for indexing even when the inline download fails', async () => {
+    // The two downloads are separate attempts at the same bytes: this turn's
+    // is best-effort, the worker's has three tries with backoff. Every
+    // download fails in this harness, which is exactly the case that must
+    // still reach the queue — otherwise a blip means a document nobody can
+    // ever retrieve.
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
       file: { key: 'file_v3_q3', name: 'Q3-revenue.pdf' },
     })));
 
-    const incoming = (result.engineInputs[0] as Record<string, any>)?.['incoming'];
-    const text = String(incoming?.text ?? '');
-
-    // Without this the model receives a bare filename and answers from it.
-    assert.match(text, /NOT READ/, 'the refusal reaches the prompt');
-    assert.match(text, /Q3-revenue\.pdf/);
-    assert.match(text, /Do not guess or infer/i);
+    assert.equal(result.ingestionJobs.length, 1);
+    const job = result.ingestionJobs[0]!;
+    assert.equal(job['jobType'], 'lark_file');
+    assert.equal(job['fileName'], 'Q3-revenue.pdf');
+    assert.equal(job['larkFileKey'], 'file_v3_q3');
+    assert.equal(job['uploaderChannel'], 'lark');
   });
 
-  it('records the document as unsupported rather than as failed or pending', async () => {
+  it('records the transcript message before queuing the job that updates it', async () => {
+    // The worker writes fileAssetId back onto the transcript row for this
+    // upload. Queue first and a fast job can finish before that row exists,
+    // land in the "message not found" branch, and leave the attachment
+    // reading `processing` forever with nothing to correct it.
+    const order: string[] = [];
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      file: { key: 'file_v3_order', name: 'ordering.pdf' },
+    }), {
+      onRetain: () => order.push('retain'),
+      onEnqueue: () => order.push('enqueue'),
+    }));
+
+    assert.equal(result.ingestionJobs.length, 1, 'the job was queued');
+    assert.equal(order[0], 'retain', 'the transcript row exists first');
+    assert.equal(order[1], 'enqueue');
+  });
+
+  it('scopes the document to the chat it was posted in', async () => {
+    // This is the whole access model: a file dropped in a room is readable by
+    // that room and by nobody else. Losing larkChatId would silently narrow
+    // the file to its uploader, and every colleague's question would come back
+    // empty with no error to explain why.
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      file: { key: 'file_v3_spec', name: 'spec.docx' },
+    })));
+
+    const job = result.ingestionJobs[0]!;
+    assert.equal(job['larkChatId'], 'oc_1');
+    assert.equal(
+      job['visibility'], 'personal',
+      'company-wide sharing is not implied by posting in one room',
+    );
+  });
+
+  it('indexes silently when Divo was not addressed', async () => {
+    // The worker quote-replies an "indexed" card wherever replyToMessageId
+    // points. In a room where Divo was never spoken to, that card is Divo
+    // interrupting — so the file is indexed with nowhere to announce it.
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: false,
+      file: { key: 'file_v3_quiet', name: 'notes.pdf' },
+    })));
+
+    assert.equal(result.ingestionJobs.length, 1, 'the document is still indexed');
+    const job = result.ingestionJobs[0]!;
+    assert.equal(job['replyToMessageId'], undefined, 'nothing to announce into');
+    assert.ok(job['groupContextMessageId'], 'but the transcript is still annotated');
+  });
+
+  it('records the document as processing so the model knows more is coming', async () => {
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'group',
       mentionsBot: true,
@@ -1114,13 +1208,36 @@ describe('Lark document attachments', () => {
 
     const attachments = attachmentsOf(result.retainedMessages[0]);
     assert.equal(attachments.length, 1);
-    // 'failed' would imply something went wrong and a retry might help;
-    // 'processing' would imply an answer is coming. Neither is true.
-    assert.equal(attachments[0]?.['ingestionStatus'], 'unsupported');
-    assert.equal(attachments[0]?.['error'], undefined, 'a refusal is not an error');
+    // 'unsupported' would tell the model to give up; 'inline_only' would tell
+    // it the excerpt is all there will ever be. Neither is true once the file
+    // is queued.
+    assert.equal(attachments[0]?.['ingestionStatus'], 'processing');
   });
 
-  it('does not acknowledge a document-only message with a received reaction', async () => {
+  it('still refuses a format it has no reader for, without downloading it', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'p2p',
+      file: { key: 'file_v3_zip', name: 'bundle.zip' },
+    })));
+
+    // The refusal has to happen before the download, not after it. Fetching a
+    // file we then decline to read is the worst of both: the bytes left Lark
+    // and the user got nothing for it.
+    assert.deepEqual(attemptedDownloads(result.logEvents), [], 'the archive never left Lark');
+    assert.ok(
+      result.logEvents.some(entry => entry.event === 'webhook.attachment.unsupported'),
+      'and the refusal is recorded',
+    );
+    assert.deepEqual(result.ingestionJobs, [], 'and nothing is queued for indexing');
+
+    const incoming = (result.engineInputs[0] as Record<string, any>)?.['incoming'];
+    const text = String(incoming?.text ?? '');
+    assert.match(text, /NOT READ/, 'the refusal reaches the prompt');
+    assert.match(text, /bundle\.zip/);
+    assert.match(text, /Do not guess or infer/i);
+  });
+
+  it('acknowledges a readable document with a received reaction', async () => {
     const reactions: string[] = [];
     await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'p2p',
@@ -1133,8 +1250,24 @@ describe('Lark document attachments', () => {
       },
     }));
 
-    // A 📥 says "received, working on it" and is then contradicted by the
-    // refusal that follows.
+    // A 📥 means "received, working on it", which is now true for documents.
+    assert.deepEqual(reactions, ['\u{1F4E5}']);
+  });
+
+  it('does not acknowledge a document it cannot read', async () => {
+    const reactions: string[] = [];
+    await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'p2p',
+      file: { key: 'file_v3_zip', name: 'bundle.zip' },
+    }), {
+      setupAdapter: adapter => {
+        (adapter as any).reactToIncoming = async (_id: string, emoji: string) => {
+          reactions.push(emoji);
+        };
+      },
+    }));
+
+    // A 📥 here says "working on it" and is then contradicted by the refusal.
     assert.deepEqual(reactions, []);
   });
 });
@@ -1344,7 +1477,7 @@ describe('Lark untagged group policy', () => {
   it('reports the policy it actually applied, not the policy configured', async () => {
     const result = await runWebhook(makeEvent({
       chatType: 'group',
-      file: { key: 'file_v3_x', name: 'notes.txt' },
+      image: { key: 'img_v3_x' },
     }));
 
     const skipped = result.logEvents.find(
@@ -1354,6 +1487,50 @@ describe('Lark untagged group policy', () => {
     assert.equal(skipped.fields['attachmentCount'], 1, 'the attachment is still counted');
     assert.equal(skipped.fields['attachmentsProcessed'], false);
     assert.equal(skipped.fields['textRetained'], true);
+  });
+
+  // ── Documents are exempt from this gate ──────────────────────────────────
+  // Lark gives a file message no text field, so a document upload can never
+  // carry an @mention — it is *structurally* untagged. Gating documents on
+  // the mention would mean Divo could never read one posted in a group, which
+  // is the entire feature.
+
+  it('indexes a document posted without mentioning Divo', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      file: { key: 'file_v3_untagged', name: 'notes.pdf' },
+    })));
+
+    assert.equal(result.ingestionJobs.length, 1, 'the document is queued');
+    assert.equal(result.ingestionJobs[0]?.['larkChatId'], 'oc_1');
+    assert.ok(!result.order.includes('engine'), 'but Divo does not butt in');
+  });
+
+  it('records the untagged document in the transcript so a later question finds it', async () => {
+    // The upload-then-ask flow lives or dies here. A file message carries no
+    // text, so without the attachment the transcript keeps no trace that a
+    // document ever arrived — and the follow-up "@Divo what does it say" has
+    // nothing to resolve "it" to.
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      file: { key: 'file_v3_untagged', name: 'notes.pdf' },
+    })));
+
+    const attachments = attachmentsOf(result.retainedMessages[0]);
+    assert.equal(attachments.length, 1, 'the upload is in the transcript');
+    assert.equal(attachments[0]?.['fileName'], 'notes.pdf');
+  });
+
+  it('still refuses an untagged image while accepting an untagged document', async () => {
+    // The exemption is for documents only. An image posted uninvited is still
+    // never sent to a third-party vision provider.
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      image: { key: 'img_v3_secret' },
+    })));
+
+    assert.deepEqual(attemptedDownloads(result.logEvents), [], 'the image never left Lark');
+    assert.deepEqual(result.ingestionJobs, [], 'and nothing was indexed');
   });
 });
 

@@ -36,6 +36,7 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
     requesterUserId: string;
     requesterAiRole: string;
     fileAssetId?:    string;
+    larkChatId?:     string;
     limit?:          number;
   }): Promise<Array<{
     text: string; fileName: string; fileAssetId: string;
@@ -47,7 +48,14 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
       ? buildDocumentSearchQueries(input.query)
       : [input.query];
 
-    const results = await this.runSearch(queries, input.companyId, input.requesterAiRole, input.fileAssetId, limit * 4);
+    const scope = {
+      companyId: input.companyId,
+      requesterUserId: input.requesterUserId,
+      requesterAiRole: input.requesterAiRole,
+      ...(input.fileAssetId ? { fileAssetId: input.fileAssetId } : {}),
+      ...(input.larkChatId ? { larkChatId: input.larkChatId } : {}),
+    };
+    const results = await this.runSearch(queries, scope, limit * 4);
 
     // Rerank
     const ranked = this.env.FILE_RAG_GRADING_ENABLED
@@ -58,7 +66,7 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
     if (ranked.length < 2 && this.env.FILE_RAG_GRADING_ENABLED) {
       const broadened = broadenDocumentSearchQuery(input.query);
       if (broadened !== input.query) {
-        const retryResults = await this.runSearch([broadened], input.companyId, input.requesterAiRole, input.fileAssetId, limit * 4);
+        const retryResults = await this.runSearch([broadened], scope, limit * 4);
         const retryRanked = await this.reranker.rerank(broadened, retryResults, { companyId: input.companyId });
         ranked.push(...retryRanked.filter(r => !ranked.find(e => e.chunk.id === r.chunk.id)));
       }
@@ -82,7 +90,40 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
     fileAssetId:     string;
     companyId:       string;
     requesterUserId: string;
+    larkChatId?:     string;
   }): Promise<{ text: string; fileName: string; cloudinaryUrl: string; truncated: boolean } | null> {
+    // Ownership is checked before a single byte is read.
+    //
+    // This path resolves a document by id alone, and ids travel: they are
+    // written into chat transcripts as retrieval hints, so anyone who has seen
+    // one can quote it back later from another company or after leaving the
+    // room it came from. Without this check that read succeeds.
+    const assetResult = await this.fileAssetRepo.findById(input.fileAssetId);
+    if (!assetResult.ok || !assetResult.value) return null;
+    const asset = assetResult.value;
+    if (asset.companyId !== input.companyId) {
+      this.log.warn('document_rag.read_full.cross_company_denied', {
+        fileAssetId: input.fileAssetId,
+        requesterCompanyId: input.companyId,
+      });
+      return null;
+    }
+
+    // Company ownership is not the whole rule. A document posted into a Lark
+    // room is readable by that room, so a colleague who was never in it — or
+    // who has since left — must not get the full text just by holding the id.
+    // The uploader keeps access from anywhere.
+    if (asset.uploaderUserId !== input.requesterUserId) {
+      const reachable = await this.isReachableFromChat(input.fileAssetId, input.larkChatId);
+      if (!reachable) {
+        this.log.warn('document_rag.read_full.out_of_scope_denied', {
+          fileAssetId: input.fileAssetId,
+          requesterUserId: input.requesterUserId,
+        });
+        return null;
+      }
+    }
+
     const result = await readFullDocFromVectorStore(input.fileAssetId, {
       vectorDocRepo: this.vectorDocRepo,
       logger:        this.log,
@@ -90,11 +131,6 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
     });
 
     if (result) return result;
-
-    // Fallback: fetch asset metadata then re-extract from Cloudinary
-    const assetResult = await this.fileAssetRepo.findById(input.fileAssetId);
-    if (!assetResult.ok || !assetResult.value) return null;
-    const asset = assetResult.value;
 
     const { readFullDocFromCloudinary } = await import('./full-doc-reader');
     const text = await readFullDocFromCloudinary(
@@ -133,23 +169,56 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
 
   // ── Private helpers ──────────────────────────────────────────────────────────
 
+  /**
+   * Whether this document was posted into the chat the caller is asking from.
+   *
+   * The scope key lives on the chunk payload rather than on `FileAsset`, which
+   * is what let chat scoping ship without a migration. The cost is that
+   * answering this question means reading a chunk.
+   *
+   * A document with no scope key at all is not chat-scoped — it came from the
+   * desktop uploader — so it is refused here and left to the ordinary
+   * visibility rules, which this method deliberately does not try to restate.
+   */
+  private async isReachableFromChat(
+    fileAssetId: string,
+    larkChatId: string | undefined,
+  ): Promise<boolean> {
+    if (!larkChatId) return false;
+    const chunks = await this.vectorDocRepo.findByFileAsset(fileAssetId);
+    if (!chunks.ok || !chunks.value) return false;
+    return chunks.value.some(row => {
+      const payload = row.payload as Record<string, unknown> | null;
+      return payload?.['larkChatId'] === larkChatId;
+    });
+  }
+
   private async runSearch(
     queries: string[],
-    companyId: string,
-    requesterAiRole: string,
-    fileAssetId: string | undefined,
+    scope: {
+      companyId: string;
+      requesterUserId: string;
+      requesterAiRole: string;
+      fileAssetId?: string;
+      larkChatId?: string;
+    },
     candidateLimit: number,
   ): Promise<VectorSearchResult[]> {
     const seen = new Set<string>();
     const allResults: VectorSearchResult[] = [];
 
     for (const q of queries) {
-      const [embedding] = await this.embedding.embedQueries([q], { companyId });
+      const [embedding] = await this.embedding.embedQueries([q], { companyId: scope.companyId });
       if (!embedding) continue;
 
       const groups = await this.qdrant.search({
-        companyId,
-        requesterAiRole,
+        companyId:        scope.companyId,
+        // `includePersonal` is inert without a requester: `buildScopeShould`
+        // drops the personal branch when `requesterUserId` is absent, so
+        // omitting it here silently hid every personal file — including every
+        // document uploaded through Lark.
+        requesterUserId:  scope.requesterUserId,
+        requesterAiRole:  scope.requesterAiRole,
         denseVector:      embedding,
         limit:            candidateLimit,
         retrievalProfile: 'file',
@@ -157,7 +226,8 @@ export class DocumentRagBroker implements DocumentRagBrokerPort {
         schemaVersion:    ACTIVE_EMBEDDING_SCHEMA_VERSION,
         includePersonal:  true,
         includeShared:    true,
-        ...(fileAssetId ? { fileAssetId } : {}),
+        ...(scope.fileAssetId ? { fileAssetId: scope.fileAssetId } : {}),
+        ...(scope.larkChatId ? { larkChatId: scope.larkChatId } : {}),
       });
 
       // Flatten groups → individual results

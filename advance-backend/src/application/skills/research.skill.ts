@@ -12,13 +12,14 @@ CONTACT LOOKUP — use larkContacts tool directly (NOT contextSearch):
 - Multiple: { op: "lookup", queries: ["Rahul", "Bhojraj", "Archit"] }
 - Result: { found: [...], ambiguous: [...], notFound: [...] }
 - If notFound, fall back to contextSearch with source=zohoCrm, then personalHistory.
-- NEVER use contextSearch source=lark_contacts for people. NEVER use web for contact lookups.
+- NEVER use contextSearch source=lark_contacts for people. NEVER use webSearch for contact lookups.
 
 CONTEXT SEARCH — pick the narrowest source:
 - Conversation/recall ("what did we discuss", "the draft from last time") → personalHistory only. NEVER search files or CRM for recall.
 - File/document/image ("the contract PDF", "screenshot I sent") → files only. Use full user description as query.
+- When the conversation gives you a fileAssetId for the file being asked about, pass it as contextSearch's fileAssetId. That pins the search to that exact document instead of guessing from its name.
 - CRM/business records ("Acme account", "deal with Foo Corp") → zohoCrm.
-- Web/external ("latest news", "current pricing") → web only. Never answer current pricing from model memory.
+- Web/external ("latest news", "current pricing") → the webSearch tool. contextSearch is company-internal only and has no web source. Never answer current pricing from model memory.
 - Cross-source ("everything about Acme") → run multiple sources in parallel, dedupe by entity.
 
 FILE CONTENT OUTPUT FORMAT:

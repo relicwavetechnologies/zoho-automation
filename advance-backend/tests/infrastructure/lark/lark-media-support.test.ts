@@ -5,6 +5,7 @@ import {
   isSupportedLarkMedia,
   isAwaitingItsQuestion,
   unsupportedDocumentNotice,
+  quotedDocumentNotice,
   withoutTransientBytes,
   MAX_INLINE_IMAGE_BYTES,
 } from '../../../src/infrastructure/channels/lark/lark-media-support.ts';
@@ -16,37 +17,109 @@ describe('classifyLarkMedia', () => {
     assert.equal(isSupportedLarkMedia({ type: 'image' }), true);
   });
 
-  it('refuses documents', () => {
-    // `file` is every document kind the parser produces — PDF, DOCX, XLSX, CSV.
-    // There is no per-extension allowance, deliberately: a format that extracts
-    // cleanly still has nowhere to be stored and nothing to retrieve it.
-    assert.equal(classifyLarkMedia({ type: 'file' }), 'unsupported_document');
-    assert.equal(isSupportedLarkMedia({ type: 'file' }), false);
+  it('accepts every document format that has an extractor behind it', () => {
+    // Kept in step with the dispatch in `text-extraction/extract`. A format
+    // listed here but missing there would be downloaded, decoded as raw text,
+    // and indexed as mojibake.
+    for (const fileName of [
+      'q3.pdf', 'notes.docx', 'legacy.doc', 'budget.xlsx', 'old.xls',
+      'rows.csv', 'rows.tsv', 'page.html', 'page.htm', 'readme.md',
+      'notes.txt', 'data.json',
+    ]) {
+      assert.equal(
+        classifyLarkMedia({ type: 'file', fileName }), 'supported',
+        `${fileName} should be readable`,
+      );
+    }
+  });
+
+  it('refuses formats with no extractor rather than decoding them as text', () => {
+    // The failure this prevents: `extractFromBuffer` falls through to
+    // `decodeTextBuffer` for anything it does not recognise, so an archive
+    // becomes pages of noise and is embedded as if it were prose.
+    for (const fileName of ['bundle.zip', 'clip.mp4', 'setup.exe', 'song.mp3']) {
+      assert.equal(
+        classifyLarkMedia({ type: 'file', fileName }), 'unsupported_document',
+        `${fileName} should be refused`,
+      );
+    }
+    assert.equal(isSupportedLarkMedia({ type: 'file', fileName: 'bundle.zip' }), false);
+  });
+
+  it('trusts a readable extension when Lark reports a generic MIME type', () => {
+    // Lark sends application/octet-stream for anything the parser's own table
+    // misses; refusing a readable PDF over a missing content type would be a
+    // silent regression that only shows up for some senders.
+    assert.equal(
+      classifyLarkMedia({ type: 'file', fileName: 'q3.pdf', mimeType: 'application/octet-stream' }),
+      'supported',
+    );
+  });
+
+  it('trusts a readable MIME type when the filename has no extension', () => {
+    assert.equal(
+      classifyLarkMedia({ type: 'file', fileName: 'scan', mimeType: 'application/pdf' }),
+      'supported',
+    );
   });
 });
 
 describe('unsupportedDocumentNotice', () => {
-  const notice = unsupportedDocumentNotice('Q3-revenue.pdf');
+  const notice = unsupportedDocumentNotice('archive.zip');
 
   it('names the file so the reply can refer to it', () => {
-    assert.match(notice, /Q3-revenue\.pdf/);
+    assert.match(notice, /archive\.zip/);
   });
 
   it('forbids inferring content from the filename', () => {
-    // The failure this prevents: a model handed `[File: Q3-revenue.pdf]` and
+    // The failure this prevents: a model handed `[File: Q3-revenue.zip]` and
     // nothing else will describe Q3 revenue rather than admit it cannot read.
     assert.match(notice, /Do not guess or infer/i);
     assert.match(notice, /Do not claim to have read it/i);
   });
 
-  it('offers the routes that actually work today', () => {
-    assert.match(notice, /screenshot/i, 'images are readable');
-    assert.match(notice, /paste/i, 'text can be pasted');
-    assert.match(notice, /desktop app/i, 'the desktop app reads documents locally');
+  it('names the formats that do work', () => {
+    assert.match(notice, /PDF/i);
+    assert.match(notice, /Excel/i);
   });
 
-  it('says the capability is coming rather than refusing flatly', () => {
-    assert.match(notice, /building it|coming soon/i);
+  it('blames the format rather than the channel', () => {
+    // Divo reads PDFs over Lark now, so the old advice — screenshot it, or use
+    // the desktop app — would send the user down a route that fails the same
+    // way. The desktop app cannot open a .zip either.
+    assert.doesNotMatch(notice, /desktop app/i);
+    assert.doesNotMatch(notice, /cannot read documents/i);
+  });
+});
+
+describe('quotedDocumentNotice', () => {
+  const notice = quotedDocumentNotice('Q3-revenue.pdf');
+
+  it('names the file and points at the transcript annotation', () => {
+    assert.match(notice, /Q3-revenue\.pdf/);
+    assert.match(notice, /fileAssetId/);
+    assert.match(notice, /contextSearch/);
+  });
+
+  it('forbids answering from the filename when nothing is found', () => {
+    // A quote-reply is usually a two-word question, and a model holding only a
+    // filename will answer it anyway.
+    assert.match(notice, /cannot locate the file/i);
+    assert.match(notice, /Never answer from the filename alone/i);
+  });
+
+  it('gives a DM a way through, since a DM has no transcript to look in', () => {
+    // The transcript that carries fileAssetId is written only for groups. An
+    // instruction that ends at "look in the transcript, else give up" made
+    // Divo refuse a document in a DM that was indexed and retrievable — a
+    // confident refusal with nothing to signal it was wrong.
+    assert.match(notice, /Otherwise call contextSearch/i);
+    assert.match(notice, /Q3-revenue\.pdf" as the query/);
+    assert.match(notice, /does not mean the file is missing/i);
+  });
+
+  it('does not tell the model to give up before it has searched', () => {
+    assert.match(notice, /Only after a search comes back empty/i);
   });
 });
 
@@ -124,8 +197,8 @@ describe('isAwaitingItsQuestion', () => {
     );
   });
 
-  it('refuses a document now rather than waiting for a question', () => {
-    // No follow-up can make a PDF readable, so waiting would leave the user
+  it('refuses an unreadable format now rather than waiting for a question', () => {
+    // No follow-up can make a .zip readable, so waiting would leave the user
     // with silence instead of an honest refusal.
     assert.equal(
       isAwaitingItsQuestion({
@@ -135,7 +208,7 @@ describe('isAwaitingItsQuestion', () => {
     );
   });
 
-  it('does not wait when an image arrives alongside a document', () => {
+  it('does not wait when a readable file arrives alongside an unreadable one', () => {
     assert.equal(
       isAwaitingItsQuestion({
         chatType: 'p2p', text: '', supportedAttachmentCount: 1, unsupportedAttachmentCount: 1,
@@ -150,6 +223,40 @@ describe('isAwaitingItsQuestion', () => {
     assert.equal(
       isAwaitingItsQuestion({ chatType: 'group', text: '', supportedAttachmentCount: 1, unsupportedAttachmentCount: 0 }),
       false,
+    );
+  });
+});
+
+
+// ─── Inline readers must exist for everything declared supported ────────────
+
+describe('every accepted document format has an inline reader', () => {
+  it('extracts a spreadsheet inline rather than handing over a bare filename', async () => {
+    // The failure this prevents: `budget.xlsx` was accepted by the classifier
+    // but had no branch in `extractDocContext`, so it reached the model as
+    // `[File: "budget.xlsx"]` — no content, and no "do not guess" guard either,
+    // because the refusal notice no longer applied. The model answers anyway.
+    const { extractAttachmentInlineContext } = await import(
+      '../../../src/infrastructure/channels/lark/lark-inline-context.ts'
+    );
+    const log: any = { info() {}, warn() {}, error() {}, debug() {}, child() { return log; } };
+
+    const result = await extractAttachmentInlineContext(
+      {
+        type: 'file', key: 'k', fileName: 'budget.xlsx', messageId: 'm',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+      Buffer.from('not a real workbook'),
+      {} as never,
+      log,
+    );
+
+    // The bytes are deliberate rubbish, so extraction yields nothing — what
+    // matters is that it went down a reader branch and said so, rather than
+    // falling through to a bare filename the model would speculate from.
+    assert.doesNotMatch(
+      result.context, /^\[File: "budget\.xlsx"\]$/,
+      'a spreadsheet must not fall through to the filename-only branch',
     );
   });
 });

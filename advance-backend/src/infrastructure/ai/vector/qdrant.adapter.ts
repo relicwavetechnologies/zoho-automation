@@ -108,6 +108,23 @@ function buildScopeShould(q: VectorSearchQuery): FilterClause[] {
       ],
     });
   }
+  // A file uploaded into a Lark chat is readable by anyone searching from that
+  // chat, whoever uploaded it, and by nobody outside it. The scope key is the
+  // chat id, so membership is enforced upstream by Lark: a non-member never
+  // gets a turn whose runContext carries this chat.
+  //
+  // This is an additional `should` branch rather than a new visibility value,
+  // which keeps chat scope out of the VectorVisibility enum and off the
+  // migration path. Files stay `personal`, so the owner still reaches them from
+  // anywhere while everyone else needs the room.
+  if (q.larkChatId) {
+    should.push({
+      must: [
+        { key: 'companyId', match: { value: q.companyId } },
+        { key: 'larkChatId', match: { value: q.larkChatId } },
+      ],
+    });
+  }
   if (should.length === 0) {
     should.push({ must: [{ key: 'companyId', match: { value: q.companyId } }] });
   }
@@ -181,6 +198,13 @@ type FieldSchema =
   | 'datetime'
   | { type: 'text'; tokenizer?: 'multilingual' | 'word'; lowercase?: boolean; min_token_len?: number };
 
+/**
+ * Exported so tests can queue exactly one mock response per index create
+ * instead of hardcoding the count — adding an index used to silently shift
+ * every later response and fail three unrelated assertions.
+ */
+export const PAYLOAD_INDEX_COUNT = (): number => PAYLOAD_INDEXES.length;
+
 const PAYLOAD_INDEXES: Array<{ fieldName: string; fieldSchema: FieldSchema }> = [
   { fieldName: 'companyId',              fieldSchema: 'keyword' },
   { fieldName: 'documentKey',            fieldSchema: 'keyword' },
@@ -191,6 +215,7 @@ const PAYLOAD_INDEXES: Array<{ fieldName: string; fieldSchema: FieldSchema }> = 
   { fieldName: 'ownerUserId',            fieldSchema: 'keyword' },
   { fieldName: 'referenceEmails',        fieldSchema: 'keyword' },
   { fieldName: 'conversationKey',        fieldSchema: 'keyword' },
+  { fieldName: 'larkChatId',             fieldSchema: 'keyword' },
   { fieldName: 'allowedRoles',           fieldSchema: 'keyword' },
   { fieldName: 'embeddingSchemaVersion', fieldSchema: 'keyword' },
   { fieldName: 'retrievalProfile',       fieldSchema: 'keyword' },

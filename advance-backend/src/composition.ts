@@ -46,7 +46,6 @@ import { LarkApprovalClient } from './infrastructure/channels/lark/clients/lark-
 import { createEmbeddingService } from './infrastructure/ai/embedding/embedding.service';
 import { QdrantAdapter } from './infrastructure/ai/vector/qdrant.adapter';
 import { SerperClient } from './infrastructure/ai/search/serper.client';
-import { WebSearchService } from './infrastructure/ai/search/web-search.service';
 import { ContextSearchBroker } from './application/context-search/context-search.broker';
 import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
@@ -688,13 +687,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger.child({ service: 'company-oms-site-data' }),
     env.OMS_SITE_DATA_API_KEY ?? '',
   );
-  const webSearchService = new WebSearchService({
-    search(input, companyId) {
-      return companyId
-        ? companySerperService.search(companyId, input)
-        : serperClient.search(input);
-    },
-  }, logger.child({ service: 'web-search' }));
 
   // ── Lark user OAuth ───────────────────────────────────────────────────────
   const larkOAuthRedirectUri =
@@ -1358,7 +1350,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const contextSearchBroker = new ContextSearchBroker({
     vectorStore:    qdrantAdapter,
     embedding:      embeddingService,
-    webSearch:      webSearchService,
     larkContacts:   channelIdentityRepo,
     zohoBooks:      zohoBooksSearchAdapter,
     skills:         skillsService,

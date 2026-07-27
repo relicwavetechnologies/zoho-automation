@@ -27,12 +27,14 @@ const ContextSearchArgsSchema = z.object({
     zohoCrmContext:  z.boolean().optional(),
     zohoBooksLive:   z.boolean().optional(),
     workspace:       z.boolean().optional(),
-    web:             z.boolean().optional(),
     skills:          z.boolean().optional(),
   }).optional().describe('Explicit source overrides; unset sources use smart defaults'),
   dateFrom: z.string().optional().describe('ISO-8601 date range start (inclusive)'),
   dateTo:   z.string().optional().describe('ISO-8601 date range end (inclusive)'),
-  site:     z.string().optional().describe('Restrict web search to this domain (e.g. "docs.example.com")'),
+  fileAssetId: z.string().optional().describe(
+    'Restrict the search to one indexed document. Pass this whenever the conversation '
+    + 'names a fileAssetId for the file being asked about.',
+  ),
 });
 
 type ContextSearchArgs = z.infer<typeof ContextSearchArgsSchema>;
@@ -87,7 +89,8 @@ export interface ContextSearchBrokerPort {
     sources?: ContextSearchArgs['sources'];
     dateFrom?: string;
     dateTo?: string;
-    site?: string;
+    fileAssetId?: string;
+    larkChatId?: string;
     workspacePath?: string;
   }): Promise<ContextSearchOutput>;
 }
@@ -104,13 +107,14 @@ export const createContextSearchTool = (deps: {
   resultSchema: ContextSearchResultSchema,
   description:
     'Search the company knowledge base, CRM, Books, Lark contacts, company files, ' +
-    'workspace, web, and skills in parallel. Returns ranked excerpts with citations.',
+    'workspace, and skills in parallel. Returns ranked excerpts with citations. ' +
+    'Company-internal only — for the public internet use the webSearch tool.',
   parameterDocs: `
 - query: Full-text or semantic query string
 - limit: Max results to return (1–10, default 5)
-- sources: Explicit per-source flags (defaults: personalHistory=true, files=true, larkContacts=true, zohoCrmContext=true; web/skills/workspace/zohoBooksLive=false unless set)
+- sources: Explicit per-source flags (defaults: personalHistory=true, files=true, larkContacts=true, zohoCrmContext=true; skills/workspace/zohoBooksLive=false unless set)
 - dateFrom / dateTo: ISO-8601 date range filter
-- site: Restrict web search to a specific domain
+- fileAssetId: Restrict to one indexed document. Use it when the conversation gives you the id of the file being asked about — it is far more reliable than naming the file in the query.
   `.trim(),
 
   permissionCheck(_args: ContextSearchArgs, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
@@ -136,7 +140,10 @@ export const createContextSearchTool = (deps: {
         ...(args.sources ? { sources: args.sources } : {}),
         ...(args.dateFrom ? { dateFrom: args.dateFrom } : {}),
         ...(args.dateTo   ? { dateTo: args.dateTo }     : {}),
-        ...(args.site     ? { site: args.site }         : {}),
+        ...(args.fileAssetId ? { fileAssetId: args.fileAssetId } : {}),
+        // Access scope, not a filter the model chose: it comes from the run,
+        // so a model cannot widen its own reach by naming someone else's chat.
+        ...(rc.chatId && rc.channel === 'lark' ? { larkChatId: String(rc.chatId) } : {}),
       });
 
       return ok({

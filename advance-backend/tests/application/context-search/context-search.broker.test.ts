@@ -20,7 +20,6 @@ import { ContextSearchBroker } from '../../../src/application/context-search/con
 import type { ContextSearchBrokerDeps } from '../../../src/application/context-search/context-search.broker.ts';
 import type { LarkContactPort, ZohoBooksPort, SkillPort, EmbeddingPort } from '../../../src/application/context-search/context-search.ports.ts';
 import type { VectorStoreAdapter } from '../../../src/infrastructure/ai/vector/types.ts';
-import type { WebSearchService } from '../../../src/infrastructure/ai/search/web-search.service.ts';
 import type { Logger } from '../../../src/shared/logger.ts';
 
 // ─── Test doubles ─────────────────────────────────────────────────────────────
@@ -60,15 +59,10 @@ const emptySkills: SkillPort = {
   readById: async () => null,
 };
 
-const emptyWebSearch = {
-  search: async () => ({ query: '', focusedSiteSearch: false, items: [], sourceRefs: [] }),
-} as unknown as WebSearchService;
-
 function makeDeps(overrides: Partial<ContextSearchBrokerDeps> = {}): ContextSearchBrokerDeps {
   return {
     vectorStore:  emptyVectorStore,
     embedding:    nullEmbedding,
-    webSearch:    emptyWebSearch,
     larkContacts: emptyLarkContacts,
     zohoBooks:    emptyZohoBooks,
     skills:       emptySkills,
@@ -109,42 +103,24 @@ describe('ContextSearchBroker — source selection', () => {
     assert.ok(calls.includes('larkContacts'), 'larkContacts should run by default');
   });
 
-  it('web source is disabled by default', async () => {
-    let webCalled = false;
-    const broker = makeBroker({
-      webSearch: {
-        search: async () => { webCalled = true; return { query: '', focusedSiteSearch: false, items: [], sourceRefs: [] }; },
-      } as unknown as WebSearchService,
-    });
-    const result = await broker.search({ ...BASE_INPUT });
-    assert.equal(webCalled, false, 'web should not run by default');
-    assert.equal(result.sourceCoverage.web.status, 'disabled');
-  });
-
-  it('web source runs when explicitly enabled', async () => {
-    let webCalled = false;
-    const broker = makeBroker({
-      webSearch: {
-        search: async () => { webCalled = true; return { query: '', focusedSiteSearch: false, items: [], sourceRefs: [] }; },
-      } as unknown as WebSearchService,
-    });
-    await broker.search({ ...BASE_INPUT, sources: { web: true } });
-    assert.equal(webCalled, true);
-  });
-
-  it('passes the company scope to the web search connection pool', async () => {
-    let companyId: string | undefined;
-    const broker = makeBroker({
-      webSearch: {
-        search: async (input: { companyId?: string }) => {
-          companyId = input.companyId;
-          return { query: '', focusedSiteSearch: false, items: [], sourceRefs: [] };
-        },
-      } as unknown as WebSearchService,
+  it('has no web source at all, not merely a disabled one', async () => {
+    // Context search answers from what the company knows; the public internet
+    // is the separate webSearch tool. A disabled-by-default flag was not
+    // enough — the model could set it, which made the authority of an answer
+    // depend on a boolean it chose for itself.
+    const result = await makeBroker().search({
+      ...BASE_INPUT,
+      sources: { web: true } as never,
     });
 
-    await broker.search({ ...BASE_INPUT, sources: { web: true } });
-    assert.equal(companyId, 'company-1');
+    assert.equal(
+      (result.sourceCoverage as Record<string, unknown>)['web'], undefined,
+      'web is not a source key',
+    );
+    assert.deepEqual(
+      result.results.filter(r => r.scope === 'web'), [],
+      'and nothing can arrive under a web scope',
+    );
   });
 
   it('workspace auto-enables when workspacePath is provided', async () => {
@@ -164,8 +140,8 @@ describe('ContextSearchBroker — source selection', () => {
         searchContacts: async () => { larkCalled = true; return []; },
       },
     });
-    // Only web requested — larkContacts should be disabled
-    await broker.search({ ...BASE_INPUT, sources: { web: true, larkContacts: false } });
+    // Only skills requested — larkContacts should be disabled
+    await broker.search({ ...BASE_INPUT, sources: { skills: true, larkContacts: false } });
     assert.equal(larkCalled, false, 'larkContacts disabled explicitly');
   });
 });
@@ -180,19 +156,18 @@ describe('ContextSearchBroker — fanout & error containment', () => {
           larkOpenId: 'ou_abc', displayName: 'Alice', email: 'alice@example.com',
         }],
       },
-      webSearch: {
-        search: async () => ({
-          query: 'q', focusedSiteSearch: false,
-          items: [{ title: 'WebResult', link: 'https://example.com/p', domain: 'example.com', source: 'organic' as const }],
-          sourceRefs: [],
-        }),
-      } as unknown as WebSearchService,
+      skills: {
+        search:   async () => [{
+          id: 'sk1', slug: 'onboarding', name: 'Onboarding', markdown: 'How we onboard new hires.',
+        }],
+        readById: async () => null,
+      },
     });
 
-    const result = await broker.search({ ...BASE_INPUT, sources: { larkContacts: true, web: true, personalHistory: false, files: false, zohoCrmContext: false } });
+    const result = await broker.search({ ...BASE_INPUT, sources: { larkContacts: true, skills: true, personalHistory: false, files: false, zohoCrmContext: false } });
     const scopes = result.results.map(r => r.scope);
     assert.ok(scopes.includes('lark_contacts'), 'should include lark result');
-    assert.ok(scopes.includes('web'), 'should include web result');
+    assert.ok(scopes.includes('skills'), 'should include skill result');
   });
 
   it('source error is captured in coverage, does not throw', async () => {
@@ -283,19 +258,15 @@ describe('ContextSearchBroker — ranking and dedup', () => {
 
   it('results contain authorityLevel', async () => {
     const broker = makeBroker({
-      webSearch: {
-        search: async () => ({
-          query: 'q', focusedSiteSearch: false,
-          items: [{ title: 'T', link: 'https://example.com', domain: 'example.com', source: 'organic' as const }],
-          sourceRefs: [],
-        }),
-      } as unknown as WebSearchService,
+      larkContacts: {
+        searchContacts: async () => [{ larkOpenId: 'ou_auth', displayName: 'Dana', email: 'dana@x.com' }],
+      },
     });
     const result = await broker.search({
       ...BASE_INPUT,
-      sources: { web: true, personalHistory: false, files: false, larkContacts: false, zohoCrmContext: false },
+      sources: { larkContacts: true, personalHistory: false, files: false, zohoCrmContext: false },
     });
-    assert.equal(result.results[0]?.authorityLevel, 'public');
+    assert.equal(result.results[0]?.authorityLevel, 'contextual');
   });
 });
 
@@ -314,23 +285,6 @@ describe('ContextSearchBroker — resolved entities', () => {
     });
     assert.equal(result.resolvedEntities['recipientEmail'], 'bob@x.com');
     assert.equal(result.resolvedEntities['recipientName'],  'Bob');
-  });
-
-  it('extracts webUrl from web result', async () => {
-    const broker = makeBroker({
-      webSearch: {
-        search: async () => ({
-          query: 'q', focusedSiteSearch: false,
-          items: [{ title: 'Page', link: 'https://docs.example.com/page', domain: 'docs.example.com', source: 'organic' as const }],
-          sourceRefs: [],
-        }),
-      } as unknown as WebSearchService,
-    });
-    const result = await broker.search({
-      ...BASE_INPUT,
-      sources: { web: true, personalHistory: false, files: false, larkContacts: false, zohoCrmContext: false },
-    });
-    assert.equal(result.resolvedEntities['webUrl'], 'https://docs.example.com/page');
   });
 
   it('extracts skillId and skillSlug from skills result', async () => {
@@ -434,38 +388,14 @@ describe('ContextSearchBroker.fetch()', () => {
     assert.equal(result, null);
   });
 
-  it('fetches web content via webSearch', async () => {
-    const url = 'https://example.com/page';
-    const encodedUrl = Buffer.from(url, 'utf8').toString('base64url');
-    const broker = makeBroker({
-      webSearch: {
-        search: async () => ({
-          query: url, focusedSiteSearch: false,
-          items: [{
-            title: 'Example Page', link: url, domain: 'example.com', source: 'organic' as const,
-            pageContext: { excerpt: 'Page content here', fetched: true },
-          }],
-          sourceRefs: [],
-        }),
-      } as unknown as WebSearchService,
+  it('cannot fetch a web chunkRef any more', async () => {
+    // Old citations may still carry web refs. Returning null is the honest
+    // answer — the broker has no way to fetch that page, and pretending
+    // otherwise would surface an empty excerpt as if it were content.
+    const encodedUrl = Buffer.from('https://example.com/page', 'utf8').toString('base64url');
+    const result = await makeBroker().fetch({
+      companyId: 'c1', userId: 'u1', chunkRef: `web:web_result:${encodedUrl}:0`,
     });
-    const result = await broker.fetch({ companyId: 'c1', userId: 'u1', chunkRef: `web:web_result:${encodedUrl}:0` });
-    assert.ok(result !== null);
-    assert.ok(result.text.includes('Page content here'));
-    assert.equal(result.resolvedEntities['webUrl'], url);
-  });
-
-  it('returns null for web when no page context', async () => {
-    const url = 'https://example.com/empty';
-    const encodedUrl = Buffer.from(url, 'utf8').toString('base64url');
-    const broker = makeBroker({
-      webSearch: {
-        search: async () => ({
-          query: url, focusedSiteSearch: false, items: [], sourceRefs: [],
-        }),
-      } as unknown as WebSearchService,
-    });
-    const result = await broker.fetch({ companyId: 'c1', userId: 'u1', chunkRef: `web:web_result:${encodedUrl}:0` });
     assert.equal(result, null);
   });
 });
@@ -490,5 +420,196 @@ describe('ContextSearchBroker — date filtering', () => {
     const ids = result.results.map(r => r.sourceId);
     assert.ok(!ids.includes('ou_old'), 'old result should be filtered out');
     assert.ok(ids.includes('ou_new'), 'new result should pass filter');
+  });
+});
+
+// ─── H. Scoping a file search to one document ─────────────────────────────────
+
+describe('ContextSearchBroker — fileAssetId scoping', () => {
+  /** Captures what the vector store was asked for, and returns one chunk. */
+  function captureVectorStore(captured: { query?: any }): VectorStoreAdapter {
+    return {
+      ...emptyVectorStore,
+      search: async (query: any) => {
+        captured.query = query;
+        return [{
+          hits: [{
+            sourceId: 'fa-1', chunkIndex: 0, score: 0.9,
+            payload: { _chunk: 'Clause 7 covers termination.', fileName: 'contract.pdf' },
+          }],
+        }];
+      },
+    } as VectorStoreAdapter;
+  }
+
+  it('passes the file id straight to the vector store', async () => {
+    const captured: { query?: any } = {};
+    const broker = makeBroker({
+      vectorStore: captureVectorStore(captured),
+      fileAssetRepo: {
+        searchByFilename: async () => { throw new Error('filename resolution must not run'); },
+      } as never,
+    });
+
+    const result = await broker.search({
+      ...BASE_INPUT,
+      fileAssetId: 'fa-1',
+      sources: { files: true, personalHistory: false, larkContacts: false, zohoCrmContext: false },
+    });
+
+    assert.equal(captured.query?.fileAssetId, 'fa-1');
+    assert.equal(result.results[0]?.sourceId, 'fa-1');
+  });
+
+  it('skips filename guessing entirely when the id is known', async () => {
+    // The open path scores every filename in the company by trigram and can
+    // hand the tie-break to an LLM. Both can pick the wrong document; the
+    // repo stub above throws to prove neither runs.
+    const captured: { query?: any } = {};
+    const broker = makeBroker({
+      vectorStore: captureVectorStore(captured),
+      fileAssetRepo: {
+        searchByFilename: async () => { throw new Error('filename resolution must not run'); },
+      } as never,
+      groqApiKey: 'gsk-test',
+    });
+
+    const result = await broker.search({
+      ...BASE_INPUT,
+      query: 'contract.pdf',
+      fileAssetId: 'fa-1',
+      sources: { files: true, personalHistory: false, larkContacts: false, zohoCrmContext: false },
+    });
+
+    assert.equal(result.results.length, 1, 'the scoped search still returned its chunk');
+  });
+
+  it('still applies the access filters — an id is not authorisation', async () => {
+    // Quoting a fileAssetId out of someone else's conversation must not read
+    // their document. The store decides that, so what matters here is that
+    // the requester's identity and chat scope are still handed to it.
+    const captured: { query?: any } = {};
+    const broker = makeBroker({ vectorStore: captureVectorStore(captured) });
+
+    await broker.search({
+      ...BASE_INPUT,
+      fileAssetId: 'fa-1',
+      requesterAiRole: 'MEMBER',
+      larkChatId: 'oc_room',
+      sources: { files: true, personalHistory: false, larkContacts: false, zohoCrmContext: false },
+    });
+
+    assert.equal(captured.query?.companyId, 'company-1');
+    assert.equal(captured.query?.requesterUserId, 'user-1');
+    assert.equal(captured.query?.requesterAiRole, 'MEMBER');
+    assert.equal(captured.query?.larkChatId, 'oc_room');
+  });
+
+  it('does not group by documentKey, which would cap one file\'s chunks', async () => {
+    // Grouping exists to spread results across documents. Inside a single
+    // file it does the opposite of what "tell me about this document" wants.
+    const captured: { query?: any } = {};
+    const broker = makeBroker({ vectorStore: captureVectorStore(captured) });
+
+    await broker.search({
+      ...BASE_INPUT,
+      fileAssetId: 'fa-1',
+      sources: { files: true, personalHistory: false, larkContacts: false, zohoCrmContext: false },
+    });
+
+    assert.equal(captured.query?.groupByField, undefined);
+  });
+
+  it('carries the chat scope into an open file search too', async () => {
+    const captured: { query?: any } = {};
+    const broker = makeBroker({ vectorStore: captureVectorStore(captured) });
+
+    await broker.search({
+      ...BASE_INPUT,
+      larkChatId: 'oc_room',
+      sources: { files: true, personalHistory: false, larkContacts: false, zohoCrmContext: false },
+    });
+
+    assert.equal(captured.query?.larkChatId, 'oc_room');
+  });
+});
+
+// ─── I. The filename shortcut must not bypass the scope filters ───────────────
+
+describe('ContextSearchBroker — filename fast-path scope', () => {
+  /**
+   * `searchByFilename` is company-wide by design: its `ingestionStatus: 'done'`
+   * branch matches every indexed file, whoever uploaded it. The fast path that
+   * consumes it returns file *content* without ever touching the vector store,
+   * so it never passes through the visibility / owner / chat-scope filters.
+   */
+  const foreignFile = {
+    id: 'fa-secret', fileName: 'Salary-Structure-2026.pdf', mimeType: 'application/pdf',
+    ingestionStatus: 'done', cloudinaryUrl: 'https://cdn/secret.pdf',
+    createdAt: new Date('2026-01-01'), uploaderUserId: 'u-insider',
+  };
+
+  function brokerFor(uploaderUserId: string, onRead: () => void) {
+    return makeBroker({
+      fileAssetRepo: {
+        searchByFilename: async () => ({ ok: true, value: [{ ...foreignFile, uploaderUserId }] }),
+      } as never,
+      vectorDocRepo: {
+        findByFileAsset: async () => {
+          onRead();
+          return { ok: true, value: [{ chunkIndex: 0, chunkText: 'CEO base salary 90,00,000 INR', payload: {} }] };
+        },
+      } as never,
+      groqApiKey: 'gsk-test',
+    });
+  }
+
+  const query = {
+    ...BASE_INPUT,
+    query: 'Salary Structure 2026',
+    sources: { files: true, personalHistory: false, larkContacts: false, zohoCrmContext: false },
+  };
+
+  it('does not serve a colleague\'s document through the filename shortcut', async () => {
+    // The concrete leak: a document posted into a private Lark room was
+    // returned in full to someone who was never in that room, simply because
+    // they typed its name into a DM.
+    let contentRead = false;
+    const result = await brokerFor('u-insider', () => { contentRead = true; }).search({
+      ...query,
+      userId: 'user-1',
+      larkChatId: 'oc_unrelated_dm',
+    });
+
+    assert.deepEqual(result.results, [], 'nothing is returned to an outsider');
+    assert.equal(contentRead, false, 'and the document was never even read');
+  });
+
+  it('still serves the requester their own file', async () => {
+    // Failing closed must not mean failing empty: the shortcut exists so that
+    // naming your own file finds it, and that has to keep working.
+    let contentRead = false;
+    const result = await brokerFor('user-1', () => { contentRead = true; }).search({
+      ...query,
+      userId: 'user-1',
+    });
+
+    assert.equal(contentRead, true);
+    assert.equal(result.results.length, 1);
+    assert.match(result.results[0]!.excerpt, /CEO base salary/);
+  });
+
+  it('does not leak a colleague\'s filename or CDN link through the fallback', async () => {
+    // Stage 3 returns less than Stage 0 — a name and a URL rather than the
+    // text — but "Redundancies-March.pdf" plus a publicly deliverable link is
+    // itself the disclosure.
+    const result = await makeBroker({
+      fileAssetRepo: {
+        searchByFilename: async () => ({ ok: true, value: [foreignFile] }),
+      } as never,
+      // No repo to read content with, so Stage 0 cannot answer and Stage 3 runs.
+    }).search({ ...query, userId: 'user-1' });
+
+    assert.deepEqual(result.results, []);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  mayPrepareAttachment,
   isUntaggedGroupMessage,
   mayPrepareAttachments,
   resolveCompanyUntaggedGroupPolicy,
@@ -129,5 +130,71 @@ describe('per-company untagged policy', () => {
     // A typo in a control row must not start indexing a company's files.
     assert.equal(resolved.processAttachments, false);
     assert.equal(resolved.attachments.origin, 'deployment');
+  });
+});
+
+
+// ─── Documents versus images ────────────────────────────────────────────────
+
+describe('mayPrepareAttachment', () => {
+  const ignore = { processAttachments: false };
+  const process = { processAttachments: true };
+
+  it('prepares a document even when nobody mentioned Divo', () => {
+    // Lark gives a file message no text field, so a document upload cannot
+    // carry an @mention. Gating on one would refuse every document ever
+    // posted in a group — the mention is structurally impossible, not withheld.
+    assert.equal(mayPrepareAttachment({ kind: 'file', untagged: true, policy: ignore }), true);
+  });
+
+  it('refuses an untagged image under the default policy', () => {
+    // Preparing an image ships the pixels to a third-party vision provider,
+    // and an image *can* be posted with a mention, so silence here is a real
+    // signal rather than a limitation of the message format.
+    assert.equal(mayPrepareAttachment({ kind: 'image', untagged: true, policy: ignore }), false);
+  });
+
+  it('prepares an untagged image once a company opts in', () => {
+    assert.equal(mayPrepareAttachment({ kind: 'image', untagged: true, policy: process }), true);
+  });
+
+  it('prepares anything on a message that addressed Divo', () => {
+    assert.equal(mayPrepareAttachment({ kind: 'image', untagged: false, policy: ignore }), true);
+    assert.equal(mayPrepareAttachment({ kind: 'file', untagged: false, policy: ignore }), true);
+  });
+});
+
+describe('mayPrepareAttachments — message-level short circuit', () => {
+  const ignore = { processAttachments: false };
+
+  it('stays consistent with the per-attachment gate for documents', () => {
+    // These two must agree. If the message-level check said no, the document
+    // would be dropped before the per-attachment gate ever ran, and the
+    // exemption above would be dead code.
+    assert.equal(
+      mayPrepareAttachments({ attachmentCount: 1, documentCount: 1, untagged: true, policy: ignore }),
+      true,
+    );
+  });
+
+  it('short-circuits an untagged image-only message', () => {
+    assert.equal(
+      mayPrepareAttachments({ attachmentCount: 1, documentCount: 0, untagged: true, policy: ignore }),
+      false,
+    );
+  });
+
+  it('lets a mixed message through so the document survives', () => {
+    assert.equal(
+      mayPrepareAttachments({ attachmentCount: 2, documentCount: 1, untagged: true, policy: ignore }),
+      true,
+    );
+  });
+
+  it('does no work when there is nothing attached', () => {
+    assert.equal(
+      mayPrepareAttachments({ attachmentCount: 0, documentCount: 0, untagged: false, policy: ignore }),
+      false,
+    );
   });
 });

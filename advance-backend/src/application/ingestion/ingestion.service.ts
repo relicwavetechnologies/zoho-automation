@@ -22,6 +22,12 @@ export interface IngestBufferInput {
   buffer:          Buffer;
   allowedRoles?:   string[];
   visibility?:     'personal' | 'shared' | 'public';
+  /**
+   * Chat-scoped access for files that arrived through Lark. Stamped onto every
+   * chunk so a search running from that chat can reach the file while the rest
+   * of the company cannot — see `buildScopeShould` in the Qdrant adapter.
+   */
+  larkChatId?:     string;
 }
 
 export interface IngestResult {
@@ -185,11 +191,18 @@ export class IngestionService {
         retrievalProfile:       'file' as const,
         denseEmbedding:         embeddings[i] ?? [],
         ...(i === 0 && multimodalEmbedding ? { multimodalEmbedding } : {}),
-        payload:                chunk.payload,
+        // The scope key rides in the free-form payload rather than as a column,
+        // so chat-scoped access needed no schema migration.
+        payload:                input.larkChatId
+          ? { ...chunk.payload, larkChatId: input.larkChatId }
+          : chunk.payload,
       }));
       await this.qdrant.upsertVectors(qdrantInputs);
 
       // 9. Upsert to Postgres VectorDocument (for full-doc reassembly)
+      // The scope key goes into the Postgres copy as well as Qdrant. This is
+      // the store `documentRag.readFull` reassembles from, and it has to be
+      // able to answer "which chat may read this?" without a second lookup.
       await this.vectorDocRepo.upsertMany(chunks.map((chunk, i) => ({
         companyId,
         fileAssetId:            fileAsset.id,
@@ -201,7 +214,9 @@ export class IngestionService {
         visibility:             input.visibility ?? 'personal',
         ownerUserId:            uploaderUserId,
         chunkText:              chunk.chunkText,
-        payload:                chunk.payload,
+        payload:                input.larkChatId
+          ? { ...chunk.payload, larkChatId: input.larkChatId }
+          : chunk.payload,
         embedding:              embeddings[i] ?? [],
         embeddingSchemaVersion: ACTIVE_EMBEDDING_SCHEMA_VERSION,
         retrievalProfile:       'file',

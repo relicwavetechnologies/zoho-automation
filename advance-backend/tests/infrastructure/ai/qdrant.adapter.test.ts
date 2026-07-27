@@ -15,7 +15,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { QdrantAdapter } from '../../../src/infrastructure/ai/vector/qdrant.adapter.ts';
+import { QdrantAdapter, PAYLOAD_INDEX_COUNT } from '../../../src/infrastructure/ai/vector/qdrant.adapter.ts';
 import type { TypedEnv } from '../../../src/config/env.ts';
 import type { Logger } from '../../../src/shared/logger.ts';
 import type { VectorSearchQuery, VectorUpsertInput } from '../../../src/infrastructure/ai/vector/types.ts';
@@ -99,7 +99,7 @@ describe('buildPointId (via upsertVectors)', () => {
     };
     const recordB = { ...recordA };
 
-    // Responses: GET collection (ok), PUT index×15, PUT points (A), PUT points (B)
+    // Responses: GET collection (ok), one PUT per payload index, PUT points (A), PUT points (B)
     for (let i = 0; i < 17; i++) pushResponse(200, {});
     for (let i = 0; i < 17; i++) pushResponse(200, {});
 
@@ -149,8 +149,8 @@ describe('QdrantAdapter.search — filter construction', () => {
     // GET collection → ok; POST query/groups → ok with empty result
     pushResponse(200, {});
     pushResponse(200, { result: { groups: [] } });
-    // ensureIndexes (15 PUT requests)
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    // ensureIndexes (one PUT per payload index)
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
     await adapter.search(q);
     return fetchCalls.find(c => c.url.includes('query/groups'))?.body;
   }
@@ -219,6 +219,61 @@ describe('QdrantAdapter.search — filter construction', () => {
     );
     assert.ok(personalClause, 'should have personal visibility clause when requesterUserId provided');
   });
+
+  // ── Lark chat scope ──────────────────────────────────────────────────────
+  // A document dropped in a Lark room is readable by that room and nobody
+  // else. This is the whole enforcement point for that rule.
+
+  const chatClauseOf = (body: any) => {
+    const should = body?.filter?.should ?? body?.prefetch?.[0]?.filter?.should ?? [];
+    return should.find((s: any) =>
+      Array.isArray(s.must) && s.must.some((m: any) => m.key === 'larkChatId'),
+    );
+  };
+
+  it('adds no chat clause when the search did not come from a Lark chat', async () => {
+    // Desktop and scheduled runs must not reach chat-scoped files at all.
+    assert.equal(chatClauseOf(await runSearch({ ...baseQuery, requesterUserId: 'u1' })), undefined);
+  });
+
+  it('grants access to files posted in the chat the search runs from', async () => {
+    const clause = chatClauseOf(await runSearch({
+      ...baseQuery, requesterUserId: 'u1', larkChatId: 'oc_room',
+    }));
+
+    assert.ok(clause, 'a chat-scope branch is added');
+    const chatMatch = clause.must.find((m: any) => m.key === 'larkChatId');
+    assert.equal(chatMatch.match.value, 'oc_room');
+  });
+
+  it('keeps the chat scope inside the company', async () => {
+    // Chat ids are opaque and come from Lark. Without the companyId conjunct,
+    // one tenant guessing another's chat id would read its documents.
+    const clause = chatClauseOf(await runSearch({
+      ...baseQuery, requesterUserId: 'u1', larkChatId: 'oc_room',
+    }));
+
+    const companyMatch = clause.must.find((m: any) => m.key === 'companyId');
+    assert.ok(companyMatch, 'the chat branch is company-scoped');
+    assert.equal(companyMatch.match.value, 'co1');
+  });
+
+  it('widens rather than replaces the requester\'s own scopes', async () => {
+    // The uploader must still reach their file from a DM or the desktop app.
+    // Replacing the personal branch instead of adding to it would lock a file
+    // to the room it was posted in, even for the person who posted it.
+    const body = await runSearch({
+      ...baseQuery, requesterUserId: 'u1', larkChatId: 'oc_room',
+    }) as any;
+    const should = body?.filter?.should ?? body?.prefetch?.[0]?.filter?.should ?? [];
+
+    assert.ok(
+      should.some((s: any) =>
+        Array.isArray(s.must) && s.must.some((m: any) => m.key === 'ownerUserId')),
+      'the personal branch survives',
+    );
+    assert.ok(chatClauseOf(body), 'alongside the chat branch');
+  });
 });
 
 // ─── C. upsert ────────────────────────────────────────────────────────────────
@@ -232,7 +287,7 @@ describe('QdrantAdapter.upsert', () => {
 
   it('sends PUT /points?wait=true with correct vector shape', async () => {
     const adapter = makeAdapter();
-    // GET collection + 15 indexes + PUT points
+    // GET collection + payload indexes + PUT points
     for (let i = 0; i < 17; i++) pushResponse(200, {});
 
     await adapter.upsert([{
@@ -276,12 +331,12 @@ describe('QdrantAdapter.upsert', () => {
     const adapter = makeAdapter();
     // GET collection → ok
     pushResponse(200, {});
-    // 15 index creates
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    // one response per payload index create
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
     // First PUT points → 400 with "Index required but not found"
     pushResponse(400, 'Index required but not found');
-    // Retry: 15 more index creates
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    // Retry: one response per payload index create again
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
     // Second PUT points → ok
     pushResponse(200, {});
 
@@ -309,7 +364,7 @@ describe('QdrantAdapter.search', () => {
     // ensureCollection: PUT collection → ok
     pushResponse(200, {});
     // ensureIndexes → 15 ok
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
 
     const results = await adapter.search({
       companyId: 'co1',
@@ -344,7 +399,7 @@ describe('QdrantAdapter.search', () => {
       },
     });
     // ensureIndexes → 15 ok
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
 
     const results = await adapter.search({
       companyId: 'co1',
@@ -364,7 +419,7 @@ describe('QdrantAdapter.search', () => {
     const adapter = makeAdapter();
     pushResponse(200, {});
     pushResponse(200, { result: { groups: [] } });
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
 
     await adapter.search({ companyId: 'co1', denseVector: Array(1536).fill(0), limit: 100 });
 
@@ -376,7 +431,7 @@ describe('QdrantAdapter.search', () => {
     const adapter = makeAdapter();
     pushResponse(200, {});
     pushResponse(200, { result: { groups: [] } });
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
 
     await adapter.search({ companyId: 'co1', denseVector: Array(1536).fill(0), limit: 5 });
 
@@ -388,7 +443,7 @@ describe('QdrantAdapter.search', () => {
     const adapter = makeAdapter();
     pushResponse(200, {});
     pushResponse(200, { result: { groups: [] } });
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
 
     await adapter.search({ companyId: 'co1', denseVector: Array(1536).fill(0), limit: 5, groupByField: 'sourceId' });
 
@@ -400,7 +455,7 @@ describe('QdrantAdapter.search', () => {
     const adapter = makeAdapter();
     pushResponse(200, {});
     pushResponse(200, { result: { groups: [] } });
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
 
     await adapter.search({
       companyId: 'co1',
@@ -425,7 +480,7 @@ describe('QdrantAdapter.deleteBySource', () => {
     const adapter = makeAdapter();
     // ensureCollection GET → ok; ensureIndexes 15 ok; POST delete → ok
     pushResponse(200, {});
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
     pushResponse(200, {});
 
     await adapter.deleteBySource({ companyId: 'co1', sourceType: 'chat_turn', sourceId: 'src1' });
@@ -445,7 +500,7 @@ describe('QdrantAdapter.deleteBySource', () => {
     pushResponse(404, 'Not found');
     pushResponse(200, {});
     // ensureIndexes 15 ok
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
     // DELETE → 400 with (404)
     pushResponse(400, 'Not found: (404)');
 
@@ -459,8 +514,8 @@ describe('QdrantAdapter.deleteBySource', () => {
 describe('QdrantAdapter.countByCompany', () => {
   it('returns the count from the API response', async () => {
     const adapter = makeAdapter();
-    // ensureIndexes 15 ok; POST count → ok
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    // ensureIndexes ok; POST count → ok
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
     pushResponse(200, { result: { count: 42 } });
 
     const count = await adapter.countByCompany('co1');
@@ -542,7 +597,7 @@ describe('QdrantAdapter.health', () => {
     const adapter = makeAdapter();
     // GET collection → ok; ensureIndexes 15 ok
     pushResponse(200, {});
-    for (let i = 0; i < 15; i++) pushResponse(200, {});
+    for (let i = 0; i < PAYLOAD_INDEX_COUNT(); i++) pushResponse(200, {});
 
     const h = await adapter.health();
     assert.equal(h.ok, true);

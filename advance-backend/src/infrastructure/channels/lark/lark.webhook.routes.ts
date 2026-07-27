@@ -52,10 +52,12 @@ import type {
 import type { FinalReply } from '../../../domain/channel/outbound';
 import {
   isUntaggedGroupMessage,
+  mayPrepareAttachment,
   mayPrepareAttachments,
   resolveCompanyUntaggedGroupPolicy,
   UNTAGGED_ATTACHMENTS_CONTROL,
   type ResolvedUntaggedGroupPolicy,
+  type UntaggedGroupPolicy,
 } from './lark-untagged-policy';
 import { appendLarkMentionContext, listLarkMentionOpenIds } from './lark-mention-context';
 import {
@@ -80,6 +82,7 @@ import type {
   IngressReceiptRepoPort,
 } from '../../persistence/ingress-receipt.repository';
 import type { LarkIngressQueue } from '../../../application/lark-ingress/lark-ingress.queue';
+import type { IngestionQueue } from '../../../application/ingestion/ingestion.queue';
 
 export interface LarkWebhookDeps {
   adapter: LarkChannelAdapter;
@@ -115,6 +118,11 @@ export interface LarkWebhookDeps {
    */
   batchingEnabled?: boolean;
   chatContextService?: LarkChatContextService;
+  /**
+   * Absent means documents are excerpted inline for the turn but never
+   * indexed — the turn still answers, later questions have nothing to retrieve.
+   */
+  ingestionQueue?: Pick<IngestionQueue, 'enqueue'>;
   prisma?: PrismaClient;
   /** Optional: absent means a retried run re-runs the agent, as before Wave 5. */
   channelDeliveryRepo?: ChannelDeliveryRepoPort;
@@ -777,6 +785,7 @@ async function processInBackground(
     connectionRepo?: IntegrationConnectionRepository;
     cache: CachePort;
     chatContextService?: LarkChatContextService;
+    ingestionQueue?: Pick<IngestionQueue, 'enqueue'>;
     prisma?: PrismaClient;
     larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
   },
@@ -1041,10 +1050,12 @@ async function processInBackground(
   const untaggedPolicy = untagged
     ? await loadUntaggedGroupPolicy(identity.companyId, deps, log)
     : null;
+  const effectivePolicy = untaggedPolicy ?? { processAttachments: false };
   const mayProcessAttachments = mayPrepareAttachments({
     attachmentCount: attachments.length,
+    documentCount: attachments.filter(att => att.type === 'file').length,
     untagged,
-    policy: untaggedPolicy ?? { processAttachments: false },
+    policy: effectivePolicy,
   });
 
   // Fetch parent message (quote-reply context) in parallel with attachment prep.
@@ -1052,10 +1063,13 @@ async function processInBackground(
     mayProcessAttachments
       ? prepareLarkAttachmentContexts({
           incoming,
+          identity,
           attachments,
           deps,
           log,
           shouldReact: shouldRespond,
+          untagged,
+          policy: effectivePolicy,
         })
       : Promise.resolve([] as PreparedAttachmentContext[]),
     shouldRespond && incoming.replyToMessageId
@@ -1090,6 +1104,11 @@ async function processInBackground(
       log,
     });
 
+    // Divo was not addressed, so it indexes without saying anything.
+    await enqueuePreparedDocuments({
+      prepared: preparedAttachments, incoming, identity, deps, log, announce: false,
+    });
+
     return;
   }
 
@@ -1100,6 +1119,11 @@ async function processInBackground(
       deps,
       attachmentContexts: preparedAttachments.map(item => item.context),
       log,
+    });
+
+    await enqueuePreparedDocuments({
+      prepared: preparedAttachments, incoming, identity, deps, log,
+      announce: shouldRespond,
     });
 
     // An attachment with no question attached to it yet. Record what it shows
@@ -1780,6 +1804,8 @@ type PreparedAttachmentContext = {
   attachment: LarkAttachment;
   context: GroupChatAttachmentContext;
   inlineContext?: InlineContextResult;
+  /** A document awaiting its background indexing job. */
+  needsIngestion?: boolean;
 };
 
 function hasUsefulInlineAttachmentContext(item: PreparedAttachmentContext): boolean {
@@ -1795,21 +1821,31 @@ function hasUsefulInlineAttachmentContext(item: PreparedAttachmentContext): bool
 
 async function prepareLarkAttachmentContexts(input: {
   incoming: IncomingMessage;
+  identity: LarkResolvedIdentity;
   attachments: readonly LarkAttachment[];
   deps: {
     adapter: LarkChannelAdapter;
     env: TypedEnv;
     logger: Logger;
+    ingestionQueue?: Pick<IngestionQueue, 'enqueue'>;
   };
   log: Logger;
   shouldReact: boolean;
+  untagged: boolean;
+  policy: UntaggedGroupPolicy;
 }): Promise<PreparedAttachmentContext[]> {
-  const { incoming, attachments, deps, log } = input;
+  const { incoming, identity, attachments, deps, log } = input;
   if (attachments.length === 0) return [];
 
-  // Acknowledge only what Divo will actually look at. A 📥 on a PDF it is about
-  // to refuse reads as "received, working on it" and then contradicts itself.
-  if (input.shouldReact && attachments.some(isSupportedLarkMedia)) {
+  const allowed = attachments.filter(att => mayPrepareAttachment({
+    kind: att.type, untagged: input.untagged, policy: input.policy,
+  }));
+  if (allowed.length === 0) return [];
+
+  // Acknowledge only what Divo will actually look at. A 📥 on a file it is
+  // about to refuse reads as "received, working on it" and then contradicts
+  // itself.
+  if (input.shouldReact && allowed.some(isSupportedLarkMedia)) {
     try {
       await deps.adapter.reactToIncoming(incoming.messageId, '📥');
     } catch { /* non-fatal */ }
@@ -1820,11 +1856,11 @@ async function prepareLarkAttachmentContexts(input: {
   const fileClient = new LarkFileClient(deps.env, log);
   const prepared: PreparedAttachmentContext[] = [];
 
-  for (const att of attachments) {
-    // Documents are refused before anything happens to them: no download, no
-    // OCR, no upload, no indexing. The refusal is the whole handling, and it
-    // travels as prompt context so Divo says it in its own voice rather than
-    // as a canned card bolted onto an otherwise confident answer.
+  for (const att of allowed) {
+    // A format with no extractor is refused before anything happens to it: no
+    // download, no upload, no indexing. The refusal is the whole handling, and
+    // it travels as prompt context so Divo says it in its own voice rather
+    // than as a canned card bolted onto an otherwise confident answer.
     if (!isSupportedLarkMedia(att)) {
       log.info('webhook.attachment.unsupported', {
         fileName: att.fileName,
@@ -1849,12 +1885,17 @@ async function prepareLarkAttachmentContexts(input: {
       continue;
     }
 
+    const isImage = att.type === 'image';
     let buffer: Buffer | undefined;
     let inlineContext: InlineContextResult | undefined;
     let error: string | undefined;
 
     try {
-      const downloaded = await fileClient.downloadImage(att.messageId, att.key);
+      // Lark serves images and files from different resource endpoints; asking
+      // for a PDF on the image route returns an error, not the bytes.
+      const downloaded = isImage
+        ? await fileClient.downloadImage(att.messageId, att.key)
+        : await fileClient.downloadFile(att.messageId, att.key);
       if (downloaded && downloaded.length > 0) {
         buffer = downloaded;
       } else {
@@ -1869,14 +1910,14 @@ async function prepareLarkAttachmentContexts(input: {
       inlineContext = await extractAttachmentInlineContext(att, buffer, deps.env, log);
     }
 
-    // The pixels ride along with this turn and are then dropped. Nothing is
+    // Image pixels ride along with this turn and are then dropped. Nothing is
     // uploaded to a CDN and nothing is queued for indexing, so there is no
     // stored copy of the image and no derived chunks to retrieve later — the
     // OCR text below is all that outlives the request.
     let base64DataUrl: string | undefined;
-    if (buffer && buffer.length <= MAX_INLINE_IMAGE_BYTES) {
+    if (isImage && buffer && buffer.length <= MAX_INLINE_IMAGE_BYTES) {
       base64DataUrl = `data:${att.mimeType};base64,${buffer.toString('base64')}`;
-    } else if (buffer) {
+    } else if (isImage && buffer) {
       // OCR still ran, so the text is available even though the model cannot
       // look at the image itself.
       log.warn('webhook.attachment.image_too_large_for_inline', {
@@ -1884,9 +1925,30 @@ async function prepareLarkAttachmentContexts(input: {
       });
     }
 
-    // An image that could not be downloaded or read still has to reach the
-    // model as *something*. Handing it nothing produces "I don't see any
-    // image", which contradicts the picture the user is looking at.
+    // Documents outlive the turn. The inline excerpt answers most questions
+    // immediately, but it is capped, so the full text is queued for indexing
+    // and the worker writes the resulting fileAssetId back onto this same
+    // transcript message — that annotation is what later questions retrieve
+    // through.
+    //
+    // Queued whether or not the inline download worked. The two are separate
+    // attempts at the same bytes: this one is best-effort for the current
+    // turn, the worker's has three tries with backoff. Skipping the durable
+    // path because the opportunistic one failed would turn a blip into a
+    // document that is never indexed at all.
+    //
+    // The job is not queued here. The worker updates the transcript message
+    // this upload belongs to, and that row is written only after every
+    // attachment has been prepared — so queuing inside this loop lets a fast
+    // job finish before its row exists, land in the "message not found" branch,
+    // and leave the transcript reading `processing` forever. The caller fires
+    // these once the snapshot is stored.
+    const ingestionStatus: GroupChatAttachmentContext['ingestionStatus'] =
+      isImage ? 'inline_only' : 'processing';
+
+    // An attachment that could not be downloaded or read still has to reach
+    // the model as *something*. Handing it nothing produces "I don't see any
+    // image", which contradicts the file the user is looking at.
     const effectiveContext: InlineContextResult = inlineContext ?? {
       context: unreadableImageNotice(att.fileName, error),
       isComplete: false,
@@ -1899,7 +1961,7 @@ async function prepareLarkAttachmentContexts(input: {
       mimeType: att.mimeType,
       larkFileKey: att.key,
       larkMessageId: att.messageId,
-      ingestionStatus: 'inline_only',
+      ingestionStatus,
       ...(base64DataUrl ? { base64DataUrl } : {}),
       inlineContext: effectiveContext.context,
       isInlineComplete: effectiveContext.isComplete,
@@ -1911,10 +1973,98 @@ async function prepareLarkAttachmentContexts(input: {
       attachment: att,
       context,
       inlineContext: effectiveContext,
+      needsIngestion: !isImage,
     });
   }
 
   return prepared;
+}
+
+/**
+ * Queue every prepared document for indexing.
+ *
+ * Deliberately called after the transcript snapshot is written, so the message
+ * the worker writes `fileAssetId` back onto already exists. Reversing the two
+ * is a race that costs nothing visible at the time and leaves the transcript
+ * permanently claiming the document is still indexing.
+ */
+async function enqueuePreparedDocuments(input: {
+  prepared: readonly PreparedAttachmentContext[];
+  incoming: IncomingMessage;
+  identity: LarkResolvedIdentity;
+  deps: { ingestionQueue?: Pick<IngestionQueue, 'enqueue'> };
+  log: Logger;
+  announce: boolean;
+}): Promise<void> {
+  for (const item of input.prepared) {
+    if (!item.needsIngestion) continue;
+    await enqueueLarkDocumentIngestion({
+      att: item.attachment,
+      incoming: input.incoming,
+      identity: input.identity,
+      deps: input.deps,
+      log: input.log,
+      // The worker quote-replies an "indexed" card when it finishes. In a room
+      // where Divo was not addressed that card is Divo speaking uninvited, so
+      // the file is still indexed — silently.
+      announce: input.announce,
+    });
+  }
+}
+
+/**
+ * Queue a Lark document for background indexing.
+ *
+ * The bytes are not carried on the job. The worker re-downloads them from
+ * Lark, which keeps a multi-megabyte base64 blob out of Redis and off the
+ * retry path — a job that fails twice would otherwise hold three copies.
+ *
+ * `larkChatId` is the access scope: it travels onto every chunk's payload and
+ * is the only thing that lets a colleague in the same room retrieve this file.
+ * Without it the document is reachable by its uploader alone.
+ *
+ * Failing to enqueue is not fatal. The inline excerpt is already in hand, so
+ * the turn still answers; what is lost is retrieval beyond the excerpt.
+ */
+async function enqueueLarkDocumentIngestion(input: {
+  att: LarkAttachment;
+  incoming: IncomingMessage;
+  identity: LarkResolvedIdentity;
+  deps: { ingestionQueue?: Pick<IngestionQueue, 'enqueue'> };
+  log: Logger;
+  announce: boolean;
+}): Promise<boolean> {
+  const { att, incoming, identity, deps, log } = input;
+  if (!deps.ingestionQueue) return false;
+
+  try {
+    await deps.ingestionQueue.enqueue({
+      jobType: 'lark_file',
+      companyId: identity.companyId,
+      uploaderUserId: identity.userId,
+      uploaderChannel: 'lark',
+      fileName: att.fileName,
+      mimeType: att.mimeType,
+      larkFileKey: att.key,
+      larkMessageId: att.messageId,
+      chatId: String(incoming.chatId),
+      // The worker treats replyToMessageId as "post the result here". Omitting
+      // it is what makes indexing silent.
+      ...(input.announce ? { replyToMessageId: String(incoming.messageId) } : {}),
+      groupContextMessageId: String(incoming.messageId),
+      larkChatId: String(incoming.chatId),
+      visibility: 'personal',
+    });
+    log.info('webhook.attachment.ingestion_queued', {
+      fileName: att.fileName, chatId: incoming.chatId,
+    });
+    return true;
+  } catch (e) {
+    log.warn('webhook.attachment.ingestion_enqueue_failed', {
+      fileName: att.fileName, error: String(e),
+    });
+    return false;
+  }
 }
 
 /**

@@ -88,7 +88,7 @@ describe('contextSearch tool', () => {
       assert.equal((r as any).value.resultCount, 0);
     });
 
-    it('passes sources, dateFrom, dateTo, site to broker', async () => {
+    it('passes sources, dateFrom, dateTo, fileAssetId to broker', async () => {
       let capturedInput: any;
       const captureBroker: ContextSearchBrokerPort = {
         search: async (input) => { capturedInput = input; return fakeOutput; },
@@ -99,11 +99,59 @@ describe('contextSearch tool', () => {
         sources: { zohoBooksLive: true },
         dateFrom: '2025-01-01',
         dateTo: '2025-12-31',
-        site: 'docs.example.com',
+        fileAssetId: 'fa-123',
       }, ctx);
       assert.equal(capturedInput.sources?.zohoBooksLive, true);
       assert.equal(capturedInput.dateFrom, '2025-01-01');
-      assert.equal(capturedInput.site, 'docs.example.com');
+      assert.equal(capturedInput.fileAssetId, 'fa-123');
+    });
+
+    it('rejects a web source rather than silently ignoring it', () => {
+      // The public internet is the webSearch tool's job. A model that asks for
+      // web here must be told, not quietly handed company-only results it will
+      // then present as current external facts.
+      const parsed = createContextSearchTool({ broker: fakeBroker })
+        .argsSchema.safeParse({ query: 'news', sources: { web: true } });
+
+      assert.equal(parsed.success, true, 'unknown keys are stripped, not fatal');
+      assert.equal(
+        (parsed as any).data.sources?.web, undefined,
+        'and web never reaches the broker',
+      );
+    });
+
+    it('takes the chat scope from the run, not from the model', async () => {
+      // A file uploaded into a Lark room is readable from that room. If the
+      // model could name the chat, it could name someone else's and read their
+      // documents — so this value comes from the run context only.
+      let capturedInput: any;
+      const captureBroker: ContextSearchBrokerPort = {
+        search: async (input) => { capturedInput = input; return fakeOutput; },
+      };
+      const tool = createContextSearchTool({ broker: captureBroker });
+      await tool.execute(
+        { query: 'what does the contract say', larkChatId: 'oc_someone_else' } as never,
+        makeCtx('contextSearch', ['read'], { chatId: 'oc_mine', channel: 'lark' }),
+      );
+
+      assert.equal(capturedInput.larkChatId, 'oc_mine');
+    });
+
+    it('leaves the chat scope unset outside Lark', async () => {
+      // Desktop runs carry a chatId too. Passing it as a Lark chat scope would
+      // be a filter on a value that never matches, silently hiding nothing —
+      // until two id spaces happened to collide.
+      let capturedInput: any;
+      const captureBroker: ContextSearchBrokerPort = {
+        search: async (input) => { capturedInput = input; return fakeOutput; },
+      };
+      const tool = createContextSearchTool({ broker: captureBroker });
+      await tool.execute(
+        { query: 'anything' },
+        makeCtx('contextSearch', ['read'], { chatId: 'desktop-session', channel: 'desktop' }),
+      );
+
+      assert.equal(capturedInput.larkChatId, undefined);
     });
 
     it('broker throws → upstream_failure, never throws', async () => {

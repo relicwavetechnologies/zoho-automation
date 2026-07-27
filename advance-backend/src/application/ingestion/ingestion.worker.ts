@@ -79,6 +79,7 @@ export class IngestionWorker {
         buffer,
         visibility:      payload.visibility ?? 'personal',
         ...(payload.allowedRoles ? { allowedRoles: payload.allowedRoles } : {}),
+        ...(payload.larkChatId   ? { larkChatId: payload.larkChatId }     : {}),
       });
 
       await this.updateGroupAttachment(payload, {
@@ -113,10 +114,14 @@ export class IngestionWorker {
         ).catch(() => { /* non-fatal */ });
       }
     } catch (e) {
-      // On the last retry attempt, send a failure reply so the user knows indexing failed
       const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-      if (isLastAttempt && payload.chatId && payload.replyToMessageId) {
+      if (isLastAttempt) {
         const errMsg = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+
+        // Marking the attachment failed is bookkeeping, not a message. It must
+        // not be gated on having somewhere to announce: a silent job that dies
+        // would otherwise leave the transcript reading 'processing' forever,
+        // and Divo would keep promising an answer that is never coming.
         await this.updateGroupAttachment(payload, {
           kind: payload.jobType === 'lark_image' || payload.mimeType.startsWith('image/') ? 'image' : 'file',
           fileName: payload.fileName,
@@ -126,11 +131,15 @@ export class IngestionWorker {
           ingestionStatus: 'failed',
           error: errMsg,
         });
-        await this.deps.larkAdapter.sendToChatId(
-          payload.chatId,
-          buildFailedCard(payload.fileName, errMsg),
-          payload.replyToMessageId,
-        ).catch(() => { /* non-fatal */ });
+
+        // Telling the user is the part that needs a place to speak.
+        if (payload.chatId && payload.replyToMessageId) {
+          await this.deps.larkAdapter.sendToChatId(
+            payload.chatId,
+            buildFailedCard(payload.fileName, errMsg),
+            payload.replyToMessageId,
+          ).catch(() => { /* non-fatal */ });
+        }
       }
       throw e;
     }

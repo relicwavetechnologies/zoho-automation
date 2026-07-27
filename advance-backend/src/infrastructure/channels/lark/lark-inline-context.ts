@@ -110,7 +110,26 @@ async function extractDocContext(
     const { htmlToText }       = await import('../../../application/ingestion/text-extraction/extract');
     rawText = htmlToText(decodeTextBuffer(buf));
 
-  } else if (mime === 'text/plain' || mime === 'text/markdown' || lowerName.endsWith('.md') || lowerName.endsWith('.txt')) {
+  } else if (
+    mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    mime === 'application/vnd.ms-excel' ||
+    lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')
+  ) {
+    const { extractXlsxText } = await import('../../../application/ingestion/text-extraction/xlsx.extractor');
+    rawText = extractXlsxText(buf);
+
+  } else if (
+    mime === 'text/csv' || mime === 'text/tab-separated-values' || mime === 'text/tsv' ||
+    lowerName.endsWith('.csv') || lowerName.endsWith('.tsv')
+  ) {
+    const { decodeTextBuffer }    = await import('../../../application/ingestion/text-extraction/text-decode');
+    const { extractTabularText }  = await import('../../../application/ingestion/text-extraction/tabular.extractor');
+    rawText = extractTabularText(decodeTextBuffer(buf));
+
+  } else if (
+    mime === 'text/plain' || mime === 'text/markdown' || mime === 'application/json' ||
+    lowerName.endsWith('.md') || lowerName.endsWith('.txt') || lowerName.endsWith('.json')
+  ) {
     const { decodeTextBuffer } = await import('../../../application/ingestion/text-extraction/text-decode');
     rawText = decodeTextBuffer(buf);
 

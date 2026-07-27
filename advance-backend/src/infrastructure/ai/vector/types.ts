@@ -108,6 +108,13 @@ export interface VectorSearchQuery {
   readonly includePersonal?: boolean;
   readonly includeShared?: boolean;
   readonly includePublic?: boolean;
+  /**
+   * Widen the scope to files uploaded into this Lark chat. Set only when the
+   * search originates from that chat, which is what makes it an access check
+   * rather than a hint: Lark decides who can be in the room, so it decides who
+   * can supply this value.
+   */
+  readonly larkChatId?: string;
 }
 
 export interface VectorSearchResult {

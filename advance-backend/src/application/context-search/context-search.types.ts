@@ -7,6 +7,12 @@
 
 // ─── Source keys ──────────────────────────────────────────────────────────────
 
+/**
+ * `web` is deliberately absent. Context search answers from what the company
+ * knows; the public internet is the `webSearch` tool's job, and every role
+ * already has it. Folding both behind one tool made the model's source of
+ * truth depend on a boolean flag it chose itself.
+ */
 export type ContextSourceKey =
   | 'personalHistory'
   | 'files'
@@ -14,7 +20,6 @@ export type ContextSourceKey =
   | 'zohoCrmContext'
   | 'zohoBooksLive'
   | 'workspace'
-  | 'web'
   | 'skills';
 
 // ─── Source filter ────────────────────────────────────────────────────────────
@@ -110,8 +115,20 @@ export interface ContextSearchInput {
   readonly dateTo?: string;
   /** Explicit source overrides. When absent, smart defaults are used. */
   readonly sources?: ContextSourceFilter;
-  /** For web source: restrict to this domain. */
-  readonly site?: string;
+  /**
+   * Restrict the file search to one indexed document.
+   *
+   * Without it `runFiles` has to guess which file the question is about from
+   * its name — trigram scoring plus an LLM tie-break. When the caller already
+   * knows the id, as it does for a file attached to the conversation, that
+   * whole guess is skipped and cannot pick the wrong document.
+   */
+  readonly fileAssetId?: string;
+  /**
+   * Lark chat the search is running in. Grants access to files uploaded into
+   * that chat and to nothing else — see `buildScopeShould`.
+   */
+  readonly larkChatId?: string;
   /** Workspace filesystem path for workspace source. */
   readonly workspacePath?: string;
   /** Per-source timeout in ms. Default 8 000 ms. */

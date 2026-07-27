@@ -24,6 +24,13 @@ export interface IngestionJobPayload {
   replyToMessageId?: string;
   /** Group-context message ID to update after background indexing. */
   groupContextMessageId?: string;
+  /**
+   * Access scope for a file that arrived through Lark: everyone who can search
+   * from this chat can retrieve it, and nobody else. Stamped onto every chunk's
+   * vector payload. Absent for desktop uploads, which fall back to
+   * `visibility` + `ownerUserId` alone.
+   */
+  larkChatId?:    string;
   allowedRoles?:  string[];
   visibility?:    'personal' | 'shared' | 'public';
 }

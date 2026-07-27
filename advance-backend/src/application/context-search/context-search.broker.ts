@@ -2,17 +2,18 @@
  * ContextSearchBroker — parallel multi-source context retrieval.
  *
  * Architecture:
- *   • 8 source runners (personalHistory, files, larkContacts, zohoCrmContext,
- *     zohoBooksLive, workspace, web, skills) execute concurrently via
+ *   • 7 source runners (personalHistory, files, larkContacts, zohoCrmContext,
+ *     zohoBooksLive, workspace, skills) execute concurrently via
  *     Promise.allSettled, each wrapped in a per-source timeout (default 8 s).
  *   • Source selection: caller may pass an explicit ContextSourceFilter; when
- *     absent, non-web internal sources all run.
+ *     absent, the internal sources all run. The public web is not a source
+ *     here — that is the separate `webSearch` tool.
  *   • Ranking: weighted score boost per source; authority-level boost.
  *   • Dedup: (scope, sourceId, chunkIndex) triple.
  *   • No search-intent classifier — planner decides intent; broker is pure retrieval.
  *
  * Dependencies (all injected via constructor, none imported as singletons):
- *   vectorStore, embedding, webSearch, larkContacts, zohoBooks, skills, logger.
+ *   vectorStore, embedding, larkContacts, zohoBooks, skills, logger.
  */
 
 import { promises as fsp } from 'node:fs';
@@ -40,7 +41,6 @@ import type {
   EmbeddingPort,
 } from './context-search.ports';
 import type { VectorStoreAdapter } from '../../infrastructure/ai/vector/types';
-import type { WebSearchService } from '../../infrastructure/ai/search/web-search.service';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -70,7 +70,6 @@ const DEFAULT_WEIGHTS: Record<ContextSourceKey, number> = {
   workspace:       1.05,
   personalHistory: 0.15,
   larkContacts:    0.75,
-  web:             0.75,
   skills:          0.5,
 };
 
@@ -124,7 +123,6 @@ function getAuthorityLevel(scope: string): AuthorityLevel {
   if (scope === 'zoho_books' || scope === 'zoho_crm') return 'authoritative';
   if (scope === 'files' || scope === 'workspace') return 'documentary';
   if (scope === 'personal_history' || scope === 'lark_contacts') return 'contextual';
-  if (scope === 'web') return 'public';
   return 'contextual';
 }
 
@@ -143,7 +141,6 @@ function buildSourceLabel(input: {
   if (input.scope === 'personal_history') return `Personal history · ${input.title ?? input.sourceType}${s}`;
   if (input.scope === 'zoho_crm')        return `Zoho CRM · ${input.title ?? input.sourceType}${s}`;
   if (input.scope === 'zoho_books')      return `Zoho Books · ${input.title ?? input.sourceType}${s}`;
-  if (input.scope === 'web')             return `Web · ${input.domain ?? input.title ?? input.sourceType}${s}`;
   if (input.scope === 'skills')          return `Skill · ${input.title ?? input.sourceType}${s}`;
   if (input.scope === 'workspace')       return `Workspace · ${input.fileName ?? input.title ?? input.sourceType}${s}`;
   return `${input.scope} · ${input.title ?? input.sourceType}${s}`;
@@ -222,7 +219,6 @@ const SCOPE_TO_SOURCE_KEY: Record<string, ContextSourceKey> = {
   zoho_crm:         'zohoCrmContext',
   zoho_books:       'zohoBooksLive',
   workspace:        'workspace',
-  web:              'web',
   skills:           'skills',
 };
 
@@ -252,10 +248,6 @@ function buildResolvedEntities(results: ContextSearchResult[]): Record<string, s
       set('recipientEmail', r.email);
       set('recipientName',  r.displayName);
       set('recipientOpenId', r.sourceId);
-    }
-    if (r.scope === 'web') {
-      set('webUrl',   r.url);
-      set('webTitle', r.title);
     }
     if (r.scope === 'files') {
       set('fileAssetId', r.sourceId);
@@ -536,7 +528,7 @@ function toCitations(results: ContextSearchResult[]): ContextCitation[] {
 // ─── Broker ───────────────────────────────────────────────────────────────────
 
 export interface FileAssetSearchPort {
-  searchByFilename(companyId: string, query: string, uploaderUserId?: string): Promise<{ ok: boolean; value?: Array<{ id: string; fileName: string; mimeType: string; cloudinaryUrl: string; ingestionStatus: string; createdAt: Date }> }>;
+  searchByFilename(companyId: string, query: string, uploaderUserId?: string): Promise<{ ok: boolean; value?: Array<{ id: string; fileName: string; mimeType: string; cloudinaryUrl: string; ingestionStatus: string; createdAt: Date; uploaderUserId?: string }> }>;
 }
 
 export interface VectorDocReaderPort {
@@ -546,7 +538,6 @@ export interface VectorDocReaderPort {
 export interface ContextSearchBrokerDeps {
   vectorStore:      VectorStoreAdapter;
   embedding:        EmbeddingPort;
-  webSearch:        WebSearchService;
   larkContacts:     LarkContactPort;
   zohoBooks:        ZohoBooksPort;
   skills:           SkillPort;
@@ -602,8 +593,86 @@ export class ContextSearchBroker {
     return results.slice(0, limit);
   }
 
+  /**
+   * Semantic search confined to one already-identified document.
+   *
+   * The access filters are unchanged from the open search — passing an id is
+   * not authorisation. A chunk still has to pass the visibility, owner, role
+   * and chat-scope branches, so quoting a fileAssetId out of someone else's
+   * conversation returns nothing.
+   *
+   * Chunks are not grouped by `documentKey` here: within a single file that
+   * grouping caps how much of it can come back, which is the opposite of what
+   * "tell me about this document" wants.
+   */
+  private async searchWithinFile(
+    input: ContextSearchInput,
+    limit: number,
+    wantsVisual: boolean,
+  ): Promise<ContextSearchResult[]> {
+    const qv = await this.deps.embedding.embedQuery(input.query);
+    const groups = await this.deps.vectorStore.search({
+      companyId:         input.companyId,
+      requesterUserId:   input.userId,
+      ...(input.requesterAiRole ? { requesterAiRole: input.requesterAiRole } : {}),
+      ...(input.larkChatId      ? { larkChatId: input.larkChatId }           : {}),
+      fileAssetId:       input.fileAssetId!,
+      denseVector:       qv,
+      limit,
+      retrievalProfile:  'file',
+      sourceTypes:       ['file_document'],
+      includePersonal:   true,
+      includeShared:     true,
+      includePublic:     true,
+      enforceEmailMatch: false,
+      ...(wantsVisual ? { useMultimodal: true, queryMode: 'multimodal' as const } : {}),
+    });
+
+    const results: ContextSearchResult[] = [];
+    for (const group of groups) {
+      for (const hit of group.hits) {
+        const payload   = hit.payload as Record<string, unknown>;
+        const chunkText = readString(payload['_chunk']) ?? readString(payload['text']);
+        if (!chunkText) continue;
+        const fileName = readString(payload['fileName']) ?? readString(payload['title']);
+        const cloudUrl = readString(payload['cloudinaryUrl']) ?? readString(payload['sourceUrl']);
+        results.push({
+          scope: 'files', sourceType: 'file_document',
+          sourceId: hit.sourceId, chunkIndex: hit.chunkIndex, score: hit.score,
+          excerpt: excerptFrom(chunkText),
+          chunkRef: buildChunkRef('files', 'file_document', hit.sourceId, hit.chunkIndex),
+          sourceLabel: buildSourceLabel({
+            scope: 'files',
+            ...opt('fileName', fileName ? `📄 ${fileName}` : undefined),
+            sourceType: 'file_document',
+          }),
+          ...opt('fileName', fileName),
+          ...opt('title', fileName),
+          ...opt('url', cloudUrl),
+          authorityLevel: 'documentary',
+        });
+      }
+    }
+
+    if (results.length === 0) {
+      this.log.info('files.scoped.no_hits', {
+        fileAssetId: input.fileAssetId, query: input.query,
+      });
+    }
+    return results.slice(0, limit);
+  }
+
   private async runFiles(input: ContextSearchInput, limit: number): Promise<ContextSearchResult[]> {
     const wantsVisual = isVisualQuery(input.query);
+
+    // ── Stage 0a: Caller already knows the file ─────────────────────────────
+    // Every stage below exists to work out *which* file the question is about.
+    // When the caller supplies the id — as it does for a document attached to
+    // the conversation — that question is already answered, and running the
+    // filename heuristics anyway risks resolving to a different file entirely.
+    if (input.fileAssetId) {
+      return this.searchWithinFile(input, limit, wantsVisual);
+    }
 
     // ── Stage 0: Trigram filename fast-path ─────────────────────────────────
     // Fetch all filenames from DB, score with trigram. If a strong match (≥0.8)
@@ -616,13 +685,27 @@ export class ContextSearchBroker {
         input.userId,
       );
 
-      if (allFiles.ok && allFiles.value && allFiles.value.length > 0) {
-        const filenames  = allFiles.value.map(f => f.fileName);
+      // The name-matching shortcut below returns file *content* without ever
+      // consulting the vector store, so it never sees `buildScopeShould` — the
+      // one place visibility, ownership and Lark chat scope are enforced. The
+      // repository query behind it is company-wide (`ingestionStatus: 'done'`
+      // matches every indexed file), so left unfiltered this path hands any
+      // colleague the contents of a document posted in a room they were never
+      // in.
+      //
+      // Restricted to the requester's own uploads, where no scope question can
+      // arise. Everything else falls through to the semantic search below,
+      // which is filtered correctly — so a document shared with a room is
+      // still reachable by that room, just not through this shortcut.
+      const ownFiles = (allFiles.value ?? []).filter(f => f.uploaderUserId === input.userId);
+
+      if (allFiles.ok && ownFiles.length > 0) {
+        const filenames  = ownFiles.map(f => f.fileName);
         const ranked     = rankByTrigram(input.query, filenames);
         const topScore   = ranked[0]?.score ?? 0;
 
         if (topScore >= TRIGRAM_STRONG_THRESHOLD) {
-          const matchedFile = allFiles.value.find(f => f.fileName === ranked[0]!.filename)!;
+          const matchedFile = ownFiles.find(f => f.fileName === ranked[0]!.filename)!;
           this.log.info('files.trigram.strong_match', { query: input.query, matched: matchedFile.fileName, score: topScore });
           const content = await this.readFileContent(matchedFile);
           return [this.buildFileResult(matchedFile, topScore, content)];
@@ -632,7 +715,7 @@ export class ContextSearchBroker {
         // but we have few files (e.g. wrong name given, only 1 HTML file exists).
         const groqShouldFire =
           this.deps.groqApiKey &&
-          (topScore >= TRIGRAM_CANDIDATE_THRESHOLD || allFiles.value.length <= 20);
+          (topScore >= TRIGRAM_CANDIDATE_THRESHOLD || ownFiles.length <= 20);
 
         if (groqShouldFire && this.deps.groqApiKey) {
           const candidates = ranked.length > 0
@@ -640,7 +723,7 @@ export class ContextSearchBroker {
             : filenames.slice(0, 20);
           const resolved = await resolveFilenameWithGroq(input.query, candidates, this.deps.groqApiKey);
           if (resolved.match && resolved.confidence >= 0.7) {
-            const matchedFile = allFiles.value.find(f => f.fileName === resolved.match);
+            const matchedFile = ownFiles.find(f => f.fileName === resolved.match);
             if (matchedFile) {
               this.log.info('files.groq.resolved', { query: input.query, matched: matchedFile.fileName, confidence: resolved.confidence });
               const content = await this.readFileContent(matchedFile);
@@ -662,6 +745,7 @@ export class ContextSearchBroker {
         companyId:         input.companyId,
         requesterUserId:   input.userId,
         ...(input.requesterAiRole ? { requesterAiRole: input.requesterAiRole } : {}),
+        ...(input.larkChatId      ? { larkChatId: input.larkChatId }           : {}),
         denseVector:       qv,
         limit,
         retrievalProfile:  'file',
@@ -723,11 +807,17 @@ export class ContextSearchBroker {
 
     // ── Stage 3: Filename fuzzy DB fallback if still sparse ───────────────
     // Catches files that are indexed but scored low on vectors (e.g. wrong query language)
+    //
+    // Same restriction as Stage 0, and for the same reason: this reads the
+    // company-wide file table directly rather than the scoped vector store.
+    // It returns less than Stage 0 — a filename and a URL rather than the
+    // text — but a filename such as "Redundancies-March.pdf" and a publicly
+    // deliverable Cloudinary link are themselves the disclosure.
     if (results.length < 2 && this.deps.fileAssetRepo) {
       const fnResult = await this.deps.fileAssetRepo.searchByFilename(input.companyId, input.query, input.userId);
       if (fnResult.ok && fnResult.value) {
         const seenIds = new Set(results.map(r => r.sourceId));
-        for (const fa of fnResult.value) {
+        for (const fa of fnResult.value.filter(f => f.uploaderUserId === input.userId)) {
           if (seenIds.has(fa.id)) continue;
           const isImg = fa.mimeType.startsWith('image/');
           results.push({
@@ -916,32 +1006,6 @@ export class ContextSearchBroker {
     return searchWorkspace(input.workspacePath, input.query, limit);
   }
 
-  private async runWeb(input: ContextSearchInput, limit: number): Promise<ContextSearchResult[]> {
-    const result = await this.deps.webSearch.search({
-      companyId:         input.companyId,
-      query:             input.query,
-      ...(input.site ? { exactDomain: input.site.trim() } : {}),
-      searchResultsLimit: limit,
-      pageContextLimit:   Math.min(2, limit),
-    });
-    return result.items.map((item, i): ContextSearchResult => {
-      const encodedUrl = encodeRef(item.link);
-      const excerpt    = excerptFrom(item.pageContext?.excerpt ?? item.snippet ?? '');
-      return {
-        scope: 'web', sourceType: 'web_result',
-        sourceId: encodedUrl, chunkIndex: 0,
-        score: Math.max(1 - i * 0.05, 0.5),
-        excerpt,
-        chunkRef: buildChunkRef('web', 'web_result', encodedUrl, 0),
-        sourceLabel: buildSourceLabel({ scope: 'web', ...opt('title', item.title), sourceType: 'web_result', ...opt('asOf', item.date), domain: item.domain }),
-        ...opt('asOf', item.date),
-        ...opt('title', item.title),
-        url: item.link,
-        authorityLevel: 'public',
-      };
-    });
-  }
-
   private async runSkills(input: ContextSearchInput, limit: number): Promise<ContextSearchResult[]> {
     const skillList = await this.deps.skills.search({
       companyId:    input.companyId,
@@ -977,7 +1041,6 @@ export class ContextSearchBroker {
       zohoCrmContext:  req.zohoCrmContext   ?? true,
       zohoBooksLive:   req.zohoBooksLive   ?? false,
       workspace:       req.workspace       ?? (input.workspacePath ? true : false),
-      web:             req.web             ?? false,
       skills:          req.skills          ?? false,
     };
 
@@ -997,7 +1060,6 @@ export class ContextSearchBroker {
       zohoCrmContext:  mkCov(enabled.zohoCrmContext),
       zohoBooksLive:   mkCov(enabled.zohoBooksLive),
       workspace:       mkCov(enabled.workspace),
-      web:             mkCov(enabled.web),
       skills:          mkCov(enabled.skills),
     };
 
@@ -1009,7 +1071,6 @@ export class ContextSearchBroker {
       zohoCrmContext:  (i, l) => this.runZohoCrmContext(i, l),
       zohoBooksLive:   (i, l) => this.runZohoBooksLive(i, l),
       workspace:       (i, l) => this.runWorkspace(i, l),
-      web:             (i, l) => this.runWeb(i, l),
       skills:          (i, l) => this.runSkills(i, l),
     };
 
@@ -1085,18 +1146,6 @@ export class ContextSearchBroker {
       let text: string;
       try { text = await fsp.readFile(full, 'utf8'); } catch { return null; }
       return { chunkRef: input.chunkRef, scope, sourceType, sourceId, chunkIndex, text, resolvedEntities: { workspacePath: rel } };
-    }
-
-    if (scope === 'web') {
-      const url = decodeRef(sourceId);
-      const res = await this.deps.webSearch.search({ companyId: input.companyId, query: url, searchResultsLimit: 1, pageContextLimit: 1 });
-      const item = res.items[0];
-      const text = item?.pageContext?.excerpt ?? item?.snippet ?? '';
-      if (!text.trim()) return null;
-      return {
-        chunkRef: input.chunkRef, scope, sourceType, sourceId, chunkIndex, text,
-        resolvedEntities: { webUrl: url, ...opt('webTitle', item?.title) },
-      };
     }
 
     if (scope === 'lark_contacts') {

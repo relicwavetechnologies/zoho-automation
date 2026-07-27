@@ -90,6 +90,7 @@ export const createServer = (c: Container) => {
     cache:                 c.memoryCache,
     serializer:            c.chatSerializer,
     chatContextService:    c.chatContextService,
+    ingestionQueue:        c.ingestionQueue,
     channelDeliveryRepo:   c.channelDeliveryRepo,
     laneLeaseHolder:       c.laneLeaseHolder,
     busyNotices:           c.busyLaneNotices,

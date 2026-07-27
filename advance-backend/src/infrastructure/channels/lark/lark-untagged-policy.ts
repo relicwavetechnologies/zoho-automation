@@ -34,20 +34,49 @@ export const isUntaggedGroupMessage = (
 ): boolean => incoming.chatType === 'group' && !incoming.mentionsSelf;
 
 /**
- * Whether this message's attachments may be downloaded, OCR'd, and indexed.
+ * Whether one attachment may be downloaded, extracted, and indexed.
  *
- * Separate from the work itself so the decision is testable without reaching
- * Lark. The gate must be evaluated *before* preparation, not used to discard
- * its output: by the time an attachment context exists, the file has already
- * left Lark and been written to a CDN and an index.
+ * Documents are exempt from the untagged gate. Lark gives a file message no
+ * text field, so a document upload can never carry an @mention — every one of
+ * them arrives untagged, and gating on the mention would mean Divo could never
+ * read a document posted in a group at all. The gate's own rationale also no
+ * longer holds for them: a document is indexed against the chat it was posted
+ * in, not as shared company knowledge.
+ *
+ * Images stay gated. Preparing one sends the pixels to a third-party vision
+ * provider, and an image can be posted with a mention when it is meant for
+ * Divo, so the consent signal is real rather than structurally impossible.
+ */
+export const mayPrepareAttachment = (input: {
+  readonly kind: 'file' | 'image';
+  readonly untagged: boolean;
+  readonly policy: UntaggedGroupPolicy;
+}): boolean =>
+  input.kind === 'file'
+  || !input.untagged
+  || input.policy.processAttachments;
+
+/**
+ * Whether any of this message's attachments are worth preparing.
+ *
+ * A message-level short-circuit so an untagged image-only message costs no
+ * work at all. The per-attachment gate above is what actually decides; this
+ * must stay consistent with it or a document would be dropped before
+ * `mayPrepareAttachment` ever sees it.
+ *
+ * The gate is evaluated *before* preparation, not used to discard its output:
+ * by the time an attachment context exists, the file has already left Lark.
  */
 export const mayPrepareAttachments = (input: {
   readonly attachmentCount: number;
+  readonly documentCount?: number;
   readonly untagged: boolean;
   readonly policy: UntaggedGroupPolicy;
 }): boolean =>
   input.attachmentCount > 0
-  && (!input.untagged || input.policy.processAttachments);
+  && (!input.untagged
+    || input.policy.processAttachments
+    || (input.documentCount ?? 0) > 0);
 
 // ─── Per-company overrides ──────────────────────────────────────────────────
 

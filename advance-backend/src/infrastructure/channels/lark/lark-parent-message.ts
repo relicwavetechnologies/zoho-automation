@@ -11,7 +11,12 @@
 import type { TypedEnv } from '../../../config/env';
 import type { Logger } from '../../../shared/logger';
 import { Client as LarkSdkClient, Domain, LoggerLevel } from '@larksuiteoapi/node-sdk';
-import { unsupportedDocumentNotice, MAX_INLINE_IMAGE_BYTES } from './lark-media-support';
+import {
+  unsupportedDocumentNotice,
+  quotedDocumentNotice,
+  isSupportedLarkMedia,
+  MAX_INLINE_IMAGE_BYTES,
+} from './lark-media-support';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
 import type { ReferencedMessage } from '../../../domain/channel/incoming-message';
 import { extractInteractiveCardText } from './lark-message-content';
@@ -75,10 +80,18 @@ export async function fetchParentMessage(input: {
         if (url) imageUrls.push(url);
       }
     } else if (msgType === 'file') {
-      // The quoted message is a document. Divo cannot read those over Lark, and
-      // saying so is better than handing the model a bare filename it will
-      // cheerfully speculate about.
-      text = unsupportedDocumentNotice((content['file_name'] as string) ?? 'attachment');
+      // The quoted message is a document. If Divo has seen it before it was
+      // indexed when it arrived, and the transcript for this room carries its
+      // fileAssetId on the message being quoted — so the useful move is to
+      // point at that annotation rather than to re-download the file here.
+      //
+      // Formats with no extractor are still refused outright: for those there
+      // is no annotation to find, and a bare filename is exactly what a model
+      // will speculate from.
+      const fileName = (content['file_name'] as string) ?? 'attachment';
+      text = isSupportedLarkMedia({ type: 'file', fileName })
+        ? quotedDocumentNotice(fileName)
+        : unsupportedDocumentNotice(fileName);
     } else if (msgType === 'media') {
       text = '[Media/Video]';
     } else if (msgType === 'interactive') {
