@@ -306,7 +306,7 @@ describe('larkMessaging tool', () => {
       assert.equal((r as any).error.payload.reason, 'bad_args');
     });
 
-    it('send: defaults to locked current chat for scheduled delivery runs', async () => {
+    it('send: rejects manual delivery during scheduled runtime delivery', async () => {
       let capturedChatId: string | null = null;
       const client = {
         ...fakeClient,
@@ -321,21 +321,28 @@ describe('larkMessaging tool', () => {
       });
       const tool = createLarkMessagingTool({ client });
       const r = await tool.execute({ op: 'send', text: 'hi' }, lockedCtx);
-      assert.equal(r.ok, true);
-      assert.equal(capturedChatId, 'oc_locked_dm_chat');
-      assert.equal((r as any).value.messageId, 'msg-locked');
+      assert.equal(r.ok, false);
+      assert.equal(capturedChatId, null);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
     });
 
-    it('send: rejects explicit different chat when scheduled delivery is locked', async () => {
+    it('send: preserves an explicit external action to a different chat', async () => {
+      let capturedChatId: string | null = null;
+      const client = {
+        ...fakeClient,
+        sendMessage: async (chatId: string) => {
+          capturedChatId = chatId;
+          return { messageId: 'msg-external' };
+        },
+      };
       const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
         chatId: 'oc_locked_dm_chat',
         deliveryMode: 'current_chat_only',
       });
-      const tool = createLarkMessagingTool({ client: fakeClient });
+      const tool = createLarkMessagingTool({ client });
       const r = await tool.execute({ op: 'send', chatId: 'oc_other_group', text: 'hi' }, lockedCtx);
-      assert.equal(r.ok, false);
-      assert.equal((r as any).error.payload.reason, 'bad_args');
-      assert.match((r as any).error.message, /locked to the current chat/i);
+      assert.equal(r.ok, true);
+      assert.equal(capturedChatId, 'oc_other_group');
     });
 
     it('reply: ok with messageId', async () => {
@@ -344,16 +351,100 @@ describe('larkMessaging tool', () => {
       assert.equal(r.ok, true);
     });
 
-    it('send_dm: rejects when scheduled delivery is locked to current chat', async () => {
-      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
+    it('reply: rejects delivery during a scheduled current-chat run', async () => {
+      const lockedCtx = makeCtx('larkMessaging', ['send'], {
         chatId: 'oc_locked_dm_chat',
         deliveryMode: 'current_chat_only',
       });
       const tool = createLarkMessagingTool({ client: fakeClient });
+
+      const r = await tool.execute({ op: 'reply', messageId: 'msg-1', text: 'summary' }, lockedCtx);
+
+      assert.equal(r.ok, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('send and reply: reject chat-addressed creator-DM delivery', async () => {
+      let calls = 0;
+      const client = {
+        ...fakeClient,
+        sendMessage: async () => {
+          calls += 1;
+          return { messageId: 'msg-duplicate' };
+        },
+        replyMessage: async () => {
+          calls += 1;
+          return { messageId: 'reply-duplicate' };
+        },
+      };
+      const scheduledCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'ou_creator',
+        deliveryMode: 'scheduled_runtime_delivery',
+      });
+      const tool = createLarkMessagingTool({ client });
+
+      const send = await tool.execute({ op: 'send', chatId: 'oc_creator_dm', text: 'summary' }, scheduledCtx);
+      const reply = await tool.execute({ op: 'reply', messageId: 'msg-1', text: 'summary' }, scheduledCtx);
+
+      assert.equal(send.ok, false);
+      assert.equal(reply.ok, false);
+      assert.equal(calls, 0);
+    });
+
+    it('send_dm: rejects duplicate delivery to the current-chat requester', async () => {
+      const lockedCtx = makeCtx('larkMessaging', ['read', 'send'], {
+        chatId: 'oc_locked_dm_chat',
+        deliveryMode: 'current_chat_only',
+        userExternalId: 'resolved:Abhishek',
+      });
+      const tool = createLarkMessagingTool({ client: fakeClient, peopleResolver });
       const r = await tool.execute({ op: 'send_dm', text: 'hello', recipientName: 'Abhishek' }, lockedCtx);
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'bad_args');
-      assert.match((r as any).error.message, /locked to the current chat/i);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('send_dm: rejects duplicate delivery to a creator-DM runtime target', async () => {
+      let called = false;
+      const client = {
+        ...fakeClient,
+        sendDm: async () => {
+          called = true;
+          return { messageId: 'dm-duplicate' };
+        },
+      };
+      const scheduledCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'resolved:Creator',
+        deliveryMode: 'scheduled_runtime_delivery',
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+
+      const r = await tool.execute({ op: 'send_dm', text: 'summary', recipientName: 'Creator' }, scheduledCtx);
+
+      assert.equal(r.ok, false);
+      assert.equal(called, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('send_dm: preserves an explicit external action to another recipient', async () => {
+      let recipient: string | null = null;
+      const client = {
+        ...fakeClient,
+        sendDm: async (openId: string) => {
+          recipient = openId;
+          return { messageId: 'dm-external' };
+        },
+      };
+      const scheduledCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'resolved:Creator',
+        deliveryMode: 'scheduled_runtime_delivery',
+      });
+      const tool = createLarkMessagingTool({ client, peopleResolver });
+
+      const r = await tool.execute({ op: 'send_dm', text: 'alert', recipientName: 'Alice' }, scheduledCtx);
+
+      assert.equal(r.ok, true);
+      assert.equal(recipient, 'resolved:Alice');
     });
 
     it('send_dm: uses an exact recipient ID explicitly mentioned in this turn', async () => {

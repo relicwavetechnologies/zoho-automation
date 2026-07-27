@@ -48,21 +48,20 @@ export function buildScheduledExecutionPrompt(
       '- External actions explicitly required by the scheduled task are still allowed subject to normal permissions and approvals.',
     ].join('\n');
   }
-  if (!usesLockedCurrentChatDelivery(compiledPrompt)) {
-    return compiledPrompt;
-  }
-
-  const rewritten = compiledPrompt.replace(
-    CURRENT_CHAT_DELIVERY_LINE,
-    '   Deliver to: runtime_locked_current_chat (system-delivered; do not send manually)',
-  );
+  const rewritten = usesLockedCurrentChatDelivery(compiledPrompt)
+    ? compiledPrompt.replace(
+        CURRENT_CHAT_DELIVERY_LINE,
+        '   Deliver to: runtime_locked_current_chat (system-delivered; do not send manually)',
+      )
+    : compiledPrompt;
 
   return [
     rewritten,
     '',
     'RUNTIME DELIVERY OVERRIDE:',
     `- The destination for lark_current_chat is already locked by the runtime to this exact current Lark conversation (${lockedChatId}).`,
-    '- Do NOT call larkMessaging, do NOT list or search chats, and do NOT send or repost the result to any other chat, group, or DM.',
+    '- Do NOT use larkMessaging to deliver or repost the final result to this current chat.',
+    '- Explicit messaging actions required by the scheduled task are still allowed for other recipients, subject to normal permissions and approvals.',
     '- Produce the completed delivery content as your final reply only. The runtime will deliver that reply to the locked current chat.',
   ].join('\n');
 }
@@ -219,8 +218,7 @@ export class ScheduledWorkflowService {
       return;
     }
 
-    const currentChatDeliveryLocked = deliveryTarget === 'origin_chat'
-      && (deliveryChannel === 'desktop' || usesLockedCurrentChatDelivery(workflow.compiledPrompt));
+    const currentChatDeliveryLocked = deliveryTarget === 'origin_chat';
     const executionPrompt = buildScheduledExecutionPrompt(
       workflow.compiledPrompt,
       targetChatId,

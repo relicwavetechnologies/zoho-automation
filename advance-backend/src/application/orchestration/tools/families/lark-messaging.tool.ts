@@ -63,6 +63,20 @@ function lockedCurrentChatId(ctx: ToolExecutionContext): string | null {
   return ctx.runContext.chatId ?? null;
 }
 
+function runtimeDeliveryOpenId(ctx: ToolExecutionContext): string | null {
+  if (ctx.runContext.deliveryMode !== 'scheduled_runtime_delivery') return null;
+  if (ctx.runContext.channel !== 'lark') return null;
+  return ctx.runContext.chatId ?? null;
+}
+
+function runtimeDeliveryError(): ToolError {
+  return new ToolError({
+    toolId: 'larkMessaging',
+    reason: 'bad_args',
+    message: 'The scheduled runtime owns final delivery. Return the content as the final reply instead of sending it with larkMessaging.',
+  });
+}
+
 function explicitlyMentionedOpenIds(ctx: ToolExecutionContext): Set<string> {
   return new Set(ctx.runContext.mentionedLarkOpenIds ?? []);
 }
@@ -140,26 +154,23 @@ export const createLarkMessagingTool = (deps: {
       switch (args.op) {
         case 'send': {
           if (!args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'text required for send' }));
-          if (lockedChatId && args.chatId && args.chatId !== lockedChatId) {
-            return err(new ToolError({
-              toolId: 'larkMessaging',
-              reason: 'bad_args',
-              message: 'This run is locked to the current chat and cannot send to another chat.',
-            }));
+          if (ctx.runContext.deliveryMode === 'scheduled_runtime_delivery') {
+            return err(runtimeDeliveryError());
           }
-          const chatId = args.chatId ?? lockedChatId;
-          if (!chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for send' }));
+          if (lockedChatId && (!args.chatId || args.chatId === lockedChatId)) {
+            return err(runtimeDeliveryError());
+          }
+          if (!args.chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for send' }));
           ctx.onProgress?.('Sending message…');
-          const r = await deps.client.sendMessage(chatId, args.text, { rendering });
+          const r = await deps.client.sendMessage(args.chatId, args.text, { rendering });
           return ok({ success: true, messageId: r.messageId, message: 'Message sent' });
         }
         case 'reply': {
-          if (lockedChatId) {
-            return err(new ToolError({
-              toolId: 'larkMessaging',
-              reason: 'bad_args',
-              message: 'This run is locked to the current chat and cannot send replies by message ID.',
-            }));
+          if (
+            ctx.runContext.deliveryMode === 'current_chat_only'
+            || ctx.runContext.deliveryMode === 'scheduled_runtime_delivery'
+          ) {
+            return err(runtimeDeliveryError());
           }
           if (!args.messageId || !args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'messageId and text required for reply' }));
           ctx.onProgress?.('Sending reply…');
@@ -173,13 +184,6 @@ export const createLarkMessagingTool = (deps: {
           return ok({ success: true, data: msgs, message: `Found ${msgs.length} messages` });
         }
         case 'send_dm': {
-          if (lockedChatId) {
-            return err(new ToolError({
-              toolId: 'larkMessaging',
-              reason: 'bad_args',
-              message: 'This run is locked to the current chat and cannot send a separate DM.',
-            }));
-          }
           if (!args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'text required for send_dm' }));
           if (args.recipientOpenId && args.recipientName) {
             return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'Use recipientOpenId or recipientName, not both.' }));
@@ -207,6 +211,13 @@ export const createLarkMessagingTool = (deps: {
           } else {
             return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'recipientOpenId or recipientName required for send_dm' }));
           }
+          const runtimeOpenId = runtimeDeliveryOpenId(ctx)
+            ?? (ctx.runContext.deliveryMode === 'current_chat_only' && ctx.runContext.channel === 'lark'
+              ? ctx.runContext.userExternalId ?? null
+              : null);
+          if (openId === runtimeOpenId) {
+            return err(runtimeDeliveryError());
+          }
           const r = await deps.client.sendDm(openId, args.text, { rendering });
           return ok({ success: true, messageId: r.messageId, message: 'DM sent' });
         }
@@ -229,15 +240,10 @@ export const createLarkMessagingTool = (deps: {
           if (!args.mentionOpenIds?.length && !args.mentionNames?.length) {
             return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'mentionOpenIds or mentionNames required for mention' }));
           }
-          if (lockedChatId && args.chatId && args.chatId !== lockedChatId) {
-            return err(new ToolError({
-              toolId: 'larkMessaging',
-              reason: 'bad_args',
-              message: 'This run is locked to the current chat and cannot mention people in another chat.',
-            }));
+          if (lockedChatId && (!args.chatId || args.chatId === lockedChatId)) {
+            return err(runtimeDeliveryError());
           }
-          const chatId = args.chatId ?? lockedChatId;
-          if (!chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for mention' }));
+          if (!args.chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for mention' }));
           ctx.onProgress?.('Sending mention…');
           let mentionOpenIds: string[];
           if (args.mentionOpenIds?.length) {
@@ -257,7 +263,7 @@ export const createLarkMessagingTool = (deps: {
               return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: `Could not find: ${resolved.notFound.join(', ')}` }));
             }
           }
-          const r = await deps.client.mentionMessage(chatId, args.text, mentionOpenIds, { rendering });
+          const r = await deps.client.mentionMessage(args.chatId, args.text, mentionOpenIds, { rendering });
           return ok({ success: true, messageId: r.messageId, message: `Message sent with ${mentionOpenIds.length} mention(s)` });
         }
       }

@@ -43,17 +43,20 @@ describe('scheduled workflow current-chat delivery helpers', () => {
     assert.match(rewritten, /oc_dm_chat/);
     assert.doesNotMatch(rewritten, /Deliver to:\s+dest_1:lark_current_chat/);
   });
+
+  it('adds runtime delivery ownership to new raw-intent schedules', () => {
+    const rewritten = buildScheduledExecutionPrompt(
+      'Review new mail and return a concise summary.',
+      'oc_dm_chat',
+    );
+
+    assert.match(rewritten, /RUNTIME DELIVERY OVERRIDE/);
+    assert.match(rewritten, /Do NOT use larkMessaging/i);
+  });
 });
 
 describe('ScheduledWorkflowService.executeWorkflow', () => {
   it('locks the run context to the originating chat for scheduled current-chat delivery', async () => {
-    const compiledPrompt = [
-      'Workflow: Daily email summary',
-      'Original intent: check my mails every day in the morning and give me a summary of latest 5 mails',
-      '2. [deliver] Deliver result',
-      '   Deliver to: dest_1:lark_current_chat',
-    ].join('\n');
-
     const workflow = {
       id: 'wf-1',
       name: 'Daily email summary',
@@ -61,7 +64,7 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
       createdByUserId: 'user-1',
       departmentId: 'dept-1',
       originChatId: 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50',
-      compiledPrompt,
+      compiledPrompt: 'Review new mail and return a concise summary.',
       outputConfigJson: { deliveryChannel: 'lark' },
       scheduleConfigJson: {
         type: 'daily',
@@ -119,8 +122,8 @@ describe('ScheduledWorkflowService.executeWorkflow', () => {
     assert.equal(capturedInput.runContext.deliveryMode, 'current_chat_only');
     assert.equal(capturedInput.runContext.departmentId, 'dept-1');
     assert.equal(capturedInput.conversation.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
-    assert.match(capturedInput.incoming.text, /runtime_locked_current_chat/);
-    assert.match(capturedInput.incoming.text, /Do NOT call larkMessaging/i);
+    assert.match(capturedInput.incoming.text, /RUNTIME DELIVERY OVERRIDE/);
+    assert.match(capturedInput.incoming.text, /Do NOT use larkMessaging/i);
   });
 
   it('runs desktop schedules headlessly and persists delivery through the desktop adapter', async () => {
