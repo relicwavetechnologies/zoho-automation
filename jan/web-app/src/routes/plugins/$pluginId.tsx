@@ -199,6 +199,7 @@ type CloudProviderConfig = {
   supportsLabel?: boolean
   commands: {
     authorize: string
+    patConnect?: string
     status: string
     disconnect: string
   }
@@ -254,8 +255,10 @@ export const cloudProviders: Record<CloudProviderConfig['pluginId'], CloudProvid
     label: 'Airtable',
     connectionLabel: 'Airtable',
     accountFallback: 'Airtable account',
+    supportsLabel: true,
     commands: {
       authorize: 'divo_airtable_authorize_url',
+      patConnect: 'divo_airtable_pat_connect',
       status: 'divo_airtable_status',
       disconnect: 'divo_airtable_disconnect_connection',
     },
@@ -2269,7 +2272,17 @@ function AddConnectionDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const [isStartingOAuth, setIsStartingOAuth] = useState(false)
+  const [isSavingPat, setIsSavingPat] = useState(false)
+  const [connectMode, setConnectMode] = useState<'choose' | 'pat'>('choose')
   const [connectionLabel, setConnectionLabel] = useState('')
+  const [personalAccessToken, setPersonalAccessToken] = useState('')
+  const [patAccessMode, setPatAccessMode] = useState<'read_only' | 'read_write'>('read_write')
+
+  const closeDialog = () => {
+    setConnectMode('choose')
+    setPersonalAccessToken('')
+    onOpenChange(false)
+  }
 
   const handleContinue = async () => {
     if (divoSession.status !== 'connected') {
@@ -2293,7 +2306,7 @@ function AddConnectionDialog({
       await openExternalUrl(authorizeUrl)
       console.debug('[DivoPlugins] cloud_oauth.browser_opened', { provider: provider.provider })
       toast.success(`${provider.label} sign-in opened`)
-      onOpenChange(false)
+      closeDialog()
       setTimeout(() => void onConnected(), 1500)
     } catch (error) {
       console.error('[DivoPlugins] cloud_oauth.failed', { provider: provider.provider, error })
@@ -2313,14 +2326,60 @@ function AddConnectionDialog({
     }
   }
 
+  const handlePatConnect = async () => {
+    if (divoSession.status !== 'connected') {
+      onReconnect()
+      return
+    }
+    if (!provider.commands.patConnect || !personalAccessToken.trim()) return
+
+    setIsSavingPat(true)
+    try {
+      const response = await invoke<{ data?: { warning?: string } }>(provider.commands.patConnect, {
+        label: connectionLabel.trim() || provider.accountFallback,
+        personalAccessToken: personalAccessToken.trim(),
+        personal_access_token: personalAccessToken.trim(),
+        accessMode: patAccessMode,
+        access_mode: patAccessMode,
+      })
+      toast.success('Airtable connection added', {
+        description: response.data?.warning,
+      })
+      closeDialog()
+      await onConnected()
+    } catch (error) {
+      if (isDivoAuthError(error)) {
+        toast.error('Reconnect Divo to continue')
+        closeDialog()
+        onReconnect()
+        return
+      }
+      toast.error('Airtable connection failed', { description: String(error) })
+    } finally {
+      setIsSavingPat(false)
+    }
+  }
+
+  const isAirtable = provider.provider === 'airtable'
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          setConnectMode('choose')
+          setPersonalAccessToken('')
+        }
+        onOpenChange(nextOpen)
+      }}
+    >
       <DialogContent className="max-h-[calc(100svh-64px)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add {provider.label} connection</DialogTitle>
           <DialogDescription>
-            OAuth will be handled by Divo backend. This UI is ready for personal
-            accounts and admin-shared company accounts.
+            {isAirtable
+              ? 'Use Airtable OAuth, or add an admin-owned personal access token from Builder Hub.'
+              : 'OAuth will be handled by Divo backend. This UI is ready for personal accounts and admin-shared company accounts.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -2330,17 +2389,12 @@ function AddConnectionDialog({
               <div className="flex gap-2">
                 <Lock className="mt-0.5 size-4 shrink-0 text-amber-300" />
                 <p className="text-xs leading-5 text-amber-100">
-                  Connect Divo before starting {provider.label} OAuth. The backend needs
+                  Connect Divo before adding {provider.label}. The backend needs
                   your Divo company session to save and authorize this connection.
                 </p>
               </div>
             </div>
           ) : null}
-          <ConnectionOption
-            icon={User}
-            title="Connect account"
-            description={`OAuth creates a backend-owned ${provider.label} connection with admin access for you.`}
-          />
           {provider.supportsLabel ? (
             <label className="grid gap-1.5 text-sm font-medium">
               Connection name
@@ -2354,10 +2408,75 @@ function AddConnectionDialog({
               <span className="text-xs font-normal leading-5 text-muted-foreground">Use a name your team will recognize when selecting or sharing this connection.</span>
             </label>
           ) : null}
+
+          {isAirtable && connectMode === 'choose' ? (
+            <>
+              <div className="rounded-lg border border-border/70 bg-card/30 p-4">
+                <h3 className="text-sm font-medium">Airtable OAuth</h3>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Open Airtable in your browser and approve the regular Divo connection.
+                </p>
+                <Button className="mt-3" size="sm" onClick={() => void handleContinue()} disabled={isStartingOAuth}>
+                  <ExternalLink className="size-4" />
+                  {isStartingOAuth ? 'Opening Airtable...' : 'Continue with Airtable'}
+                </Button>
+              </div>
+              <div className="rounded-lg border border-border/70 bg-card/30 p-4">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-medium">Personal access token</h3>
+                  <Badge tone="amber">Company admin</Badge>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Paste a PAT created in Airtable Builder Hub. Divo verifies its identity before encrypted backend storage.
+                </p>
+                <Button className="mt-3" variant="outline" size="sm" onClick={() => setConnectMode('pat')}>
+                  Enter token
+                </Button>
+              </div>
+            </>
+          ) : isAirtable ? (
+            <>
+              <label className="grid gap-1.5 text-sm font-medium">
+                Access included in this token
+                <select
+                  className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none"
+                  value={patAccessMode}
+                  onChange={(event) => setPatAccessMode(event.target.value as 'read_only' | 'read_write')}
+                >
+                  <option value="read_only">Read-only</option>
+                  <option value="read_write">Read and write</option>
+                </select>
+                <span className="text-xs font-normal leading-5 text-muted-foreground">
+                  Match what you selected in Airtable. Airtable exposes PAT identity, but only OAuth tokens reveal their scopes.
+                </span>
+              </label>
+              <label className="grid gap-1.5 text-sm font-medium">
+                Personal access token
+                <input
+                  className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none"
+                  type="password"
+                  value={personalAccessToken}
+                  onChange={(event) => setPersonalAccessToken(event.target.value)}
+                  autoComplete="off"
+                  autoFocus
+                  placeholder="pat..."
+                />
+              </label>
+              <p className="text-xs leading-5 text-muted-foreground">
+                Give the token access only to the bases and scopes Divo should use. The token is sent once to the Divo backend and is never shown again.
+              </p>
+            </>
+          ) : (
+            <ConnectionOption
+              icon={User}
+              title="Connect account"
+              description={`OAuth creates a backend-owned ${provider.label} connection with admin access for you.`}
+            />
+          )}
           <ConnectionOption
             icon={Users}
             title="Share after connect"
-            description="After OAuth, use Manage to grant users, departments, roles, or the company access."
+            description={`After ${isAirtable ? 'connecting' : 'OAuth'}, use Manage to grant users, departments, roles, or the company access.`}
           />
           <div className="rounded-lg border border-border/70 bg-muted/30 p-3">
             <div className="flex gap-2">
@@ -2371,18 +2490,33 @@ function AddConnectionDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={closeDialog}>
             Cancel
           </Button>
-          <Button onClick={() => void handleContinue()} disabled={isStartingOAuth}>
-            <KeyRound className="size-4" />
-            {divoSession.status !== 'connected'
-              ? 'Connect Divo first'
-              : isStartingOAuth
-                ? `Opening ${provider.label}...`
-                : `Continue with ${provider.label}`}
-            <ExternalLink className="size-4" />
-          </Button>
+          {isAirtable && connectMode === 'pat' ? (
+            <>
+              <Button variant="outline" onClick={() => setConnectMode('choose')} disabled={isSavingPat}>
+                Back
+              </Button>
+              <Button
+                onClick={() => void handlePatConnect()}
+                disabled={isSavingPat || !personalAccessToken.trim()}
+              >
+                <KeyRound className="size-4" />
+                {isSavingPat ? 'Verifying token...' : 'Add with token'}
+              </Button>
+            </>
+          ) : !isAirtable ? (
+            <Button onClick={() => void handleContinue()} disabled={isStartingOAuth}>
+              <KeyRound className="size-4" />
+              {divoSession.status !== 'connected'
+                ? 'Connect Divo first'
+                : isStartingOAuth
+                  ? `Opening ${provider.label}...`
+                  : `Continue with ${provider.label}`}
+              <ExternalLink className="size-4" />
+            </Button>
+          ) : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>

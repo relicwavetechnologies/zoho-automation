@@ -19,14 +19,15 @@ export const AIRTABLE_MCP_SOURCE = Object.freeze({
 
 /**
  * Authorization is resolved before any native tool runs. The selected Divo
- * connection's OAuth bearer identifies the Airtable user, so identity is never
- * a model argument, and Airtable applies its own base-level permissions on top.
+ * connection's backend-owned bearer (OAuth or PAT) identifies the Airtable
+ * user, so identity is never a model argument, and Airtable applies its own
+ * token-scope and base-level permissions on top.
  */
 export const AIRTABLE_MCP_AUTH_CONTRACT = Object.freeze({
-  mode: 'external_oauth_bearer' as const,
+  mode: 'external_bearer' as const,
   identitySource: 'access_token' as const,
   agentGuidance:
-    'The selected Divo connection authenticates the request with its OAuth bearer token. ' +
+    'The selected Divo connection authenticates the request with its backend-owned bearer token. ' +
     'Airtable derives the account from that token and still enforces its own base permissions, ' +
     'so never send identity, token, or API-key fields in native tool input.',
 });
@@ -49,7 +50,7 @@ export const AIRTABLE_SCOPE = Object.freeze({
   workspacesRead: 'workspacesAndBases:read',
 });
 
-/** Requested at connect time. One consent covers every Airtable product tool. */
+/** Requested by OAuth connect. One consent covers every Airtable product tool. */
 export const AIRTABLE_REQUESTED_SCOPES: readonly string[] = Object.freeze([
   AIRTABLE_SCOPE.recordsRead,
   AIRTABLE_SCOPE.recordsWrite,
@@ -60,7 +61,7 @@ export const AIRTABLE_REQUESTED_SCOPES: readonly string[] = Object.freeze([
   AIRTABLE_SCOPE.workspacesRead,
 ]);
 
-export type AirtableService = 'records' | 'schema' | 'automation';
+export type AirtableService = 'base' | 'records' | 'schema' | 'automation';
 
 export interface AirtableOperationDefinition {
   /** Exact native MCP tool name. This allow-list is the RBAC surface. */
@@ -102,6 +103,25 @@ const DISCOVERY_OPERATIONS: readonly AirtableOperationDefinition[] = [
 ];
 
 export const AIRTABLE_PRODUCTS: readonly AirtableProductDefinition[] = [
+  {
+    service: 'base',
+    toolId: 'airtableBase',
+    name: 'Airtable',
+    description:
+      'Read governed Airtable bases, table schemas, views, and records through Divo-controlled Airtable MCP.',
+    category: 'data',
+    operations: [
+      ...DISCOVERY_OPERATIONS,
+      { nativeTool: 'list_records_for_table', action: 'read' },
+      { nativeTool: 'search_records', action: 'read' },
+    ],
+    readScopeGroups: [
+      [AIRTABLE_SCOPE.recordsRead],
+      [AIRTABLE_SCOPE.schemaRead],
+      [AIRTABLE_SCOPE.workspacesRead],
+    ],
+    writeScopeGroups: [],
+  },
   {
     service: 'records',
     toolId: 'airtableRecords',

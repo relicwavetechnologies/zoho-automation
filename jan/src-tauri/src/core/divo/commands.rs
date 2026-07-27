@@ -1650,6 +1650,35 @@ pub async fn divo_airtable_authorize_url<R: Runtime>(
         })
 }
 
+/// Add a backend-owned Airtable personal access token. The token crosses the
+/// webview boundary once, is verified by the backend, and is never returned.
+#[tauri::command]
+pub async fn divo_airtable_pat_connect<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    personal_access_token: String,
+    access_mode: String,
+) -> Result<Value, String> {
+    if personal_access_token.trim().is_empty() {
+        return Err("Personal access token is required".into());
+    }
+    if !matches!(access_mode.as_str(), "read_only" | "read_write") {
+        return Err("Airtable token access must be read_only or read_write".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        "/airtable/pat",
+        Some(json!({
+            "label": label.trim(),
+            "personalAccessToken": personal_access_token.trim(),
+            "accessMode": access_mode,
+        })),
+        "Airtable personal access token connection",
+    )
+    .await
+}
+
 /// Read Airtable connections visible to the stored Divo member session.
 #[tauri::command]
 pub async fn divo_airtable_status<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {

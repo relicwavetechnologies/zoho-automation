@@ -8,8 +8,9 @@ import type { CanvaMcpOAuthService } from '../../infrastructure/canva/canva-mcp-
 import type { AirtableMcpOAuthService } from '../../infrastructure/airtable/airtable-mcp-oauth.service';
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
-import { CONNECTION_NEEDS_KEY, type IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
+import { apiKeyFingerprint, CONNECTION_NEEDS_KEY, type IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import type { AitableKeyVerifier } from '../../application/aitable/aitable-connect.service';
+import { AIRTABLE_REQUESTED_SCOPES, AIRTABLE_SCOPE } from '../../application/airtable/airtable-mcp-manifest';
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
@@ -76,6 +77,63 @@ function isManageableConnectionProvider(value: string): value is ManageableConne
 
 const CONNECTION_GRANTEE_TYPES = new Set(['user', 'department', 'role', 'company']);
 const COMPANY_ADMIN_ROLES = new Set(['COMPANY_ADMIN', 'SUPER_ADMIN']);
+const AIRTABLE_PAT_SCOPE_PRESETS = {
+  read_only: [
+    AIRTABLE_SCOPE.recordsRead,
+    AIRTABLE_SCOPE.commentsRead,
+    AIRTABLE_SCOPE.schemaRead,
+    AIRTABLE_SCOPE.workspacesRead,
+  ],
+  read_write: [...AIRTABLE_REQUESTED_SCOPES],
+} as const;
+
+type AirtablePatAccessMode = keyof typeof AIRTABLE_PAT_SCOPE_PRESETS;
+type AirtablePatCheck =
+  | { readonly ok: true; readonly userId: string }
+  | { readonly ok: false; readonly reason: 'empty' | 'rejected' | 'unreachable'; readonly message: string };
+
+async function verifyAirtablePatIdentity(personalAccessToken: string): Promise<AirtablePatCheck> {
+  const token = personalAccessToken.trim();
+  if (!token) {
+    return { ok: false, reason: 'empty', message: 'Enter an Airtable personal access token.' };
+  }
+  try {
+    const response = await fetch('https://api.airtable.com/v0/meta/whoami', {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.status === 401 || response.status === 403) {
+      return {
+        ok: false,
+        reason: 'rejected',
+        message: 'Airtable rejected this personal access token. Check that it was copied whole and is still active.',
+      };
+    }
+    if (!response.ok) {
+      return {
+        ok: false,
+        reason: 'unreachable',
+        message: 'Could not verify this token with Airtable. The token was not saved — try again in a moment.',
+      };
+    }
+    const identity = await response.json() as { id?: unknown };
+    if (typeof identity.id !== 'string' || !identity.id.trim()) {
+      return {
+        ok: false,
+        reason: 'unreachable',
+        message: 'Airtable returned an unexpected token identity response. The token was not saved.',
+      };
+    }
+    return { ok: true, userId: identity.id.trim() };
+  } catch {
+    return {
+      ok: false,
+      reason: 'unreachable',
+      message: 'Could not reach Airtable to verify this token. The token was not saved.',
+    };
+  }
+}
+
 const DEFAULT_ZOHO_SCOPES = [
   'ZohoCRM.modules.ALL',
   'ZohoCRM.settings.ALL',
@@ -1954,6 +2012,79 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     } catch (e) {
       log.error('airtable.callback.error', { error: String(e) });
       res.status(500).type('text/plain').send('Airtable connection failed. Return to Divo and try again.');
+    }
+  });
+
+  router.post('/airtable/pat', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      if (!COMPANY_ADMIN_ROLES.has(role)) {
+        res.status(403).json({ success: false, message: 'Only a company administrator can connect Airtable with a personal access token.' });
+        return;
+      }
+
+      const body = req.body as { personalAccessToken?: unknown; label?: unknown; accessMode?: unknown };
+      const personalAccessToken = typeof body.personalAccessToken === 'string'
+        ? body.personalAccessToken.trim()
+        : '';
+      const accessMode = body.accessMode === 'read_only' || body.accessMode === 'read_write'
+        ? body.accessMode as AirtablePatAccessMode
+        : null;
+      if (!accessMode) {
+        res.status(400).json({ success: false, message: 'Choose whether this Airtable token is read-only or read/write.' });
+        return;
+      }
+      const check = await verifyAirtablePatIdentity(personalAccessToken);
+      if (!check.ok) {
+        res.status(check.reason === 'unreachable' ? 502 : 400)
+          .json({ success: false, message: check.message, reason: check.reason });
+        return;
+      }
+
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const connection = await deps.connectionRepo.upsertAirtableConnection({
+        companyId,
+        ownerType: 'user',
+        ownerUserId: userId,
+        createdBy: userId,
+        externalAccountId: `mcp-pat:${apiKeyFingerprint(personalAccessToken)}`,
+        ...(typeof body.label === 'string' && body.label.trim()
+          ? { label: body.label.trim().slice(0, 120) }
+          : {}),
+        accessToken: personalAccessToken,
+        tokenType: 'Bearer',
+        scopes: [...AIRTABLE_PAT_SCOPE_PRESETS[accessMode]],
+        tokenMetadata: {
+          authenticationMethod: 'personal_access_token',
+          airtableUserId: check.userId,
+          scopeSource: 'admin_declaration',
+          declaredAccessMode: accessMode,
+        },
+        initialAccess: 'admin',
+      });
+      if (!connection.ok) {
+        res.status(500).json({ success: false, message: connection.error.message });
+        return;
+      }
+
+      log.info('airtable.pat.success', {
+        companyId,
+        userId,
+        connectionId: connection.value.id,
+        scopeCount: AIRTABLE_PAT_SCOPE_PRESETS[accessMode].length,
+      });
+      res.json({
+        success: true,
+        data: {
+          connectionId: connection.value.id,
+          label: connection.value.label,
+          scopes: AIRTABLE_PAT_SCOPE_PRESETS[accessMode],
+        },
+      });
+    } catch (e) {
+      log.error('airtable.pat.error', { error: String(e) });
+      res.status(500).json({ success: false, message: 'Could not save the Airtable connection.' });
     }
   });
 

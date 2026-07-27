@@ -148,6 +148,7 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_canva_revoke_access,
         core::divo::commands::divo_canva_disconnect_connection,
         core::divo::commands::divo_airtable_authorize_url,
+        core::divo::commands::divo_airtable_pat_connect,
         core::divo::commands::divo_airtable_status,
         core::divo::commands::divo_airtable_manage_access,
         core::divo::commands::divo_airtable_grant_access,

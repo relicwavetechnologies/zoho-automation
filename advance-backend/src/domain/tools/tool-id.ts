@@ -23,6 +23,7 @@ export const CANONICAL_TOOL_IDS = [
   'googleChat',
   'googleAppsScript',
   'canvaDesign',
+  'airtableBase',
   'airtableRecords',
   'airtableSchema',
   'airtableAutomation',
@@ -75,6 +76,7 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   googleChat:     'google',
   googleAppsScript: 'google',
   canvaDesign:    'canva',
+  airtableBase:       'airtable',
   airtableRecords:    'airtable',
   airtableSchema:     'airtable',
   airtableAutomation: 'airtable',
@@ -124,6 +126,7 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   googleChat:     ['read', 'send', 'update'],
   googleAppsScript: ['read', 'create', 'update', 'delete', 'execute'],
   canvaDesign:    ['read', 'create', 'update'],
+  airtableBase:       ['read'],
   airtableRecords:    ['read', 'create', 'update', 'delete'],
   airtableSchema:     ['read', 'create', 'update', 'delete'],
   airtableAutomation: ['read', 'create', 'update', 'delete'],
@@ -170,6 +173,7 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   // Records are ordinary day-to-day work. Schema and automation edit the shape
   // of a base — including delete_table / delete_automation — so they follow the
   // larkBase precedent and stay off for members until an admin grants them.
+  airtableBase:       { MEMBER: true,  COMPANY_ADMIN: true, SUPER_ADMIN: true },
   airtableRecords:    { MEMBER: true,  COMPANY_ADMIN: true, SUPER_ADMIN: true },
   airtableSchema:     { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   airtableAutomation: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },

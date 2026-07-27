@@ -252,6 +252,123 @@ describe('desktop auth routes', () => {
     assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'canva-1', provider: 'canva' }]);
   });
 
+  it('lets a company admin verify and store an Airtable PAT without returning the secret', async () => {
+    const token = 'pat-super-secret';
+    let storedConnection: Record<string, unknown> | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_input, init) => {
+      assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${token}`);
+      return Response.json({
+        id: 'usr-airtable-1',
+      });
+    };
+
+    try {
+      const router = createDesktopAuthRoutes(makeDeps({
+        connectionRepo: {
+          upsertAirtableConnection: async (input: Record<string, unknown>) => {
+            storedConnection = input;
+            return { ok: true, value: { id: 'airtable-1', label: input['label'] } };
+          },
+        },
+      }));
+
+      const result = await callRoute(router, 'POST', '/airtable/pat', {
+        body: { personalAccessToken: ` ${token} `, label: 'Finance bases', accessMode: 'read_write' },
+        locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+      });
+
+      assert.equal(result.status, 200);
+      assert.equal(storedConnection?.['accessToken'], token);
+      assert.equal(storedConnection?.['externalAccountId'], 'mcp-pat:efb14cf6579790df2ee07b8398a9f7713f61f8e70730b4d0d9ca9bd0f8297ecd');
+      assert.deepEqual(storedConnection?.['scopes'], [
+        'data.records:read',
+        'data.records:write',
+        'data.recordComments:read',
+        'data.recordComments:write',
+        'schema.bases:read',
+        'schema.bases:write',
+        'workspacesAndBases:read',
+      ]);
+      assert.deepEqual(storedConnection?.['tokenMetadata'], {
+        authenticationMethod: 'personal_access_token',
+        airtableUserId: 'usr-airtable-1',
+        scopeSource: 'admin_declaration',
+        declaredAccessMode: 'read_write',
+      });
+      assert.equal(JSON.stringify(result.body).includes(token), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('stores only read scopes for a read-only Airtable PAT declaration', async () => {
+    const token = 'pat-read-only-secret';
+    let storedConnection: Record<string, unknown> | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => Response.json({ id: 'usr-airtable-1' });
+
+    try {
+      const router = createDesktopAuthRoutes(makeDeps({
+        connectionRepo: {
+          upsertAirtableConnection: async (input: Record<string, unknown>) => {
+            storedConnection = input;
+            return { ok: true, value: { id: 'airtable-1', label: 'Read-only bases' } };
+          },
+        },
+      }));
+
+      const result = await callRoute(router, 'POST', '/airtable/pat', {
+        body: { personalAccessToken: token, accessMode: 'read_only' },
+        locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+      });
+
+      assert.equal(result.status, 200);
+      assert.deepEqual(storedConnection?.['scopes'], [
+        'data.records:read',
+        'data.recordComments:read',
+        'schema.bases:read',
+        'workspacesAndBases:read',
+      ]);
+      assert.equal((storedConnection?.['scopes'] as string[]).some((scope) => scope.endsWith(':write')), false);
+      assert.equal(JSON.stringify(result.body).includes(token), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects an Airtable PAT from a non-admin before verification or storage', async () => {
+    let verified = false;
+    let stored = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      verified = true;
+      return Response.json({ id: 'usr-airtable-1', scopes: [] });
+    };
+
+    try {
+      const router = createDesktopAuthRoutes(makeDeps({
+        connectionRepo: {
+          upsertAirtableConnection: async () => {
+            stored = true;
+            return { ok: true, value: { id: 'airtable-1', label: 'Airtable' } };
+          },
+        },
+      }));
+
+      const result = await callRoute(router, 'POST', '/airtable/pat', {
+        body: { personalAccessToken: 'pat-secret' },
+        locals: { userId: 'member-1', companyId: 'company-1', aiRole: 'MEMBER' },
+      });
+
+      assert.equal(result.status, 403);
+      assert.equal(verified, false);
+      assert.equal(stored, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('stores the Zoho accounts domain used for the OAuth exchange', async () => {
     let storedConnection: Record<string, unknown> | undefined;
     const originalFetch = globalThis.fetch;

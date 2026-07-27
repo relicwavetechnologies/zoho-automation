@@ -46,6 +46,7 @@ export const TOOL_LABELS: Readonly<Record<CanonicalToolId, ToolLabel>> = {
   googleChat:         { name: 'Google Chat',      noun: 'messages' },
   googleAppsScript:   { name: 'Apps Script',      noun: 'scripts' },
   canvaDesign:        { name: 'Canva',            noun: 'designs' },
+  airtableBase:       { name: 'Airtable',         noun: 'bases and records' },
   airtableRecords:    { name: 'Airtable Records', noun: 'records' },
   airtableSchema:     { name: 'Airtable Schema',  noun: 'tables and fields' },
   airtableAutomation: { name: 'Airtable Automations', noun: 'automations' },
