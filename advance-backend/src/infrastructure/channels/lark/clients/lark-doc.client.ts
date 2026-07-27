@@ -164,7 +164,7 @@ export class LarkDocClient implements LarkDocClientPort {
     );
     const parentBlockId = params.afterBlockId ?? (docData.document['document_id'] as string);
     type CreateTableResponse = {
-      children?: Array<{ table?: { cells?: string[] } }>;
+      children?: Array<{ block_id?: string; table?: { cells?: string[] } }>;
     };
     const created = await this.http.request<CreateTableResponse>(
       'POST',
@@ -199,23 +199,51 @@ export class LarkDocClient implements LarkDocClientPort {
     if (populatedCells.length === 0) return;
 
     const cells = created.children?.[0]?.table?.cells ?? [];
-    if (cells.length < params.rows * params.cols) {
+    const tableBlockId = created.children?.[0]?.block_id;
+    if (!tableBlockId || cells.length < params.rows * params.cols) {
       throw new LarkApiError(
-        'Lark created the table but did not return enough cell IDs to populate it',
+        'Lark created the table but did not return enough block IDs to populate it',
         200,
       );
     }
-    for (const { value, cellIndex } of populatedCells) {
-      const cellId = cells[cellIndex]!;
-      await this.http.request(
-        'POST',
-        `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/blocks/${encodeURIComponent(cellId)}/children`,
-        {
-          query: { document_revision_id: -1 },
-          body: { children: [buildRichTextBlock(value, 'text')] },
+
+    type TableDescendantsResponse = { items?: DocRecord[] };
+    const descendants = await this.http.request<TableDescendantsResponse>(
+      'GET',
+      `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/blocks/${encodeURIComponent(tableBlockId)}/children`,
+      {
+        query: {
+          document_revision_id: -1,
+          with_descendants: 'true',
+          page_size: 500,
         },
-      );
-    }
+      },
+    );
+    const textBlockByCell = new Map(
+      (descendants.items ?? []).flatMap(block => {
+        const blockId = stringValue(block['block_id']);
+        const textBlockId = childBlockIds(block)[0];
+        return blockId && textBlockId ? [[blockId, textBlockId] as const] : [];
+      }),
+    );
+    const requests = populatedCells.map(({ value, cellIndex }) => {
+      const textBlockId = textBlockByCell.get(cells[cellIndex]!);
+      if (!textBlockId) {
+        throw new LarkApiError('Lark created the table but did not return its cell text blocks', 200);
+      }
+      return {
+        block_id: textBlockId,
+        update_text_elements: { elements: [{ text_run: { content: value } }] },
+      };
+    });
+    await this.http.request(
+      'PATCH',
+      `/open-apis/docx/v1/documents/${encodeURIComponent(docToken)}/blocks/batch_update`,
+      {
+        query: { document_revision_id: -1 },
+        body: { requests },
+      },
+    );
   }
 
   async shareDoc(docToken: string, visibility: string): Promise<{ shareUrl?: string }> {
