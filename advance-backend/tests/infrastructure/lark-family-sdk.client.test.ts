@@ -251,10 +251,21 @@ describe('Lark family clients through the official SDK boundary', () => {
 
   it('creates a table using the documented payload and populates header and body cells', async () => {
     const { sdkClient, requests } = sdkStub(request => {
+      if (request.url.endsWith('/blocks/table-1/children')) {
+        return {
+          items: [
+            { block_id: 'cell-1', children: ['text-1'] },
+            { block_id: 'cell-2', children: ['text-2'] },
+            { block_id: 'cell-3', children: ['text-3'] },
+            { block_id: 'cell-4', children: ['text-4'] },
+          ],
+        };
+      }
       if (request.method === 'GET') return { document: { document_id: 'doc-root' } };
       if (request.url.endsWith('/blocks/doc-root/children')) {
         return {
           children: [{
+            block_id: 'table-1',
             table: {
               cells: ['cell-1', 'cell-2', 'cell-3', 'cell-4'],
               property: { row_size: 2, column_size: 2, header_row: true },
@@ -286,35 +297,25 @@ describe('Lark family clients through the official SDK boundary', () => {
         },
       },
       {
-        method: 'POST',
-        url: '/open-apis/docx/v1/documents/doc-1/blocks/cell-1/children',
-        params: { document_revision_id: -1 },
-        data: {
-          children: [{ block_type: 2, text: { elements: [{ text_run: { content: 'Owner' } }], style: {} } }],
+        method: 'GET',
+        url: '/open-apis/docx/v1/documents/doc-1/blocks/table-1/children',
+        params: {
+          document_revision_id: -1,
+          with_descendants: 'true',
+          page_size: 500,
         },
       },
       {
-        method: 'POST',
-        url: '/open-apis/docx/v1/documents/doc-1/blocks/cell-2/children',
+        method: 'PATCH',
+        url: '/open-apis/docx/v1/documents/doc-1/blocks/batch_update',
         params: { document_revision_id: -1 },
         data: {
-          children: [{ block_type: 2, text: { elements: [{ text_run: { content: 'Status' } }], style: {} } }],
-        },
-      },
-      {
-        method: 'POST',
-        url: '/open-apis/docx/v1/documents/doc-1/blocks/cell-3/children',
-        params: { document_revision_id: -1 },
-        data: {
-          children: [{ block_type: 2, text: { elements: [{ text_run: { content: 'Abhishek' } }], style: {} } }],
-        },
-      },
-      {
-        method: 'POST',
-        url: '/open-apis/docx/v1/documents/doc-1/blocks/cell-4/children',
-        params: { document_revision_id: -1 },
-        data: {
-          children: [{ block_type: 2, text: { elements: [{ text_run: { content: 'Open' } }], style: {} } }],
+          requests: [
+            { block_id: 'text-1', update_text_elements: { elements: [{ text_run: { content: 'Owner' } }] } },
+            { block_id: 'text-2', update_text_elements: { elements: [{ text_run: { content: 'Status' } }] } },
+            { block_id: 'text-3', update_text_elements: { elements: [{ text_run: { content: 'Abhishek' } }] } },
+            { block_id: 'text-4', update_text_elements: { elements: [{ text_run: { content: 'Open' } }] } },
+          ],
         },
       },
     ]);
