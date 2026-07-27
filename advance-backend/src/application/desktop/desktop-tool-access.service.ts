@@ -1,7 +1,7 @@
 import type { PrismaClient } from '../../generated/prisma';
 import type { PermissionService } from '../permissions/permission.service';
 import type { PermissionWriteService } from '../permissions/permission-write.service';
-import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
+import { CONNECTION_NEEDS_KEY, type IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
 import { getDesktopToolPolicy } from '../../domain/tools/tool-policy';
 import { TOOL_DEFAULT_PERMISSIONS } from '../../domain/tools/tool-id';
 import { actionPhrase } from '../../domain/tools/tool-labels';
@@ -139,7 +139,7 @@ export class DesktopToolAccessService {
   async inventory(actor: Actor) {
     const liveRole = await this.liveCompanyRole(actor);
     if (!liveRole) throw new DesktopToolAccessError('forbidden');
-    const [registered, memberships, google, canva, zoho, lark, airtable] = await Promise.all([
+    const [registered, memberships, google, canva, zoho, lark, airtable, aitable] = await Promise.all([
       this.deps.prisma.registeredTool.findMany({
         where: { deprecated: false },
         select: { toolId: true, name: true, description: true, category: true, domain: true, hitlRequired: true },
@@ -155,6 +155,7 @@ export class DesktopToolAccessService {
       this.deps.connectionRepo.listAccessibleZohoConnections({ companyId: actor.companyId, userId: actor.userId }),
       this.deps.connectionRepo.listAccessibleLarkConnections({ companyId: actor.companyId, userId: actor.userId }),
       this.deps.connectionRepo.listAccessibleAirtableConnections({ companyId: actor.companyId, userId: actor.userId }),
+      this.deps.connectionRepo.listAccessibleAitableConnections({ companyId: actor.companyId, userId: actor.userId }),
     ]);
     const companyResult = await this.deps.permissions.resolve({ companyId: asCompanyId(actor.companyId), userId: asUserId(actor.userId), companyRole: liveRole as any, channel: 'desktop' });
     if (!companyResult.ok) throw new DesktopToolAccessError('internal');
@@ -171,6 +172,10 @@ export class DesktopToolAccessService {
     const zohoReady = zoho.ok && zoho.value.length > 0;
     const larkReady = lark.ok && lark.value.length > 0;
     const airtableReady = airtable.ok && airtable.value.length > 0;
+    // A connection whose API key was regenerated upstream is listed but cannot
+    // serve a call, so it must not count towards readiness — otherwise the
+    // screen reports "ready" for a tool that fails on its next use.
+    const aitableReady = aitable.ok && aitable.value.some(connection => connection.status !== CONNECTION_NEEDS_KEY);
     const canManageGlobal = COMPANY_ADMIN_ROLES.has(liveRole);
     const managedDepartments = new Set(memberships.filter(m => m.role.slug === 'MANAGER').map(m => m.departmentId));
     // A company admin governs every department, not only the ones they happen
@@ -213,6 +218,11 @@ export class DesktopToolAccessService {
           ? (zohoReady ? 'ready' : canManageGlobal ? 'connection_required' : 'admin_connection_required')
         : tool.toolId.startsWith('airtable')
           ? (airtableReady ? 'ready' : 'connection_required')
+        // Distinct from the branch above by one character, which is exactly why
+        // the AITable tool IDs were named for datasheets and fields rather than
+        // records and schema.
+        : tool.toolId.startsWith('aitable')
+          ? (aitableReady ? 'ready' : 'connection_required')
         : tool.toolId.startsWith('lark')
             ? (LARK_USER_CONNECTION_TOOL_IDS.has(tool.toolId)
               ? (larkReady ? 'ready' : 'connection_required')

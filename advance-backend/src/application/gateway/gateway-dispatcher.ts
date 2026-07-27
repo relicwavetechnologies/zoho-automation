@@ -50,7 +50,7 @@ import {
 } from './google-orchestration.service';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
 import { AIRTABLE_TOOL_IDS } from '../airtable/airtable-mcp-manifest';
-import { TOOL_PERMISSION_POLICY_REVISION, type CanonicalToolId } from '../../domain/tools/tool-id';
+import { TOOL_PERMISSION_POLICY_REVISION, toolIdsForFamily, type CanonicalToolId } from '../../domain/tools/tool-id';
 import {
   WorkResolutionService,
   withWorkDiscoveryPermissions as withGatewayDiscoveryPermissions,
@@ -888,6 +888,9 @@ export class GatewayDispatcher {
     const canUseAirtable = AIRTABLE_TOOL_IDS.some((toolId) =>
       perm.allowedToolIds.has(asToolId(toolId as CanonicalToolId)),
     );
+    const canUseAitable = toolIdsForFamily('aitable').some((toolId) =>
+      perm.allowedToolIds.has(asToolId(toolId)),
+    );
     const canUseLark = [...LARK_CONNECTION_TOOL_IDS]
       .some((toolId) => perm.allowedToolIds.has(asToolId(toolId)));
 
@@ -898,6 +901,7 @@ export class GatewayDispatcher {
       zoho:             canUseZoho,
       canva:            canUseCanva,
       airtable:         canUseAirtable,
+      aitable:          canUseAitable,
       lark:             canUseLark,
     };
     if (!permitted[provider]) {

@@ -47,7 +47,16 @@ export function isFixedToolPolicy(toolId: string): boolean {
  * grant rather than a ceiling has to skip them: the department-less permission
  * path, and the MEMBER template that seeds new role matrices.
  */
-export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = ['omsSiteData', 'semrush'];
+export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = [
+  'omsSiteData',
+  'semrush',
+  // AITable ships to company administrators first. Keeping it here means the
+  // permissive company-role ceiling in tool-id never reaches a member who has
+  // no department selected, so opening it to a department later stays a
+  // deliberate grant rather than something that already happened by default.
+  'aitableDatasheets',
+  'aitableFields',
+];
 
 export function isDepartmentGrantOnlyTool(toolId: string): boolean {
   return DEPARTMENT_GRANT_ONLY_TOOLS.includes(toolId as CanonicalToolId);

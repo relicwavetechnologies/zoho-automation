@@ -29,6 +29,8 @@ function makeService(options: {
   canvaConnections?: Array<unknown>;
   larkConnections?: Array<unknown>;
   airtableConnections?: Array<unknown>;
+  aitableConnections?: Array<unknown>;
+  companyDepartments?: Array<{ id: string; name: string }>;
 } = {}) {
   const writes: Array<Record<string, unknown>> = [];
   const invalidations: string[] = [];
@@ -65,7 +67,12 @@ function makeService(options: {
       findFirst: async () => ({ id: 'role-ops' }),
       findMany: async () => [{ id: 'role-ops', name: 'Operator', slug: 'OPERATOR' }],
     },
-    department: { findFirst: async ({ where }: any) => ({ id: where.id, name: where.id === 'ops' ? 'Ops' : 'Outreach' }) },
+    department: {
+      findFirst: async ({ where }: any) => ({ id: where.id, name: where.id === 'ops' ? 'Ops' : 'Outreach' }),
+      // Only reached on the company-admin path, which governs every department
+      // rather than only the ones the actor happens to belong to.
+      findMany: async () => options.companyDepartments ?? [],
+    },
     departmentToolPermission: { findMany: async () => options.roleRows ?? [] },
     departmentUserToolOverride: { findMany: async () => options.overrideRows ?? [] },
   } as any;
@@ -107,6 +114,7 @@ function makeService(options: {
       listAccessibleZohoConnections: async () => ({ ok: true as const, value: [] }),
       listAccessibleLarkConnections: async () => ({ ok: true as const, value: options.larkConnections ?? [] }),
       listAccessibleAirtableConnections: async () => ({ ok: true as const, value: options.airtableConnections ?? [] }),
+      listAccessibleAitableConnections: async () => ({ ok: true as const, value: options.aitableConnections ?? [] }),
     } as any,
     toolRegistry: {
       byId: (toolId: string) => (options.runtimeToolIds ?? ['larkTask', 'memoryRecall', 'runCommand']).includes(toolId) ? {} : undefined,
@@ -151,6 +159,63 @@ describe('DesktopToolAccessService', () => {
 
     const connected = makeService({ registeredTools: [records], runtimeToolIds, airtableConnections: [{ connectionId: 'airtable-1' }] });
     assert.equal((await connected.service.inventory(actor)).tools[0]?.readiness, 'ready');
+  });
+
+  // The Tools page is built from RegisteredTool rows, but a row alone is not
+  // enough: cataloguePolicy also requires the ID to be canonical AND present in
+  // the runtime registry. Both gates have to pass or the tool is silently
+  // dropped from the page, which is exactly how it looks when the backend is
+  // running code that predates the tool.
+  it('lists AITable once it is both catalogued and registered at runtime', async () => {
+    const datasheets = { ...tool, toolId: 'aitableDatasheets', name: 'AITable Datasheets', category: 'data', domain: 'aitable' };
+    const fields = { ...tool, toolId: 'aitableFields', name: 'AITable Fields', category: 'data', domain: 'aitable' };
+    const registeredTools = [datasheets, fields];
+
+    const listed = makeService({
+      registeredTools,
+      runtimeToolIds: ['aitableDatasheets', 'aitableFields'],
+      companyRole: 'COMPANY_ADMIN',
+    });
+    const inventory = await listed.service.inventory({ ...actor, role: 'COMPANY_ADMIN' });
+    assert.deepEqual(
+      inventory.tools.map(entry => entry.tool.toolId).sort(),
+      ['aitableDatasheets', 'aitableFields'],
+    );
+
+    // Catalogued but absent from the runtime registry — the shape of a backend
+    // that has the database rows but not the code.
+    const errors: string[] = [];
+    const unregistered = makeService({
+      registeredTools,
+      runtimeToolIds: [],
+      companyRole: 'COMPANY_ADMIN',
+      logger: { error: (event: string) => { errors.push(event); } } as never,
+    });
+    assert.deepEqual((await unregistered.service.inventory({ ...actor, role: 'COMPANY_ADMIN' })).tools, []);
+    assert.ok(errors.includes('desktop.tools.catalogue.registry_mismatch'), 'the mismatch must be logged, not silent');
+  });
+
+  it('shows AITable as needing a connection, and never counts a dead key as ready', async () => {
+    const datasheets = { ...tool, toolId: 'aitableDatasheets', name: 'AITable Datasheets', category: 'data', domain: 'aitable' };
+    const runtimeToolIds = ['aitableDatasheets'];
+    const readiness = async (aitableConnections?: Array<unknown>) => {
+      const built = makeService({
+        registeredTools: [datasheets], runtimeToolIds, companyRole: 'COMPANY_ADMIN',
+        ...(aitableConnections ? { aitableConnections } : {}),
+      });
+      return (await built.service.inventory({ ...actor, role: 'COMPANY_ADMIN' })).tools[0]?.readiness;
+    };
+
+    assert.equal(await readiness(), 'connection_required');
+    assert.equal(await readiness([{ connectionId: 'aitable-1', status: 'connected' }]), 'ready');
+    // A key revoked upstream is listed so it can be repaired, but the tool
+    // fails on its next call — reporting "ready" would be a lie the member
+    // only discovers mid-task.
+    assert.equal(await readiness([{ connectionId: 'aitable-1', status: 'needs_key' }]), 'connection_required');
+    assert.equal(
+      await readiness([{ connectionId: 'a', status: 'needs_key' }, { connectionId: 'b', status: 'connected' }]),
+      'ready',
+    );
   });
 
   it('requires a shared Lark connection only for Lark APIs that support user tokens', async () => {

@@ -58,6 +58,9 @@ import { CanvaMcpClient } from './infrastructure/canva/canva-mcp.client';
 import { AirtableMcpOAuthService } from './infrastructure/airtable/airtable-mcp-oauth.service';
 import { AirtableMcpClient } from './infrastructure/airtable/airtable-mcp.client';
 import { AirtableMcpSchemaCatalog } from './infrastructure/airtable/airtable-mcp-schema.catalog';
+import { AitableClient } from './infrastructure/aitable/aitable.client';
+import { createAitableKeyVerifier, type AitableKeyVerifier } from './application/aitable/aitable-connect.service';
+import { selectAitableConnection } from './application/aitable/aitable-connection-selection';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
 import { ChannelDeliveryRepository } from './infrastructure/persistence/channel-delivery.repository';
 import { ExecutionLaneLeaseRepository } from './infrastructure/persistence/execution-lane-lease.repository';
@@ -167,6 +170,7 @@ import { createLarkApprovalTool } from './application/orchestration/tools/famili
 import { createGoogleWorkspaceMcpTools } from './application/orchestration/tools/families/google-workspace-mcp.tool';
 import { createCanvaDesignTool } from './application/orchestration/tools/families/canva-design.tool';
 import { createAirtableMcpTools } from './application/orchestration/tools/families/airtable-mcp.tool';
+import { createAitableTools } from './application/orchestration/tools/families/aitable.tool';
 import { hasAirtableScopeGroups } from './application/airtable/airtable-mcp-manifest';
 import { createZohoCrmTool } from './application/orchestration/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/orchestration/tools/families/zoho-books.tool';
@@ -270,6 +274,8 @@ export interface Container {
   googleOAuthService: GoogleOAuthService;
   canvaMcpOAuthService: CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
+  /** AITable has no OAuth; this proves a pasted API key before it is stored. */
+  aitableKeyVerifier: AitableKeyVerifier;
   integrationConnectionRepo: IntegrationConnectionRepository;
   companySerperConnectionRepo: CompanySerperConnectionRepository;
   companySerperService: CompanySerperService;
@@ -715,6 +721,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: memoryCache, logger });
   const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: memoryCache, logger });
   const airtableMcpSchemas        = new AirtableMcpSchemaCatalog();
+  // AITable authenticates with a personal API key, so there is no OAuth service
+  // to construct — only the check that proves a pasted key before it is stored.
+  const aitableKeyVerifier        = createAitableKeyVerifier({ baseUrl: env.AITABLE_BASE_URL });
 
   async function getGoogleWorkspaceMcpConnection(input: {
     readonly companyId: string;
@@ -940,6 +949,93 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         client: new AirtableMcpClient(accessToken, airtableMcpSchemas, env.AIRTABLE_MCP_URL),
       },
     };
+  }
+
+  /**
+   * Resolve one AITable account for a tool call.
+   *
+   * Shaped like the Airtable resolver, minus every token-refresh branch: an
+   * AITable key is a static credential with no expiry and nothing to rotate.
+   * What replaces that branch is the opposite problem — a key its owner
+   * regenerated upstream is dead permanently, so connections in `needs_key`
+   * are declared as filtered-out rather than dropped. That is what lets the
+   * selector say "you have an account, it needs a new key" instead of the
+   * falsehood "you have no AITable account".
+   */
+  async function getAitableConnection(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId?: string;
+    readonly minimumAccess: 'read_only' | 'read_write';
+  }) {
+    const accessible = await integrationConnectionRepo.listAccessibleAitableConnections({
+      companyId: input.companyId,
+      userId: input.userId,
+    });
+    if (!accessible.ok) return { status: 'unavailable' as const };
+
+    const selection = selectAitableConnection({
+      connections: accessible.value,
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+      minimumAccess: input.minimumAccess,
+    });
+    if (selection.status === 'choose_connection') {
+      return {
+        status: 'choose_connection' as const,
+        connections: publicConnectionChoices(selection.connections),
+      };
+    }
+    if (selection.status === 'needs_key') {
+      logger.warn('aitable.connection.needs_key', {
+        companyId: input.companyId,
+        userId: input.userId,
+        connectionIds: selection.connections.map(connection => connection.connectionId),
+      });
+      return {
+        status: 'needs_key' as const,
+        connections: publicConnectionChoices(selection.connections),
+      };
+    }
+    if (selection.status === 'unavailable') return { status: 'unavailable' as const };
+
+    const selectedConnectionId = selection.connection.connectionId;
+    const connection = await integrationConnectionRepo.findAccessibleAitableConnection({
+      companyId: input.companyId,
+      userId: input.userId,
+      connectionId: selectedConnectionId,
+      minimumAccess: input.minimumAccess,
+    });
+    if (!connection.ok || !connection.value?.accessToken) {
+      return { status: 'unavailable' as const };
+    }
+
+    await integrationConnectionRepo.touchLastUsed(selectedConnectionId);
+    return {
+      status: 'resolved' as const,
+      connectionId: selectedConnectionId,
+      connection: {
+        client: new AitableClient(connection.value.accessToken, env.AITABLE_BASE_URL),
+      },
+    };
+  }
+
+  /**
+   * Records that AITable rejected a stored key, so the connection stops being
+   * offered and starts asking to be repaired. Called by the tool family when a
+   * live call comes back 401 — the only moment we can learn this, since there
+   * is no refresh cycle to discover it during.
+   */
+  async function markAitableConnectionNeedsKey(companyId: string, connectionId: string): Promise<void> {
+    const marked = await integrationConnectionRepo.markAitableConnectionNeedsKey({ companyId, connectionId });
+    if (!marked.ok) {
+      logger.error('aitable.connection.mark_needs_key_failed', {
+        companyId,
+        connectionId,
+        error: marked.error.message,
+      });
+      return;
+    }
+    logger.warn('aitable.connection.key_rejected', { companyId, connectionId });
   }
 
   async function getCanvaMcpClient(input: {
@@ -1419,6 +1515,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   for (const tool of createAirtableMcpTools({ getConnection: getAirtableMcpConnection })) {
     toolRegistry.register(tool);
   }
+  for (const tool of createAitableTools({
+    getConnection: getAitableConnection,
+    onKeyRejected: markAitableConnectionNeedsKey,
+  })) {
+    toolRegistry.register(tool);
+  }
   toolRegistry.register(createZohoCrmTool({
     getClient:   getZohoCrmClient,
     crmClient:   zohoPaginatedCrmClient,
@@ -1781,6 +1883,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     googleOAuthService,
     canvaMcpOAuthService,
     airtableMcpOAuthService,
+    aitableKeyVerifier,
     integrationConnectionRepo,
     companySerperConnectionRepo,
     companySerperService,

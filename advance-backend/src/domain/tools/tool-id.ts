@@ -26,6 +26,12 @@ export const CANONICAL_TOOL_IDS = [
   'airtableRecords',
   'airtableSchema',
   'airtableAutomation',
+  // AITable (aitable.ai) is a different product from Airtable, not a variant of
+  // it. The IDs deliberately borrow AITable's own vocabulary — spaces, nodes,
+  // datasheets, fields — rather than Airtable's bases and tables, so the two
+  // families do not read as near-duplicates in the catalogue or to the model.
+  'aitableDatasheets',
+  'aitableFields',
   'zohoCrm',
   'zohoBooks',
   'contextSearch',
@@ -46,7 +52,7 @@ export const CANONICAL_TOOL_IDS = [
 
 export type CanonicalToolId = typeof CANONICAL_TOOL_IDS[number];
 
-export type ToolFamily = 'lark' | 'google' | 'canva' | 'airtable' | 'zoho' | 'context' | 'skills' | 'memory' | 'rag' | 'data' | 'execution' | 'scheduling' | 'semrush' | 'oms';
+export type ToolFamily = 'lark' | 'google' | 'canva' | 'airtable' | 'aitable' | 'zoho' | 'context' | 'skills' | 'memory' | 'rag' | 'data' | 'execution' | 'scheduling' | 'semrush' | 'oms';
 
 export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   larkMessaging:  'lark',
@@ -72,6 +78,8 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   airtableRecords:    'airtable',
   airtableSchema:     'airtable',
   airtableAutomation: 'airtable',
+  aitableDatasheets:  'aitable',
+  aitableFields:      'aitable',
   zohoCrm:        'zoho',
   zohoBooks:      'zoho',
   contextSearch:  'context',
@@ -85,6 +93,14 @@ export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
   semrush: 'semrush',
   omsSiteData: 'oms',
 };
+
+/**
+ * Every tool ID in one family, derived rather than listed so a new tool cannot
+ * be added to a family and then quietly missed by callers that switch on it.
+ */
+export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
+  return CANONICAL_TOOL_IDS.filter(toolId => TOOL_FAMILY_MAP[toolId] === family);
+}
 
 /** Action groups each tool supports. Drives permission defaults. */
 export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> = {
@@ -111,6 +127,10 @@ export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> 
   airtableRecords:    ['read', 'create', 'update', 'delete'],
   airtableSchema:     ['read', 'create', 'update', 'delete'],
   airtableAutomation: ['read', 'create', 'update', 'delete'],
+  aitableDatasheets:  ['read', 'create', 'update', 'delete'],
+  // AITable's Fusion API can create and delete a field but has no endpoint to
+  // alter one, so 'update' is absent rather than declared and unimplementable.
+  aitableFields:      ['read', 'create', 'delete'],
   zohoCrm:        ['read', 'create', 'update', 'delete'],
   zohoBooks:      ['read', 'create', 'update', 'delete'],
   contextSearch:  ['read'],
@@ -153,6 +173,14 @@ export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean
   airtableRecords:    { MEMBER: true,  COMPANY_ADMIN: true, SUPER_ADMIN: true },
   airtableSchema:     { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   airtableAutomation: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  // A ceiling, not a grant. AITable is department-grant-only in tool-policy, so
+  // this permissive MEMBER default is only what makes granting it to a
+  // department possible at all; the grant-only list is what keeps it away from
+  // everyone who has no department selected, and the company-admin floor in
+  // permission.service is what hands it to administrators. Setting MEMBER false
+  // here would instead make the tool permanently ungrantable.
+  aitableDatasheets:  { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+  aitableFields:      { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
   zohoCrm:        { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   zohoBooks:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
   contextSearch:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },

@@ -9,6 +9,7 @@ import type {
 } from '../connections/connection-registry.port';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
 import { AIRTABLE_TOOL_IDS } from '../airtable/airtable-mcp-manifest';
+import { toolIdsForFamily, type CanonicalToolId } from '../../domain/tools/tool-id';
 import { withWorkDiscoveryPermissions } from './work-resolution.service';
 import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
 
@@ -231,10 +232,14 @@ export function listAccessibleConnectionsFor(
       return registry.listAccessibleCanvaConnections(input);
     case 'airtable':
       return registry.listAccessibleAirtableConnections(input);
+    case 'aitable':
+      return registry.listAccessibleAitableConnections(input);
     case 'lark':
       return registry.listAccessibleLarkConnections(input);
   }
 }
+
+const AITABLE_TOOL_IDS = toolIdsForFamily('aitable');
 
 export function connectionProvidersForToolIds(toolIds: readonly string[]): ConnectionProvider[] {
   const providers = new Set<ConnectionProvider>();
@@ -247,6 +252,8 @@ export function connectionProvidersForToolIds(toolIds: readonly string[]): Conne
       providers.add('canva');
     } else if (AIRTABLE_TOOL_IDS.includes(toolId)) {
       providers.add('airtable');
+    } else if (AITABLE_TOOL_IDS.includes(toolId as CanonicalToolId)) {
+      providers.add('aitable');
     } else if (LARK_CONNECTION_TOOL_IDS.has(toolId)) {
       providers.add('lark');
     }
@@ -269,5 +276,9 @@ export function serializeAccessibleConnection(
     scopes: connection.scopes,
     connectedAt: connection.connectedAt.toISOString(),
     lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+    // Only providers that can list an unusable connection report this. Omitted
+    // rather than defaulted to 'connected', so a provider that does not track
+    // it never claims a connection is healthy on evidence it does not have.
+    ...(connection.status ? { status: connection.status } : {}),
   };
 }

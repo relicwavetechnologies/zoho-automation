@@ -439,6 +439,12 @@ const COMPANY_ADMIN_FIXED_TOOLS: ReadonlyArray<readonly [CanonicalToolId, readon
   ['airtableRecords', ['read', 'create', 'update']],
   ['airtableSchema', ['read', 'create', 'update']],
   ['airtableAutomation', ['read', 'create', 'update']],
+  // AITable follows Airtable: an administrator piloting a company connection
+  // holds it outright. 'delete' is withheld from the floor for both tools —
+  // dropping records or a field is not something to acquire by role alone, so
+  // it stays an explicit department grant.
+  ['aitableDatasheets', ['read', 'create', 'update']],
+  ['aitableFields', ['read', 'create']],
 ];
 
 /**

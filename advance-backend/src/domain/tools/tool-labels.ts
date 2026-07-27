@@ -49,6 +49,8 @@ export const TOOL_LABELS: Readonly<Record<CanonicalToolId, ToolLabel>> = {
   airtableRecords:    { name: 'Airtable Records', noun: 'records' },
   airtableSchema:     { name: 'Airtable Schema',  noun: 'tables and fields' },
   airtableAutomation: { name: 'Airtable Automations', noun: 'automations' },
+  aitableDatasheets:  { name: 'AITable Datasheets', noun: 'records' },
+  aitableFields:      { name: 'AITable Fields',   noun: 'fields' },
   zohoCrm:            { name: 'Zoho CRM',         noun: 'records' },
   zohoBooks:          { name: 'Zoho Books',       noun: 'invoices' },
   contextSearch:      { name: 'Context Search',   noun: 'company context' },

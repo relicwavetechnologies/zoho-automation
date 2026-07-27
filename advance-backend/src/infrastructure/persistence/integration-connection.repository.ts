@@ -1,10 +1,33 @@
+import { createHash } from 'node:crypto';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type { TypedEnv } from '../../config/env';
 import { encryptToken, decryptToken } from '../shared/token.crypto';
 import { err, ok, type Result } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 
-export type IntegrationProvider = 'google_workspace' | 'zoho' | 'canva' | 'airtable' | 'lark';
+export type IntegrationProvider = 'google_workspace' | 'zoho' | 'canva' | 'airtable' | 'aitable' | 'lark';
+
+/**
+ * A connection whose stored credential no longer works and cannot be repaired
+ * without the owner supplying a new one.
+ *
+ * Every OAuth provider here refreshes itself, so this state never applied to
+ * them. AITable authenticates with a personal API key that its owner can
+ * regenerate at any time, which silently invalidates the stored copy — without
+ * a state of its own that failure is indistinguishable from a permissions
+ * problem and repeats forever.
+ */
+export const CONNECTION_NEEDS_KEY = 'needs_key';
+
+/** Statuses a connection can hold and still be worth showing to its owner. */
+const LISTABLE_STATUSES = ['connected', CONNECTION_NEEDS_KEY];
+
+/**
+ * Stable identifier for a raw API key. Only ever used to recognise the same key
+ * again — the key itself is encrypted, and this never leaves the backend.
+ */
+export const apiKeyFingerprint = (apiKey: string): string =>
+  createHash('sha256').update(apiKey.trim()).digest('hex');
 export type IntegrationOwnerType = 'user' | 'company';
 export type IntegrationGrantAccess = 'read_only' | 'read_write' | 'admin';
 export type IntegrationGranteeType = 'user' | 'department' | 'role' | 'company';
@@ -45,6 +68,8 @@ export interface ConnectionSummary {
   readonly scopes: string[];
   readonly connectedAt: Date;
   readonly lastUsedAt?: Date;
+  /** Only set by providers that list unusable connections — see CONNECTION_NEEDS_KEY. */
+  readonly status?: string;
 }
 
 export interface UpsertGoogleConnectionInput {
@@ -113,6 +138,27 @@ export interface UpsertAirtableConnectionInput {
   readonly initialAccess?: IntegrationGrantAccess;
 }
 
+/**
+ * An AITable personal API key that has already been proven to work.
+ *
+ * There is no OAuth here and nothing to refresh: the key is minted by hand in
+ * AITable's User Center and is valid until its owner regenerates it. So the
+ * only safe moment to find out whether a key works is before it is stored,
+ * which is why callers must supply the workspace list a live check returned —
+ * a caller cannot construct this input without having made that call.
+ */
+export interface UpsertAitableConnectionInput {
+  readonly companyId: string;
+  readonly ownerType: IntegrationOwnerType;
+  readonly ownerUserId?: string;
+  readonly createdBy?: string;
+  readonly label?: string;
+  readonly apiKey: string;
+  /** Workspaces the live check saw. Names the connection and reports its reach. */
+  readonly spaces: readonly { readonly id: string; readonly name: string }[];
+  readonly initialAccess?: IntegrationGrantAccess;
+}
+
 /** A user-authorised Lark account. One Divo member may own multiple accounts. */
 export interface UpsertLarkConnectionInput {
   readonly companyId: string;
@@ -138,6 +184,7 @@ const GOOGLE_PROVIDER: IntegrationProvider = 'google_workspace';
 const ZOHO_PROVIDER: IntegrationProvider = 'zoho';
 const CANVA_PROVIDER: IntegrationProvider = 'canva';
 const AIRTABLE_PROVIDER: IntegrationProvider = 'airtable';
+const AITABLE_PROVIDER: IntegrationProvider = 'aitable';
 const LARK_PROVIDER: IntegrationProvider = 'lark';
 
 const splitScopes = (scope?: string | null): string[] =>
@@ -1188,6 +1235,260 @@ export class IntegrationConnectionRepository {
       return ok(undefined);
     } catch (e) {
       return err(wrapInfra('prisma', 'IntegrationConnection.updateAirtableTokens', e));
+    }
+  }
+
+  /**
+   * Unlike every other lister here, this one returns connections whose key has
+   * stopped working as well as live ones, tagged with their status. A dead key
+   * that vanished from the list would leave its owner with a tool that fails
+   * and no connection to point at; the caller decides what to do with a
+   * `needs_key` row, but it has to be able to see one.
+   */
+  async listAccessibleAitableConnections(input: {
+    readonly companyId: string;
+    readonly userId: string;
+  }): Promise<Result<ConnectionSummary[], InfraError>> {
+    try {
+      const grantOr = await this.grantScopeFor(input.companyId, input.userId);
+      const rows = await this.db.integrationConnection.findMany({
+        where: {
+          companyId: input.companyId,
+          provider:  AITABLE_PROVIDER,
+          revokedAt: null,
+          status:    { in: LISTABLE_STATUSES },
+          OR: [
+            { ownerUserId: input.userId },
+            { grants: { some: { revokedAt: null, OR: grantOr } } },
+          ],
+        },
+        include: {
+          grants: {
+            where: { revokedAt: null, OR: grantOr },
+            select: { access: true },
+          },
+        },
+        orderBy: [{ ownerType: 'asc' }, { updatedAt: 'desc' }],
+      });
+
+      return ok(rows.map(row => {
+        const directOwnerAccess: IntegrationGrantAccess[] = row.ownerUserId === input.userId ? ['admin'] : [];
+        const grantAccess = row.grants.map(g => g.access as IntegrationGrantAccess);
+        return {
+          connectionId: row.id,
+          provider:     row.provider as IntegrationProvider,
+          label:        row.label,
+          ...(row.accountEmail ? { accountEmail: row.accountEmail } : {}),
+          ...(row.accountName ? { accountName: row.accountName } : {}),
+          ownerType:    row.ownerType as IntegrationOwnerType,
+          ...(row.ownerUserId ? { ownerUserId: row.ownerUserId } : {}),
+          access:       bestAccess([...directOwnerAccess, ...grantAccess]),
+          scopes:       row.scopes,
+          connectedAt:  row.connectedAt,
+          ...(row.lastUsedAt ? { lastUsedAt: row.lastUsedAt } : {}),
+          status:       row.status,
+        };
+      }));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.listAccessibleAitableConnections', e));
+    }
+  }
+
+  /**
+   * Resolves a single connection for use. A `needs_key` row is deliberately not
+   * returned: it is listable so it can be repaired, never usable.
+   */
+  async findAccessibleAitableConnection(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId: string;
+    readonly minimumAccess: IntegrationGrantAccess;
+  }): Promise<Result<DecryptedIntegrationConnection | null, InfraError>> {
+    try {
+      const accessible = await this.listAccessibleAitableConnections({
+        companyId: input.companyId,
+        userId:    input.userId,
+      });
+      if (!accessible.ok) return accessible;
+      const summary = accessible.value.find(c => c.connectionId === input.connectionId);
+      if (!summary || accessRank[summary.access] < accessRank[input.minimumAccess]) return ok(null);
+
+      const record = await this.db.integrationConnection.findFirst({
+        where: {
+          id:        input.connectionId,
+          companyId: input.companyId,
+          provider:  AITABLE_PROVIDER,
+          revokedAt: null,
+          status:    'connected',
+        },
+      });
+      return ok(record ? this.decrypt(record) : null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.findAccessibleAitableConnection', e));
+    }
+  }
+
+  /**
+   * Identity is the key itself, because AITable gives us nothing else to
+   * identify an account by — the Fusion API has no "who am I" endpoint, and the
+   * workspace list a key can reach changes as its owner is added to and removed
+   * from spaces. So re-pasting the same key updates one row, and pasting a
+   * different key makes a new connection rather than silently rebinding an
+   * existing one to an account we cannot prove is the same. Rotating a key on a
+   * connection that already has grants is `replaceAitableApiKey`, not this.
+   */
+  async upsertAitableConnection(
+    input: UpsertAitableConnectionInput,
+  ): Promise<Result<DecryptedIntegrationConnection, InfraError>> {
+    try {
+      const apiKey = input.apiKey.trim();
+      const encrypted = encryptToken(apiKey, this.key);
+      const fingerprint = apiKeyFingerprint(apiKey);
+      const primarySpace = input.spaces[0];
+      const accountName = primarySpace?.name?.trim() || null;
+      // Several keys are expected per company, so an identical label on each
+      // would make the account picker useless. The workspace name is the only
+      // thing AITable gives us that tells two keys apart.
+      const label = input.label?.trim() || accountName || 'AITable connection';
+      const key = dedupeKey({
+        provider: AITABLE_PROVIDER,
+        ownerType: input.ownerType,
+        ownerUserId: input.ownerUserId,
+        externalAccountId: fingerprint,
+      });
+
+      const shared = {
+        label,
+        accountName,
+        externalAccountId:    fingerprint,
+        status:               'connected',
+        // AITable keys carry no scopes. An invented scope string here would be
+        // read as a capability claim by every scope-group check downstream.
+        scopes:               [] as string[],
+        accessTokenEncrypted: encrypted.cipherText,
+        tokenType:            'api_key',
+        // No refresh token and no expiry: a key is valid until revoked upstream,
+        // which we only ever learn from a 401 on a real call.
+        refreshTokenEncrypted: null,
+        accessTokenExpiresAt:  null,
+        tokenMetadata:        { spaces: input.spaces } as Prisma.InputJsonValue,
+        connectedAt:          new Date(),
+      };
+
+      const record = await this.db.integrationConnection.upsert({
+        where: { companyId_dedupeKey: { companyId: input.companyId, dedupeKey: key } },
+        create: {
+          companyId:   input.companyId,
+          provider:    AITABLE_PROVIDER,
+          ownerType:   input.ownerType,
+          ownerUserId: input.ownerType === 'user' ? input.ownerUserId ?? null : null,
+          dedupeKey:   key,
+          createdBy:   input.createdBy ?? input.ownerUserId ?? null,
+          ...shared,
+        },
+        update: { ...shared, revokedAt: null },
+      });
+
+      const initialUserGrant = input.ownerType === 'user' ? input.ownerUserId : input.createdBy;
+      if (initialUserGrant) {
+        await this.grantConnection({
+          companyId:    input.companyId,
+          connectionId: record.id,
+          granteeType:  'user',
+          granteeId:    initialUserGrant,
+          access:       input.initialAccess ?? 'admin',
+          grantedBy:    input.createdBy ?? initialUserGrant,
+        });
+      }
+
+      return ok(this.decrypt(record));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.upsertAitableConnection', e));
+    }
+  }
+
+  /**
+   * Records that a stored key was rejected upstream. Idempotent, and scoped to
+   * connections that are currently live so a repair racing with an in-flight
+   * call cannot be undone by the loser.
+   */
+  async markAitableConnectionNeedsKey(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+  }): Promise<Result<void, InfraError>> {
+    try {
+      await this.db.integrationConnection.updateMany({
+        where: {
+          id:        input.connectionId,
+          companyId: input.companyId,
+          provider:  AITABLE_PROVIDER,
+          revokedAt: null,
+          status:    'connected',
+        },
+        data: { status: CONNECTION_NEEDS_KEY },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.markAitableConnectionNeedsKey', e));
+    }
+  }
+
+  /**
+   * Rotates the key on an existing connection, keeping the row and therefore
+   * every grant and governance record attached to it. Deleting and re-adding
+   * would silently drop who the connection was shared with.
+   */
+  async replaceAitableApiKey(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+    readonly apiKey: string;
+    readonly spaces: readonly { readonly id: string; readonly name: string }[];
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      const apiKey = input.apiKey.trim();
+      const fingerprint = apiKeyFingerprint(apiKey);
+      const existing = await this.db.integrationConnection.findFirst({
+        where: {
+          id:        input.connectionId,
+          companyId: input.companyId,
+          provider:  AITABLE_PROVIDER,
+          revokedAt: null,
+          status:    { in: LISTABLE_STATUSES },
+        },
+      });
+      if (!existing) return ok(false);
+
+      // The row is identified by its key, so rotating the key has to move the
+      // dedupe identity with it. Leaving the old fingerprint behind meant the
+      // next Add Connection with the same new key missed this row and created
+      // a second one holding the same credential.
+      const dedupe = dedupeKey({
+        provider: AITABLE_PROVIDER,
+        ownerType: existing.ownerType as IntegrationOwnerType,
+        ownerUserId: existing.ownerUserId ?? undefined,
+        externalAccountId: fingerprint,
+      });
+      const accountName = input.spaces[0]?.name?.trim() || null;
+      // The label follows the workspace only while it still is the workspace
+      // name; a label someone typed themselves is theirs to keep.
+      const renameLabel = accountName !== null && existing.label === existing.accountName;
+
+      const result = await this.db.integrationConnection.updateMany({
+        where: { id: existing.id, companyId: input.companyId },
+        data: {
+          accessTokenEncrypted: encryptToken(apiKey, this.key).cipherText,
+          externalAccountId:    fingerprint,
+          dedupeKey:            dedupe,
+          accountName,
+          ...(renameLabel ? { label: accountName } : {}),
+          tokenMetadata:        { spaces: input.spaces } as Prisma.InputJsonValue,
+          status:               'connected',
+          connectedAt:          new Date(),
+        },
+      });
+      return ok(result.count > 0);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.replaceAitableApiKey', e));
     }
   }
 

@@ -8,7 +8,8 @@ import type { CanvaMcpOAuthService } from '../../infrastructure/canva/canva-mcp-
 import type { AirtableMcpOAuthService } from '../../infrastructure/airtable/airtable-mcp-oauth.service';
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
-import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
+import { CONNECTION_NEEDS_KEY, type IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
+import type { AitableKeyVerifier } from '../../application/aitable/aitable-connect.service';
 import type { Logger } from '../../shared/logger';
 import type { TypedEnv } from '../../config/env';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
@@ -32,6 +33,8 @@ export interface DesktopAuthRoutesDeps {
   googleOAuthService:     GoogleOAuthService;
   canvaMcpOAuthService:   CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
+  /** Proves a pasted AITable key before it is stored. AITable has no OAuth. */
+  aitableKeyVerifier:     AitableKeyVerifier;
   zohoTokenService:       ZohoTokenService;
   zohoConnectionRepo:     ZohoConnectionRepository;
   connectionRepo:         IntegrationConnectionRepository;
@@ -62,7 +65,9 @@ const DESKTOP_PROTOCOL = 'cursorr';
 const HANDOFF_TTL_MS   = 5 * 60 * 1000;
 const CONNECTION_GRANT_ACCESSES = new Set(['read_only', 'read_write', 'admin']);
 /** Providers whose connections expose the shared manage/grant/disconnect surface. */
-const MANAGEABLE_CONNECTION_PROVIDERS = ['google_workspace', 'zoho', 'canva', 'airtable', 'lark'] as const;
+const MANAGEABLE_CONNECTION_PROVIDERS = ['google_workspace', 'zoho', 'canva', 'airtable', 'aitable', 'lark'] as const;
+/** Statuses whose grants and governance are still worth showing and editing. */
+const MANAGEABLE_STATUSES = ['connected', CONNECTION_NEEDS_KEY];
 type ManageableConnectionProvider = typeof MANAGEABLE_CONNECTION_PROVIDERS[number];
 
 function isManageableConnectionProvider(value: string): value is ManageableConnectionProvider {
@@ -212,6 +217,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       zoho:             () => deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId }),
       canva:            () => deps.connectionRepo.listAccessibleCanvaConnections({ userId, companyId }),
       airtable:         () => deps.connectionRepo.listAccessibleAirtableConnections({ userId, companyId }),
+      aitable:          () => deps.connectionRepo.listAccessibleAitableConnections({ userId, companyId }),
       lark:             () => deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId }),
     };
     const accessible = await listAccessibleByProvider[provider]();
@@ -224,7 +230,10 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         companyId,
         provider,
         revokedAt: null,
-        status:    'connected',
+        // AITable is the only provider that can hold a listed-but-unusable
+        // connection. Restricting this to 'connected' made the manage view
+        // 404 for exactly the connection an admin is being told to repair.
+        status:    provider === 'aitable' ? { in: MANAGEABLE_STATUSES } : 'connected',
       },
       include: {
         ownerUser: { select: { id: true, email: true, name: true } },
@@ -1906,6 +1915,197 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     } catch (e) {
       log.error('airtable.callback.error', { error: String(e) });
       res.status(500).type('text/plain').send('Airtable connection failed. Return to Divo and try again.');
+    }
+  });
+
+  // ── AITable ────────────────────────────────────────────────────────────────
+  // No OAuth exists for AITable, so there is no authorize-url/callback pair
+  // here. A member pastes the personal API key they minted in AITable's User
+  // Center, and the key is proven against AITable before anything is stored —
+  // that live check is the connect step, not a nicety attached to it.
+  //
+  // Adding a connection is restricted to company administrators for the same
+  // reason the tools are (plans/aitable-integration.md §2.7): a connection
+  // nobody is permitted to use would be confusing to offer. Both open together
+  // when a department is granted the tools.
+
+  const aitableAdminOnly = (res: Response): boolean =>
+    COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER');
+
+  const verifiedSpaces = async (
+    res: Response,
+    apiKey: unknown,
+  ): Promise<{ id: string; name: string }[] | null> => {
+    const check = await deps.aitableKeyVerifier.verify(typeof apiKey === 'string' ? apiKey : '');
+    if (!check.ok) {
+      // 'rejected' is the caller's fault and permanent; 'unreachable' is
+      // neither, so it must not be reported as a bad key. 502 says "ask again".
+      res.status(check.reason === 'unreachable' ? 502 : 400)
+        .json({ success: false, message: check.message, reason: check.reason });
+      return null;
+    }
+    return check.spaces.map((space: { id: string; name: string }) => ({ id: space.id, name: space.name }));
+  };
+
+  router.post('/aitable/connect', memberAuth, async (req: Request, res: Response) => {
+    try {
+      if (!aitableAdminOnly(res)) {
+        res.status(403).json({ success: false, message: 'Only a company administrator can connect AITable.' });
+        return;
+      }
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const body = req.body as { apiKey?: unknown; label?: unknown };
+
+      const spaces = await verifiedSpaces(res, body.apiKey);
+      if (!spaces) return;
+
+      const saved = await deps.connectionRepo.upsertAitableConnection({
+        companyId,
+        ownerType: 'user',
+        ownerUserId: userId,
+        createdBy: userId,
+        ...(typeof body.label === 'string' && body.label.trim() ? { label: body.label.trim() } : {}),
+        apiKey: String(body.apiKey),
+        spaces,
+      });
+      if (!saved.ok) {
+        res.status(500).json({ success: false, message: saved.error.message });
+        return;
+      }
+
+      log.info('aitable.connect.success', { userId, companyId, connectionId: saved.value.id, spaceCount: spaces.length });
+      res.json({
+        success: true,
+        data: {
+          connectionId: saved.value.id,
+          label: saved.value.label,
+          spaceCount: spaces.length,
+          // A key that reaches nothing is valid but useless until its owner is
+          // added to a workspace. Said plainly rather than left to be discovered
+          // when the first tool call comes back empty.
+          ...(spaces.length === 0
+            ? { warning: 'This key works, but it does not reach any AITable workspace yet.' }
+            : {}),
+        },
+      });
+    } catch (e) {
+      log.error('aitable.connect.error', { error: String(e) });
+      res.status(500).json({ success: false, message: 'Could not save the AITable connection.' });
+    }
+  });
+
+  /**
+   * Rotating the key on a connection that already exists. This is the repair
+   * path for a connection marked `needs_key`, and it keeps the row — deleting
+   * and re-adding would silently drop every grant attached to it.
+   */
+  router.post('/aitable/connections/:connectionId/key', memberAuth, async (req: Request, res: Response) => {
+    try {
+      if (!aitableAdminOnly(res)) {
+        res.status(403).json({ success: false, message: 'Only a company administrator can update an AITable key.' });
+        return;
+      }
+      const companyId = res.locals['companyId'] as string;
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const body = req.body as { apiKey?: unknown };
+
+      const spaces = await verifiedSpaces(res, body.apiKey);
+      if (!spaces) return;
+
+      const replaced = await deps.connectionRepo.replaceAitableApiKey({
+        companyId,
+        connectionId,
+        apiKey: String(body.apiKey),
+        spaces,
+      });
+      if (!replaced.ok) {
+        res.status(500).json({ success: false, message: replaced.error.message });
+        return;
+      }
+      if (!replaced.value) {
+        res.status(404).json({ success: false, message: 'AITable connection not found' });
+        return;
+      }
+      log.info('aitable.key.replaced', { companyId, connectionId, spaceCount: spaces.length });
+      res.json({ success: true, data: { connectionId, spaceCount: spaces.length } });
+    } catch (e) {
+      log.error('aitable.key.replace.error', { error: String(e) });
+      res.status(500).json({ success: false, message: 'Could not update the AITable key.' });
+    }
+  });
+
+  router.get('/aitable/status', memberAuth, async (_req: Request, res: Response) => {
+    const userId = res.locals['userId'] as string;
+    const companyId = res.locals['companyId'] as string;
+    const connections = await deps.connectionRepo.listAccessibleAitableConnections({ userId, companyId });
+    if (!connections.ok) {
+      res.status(500).json({ success: false, message: connections.error.message });
+      return;
+    }
+    res.json({
+      success: true,
+      data: {
+        // A connection whose key died does not count as being connected, but it
+        // is still listed so it can be repaired rather than silently vanishing.
+        connected: connections.value.some(connection => connection.status === 'connected'),
+        canConnect: aitableAdminOnly(res),
+        connections: connections.value.map(connection => ({
+          connectionId: connection.connectionId,
+          label: connection.label,
+          accountName: connection.accountName ?? null,
+          ownerType: connection.ownerType,
+          ownerUserId: connection.ownerUserId ?? null,
+          access: connection.access,
+          status: connection.status ?? 'connected',
+          needsKey: connection.status === CONNECTION_NEEDS_KEY,
+          connectedAt: connection.connectedAt.toISOString(),
+          lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+        })),
+      },
+    });
+  });
+
+  router.get('/aitable/connections/:connectionId/manage', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const payload = await buildConnectionManagePayload(connectionId, userId, companyId, role, 'aitable');
+      if (!payload) {
+        res.status(404).json({ success: false, message: 'AITable connection not found' });
+        return;
+      }
+      if ('forbidden' in payload) {
+        res.status(403).json({ success: false, message: 'You do not have admin access to this AITable connection' });
+        return;
+      }
+      res.json({ success: true, data: payload });
+    } catch (e) {
+      log.error('aitable.manage.read.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  router.post('/aitable/connections/:connectionId/revoke', memberAuth, async (req: Request, res: Response) => {
+    try {
+      if (!aitableAdminOnly(res)) {
+        res.status(403).json({ success: false, message: 'Only a company administrator can revoke an AITable connection.' });
+        return;
+      }
+      const companyId = res.locals['companyId'] as string;
+      const connectionId = String(req.params['connectionId'] ?? '');
+      const revoked = await deps.connectionRepo.revokeConnection({ companyId, connectionId, provider: 'aitable' });
+      if (!revoked.ok) {
+        res.status(500).json({ success: false, message: revoked.error.message });
+        return;
+      }
+      log.info('aitable.connection.revoked', { companyId, connectionId });
+      res.json({ success: true });
+    } catch (e) {
+      log.error('aitable.revoke.error', { error: String(e) });
+      res.status(500).json({ success: false, message: String(e) });
     }
   });
 

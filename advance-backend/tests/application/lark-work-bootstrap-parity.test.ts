@@ -57,6 +57,7 @@ function bootstrapService(connections: AccessibleConnection[]): WorkBootstrapSer
       listAccessibleZohoConnections: async () => ok([]),
       listAccessibleCanvaConnections: async () => ok([]),
       listAccessibleAirtableConnections: async () => ok([]),
+      listAccessibleAitableConnections: async () => ok([]),
       listAccessibleLarkConnections: async () => ok([]),
     },
   });

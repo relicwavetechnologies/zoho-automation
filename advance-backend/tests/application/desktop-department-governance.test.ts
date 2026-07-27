@@ -78,6 +78,7 @@ function makeService(options: { companyRole?: string; managerOf?: string[] } = {
         listAccessibleZohoConnections: async () => ({ ok: true as const, value: [] }),
         listAccessibleLarkConnections: async () => ({ ok: true as const, value: [] }),
         listAccessibleAirtableConnections: async () => ({ ok: true as const, value: [] }),
+        listAccessibleAitableConnections: async () => ({ ok: true as const, value: [] }),
       } as any,
       toolRegistry: { byId: (toolId: string) => toolId === 'semrush' ? {} : undefined } as any,
       logger: { error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, child() { return this; } } as any,

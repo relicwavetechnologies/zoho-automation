@@ -73,6 +73,39 @@ const TOOLS: ToolSeed[] = [
       'Airtable enforces its own base permissions on top of Divo RBAC',
     ],
   })),
+  // Written literally rather than mapped from a manifest: the AITable manifest
+  // lands with the client in a later wave, and a catalogue row is needed before
+  // then so the admin panel can list the tool an administrator already holds.
+  {
+    toolId: 'aitableDatasheets',
+    name: 'AITable Datasheets',
+    description:
+      'Browse AITable spaces and nodes, and read, create, update, or delete records in a datasheet.',
+    category: 'data',
+    domain: 'aitable',
+    guardrails: [
+      'Uses a Divo connection selected by connection ID',
+      'AITable API keys are encrypted and remain server-side',
+      'Only manifest-approved AITable operations are callable',
+      'AITable enforces the key owner\'s own space permissions on top of Divo RBAC',
+    ],
+  },
+  {
+    toolId: 'aitableFields',
+    name: 'AITable Fields',
+    description:
+      'Inspect the field schema of an AITable datasheet, and add or remove fields. Removing a field deletes its data.',
+    category: 'data',
+    domain: 'aitable',
+    // Adding a field is harmless; deleting one destroys a column of data.
+    hitlRequired: true,
+    guardrails: [
+      'Uses a Divo connection selected by connection ID',
+      'AITable API keys are encrypted and remain server-side',
+      'Deleting a field is irreversible and always requires human approval',
+      'AITable enforces the key owner\'s own space permissions on top of Divo RBAC',
+    ],
+  },
   { toolId: 'zohoCrm', name: 'Zoho CRM', description: 'Read and write Zoho CRM records, pipeline and lead reports.', category: 'crm', domain: 'zoho' },
   { toolId: 'zohoBooks', name: 'Zoho Books', description: 'Read and write invoices, bills and expenses; financial reports.', category: 'finance', domain: 'zoho' },
   { toolId: 'contextSearch', name: 'Context Search', description: 'RAG search over ingested company documents.', category: 'knowledge', domain: 'context' },

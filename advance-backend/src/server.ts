@@ -445,6 +445,7 @@ export const createServer = (c: Container) => {
       googleOAuthService:     c.googleOAuthService,
       canvaMcpOAuthService:   c.canvaMcpOAuthService,
       airtableMcpOAuthService: c.airtableMcpOAuthService,
+      aitableKeyVerifier:      c.aitableKeyVerifier,
       zohoTokenService:       c.zohoTokenService,
       zohoConnectionRepo:     c.zohoConnectionRepo,
       connectionRepo:         c.integrationConnectionRepo,

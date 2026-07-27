@@ -178,6 +178,14 @@ const EnvSchema = z.object({
   AIRTABLE_MCP_REDIRECT_URI: z.string().optional(),
   AIRTABLE_CLIENT_ID:        z.string().optional(),
 
+  // ── AITable Fusion API ────────────────────────────────────────────────────
+  // AITable has no OAuth: every connection carries a personal API key its owner
+  // minted in the AITable User Center, so there is no client ID, secret, or
+  // redirect here and no company-wide key — credentials live per connection.
+  // The host is configurable because the same Fusion API serves aitable.ai,
+  // api.apitable.com, and self-hosted APITable.
+  AITABLE_BASE_URL:          z.string().default('https://aitable.ai'),
+
   // ── Zoho OAuth ────────────────────────────────────────────────────────────
   ZOHO_CLIENT_ID:            z.string().optional(),
   ZOHO_CLIENT_SECRET:        z.string().optional(),
