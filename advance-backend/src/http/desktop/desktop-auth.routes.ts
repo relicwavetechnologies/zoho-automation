@@ -2376,19 +2376,17 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         });
         return;
       }
-      if (
-        tokens.scopes.length > 0
-        && (
-          tokens.scopes.length !== ZOHO_SELF_CLIENT_READ_SCOPES.length
-          || tokens.scopes.some(scope => !ZOHO_SELF_CLIENT_READ_SCOPES.includes(scope))
-        )
-      ) {
+      const nonReadScopes = tokens.scopes.filter(scope => !/\.READ$/i.test(scope));
+      if (nonReadScopes.length > 0) {
         res.status(400).json({
           success: false,
-          message: `Generate the Self Client grant with exactly: ${ZOHO_SELF_CLIENT_READ_SCOPES.join(', ')}`,
+          message: `Zoho reported write-capable scopes: ${nonReadScopes.join(', ')}`,
         });
         return;
       }
+      const grantedScopes = tokens.scopes.length > 0
+        ? tokens.scopes
+        : ZOHO_SELF_CLIENT_READ_SCOPES;
 
       const apiBaseUrl = tokens.apiDomain
         ?? ZOHO_DATA_CENTRES[parsed.data.accountsBaseUrl];
@@ -2412,7 +2410,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         refreshToken: tokens.refreshToken,
         ...(tokens.tokenType ? { tokenType: tokens.tokenType } : {}),
         accessTokenExpiresAt: expiresAt,
-        scopes: ZOHO_SELF_CLIENT_READ_SCOPES,
+        scopes: grantedScopes,
         apiDomain: apiBaseUrl,
         accountsBaseUrl: parsed.data.accountsBaseUrl,
         apiBaseUrl,
@@ -2436,7 +2434,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           connectionId: connectionResult.value.id,
           label: connectionResult.value.label,
           access: 'read_only',
-          scopes: ZOHO_SELF_CLIENT_READ_SCOPES,
+          scopes: grantedScopes,
         },
       });
     } catch (e) {

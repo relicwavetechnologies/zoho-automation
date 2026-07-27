@@ -329,7 +329,12 @@ describe('desktop auth routes', () => {
               accessToken: 'access-1',
               refreshToken: 'refresh-1',
               expiresIn: 3600,
-              scopes: [],
+              scopes: [
+                'ZohoCRM.modules.read',
+                'ZohoCRM.settings.READ',
+                'ZohoBooks.fullaccess.READ',
+                'AaaServer.profile.READ',
+              ],
               accountsBaseUrl: 'https://accounts.zoho.in',
               apiDomain: 'https://www.zohoapis.in',
               tokenType: 'Bearer',
@@ -365,9 +370,10 @@ describe('desktop auth routes', () => {
         clientSecret: 'client-secret-1234',
       });
       assert.deepEqual(storedConnection?.['scopes'], [
-        'ZohoCRM.modules.READ',
+        'ZohoCRM.modules.read',
         'ZohoCRM.settings.READ',
         'ZohoBooks.fullaccess.READ',
+        'AaaServer.profile.READ',
       ]);
     } finally {
       globalThis.fetch = originalFetch;
