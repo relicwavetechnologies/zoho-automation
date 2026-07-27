@@ -24,6 +24,7 @@ export class GoogleWorkspaceContractBootstrapService implements WorkContractBoot
   ) {}
 
   async load(input: Parameters<WorkContractBootstrapPort['load']>[0]): Promise<WorkContractBootstrapResult> {
+    input.abortSignal?.throwIfAborted();
     const requested = suggestedGoogleWorkspaceNativeTools(input.query, input.toolIds);
     if (requested.length === 0) {
       return { contracts: [], unavailableNativeTools: [] };
@@ -48,8 +49,11 @@ export class GoogleWorkspaceContractBootstrapService implements WorkContractBoot
         minimumAccess: 'read_only',
         requiredScopeGroups: [],
         markLastUsed: false,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
+      input.abortSignal?.throwIfAborted();
     } catch {
+      input.abortSignal?.throwIfAborted();
       return {
         contracts: [],
         unavailableNativeTools: requested.map(item => item.nativeTool),
@@ -67,8 +71,13 @@ export class GoogleWorkspaceContractBootstrapService implements WorkContractBoot
     for (const item of requested) {
       let description;
       try {
-        description = await resolution.connection.client.describeTool(item.nativeTool);
+        description = await resolution.connection.client.describeTool(
+          item.nativeTool,
+          input.abortSignal,
+        );
+        input.abortSignal?.throwIfAborted();
       } catch {
+        input.abortSignal?.throwIfAborted();
         unavailableNativeTools.push(item.nativeTool);
         continue;
       }

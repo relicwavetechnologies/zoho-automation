@@ -190,6 +190,7 @@ export class GoogleOAuthService {
 
   async refreshAccessToken(
     refreshToken: string,
+    abortSignal?: AbortSignal,
   ): Promise<{
     accessToken: string;
     tokenType?:  string;
@@ -209,8 +210,10 @@ export class GoogleOAuthService {
           refresh_token: refreshToken.trim(),
           grant_type:    'refresh_token',
         }),
+        ...(abortSignal ? { signal: abortSignal } : {}),
       });
     } catch (e) {
+      abortSignal?.throwIfAborted();
       throw new Error(`Google token refresh network error: ${String(e)}`);
     }
 
@@ -245,11 +248,14 @@ export class GoogleOAuthService {
     companyId:    string;
     userId:       string;
     refreshToken: string;
+    abortSignal?: AbortSignal;
   }): Promise<string> {
+    opts.abortSignal?.throwIfAborted();
     const cacheKey = buildCacheKey(opts.companyId, opts.userId);
 
     // ── Try cache ──────────────────────────────────────────────────────────
     const cachedResult = await this.cache.get<CachedGoogleToken>(cacheKey);
+    opts.abortSignal?.throwIfAborted();
     if (cachedResult.ok && cachedResult.value) {
       const cached = cachedResult.value;
       if (typeof cached.token === 'string' && cached.token &&
@@ -260,12 +266,14 @@ export class GoogleOAuthService {
     }
 
     // ── Refresh ────────────────────────────────────────────────────────────
-    const refreshed    = await this.refreshAccessToken(opts.refreshToken);
+    const refreshed    = await this.refreshAccessToken(opts.refreshToken, opts.abortSignal);
+    opts.abortSignal?.throwIfAborted();
     const expiresAtMs  = Date.now() + (refreshed.expiresIn ?? 3600) * 1000;
     const ttlSeconds   = Math.max(60, Math.floor((expiresAtMs - Date.now() - TOKEN_EXPIRY_BUFFER_MS) / 1000));
 
     const cached: CachedGoogleToken = { token: refreshed.accessToken, expiresAtMs };
     await this.cache.set(cacheKey, cached, ttlSeconds);
+    opts.abortSignal?.throwIfAborted();
 
     this.log.debug('google.oauth.token.refreshed', {
       companyId:   opts.companyId,

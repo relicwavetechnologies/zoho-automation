@@ -1,6 +1,6 @@
 # Divo Dynamic Capability Discovery — Living Specification
 
-> Status: **implemented through catalogue/harness integration; deployment reconciliation and live harness cases pending**
+> Status: **implemented through deterministic discovery, automatic Lark bootstrap, and harness integration; broader live provider scenarios and production rollout remain**
 >
 > Last updated: **2026-07-28**
 >
@@ -156,6 +156,34 @@ The normal context budget is:
 
 This preserves the clarity of the successful Airtable route without flooding a
 small model with unrelated contracts.
+
+### 2.6 DECIDED — Backend-hosted channels resolve work before the model runs
+
+Lark must not depend on a small model remembering to discover its own tools.
+The backend resolves the authenticated member's exact original request before
+`streamText`, then injects only the matched recipes, permitted wrapper
+contracts, accessible accounts, and selected native contracts.
+
+- The model cannot rewrite the discovery query or choose search variants.
+- `resolve_work` is not exposed as a model-callable tool.
+- `call_tool` remains unavailable until resolution succeeds.
+- A no-recipe result may still use canonical family metadata to load a direct
+  contract; it never invents a new authorization path.
+- Recipe instructions and backend contracts are trusted policy. Connection
+  labels, account names, emails, and provider-returned values remain untrusted
+  data and cannot supply instructions.
+
+### 2.7 DECIDED — One run signal owns preload and execution lifecycle
+
+The supervisor's merged request/timeout signal is propagated through work
+resolution, skill and persona reads, account discovery, native contract
+bootstrap, governed execution, Google OAuth refresh, and Google MCP calls.
+
+Prisma reads are cooperatively cancelled: an in-flight query may finish inside
+the driver, but abort checkpoints prevent later work. Fetch-based OAuth calls
+and the MCP transport are actively closed. If cancellation happens during
+automatic preload, no model or provider action starts and the member receives
+a truthful no-action timeout response.
 
 ## 3. Desired agent flows
 
@@ -698,6 +726,11 @@ The unchecked items below remain explicit follow-up work.
 - [x] Preserve v2 parsing during rollout.
 - [x] Render explicit families, leaf tools, descriptions, connection mode, and
       optional skills.
+- [x] Preload governed Lark work from the server-held original request before
+      the model runs.
+- [x] Hide `resolve_work` from the model and gate `call_tool` until resolution.
+- [x] Propagate one run cancellation signal through discovery and governed
+      Google execution.
 - [ ] Remove duplicated provider lists from model instructions where runtime
       bootstrap can supply them.
 - [ ] Add contract-completeness tests for first-class tools.
@@ -722,10 +755,11 @@ The unchecked items below remain explicit follow-up work.
 ### Wave 5 — real-agent validation
 
 - [ ] Add harness assertions for Airtable, OMS, Semrush, Lark, and Zoho.
-- [ ] Run read-only production-like prompts through the real engine.
+- [x] Run an Airtable read-only prompt through the real Lark engine as Anish
+      using the Flash harness and inspect the persisted trace.
 - [ ] Verify trace clarity, small-model recovery, and no cross-provider routing.
 - [x] Run focused tests and typecheck.
-- [ ] Run the requested independent cold review.
+- [x] Run the requested independent cold review and its post-fix verification.
 
 ## 16. Evidence inspected
 
@@ -749,7 +783,7 @@ The unchecked items below remain explicit follow-up work.
 
 ## 17. Confidence
 
-Current recommendation confidence: **96%**.
+Current recommendation confidence: **97%**.
 
 The remaining uncertainty concerns rollout details and lifecycle choices, not
 the central boundary:

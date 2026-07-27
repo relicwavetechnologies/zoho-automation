@@ -19,15 +19,27 @@ export class GoogleWorkspaceGatewayClient implements GoogleWorkspaceMcpPort {
     this.sheetsDataValidation = sheetsDataValidation ?? new GoogleSheetsDataValidationClient(accessToken);
   }
 
-  async describeTool(name: string): Promise<GoogleWorkspaceMcpToolDescription | null> {
-    return this.sheetsDataValidation.describeTool(name) ?? this.mcp.describeTool(name);
+  async describeTool(
+    name: string,
+    abortSignal?: AbortSignal,
+  ): Promise<GoogleWorkspaceMcpToolDescription | null> {
+    abortSignal?.throwIfAborted();
+    return this.sheetsDataValidation.describeTool(name)
+      ?? this.mcp.describeTool(name, abortSignal);
   }
 
-  async callTool(name: string, input: Readonly<Record<string, unknown>>): Promise<unknown> {
+  async callTool(
+    name: string,
+    input: Readonly<Record<string, unknown>>,
+    abortSignal?: AbortSignal,
+  ): Promise<unknown> {
+    abortSignal?.throwIfAborted();
     if (this.sheetsDataValidation.describeTool(name)) {
-      return this.sheetsDataValidation.callTool(name, input);
+      const result = await this.sheetsDataValidation.callTool(name, input);
+      abortSignal?.throwIfAborted();
+      return result;
     }
-    const result = await this.mcp.callTool(name, input);
+    const result = await this.mcp.callTool(name, input, abortSignal);
     // Normalize the complete provider response before trimming model-facing
     // prose. Otherwise a 100-message Gmail page compacted to 20 entries loses
     // 80 IDs while its provider continuation token advances past all 100.

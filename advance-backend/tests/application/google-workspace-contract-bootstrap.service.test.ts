@@ -210,4 +210,40 @@ describe('Google Workspace work-contract bootstrap', () => {
     assert.deepEqual(schemaResult.contracts, []);
     assert.deepEqual(schemaResult.unavailableNativeTools, ['search_gmail_messages']);
   });
+
+  it('forwards and does not swallow cancellation during schema discovery', async () => {
+    const controller = new AbortController();
+    let describedWith: AbortSignal | undefined;
+    const service = new GoogleWorkspaceContractBootstrapService(async () => ({
+      status: 'resolved' as const,
+      connection: {
+        client: {
+          describeTool: async (_name: string, abortSignal?: AbortSignal) => {
+            describedWith = abortSignal;
+            return new Promise((_resolve, reject) => {
+              abortSignal?.addEventListener(
+                'abort',
+                () => reject(abortSignal.reason),
+                { once: true },
+              );
+            });
+          },
+          callTool: async () => undefined,
+        },
+      },
+    }));
+
+    const pending = service.load({
+      member,
+      query: 'Search Gmail',
+      toolIds: ['googleGmail'],
+      connections: [connection],
+      abortSignal: controller.signal,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    controller.abort(new Error('schema discovery cancelled'));
+
+    await assert.rejects(pending, /schema discovery cancelled/);
+    assert.equal(describedWith, controller.signal);
+  });
 });

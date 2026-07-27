@@ -6,5 +6,9 @@
  * to control which tools/actions may execute.
  */
 export interface SkillAccessEnforcementPort {
-  listGrantedSkillIds(companyId: string, userId: string): Promise<ReadonlySet<string>>;
+  listGrantedSkillIds(
+    companyId: string,
+    userId: string,
+    abortSignal?: AbortSignal,
+  ): Promise<ReadonlySet<string>>;
 }

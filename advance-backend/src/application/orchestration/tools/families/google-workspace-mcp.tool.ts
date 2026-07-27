@@ -51,8 +51,12 @@ export interface GoogleWorkspaceMcpToolDescription {
 }
 
 export interface GoogleWorkspaceMcpPort {
-  describeTool(name: string): Promise<GoogleWorkspaceMcpToolDescription | null>;
-  callTool(name: string, input: Readonly<Record<string, unknown>>): Promise<unknown>;
+  describeTool(name: string, abortSignal?: AbortSignal): Promise<GoogleWorkspaceMcpToolDescription | null>;
+  callTool(
+    name: string,
+    input: Readonly<Record<string, unknown>>,
+    abortSignal?: AbortSignal,
+  ): Promise<unknown>;
 }
 
 export interface GoogleWorkspaceMcpConnection {
@@ -85,6 +89,7 @@ export type ResolveGoogleWorkspaceMcpConnection = (input: {
   readonly requiredScopeGroups: readonly (readonly string[])[];
   /** Discovery-only schema preload must not count as real account usage. */
   readonly markLastUsed?: boolean;
+  readonly abortSignal?: AbortSignal;
 }) => Promise<GoogleWorkspaceMcpConnectionResolution>;
 
 export function createGoogleWorkspaceMcpTools(deps: {
@@ -149,6 +154,7 @@ function createProductTool(
         requiredScopeGroups: args.op === 'describe'
           ? []
           : googleWorkspaceScopeGroupsFor(product, args.nativeTool, action),
+        ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
       });
       if (connectionResolution.status === 'choose_connection') {
         return badArgs(
@@ -165,7 +171,10 @@ function createProductTool(
       }
 
       try {
-        const description = await connectionResolution.connection.client.describeTool(args.nativeTool);
+        const description = await connectionResolution.connection.client.describeTool(
+          args.nativeTool,
+          ctx.abortSignal,
+        );
         if (!description) {
           return err(new ToolError({
             toolId: product.toolId,
@@ -217,6 +226,7 @@ function createProductTool(
         requiredScopeGroups: args.op === 'describe'
           ? []
           : googleWorkspaceScopeGroupsFor(product, args.nativeTool, action),
+        ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
       });
       if (connectionResolution.status === 'choose_connection') {
         return ok({
@@ -241,7 +251,10 @@ function createProductTool(
       try {
         if (args.op === 'describe') {
           ctx.onProgress?.(`Loading ${product.name} operation schema…`);
-          const description = await connection.client.describeTool(args.nativeTool);
+          const description = await connection.client.describeTool(
+            args.nativeTool,
+            ctx.abortSignal,
+          );
           if (!description) {
             return err(new ToolError({
               toolId: product.toolId,
@@ -253,7 +266,11 @@ function createProductTool(
         }
 
         ctx.onProgress?.(`${progressVerb(action)} ${product.name}…`);
-        const data = await connection.client.callTool(args.nativeTool, args.input ?? {});
+        const data = await connection.client.callTool(
+          args.nativeTool,
+          args.input ?? {},
+          ctx.abortSignal,
+        );
         return ok({
           success: true,
           nativeTool: args.nativeTool,

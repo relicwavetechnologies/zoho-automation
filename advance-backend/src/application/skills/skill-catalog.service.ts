@@ -68,7 +68,9 @@ export class SkillCatalogService {
     grantedSkillIds?: ReadonlySet<string>;
     query: string;
     limit: number;
+    abortSignal?: AbortSignal;
   }): Promise<CatalogSkillSearchResult[]> {
+    input.abortSignal?.throwIfAborted();
     const result = await this.deps.repo.search({
       companyId: input.companyId,
       ...(input.departmentId ? { departmentId: input.departmentId } : {}),
@@ -76,7 +78,9 @@ export class SkillCatalogService {
       // Fetch a bounded candidate window before application-layer ranking so
       // generic terms cannot hide a stronger match that sorts later in a folder.
       limit: Math.max(input.limit * 20, 100),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
+    input.abortSignal?.throwIfAborted();
     if (!result.ok) {
       this.log.warn('skills.catalog.search.failed', { companyId: input.companyId, error: result.error.message });
       return [];
@@ -99,12 +103,16 @@ export class SkillCatalogService {
     permission: PermissionResult;
     grantedSkillIds?: ReadonlySet<string>;
     skillId: string;
+    abortSignal?: AbortSignal;
   }): Promise<CatalogSkill | null> {
+    input.abortSignal?.throwIfAborted();
     const result = await this.deps.repo.findById({
       companyId: input.companyId,
       ...(input.departmentId ? { departmentId: input.departmentId } : {}),
       skillId: input.skillId,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
+    input.abortSignal?.throwIfAborted();
     if (!result.ok) {
       this.log.warn('skills.catalog.get.failed', {
         companyId: input.companyId,
@@ -141,8 +149,10 @@ export class SkillCatalogService {
     return toCatalogSkill(result.value);
   }
 
-  async registryRevision(companyId: string): Promise<number> {
-    const result = await this.deps.repo.registryRevision(companyId);
+  async registryRevision(companyId: string, abortSignal?: AbortSignal): Promise<number> {
+    abortSignal?.throwIfAborted();
+    const result = await this.deps.repo.registryRevision(companyId, abortSignal);
+    abortSignal?.throwIfAborted();
     if (!result.ok) {
       this.log.warn('skills.catalog.registry_revision.failed', {
         companyId,

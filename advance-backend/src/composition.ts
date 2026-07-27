@@ -724,13 +724,17 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     readonly minimumAccess: 'read_only' | 'read_write';
     readonly requiredScopeGroups: readonly (readonly string[])[];
     readonly markLastUsed?: boolean;
+    readonly abortSignal?: AbortSignal;
   }) {
+    input.abortSignal?.throwIfAborted();
     if (!googleOAuthService.isConfigured()) return { status: 'unavailable' as const };
 
     const accessible = await integrationConnectionRepo.listAccessibleGoogleConnections({
       companyId: input.companyId,
       userId: input.userId,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
+    input.abortSignal?.throwIfAborted();
     if (!accessible.ok) return { status: 'unavailable' as const };
     const scopeEligible = accessible.value.filter((connection) =>
       hasGoogleScopeGroups(connection.scopes, input.requiredScopeGroups),
@@ -772,7 +776,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       userId: input.userId,
       connectionId: selectedConnectionId,
       minimumAccess: input.minimumAccess,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
+    input.abortSignal?.throwIfAborted();
     if (!connection.ok || !connection.value?.refreshToken) {
       return { status: 'unavailable' as const };
     }
@@ -791,9 +797,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         companyId:    input.companyId,
         userId:       `connection:${selectedConnectionId}`,
         refreshToken: connection.value.refreshToken,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
+      input.abortSignal?.throwIfAborted();
       if (input.markLastUsed !== false) {
         await integrationConnectionRepo.touchLastUsed(selectedConnectionId);
+        input.abortSignal?.throwIfAborted();
       }
       return {
         status: 'resolved' as const,
@@ -809,6 +818,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
         },
       };
     } catch (error) {
+      input.abortSignal?.throwIfAborted();
       logger.warn('google.connection.token_resolution_failed', {
         companyId: input.companyId,
         userId: input.userId,

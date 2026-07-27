@@ -29,5 +29,6 @@ export interface WorkContractBootstrapPort {
     readonly query: string;
     readonly toolIds: readonly string[];
     readonly connections: readonly AccessibleConnection[];
+    readonly abortSignal?: AbortSignal;
   }): Promise<WorkContractBootstrapResult>;
 }

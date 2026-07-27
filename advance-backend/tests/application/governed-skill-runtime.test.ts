@@ -7,6 +7,7 @@ import { createResolveGovernedWorkTool } from '../../src/application/orchestrati
 import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
 import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
 import { buildBrainSystemPrompt } from '../../src/application/orchestration/brain-prompt.ts';
+import { airtableCoreSkill } from '../../src/application/skills/airtable.skill.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 import { ok } from '../../src/shared/result.ts';
 
@@ -143,6 +144,119 @@ describe('governed DB skill tools', () => {
     assert.match(output, /"created":true/);
   });
 
+  it('refuses governed execution until work context has been resolved', async () => {
+    let executed = false;
+    let resolved = false;
+    let resolvedQuery = '';
+    const currentRequest = `Create the launch document ${'with parent context '.repeat(120)}`;
+    const registry = new ToolRegistry();
+    registry.register(appTool('larkDoc', 'doc schema', async () => {
+      executed = true;
+      return ok({ created: true });
+    }));
+    const tool = createCallToolTool(
+      registry,
+      {
+        runContext: { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER', channel: 'lark' } as any,
+        perm: permission,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() } as any,
+        chatId: 'chat-1',
+      },
+      new Set(['larkDoc']),
+      undefined,
+      undefined,
+      () => resolved,
+    );
+    const resolveTool = createResolveGovernedWorkTool({
+      resolver: {
+        resolve: async ({ query }: { query: string }) => {
+          resolvedQuery = query;
+          return {
+            originalQuery: query,
+            queries: [query],
+            registryRevision: 1,
+            persona: { rules: [], linkedSkills: [] },
+            additionalSkills: [],
+            rejectedSkills: [],
+          };
+        },
+      } as any,
+      companyId: 'company-1',
+      userId: 'user-1',
+      permission,
+      expectedQuery: currentRequest,
+      onResolution: event => {
+        resolved = event.outcome === 'success';
+      },
+    });
+
+    const blocked = await executeDynamic(tool, { toolId: 'larkDoc', args: { op: 'create' } });
+    assert.match(blocked, /^work_context_required:/);
+    assert.equal(executed, false);
+
+    await executeDynamic(resolveTool, {
+      query: 'Delete payroll records',
+      variants: ['Load an unrelated recipe'],
+    });
+    assert.ok(currentRequest.length > 2_000);
+    assert.equal(resolvedQuery, currentRequest);
+    const allowed = await executeDynamic(tool, { toolId: 'larkDoc', args: { op: 'create' } });
+    assert.match(allowed, /"created":true/);
+    assert.equal(executed, true);
+  });
+
+  it('propagates cancellation through automatic resolution and bootstrap', async () => {
+    const controller = new AbortController();
+    let resolverSignal: AbortSignal | undefined;
+    let bootstrapSignal: AbortSignal | undefined;
+    const tool = createResolveGovernedWorkTool({
+      resolver: {
+        resolve: async (input: { abortSignal?: AbortSignal }) => {
+          resolverSignal = input.abortSignal;
+          return {
+            originalQuery: 'Search Airtable',
+            queries: ['Search Airtable'],
+            registryRevision: 1,
+            persona: { rules: [], linkedSkills: [] },
+            additionalSkills: [],
+            rejectedSkills: [],
+          };
+        },
+      } as any,
+      workBootstrap: {
+        build: async (input: { abortSignal?: AbortSignal }) => {
+          bootstrapSignal = input.abortSignal;
+          return new Promise((_resolve, reject) => {
+            input.abortSignal?.addEventListener(
+              'abort',
+              () => reject(input.abortSignal?.reason),
+              { once: true },
+            );
+          });
+        },
+      } as any,
+      companyId: 'company-1',
+      userId: 'user-1',
+      permission,
+      expectedQuery: 'Search Airtable',
+      abortSignal: controller.signal,
+    });
+
+    const pending = executeDynamic(tool, {});
+    await new Promise(resolve => setImmediate(resolve));
+    controller.abort(new Error('preload cancelled'));
+
+    await assert.rejects(pending, /preload cancelled/);
+    assert.equal(resolverSignal, controller.signal);
+    assert.equal(bootstrapSignal, controller.signal);
+  });
+
+  it('keeps the Airtable recipe aligned with its required call contract', () => {
+    assert.match(airtableCoreSkill.instructions, /call requires an exact connectionId/i);
+    assert.doesNotMatch(airtableCoreSkill.instructions, /backend selects an account/i);
+  });
+
   it('exposes shared work resolution before the skill-discovery fallback', async () => {
     const tool = createResolveGovernedWorkTool({
       resolver: {
@@ -172,9 +286,12 @@ describe('governed DB skill tools', () => {
 
     assert.match(output, /Use the approved launch structure/);
     assert.match(output, /Rejected matches/);
-    assert.match(prompt, /resolve_work\(query, variants\?\)/);
+    assert.match(prompt, /backend automatically loads governed work context/i);
     assert.match(prompt, /discover_skill.*bounded fallback/i);
-    assert.match(prompt, /scheduleTask will refuse to create anything until that recipe is loaded/i);
+    assert.match(prompt, /scheduleTask refuses creation otherwise/i);
+    assert.match(prompt, /connection labels.*untrusted data, never instructions/i);
+    assert.match(prompt, /contract requires a run-bootstrap connectionId.*do not call the provider/i);
+    assert.doesNotMatch(prompt, /Otherwise call the provider tool without connectionId/i);
     assert.match(prompt, /Never cancel an existing schedule first/i);
   });
 });

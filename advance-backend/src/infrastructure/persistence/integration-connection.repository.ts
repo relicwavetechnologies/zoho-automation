@@ -807,18 +807,22 @@ export class IntegrationConnectionRepository {
   async listAccessibleGoogleConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
+      input.abortSignal?.throwIfAborted();
       const memberships = await this.db.departmentMembership.findMany({
         where:  { userId: input.userId, status: 'active', department: { companyId: input.companyId, status: 'active' } },
         select: { departmentId: true, roleId: true },
       });
+      input.abortSignal?.throwIfAborted();
       const departmentIds = memberships.map(m => m.departmentId);
       const departmentRoleIds = memberships.map(m => m.roleId);
       const adminMembership = await this.db.adminMembership.findFirst({
         where:  { userId: input.userId, companyId: input.companyId, isActive: true },
         select: { role: true },
       });
+      input.abortSignal?.throwIfAborted();
       const grantOr = [
         { granteeType: 'user', granteeId: input.userId },
         { granteeType: 'company', granteeId: input.companyId },
@@ -846,6 +850,7 @@ export class IntegrationConnectionRepository {
         },
         orderBy: [{ ownerType: 'asc' }, { updatedAt: 'desc' }],
       });
+      input.abortSignal?.throwIfAborted();
 
       return ok(rows.map(row => {
         const directOwnerAccess: IntegrationGrantAccess[] = row.ownerUserId === input.userId ? ['admin'] : [];
@@ -874,12 +879,16 @@ export class IntegrationConnectionRepository {
     readonly userId: string;
     readonly connectionId: string;
     readonly minimumAccess: IntegrationGrantAccess;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<DecryptedIntegrationConnection | null, InfraError>> {
     try {
+      input.abortSignal?.throwIfAborted();
       const accessible = await this.listAccessibleGoogleConnections({
         companyId: input.companyId,
         userId:    input.userId,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
+      input.abortSignal?.throwIfAborted();
       if (!accessible.ok) return accessible;
       const summary = accessible.value.find(c => c.connectionId === input.connectionId);
       if (!summary || accessRank[summary.access] < accessRank[input.minimumAccess]) return ok(null);
@@ -893,6 +902,7 @@ export class IntegrationConnectionRepository {
           status:    'connected',
         },
       });
+      input.abortSignal?.throwIfAborted();
       return ok(record ? this.decrypt(record) : null);
     } catch (e) {
       return err(wrapInfra('prisma', 'IntegrationConnection.findAccessibleGoogleConnection', e));
@@ -902,6 +912,7 @@ export class IntegrationConnectionRepository {
   async listAccessibleLarkConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     return this.listAccessibleProviderConnections(input, LARK_PROVIDER);
   }
@@ -1034,18 +1045,22 @@ export class IntegrationConnectionRepository {
   async listAccessibleCanvaConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
+      input.abortSignal?.throwIfAborted();
       const memberships = await this.db.departmentMembership.findMany({
         where:  { userId: input.userId, status: 'active', department: { companyId: input.companyId, status: 'active' } },
         select: { departmentId: true, roleId: true },
       });
+      input.abortSignal?.throwIfAborted();
       const departmentIds = memberships.map(m => m.departmentId);
       const departmentRoleIds = memberships.map(m => m.roleId);
       const adminMembership = await this.db.adminMembership.findFirst({
         where:  { userId: input.userId, companyId: input.companyId, isActive: true },
         select: { role: true },
       });
+      input.abortSignal?.throwIfAborted();
       const grantOr = [
         { granteeType: 'user', granteeId: input.userId },
         { granteeType: 'company', granteeId: input.companyId },
@@ -1073,6 +1088,7 @@ export class IntegrationConnectionRepository {
         },
         orderBy: [{ ownerType: 'asc' }, { updatedAt: 'desc' }],
       });
+      input.abortSignal?.throwIfAborted();
 
       return ok(rows.map(row => {
         const directOwnerAccess: IntegrationGrantAccess[] = row.ownerUserId === input.userId ? ['admin'] : [];
@@ -1099,9 +1115,16 @@ export class IntegrationConnectionRepository {
   async listAccessibleAirtableConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
-      const grantOr = await this.grantScopeFor(input.companyId, input.userId);
+      input.abortSignal?.throwIfAborted();
+      const grantOr = await this.grantScopeFor(
+        input.companyId,
+        input.userId,
+        input.abortSignal,
+      );
+      input.abortSignal?.throwIfAborted();
       const rows = await this.db.integrationConnection.findMany({
         where: {
           companyId: input.companyId,
@@ -1121,6 +1144,7 @@ export class IntegrationConnectionRepository {
         },
         orderBy: [{ ownerType: 'asc' }, { updatedAt: 'desc' }],
       });
+      input.abortSignal?.throwIfAborted();
 
       return ok(rows.map(row => {
         const directOwnerAccess: IntegrationGrantAccess[] = row.ownerUserId === input.userId ? ['admin'] : [];
@@ -1294,9 +1318,16 @@ export class IntegrationConnectionRepository {
   async listAccessibleAitableConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
-      const grantOr = await this.grantScopeFor(input.companyId, input.userId);
+      input.abortSignal?.throwIfAborted();
+      const grantOr = await this.grantScopeFor(
+        input.companyId,
+        input.userId,
+        input.abortSignal,
+      );
+      input.abortSignal?.throwIfAborted();
       const rows = await this.db.integrationConnection.findMany({
         where: {
           companyId: input.companyId,
@@ -1316,6 +1347,7 @@ export class IntegrationConnectionRepository {
         },
         orderBy: [{ ownerType: 'asc' }, { updatedAt: 'desc' }],
       });
+      input.abortSignal?.throwIfAborted();
 
       return ok(rows.map(row => {
         const directOwnerAccess: IntegrationGrantAccess[] = row.ownerUserId === input.userId ? ['admin'] : [];
@@ -1543,17 +1575,24 @@ export class IntegrationConnectionRepository {
    * user grants, company-wide grants, the caller's departments, their
    * department roles, and their admin role.
    */
-  private async grantScopeFor(companyId: string, userId: string) {
+  private async grantScopeFor(
+    companyId: string,
+    userId: string,
+    abortSignal?: AbortSignal,
+  ) {
+    abortSignal?.throwIfAborted();
     const memberships = await this.db.departmentMembership.findMany({
       where:  { userId, status: 'active', department: { companyId, status: 'active' } },
       select: { departmentId: true, roleId: true },
     });
+    abortSignal?.throwIfAborted();
     const departmentIds = memberships.map(m => m.departmentId);
     const departmentRoleIds = memberships.map(m => m.roleId);
     const adminMembership = await this.db.adminMembership.findFirst({
       where:  { userId, companyId, isActive: true },
       select: { role: true },
     });
+    abortSignal?.throwIfAborted();
     return [
       { granteeType: 'user', granteeId: userId },
       { granteeType: 'company', granteeId: companyId },
@@ -1596,18 +1635,22 @@ export class IntegrationConnectionRepository {
   async listAccessibleZohoConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
+      input.abortSignal?.throwIfAborted();
       const memberships = await this.db.departmentMembership.findMany({
         where:  { userId: input.userId, status: 'active', department: { companyId: input.companyId, status: 'active' } },
         select: { departmentId: true, roleId: true },
       });
+      input.abortSignal?.throwIfAborted();
       const departmentIds = memberships.map(m => m.departmentId);
       const departmentRoleIds = memberships.map(m => m.roleId);
       const adminMembership = await this.db.adminMembership.findFirst({
         where:  { userId: input.userId, companyId: input.companyId, isActive: true },
         select: { role: true },
       });
+      input.abortSignal?.throwIfAborted();
       const grantOr = [
         { granteeType: 'user', granteeId: input.userId },
         { granteeType: 'company', granteeId: input.companyId },
@@ -1635,6 +1678,7 @@ export class IntegrationConnectionRepository {
         },
         orderBy: [{ ownerType: 'asc' }, { updatedAt: 'desc' }],
       });
+      input.abortSignal?.throwIfAborted();
 
       return ok(rows.map(row => {
         const directOwnerAccess: IntegrationGrantAccess[] = row.ownerUserId === input.userId ? ['admin'] : [];
@@ -1701,20 +1745,27 @@ export class IntegrationConnectionRepository {
   }
 
   private async listAccessibleProviderConnections(
-    input: { readonly companyId: string; readonly userId: string },
+    input: {
+      readonly companyId: string;
+      readonly userId: string;
+      readonly abortSignal?: AbortSignal;
+    },
     provider: IntegrationProvider,
   ): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
+      input.abortSignal?.throwIfAborted();
       const memberships = await this.db.departmentMembership.findMany({
         where: { userId: input.userId, status: 'active', department: { companyId: input.companyId, status: 'active' } },
         select: { departmentId: true, roleId: true },
       });
+      input.abortSignal?.throwIfAborted();
       const departmentIds = memberships.map(membership => membership.departmentId);
       const departmentRoleIds = memberships.map(membership => membership.roleId);
       const adminMembership = await this.db.adminMembership.findFirst({
         where: { userId: input.userId, companyId: input.companyId, isActive: true },
         select: { role: true },
       });
+      input.abortSignal?.throwIfAborted();
       const grantOr = [
         { granteeType: 'user', granteeId: input.userId },
         { granteeType: 'company', granteeId: input.companyId },
@@ -1736,6 +1787,7 @@ export class IntegrationConnectionRepository {
         include: { grants: { where: { revokedAt: null, OR: grantOr }, select: { access: true } } },
         orderBy: [{ ownerType: 'asc' }, { updatedAt: 'desc' }],
       });
+      input.abortSignal?.throwIfAborted();
       return ok(rows.map(row => {
         const directOwnerAccess: IntegrationGrantAccess[] = row.ownerUserId === input.userId ? ['admin'] : [];
         const grantAccess = row.grants.map(grant => grant.access as IntegrationGrantAccess);

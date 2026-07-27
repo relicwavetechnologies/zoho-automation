@@ -78,7 +78,9 @@ export class WorkBootstrapService {
     readonly registryRevision: number;
     readonly query?: string;
     readonly toolIds: readonly string[];
+    readonly abortSignal?: AbortSignal;
   }): Promise<WorkBootstrap> {
+    input.abortSignal?.throwIfAborted();
     const discoveryPerm = withWorkDiscoveryPermissions(input.permission);
     const requestedToolIds = new Set(
       input.toolIds.length > 0
@@ -121,6 +123,7 @@ export class WorkBootstrapService {
         provider,
         result: await this.listAccessibleConnections(input, provider),
       })));
+      input.abortSignal?.throwIfAborted();
       for (const { provider, result } of results) {
         if (!result.ok) {
           advisories.push({
@@ -159,8 +162,11 @@ export class WorkBootstrapService {
           query: input.query,
           toolIds: tools.map(tool => String(tool.id)),
           connections,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         });
+        input.abortSignal?.throwIfAborted();
       } catch {
+        input.abortSignal?.throwIfAborted();
         loaded = {
           contracts: [],
           unavailableNativeTools: [],
@@ -205,7 +211,11 @@ export class WorkBootstrapService {
   }
 
   private listAccessibleConnections(
-    principal: { readonly companyId: string; readonly userId: string },
+    principal: {
+      readonly companyId: string;
+      readonly userId: string;
+      readonly abortSignal?: AbortSignal;
+    },
     provider: ConnectionProvider,
   ) {
     return listAccessibleConnectionsFor(this.deps.connectionRegistry!, principal, provider);
@@ -218,10 +228,18 @@ export class WorkBootstrapService {
  */
 export function listAccessibleConnectionsFor(
   registry: ConnectionRegistryPort,
-  principal: { readonly companyId: string; readonly userId: string },
+  principal: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly abortSignal?: AbortSignal;
+  },
   provider: ConnectionProvider,
 ) {
-  const input = { companyId: principal.companyId, userId: principal.userId };
+  const input = {
+    companyId: principal.companyId,
+    userId: principal.userId,
+    ...(principal.abortSignal ? { abortSignal: principal.abortSignal } : {}),
+  };
   switch (provider) {
     case 'google_workspace':
       return registry.listAccessibleGoogleConnections(input);

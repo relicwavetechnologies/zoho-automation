@@ -18,6 +18,8 @@ export function createResolveGovernedWorkTool(input: {
   readonly userId: string;
   readonly departmentId?: string;
   readonly permission: PermissionResult;
+  readonly expectedQuery?: string;
+  readonly abortSignal?: AbortSignal;
   /**
    * Discovery context for the recipes this resolves to — the same bootstrap the
    * desktop gateway attaches to `work.resolve`. Optional so a caller without a
@@ -31,42 +33,59 @@ export function createResolveGovernedWorkTool(input: {
     readonly resolution?: WorkResolution;
   }) => void;
 }) {
+  const runtimeInputSchema = input.expectedQuery === undefined
+    ? inputSchema
+    : z.object({}).describe('The backend resolves the current user request automatically.');
+
   return dynamicTool({
     description:
       'Resolve meaningful Divo/company work against the authenticated member’s department persona and approved company skills. ' +
       'Returns exact persona-linked recipes, strong complementary recipes, provenance, and rejected weak matches.',
-    inputSchema: inputSchema as never,
+    inputSchema: runtimeInputSchema as never,
     execute: async (value: unknown): Promise<string> => {
-      const parsed = inputSchema.safeParse(value);
-      if (!parsed.success) {
-        return `error: invalid resolve_work input — ${parsed.error.errors
-          .map(issue => `${issue.path.join('.')}: ${issue.message}`)
-          .join('; ')}`;
+      let query: string;
+      let variants: readonly string[] | undefined;
+      if (input.expectedQuery !== undefined) {
+        query = input.expectedQuery;
+      } else {
+        const parsed = inputSchema.safeParse(value);
+        if (!parsed.success) {
+          return `error: invalid resolve_work input — ${parsed.error.errors
+            .map(issue => `${issue.path.join('.')}: ${issue.message}`)
+            .join('; ')}`;
+        }
+        query = parsed.data.query;
+        variants = parsed.data.variants;
       }
 
       try {
+        input.abortSignal?.throwIfAborted();
         const resolution = await input.resolver.resolve({
           companyId: input.companyId,
           userId: input.userId,
           ...(input.departmentId ? { departmentId: input.departmentId } : {}),
           permission: input.permission,
-          query: parsed.data.query,
-          ...(parsed.data.variants ? { variants: parsed.data.variants } : {}),
+          query,
+          ...(variants ? { variants } : {}),
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         });
-        input.onResolution?.({ query: parsed.data.query, outcome: 'success', resolution });
+        input.abortSignal?.throwIfAborted();
+        input.onResolution?.({ query, outcome: 'success', resolution });
         const brief = input.workBootstrap
           ? await buildBootstrapBrief({
               service: input.workBootstrap,
               companyId: input.companyId,
               userId: input.userId,
               permission: input.permission,
-              query: parsed.data.query,
+              query,
               resolution,
+              ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
             })
           : '';
         return [formatWorkResolution(resolution, Boolean(brief)), brief].filter(Boolean).join('\n\n');
       } catch (error) {
-        input.onResolution?.({ query: parsed.data.query, outcome: 'failure' });
+        input.abortSignal?.throwIfAborted();
+        input.onResolution?.({ query, outcome: 'failure' });
         return `error: work context could not be resolved — ${error instanceof Error ? error.message : String(error)}`;
       }
     },
@@ -85,6 +104,7 @@ async function buildBootstrapBrief(input: {
   readonly permission: PermissionResult;
   readonly query: string;
   readonly resolution: WorkResolution;
+  readonly abortSignal?: AbortSignal;
 }): Promise<string> {
   const toolIds = [
     ...input.resolution.persona.linkedSkills.flatMap(item => item.skill.toolIds),
@@ -98,9 +118,11 @@ async function buildBootstrapBrief(input: {
       registryRevision: input.resolution.registryRevision,
       query: input.query,
       toolIds,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
     return renderWorkBootstrapBrief(bootstrap);
   } catch {
+    input.abortSignal?.throwIfAborted();
     return '';
   }
 }

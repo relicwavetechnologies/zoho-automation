@@ -5,7 +5,12 @@ import type { SkillAccessEnforcementPort } from '../../application/skills/skill-
 export class SkillAccessRepository implements SkillAccessEnforcementPort {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async listGrantedSkillIds(companyId: string, userId: string): Promise<ReadonlySet<string>> {
+  async listGrantedSkillIds(
+    companyId: string,
+    userId: string,
+    abortSignal?: AbortSignal,
+  ): Promise<ReadonlySet<string>> {
+    abortSignal?.throwIfAborted();
     const memberships = await this.prisma.departmentMembership.findMany({
       where: {
         userId,
@@ -14,6 +19,7 @@ export class SkillAccessRepository implements SkillAccessEnforcementPort {
       },
       select: { departmentId: true, roleId: true },
     });
+    abortSignal?.throwIfAborted();
 
     const departmentIds = memberships.map((membership) => membership.departmentId);
     const roleIds = memberships.map((membership) => membership.roleId);
@@ -33,6 +39,7 @@ export class SkillAccessRepository implements SkillAccessEnforcementPort {
       },
       select: { skillId: true },
     });
+    abortSignal?.throwIfAborted();
 
     return new Set(grants.map((grant) => grant.skillId));
   }

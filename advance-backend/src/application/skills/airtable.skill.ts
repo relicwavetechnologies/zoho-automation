@@ -2,8 +2,8 @@ import type { Skill } from './skill.types';
 
 const AIRTABLE_CONNECTION_METHOD = `DIVO-GOVERNED AIRTABLE CONNECTION:
 - Invoke Airtable only through the Divo tool surface available in the current runtime: server channels use call_tool; desktop uses divo_gateway. Never call Airtable directly, never use a personal access token, and never switch to an unavailable tool surface.
-- Reuse an exact connectionId already supplied by the current run. Otherwise omit it: the backend selects an account only when exactly one accessible account qualifies.
-- If Divo returns structured connection choices, ask one short account-choice question using those labels, then retry with the selected exact ID. Do not guess.
+- A call requires an exact connectionId supplied by the current run. Describe may omit it only to inspect an approved operation schema.
+- If the current run supplies multiple connections, ask one short account-choice question using those labels, then use the selected exact ID. Do not guess.
 - If no connection is accessible, tell the member to connect Airtable or request access to an existing connection.
 - Never use a base name, workspace name, or label as connectionId. Use only a backend-provided connectionId.`;
 

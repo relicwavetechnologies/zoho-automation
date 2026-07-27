@@ -192,6 +192,35 @@ describe('GoogleOAuthService', () => {
       }
     });
 
+    it('aborts an in-flight token refresh', async () => {
+      const controller = new AbortController();
+      const origFetch = globalThis.fetch;
+      let fetchSignal: AbortSignal | null | undefined;
+      try {
+        globalThis.fetch = async (_url, init) => {
+          fetchSignal = init?.signal;
+          return new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              'abort',
+              () => reject(init.signal?.reason),
+              { once: true },
+            );
+          });
+        };
+        const pending = svc.getValidAccessToken({
+          ...opts,
+          abortSignal: controller.signal,
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        controller.abort(new Error('token refresh cancelled'));
+
+        await assert.rejects(pending, /token refresh cancelled/);
+        assert.equal(fetchSignal, controller.signal);
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
+
     it('does not call refresh when cached token is still valid', async () => {
       const expiresAtMs = Date.now() + 600_000; // 10 min — beyond 60 s buffer
       await cache.set('google:token:co1:u1', { token: 'still-valid', expiresAtMs });

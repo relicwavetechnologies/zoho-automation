@@ -32,11 +32,11 @@ export function createScheduleTaskTool(
 ) {
   return dynamicTool({
     description:
-      'Create a recurring or one-time scheduled task after resolve_work has loaded the Schedule Divo Work recipe. The intent must be a complete executable task, not a workflow name or timing description.',
+      'Create a recurring or one-time scheduled task after the backend-loaded work context includes the Schedule Divo Work recipe. The intent must be a complete executable task, not a workflow name or timing description.',
     inputSchema: schema as never,
     execute: async (input: unknown): Promise<string> => {
       if (options.isSchedulingSkillResolved && !options.isSchedulingSkillResolved()) {
-        return 'skill_required: Before creating a schedule, call resolve_work with the exact original user request and a scheduling-focused variant. Continue only after the approved Schedule Divo Work recipe is returned.';
+        return 'skill_required: The approved Schedule Divo Work recipe was not loaded for this request. Do not create the schedule.';
       }
       const args = schema.parse(input);
       try {

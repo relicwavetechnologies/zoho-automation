@@ -31,25 +31,31 @@ export interface ConnectionRegistryPort {
   listAccessibleGoogleConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleZohoConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleCanvaConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleAirtableConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleAitableConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleLarkConnections(input: {
     readonly companyId: string;
     readonly userId: string;
+    readonly abortSignal?: AbortSignal;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
 }

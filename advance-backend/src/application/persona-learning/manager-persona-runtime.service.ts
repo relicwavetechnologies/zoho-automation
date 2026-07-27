@@ -101,8 +101,11 @@ export class ManagerPersonaRuntimeService {
     readonly departmentId: string;
     readonly query: string;
     readonly limit: number;
+    readonly abortSignal?: AbortSignal;
   }): Promise<ManagerPersonaResolvedRule[]> {
+    input.abortSignal?.throwIfAborted();
     const managerId = await this.findSingleManager(input);
+    input.abortSignal?.throwIfAborted();
     if (!managerId) return [];
     const tree = await this.deps.prisma.managerPersonaTree.findUnique({
       where: {
@@ -152,6 +155,7 @@ export class ManagerPersonaRuntimeService {
         },
       },
     });
+    input.abortSignal?.throwIfAborted();
     if (!tree?.nodes.length) return [];
 
     return rankManagerPersonaRules(input.query, tree.nodes, input.limit)
@@ -184,7 +188,12 @@ export class ManagerPersonaRuntimeService {
       }));
   }
 
-  private async findSingleManager(input: { companyId: string; departmentId: string }): Promise<string | null> {
+  private async findSingleManager(input: {
+    companyId: string;
+    departmentId: string;
+    abortSignal?: AbortSignal;
+  }): Promise<string | null> {
+    input.abortSignal?.throwIfAborted();
     const managers = await this.deps.prisma.departmentMembership.findMany({
       where: {
         departmentId: input.departmentId,
@@ -195,6 +204,7 @@ export class ManagerPersonaRuntimeService {
       select: { userId: true },
       take: 2,
     });
+    input.abortSignal?.throwIfAborted();
     if (managers.length === 1) return managers[0]!.userId;
     this.log.debug('manager-persona.runtime.unresolved_manager', {
       companyId: input.companyId,

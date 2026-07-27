@@ -76,12 +76,19 @@ export class WorkResolutionService {
     readonly query: string;
     readonly variants?: readonly string[];
     readonly limit?: number;
+    readonly abortSignal?: AbortSignal;
   }): Promise<WorkResolution> {
+    input.abortSignal?.throwIfAborted();
     const queries = uniqueQueries(input.query, input.variants ?? []);
     const discoveryPermission = withWorkDiscoveryPermissions(input.permission);
     const grantedSkillIds = this.deps.skillAccessEnforcement
-      ? await this.deps.skillAccessEnforcement.listGrantedSkillIds(input.companyId, input.userId)
+      ? await this.deps.skillAccessEnforcement.listGrantedSkillIds(
+        input.companyId,
+        input.userId,
+        input.abortSignal,
+      )
       : undefined;
+    input.abortSignal?.throwIfAborted();
 
     const [personaRules, searches] = await Promise.all([
       input.departmentId && this.deps.managerPersonaRuntime
@@ -90,6 +97,7 @@ export class WorkResolutionService {
           departmentId: input.departmentId,
           query: input.query,
           limit: 5,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         })
         : Promise.resolve([]),
       Promise.all(queries.map(query => this.deps.skillCatalog.searchVisible({
@@ -99,8 +107,10 @@ export class WorkResolutionService {
         ...(grantedSkillIds ? { grantedSkillIds } : {}),
         query,
         limit: 5,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       }))),
     ]);
+    input.abortSignal?.throwIfAborted();
 
     const personaSkillReferences = new Map<string, Array<{
       nodeId: string;
@@ -122,9 +132,11 @@ export class WorkResolutionService {
         permission: discoveryPermission,
         ...(grantedSkillIds ? { grantedSkillIds } : {}),
         skillId,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       });
       return skill ? { source: 'persona_link' as const, references, skill: agentFacingSkill(skill) } : null;
     }))).filter(isPresent);
+    input.abortSignal?.throwIfAborted();
 
     const aggregated = aggregateSkillSearches(queries, searches);
     const fuzzyCandidates = aggregated.filter(candidate => !personaSkillReferences.has(candidate.skill.id));
@@ -171,7 +183,11 @@ export class WorkResolutionService {
     return {
       originalQuery: input.query,
       queries,
-      registryRevision: await registryRevision(this.deps.skillCatalog, input.companyId),
+      registryRevision: await registryRevision(
+        this.deps.skillCatalog,
+        input.companyId,
+        input.abortSignal,
+      ),
       persona: { rules: personaRules, linkedSkills: personaSkills },
       additionalSkills,
       rejectedSkills,
@@ -220,12 +236,17 @@ export function withWorkDiscoveryPermissions(perm: PermissionResult): Permission
   return { ...perm, allowedToolIds, allowedActionsByTool };
 }
 
-async function registryRevision(catalog: SkillCatalogService, companyId: string): Promise<number> {
+async function registryRevision(
+  catalog: SkillCatalogService,
+  companyId: string,
+  abortSignal?: AbortSignal,
+): Promise<number> {
+  abortSignal?.throwIfAborted();
   const revisionReader = catalog as SkillCatalogService & {
-    registryRevision?: (requestedCompanyId: string) => Promise<number>;
+    registryRevision?: (requestedCompanyId: string, signal?: AbortSignal) => Promise<number>;
   };
   return revisionReader.registryRevision
-    ? await revisionReader.registryRevision(companyId)
+    ? await revisionReader.registryRevision(companyId, abortSignal)
     : 1;
 }
 

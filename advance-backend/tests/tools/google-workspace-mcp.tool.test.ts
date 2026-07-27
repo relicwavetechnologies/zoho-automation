@@ -95,6 +95,39 @@ describe('Google Workspace MCP product tools', () => {
     assert.deepEqual(calls, [{ name: 'create_spreadsheet', input: { title: 'Quarterly plan' } }]);
   });
 
+  it('passes parent cancellation through connection resolution and MCP execution', async () => {
+    const controller = new AbortController();
+    let connectionSignal: AbortSignal | undefined;
+    let callSignal: AbortSignal | undefined;
+    const client: GoogleWorkspaceMcpPort = {
+      describeTool: async () => null,
+      callTool: async (_name, _input, abortSignal) => {
+        callSignal = abortSignal;
+        return { spreadsheetId: 'sheet-1' };
+      },
+    };
+    const sheets = createGoogleWorkspaceMcpTools({
+      getConnection: async (request) => {
+        connectionSignal = request.abortSignal;
+        return { status: 'resolved', connection: { client } };
+      },
+    }).find((tool) => tool.id === 'googleSheets')!;
+
+    const result = await sheets.execute({
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      op: 'call',
+      nativeTool: 'create_spreadsheet',
+      input: { title: 'Quarterly plan' },
+    }, {
+      ...makeCtx('googleSheets', ['create']),
+      abortSignal: controller.signal,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(connectionSignal, controller.signal);
+    assert.equal(callSignal, controller.signal);
+  });
+
   it('preflights the selected connection and native schema without executing the operation', async () => {
     const requests: any[] = [];
     let executions = 0;

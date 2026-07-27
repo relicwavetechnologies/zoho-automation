@@ -41,7 +41,7 @@ describe('scheduleTask orchestration tool', () => {
     });
 
     assert.match(output, /^skill_required:/);
-    assert.match(output, /call resolve_work/i);
+    assert.match(output, /recipe was not loaded/i);
     assert.equal(created, false);
   });
 });

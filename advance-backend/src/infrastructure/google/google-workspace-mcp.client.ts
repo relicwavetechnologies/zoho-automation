@@ -17,7 +17,11 @@ export class GoogleWorkspaceMcpClient implements GoogleWorkspaceMcpPort {
     private readonly schemaCatalog = new GoogleWorkspaceMcpSchemaCatalog(),
   ) {}
 
-  async describeTool(name: string): Promise<GoogleWorkspaceMcpToolDescription | null> {
+  async describeTool(
+    name: string,
+    abortSignal?: AbortSignal,
+  ): Promise<GoogleWorkspaceMcpToolDescription | null> {
+    abortSignal?.throwIfAborted();
     return this.schemaCatalog.describe(name, () => this.withClient(async (client) => {
       const result = await client.listTools();
       return result.tools.map((tool) => ({
@@ -25,10 +29,15 @@ export class GoogleWorkspaceMcpClient implements GoogleWorkspaceMcpPort {
         ...(tool.description ? { description: tool.description } : {}),
         inputSchema: tool.inputSchema,
       }));
-    }));
+    }, abortSignal));
   }
 
-  async callTool(name: string, input: Readonly<Record<string, unknown>>): Promise<unknown> {
+  async callTool(
+    name: string,
+    input: Readonly<Record<string, unknown>>,
+    abortSignal?: AbortSignal,
+  ): Promise<unknown> {
+    abortSignal?.throwIfAborted();
     assertSafeGoogleWorkspaceMcpInput(input);
     return this.withClient(async (client) => {
       // The bearer token is the complete identity boundary. Forward the
@@ -44,18 +53,29 @@ export class GoogleWorkspaceMcpClient implements GoogleWorkspaceMcpPort {
         throw new Error(mcpErrorMessage(toolResult.content ?? []));
       }
       return unwrapGoogleWorkspaceMcpResult(toolResult);
-    });
+    }, abortSignal);
   }
 
-  private async withClient<T>(operation: (client: Client) => Promise<T>): Promise<T> {
+  private async withClient<T>(
+    operation: (client: Client) => Promise<T>,
+    abortSignal?: AbortSignal,
+  ): Promise<T> {
+    abortSignal?.throwIfAborted();
     const client = new Client({ name: 'Divo Dex Google Workspace Gateway', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(this.mcpUrl), {
       requestInit: { headers: { Authorization: `Bearer ${this.accessToken}` } },
     });
+    // The MCP SDK replaces requestInit.signal with its own controller. Closing
+    // the transport is therefore the supported way to abort its active fetch.
+    const abortTransport = () => { void transport.close(); };
+    abortSignal?.addEventListener('abort', abortTransport, { once: true });
     try {
+      abortSignal?.throwIfAborted();
       await client.connect(transport as any);
+      abortSignal?.throwIfAborted();
       return await operation(client);
     } finally {
+      abortSignal?.removeEventListener('abort', abortTransport);
       await transport.terminateSession().catch(() => undefined);
       await client.close().catch(() => undefined);
     }

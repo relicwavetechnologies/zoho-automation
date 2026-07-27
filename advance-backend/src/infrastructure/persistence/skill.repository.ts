@@ -31,15 +31,20 @@ export interface SkillRepoPort {
     departmentId?: string;
     query: string;
     limit: number;
+    abortSignal?: AbortSignal;
   }): Promise<Result<SkillRow[], InfraError>>;
 
   findById(input: {
     companyId: string;
     departmentId?: string;
     skillId: string;
+    abortSignal?: AbortSignal;
   }): Promise<Result<SkillRow | null, InfraError>>;
 
-  registryRevision(companyId: string): Promise<Result<number, InfraError>>;
+  registryRevision(
+    companyId: string,
+    abortSignal?: AbortSignal,
+  ): Promise<Result<number, InfraError>>;
 }
 
 const SELECT = {
@@ -97,8 +102,10 @@ export class SkillRepository implements SkillRepoPort {
     departmentId?: string;
     query: string;
     limit: number;
+    abortSignal?: AbortSignal;
   }): Promise<Result<SkillRow[], InfraError>> {
     try {
+      input.abortSignal?.throwIfAborted();
       const { companyId, departmentId, query, limit } = input;
       const terms = searchTerms(query);
 
@@ -117,6 +124,7 @@ export class SkillRepository implements SkillRepoPort {
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         take:    limit,
       });
+      input.abortSignal?.throwIfAborted();
 
       return ok(rows.map(toSkillRow));
     } catch (e) {
@@ -128,8 +136,10 @@ export class SkillRepository implements SkillRepoPort {
     companyId: string;
     departmentId?: string;
     skillId: string;
+    abortSignal?: AbortSignal;
   }): Promise<Result<SkillRow | null, InfraError>> {
     try {
+      input.abortSignal?.throwIfAborted();
       const { companyId, departmentId, skillId } = input;
 
       const row = await this.db.skill.findFirst({
@@ -143,6 +153,7 @@ export class SkillRepository implements SkillRepoPort {
         },
         select: SELECT,
       });
+      input.abortSignal?.throwIfAborted();
 
       return ok(row ? toSkillRow(row) : null);
     } catch (e) {
@@ -150,12 +161,17 @@ export class SkillRepository implements SkillRepoPort {
     }
   }
 
-  async registryRevision(companyId: string): Promise<Result<number, InfraError>> {
+  async registryRevision(
+    companyId: string,
+    abortSignal?: AbortSignal,
+  ): Promise<Result<number, InfraError>> {
     try {
+      abortSignal?.throwIfAborted();
       const row = await this.db.skillRegistryRevision.findUnique({
         where: { companyId },
         select: { revision: true },
       });
+      abortSignal?.throwIfAborted();
       return ok(row?.revision ?? 1);
     } catch (e) {
       return err(wrapInfra('prisma', 'skill.registry_revision', e));
