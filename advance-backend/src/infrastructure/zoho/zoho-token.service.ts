@@ -295,6 +295,41 @@ export class ZohoTokenService {
     };
   }
 
+  /** Exchange a Zoho API Console Self Client grant. Self Client has no redirect URI. */
+  async exchangeSelfClientGrant(opts: {
+    clientId: string;
+    clientSecret: string;
+    grantToken: string;
+    accountsBaseUrl: string;
+  }): Promise<{ accessToken: string; refreshToken?: string; expiresIn: number; scopes: string[]; accountsBaseUrl: string; apiDomain?: string; tokenType?: string }> {
+    const accountsBaseUrl = opts.accountsBaseUrl.trim().replace(/\/$/, '');
+    const res = await fetch(`${accountsBaseUrl}/oauth/v2/token`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    new URLSearchParams({
+        grant_type:    'authorization_code',
+        client_id:     opts.clientId.trim(),
+        client_secret: opts.clientSecret.trim(),
+        code:          opts.grantToken.trim(),
+      }),
+    });
+
+    const payload = (await tryJson(res)) as ZohoTokenResponse;
+    if (!res.ok || !payload.access_token) {
+      throw new Error(payload.error_description ?? payload.error ?? 'Zoho Self Client grant exchange failed');
+    }
+
+    return {
+      accessToken: payload.access_token,
+      ...(payload.refresh_token ? { refreshToken: payload.refresh_token } : {}),
+      expiresIn: toNumber(payload.expires_in) ?? 3600,
+      scopes: (payload.scope ?? '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean),
+      accountsBaseUrl,
+      ...(payload.api_domain ? { apiDomain: payload.api_domain } : {}),
+      ...(payload.token_type ? { tokenType: payload.token_type } : {}),
+    };
+  }
+
   // ── Private ───────────────────────────────────────────────────────────────
 
   private resolveConnectionEndpoints(conn: DecryptedIntegrationConnection): {
@@ -348,8 +383,9 @@ export class ZohoTokenService {
       throw new Error(`Zoho connection has no refresh token for connection ${conn.id}`);
     }
 
-    const credentials = await this.resolveCredentials(conn.companyId);
     const meta = conn.tokenMetadata ?? {};
+    const credentials: ZohoClientCredentials = conn.zohoClientCredentials
+      ?? await this.resolveCredentials(conn.companyId);
     const accountsBaseUrl = typeof meta['accountsBaseUrl'] === 'string'
       ? meta['accountsBaseUrl']
       : credentials.accountsBaseUrl;

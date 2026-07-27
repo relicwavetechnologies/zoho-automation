@@ -1106,7 +1106,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     connectionId?: string,
     minimumAccess: 'read_only' | 'read_write' = 'read_only',
   ): Promise<{ accessToken: string; apiBaseUrl: string } | null> {
-    if (!zohoTokenService.isConfigured()) {
+    if ((!connectionId || !userId) && !zohoTokenService.isConfigured()) {
       logger.warn('zoho.token.not_configured', { companyId });
       return null;
     }

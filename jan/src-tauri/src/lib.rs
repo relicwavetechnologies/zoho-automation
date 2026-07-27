@@ -160,6 +160,7 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_serper_set_remaining_credits,
         core::divo::commands::divo_serper_disconnect_connection,
         core::divo::commands::divo_zoho_authorize_url,
+        core::divo::commands::divo_zoho_self_client_connect,
         core::divo::commands::divo_zoho_status,
         core::divo::commands::divo_zoho_unlink,
         core::divo::commands::divo_zoho_manage_access,

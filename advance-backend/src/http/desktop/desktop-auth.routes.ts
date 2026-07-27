@@ -84,6 +84,28 @@ const DEFAULT_ZOHO_SCOPES = [
   'ZohoBooks.invoices.all',
   'ZohoBooks.expenses.all',
 ];
+const ZOHO_SELF_CLIENT_READ_SCOPES = [
+  'ZohoCRM.modules.READ',
+  'ZohoCRM.settings.READ',
+  'ZohoBooks.fullaccess.READ',
+];
+const ZOHO_DATA_CENTRES = {
+  'https://accounts.zoho.com':     'https://www.zohoapis.com',
+  'https://accounts.zoho.eu':      'https://www.zohoapis.eu',
+  'https://accounts.zoho.in':      'https://www.zohoapis.in',
+  'https://accounts.zoho.com.au':  'https://www.zohoapis.com.au',
+  'https://accounts.zoho.jp':      'https://www.zohoapis.jp',
+  'https://accounts.zohocloud.ca': 'https://www.zohoapis.ca',
+  'https://accounts.zoho.sa':      'https://www.zohoapis.sa',
+  'https://accounts.zoho.uk':      'https://www.zohoapis.uk',
+} as const;
+const zohoSelfClientSchema = z.object({
+  label:           z.string().trim().max(120).optional(),
+  clientId:        z.string().trim().min(8).max(255),
+  clientSecret:    z.string().trim().min(8).max(512),
+  grantToken:      z.string().trim().min(8).max(4096),
+  accountsBaseUrl: z.enum(Object.keys(ZOHO_DATA_CENTRES) as [keyof typeof ZOHO_DATA_CENTRES, ...(keyof typeof ZOHO_DATA_CENTRES)[]]),
+});
 
 const runtimeContextQuerySchema = z.object({
   departmentId: z.string().uuid().optional(),
@@ -366,7 +388,15 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         ],
         company: company ? { id: company.id, name: company.name } : null,
       },
-      accessLevels: [
+      accessLevels: provider === 'zoho'
+        && connection.scopes.length > 0
+        && connection.scopes.every(scope => /\.READ$/i.test(scope))
+        ? [{
+            value: 'read_only',
+            label: 'Read-only',
+            description: 'Can read Zoho CRM and Books data allowed by Zoho scopes.',
+          }]
+        : [
         {
           value: 'read_only',
           label: 'Read-only',
@@ -2316,6 +2346,105 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     }
   });
 
+  router.post('/zoho/self-client', memberAuth, async (req: Request, res: Response) => {
+    try {
+      const userId    = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const role      = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
+      if (!COMPANY_ADMIN_ROLES.has(role)) {
+        res.status(403).json({ success: false, message: 'Only company admins can connect Zoho for the company' });
+        return;
+      }
+
+      const parsed = zohoSelfClientSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? 'Invalid Self Client details' });
+        return;
+      }
+
+      let tokens;
+      try {
+        tokens = await deps.zohoTokenService.exchangeSelfClientGrant(parsed.data);
+      } catch (e) {
+        res.status(400).json({ success: false, message: `Zoho rejected the Self Client grant: ${String(e)}` });
+        return;
+      }
+      if (!tokens.refreshToken) {
+        res.status(400).json({
+          success: false,
+          message: 'Zoho did not return a refresh token. Generate a new Self Client grant and try again.',
+        });
+        return;
+      }
+      if (
+        tokens.scopes.length > 0
+        && (
+          tokens.scopes.length !== ZOHO_SELF_CLIENT_READ_SCOPES.length
+          || tokens.scopes.some(scope => !ZOHO_SELF_CLIENT_READ_SCOPES.includes(scope))
+        )
+      ) {
+        res.status(400).json({
+          success: false,
+          message: `Generate the Self Client grant with exactly: ${ZOHO_SELF_CLIENT_READ_SCOPES.join(', ')}`,
+        });
+        return;
+      }
+
+      const apiBaseUrl = tokens.apiDomain
+        ?? ZOHO_DATA_CENTRES[parsed.data.accountsBaseUrl];
+      const accountSummary = await fetchZohoAccountSummary(tokens.accessToken, apiBaseUrl);
+      if (!accountSummary?.externalAccountId) {
+        res.status(400).json({
+          success: false,
+          message: 'Zoho connected, but Divo could not verify a Books organization. Check the data centre and read-only scopes, then generate a new grant.',
+        });
+        return;
+      }
+      const expiresAt = new Date(Date.now() + tokens.expiresIn * 1000);
+      const connectionResult = await deps.connectionRepo.upsertZohoConnection({
+        companyId,
+        ownerType: 'company',
+        createdBy: userId,
+        label: parsed.data.label || (accountSummary?.accountName ? `${accountSummary.accountName} Zoho` : 'Zoho Self Client'),
+        ...(accountSummary.accountName ? { accountName: accountSummary.accountName } : {}),
+        externalAccountId: `self-client:${parsed.data.clientId}:${accountSummary.externalAccountId}`,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        ...(tokens.tokenType ? { tokenType: tokens.tokenType } : {}),
+        accessTokenExpiresAt: expiresAt,
+        scopes: ZOHO_SELF_CLIENT_READ_SCOPES,
+        apiDomain: apiBaseUrl,
+        accountsBaseUrl: parsed.data.accountsBaseUrl,
+        apiBaseUrl,
+        selfClientOAuth: {
+          clientId:     parsed.data.clientId,
+          clientSecret: parsed.data.clientSecret,
+        },
+        environment: 'prod',
+        initialAccess: 'read_only',
+      });
+      if (!connectionResult.ok) throw new Error(connectionResult.error.message);
+
+      log.info('zoho.self_client.connected', {
+        userId,
+        companyId,
+        connectionId: connectionResult.value.id,
+      });
+      res.json({
+        success: true,
+        data: {
+          connectionId: connectionResult.value.id,
+          label: connectionResult.value.label,
+          access: 'read_only',
+          scopes: ZOHO_SELF_CLIENT_READ_SCOPES,
+        },
+      });
+    } catch (e) {
+      log.error('zoho.self_client.error', { error: String(e) });
+      res.status(500).json({ success: false, message: 'Could not save the Zoho Self Client connection' });
+    }
+  });
+
   router.get('/zoho/callback', async (req: Request, res: Response) => {
     try {
       const { code, state, error: oauthError } = req.query;
@@ -2509,6 +2638,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
       if ('forbidden' in manageable) {
         res.status(403).json({ success: false, message: 'You do not have admin access to this Zoho connection' });
+        return;
+      }
+      if (
+        access !== 'read_only'
+        && manageable.connection.scopes.length > 0
+        && manageable.connection.scopes.every(scope => /\.READ$/i.test(scope))
+      ) {
+        res.status(400).json({ success: false, message: 'This Zoho connection is read-only' });
         return;
       }
 

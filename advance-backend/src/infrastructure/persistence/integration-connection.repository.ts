@@ -50,6 +50,12 @@ export interface DecryptedIntegrationConnection {
   readonly accessTokenExpiresAt?: Date;
   readonly refreshTokenExpiresAt?: Date;
   readonly tokenMetadata?: Record<string, unknown>;
+  /** Decrypted only in backend memory for this Zoho connection's refresh call. */
+  readonly zohoClientCredentials?: {
+    readonly clientId: string;
+    readonly clientSecret: string;
+    readonly accountsBaseUrl: string;
+  };
   readonly connectedAt: Date;
   readonly lastUsedAt?: Date;
   readonly revokedAt?: Date;
@@ -254,6 +260,33 @@ export class IntegrationConnectionRepository {
     revokedAt?: Date | null;
     createdBy?: string | null;
   }): DecryptedIntegrationConnection {
+    const tokenMetadata = record.tokenMetadata
+      && typeof record.tokenMetadata === 'object'
+      && !Array.isArray(record.tokenMetadata)
+      ? record.tokenMetadata as Record<string, unknown>
+      : undefined;
+    const storedZohoClient = tokenMetadata?.['zohoClient'];
+    let zohoClientCredentials: DecryptedIntegrationConnection['zohoClientCredentials'];
+    if (
+      record.provider === ZOHO_PROVIDER
+      && storedZohoClient
+      && typeof storedZohoClient === 'object'
+      && !Array.isArray(storedZohoClient)
+    ) {
+      const client = storedZohoClient as Record<string, unknown>;
+      if (
+        typeof client['clientId'] === 'string'
+        && typeof client['clientSecretEncrypted'] === 'string'
+        && typeof client['accountsBaseUrl'] === 'string'
+      ) {
+        zohoClientCredentials = {
+          clientId: client['clientId'],
+          clientSecret: decryptToken(client['clientSecretEncrypted'], this.key),
+          accountsBaseUrl: client['accountsBaseUrl'],
+        };
+      }
+    }
+
     return {
       id:          record.id,
       companyId:   record.companyId,
@@ -271,7 +304,8 @@ export class IntegrationConnectionRepository {
       ...(record.tokenType ? { tokenType: record.tokenType } : {}),
       ...(record.accessTokenExpiresAt ? { accessTokenExpiresAt: record.accessTokenExpiresAt } : {}),
       ...(record.refreshTokenExpiresAt ? { refreshTokenExpiresAt: record.refreshTokenExpiresAt } : {}),
-      ...(record.tokenMetadata ? { tokenMetadata: record.tokenMetadata as Record<string, unknown> } : {}),
+      ...(tokenMetadata ? { tokenMetadata } : {}),
+      ...(zohoClientCredentials ? { zohoClientCredentials } : {}),
       connectedAt: record.connectedAt,
       ...(record.lastUsedAt ? { lastUsedAt: record.lastUsedAt } : {}),
       ...(record.revokedAt ? { revokedAt: record.revokedAt } : {}),
@@ -374,6 +408,10 @@ export class IntegrationConnectionRepository {
     readonly apiDomain?: string;
     readonly accountsBaseUrl?: string;
     readonly apiBaseUrl?: string;
+    readonly selfClientOAuth?: {
+      readonly clientId: string;
+      readonly clientSecret: string;
+    };
     readonly environment?: string;
     readonly initialAccess?: IntegrationGrantAccess;
   }): Promise<Result<DecryptedIntegrationConnection, InfraError>> {
@@ -397,6 +435,13 @@ export class IntegrationConnectionRepository {
         ...(input.apiDomain ? { apiDomain: input.apiDomain } : {}),
         ...(input.accountsBaseUrl ? { accountsBaseUrl: input.accountsBaseUrl } : {}),
         ...(input.apiBaseUrl ? { apiBaseUrl: input.apiBaseUrl } : {}),
+        ...(input.selfClientOAuth ? {
+          zohoClient: {
+            clientId: input.selfClientOAuth.clientId.trim(),
+            clientSecretEncrypted: encryptToken(input.selfClientOAuth.clientSecret.trim(), this.key).cipherText,
+            accountsBaseUrl: input.accountsBaseUrl,
+          },
+        } : {}),
         environment: input.environment ?? 'prod',
       };
 

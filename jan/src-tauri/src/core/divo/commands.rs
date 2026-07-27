@@ -1875,6 +1875,32 @@ pub async fn divo_zoho_authorize_url<R: Runtime>(app: AppHandle<R>) -> Result<St
     Ok(authorize_url.to_string())
 }
 
+/// Exchange and save a read-only Zoho API Console Self Client grant.
+#[tauri::command]
+pub async fn divo_zoho_self_client_connect<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+    client_id: String,
+    client_secret: String,
+    grant_token: String,
+    accounts_base_url: String,
+) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::POST,
+        "/zoho/self-client",
+        Some(json!({
+            "label": label,
+            "clientId": client_id,
+            "clientSecret": client_secret,
+            "grantToken": grant_token,
+            "accountsBaseUrl": accounts_base_url,
+        })),
+        "Zoho Self Client connection",
+    )
+    .await
+}
+
 /// Read Zoho connection status for the stored Divo member session.
 #[tauri::command]
 pub async fn divo_zoho_status<R: Runtime>(app: AppHandle<R>) -> Result<Value, String> {

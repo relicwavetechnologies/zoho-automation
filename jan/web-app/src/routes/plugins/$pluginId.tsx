@@ -320,6 +320,17 @@ type ZohoStatusResponse = {
   message?: string
 }
 
+const zohoDataCentres = [
+  { label: 'India', value: 'https://accounts.zoho.in' },
+  { label: 'United States', value: 'https://accounts.zoho.com' },
+  { label: 'Europe', value: 'https://accounts.zoho.eu' },
+  { label: 'Australia', value: 'https://accounts.zoho.com.au' },
+  { label: 'Japan', value: 'https://accounts.zoho.jp' },
+  { label: 'Canada', value: 'https://accounts.zohocloud.ca' },
+  { label: 'Saudi Arabia', value: 'https://accounts.zoho.sa' },
+  { label: 'United Kingdom', value: 'https://accounts.zoho.uk' },
+]
+
 type DivoSessionStatus = {
   configured: boolean
   backendUrl?: string
@@ -1021,6 +1032,13 @@ function ZohoPluginDetail({
   const [manageConnection, setManageConnection] = useState<DivoConnection | null>(null)
   const [disconnectConnection, setDisconnectConnection] = useState<DivoConnection | null>(null)
   const [connectionActionId, setConnectionActionId] = useState<string | null>(null)
+  const [connectDialogOpen, setConnectDialogOpen] = useState(false)
+  const [connectMode, setConnectMode] = useState<'choose' | 'self_client'>('choose')
+  const [selfClientLabel, setSelfClientLabel] = useState('')
+  const [selfClientId, setSelfClientId] = useState('')
+  const [selfClientSecret, setSelfClientSecret] = useState('')
+  const [selfClientGrant, setSelfClientGrant] = useState('')
+  const [selfClientAccountsUrl, setSelfClientAccountsUrl] = useState('https://accounts.zoho.in')
 
   const loadStatus = useCallback(async () => {
     setIsLoading(true)
@@ -1058,19 +1076,50 @@ function ZohoPluginDetail({
     void loadStatus()
   }, [loadStatus])
 
-  const connectZoho = async (connection?: DivoConnection) => {
+  const openZohoConnect = (connection?: DivoConnection) => {
     if (divoSession.status !== 'connected') {
       onReconnectDivo()
       return
     }
+    setConnectMode('choose')
+    setSelfClientLabel(connection?.label ?? '')
+    setConnectDialogOpen(true)
+  }
+
+  const connectZohoOAuth = async () => {
     setIsBusy(true)
     try {
       const authorizeUrl = await invoke<string>('divo_zoho_authorize_url')
       await openExternalUrl(authorizeUrl)
-      toast.success('Zoho sign-in opened', connection ? {
-        description: `Reconnect ${connection.accountEmail}.`,
-      } : undefined)
+      setConnectDialogOpen(false)
+      toast.success('Zoho sign-in opened')
       setTimeout(() => void loadStatus(), 1500)
+    } catch (connectError) {
+      toast.error('Zoho connection failed', { description: String(connectError) })
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  const connectZohoSelfClient = async () => {
+    setIsBusy(true)
+    try {
+      await invoke('divo_zoho_self_client_connect', {
+        label: selfClientLabel.trim(),
+        clientId: selfClientId.trim(),
+        client_id: selfClientId.trim(),
+        clientSecret: selfClientSecret.trim(),
+        client_secret: selfClientSecret.trim(),
+        grantToken: selfClientGrant.trim(),
+        grant_token: selfClientGrant.trim(),
+        accountsBaseUrl: selfClientAccountsUrl,
+        accounts_base_url: selfClientAccountsUrl,
+      })
+      setConnectDialogOpen(false)
+      setSelfClientSecret('')
+      setSelfClientGrant('')
+      toast.success('Read-only Zoho connection added')
+      await loadStatus()
     } catch (connectError) {
       toast.error('Zoho connection failed', { description: String(connectError) })
     } finally {
@@ -1111,7 +1160,6 @@ function ZohoPluginDetail({
   }
 
   const connections = (status?.connections ?? []).map(toZohoConnectionModel)
-  const adminConnections = connections.filter((connection) => connection.access === 'admin')
   const legacyConnection = status?.legacyConnection ?? null
   const connected = Boolean(status?.connected)
   const canManage = Boolean(status?.canManage)
@@ -1136,11 +1184,11 @@ function ZohoPluginDetail({
                 </Button>
               ) : canManage ? (
                 <>
-                  {adminConnections.length ? (
+                  {connections.length ? (
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setManageConnection(adminConnections[0] ?? null)}
+                      onClick={() => setManageConnection(connections[0] ?? null)}
                     >
                       Manage access
                     </Button>
@@ -1150,10 +1198,9 @@ function ZohoPluginDetail({
                       Disconnect all
                     </Button>
                   ) : null}
-                  <Button size="sm" onClick={() => void connectZoho()} disabled={isBusy}>
+                  <Button size="sm" onClick={() => openZohoConnect()} disabled={isBusy}>
                     <KeyRound className="size-4" />
                     Add Zoho
-                    <ExternalLink className="size-4" />
                   </Button>
                 </>
               ) : null}
@@ -1209,8 +1256,9 @@ function ZohoPluginDetail({
                   key={connection.id}
                   connection={connection}
                   onManage={() => setManageConnection(connection)}
-                  onReconnect={() => void connectZoho(connection)}
+                  onReconnect={() => openZohoConnect(connection)}
                   onDisconnect={() => setDisconnectConnection(connection)}
+                  canManage={canManage}
                   busy={connectionActionId === connection.id}
                 />
               ))
@@ -1229,10 +1277,9 @@ function ZohoPluginDetail({
                     </p>
                   </div>
                   {canManage ? (
-                    <Button size="sm" onClick={() => void connectZoho()} disabled={isBusy}>
+                    <Button size="sm" onClick={() => openZohoConnect()} disabled={isBusy}>
                       <KeyRound className="size-4" />
                       Reconnect Zoho
-                      <ExternalLink className="size-4" />
                     </Button>
                   ) : null}
                 </div>
@@ -1262,10 +1309,9 @@ function ZohoPluginDetail({
                 }
                 action={
                   canManage ? (
-                    <Button size="sm" onClick={() => void connectZoho()} disabled={isBusy}>
+                    <Button size="sm" onClick={() => openZohoConnect()} disabled={isBusy}>
                       <KeyRound className="size-4" />
                       Connect Zoho
-                      <ExternalLink className="size-4" />
                     </Button>
                   ) : undefined
                 }
@@ -1288,6 +1334,108 @@ function ZohoPluginDetail({
 	        </section>
 	        {accessContent}
 	      </main>
+
+      <Dialog
+        open={connectDialogOpen}
+        onOpenChange={(open) => {
+          setConnectDialogOpen(open)
+          if (!open) {
+            setConnectMode('choose')
+            setSelfClientSecret('')
+            setSelfClientGrant('')
+          }
+        }}
+      >
+        <DialogContent className="max-h-[calc(100svh-64px)] overflow-y-auto sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Add Zoho connection</DialogTitle>
+            <DialogDescription>
+              Use normal Zoho sign-in, or connect a read-only Self Client grant supplied by your Zoho admin.
+            </DialogDescription>
+          </DialogHeader>
+
+          {connectMode === 'choose' ? (
+            <div className="grid gap-3 py-2">
+              <div className="rounded-lg border border-border/70 bg-card/30 p-4">
+                <h3 className="text-sm font-medium">Zoho OAuth</h3>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Open Zoho in your browser and approve the regular Divo connection.
+                </p>
+                <Button className="mt-3" size="sm" onClick={() => void connectZohoOAuth()} disabled={isBusy}>
+                  <ExternalLink className="size-4" />
+                  Continue with Zoho
+                </Button>
+              </div>
+              <div className="rounded-lg border border-border/70 bg-card/30 p-4">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-medium">Self Client credentials</h3>
+                  <Badge tone="amber">Divo read-only</Badge>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Paste a Client ID, Client Secret, and fresh short-lived grant token. Divo blocks write tools and keeps the connection alive with the encrypted refresh token.
+                </p>
+                <Button className="mt-3" variant="outline" size="sm" onClick={() => setConnectMode('self_client')}>
+                  Enter credentials
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 py-2">
+              <label className="grid gap-1.5 text-sm font-medium">
+                Connection name <span className="text-xs font-normal text-muted-foreground">(optional)</span>
+                <input className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none" value={selfClientLabel} maxLength={120} onChange={(event) => setSelfClientLabel(event.target.value)} placeholder="e.g. Finance read-only" />
+              </label>
+              <label className="grid gap-1.5 text-sm font-medium">
+                Data centre
+                <select className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none" value={selfClientAccountsUrl} onChange={(event) => setSelfClientAccountsUrl(event.target.value)}>
+                  {zohoDataCentres.map(dataCentre => <option key={dataCentre.value} value={dataCentre.value}>{dataCentre.label}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1.5 text-sm font-medium">
+                Client ID
+                <input className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none" value={selfClientId} onChange={(event) => setSelfClientId(event.target.value)} autoComplete="off" />
+              </label>
+              <label className="grid gap-1.5 text-sm font-medium">
+                Client Secret
+                <input className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none" type="password" value={selfClientSecret} onChange={(event) => setSelfClientSecret(event.target.value)} autoComplete="new-password" />
+              </label>
+              <label className="grid gap-1.5 text-sm font-medium">
+                Short-lived grant token
+                <input className="h-9 rounded-md border border-border bg-background px-3 text-sm font-normal outline-none" type="password" value={selfClientGrant} onChange={(event) => setSelfClientGrant(event.target.value)} autoComplete="off" />
+              </label>
+              <div className="rounded-lg border border-border/70 bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+                Generate the grant with exactly: ZohoCRM.modules.READ, ZohoCRM.settings.READ, ZohoBooks.fullaccess.READ. Submit it before its short expiry.
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            {connectMode === 'self_client' ? (
+              <Button variant="outline" onClick={() => setConnectMode('choose')} disabled={isBusy}>Back</Button>
+            ) : null}
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConnectDialogOpen(false)
+                setSelfClientSecret('')
+                setSelfClientGrant('')
+              }}
+              disabled={isBusy}
+            >
+              Cancel
+            </Button>
+            {connectMode === 'self_client' ? (
+              <Button
+                onClick={() => void connectZohoSelfClient()}
+                disabled={isBusy || !selfClientId.trim() || !selfClientSecret.trim() || !selfClientGrant.trim()}
+              >
+                <KeyRound className="size-4" />
+                {isBusy ? 'Connecting...' : 'Connect read-only'}
+              </Button>
+            ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConnectionManagementSheet
 	        provider="zoho"
@@ -1342,12 +1490,14 @@ function ConnectionCard({
   onManage,
   onReconnect,
   onDisconnect,
+  canManage = false,
   busy = false,
 }: {
   connection: DivoConnection
   onManage: () => void
   onReconnect: () => void
   onDisconnect: () => void
+  canManage?: boolean
   busy?: boolean
 }) {
   const isShared = connection.kind === 'company_shared'
@@ -1376,7 +1526,7 @@ function ConnectionCard({
         </div>
 
         <div className="flex items-center gap-2">
-          {connection.access === 'admin' ? (
+          {connection.access === 'admin' || canManage ? (
             <>
             <Button variant="outline" size="sm" onClick={onReconnect} disabled={busy} aria-label={`Reconnect ${connection.label}`}>
               <RefreshCw className="size-4" />

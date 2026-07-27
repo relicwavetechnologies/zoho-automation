@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 
 import { createDesktopAuthRoutes } from '../../src/http/desktop/desktop-auth.routes.ts';
 import { LARK_USER_OAUTH_SCOPES, LarkOAuthService } from '../../src/infrastructure/lark/lark-oauth.service.ts';
+import { ZohoTokenService } from '../../src/infrastructure/zoho/zoho-token.service.ts';
 
 const noopLogger = {
   info:  () => {},
@@ -302,6 +303,209 @@ describe('desktop auth routes', () => {
       assert.equal(callback.status, 200);
       assert.equal(storedConnection?.['accountsBaseUrl'], 'https://accounts.zoho.in');
       assert.equal(storedConnection?.['apiBaseUrl'], 'https://www.zohoapis.in');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('stores a Self Client grant as connection-scoped read-only Zoho credentials', async () => {
+    let exchanged: Record<string, unknown> | undefined;
+    let storedConnection: Record<string, unknown> | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      organizations: [{ organization_id: 'org-1', name: 'Finance India', is_default_org: true }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    try {
+      const router = createDesktopAuthRoutes(makeDeps({
+        env: {
+          ZOHO_API_BASE_URL: 'https://www.zohoapis.com',
+          ZOHO_ACCOUNTS_BASE_URL: 'https://accounts.zoho.com',
+        },
+        zohoTokenService: {
+          exchangeSelfClientGrant: async (input: Record<string, unknown>) => {
+            exchanged = input;
+            return {
+              accessToken: 'access-1',
+              refreshToken: 'refresh-1',
+              expiresIn: 3600,
+              scopes: [],
+              accountsBaseUrl: 'https://accounts.zoho.in',
+              apiDomain: 'https://www.zohoapis.in',
+              tokenType: 'Bearer',
+            };
+          },
+        },
+        connectionRepo: {
+          listAccessibleZohoConnections: async () => ({ ok: true, value: [] }),
+          upsertZohoConnection: async (input: Record<string, unknown>) => {
+            storedConnection = input;
+            return { ok: true, value: { id: 'connection-1', label: input['label'] } };
+          },
+        },
+      }));
+
+      const result = await callRoute(router, 'POST', '/zoho/self-client', {
+        body: {
+          label: 'Finance read-only',
+          clientId: 'client-id-1234',
+          clientSecret: 'client-secret-1234',
+          grantToken: 'short-lived-grant-1234',
+          accountsBaseUrl: 'https://accounts.zoho.in',
+        },
+        locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+      });
+
+      assert.equal(result.status, 200);
+      assert.equal(exchanged?.['accountsBaseUrl'], 'https://accounts.zoho.in');
+      assert.equal(storedConnection?.['ownerType'], 'company');
+      assert.equal(storedConnection?.['initialAccess'], 'read_only');
+      assert.deepEqual(storedConnection?.['selfClientOAuth'], {
+        clientId: 'client-id-1234',
+        clientSecret: 'client-secret-1234',
+      });
+      assert.deepEqual(storedConnection?.['scopes'], [
+        'ZohoCRM.modules.READ',
+        'ZohoCRM.settings.READ',
+        'ZohoBooks.fullaccess.READ',
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects a Self Client exchange that explicitly reports write-capable scopes', async () => {
+    let stored = false;
+    const router = createDesktopAuthRoutes(makeDeps({
+      env: {
+        ZOHO_API_BASE_URL: 'https://www.zohoapis.in',
+        ZOHO_ACCOUNTS_BASE_URL: 'https://accounts.zoho.in',
+      },
+      zohoTokenService: {
+        exchangeSelfClientGrant: async () => ({
+          accessToken: 'access-1',
+          refreshToken: 'refresh-1',
+          expiresIn: 3600,
+          scopes: ['ZohoCRM.modules.ALL'],
+          accountsBaseUrl: 'https://accounts.zoho.in',
+          apiDomain: 'https://www.zohoapis.in',
+        }),
+      },
+      connectionRepo: {
+        upsertZohoConnection: async () => {
+          stored = true;
+          return { ok: true, value: { id: 'connection-1', label: 'Zoho' } };
+        },
+      },
+    }));
+
+    const result = await callRoute(router, 'POST', '/zoho/self-client', {
+      body: {
+        clientId: 'client-id-1234',
+        clientSecret: 'client-secret-1234',
+        grantToken: 'short-lived-grant-1234',
+        accountsBaseUrl: 'https://accounts.zoho.in',
+      },
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+    });
+
+    assert.equal(result.status, 400);
+    assert.equal(stored, false);
+  });
+
+  it('isolates refresh credentials between OAuth and Self Client Zoho connections', async () => {
+    const requests: Array<{ url: string; clientId: string; refreshToken: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const body = new URLSearchParams(String(init?.body ?? ''));
+      requests.push({
+        url: String(input),
+        clientId: body.get('client_id') ?? '',
+        refreshToken: body.get('refresh_token') ?? '',
+      });
+      return new Response(JSON.stringify({ access_token: `access-${requests.length}`, expires_in: 3600 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+
+    try {
+      const connectionRepo = {
+        findOAuthCredentials: async () => ({
+          ok: true,
+          value: {
+            clientId: 'oauth-client',
+            clientSecret: 'oauth-secret',
+            redirectUri: 'https://backend.example.com/callback',
+            accountsBaseUrl: 'https://accounts.zoho.com',
+            apiBaseUrl: 'https://www.zohoapis.com',
+          },
+        }),
+      } as any;
+      const integrationRepo = {
+        findAccessibleZohoConnection: async ({ connectionId }: { connectionId: string }) => ({
+          ok: true,
+          value: {
+            id: connectionId,
+            companyId: 'company-1',
+            provider: 'zoho',
+            ownerType: 'company',
+            label: connectionId,
+            status: 'connected',
+            scopes: ['ZohoBooks.fullaccess.READ'],
+            refreshToken: connectionId === 'manual-1' ? 'manual-refresh' : 'oauth-refresh',
+            accessTokenExpiresAt: new Date(0),
+            tokenMetadata: connectionId === 'manual-1'
+              ? { accountsBaseUrl: 'https://accounts.zoho.in' }
+              : { accountsBaseUrl: 'https://accounts.zoho.com' },
+            ...(connectionId === 'manual-1' ? {
+              zohoClientCredentials: {
+                clientId: 'manual-client',
+                clientSecret: 'manual-secret',
+                accountsBaseUrl: 'https://accounts.zoho.in',
+              },
+            } : {}),
+            connectedAt: new Date(),
+          },
+        }),
+        updateZohoTokens: async () => ({ ok: true, value: undefined }),
+      } as any;
+      const cache = {
+        get: async () => ({ ok: true, value: null }),
+        set: async () => ({ ok: true, value: undefined }),
+      } as any;
+      const service = new ZohoTokenService(connectionRepo, cache, {
+        ZOHO_CLIENT_ID: '',
+        ZOHO_CLIENT_SECRET: '',
+        ZOHO_ACCOUNTS_BASE_URL: 'https://accounts.zoho.com',
+        ZOHO_API_BASE_URL: 'https://www.zohoapis.com',
+      } as any, noopLogger, integrationRepo);
+
+      await service.getValidConnectionAuth({
+        companyId: 'company-1',
+        userId: 'user-1',
+        connectionId: 'manual-1',
+        minimumAccess: 'read_only',
+      });
+      await service.getValidConnectionAuth({
+        companyId: 'company-1',
+        userId: 'user-1',
+        connectionId: 'oauth-1',
+        minimumAccess: 'read_only',
+      });
+
+      assert.deepEqual(requests, [
+        {
+          url: 'https://accounts.zoho.in/oauth/v2/token',
+          clientId: 'manual-client',
+          refreshToken: 'manual-refresh',
+        },
+        {
+          url: 'https://accounts.zoho.com/oauth/v2/token',
+          clientId: 'oauth-client',
+          refreshToken: 'oauth-refresh',
+        },
+      ]);
     } finally {
       globalThis.fetch = originalFetch;
     }
