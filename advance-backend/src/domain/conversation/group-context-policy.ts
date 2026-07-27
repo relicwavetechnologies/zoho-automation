@@ -16,7 +16,6 @@ export const GROUP_CONTEXT_POLICY = {
   TOKEN_BUDGET: 20_000,
   MIN_MESSAGES: 40,
   MAX_MESSAGES: 200,
-  SUMMARY_REFRESH_DELTA: 6,
   MIN_MESSAGES_FOR_LLM_SUMMARY: 16,
 
   // ─── Multimodal image budget ───────────────────────────────────────────────

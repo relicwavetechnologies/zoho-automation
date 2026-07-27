@@ -44,18 +44,15 @@ import { userFacingMessageOf } from '../../../shared/user-facing-error';
 
 const MEM0_SEARCH_TIMEOUT_MS = 500;
 
-function withoutCurrentIncomingMessage(window: GroupChatWindow, incomingText: string): GroupChatWindow {
-  const last = window.recentMessages.at(-1);
-  if (!last || last.role !== 'user' || last.content.trim() !== incomingText.trim()) {
-    return window;
-  }
-  if ((last.attachments?.length ?? 0) > 0 || (last.attachedFiles?.length ?? 0) > 0) {
+function withoutCurrentIncomingMessage(window: GroupChatWindow, incomingMessageId: string): GroupChatWindow {
+  const recentMessages = window.recentMessages.filter(message => message.id !== incomingMessageId);
+  if (recentMessages.length === window.recentMessages.length) {
     return window;
   }
 
   return {
     ...window,
-    recentMessages: window.recentMessages.slice(0, -1),
+    recentMessages,
   };
 }
 
@@ -408,26 +405,27 @@ export class OrchestrationEngine {
       && groupContextResult?.ok
       && groupContextResult.value.recentMessages.length > 0;
 
-    const groupContextWindow = isGroupWithContext
-      ? withoutCurrentIncomingMessage(groupContextResult!.value, incoming.text)
+    const historicalGroupWindow = isGroupWithContext
+      ? withoutCurrentIncomingMessage(groupContextResult!.value, String(incoming.messageId))
       : undefined;
-    const currentMsg = { senderName: 'User', content: incoming.text };
-
+    const groupContextWindow = historicalGroupWindow
+      && (historicalGroupWindow.recentMessages.length > 0 || historicalGroupWindow.summary)
+      ? historicalGroupWindow
+      : undefined;
     const groupContext = groupContextWindow
-      ? formatGroupContextForPrompt(groupContextWindow, currentMsg)
+      ? formatGroupContextForPrompt(groupContextWindow)
       : undefined;
 
     const multimodalCtx = groupContextWindow
-      ? formatGroupContextMultimodal(groupContextWindow, currentMsg)
+      ? formatGroupContextMultimodal(groupContextWindow)
       : undefined;
 
     debugGroupContext(groupContext);
 
-    // For group chats, limit conversation history to avoid "above" ambiguity.
-    // The unified group transcript (with the current message merged in) is the
-    // source of truth — only keep the last 2 Divo exchanges for style context.
-    const supervisorHistory = isGroupWithContext
-      ? { turns: history.turns.slice(-2), truncated: false, tokenEstimate: 0 }
+    // The room transcript is the single source of historical group context.
+    // Previous turns must not be reintroduced as actionable user requests.
+    const supervisorHistory = incoming.chatType === 'group'
+      ? { turns: [], truncated: false, tokenEstimate: 0 }
       : history;
 
     // ── 5. Run supervisor ─────────────────────────────────────────────────

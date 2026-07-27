@@ -178,6 +178,86 @@ describe('Lark parent message references', () => {
     assert.match(buildParentContextPrefix(result), /unsupported message type \(system\)/);
   });
 
+  it('reads visible text from a quoted Card 1.0 without exposing action state', async () => {
+    const result = await fetchWith({
+      code: 0,
+      data: {
+        items: [{
+          chat_id: 'oc_expected',
+          msg_type: 'interactive',
+          sender: { id: 'ou_alice' },
+          body: {
+            content: JSON.stringify({
+              header: { title: { tag: 'plain_text', content: 'Invoice approval' } },
+              elements: [{
+                tag: 'action',
+                actions: [{
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: 'Approve' },
+                  value: { invoiceId: 'secret-invoice-id', token: 'secret-token' },
+                  url: 'https://private.example/approve',
+                }],
+              }],
+            }),
+          },
+        }],
+      },
+    });
+
+    const prefix = buildParentContextPrefix(result);
+    assert.match(prefix, /Invoice approval/);
+    assert.match(prefix, /Approve/);
+    assert.doesNotMatch(prefix, /secret-invoice-id|secret-token|private\.example/);
+  });
+
+  it('reads visible text from a quoted Card 2.0', async () => {
+    const result = await fetchWith({
+      code: 0,
+      data: {
+        items: [{
+          chat_id: 'oc_expected',
+          msg_type: 'interactive',
+          sender: { id: 'ou_alice' },
+          body: {
+            content: JSON.stringify({
+              schema: '2.0',
+              header: { title: { tag: 'plain_text', content: 'Monthly invoices' } },
+              body: {
+                elements: [
+                  { tag: 'markdown', content: 'Six invoices are ready.' },
+                  { tag: 'button', text: { tag: 'plain_text', content: 'Open report' }, behaviors: [{ type: 'open_url', default_url: 'https://private.example/report' }] },
+                ],
+              },
+            }),
+          },
+        }],
+      },
+    });
+
+    const prefix = buildParentContextPrefix(result);
+    assert.match(prefix, /Monthly invoices/);
+    assert.match(prefix, /Six invoices are ready/);
+    assert.match(prefix, /Open report/);
+    assert.doesNotMatch(prefix, /private\.example/);
+  });
+
+  it('degrades an interactive parent with malformed JSON to empty readable content', async () => {
+    const result = await fetchWith({
+      code: 0,
+      data: {
+        items: [{
+          chat_id: 'oc_expected',
+          msg_type: 'interactive',
+          sender: { id: 'ou_alice' },
+          body: { content: '{not-json' },
+        }],
+      },
+    });
+
+    assert.equal(result.status, 'available');
+    assert.match(buildParentContextPrefix(result), /no readable text or image/);
+  });
+
   it('caps rich-text parent images before downloading them', async () => {
     let downloads = 0;
     const result = await fetchWith({

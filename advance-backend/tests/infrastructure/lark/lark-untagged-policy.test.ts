@@ -6,28 +6,23 @@ import {
   resolveCompanyUntaggedGroupPolicy,
   resolveUntaggedGroupPolicy,
   UNTAGGED_ATTACHMENTS_CONTROL,
-  UNTAGGED_TEXT_RETENTION_CONTROL,
 } from '../../../src/infrastructure/channels/lark/lark-untagged-policy.ts';
 
-const policy = (
-  text: 'retain' | 'off',
-  attachments: 'ignore' | 'process',
-) => resolveUntaggedGroupPolicy({
-  LARK_UNTAGGED_GROUP_TEXT_RETENTION: text,
+const policy = (attachments: 'ignore' | 'process') => resolveUntaggedGroupPolicy({
   LARK_UNTAGGED_GROUP_ATTACHMENTS: attachments,
 });
 
 describe('untagged group policy resolution', () => {
-  it('reads each setting independently', () => {
-    assert.deepEqual(policy('retain', 'ignore'), { retainText: true, processAttachments: false });
-    assert.deepEqual(policy('off', 'process'), { retainText: false, processAttachments: true });
+  it('reads the attachment-processing setting', () => {
+    assert.deepEqual(policy('ignore'), { processAttachments: false });
+    assert.deepEqual(policy('process'), { processAttachments: true });
   });
 
   it('treats any value other than the opt-in as off', () => {
     // Env validation already constrains these, but the resolver must not turn a
     // malformed or absent value into consent to index files.
     const loose = resolveUntaggedGroupPolicy({} as never);
-    assert.deepEqual(loose, { retainText: false, processAttachments: false });
+    assert.deepEqual(loose, { processAttachments: false });
   });
 });
 
@@ -52,7 +47,7 @@ describe('attachment preparation gate', () => {
     assert.equal(mayPrepareAttachments({
       attachmentCount: 1,
       untagged: true,
-      policy: policy('retain', 'ignore'),
+      policy: policy('ignore'),
     }), false);
   });
 
@@ -60,7 +55,7 @@ describe('attachment preparation gate', () => {
     assert.equal(mayPrepareAttachments({
       attachmentCount: 1,
       untagged: true,
-      policy: policy('retain', 'process'),
+      policy: policy('process'),
     }), true);
   });
 
@@ -71,7 +66,7 @@ describe('attachment preparation gate', () => {
       assert.equal(mayPrepareAttachments({
         attachmentCount: 2,
         untagged: false,
-        policy: policy('retain', attachments),
+        policy: policy(attachments),
       }), true, `addressed message with attachments=${attachments}`);
     }
   });
@@ -80,29 +75,21 @@ describe('attachment preparation gate', () => {
     assert.equal(mayPrepareAttachments({
       attachmentCount: 0,
       untagged: false,
-      policy: policy('retain', 'process'),
+      policy: policy('process'),
     }), false);
   });
 
-  it('does not let text retention imply attachment processing', () => {
-    // The two settings govern different costs: retained text is already visible
-    // to the room, while a processed attachment leaves Lark entirely.
+  it('does not let room listening imply attachment processing', () => {
     assert.equal(mayPrepareAttachments({
       attachmentCount: 1,
       untagged: true,
-      policy: policy('retain', 'ignore'),
+      policy: policy('ignore'),
     }), false);
-    assert.equal(mayPrepareAttachments({
-      attachmentCount: 1,
-      untagged: true,
-      policy: policy('off', 'process'),
-    }), true);
   });
 });
 
 describe('per-company untagged policy', () => {
   const DEPLOYMENT_DEFAULT = {
-    LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
     LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore',
   } as const;
 
@@ -112,7 +99,6 @@ describe('per-company untagged policy', () => {
       controls: [],
     });
 
-    assert.equal(resolved.retainText, true);
     assert.equal(resolved.processAttachments, false);
     assert.deepEqual(resolved.attachments, { value: 'ignore', origin: 'deployment' });
   });
@@ -134,41 +120,14 @@ describe('per-company untagged policy', () => {
     assert.equal(untouched.processAttachments, false);
   });
 
-  it('lets a company opt out of retention the deployment enables', () => {
-    const resolved = resolveCompanyUntaggedGroupPolicy({
-      env: DEPLOYMENT_DEFAULT,
-      controls: [{ controlKey: UNTAGGED_TEXT_RETENTION_CONTROL, value: 'off' }],
-    });
-
-    assert.equal(resolved.retainText, false);
-    assert.deepEqual(resolved.textRetention, { value: 'off', origin: 'company' });
-  });
-
   it('ignores an unrecognised stored value instead of reading it as consent', () => {
     const resolved = resolveCompanyUntaggedGroupPolicy({
       env: DEPLOYMENT_DEFAULT,
-      controls: [
-        { controlKey: UNTAGGED_ATTACHMENTS_CONTROL, value: 'PROCESS' },
-        { controlKey: UNTAGGED_TEXT_RETENTION_CONTROL, value: 'yes' },
-      ],
+      controls: [{ controlKey: UNTAGGED_ATTACHMENTS_CONTROL, value: 'PROCESS' }],
     });
 
     // A typo in a control row must not start indexing a company's files.
     assert.equal(resolved.processAttachments, false);
-    assert.equal(resolved.attachments.origin, 'deployment');
-    assert.equal(resolved.retainText, true);
-    assert.equal(resolved.textRetention.origin, 'deployment');
-  });
-
-  it('keeps the two settings independent', () => {
-    const resolved = resolveCompanyUntaggedGroupPolicy({
-      env: { LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'off', LARK_UNTAGGED_GROUP_ATTACHMENTS: 'process' },
-      controls: [{ controlKey: UNTAGGED_TEXT_RETENTION_CONTROL, value: 'retain' }],
-    });
-
-    assert.equal(resolved.retainText, true);
-    assert.equal(resolved.textRetention.origin, 'company');
-    assert.equal(resolved.processAttachments, true);
     assert.equal(resolved.attachments.origin, 'deployment');
   });
 });

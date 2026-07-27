@@ -6,6 +6,7 @@ import type { Client } from '@larksuiteoapi/node-sdk';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 import type { Logger } from '../../../../shared/logger';
 import { planFinalCards } from '../lark-card.builder';
+import { extractInteractiveCardText } from '../lark-message-content';
 
 /**
  * Accept either a raw card body or the `{ msg_type, card }` envelope the card
@@ -552,50 +553,6 @@ function extractPostBlockText(block: unknown): string {
     default:
       return '';
   }
-}
-
-function extractInteractiveCardText(card: Record<string, unknown>): string {
-  const parts: string[] = [];
-  collectCardText(card, parts, new WeakSet<object>());
-  return parts.join('\n');
-}
-
-function collectCardText(value: unknown, parts: string[], visited: WeakSet<object>): void {
-  if (Array.isArray(value)) {
-    for (const entry of value) collectCardText(entry, parts, visited);
-    return;
-  }
-
-  const record = recordValue(value);
-  if (!record || visited.has(record)) return;
-  visited.add(record);
-
-  const tag = stringValue(record['tag']);
-  if (tag === 'markdown' || tag === 'lark_md' || tag === 'plain_text') {
-    addText(parts, record['content']);
-    return;
-  }
-  if (tag === 'text') {
-    addText(parts, record['content']);
-    addText(parts, record['text']);
-    return;
-  }
-
-  if (tag === 'div' || tag === 'button' || tag === 'confirm') {
-    collectCardText(record['text'], parts, visited);
-  }
-
-  // These are the containers and text-bearing fields defined by Lark Card 2.0.
-  // Deliberately do not walk every property: that would expose opaque IDs,
-  // URLs, or hidden card state to the agent.
-  for (const key of ['header', 'title', 'body', 'elements', 'fields', 'columns', 'extra', 'confirm'] as const) {
-    collectCardText(record[key], parts, visited);
-  }
-}
-
-function addText(parts: string[], value: unknown): void {
-  const text = stringValue(value).trim();
-  if (text && parts[parts.length - 1] !== text) parts.push(text);
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {

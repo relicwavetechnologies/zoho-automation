@@ -112,8 +112,22 @@ describe('OrchestrationEngine', () => {
         content: 'Please track these tasks.',
         createdAt: '2026-05-14T00:00:00.000Z',
         botMentioned: false,
+      }, {
+        id: 'msg-1',
+        senderOpenId: 'ou_1',
+        senderName: 'Invoker',
+        role: 'user',
+        content: 'raw current message',
+        createdAt: '2026-05-14T00:00:01.000Z',
+        botMentioned: true,
+        attachments: [{
+          type: 'image',
+          status: 'ready',
+          label: 'current chart',
+          text: 'current attachment OCR',
+        }],
       }],
-      totalMessageCount: 1,
+      totalMessageCount: 2,
     };
     const deps: OrchestrationEngineDeps = {
       permissions: {
@@ -150,6 +164,9 @@ describe('OrchestrationEngine', () => {
           started.push('supervisor');
           assert.equal(input.memoryContext, 'remembered context');
           assert.ok(input.groupContext?.includes('Alice'));
+          assert.doesNotMatch(input.groupContext ?? '', /raw current message|current attachment OCR/);
+          assert.deepEqual(input.history.turns, []);
+          assert.equal(input.userMessage, 'list my tasks');
           assert.equal((input.model as { modelId?: string } | undefined)?.modelId, 'deepseek-v4-pro');
           assert.equal(typeof input.resolveModel, 'function');
           return ok({

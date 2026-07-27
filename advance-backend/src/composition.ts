@@ -149,7 +149,10 @@ import { DocumentRagTool } from './application/orchestration/tools/families/docu
 
 // Knowledge Share
 import { KnowledgeShareService } from './application/knowledge-share/knowledge-share.service';
-import { ShareResolverService } from './application/knowledge-share/share-resolver.service';
+import {
+  LarkMemoryReviewService,
+  ShareResolverService,
+} from './application/knowledge-share/share-resolver.service';
 import { Mem0Service } from './application/memory/mem0.service';
 
 // Tools
@@ -474,8 +477,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const chatContextService = new LarkChatContextService({
     repo: larkChatContextRepo,
-    // Group context keeps its deterministic compaction until it receives a
-    // per-run Lark model; never let it silently use the global fallback.
+    // Ambient group rollover has no invoker-bound inference context. Use the
+    // configured cheap/fast backend model and keep request RBAC in the live run.
+    model: fallbackModel,
     logger: logger.child({ service: 'chat-context' }),
   });
   logger.warn('ai.model.selected', {
@@ -1724,12 +1728,22 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     memoryCache,
     logger,
   );
+  const larkMemoryReviewService = new LarkMemoryReviewService(
+    memoryCache,
+    larkAdapter,
+    larkRuntimeToolExecutor,
+    permissions,
+    approvalGate,
+    logger,
+  );
   const shareResolverService = new ShareResolverService(
     knowledgeShareService,
     memoryCache,
     larkAdapter,
     logger.child({ service: 'share-resolver' }),
+    larkMemoryReviewService,
   );
+  supervisor.bindLarkMemoryReview(larkMemoryReviewService);
 
   logger.info('container.built', { channels: channelRegistry.keys() });
 

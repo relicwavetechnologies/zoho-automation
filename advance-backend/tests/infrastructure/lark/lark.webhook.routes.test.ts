@@ -7,6 +7,7 @@ import {
   replayLarkMessageAfterLogin,
 } from '../../../src/infrastructure/channels/lark/lark.webhook.routes.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
+import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
 import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
 import { ok } from '../../../src/shared/result.ts';
 import type { Logger } from '../../../src/shared/logger.ts';
@@ -123,6 +124,8 @@ async function runWebhook(body: unknown, options: {
   pendingLogin?: Record<string, unknown> | null;
   /** Whether first-touch bootstrap succeeded (workspace bound + directory ok). */
   bootstrapped?: boolean;
+  /** Company installation resolved independently of a speaker's user identity. */
+  tenantCompanyId?: string | null;
   /** Whether Lark OAuth is configured on this deployment. */
   oauthConfigured?: boolean;
   setupAdapter?: (adapter: LarkChannelAdapter) => void;
@@ -142,19 +145,17 @@ async function runWebhook(body: unknown, options: {
   }>;
   processQueued?: boolean;
   /**
-   * Untagged-group policy. Production resolves these from validated env with
-   * defaults; tests must state them, because an unset value is not the default
-   * and a silently-off policy would make a gate look like it works when the
-   * message simply never reached it.
+   * Untagged attachment policy. Group text retention is unconditional.
    */
   untaggedPolicy?: {
-    LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain' | 'off';
     LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore' | 'process';
   };
   /** Per-company control rows layered over the deployment policy. */
   companyControls?: Array<{ controlKey: string; value: string }>;
   /** Delivery outbox, consulted before the agent runs. */
   channelDeliveryRepo?: unknown;
+  /** Optional busy-lane notice state. */
+  busyNotices?: BusyLaneNotices;
 } = {}) {
   const order: string[] = [];
   const retainedMessages: Array<Record<string, unknown>> = [];
@@ -181,7 +182,6 @@ async function runWebhook(body: unknown, options: {
     LARK_APP_SECRET: 'secret',
     LARK_BOT_NAME: 'Divo',
     LARK_VERIFICATION_TOKEN: 'verify',
-    LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
     LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore',
     ...(options.untaggedPolicy ?? {}),
   } as any;
@@ -212,6 +212,8 @@ async function runWebhook(body: unknown, options: {
           channel: 'lark',
         });
       },
+      resolveLarkTenantCompanyId: async () =>
+        ok(options.tenantCompanyId === undefined ? 'company-1' : options.tenantCompanyId),
       prepareLarkLogin: async () => ok(options.pendingLogin ?? null),
     } as any,
     conversationRepo: {
@@ -273,6 +275,7 @@ async function runWebhook(body: unknown, options: {
     ...(options.channelDeliveryRepo
       ? { channelDeliveryRepo: options.channelDeliveryRepo as any }
       : {}),
+    ...(options.busyNotices ? { busyNotices: options.busyNotices } : {}),
     cache: { setNx: async () => ok(true), set: async () => ok(true) } as any,
     ...(options.bootstrapped
       ? {
@@ -1113,28 +1116,73 @@ describe('Lark untagged group policy', () => {
     assert.ok(!result.order.includes('engine'), 'retention is not invocation');
   });
 
-  it('adds no transcript entry for an untagged group message when retention is off', async () => {
-    const result = await runWebhook(makeEvent({ chatType: 'group' }), {
-      untaggedPolicy: {
-        LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'off',
-        LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore',
-      },
+  it('retains an unknown speaker in a tenant-bound room without invoking Divo', async () => {
+    const result = await runWebhook(makeEvent({ chatType: 'group', text: 'ship it Monday' }), {
+      unknownUser: true,
+      tenantCompanyId: 'company-1',
     });
 
-    assert.deepEqual(result.retainedMessages, [], 'no transcript entry');
-    assert.ok(!result.order.includes('retain'), 'context service never called');
+    assert.equal(result.retainedMessages.length, 1);
+    assert.equal(result.retainedMessages[0]?.['companyId'], 'company-1');
+    assert.equal(result.retainedMessages[0]?.['senderOpenId'], 'ou_sender');
+    assert.equal(result.retainedMessages[0]?.['content'], 'ship it Monday');
+    assert.ok(!result.order.includes('engine'), 'ambient history grants no authority');
+  });
 
-    // Retention 'off' governs the room transcript, and nothing more. The raw
-    // event was already written to the durable ingress receipt before any
-    // policy was consulted, and no code path ever deletes it. Pinned here so
-    // the setting is not mistaken for a promise that Divo stored nothing.
-    const payload = result.acceptedPayloads[0] as Record<string, any>;
-    assert.ok(payload, 'the message was still accepted durably');
-    assert.match(
-      payload['event']['message']['content'],
-      /help/,
-      'the untagged text survives verbatim in the ingress receipt',
-    );
+  it('retains a tagged unknown speaker before offering sign-in', async () => {
+    let adapter: any;
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      text: 'summarize the plan',
+    }), {
+      unknownUser: true,
+      tenantCompanyId: 'company-1',
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.equal(result.retainedMessages.length, 1);
+    assert.equal(result.retainedMessages[0]?.['companyId'], 'company-1');
+    assert.match(String(result.retainedMessages[0]?.['content']), /summarize the plan/);
+    assert.ok(!result.order.includes('engine'), 'an unknown speaker receives no tool authority');
+    assert.equal(noticesSent(adapter).length, 1, 'a tagged speaker may receive sign-in guidance');
+  });
+
+  it('does not retain an unknown speaker from an unbound workspace', async () => {
+    const result = await runWebhook(makeEvent({ chatType: 'group', text: 'private note' }), {
+      unknownUser: true,
+      tenantCompanyId: null,
+    });
+
+    assert.deepEqual(result.retainedMessages, []);
+    assert.ok(!result.order.includes('engine'));
+  });
+
+  it('does not send a busy notice for an untagged group message', async () => {
+    let adapter: any;
+    const result = await runWebhook(makeEvent({ chatType: 'group', text: 'ambient update' }), {
+      busyNotices: new BusyLaneNotices(),
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+      waitForIdle: false,
+      serializer: {
+        isActive: () => true,
+        runAndWait: async (_key: string, task: (signal: AbortSignal) => Promise<void>) =>
+          task(new AbortController().signal),
+      } as any,
+    });
+
+    assert.deepEqual(noticesSent(adapter), []);
+    assert.equal(result.retainedMessages.length, 1);
+    assert.ok(!result.order.includes('engine'));
+  });
+
+  it('ignores a stale text-retention opt-out and keeps listening', async () => {
+    const result = await runWebhook(makeEvent({ chatType: 'group' }), {
+      companyControls: [{ controlKey: 'lark.untagged.textRetention', value: 'off' }],
+    });
+
+    assert.equal(result.retainedMessages.length, 1, 'ambient text is always kept');
+    assert.ok(!result.order.includes('engine'), 'listening is not invocation');
   });
 
   it('reaches attachment preparation when a deployment opts in', async () => {
@@ -1146,7 +1194,6 @@ describe('Lark untagged group policy', () => {
       image: { key: 'img_v3_shared' },
     }), {
       untaggedPolicy: {
-        LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
         LARK_UNTAGGED_GROUP_ATTACHMENTS: 'process',
       },
     }));
@@ -1281,7 +1328,6 @@ describe('Lark untagged policy per company', () => {
     const result = await withStubbedFetch(() => runWebhook(untaggedImage(), {
       companyControls: [
         { controlKey: 'lark.untagged.attachments', value: 'process' },
-        { controlKey: 'lark.untagged.textRetention', value: 'retain' },
       ],
     }));
 
@@ -1293,7 +1339,6 @@ describe('Lark untagged policy per company', () => {
   it("honours a company's opt-out even when the deployment enables processing", async () => {
     const result = await withStubbedFetch(() => runWebhook(untaggedImage(), {
       untaggedPolicy: {
-        LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
         LARK_UNTAGGED_GROUP_ATTACHMENTS: 'process',
       },
       companyControls: [{ controlKey: 'lark.untagged.attachments', value: 'ignore' }],

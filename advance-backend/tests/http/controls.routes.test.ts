@@ -27,7 +27,6 @@ const noopLogger = {
 
 /** Deployment defaults; per-company control rows layer over these. */
 const FAKE_ENV = {
-  LARK_UNTAGGED_GROUP_TEXT_RETENTION: 'retain',
   LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore',
 } as any;
 
@@ -197,7 +196,8 @@ describe('GET /lark-untagged-policy', () => {
     // An empty control list is not an empty policy. Reporting "no rows" would
     // leave an admin unable to see the rule their people are governed by.
     assert.deepEqual(data.textRetention.value, 'retain');
-    assert.deepEqual(data.textRetention.origin, 'deployment');
+    assert.deepEqual(data.textRetention.origin, 'product');
+    assert.equal(data.textRetention.configurable, false);
     assert.deepEqual(data.attachments.value, 'ignore');
     assert.deepEqual(data.attachments.origin, 'deployment');
   });
@@ -220,7 +220,6 @@ describe('GET /lark-untagged-policy', () => {
     assert.equal(data.attachments.origin, 'company');
     assert.equal(data.attachments.updatedBy, 'u-admin');
     assert.equal(data.attachments.updatedAt, '2026-07-26T00:00:00.000Z');
-    assert.equal(data.textRetention.updatedBy, null, 'unset settings report no author');
   });
 
   it('states the retention bounds and the receipt caveat', async () => {
@@ -254,7 +253,7 @@ describe('GET /lark-untagged-policy', () => {
     await callRoute(router, 'GET', '/lark-untagged-policy');
 
     assert.equal(where.companyId, 'co-1');
-    assert.deepEqual(where.controlKey.in, ['lark.untagged.textRetention', 'lark.untagged.attachments']);
+    assert.equal(where.controlKey, 'lark.untagged.attachments');
   });
 
   it('requires a company for a super admin with no company selected', async () => {
@@ -307,18 +306,16 @@ describe('PUT /lark-untagged-policy', () => {
     assert.equal((body as any).data.applied['lark.untagged.attachments'], 'process');
   });
 
-  it('writes both settings when both are given', async () => {
+  it('rejects the removed text-retention switch', async () => {
     const { prisma, upserts } = makeWritablePrisma();
     const router = createControlsRoutes({ prisma, logger: noopLogger, env: FAKE_ENV });
 
-    await callRoute(router, 'PUT', '/lark-untagged-policy', {
-      body: { textRetention: 'off', attachments: 'ignore' },
+    const { status } = await callRoute(router, 'PUT', '/lark-untagged-policy', {
+      body: { textRetention: 'off' },
     });
 
-    assert.deepEqual(
-      upserts.map(u => u.where.controlKey_companyId.controlKey),
-      ['lark.untagged.textRetention', 'lark.untagged.attachments'],
-    );
+    assert.equal(status, 400);
+    assert.deepEqual(upserts, []);
   });
 
   it('rejects a value outside the two legal tokens', async () => {

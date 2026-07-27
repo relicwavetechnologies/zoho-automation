@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lark context management audit</title>
+  <style>
+    :root {
+      --canvas:#11110f; --canvas-soft:#171715; --surface:#1d1c19;
+      --ink:#f3f1e8; --body:#bbb8ae; --muted:#89867d;
+      --primary:#f54e00; --primary-active:#d04200;
+      --danger:#f05a7e; --warning:#d89a42; --suggestion:#7da6d8; --success:#55b891;
+      --hairline:#34322c; --hairline-strong:#504d44;
+    }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; color:var(--ink); background:var(--canvas);
+      font:15px/1.55 Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    a { color:var(--ink); text-decoration-color:var(--hairline-strong); text-underline-offset:3px; }
+    a:hover { color:var(--primary); }
+    code,pre { font-family:"JetBrains Mono",SFMono-Regular,Menlo,Consolas,monospace; }
+    code { font-size:.9em; }
+    .page { width:min(1120px,calc(100% - 32px)); margin:auto; padding:28px 0 80px; }
+    nav { position:sticky; top:0; z-index:5; display:flex; gap:18px; padding:12px 0;
+      overflow-x:auto; background:color-mix(in srgb,var(--canvas) 94%,transparent); backdrop-filter:blur(10px); }
+    nav a { color:var(--body); font-size:14px; font-weight:500; white-space:nowrap; text-decoration:none; }
+    header { display:grid; grid-template-columns:1fr auto; gap:28px; align-items:center;
+      padding:32px; border:1px solid var(--hairline); border-radius:12px; background:var(--surface); }
+    .eyebrow { color:var(--primary); text-transform:uppercase; letter-spacing:.08em; font-size:11px; font-weight:600; }
+    h1 { margin:7px 0 10px; font-size:clamp(32px,5vw,52px); line-height:1.05; letter-spacing:-.035em; font-weight:400; }
+    h2 { margin:52px 0 16px; font-size:28px; letter-spacing:-.018em; font-weight:400; }
+    h3 { margin:10px 0 8px; font-size:18px; font-weight:600; }
+    p { color:var(--body); }
+    .risk { width:116px; height:116px; border-radius:50%; display:grid; place-items:center;
+      background:conic-gradient(var(--danger) 0 78%,var(--hairline) 78%); }
+    .risk > div { width:94px; height:94px; border-radius:50%; display:grid; place-items:center;
+      text-align:center; background:var(--surface); font-weight:600; font-size:27px; }
+    .risk small { display:block; color:var(--muted); font-size:10px; font-weight:500; }
+    .verdict { margin-top:20px; padding:18px 20px; border:1px solid var(--hairline);
+      border-left:4px solid var(--danger); background:var(--surface); border-radius:8px; color:var(--body); }
+    .verdict strong { color:var(--ink); }
+    .contract { display:grid; grid-template-columns:repeat(5,1fr); border:1px solid var(--hairline);
+      border-radius:12px; overflow:hidden; background:var(--surface); }
+    .contract-step { padding:18px; border-right:1px solid var(--hairline); }
+    .contract-step:last-child { border-right:0; }
+    .contract-step small { display:block; margin-bottom:8px; color:var(--primary);
+      font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+    .contract-step strong { display:block; font-size:14px; line-height:1.4; }
+    .guardrail { margin:12px 0 0; padding:12px 14px; border:1px solid var(--hairline);
+      border-radius:8px; background:var(--canvas-soft); color:var(--body); }
+    .progress-shell { padding:22px; border:1px solid var(--hairline); border-radius:12px;
+      background:var(--surface); }
+    .progress-head { display:flex; justify-content:space-between; gap:20px; align-items:end; }
+    .progress-head strong { font-size:28px; font-weight:400; }
+    .progress-track { height:8px; margin:16px 0 20px; overflow:hidden; border-radius:999px;
+      background:var(--hairline); }
+    .progress-fill { width:100%; height:100%; background:var(--success); }
+    .progress-fill.pending { width:75%; background:var(--primary); }
+    .checkpoints { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+    .checkpoint { min-height:134px; padding:14px; border:1px solid var(--hairline);
+      border-radius:8px; background:var(--canvas-soft); }
+    .checkpoint.active { border-color:var(--primary); }
+    .checkpoint.done { border-color:var(--success); }
+    .checkpoint small { color:var(--muted); text-transform:uppercase; letter-spacing:.07em; }
+    .checkpoint.active small { color:var(--primary); }
+    .checkpoint.done small { color:var(--success); }
+    .checkpoint strong { display:block; margin:8px 0 5px; font-size:14px; }
+    .checkpoint p { margin:0; font-size:12px; }
+    .hermes-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
+    .hermes-card { padding:20px; border:1px solid var(--hairline); border-radius:12px;
+      background:var(--surface); }
+    .hermes-card h3 { margin-top:0; }
+    .hermes-card p { margin-bottom:0; }
+    .filters { position:sticky; top:46px; z-index:4; display:flex; flex-wrap:wrap; gap:8px;
+      padding:12px 0; background:var(--canvas); }
+    button { color:var(--body); background:var(--surface); border:1px solid var(--hairline-strong);
+      border-radius:8px; padding:8px 12px; cursor:pointer; font:500 14px/1 inherit; }
+    button:hover { border-color:var(--ink); }
+    button.active { color:white; background:var(--primary); border-color:var(--primary); }
+    button.active:hover { background:var(--primary-active); }
+    .finding { margin:12px 0; padding:22px; background:var(--surface); border:1px solid var(--hairline);
+      border-left:4px solid var(--suggestion); border-radius:12px; }
+    .finding:hover { border-color:var(--hairline-strong); }
+    .finding.critical { border-left-color:var(--danger); }
+    .finding.warning { border-left-color:var(--warning); }
+    .finding.positive { border-left-color:var(--success); }
+    .finding.suggestion { border-left-color:var(--suggestion); }
+    .meta { display:flex; gap:10px; align-items:center; flex-wrap:wrap; color:var(--muted); font-size:12px; }
+    .badge { padding:3px 8px; border-radius:4px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+    .critical .badge { color:var(--danger); background:color-mix(in srgb,var(--danger) 12%,var(--surface)); }
+    .warning .badge { color:var(--warning); background:color-mix(in srgb,var(--warning) 12%,var(--surface)); }
+    .positive .badge { color:var(--success); background:color-mix(in srgb,var(--success) 12%,var(--surface)); }
+    .suggestion .badge { color:var(--suggestion); background:color-mix(in srgb,var(--suggestion) 12%,var(--surface)); }
+    .cdot { display:inline-block; width:8px; height:8px; border-radius:50%; box-shadow:0 0 0 3px currentColor inset; }
+    .cdot-danger { color:var(--danger); } .cdot-warning { color:var(--warning); }
+    .cdot-muted { color:var(--suggestion); } .cdot-success { color:var(--success); }
+    details.fix { margin-top:16px; border-top:1px solid var(--hairline); }
+    details.fix summary { padding:14px 0 4px; color:var(--ink); cursor:pointer; font-weight:600; list-style:none; }
+    details.fix summary::-webkit-details-marker { display:none; }
+    details.fix summary::after { content:"+"; float:right; color:var(--primary); font-size:18px; font-weight:400; }
+    details.fix[open] summary::after { content:"−"; }
+    details.fix .fix-body { padding:4px 0 2px; color:var(--body); }
+    details.fix .fix-body p { margin:6px 0; }
+    pre { overflow:auto; padding:18px; background:var(--canvas-soft); color:var(--ink); border-radius:12px;
+      border:1px solid var(--hairline); font-size:12px; line-height:1.6; }
+    .comment { color:var(--warning); }
+    .arch { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; align-items:center; }
+    .node { min-height:84px; display:grid; place-items:center; text-align:center; padding:10px;
+      background:var(--surface); border:1px solid var(--hairline); border-radius:12px; }
+    .node.hot { border-color:var(--primary); }
+    .arrow { color:var(--muted); text-align:center; font-size:20px; }
+    ol li { margin:9px 0; color:var(--body); }
+    .note { color:var(--muted); font-size:13px; }
+    @media(max-width:760px) {
+      header { grid-template-columns:1fr; } .risk { width:96px; height:96px; }
+      .risk > div { width:74px; height:74px; } .arch,.contract,.hermes-grid,.checkpoints { grid-template-columns:1fr; }
+      .contract-step { border-right:0; border-bottom:1px solid var(--hairline); }
+      .contract-step:last-child { border-bottom:0; }
+      .arrow { transform:rotate(90deg); }
+    }
+  </style>
+</head>
+<body>
+<main class="page">
+  <nav><a href="#summary">Summary</a><a href="#progress">Progress</a><a href="#memory-review">Memory review</a><a href="#contract">Agreed design</a><a href="#hermes">Hermes learnings</a><a href="#findings">Findings</a><a href="#evidence">Evidence</a><a href="#architecture">Architecture</a><a href="#recommendations">Recommendations</a></nav>
+  <header>
+    <div>
+      <div class="eyebrow">Implementation audit · updated 27 July 2026</div>
+      <h1>Lark context management &amp; compaction</h1>
+      <p>Current workspace implementation, focused on the live governed-Lark path rather than helper behavior in isolation.</p>
+    </div>
+    <div class="risk"><div>46<small>MEDIUM</small></div></div>
+  </header>
+
+  <section id="summary">
+    <h2>Summary</h2>
+    <div class="verdict"><strong>Verdict: group context is now handled properly; Lark context is not fully complete.</strong>
+      The shared-room path now keeps the newest messages raw, compacts older messages with the fast model, preserves durable facts,
+      retries concurrent writes, treats history as reference only, and listens silently to every tenant-bound speaker. The main
+      remaining defect is separate: older DM summaries are still loaded but not shown to the governed Lark model.
+    </div>
+  </section>
+
+  <section id="progress">
+    <h2>Implementation progress</h2>
+    <div class="progress-shell">
+      <div class="progress-head"><div><div class="eyebrow">Live todo board</div><strong>Group-context remediation · 100% complete</strong></div><span class="note">Final cold review: SHIP</span></div>
+      <div class="progress-track"><div class="progress-fill"></div></div>
+      <div class="checkpoints">
+        <article class="checkpoint done"><small>0 → 25% · Reviewed</small><strong>Safe quoted cards</strong><p>Complete. Bounded shared parser; focused checks 17/17; second cold review: ship.</p></article>
+        <article class="checkpoint done"><small>25 → 50% · Reviewed</small><strong>Trust boundary</strong><p>Complete on governed Lark: message-ID exclusion, no old actionable group turns, live OCR retained, and no discarded child-capability build. Layer-1 checks 21/21; cold review: ship.</p></article>
+        <article class="checkpoint done"><small>50 → 75% · Reviewed</small><strong>Flash compaction</strong><p>Complete. Every overflow uses the fast model; newest tail stays raw; prior durable state rolls forward; CAS retries and late enrichment are lossless. Layer-1 checks 28/28; cold review: ship.</p></article>
+        <article class="checkpoint done"><small>75 → 100% · Reviewed</small><strong>Always listen safely</strong><p>Complete. Known and unknown tenant-bound speakers are retained before invocation checks; stale opt-outs are removed; batching and busy notices cannot make ambient messages speak. Focused checks 34/34, 16/16, then 5/5; cold review: ship.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section id="memory-review">
+    <h2>Lark “share this memory” progress</h2>
+    <div class="progress-shell">
+      <div class="progress-head"><div><div class="eyebrow">Live todo board</div><strong>Safe Lark review flow · 100% complete</strong></div><span class="note">Final cold review: SHIP</span></div>
+      <div class="progress-track"><div class="progress-fill"></div></div>
+      <div class="checkpoints">
+        <article class="checkpoint done"><small>1 · Fixed</small><strong>Skill is available</strong><p>The Share Memory system skill now gets a company grant, so Lark can discover it.</p>
+          <details class="fix"><summary>What was fixed</summary><div class="fix-body"><p>Before, the skill existed in the database but ordinary Lark users could not see it. Provisioning now grants the system skill to the company.</p></div></details>
+        </article>
+        <article class="checkpoint done"><small>2 · Fixed</small><strong>Invoker-only review card</strong><p>Divo shows the exact facts and only the targets returned by the backend. Only the person who asked can approve or cancel.</p>
+          <details class="fix"><summary>What was fixed</summary><div class="fix-body"><p>The model cannot invent a department or company target. Another group member cannot click the card for the requester.</p></div></details>
+        </article>
+        <article class="checkpoint done"><small>3 · Verified</small><strong>RBAC is checked again</strong><p>Approval uses the current Lark identity and current department, then calls the existing backend memory tool.</p>
+          <details class="fix"><summary>What was fixed</summary><div class="fix-body"><p>If access changed after the card opened, saving is denied. Manager approval also shows the exact facts and target. Focused layer-1 checks: 4/4; TypeScript: pass.</p></div></details>
+        </article>
+        <article class="checkpoint done"><small>4 · Reviewed</small><strong>Independent cold review</strong><p>Complete. Direct memory bypasses are closed, replay is fail-closed, and tenant identity survives manager approval. Final verdict: ship.</p>
+          <details class="fix"><summary>What was fixed</summary><div class="fix-body"><p>Governed Lark cannot call raw memory publishing or legacy <code>rememberFact</code>. Review state starts non-actionable, becomes ready only after safe persistence, and is claimed before publishing. Focused checks: 11/11; TypeScript: pass.</p></div></details>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="contract">
+    <h2>Agreed group-memory design</h2>
+    <div class="contract">
+      <div class="contract-step"><small>1 · Listen</small><strong>Receive every visible text message in the Lark group.</strong></div>
+      <div class="contract-step"><small>2 · Remember</small><strong>Append it to one bounded context record for that company + group.</strong></div>
+      <div class="contract-step"><small>3 · Roll</small><strong>Keep the newest messages raw; use the fast model only to summarize older overflow.</strong></div>
+      <div class="contract-step"><small>4 · Stay silent</small><strong>If Divo is not tagged, save context and stop. Do not run the agent or tools.</strong></div>
+      <div class="contract-step"><small>5 · Invoke safely</small><strong>If Divo is tagged, resolve RBAC only from that current invoker.</strong></div>
+    </div>
+    <p class="guardrail"><strong>Important boundary:</strong> room history is information, not authority. A past admin message, a quoted instruction, or another participant can add context, but can never give the current invoker extra permissions.</p>
+  </section>
+
+  <section id="hermes">
+    <h2>Hermes learnings to use</h2>
+    <p>Divo should not copy Hermes blindly: Hermes usually isolates a group session per user, while Divo needs one shared ambient memory per Lark room. It should copy the compaction invariants that make Hermes resilient.</p>
+    <div class="hermes-grid">
+      <article class="hermes-card">
+        <h3>Protect the newest conversation</h3>
+        <p>Choose the recent tail by token budget, not only by message count. Always keep the latest user message and latest visible assistant reply raw so the active task cannot disappear into a summary.</p>
+      </article>
+      <article class="hermes-card">
+        <h3>Keep causal groups together</h3>
+        <p>Never split a user request from its answer, or a tool call from its tool result. Move the compaction boundary so the complete unit stays on one side.</p>
+      </article>
+      <article class="hermes-card">
+        <h3>Update the old summary</h3>
+        <p>On every rollover, send the previous summary plus only the newly aged-out messages to Flash. Produce one refreshed summary instead of repeatedly summarizing the whole room from scratch.</p>
+      </article>
+      <article class="hermes-card">
+        <h3>Make recent truth authoritative</h3>
+        <p>Label the compacted block as historical reference. If it conflicts with the newest raw message or current system state, the newest information wins.</p>
+      </article>
+      <article class="hermes-card">
+        <h3>Fail without losing history</h3>
+        <p>If Flash times out, returns bad output, or has an auth problem, do not advance the rollover destructively. Keep a deterministic fallback or retryable old chunk, log the failure, and avoid repeated no-op compaction loops.</p>
+      </article>
+      <article class="hermes-card">
+        <h3>Serialize one room</h3>
+        <p>Use one update lane or optimistic retry for each company + chat ID. Two simultaneous group messages must not read the same old value and overwrite each other.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="findings">
+    <h2>Findings</h2>
+    <div class="filters">
+      <button class="active" data-filter="all">All (11)</button>
+      <button data-filter="critical">Critical (1)</button>
+      <button data-filter="warning">Warning (3)</button>
+      <button data-filter="suggestion">Suggestion (1)</button>
+      <button data-filter="positive">Positive (6)</button>
+    </div>
+
+    <article class="finding critical" data-kind="critical">
+      <div class="meta"><span class="cdot cdot-danger"></span><span class="badge">Critical</span>
+        <a href="#evidence-dm">agents/supervisor.ts:193–197, 335–347, 573–576</a></div>
+      <h3>DM conversation summaries never reach the live governed Lark model</h3>
+      <p>The engine loads a summary and passes it as <code>conversationSummary</code>. The supervisor destructures that value, but its live governed-Lark prompt appends memory and group context only. Once a summary exists, <code>HistoryService</code> returns only messages after the summary checkpoint, so omission of the summary is direct loss of older context.</p>
+      <details class="fix"><summary>How to fix</summary><div class="fix-body">
+        <p>Put the saved summary into the final instructions sent to the AI. Right now it is loaded, but never shown to the AI.</p>
+        <p>Then add one test that checks the final prompt really contains that summary.</p>
+      </div></details>
+    </article>
+
+    <article class="finding positive" data-kind="positive">
+      <div class="meta"><span class="cdot cdot-success"></span><span class="badge">Resolved at 25%</span>
+        <a href="#evidence-card">lark-parent-message.ts:51–85</a></div>
+      <h3>Quoted interactive cards now use one bounded safe parser</h3>
+      <p>Card 1.0 and Card 2.0 visible text now reaches both quoted-parent hydration and history search through one shared normalizer. Depth, visited nodes, and output length are capped; action values, URLs, IDs, tokens, and hidden state are not traversed.</p>
+      <details class="fix"><summary>What changed</summary><div class="fix-body">
+        <p>The parent parser now handles <code>interactive</code> messages instead of rejecting them. The first cold review found unbounded traversal; that was fixed before the slice was accepted.</p>
+        <p>Focused verification: 17/17. Final 25% cold-review verdict: ship.</p>
+      </div></details>
+    </article>
+
+    <article class="finding positive" data-kind="positive">
+      <div class="meta"><span class="cdot cdot-success"></span><span class="badge">Resolved at 75%</span>
+        <a href="#evidence-group">composition.ts; lark-chat-context.service.ts; lark-chat-context.repository.ts</a></div>
+      <h3>Group rollover now uses a Hermes-style fast compaction path</h3>
+      <p>Production supplies the configured fast model. Every real overflow updates the previous summary while preserving the newest raw tail. Empty model fields cannot erase durable history, late attachment enrichment survives rollover, and compare-and-swap retries prevent blind concurrent overwrites.</p>
+      <details class="fix"><summary>What changed</summary><div class="fix-body">
+        <p>The prompt labels summaries as historical reference only and makes newer raw messages authoritative. Model failure falls back to bounded deterministic memory.</p>
+        <p>All durable categories receive bounded formatter space. Focused checks passed 28/28 and the final 75% cold review said ship.</p>
+      </div></details>
+    </article>
+
+    <article class="finding positive" data-kind="positive">
+      <div class="meta"><span class="cdot cdot-success"></span><span class="badge">Resolved at 50%</span>
+        <a href="#evidence-trust">group-context-formatter.ts:25–42; supervisor.ts:351–364; core.ts:408–429</a></div>
+      <h3>Room history is now reference data, not privileged instructions</h3>
+      <p>On the active governed-Lark path, participant transcript is outside the system prompt. The live event is removed from history by message ID, old group turns are not reintroduced, and the final tagged message is the only active request.</p>
+      <details class="fix"><summary>What changed</summary><div class="fix-body">
+        <p>The system prompt receives only a fixed trust rule. Room transcript arrives in a clearly labeled untrusted reference message immediately before the current request.</p>
+        <p>RBAC still comes from the current invoker. Unused dynamic-path edits were removed; focused checks passed 21/21 and the governed-Lark cold review said ship.</p>
+      </div></details>
+    </article>
+
+    <article class="finding warning" data-kind="warning">
+      <div class="meta"><span class="cdot cdot-warning"></span><span class="badge">Warning</span>
+        <a href="#evidence-backlog">conversation-summarizer.ts:82–131; conversation.repository.ts:292–320</a></div>
+      <h3>A backlog over 60 turns can be checkpointed past turns that were never summarized</h3>
+      <p>The repository selects the newest 60 rows after the checkpoint. The summarizer then advances to <code>meta.lastMessageSequence - 5</code>. If more than 60 unsummarized rows accumulate, older rows outside that query are skipped permanently.</p>
+      <details class="fix"><summary>How to fix</summary><div class="fix-body">
+        <p>Summarize the oldest waiting messages first.</p>
+        <p>Move the checkpoint only to the last message that was actually summarized. If messages remain, process the next batch later.</p>
+      </div></details>
+    </article>
+
+    <article class="finding warning" data-kind="warning">
+      <div class="meta"><span class="cdot cdot-warning"></span><span class="badge">Warning</span>
+        <span>supervisor.ts:317–347, 573–576</span></div>
+      <h3>The global context budget is not enforced on the governed Lark path</h3>
+      <p><code>enforceContextBudget</code> is called in the dynamic graph path, while governed Lark bypasses that graph and calls <code>streamText</code> directly with the assembled system prompt and messages. Component-local limits reduce risk, but there is no final model-specific aggregate guard.</p>
+      <details class="fix"><summary>How to fix</summary><div class="fix-body">
+        <p>Check the size of the complete prompt immediately before sending it to the AI.</p>
+        <p>If it is too large, trim it using the same budget rules used by the other execution path.</p>
+      </div></details>
+    </article>
+
+    <article class="finding positive" data-kind="positive">
+      <div class="meta"><span class="cdot cdot-success"></span><span class="badge">Resolved at 75%</span>
+        <span>lark-chat-context.service.ts:407–481; lark-routing.ts:53–65</span></div>
+      <h3>Room-wide group writes now reject stale updates and retry</h3>
+      <p>The repository updates only when <code>updatedAt</code> still matches the value read. A competing writer makes that update fail cleanly, and the service rereads and retries instead of overwriting the newer room snapshot.</p>
+      <details class="fix"><summary>What changed</summary><div class="fix-body">
+        <p>Optimistic compare-and-swap works across replicas without a schema migration.</p>
+        <p>A focused concurrent-append test proves both messages survive.</p>
+      </div></details>
+    </article>
+
+    <article class="finding positive" data-kind="positive">
+      <div class="meta"><span class="cdot cdot-success"></span><span class="badge">Resolved at 100%</span>
+        <a href="#evidence-silent">lark.webhook.routes.ts; message-batch.ts; lark-untagged-policy.ts</a></div>
+      <h3>Every tenant-bound group speaker is remembered without gaining authority</h3>
+      <p>Visible group text is now stored whether the speaker is linked, unlinked, tagged, or untagged. Unknown speakers receive attribution only; they receive no user identity, role, department, or tool permission. Untagged messages stop silently before the engine.</p>
+      <details class="fix"><summary>What changed</summary><div class="fix-body">
+        <p>The old text-retention environment and company opt-out switches were removed. The admin view reports listening as a fixed, non-configurable rule.</p>
+        <p>Busy notices are invocation-gated, and burst batching cannot merge tagged and ambient messages. Untagged attachment download/OCR remains a separate opt-in.</p>
+        <p>Deployment prerequisite: Lark still must grant the app its all-group-message permission and deliver those events.</p>
+      </div></details>
+    </article>
+
+    <article class="finding warning" data-kind="warning">
+      <div class="meta"><span class="cdot cdot-warning"></span><span class="badge">Warning</span>
+        <span>tests/application/*.test.ts</span></div>
+      <h3>The remaining DM handoff and checkpoint gaps lack regression tests</h3>
+      <p>Group-summary field formatting, concurrent room writes, unknown speakers, silent busy lanes, and invocation-safe batching now have focused coverage. The unresolved DM summary handoff and backlog checkpoint still do not.</p>
+      <details class="fix"><summary>How to fix</summary><div class="fix-body">
+        <p>Add two small tests with those fixes: a saved DM summary reaches the AI, and every old DM turn is summarized before its checkpoint advances.</p>
+      </div></details>
+    </article>
+
+    <article class="finding suggestion" data-kind="suggestion">
+      <div class="meta"><span class="cdot cdot-muted"></span><span class="badge">Suggestion</span>
+        <span>conversation-summarizer.ts:199–207</span></div>
+      <h3>The structured summary records <code>lastSummarizedSequence: 0</code></h3>
+      <p>The database column has the real checkpoint, but the JSON contract claims to contain it and always stores zero. It is currently unused by formatting, yet it invites inconsistent diagnostics or future recovery logic.</p>
+      <details class="fix"><summary>How to fix</summary><div class="fix-body">
+        <p>Save the real last summarized message number instead of zero.</p>
+        <p>If that field is not needed, remove it so there is only one source of truth.</p>
+      </div></details>
+    </article>
+
+    <article class="finding positive" data-kind="positive">
+      <div class="meta"><span class="cdot cdot-success"></span><span class="badge">Positive</span>
+        <span>conversation-key.ts; history.ts; lark-untagged-policy.ts; lark-chat-context.service.ts</span></div>
+      <h3>The foundations show good isolation and bounded-window discipline</h3>
+      <p>DMs and group threads receive distinct working-context identities, ambient group text is retained without invoking the agent, tenant/company/channel scope is carried to persistence, old tool results are masked, and both working and ambient context have explicit limits. The remaining defects are confined to DM summary handoff/checkpointing and the final aggregate prompt budget.</p>
+      <details class="fix"><summary>What to keep</summary><div class="fix-body">
+        <p>Keep one bounded room context per company + Lark group, the silent untagged-message branch, newest-message retention, tenant boundaries, filtering, and local size limits.</p>
+        <p>Keep these foundations while fixing the remaining DM-only handoff.</p>
+      </div></details>
+    </article>
+  </section>
+
+  <section id="evidence">
+    <h2>Annotated evidence</h2>
+    <h3 id="evidence-dm">DM summary handoff</h3>
+    <pre>core.ts
+451  ...(summary ? { conversationSummary: supervisorHistory.summary } : {})
+
+supervisor.ts
+197  approvalGate, memoryContext, conversationSummary, groupContext, ...
+342  if (memoryContext) fullSystemPrompt += `MEMORY CONTEXT...`
+345  if (groupContext) fullSystemPrompt += groupContext
+     <span class="comment">// conversationSummary is never appended</span>
+575  system: fullSystemPrompt
+576  messages</pre>
+
+    <h3 id="evidence-group">Group rollover is connected and lossless</h3>
+    <pre>lark-chat-context.service.ts
+partitionRecentMessages(...) protects the newest raw tail
+refreshSummaryWithLLM(compactedChunk, previousSummary, fastModel)
+empty/partial arrays merge with durable fallback fields
+late attachment enrichment merges into mentionedResources
+
+composition.ts
+new LarkChatContextService({ repo, model: fallbackModel, logger })
+
+lark-chat-context.repository.ts
+updateMany({ where: { id, updatedAt: expectedUpdatedAt } })
+     <span class="comment">// stale writers retry instead of overwriting a newer room snapshot</span></pre>
+
+    <h3 id="evidence-silent">Silent-listening boundary</h3>
+    <pre>env.ts
+126  LARK_UNTAGGED_GROUP_ATTACHMENTS = 'ignore'
+     <span class="comment">// group text retention is no longer configurable</span>
+
+lark.webhook.routes.ts
+792  resolveByLarkTenantIdentity(senderOpenId, tenantKey)
+798  if identity is missing and chatType is group:
+800    resolveLarkTenantCompanyId(tenantKey)
+803    storeUnknownGroupIncomingSnapshot(...)
+816  if group message is untagged: return
+538  busy notice only when shouldStartLarkAgent(incoming)
+
+message-batch.ts
+76   candidate.invokesAgent must equal anchor.invokesAgent
+     <span class="comment">// listening is unconditional; speaking remains invocation-gated</span></pre>
+
+    <h3 id="evidence-trust">Room-history trust boundary</h3>
+    <pre>group-context-formatter.ts
+25   GROUP_CONTEXT_TRUST_POLICY
+35   formatGroupContextReference(groupContext)
+
+supervisor.ts
+351  system prompt += fixed trust policy
+361  transcript becomes a preceding reference user message
+364  final current user request
+
+core.ts
+408  remove current room snapshot by message ID
+427  group conversation history becomes empty
+     <span class="comment">// only the final tagged request can ask for action</span></pre>
+
+    <h3 id="evidence-card">Quoted interactive cards</h3>
+    <pre>lark-message-content.ts
+extractLarkInteractiveCardText(content)
+bounded traversal: depth + node count + output length
+visible text allowlist; action values, URLs, IDs and hidden state excluded
+
+lark-parent-message.ts
+interactive parent → shared safe extractor
+
+lark-messaging.client.ts
+interactive history → same shared safe extractor
+     <span class="comment">// Card 1.0 and Card 2.0 visible text now use one parser</span></pre>
+
+    <h3 id="evidence-backlog">Backlog checkpoint gap</h3>
+    <pre>conversation.repository.ts
+303  messages: { sequence: { gt: afterSequence }, orderBy: { sequence: 'desc' }, take: limit }
+
+conversation-summarizer.ts
+83   getHistoryAfterSequence(..., 60, ...)
+101  turnsToSummarize = turns.slice(0, -5)
+130  lastSummarizedSequence: meta.lastMessageSequence - 5
+     <span class="comment">// checkpoint is based on global meta, not the last row actually summarized</span></pre>
+
+    <h3>Hermes compaction reference</h3>
+    <pre>research/hermes-agent/agent/context_compressor.py
+4     uses a cheap/fast auxiliary model for middle turns
+45    marks compacted history as "REFERENCE ONLY"
+2089  feeds the previous summary into the next iterative update
+2696  protects the latest visible assistant reply
+2754  protects the latest user message
+2855  finds the raw tail by token budget without splitting tool groups
+2978  compresses protected head + summarized middle + raw recent tail
+
+research/hermes-agent/plugins/platforms/feishu/adapter.py
+3024  creates one per-chat lock for serial message processing
+
+research/hermes-agent/gateway/session.py
+871   scopes sessions by platform, chat, thread and optionally user
+      <span class="comment">// Divo adopts the safety patterns, but keeps one shared ambient record per Lark room</span></pre>
+    <p class="note">This is an implementation audit rather than a branch diff, so this section annotates the live source excerpts that determine behavior.</p>
+  </section>
+
+  <section id="architecture">
+    <h2>Architecture impact</h2>
+    <div class="arch">
+      <div class="node hot">Every group event<br><small>company + room + speaker</small></div><div class="arrow">→</div>
+      <div class="node">One room memory<br><small>summary + newest raw tail</small></div><div class="arrow">→</div>
+      <div class="node">Not tagged<br><small>stop silently</small></div>
+      <div class="node">Tagged invoker<br><small>resolve identity + RBAC</small></div><div class="arrow">→</div>
+      <div class="node hot">Governed agent<br><small>context informs; invoker authorizes</small></div><div class="arrow">→</div>
+      <div class="node">Tools / reply<br><small>within invoker permissions</small></div>
+    </div>
+  </section>
+
+  <section id="recommendations">
+    <h2>Recommendations</h2>
+    <ol>
+      <li>✅ Completed: quoted <code>interactive</code> messages use one bounded safe parser with Card 1.0/Card 2.0 tests.</li>
+      <li>Wire <code>conversationSummary</code> into the governed Lark prompt and add one prompt-capture regression test.</li>
+      <li>✅ Completed: group rollover uses the fast model with a protected newest tail, iterative durable summary, recent-truth precedence, deterministic fallback, and optimistic retries.</li>
+      <li>✅ Completed in code: tenant-bound group text is stored before invocation handling; untagged messages stay silent; current-invoker RBAC remains authoritative. Confirm the Lark all-group-message permission in deployment.</li>
+      <li>Apply the aggregate prompt budget and checkpoint DM summarization only through rows actually processed. Group-room concurrent writes are already protected.</li>
+    </ol>
+    <button id="copy">Copy recommendations</button>
+    <p class="note">Validation stayed at layer 1: focused slices passed 17/17, 21/21, 28/28, 34/34, 16/16, and 5/5. No broad suite was run. Every 25% checkpoint ended with an independent cold-review SHIP verdict.</p>
+  </section>
+</main>
+<script>
+  const buttons=[...document.querySelectorAll('[data-filter]')];
+  buttons.forEach(button=>button.addEventListener('click',()=>{
+    buttons.forEach(b=>b.classList.remove('active')); button.classList.add('active');
+    const filter=button.dataset.filter;
+    document.querySelectorAll('.finding').forEach(card=>{
+      card.style.display=filter==='all'||card.dataset.kind===filter?'block':'none';
+    });
+  }));
+  document.querySelector('#copy').addEventListener('click',async()=>{
+    const text=[...document.querySelectorAll('#recommendations li')].map((x,i)=>`${i+1}. ${x.innerText}`).join('\n');
+    await navigator.clipboard.writeText(text);
+    document.querySelector('#copy').textContent='Copied';
+  });
+</script>
+</body>
+</html>

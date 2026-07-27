@@ -120,11 +120,10 @@ const EnvSchema = z.object({
   LARK_TENANT_TOKEN_RETRY_BASE_DELAY_MS:    positiveInt(250),
   // User OAuth — set LARK_OAUTH_REDIRECT_URI to <BACKEND_PUBLIC_URL>/api/lark/auth/callback
   LARK_OAUTH_REDIRECT_URI: z.string().optional(),
-  // Group messages that never mention Divo. Text retention feeds the bounded
-  // room transcript; attachment processing downloads, OCRs, and indexes files
-  // nobody asked Divo to read, so it stays off unless a company opts in.
-  LARK_UNTAGGED_GROUP_TEXT_RETENTION: z.enum(['retain', 'off']).default('retain'),
-  LARK_UNTAGGED_GROUP_ATTACHMENTS:    z.enum(['ignore', 'process']).default('ignore'),
+  // Group text always feeds the bounded room transcript. Attachment processing
+  // downloads, OCRs, and indexes files nobody asked Divo to read, so it stays
+  // off unless a company opts in.
+  LARK_UNTAGGED_GROUP_ATTACHMENTS: z.enum(['ignore', 'process']).default('ignore'),
 
   // Merge a rapid burst from one sender into a single turn. Kept as a switch
   // rather than a constant because it changes how many replies a user gets,

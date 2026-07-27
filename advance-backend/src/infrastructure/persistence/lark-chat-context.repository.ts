@@ -13,6 +13,7 @@ export interface LarkChatContextRow {
   summaryJson: unknown;
   sourceMessageCount: number;
   lastMessageAt: Date | null;
+  updatedAt: Date;
 }
 
 export interface LarkChatContextRepoPort {
@@ -24,13 +25,14 @@ export interface LarkChatContextRepoPort {
 
   update(
     id: string,
+    expectedUpdatedAt: Date,
     data: {
       recentMessagesJson: unknown;
       summaryJson?: unknown;
       sourceMessageCount: number;
       lastMessageAt: Date;
     },
-  ): Promise<Result<void, InfraError>>;
+  ): Promise<Result<boolean, InfraError>>;
 
   clear(companyId: string, chatId: string): Promise<Result<void, InfraError>>;
 }
@@ -71,6 +73,7 @@ export class LarkChatContextRepository implements LarkChatContextRepoPort {
         summaryJson: row.summaryJson,
         sourceMessageCount: row.sourceMessageCount,
         lastMessageAt: row.lastMessageAt,
+        updatedAt: row.updatedAt,
       });
     } catch (e) {
       return err(wrapInfra('prisma', 'larkChatContext.getOrCreate', e));
@@ -79,16 +82,17 @@ export class LarkChatContextRepository implements LarkChatContextRepoPort {
 
   async update(
     id: string,
+    expectedUpdatedAt: Date,
     data: {
       recentMessagesJson: unknown;
       summaryJson?: unknown;
       sourceMessageCount: number;
       lastMessageAt: Date;
     },
-  ): Promise<Result<void, InfraError>> {
+  ): Promise<Result<boolean, InfraError>> {
     try {
-      await this.db.larkChatContext.update({
-        where: { id },
+      const updated = await this.db.larkChatContext.updateMany({
+        where: { id, updatedAt: expectedUpdatedAt },
         data: {
           recentMessagesJson: data.recentMessagesJson as any,
           ...(data.summaryJson !== undefined
@@ -98,7 +102,7 @@ export class LarkChatContextRepository implements LarkChatContextRepoPort {
           lastMessageAt: data.lastMessageAt,
         },
       });
-      return ok(undefined);
+      return ok(updated.count === 1);
     } catch (e) {
       return err(wrapInfra('prisma', 'larkChatContext.update', e));
     }

@@ -48,10 +48,11 @@ describe('formatGroupContextForPrompt', () => {
       owners: ['Alice owns invoice checks'],
       deadlines: ['Today EOD'],
       mentionedResources: ['Q3-report.xlsx'],
-      completedActions: [],
-      constraints: [],
+      completedActions: ['Reconciled April'],
+      constraints: ['Finance approval required'],
       blockers: ['Zoho export is delayed'],
-      userGoals: [],
+      userGoals: ['Publish the monthly close'],
+      superseded: ['Old CSV workflow'],
       sourceMessageCount: 50,
       updatedAt: new Date().toISOString(),
     };
@@ -68,6 +69,46 @@ describe('formatGroupContextForPrompt', () => {
     assert.ok(result.includes('Direction: Close budget reconciliation today'));
     assert.ok(result.includes('decided: Use the revised spreadsheet'));
     assert.ok(result.includes('blocker: Zoho export is delayed'));
+    assert.ok(result.includes('owner: Alice owns invoice checks'));
+    assert.ok(result.includes('entity: Acme Corp'));
+    assert.ok(result.includes('resource: Q3-report.xlsx'));
+    assert.ok(result.includes('historically completed: Reconciled April'));
+    assert.ok(result.includes('constraint: Finance approval required'));
+    assert.ok(result.includes('historical goal: Publish the monthly close'));
+    assert.ok(result.includes('superseded: Old CSV workflow'));
+  });
+
+  it('keeps every durable category visible when earlier fields are large', () => {
+    const longItems = Array.from({ length: 20 }, (_, index) => `decision-${index}-${'x'.repeat(1_000)}`);
+    const window: GroupChatWindow = {
+      summary: {
+        summary: 's'.repeat(80_000),
+        activeEntities: ['Final entity'],
+        decisions: longItems,
+        openQuestions: longItems,
+        owners: ['Final owner'],
+        deadlines: longItems,
+        mentionedResources: ['Final resource'],
+        completedActions: ['Final completed action'],
+        constraints: ['Final constraint'],
+        blockers: longItems,
+        userGoals: ['Final goal'],
+        superseded: ['Final superseded item'],
+        sourceMessageCount: 200,
+        updatedAt: new Date().toISOString(),
+      },
+      recentMessages: [msg('Alice', 'Newest message')],
+      totalMessageCount: 201,
+    };
+
+    const result = formatGroupContextForPrompt(window);
+    assert.match(result, /owner: Final owner/);
+    assert.match(result, /entity: Final entity/);
+    assert.match(result, /resource: Final resource/);
+    assert.match(result, /historically completed: Final completed action/);
+    assert.match(result, /constraint: Final constraint/);
+    assert.match(result, /historical goal: Final goal/);
+    assert.match(result, /superseded: Final superseded item/);
   });
 
   it('formats assistant messages with @Divo prefix', () => {
@@ -146,16 +187,13 @@ describe('formatGroupContextForPrompt', () => {
       totalMessageCount: 1,
     };
 
-    const result = formatGroupContextForPrompt(window, {
-      senderName: 'Bob',
-      content: 'summarize this image',
-    });
+    const result = formatGroupContextForPrompt(window);
 
     assert.ok(result.includes('nearest preceding message with [internal attachment context]'));
     assert.ok(result.includes('Inline attachment context is already in hand. Answer from it first'));
     assert.ok(result.includes('Attachment placement: this upload belongs to this exact transcript message; nearby "this image" references usually point here.'));
     assert.ok(result.includes('Description: A settings permission screen'));
-    assert.ok(result.includes('▶ [now] Bob → @Divo: summarize this image'));
+    assert.ok(!result.includes('summarize this image'));
   });
 
   it('handles empty recent messages gracefully', () => {
@@ -170,7 +208,7 @@ describe('formatGroupContextForPrompt', () => {
     assert.ok(!result.includes('── RECENT MESSAGES ──'));
   });
 
-  it('appends current message with ▶ marker when provided', () => {
+  it('keeps the current request out of the historical reference block', () => {
     const window: GroupChatWindow = {
       summary: null,
       recentMessages: [
@@ -179,16 +217,11 @@ describe('formatGroupContextForPrompt', () => {
       totalMessageCount: 1,
     };
 
-    const result = formatGroupContextForPrompt(window, {
-      senderName: 'Bob',
-      content: 'make todos of the above message',
-    });
+    const result = formatGroupContextForPrompt(window);
     assert.ok(result.includes('── RECENT MESSAGES ──'));
     assert.ok(result.includes('Alice: Here are the Q3 numbers'));
-    assert.ok(result.includes('▶ [now] Bob → @Divo: make todos of the above message'));
-    // The ▶ line should be the last line
-    const lines = result.split('\n');
-    assert.ok(lines[lines.length - 1]!.startsWith('▶'));
+    assert.ok(!result.includes('make todos of the above message'));
+    assert.ok(!result.includes('▶'));
   });
 
   it('handles partially populated legacy summary JSON safely', () => {
@@ -256,10 +289,7 @@ describe('formatGroupContextMultimodal', () => {
       totalMessageCount: 2,
     };
 
-    const result = formatGroupContextMultimodal(window, {
-      senderName: 'Alice',
-      content: 'summarize this chart',
-    });
+    const result = formatGroupContextMultimodal(window);
 
     assert.ok(result.hasImages);
     assert.ok(result.systemHeader.includes('GROUP CHAT CONTEXT'));
@@ -279,9 +309,9 @@ describe('formatGroupContextMultimodal', () => {
     const imgIdx = partTypes.indexOf('image');
     assert.ok(imgIdx > 0, 'image should not be first');
 
-    // Current request marker should be last
     const lastPart = result.parts.at(-1);
-    assert.ok(lastPart?.type === 'text' && lastPart.text.startsWith('▶'));
+    assert.ok(lastPart?.type === 'text' && lastPart.text.includes('Looks good'));
+    assert.ok(!result.parts.some(part => part.type === 'text' && part.text.startsWith('▶')));
   });
 
   it('falls back to text-only when no cloudinaryUrl present', () => {

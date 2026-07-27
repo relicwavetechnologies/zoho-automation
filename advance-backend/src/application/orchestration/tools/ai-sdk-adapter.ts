@@ -163,6 +163,19 @@ export function buildArgsSummary(toolId: string, action: string, args: unknown):
   try {
     const a = args as Record<string, unknown>;
     if (googleWorkspaceProductByToolId(toolId)) return buildGoogleWorkspaceArgsSummary(toolId, action, a);
+    if (toolId === 'memoryPublishing' && a['operation'] === 'publish') {
+      const scope = String(a['scope'] ?? 'unknown');
+      const target = scope === 'department' && typeof a['departmentId'] === 'string'
+        ? `${scope}:${a['departmentId']}`
+        : scope;
+      const facts = Array.isArray(a['facts'])
+        ? a['facts'].filter((fact): fact is string => typeof fact === 'string')
+        : [];
+      return [
+        `${toolId}.${action} | target=${target}`,
+        ...facts.map((fact, index) => `${index + 1}. ${fact}`),
+      ].join('\n');
+    }
     const parts: string[] = [`${toolId}.${action}`];
     // Append the most human-readable fields if present
     for (const key of ['to', 'subject', 'title', 'name', 'query', 'module', 'chatId', 'calendarId']) {

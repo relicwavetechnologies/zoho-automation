@@ -14,6 +14,7 @@ import { Client as LarkSdkClient, Domain, LoggerLevel } from '@larksuiteoapi/nod
 import { unsupportedDocumentNotice, MAX_INLINE_IMAGE_BYTES } from './lark-media-support';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
 import type { ReferencedMessage } from '../../../domain/channel/incoming-message';
+import { extractInteractiveCardText } from './lark-message-content';
 
 export type ParentMessageResult = ReferencedMessage;
 
@@ -80,6 +81,8 @@ export async function fetchParentMessage(input: {
       text = unsupportedDocumentNotice((content['file_name'] as string) ?? 'attachment');
     } else if (msgType === 'media') {
       text = '[Media/Video]';
+    } else if (msgType === 'interactive') {
+      text = extractInteractiveCardText(content);
     } else {
       return unavailableParent(parentMessageId, 'unsupported', msgType);
     }

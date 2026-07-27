@@ -9,7 +9,7 @@ import type {
   IngressReceiptRepoPort,
   PendingLaneReceipt,
 } from '../../persistence/ingress-receipt.repository';
-import type { LarkChannelAdapter } from './lark.adapter';
+import { shouldStartLarkAgent, type LarkChannelAdapter } from './lark.adapter';
 import { buildLarkIngressLaneKey } from './lark-routing';
 import { parseLarkAttachments } from './lark-attachment.parser';
 import type { Logger } from '../../../shared/logger';
@@ -31,6 +31,7 @@ export const toBatchableMessage = (
   parentMessageId: incoming.parentMessageId ? String(incoming.parentMessageId) : undefined,
   text: incoming.text ?? '',
   hasAttachments: parseLarkAttachments(rawEvent).length > 0,
+  invokesAgent: shouldStartLarkAgent(incoming),
   isCommand: (incoming.text ?? '').trim().startsWith('/'),
   acceptedAtMs,
 });

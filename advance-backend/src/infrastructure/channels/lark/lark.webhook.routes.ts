@@ -55,7 +55,6 @@ import {
   mayPrepareAttachments,
   resolveCompanyUntaggedGroupPolicy,
   UNTAGGED_ATTACHMENTS_CONTROL,
-  UNTAGGED_TEXT_RETENTION_CONTROL,
   type ResolvedUntaggedGroupPolicy,
 } from './lark-untagged-policy';
 import { appendLarkMentionContext, listLarkMentionOpenIds } from './lark-mention-context';
@@ -216,7 +215,15 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
             return;
           }
 
-          // Check share actions first
+          // Requester-owned memory review decisions are resolved before the
+          // generic approval handler so they cannot be mistaken for manager HITL.
+          if (deps.shareResolverService?.isMemoryReviewAction(cardEvent)) {
+            const result = await deps.shareResolverService.handleMemoryReview(cardEvent, actor);
+            res.status(200).json(result.responseBody);
+            return;
+          }
+
+          // Check file share actions next
           if (deps.shareResolverService?.isShareAction(cardEvent)) {
             const result = await deps.shareResolverService.handle(cardEvent, actor);
             res.status(200).json(result.responseBody);
@@ -536,7 +543,7 @@ export async function processAcceptedLarkReceipt(
   // Decided before queueing, because "is this lane busy" is only true while the
   // previous turn is still running — asking after `runAndWait` has admitted
   // this task would always answer yes, and every message would look queued.
-  if (deps.busyNotices) {
+  if (deps.busyNotices && shouldStartLarkAgent(incoming)) {
     const decision = deps.busyNotices.decide(executionLaneKey, {
       laneBusy: deps.serializer.isActive(executionLaneKey),
       isCommand: (incoming.text ?? '').trim().startsWith('/'),
@@ -795,11 +802,26 @@ async function processInBackground(
   );
 
   if (!identityResult.ok || !identityResult.value) {
+    let ambientCompanyId: string | null = null;
+    if (incoming.chatType === 'group') {
+      const companyResult = await deps.channelIdentityRepo.resolveLarkTenantCompanyId(tenantKey);
+      ambientCompanyId = companyResult.ok ? companyResult.value : null;
+      if (ambientCompanyId) {
+        await storeUnknownGroupIncomingSnapshot({
+          incoming,
+          companyId: ambientCompanyId,
+          deps,
+          log,
+        });
+      }
+    }
+
     if (isUntaggedGroupMessage(incoming)) {
       log.debug('webhook.group_message.not_mentioned.identity_missing', {
         chatId: incoming.chatId,
         messageId: incoming.messageId,
         larkOpenId: incoming.userExternalId,
+        textRetained: Boolean(ambientCompanyId),
       });
       return;
     }
@@ -978,7 +1000,7 @@ async function processInBackground(
   const mayProcessAttachments = mayPrepareAttachments({
     attachmentCount: attachments.length,
     untagged,
-    policy: untaggedPolicy ?? { retainText: false, processAttachments: false },
+    policy: untaggedPolicy ?? { processAttachments: false },
   });
 
   // Fetch parent message (quote-reply context) in parallel with attachment prep.
@@ -1013,18 +1035,16 @@ async function processInBackground(
       messageId: incoming.messageId,
       attachmentCount: attachments.length,
       attachmentsProcessed: mayProcessAttachments,
-      textRetained: untaggedPolicy?.retainText ?? false,
+      textRetained: true,
     });
 
-    if (untaggedPolicy?.retainText) {
-      await storeGroupIncomingSnapshot({
-        incoming,
-        identity,
-        deps,
-        attachmentContexts: preparedAttachments.map(item => item.context),
-        log,
-      });
-    }
+    await storeGroupIncomingSnapshot({
+      incoming,
+      identity,
+      deps,
+      attachmentContexts: preparedAttachments.map(item => item.context),
+      log,
+    });
 
     return;
   }
@@ -1090,7 +1110,8 @@ async function processInBackground(
     const textWithParent = parentPrefix
       ? (userText ? `${parentPrefix}\n\n${userText}` : parentPrefix)
       : userText;
-    // Image OCR is injected as text for direct messages, and only there.
+    // Image OCR is injected into the live request for both direct and group
+    // messages.
     //
     // Passing pixels through `imageUrls` assumes the model can see them. The
     // Lark supervisor runs on DeepSeek, which is text-only, so on that path the
@@ -1098,12 +1119,9 @@ async function processInBackground(
     // picture it successfully downloaded and read. The OCR text is the only
     // form it can actually receive.
     //
-    // A group already carries this: the attachment context is written to the
-    // room snapshot above, and the transcript formatter emits an OCR
-    // supplement. Injecting it here as well would say the same thing twice.
-    const includeImageContext = incoming.chatType !== 'group';
+    // The current room snapshot is removed from historical context before the
+    // supervisor runs, so this is not duplicated in a group request.
     const contextBlock = preparedAttachments
-      .filter(p => includeImageContext || p.attachment.type !== 'image')
       .map(item => item.inlineContext?.context)
       .filter((part): part is string => !!part)
       .join('\n\n');
@@ -1306,7 +1324,7 @@ async function resolveAuthenticatedCardActor(
   envelope: Record<string, unknown>,
   header: Record<string, unknown> | undefined,
   identityRepo: ChannelIdentityRepoPort,
-): Promise<LarkAuthenticatedCardActor | null> {
+): Promise<(LarkAuthenticatedCardActor & { activeDepartmentId?: string }) | null> {
   const card = toRecord(cardEvent);
   const operator = toRecord(card?.['operator']);
   const envelopeEvent = toRecord(envelope['event']);
@@ -1339,6 +1357,9 @@ async function resolveAuthenticatedCardActor(
     companyId: resolved.value.companyId,
     aiRole: resolved.value.aiRole,
     ...(displayName ? { displayName } : {}),
+    ...(resolved.value.activeDepartmentId
+      ? { activeDepartmentId: resolved.value.activeDepartmentId }
+      : {}),
   };
 }
 
@@ -1831,7 +1852,7 @@ async function prepareLarkAttachmentContexts(input: {
  *
  * Deliberately uncached. This is a privacy control: an admin who turns
  * attachment processing off expects the next message to obey, not the first
- * message after a TTL expires. Two indexed rows on a path that already does
+ * message after a TTL expires. One indexed row on a path that already does
  * several round trips is the cheaper side of that trade.
  *
  * A lookup failure falls back to the deployment default rather than to the
@@ -1850,7 +1871,7 @@ async function loadUntaggedGroupPolicy(
     const controls = await deps.prisma.adminControlState.findMany({
       where: {
         companyId,
-        controlKey: { in: [UNTAGGED_TEXT_RETENTION_CONTROL, UNTAGGED_ATTACHMENTS_CONTROL] },
+        controlKey: UNTAGGED_ATTACHMENTS_CONTROL,
       },
       select: { controlKey: true, value: true },
     });
@@ -1859,6 +1880,30 @@ async function loadUntaggedGroupPolicy(
     log.warn('webhook.untagged_policy.lookup_failed', { companyId, error: String(error) });
     return resolveCompanyUntaggedGroupPolicy({ env: deps.env, controls: [] });
   }
+}
+
+async function storeUnknownGroupIncomingSnapshot(input: {
+  incoming: IncomingMessage;
+  companyId: string;
+  deps: { chatContextService?: LarkChatContextService };
+  log: Logger;
+}): Promise<void> {
+  const { incoming, companyId, deps, log } = input;
+  const content = incoming.text?.trim();
+  if (incoming.chatType !== 'group' || !deps.chatContextService || !content) return;
+
+  await deps.chatContextService.appendMessage({
+    companyId,
+    chatId: String(incoming.chatId),
+    chatType: 'group',
+    messageId: String(incoming.messageId),
+    senderOpenId: incoming.userExternalId,
+    senderName: incoming.userExternalId,
+    role: 'user',
+    content,
+    createdAt: incoming.timestamp,
+    botMentioned: false,
+  }).catch(e => log.warn('webhook.group_context.store_failed', { error: String(e) }));
 }
 
 async function storeGroupIncomingSnapshot(input: {

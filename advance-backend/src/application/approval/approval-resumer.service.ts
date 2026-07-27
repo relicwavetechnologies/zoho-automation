@@ -161,6 +161,7 @@ export class ApprovalResumerService {
       requestId: `approval-${approvalId}`,
       chatId,
       requesterAiRole: identity.aiRole,
+      ...(tenantKey ? { tenantId: tenantKey } : {}),
       ...(requesterLarkOpenId ?? identity.larkOpenId
         ? { userExternalId: requesterLarkOpenId ?? identity.larkOpenId }
         : {}),

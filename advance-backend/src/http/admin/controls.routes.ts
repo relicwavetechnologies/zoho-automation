@@ -19,7 +19,6 @@ import { GROUP_CONTEXT_POLICY } from '../../domain/conversation/group-context-po
 import {
   resolveCompanyUntaggedGroupPolicy,
   UNTAGGED_ATTACHMENTS_CONTROL,
-  UNTAGGED_TEXT_RETENTION_CONTROL,
 } from '../../infrastructure/channels/lark/lark-untagged-policy';
 
 export interface ControlsRoutesDeps {
@@ -102,7 +101,7 @@ export function createControlsRoutes(deps: ControlsRoutesDeps): Router {
     const controls = await deps.prisma.adminControlState.findMany({
       where: {
         companyId,
-        controlKey: { in: [UNTAGGED_TEXT_RETENTION_CONTROL, UNTAGGED_ATTACHMENTS_CONTROL] },
+        controlKey: UNTAGGED_ATTACHMENTS_CONTROL,
       },
       select: { controlKey: true, value: true, updatedBy: true, updatedAt: true },
     });
@@ -113,10 +112,9 @@ export function createControlsRoutes(deps: ControlsRoutesDeps): Router {
     success(res, {
       companyId,
       textRetention: {
-        ...policy.textRetention,
-        controlKey: UNTAGGED_TEXT_RETENTION_CONTROL,
-        updatedBy: changedBy(UNTAGGED_TEXT_RETENTION_CONTROL)?.updatedBy ?? null,
-        updatedAt: changedBy(UNTAGGED_TEXT_RETENTION_CONTROL)?.updatedAt.toISOString() ?? null,
+        value: 'retain',
+        origin: 'product',
+        configurable: false,
       },
       attachments: {
         ...policy.attachments,
@@ -131,20 +129,13 @@ export function createControlsRoutes(deps: ControlsRoutesDeps): Router {
         retainedTokenBudget: GROUP_CONTEXT_POLICY.RETAINED_MESSAGE_TOKEN_BUDGET,
         olderMessages: 'compacted into a rolling summary',
       },
-      // Stated because the setting reads like a retention guarantee and is not
-      // one: the raw event is persisted on the ingress receipt before any
-      // policy applies, and nothing prunes those today.
-      note: 'Text retention governs the room transcript only. Durable ingress receipts retain the raw event separately and are not pruned.',
+      note: 'Group text always enters the bounded room transcript. Durable ingress receipts retain the raw event separately and are not pruned.',
     }, 'Untagged group policy loaded');
   }));
 
   const untaggedPolicyUpdate = z.object({
-    textRetention: z.enum(['retain', 'off']).optional(),
-    attachments:   z.enum(['ignore', 'process']).optional(),
-  }).refine(
-    body => body.textRetention !== undefined || body.attachments !== undefined,
-    { message: 'Provide textRetention, attachments, or both' },
-  );
+    attachments: z.enum(['ignore', 'process']),
+  });
 
   /**
    * Set a company's untagged-group policy.
@@ -161,10 +152,7 @@ export function createControlsRoutes(deps: ControlsRoutesDeps): Router {
     const update = untaggedPolicyUpdate.parse(req.body);
     const actorId = (res.locals['userId'] as string | undefined) ?? 'unknown';
 
-    const writes: Array<{ controlKey: string; value: string }> = [
-      ...(update.textRetention ? [{ controlKey: UNTAGGED_TEXT_RETENTION_CONTROL, value: update.textRetention }] : []),
-      ...(update.attachments   ? [{ controlKey: UNTAGGED_ATTACHMENTS_CONTROL,    value: update.attachments }]   : []),
-    ];
+    const writes = [{ controlKey: UNTAGGED_ATTACHMENTS_CONTROL, value: update.attachments }];
 
     for (const write of writes) {
       await deps.prisma.adminControlState.upsert({

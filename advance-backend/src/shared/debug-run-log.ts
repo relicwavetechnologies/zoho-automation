@@ -353,9 +353,9 @@ export function debugReplyDecision(data: {
   ].join('\n'));
 }
 
-/** Log supervisor.run() entry — which path is taken (dynamic graph vs legacy) */
+/** Log supervisor.run() entry — which execution path is taken. */
 export function debugSupervisorEntry(data: {
-  path: 'dynamic_graph' | 'legacy';
+  path: 'governed_lark' | 'dynamic_graph' | 'legacy';
   dynamicGraphEnabled: boolean;
   hasAgentCatalogCache: boolean;
   hasMem0: boolean;

@@ -66,6 +66,10 @@ export interface ChannelIdentityRepoPort {
     larkOpenId: string,
     tenantKey: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>>;
+  /** Resolves the company installation without treating a room speaker as an authenticated user. */
+  resolveLarkTenantCompanyId(
+    tenantKey: string,
+  ): Promise<Result<string | null, InfraError>>;
   /** Prepares a one-time OAuth link for a known Lark identity that has no active auth link yet. */
   prepareLarkLogin(
     larkOpenId: string,
@@ -126,6 +130,20 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
     tenantKey: string,
   ): Promise<Result<ResolvedUserIdentity | null, InfraError>> {
     return this.resolveLarkIdentity(larkOpenId, tenantKey);
+  }
+
+  async resolveLarkTenantCompanyId(
+    tenantKey: string,
+  ): Promise<Result<string | null, InfraError>> {
+    try {
+      const binding = await this.db.larkTenantBinding.findFirst({
+        where: { larkTenantKey: tenantKey, isActive: true },
+        select: { companyId: true },
+      });
+      return ok(binding?.companyId ?? null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'resolveLarkTenantCompanyId', e));
+    }
   }
 
   private async resolveLarkIdentity(

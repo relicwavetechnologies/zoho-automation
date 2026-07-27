@@ -23,6 +23,8 @@ export interface BatchableMessage {
   readonly parentMessageId?: string | undefined;
   readonly text: string;
   readonly hasAttachments: boolean;
+  /** Whether this message may start an agent run. Never merge across this boundary. */
+  readonly invokesAgent: boolean;
   /** `/clear`, `/login` and friends act immediately and are never merged. */
   readonly isCommand: boolean;
   readonly acceptedAtMs: number;
@@ -56,6 +58,7 @@ const same = (a: string | undefined, b: string | undefined): boolean =>
  *   and Wave 4A separated those on purpose;
  * - an attachment carries its own handling and its own refusal, so folding it
  *   into a neighbouring message would hide that;
+ * - tagged and ambient messages have different invocation semantics;
  * - a command is answered directly, not by the agent, so it has no turn to
  *   merge into.
  */
@@ -71,6 +74,7 @@ export const isBatchCompatible = (
   if (!same(candidate.rootMessageId, anchor.rootMessageId)) return false;
   if (!same(candidate.parentMessageId, anchor.parentMessageId)) return false;
   if (candidate.hasAttachments || anchor.hasAttachments) return false;
+  if (candidate.invokesAgent !== anchor.invokesAgent) return false;
   if (candidate.isCommand || anchor.isCommand) return false;
   if (!candidate.text.trim()) return false;
   return true;

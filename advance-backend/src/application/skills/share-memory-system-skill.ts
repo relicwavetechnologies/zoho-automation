@@ -10,13 +10,12 @@ Use this skill only when the member explicitly asks to share or save durable con
 
 ## Review Flow
 
-1. Call \`memoryPublishing\` with \`operation: "check_authority"\` before proposing a review. Read \`availability\`, exact \`targets\`, and \`scopeOutcomes\`.
-2. If availability is \`storage_unavailable\`, or there are no targets, tell the member memory sharing is unavailable and do not open a review. If a requested scope is \`not_authorized\`, state that scope is unavailable and do not retry it or downgrade it.
-3. Propose only durable, user-confirmed facts, decisions, and preferences. Exclude secrets, raw tool output, transient task state, and unconfirmed assistant inference.
-4. Call the local \`divo_memory_review\` tool with only \`proposalId\` and the proposed \`bullets\`. Never pass \`departmentId\` or \`allowedTargets\` to the local tool.
-5. \`divo_memory_review\` uses the desktop-configured department context to independently obtain the current canonical targets, owns the custom review card, and lets the member edit the facts, choose one exact returned target, approve, revise, or cancel.
-6. Do not call \`tools.prepare\`, \`tools.commit\`, or \`memoryPublishing.publish\` directly. After approval, \`divo_memory_review\` prepares and commits the final reviewed facts and exact selected target through the standard backend gateway flow.
-7. Use the local tool result as the source of truth. If publish is denied, report the denial. Never retry in a narrower scope unless the member starts and approves a new review.
+1. Propose only durable, user-confirmed facts, decisions, and preferences. Exclude secrets, raw tool output, transient task state, and unconfirmed assistant inference.
+2. Open exactly one review surface with only \`proposalId\` and the proposed \`bullets\`: use \`divo_memory_review\` on Desktop, or \`review_memory\` in Lark. Never pass \`departmentId\` or \`allowedTargets\` to either review tool.
+3. The review surface independently checks storage availability and current canonical targets. If it reports no available target or a denied scope, tell the member and do not retry or downgrade it.
+4. Desktop lets the member edit the facts; in Lark, the member approves one exact target or cancels and asks for a revised review.
+5. Do not call \`tools.prepare\`, \`tools.commit\`, or \`memoryPublishing\` directly. After approval, the review surface rechecks backend authority and publishes the exact reviewed facts and selected target through the standard backend gateway flow.
+6. Use the review tool result as the source of truth. If publish is denied, report the denial. Never retry in a narrower scope unless the member starts and approves a new review.
 
 ## Bounds
 
@@ -76,6 +75,25 @@ export async function provisionShareMemorySystemSkill(
     },
   });
   await recordSkillRegistryMutation(db, skill, 'system');
+  const grantStore = (
+    db as typeof db & Pick<Prisma.TransactionClient, 'skillAccessGrant'>
+  ).skillAccessGrant;
+  await grantStore.upsert({
+    where: {
+      skillId_granteeType_granteeId: {
+        skillId: skill.id,
+        granteeType: 'company',
+        granteeId: companyId,
+      },
+    },
+    create: {
+      companyId,
+      skillId: skill.id,
+      granteeType: 'company',
+      granteeId: companyId,
+    },
+    update: {},
+  });
   return { id: skill.id };
 }
 

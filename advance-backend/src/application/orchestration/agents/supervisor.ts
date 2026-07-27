@@ -68,6 +68,10 @@ import type { Mem0Service } from '../../memory/mem0.service';
 import { buildToolFinishedPayload, isErrorOutput } from '../agent-runners/tool-trace';
 import { debugSupervisorEntry, debugGraphInvoke, debugGraphOutput } from '../../../shared/debug-run-log';
 import type { GroupContextContentPart } from '../../../domain/conversation/group-context';
+import {
+  formatGroupContextReference,
+  GROUP_CONTEXT_TRUST_POLICY,
+} from '../../chat-context/group-context-formatter';
 import { isInternalHistoryMarker } from '../../../domain/conversation/internal-history-marker';
 import type { SkillCatalogService, CatalogSkill } from '../../skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../../skills/skill-access.port';
@@ -79,6 +83,8 @@ import { createCallToolTool } from '../tools/orchestration/call-tool';
 import { createResolveGovernedWorkTool } from '../tools/orchestration/resolve-governed-work';
 import type { AuditService } from '../../observability/audit.service';
 import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from '../../skills/scheduled-work-system-skill';
+import { SHARE_MEMORY_SKILL_SLUG } from '../../skills/share-memory-system-skill';
+import type { LarkMemoryReviewToolFactory } from '../../knowledge-share/share-resolver.service';
 import { FinalAnswerAccumulator } from './final-answer';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -186,9 +192,15 @@ export interface SupervisorDeps {
 // ─── Supervisor ───────────────────────────────────────────────────────────────
 
 export class SupervisorAgent {
+  private larkMemoryReview?: LarkMemoryReviewToolFactory;
+
   constructor(private readonly deps: SupervisorDeps) {}
 
   getModel(): LanguageModel { return this.deps.model; }
+
+  bindLarkMemoryReview(service: LarkMemoryReviewToolFactory): void {
+    this.larkMemoryReview = service;
+  }
 
   async run(input: SupervisorInput): Promise<Result<SupervisorOutput, OrchestrationError>> {
     const {
@@ -207,7 +219,9 @@ export class SupervisorAgent {
     const log = logger.child({ service: 'supervisor', userId: runContext.userId });
 
     debugSupervisorEntry({
-      path: (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) ? 'dynamic_graph' : 'legacy',
+      path: useGovernedLarkRuntime
+        ? 'governed_lark'
+        : (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) ? 'dynamic_graph' : 'legacy',
       dynamicGraphEnabled: !!this.deps.dynamicGraphEnabled,
       hasAgentCatalogCache: !!this.deps.agentCatalogCache,
       hasMem0: !!this.deps.mem0,
@@ -343,7 +357,7 @@ export class SupervisorAgent {
       fullSystemPrompt += `\n\nMEMORY CONTEXT - facts learned from past conversations. Use when relevant, but do not repeat verbatim to the user:\n${memoryContext}`;
     }
     if (groupContext) {
-      fullSystemPrompt += `\n\n${groupContext}`;
+      fullSystemPrompt += `\n\n${GROUP_CONTEXT_TRUST_POLICY}`;
     }
 
     // ── 2. Build conversation messages ────────────────────────────────────────
@@ -352,6 +366,9 @@ export class SupervisorAgent {
         role:    t.role as 'user' | 'assistant',
         content: t.content,
       })),
+      ...(groupContext
+        ? [{ role: 'user' as const, content: formatGroupContextReference(groupContext) }]
+        : []),
       { role: 'user' as const, content: userMessage },
     ];
 
@@ -421,6 +438,7 @@ export class SupervisorAgent {
     } as unknown as ToolSet;
 
     const schedulingSkillResolution = { loaded: false };
+    const shareMemorySkillResolution = { loaded: false };
     const orchestrationTools = {
       manageTodos: createManageTodosTool(todoRepo, runContext),
       scheduleTask: createScheduleTaskTool(prisma, runContext, {
@@ -431,10 +449,26 @@ export class SupervisorAgent {
       listScheduledTasks: createListScheduledTasksTool(prisma, runContext),
       cancelScheduledTask: createCancelScheduledTaskTool(prisma, runContext),
       runScheduledTaskNow: createRunScheduledNowTool(prisma, runContext),
-      ...(this.deps.mem0 ? { rememberFact: createRememberFactTool(this.deps.mem0, runContext) } : {}),
+      ...(this.deps.mem0 && !useGovernedLarkRuntime
+        ? { rememberFact: createRememberFactTool(this.deps.mem0, runContext) }
+        : {}),
+      ...(useGovernedLarkRuntime && this.larkMemoryReview
+        ? {
+          review_memory: this.larkMemoryReview.createMemoryReviewTool({
+            runContext,
+            perm,
+            chatId: chatId ?? String(channelId),
+            isSkillResolved: () => shareMemorySkillResolution.loaded,
+          }),
+        }
+        : {}),
     } as unknown as ToolSet;
 
-    const allowedToolIds = governedPermittedToolIds;
+    // Lark memory publishing is requester-reviewed: the model may discover the
+    // recipe, but only review_memory may reach the publishing tool.
+    const allowedToolIds = new Set(
+      [...governedPermittedToolIds].filter(toolId => toolId !== 'memoryPublishing'),
+    );
     const workResolver = useGovernedLarkRuntime
       ? this.deps.workResolution ?? new WorkResolutionService({
         skillCatalog: this.deps.skillCatalog!,
@@ -461,6 +495,9 @@ export class SupervisorAgent {
               : [];
             schedulingSkillResolution.loaded = selectedSkills.some(
               skill => skill.slug === SCHEDULE_DIVO_WORK_SKILL_SLUG,
+            );
+            shareMemorySkillResolution.loaded = selectedSkills.some(
+              skill => skill.slug === SHARE_MEMORY_SKILL_SLUG,
             );
             if (this.deps.auditService) {
               void this.deps.auditService.record({
@@ -529,7 +566,7 @@ export class SupervisorAgent {
       : {} as ToolSet;
 
     let dynamicCapabilities = {} as ToolSet;
-    if (agentDef && this.deps.agentCatalogCache) {
+    if (!useGovernedLarkRuntime && agentDef && this.deps.agentCatalogCache) {
       const allAgents = await this.deps.agentCatalogCache.getForCompany(String(runContext.companyId));
       log.info('supervisor.catalog.loaded', { agentCount: allAgents.length, slugs: allAgents.map(a => a.slug) });
       const rootAgent = allAgents.find(agent => agent.id === agentDef.id) ?? toDescriptor(agentDef);

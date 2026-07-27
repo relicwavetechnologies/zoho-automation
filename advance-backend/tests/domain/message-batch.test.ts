@@ -14,6 +14,7 @@ const message = (over: Partial<BatchableMessage> = {}): BatchableMessage => ({
   chatId: 'oc_1',
   text: 'first thought',
   hasAttachments: false,
+  invokesAgent: true,
   isCommand: false,
   acceptedAtMs: 1_000,
   ...over,
@@ -69,6 +70,14 @@ describe('isBatchCompatible', () => {
       isBatchCompatible(message({ hasAttachments: true }), message({ messageId: 'om_2' })),
       false,
     );
+  });
+
+  it('never merges tagged and ambient messages in either direction', () => {
+    const tagged = message({ invokesAgent: true });
+    const ambient = message({ messageId: 'om_2', invokesAgent: false });
+
+    assert.equal(isBatchCompatible(tagged, ambient), false);
+    assert.equal(isBatchCompatible(ambient, message({ invokesAgent: true })), false);
   });
 
   it('never merges commands', () => {

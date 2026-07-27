@@ -308,6 +308,19 @@ describe('ChannelIdentityRepository.resolveByLarkOpenId (cache)', () => {
 });
 
 describe('ChannelIdentityRepository.resolveByLarkTenantIdentity', () => {
+  it('resolves only an active tenant company without requiring a user identity', async () => {
+    const active = new ChannelIdentityRepository(makeDb({}) as any);
+    const inactive = new ChannelIdentityRepository(makeDb({
+      larkTenantBinding: { findFirst: async () => null },
+    }) as any);
+
+    const activeResult = await active.resolveLarkTenantCompanyId('tenant-1');
+    const inactiveResult = await inactive.resolveLarkTenantCompanyId('tenant-1');
+
+    assert.deepEqual(activeResult, ok('company-tenant-1'));
+    assert.deepEqual(inactiveResult, ok(null));
+  });
+
   it('keeps identical open IDs isolated by Lark tenant', async () => {
     const connectionQueries: Array<Record<string, unknown>> = [];
     const db = makeIdentityDb({
