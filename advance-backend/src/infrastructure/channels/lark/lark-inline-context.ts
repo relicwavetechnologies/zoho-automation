@@ -44,7 +44,10 @@ export async function extractAttachmentInlineContext(
     }
 
     return await withTimeout(
-      extractDocContext(fileBuffer, attachment.mimeType, attachment.fileName),
+      extractDocContext(
+        fileBuffer, attachment.mimeType, attachment.fileName,
+        env.LARK_DOCUMENT_INDEXING === 'on',
+      ),
       INLINE_TIMEOUT_MS,
       { context: `[File: ${attachment.fileName}]`, isComplete: false, rawText: '' },
     );
@@ -85,6 +88,8 @@ async function extractDocContext(
   buf:      Buffer,
   mimeType: string,
   fileName: string,
+  /** Whether a background index will exist to search. See LARK_DOCUMENT_INDEXING. */
+  indexingEnabled: boolean,
 ): Promise<InlineContextResult> {
   const lowerName = fileName.toLowerCase();
   const mime      = mimeType.toLowerCase().split(';')[0]?.trim() ?? '';
@@ -145,9 +150,20 @@ async function extractDocContext(
   const isComplete = rawText.length <= INLINE_FULL_CHAR_CAP;
   const excerpt    = isComplete ? rawText : rawText.slice(0, INLINE_EXCERPT_CHARS).trimEnd();
 
+  // What the model is told about the rest of a long document depends on
+  // whether there is a rest to fetch. Pointing it at contextSearch when
+  // indexing is off sends it after chunks that were never written, and it
+  // reports the file as unreadable rather than answering from what it has.
+  const truncatedContext = indexingEnabled
+    ? `[Document excerpt from "${fileName}" (first section — full document indexed in background):\n${excerpt}\n…\nUse contextSearch or documentRag to look up specific sections.]`
+    : `[Document excerpt from "${fileName}" (first section only — the rest of this file was NOT read):\n${excerpt}\n…\n`
+      + 'This excerpt is everything you have of this file; it is not indexed, so searching for more will find nothing. '
+      + 'Answer from the excerpt, and say plainly which parts of the document you could not see. '
+      + 'Do not infer what the unread sections contain.]';
+
   const context = isComplete
     ? `[Document: "${fileName}"\n${rawText}]`
-    : `[Document excerpt from "${fileName}" (first section — full document indexed in background):\n${excerpt}\n…\nUse contextSearch or documentRag to look up specific sections.]`;
+    : truncatedContext;
 
   return { context, isComplete, rawText };
 }

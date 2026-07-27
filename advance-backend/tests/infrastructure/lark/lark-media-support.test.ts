@@ -92,34 +92,49 @@ describe('unsupportedDocumentNotice', () => {
   });
 });
 
-describe('quotedDocumentNotice', () => {
+describe('quotedDocumentNotice — indexing off (the shipped default)', () => {
   const notice = quotedDocumentNotice('Q3-revenue.pdf');
 
-  it('names the file and points at the transcript annotation', () => {
+  it('names the file so the reply can refer to it', () => {
     assert.match(notice, /Q3-revenue\.pdf/);
+  });
+
+  it('sends the model to the excerpt it already has', () => {
+    assert.match(notice, /excerpt/i);
+    assert.match(notice, /Answer from that excerpt/i);
+  });
+
+  it('forbids searching for chunks that were never written', () => {
+    // The failure this prevents: with nothing indexed, a contextSearch for
+    // this file returns empty and the model reports it cannot find a document
+    // the user is looking at.
+    assert.match(notice, /not indexed/i);
+    assert.match(notice, /do not call contextSearch or documentRag/i);
+  });
+
+  it('asks Divo to say what it could not see rather than guess', () => {
+    assert.match(notice, /which part you could not see/i);
+    assert.match(notice, /Never answer from the filename alone/i);
+  });
+});
+
+describe('quotedDocumentNotice — indexing on', () => {
+  const notice = quotedDocumentNotice('Q3-revenue.pdf', true);
+
+  it('points at the transcript annotation', () => {
     assert.match(notice, /fileAssetId/);
     assert.match(notice, /contextSearch/);
   });
 
-  it('forbids answering from the filename when nothing is found', () => {
-    // A quote-reply is usually a two-word question, and a model holding only a
-    // filename will answer it anyway.
-    assert.match(notice, /cannot locate the file/i);
-    assert.match(notice, /Never answer from the filename alone/i);
-  });
-
   it('gives a DM a way through, since a DM has no transcript to look in', () => {
-    // The transcript that carries fileAssetId is written only for groups. An
-    // instruction that ends at "look in the transcript, else give up" made
-    // Divo refuse a document in a DM that was indexed and retrievable — a
-    // confident refusal with nothing to signal it was wrong.
+    // The transcript that carries fileAssetId is written only for groups.
     assert.match(notice, /Otherwise call contextSearch/i);
     assert.match(notice, /Q3-revenue\.pdf" as the query/);
-    assert.match(notice, /does not mean the file is missing/i);
   });
 
   it('does not tell the model to give up before it has searched', () => {
     assert.match(notice, /Only after a search comes back empty/i);
+    assert.match(notice, /Never answer from the filename alone/i);
   });
 });
 

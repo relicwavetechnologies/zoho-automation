@@ -1943,8 +1943,13 @@ async function prepareLarkAttachmentContexts(input: {
     // job finish before its row exists, land in the "message not found" branch,
     // and leave the transcript reading `processing` forever. The caller fires
     // these once the snapshot is stored.
+    //
+    // `processing` is a promise that more is coming. It is only honest while
+    // indexing is switched on; with it off the excerpt above is all there will
+    // ever be, and saying otherwise makes Divo offer detail it cannot fetch.
+    const indexingEnabled = deps.env.LARK_DOCUMENT_INDEXING === 'on';
     const ingestionStatus: GroupChatAttachmentContext['ingestionStatus'] =
-      isImage ? 'inline_only' : 'processing';
+      !isImage && indexingEnabled ? 'processing' : 'inline_only';
 
     // An attachment that could not be downloaded or read still has to reach
     // the model as *something*. Handing it nothing produces "I don't see any
@@ -1973,7 +1978,7 @@ async function prepareLarkAttachmentContexts(input: {
       attachment: att,
       context,
       inlineContext: effectiveContext,
-      needsIngestion: !isImage,
+      needsIngestion: !isImage && indexingEnabled,
     });
   }
 
@@ -1992,7 +1997,7 @@ async function enqueuePreparedDocuments(input: {
   prepared: readonly PreparedAttachmentContext[];
   incoming: IncomingMessage;
   identity: LarkResolvedIdentity;
-  deps: { ingestionQueue?: Pick<IngestionQueue, 'enqueue'> };
+  deps: { ingestionQueue?: Pick<IngestionQueue, 'enqueue'>; env: TypedEnv };
   log: Logger;
   announce: boolean;
 }): Promise<void> {
@@ -2030,12 +2035,16 @@ async function enqueueLarkDocumentIngestion(input: {
   att: LarkAttachment;
   incoming: IncomingMessage;
   identity: LarkResolvedIdentity;
-  deps: { ingestionQueue?: Pick<IngestionQueue, 'enqueue'> };
+  deps: { ingestionQueue?: Pick<IngestionQueue, 'enqueue'>; env: TypedEnv };
   log: Logger;
   announce: boolean;
 }): Promise<boolean> {
   const { att, incoming, identity, deps, log } = input;
   if (!deps.ingestionQueue) return false;
+  // Checked here as well as at the call site: this is the last point before a
+  // job exists, and a second reader of this code should not have to trace the
+  // caller to know whether the switch is respected.
+  if (deps.env.LARK_DOCUMENT_INDEXING !== 'on') return false;
 
   try {
     await deps.ingestionQueue.enqueue({

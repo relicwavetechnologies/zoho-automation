@@ -134,6 +134,8 @@ async function runWebhook(body: unknown, options: {
   /** Number of user-owned Lark connections revoked by an auth command. */
   larkConnectionCount?: number;
   setupAdapter?: (adapter: LarkChannelAdapter) => void;
+  /** Background document indexing. Ships 'off'. */
+  documentIndexing?: 'on' | 'off';
   /** Observe the transcript write / ingestion enqueue ordering. */
   onRetain?: () => void;
   onEnqueue?: () => void;
@@ -196,6 +198,8 @@ async function runWebhook(body: unknown, options: {
     LARK_BOT_NAME: 'Divo',
     LARK_VERIFICATION_TOKEN: 'verify',
     LARK_UNTAGGED_GROUP_ATTACHMENTS: 'ignore',
+    // Matches the shipped default: documents are read for the turn, not indexed.
+    LARK_DOCUMENT_INDEXING: options.documentIndexing ?? 'off',
     ...(options.untaggedPolicy ?? {}),
   } as any;
   const adapter = new LarkChannelAdapter({ env, logger: noopLogger, botOpenId: 'ou_bot' });
@@ -1112,7 +1116,7 @@ describe('Lark document attachments', () => {
       chatType: 'p2p',
       file: { key: 'file_v3_budget', name: 'budget.xlsx' },
       text: '',
-    })));
+    }), { documentIndexing: 'on' }));
 
     assert.ok(!result.order.includes('engine'), 'no agent run');
     assert.ok(
@@ -1134,7 +1138,7 @@ describe('Lark document attachments', () => {
       chatType: 'group',
       mentionsBot: true,
       file: { key: 'file_v3_q3', name: 'Q3-revenue.pdf' },
-    })));
+    }), { documentIndexing: 'on' }));
 
     assert.equal(result.ingestionJobs.length, 1);
     const job = result.ingestionJobs[0]!;
@@ -1155,6 +1159,7 @@ describe('Lark document attachments', () => {
       mentionsBot: true,
       file: { key: 'file_v3_order', name: 'ordering.pdf' },
     }), {
+      documentIndexing: 'on',
       onRetain: () => order.push('retain'),
       onEnqueue: () => order.push('enqueue'),
     }));
@@ -1173,7 +1178,7 @@ describe('Lark document attachments', () => {
       chatType: 'group',
       mentionsBot: true,
       file: { key: 'file_v3_spec', name: 'spec.docx' },
-    })));
+    }), { documentIndexing: 'on' }));
 
     const job = result.ingestionJobs[0]!;
     assert.equal(job['larkChatId'], 'oc_1');
@@ -1191,7 +1196,7 @@ describe('Lark document attachments', () => {
       chatType: 'group',
       mentionsBot: false,
       file: { key: 'file_v3_quiet', name: 'notes.pdf' },
-    })));
+    }), { documentIndexing: 'on' }));
 
     assert.equal(result.ingestionJobs.length, 1, 'the document is still indexed');
     const job = result.ingestionJobs[0]!;
@@ -1204,7 +1209,7 @@ describe('Lark document attachments', () => {
       chatType: 'group',
       mentionsBot: true,
       file: { key: 'file_v3_spec', name: 'spec.docx' },
-    })));
+    }), { documentIndexing: 'on' }));
 
     const attachments = attachmentsOf(result.retainedMessages[0]);
     assert.equal(attachments.length, 1);
@@ -1212,6 +1217,40 @@ describe('Lark document attachments', () => {
     // it the excerpt is all there will ever be. Neither is true once the file
     // is queued.
     assert.equal(attachments[0]?.['ingestionStatus'], 'processing');
+  });
+
+  // ── Indexing off (the shipped default) ───────────────────────────────────
+  // Reading a document for the turn that asked about it is self-contained and
+  // must keep working with the background pipeline switched off.
+
+  it('still reads the document for this turn when indexing is off', async () => {
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      file: { key: 'file_v3_inline', name: 'statement.pdf' },
+    })));
+
+    assert.deepEqual(
+      attemptedDownloads(result.logEvents), ['statement.pdf'],
+      'the document is still pulled out of Lark',
+    );
+    assert.deepEqual(result.ingestionJobs, [], 'but nothing is queued for indexing');
+    assert.ok(result.order.includes('engine'), 'and Divo still answers');
+  });
+
+  it('does not claim a document is still processing when nothing will process it', async () => {
+    // `processing` tells the model more detail is coming. With indexing off
+    // the inline excerpt is all there will ever be, so the status has to say
+    // so — otherwise Divo offers to look up sections that do not exist.
+    const result = await withStubbedFetch(() => runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      file: { key: 'file_v3_inline', name: 'statement.pdf' },
+    })));
+
+    const attachments = attachmentsOf(result.retainedMessages[0]);
+    assert.equal(attachments.length, 1);
+    assert.equal(attachments[0]?.['ingestionStatus'], 'inline_only');
   });
 
   it('still refuses a format it has no reader for, without downloading it', async () => {
@@ -1499,7 +1538,7 @@ describe('Lark untagged group policy', () => {
     const result = await withStubbedFetch(() => runWebhook(makeEvent({
       chatType: 'group',
       file: { key: 'file_v3_untagged', name: 'notes.pdf' },
-    })));
+    }), { documentIndexing: 'on' }));
 
     assert.equal(result.ingestionJobs.length, 1, 'the document is queued');
     assert.equal(result.ingestionJobs[0]?.['larkChatId'], 'oc_1');

@@ -130,6 +130,20 @@ const EnvSchema = z.object({
   // and the fastest safe rollback for that is a restart, not a deploy.
   LARK_MESSAGE_BATCHING: z.enum(['on', 'off']).default('on'),
 
+  // Index Lark documents in the background so later questions can retrieve
+  // parts the inline excerpt left out.
+  //
+  // Off by default. Reading a document for the current turn is self-contained
+  // and already works; indexing adds a CDN upload, an embedding call, and a
+  // vector write, and a failure in any of them lands as a red card in the
+  // user's chat for a question Divo has usually just answered correctly.
+  // Turning this on is a deliberate choice made once that pipeline is trusted.
+  //
+  // With it off, Divo answers from the inline excerpt alone and says so when
+  // the excerpt does not cover the whole file, rather than promising a
+  // retrieval that will never be possible.
+  LARK_DOCUMENT_INDEXING: z.enum(['on', 'off']).default('off'),
+
   // ── Qdrant vector store ───────────────────────────────────────────────────
   QDRANT_URL:                  z.string().default('http://127.0.0.1:6333'),
   QDRANT_API_KEY:              z.string().optional(),

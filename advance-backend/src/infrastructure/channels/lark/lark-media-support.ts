@@ -2,15 +2,16 @@
  * What Divo can actually do with a Lark attachment.
  *
  * Images are downloaded for the turn, OCR'd, shown to the model, and then
- * forgotten. Documents are downloaded, excerpted inline for the current turn,
- * and queued for indexing so later questions can retrieve the parts the
- * excerpt left out.
+ * forgotten. Documents are downloaded and excerpted inline for the current
+ * turn. They are additionally queued for background indexing only when
+ * LARK_DOCUMENT_INDEXING is on — off by default, so by default a document is
+ * read for the turn that asked about it and nothing outlives that turn.
  *
  * Support is decided by whether an extractor can actually read the bytes, not
  * by whether the file arrived. `extractFromBuffer` falls back to
  * `decodeTextBuffer` for anything it does not recognise, which turns a .zip
- * into pages of mojibake and indexes it as if it were prose. The allow-list
- * below is what keeps that out of the vector store.
+ * into pages of mojibake and feeds it to the model as if it were prose. The
+ * allow-list below is what keeps that out.
  */
 
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
@@ -126,26 +127,51 @@ export const isAwaitingItsQuestion = (input: {
 /**
  * Prompt-only context for a readable document someone quote-replied to.
  *
- * The document itself is not re-fetched here. It was indexed when it arrived,
- * and the transcript for this room carries its `fileAssetId` on the very
+ * The document itself is not re-fetched here. Divo already read it when it was
+ * posted, and the transcript for this room carries what it found on the very
  * message being quoted — so this notice's job is to send the model there
  * rather than to duplicate the content inline.
+ *
+ * Where "there" is depends on whether background indexing is on: a searchable
+ * index, or the inline excerpt alone.
  *
  * The "do not answer from the filename" line is doing real work: a quote-reply
  * is usually a short question like "what does this say", and a model holding a
  * filename and no content will answer it anyway.
  */
-export const quotedDocumentNotice = (fileName: string): string =>
-  `[Quoted document: "${fileName}".\n`
-  + 'The user is asking about this file. It has been read and indexed. '
-  + 'If the transcript above carries an internal attachment context for it with a fileAssetId, '
-  + 'call contextSearch with that fileAssetId. '
-  + `Otherwise call contextSearch with "${fileName}" as the query — a direct message keeps no such `
-  + 'transcript, so the absence of a fileAssetId does not mean the file is missing. '
-  + 'If the transcript already holds an inline excerpt of this file, answer from that first and '
-  + 'search only for what it does not cover. '
-  + 'Only after a search comes back empty should you say you cannot locate the file. '
-  + 'Never answer from the filename alone.]';
+export const quotedDocumentNotice = (
+  fileName: string,
+  /** Whether a background index exists to search. See LARK_DOCUMENT_INDEXING. */
+  indexingEnabled = false,
+): string => {
+  const head = `[Quoted document: "${fileName}".\n`;
+
+  // With indexing off there is no index to search, so the instruction is the
+  // opposite of the one above: use the excerpt in the transcript and say what
+  // it does not cover. Sending the model to contextSearch would have it hunt
+  // for chunks that were never written and conclude the file is missing —
+  // while the user is looking at it.
+  if (!indexingEnabled) {
+    return head
+      + 'The transcript above holds the excerpt Divo read from this file when it was posted. '
+      + 'Answer from that excerpt. '
+      + 'This file is not indexed, so do not call contextSearch or documentRag for it — they will find nothing. '
+      + 'If the excerpt does not cover what was asked, say which part you could not see and offer to have '
+      + 'the relevant page pasted or screenshotted. '
+      + 'Never answer from the filename alone.]';
+  }
+
+  return head
+    + 'The user is asking about this file. It has been read and indexed. '
+    + 'If the transcript above carries an internal attachment context for it with a fileAssetId, '
+    + 'call contextSearch with that fileAssetId. '
+    + `Otherwise call contextSearch with "${fileName}" as the query — a direct message keeps no such `
+    + 'transcript, so the absence of a fileAssetId does not mean the file is missing. '
+    + 'If the transcript already holds an inline excerpt of this file, answer from that first and '
+    + 'search only for what it does not cover. '
+    + 'Only after a search comes back empty should you say you cannot locate the file. '
+    + 'Never answer from the filename alone.]';
+};
 
 /**
  * Prompt context for an image that was attached but could not be prepared.
