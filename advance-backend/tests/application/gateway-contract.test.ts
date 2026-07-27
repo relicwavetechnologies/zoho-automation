@@ -106,9 +106,14 @@ describe('public gateway request contract', () => {
     }).success, false);
   });
 
-  it('allows only an exact toolId filter for tools.list', () => {
+  it('accepts either an exact toolId or an exact family for tools.list', () => {
     assert.equal(toolsListPayloadSchema.safeParse({ toolId: 'googleGmail' }).success, true);
-    assert.equal(toolsListPayloadSchema.safeParse({ family: 'google' }).success, false);
+    assert.equal(toolsListPayloadSchema.safeParse({ family: 'google' }).success, true);
+    assert.equal(toolsListPayloadSchema.safeParse({ family: 'unknown' }).success, false);
+    assert.equal(toolsListPayloadSchema.safeParse({
+      toolId: 'googleGmail',
+      family: 'google',
+    }).success, false);
   });
 
   it('keeps Google onboarding planning internal to bounded work resolution', () => {

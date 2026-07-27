@@ -1,212 +1,168 @@
 import { createHash } from 'node:crypto';
 import type { ToolId } from '../../shared/ids';
 
-/** All canonical tool IDs in the system. Add new tools here. */
-export const CANONICAL_TOOL_IDS = [
-  'larkMessaging',
-  'larkContacts',
-  'larkTask',
-  'larkCalendar',
-  'larkMeeting',
-  'larkDoc',
-  'larkBase',
-  'larkApproval',
-  'googleGmail',
-  'googleDrive',
-  'googleCalendar',
-  'googleDocs',
-  'googleSheets',
-  'googleSlides',
-  'googleForms',
-  'googleTasks',
-  'googleContacts',
-  'googleChat',
-  'googleAppsScript',
-  'canvaDesign',
-  'airtableBase',
-  'airtableRecords',
-  'airtableSchema',
-  'airtableAutomation',
-  // AITable (aitable.ai) is a different product from Airtable, not a variant of
-  // it. The IDs deliberately borrow AITable's own vocabulary — spaces, nodes,
-  // datasheets, fields — rather than Airtable's bases and tables, so the two
-  // families do not read as near-duplicates in the catalogue or to the model.
-  'aitableDatasheets',
-  'aitableFields',
-  'zohoCrm',
-  'zohoBooks',
-  'contextSearch',
-  'webSearch',
-  'skillPublishing',
-  'memoryPublishing',
-  'memoryRecall',
-  'documentRag',
-  'dataProcessor',
-  'scheduledWorkflows',
+export const TOOL_FAMILY_IDS = [
+  'lark',
+  'google',
+  'canva',
+  'airtable',
+  'aitable',
+  'zoho',
+  'context',
+  'skills',
+  'memory',
+  'rag',
+  'data',
+  'execution',
+  'scheduling',
   'semrush',
-  'omsSiteData',
-  // NOTE: 'runCommand' is intentionally NOT here. The terminal tool runs on the
-  // user's own machine and is gated per-command by the user, so it is exempt
-  // from company/department RBAC. It lives in the tool registry + RegisteredTool
-  // catalog only. See run-command.tool.ts permissionCheck().
+  'oms',
 ] as const;
 
-export type CanonicalToolId = typeof CANONICAL_TOOL_IDS[number];
+export type ToolFamily = typeof TOOL_FAMILY_IDS[number];
 
-export type ToolFamily = 'lark' | 'google' | 'canva' | 'airtable' | 'aitable' | 'zoho' | 'context' | 'skills' | 'memory' | 'rag' | 'data' | 'execution' | 'scheduling' | 'semrush' | 'oms';
-
-export const TOOL_FAMILY_MAP: Record<CanonicalToolId, ToolFamily> = {
-  larkMessaging:  'lark',
-  larkContacts:   'lark',
-  larkTask:       'lark',
-  larkCalendar:   'lark',
-  larkMeeting:    'lark',
-  larkDoc:        'lark',
-  larkBase:       'lark',
-  larkApproval:   'lark',
-  googleGmail:    'google',
-  googleDrive:    'google',
-  googleCalendar: 'google',
-  googleDocs:     'google',
-  googleSheets:   'google',
-  googleSlides:   'google',
-  googleForms:    'google',
-  googleTasks:    'google',
-  googleContacts: 'google',
-  googleChat:     'google',
-  googleAppsScript: 'google',
-  canvaDesign:    'canva',
-  airtableBase:       'airtable',
-  airtableRecords:    'airtable',
-  airtableSchema:     'airtable',
-  airtableAutomation: 'airtable',
-  aitableDatasheets:  'aitable',
-  aitableFields:      'aitable',
-  zohoCrm:        'zoho',
-  zohoBooks:      'zoho',
-  contextSearch:  'context',
-  webSearch:      'context',
-  skillPublishing: 'skills',
-  memoryPublishing: 'memory',
-  memoryRecall: 'memory',
-  documentRag:    'rag',
-  dataProcessor:  'data',
-  scheduledWorkflows: 'scheduling',
-  semrush: 'semrush',
-  omsSiteData: 'oms',
+export const TOOL_FAMILY_DEFINITIONS: Record<ToolFamily, {
+  readonly displayName: string;
+}> = {
+  lark:       { displayName: 'Lark' },
+  google:     { displayName: 'Google Workspace' },
+  canva:      { displayName: 'Canva' },
+  airtable:   { displayName: 'Airtable' },
+  aitable:    { displayName: 'AITable' },
+  zoho:       { displayName: 'Zoho' },
+  context:    { displayName: 'Search and context' },
+  skills:     { displayName: 'Skills' },
+  memory:     { displayName: 'Memory' },
+  rag:        { displayName: 'Document retrieval' },
+  data:       { displayName: 'Data processing' },
+  execution:  { displayName: 'Local execution' },
+  scheduling: { displayName: 'Scheduled work' },
+  semrush:    { displayName: 'Semrush' },
+  oms:        { displayName: 'OMS' },
 };
 
-/**
- * Every tool ID in one family, derived rather than listed so a new tool cannot
- * be added to a family and then quietly missed by callers that switch on it.
- */
-export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
-  return CANONICAL_TOOL_IDS.filter(toolId => TOOL_FAMILY_MAP[toolId] === family);
+export function isToolFamily(value: string): value is ToolFamily {
+  return Object.prototype.hasOwnProperty.call(TOOL_FAMILY_DEFINITIONS, value);
 }
 
-/** Action groups each tool supports. Drives permission defaults. */
-export const TOOL_SUPPORTED_ACTIONS: Record<CanonicalToolId, readonly string[]> = {
-  larkMessaging:  ['read', 'send'],
-  larkContacts:   ['read'],
-  larkTask:       ['read', 'create', 'update', 'delete'],
-  larkCalendar:   ['read', 'create', 'update', 'delete'],
-  larkMeeting:    ['read'],
-  larkDoc:        ['read', 'create', 'update'],
-  larkBase:       ['read', 'create', 'update', 'delete'],
-  larkApproval:   ['read', 'create'],
-  googleGmail:    ['read', 'create', 'update', 'delete', 'send'],
-  googleDrive:    ['read', 'create', 'update', 'delete'],
-  googleCalendar: ['read', 'create', 'update', 'delete'],
-  googleDocs:     ['read', 'create', 'update', 'delete'],
-  googleSheets:   ['read', 'create', 'update', 'delete'],
-  googleSlides:   ['read', 'create', 'update', 'delete'],
-  googleForms:    ['read', 'create', 'update', 'delete'],
-  googleTasks:    ['read', 'create', 'update', 'delete'],
-  googleContacts: ['read', 'create', 'update', 'delete'],
-  googleChat:     ['read', 'send', 'update'],
-  googleAppsScript: ['read', 'create', 'update', 'delete', 'execute'],
-  canvaDesign:    ['read', 'create', 'update'],
-  airtableBase:       ['read'],
-  airtableRecords:    ['read', 'create', 'update', 'delete'],
-  airtableSchema:     ['read', 'create', 'update', 'delete'],
-  airtableAutomation: ['read', 'create', 'update', 'delete'],
-  aitableDatasheets:  ['read', 'create', 'update', 'delete'],
-  // AITable's Fusion API can create and delete a field but has no endpoint to
-  // alter one, so 'update' is absent rather than declared and unimplementable.
-  aitableFields:      ['read', 'create', 'delete'],
-  zohoCrm:        ['read', 'create', 'update', 'delete'],
-  zohoBooks:      ['read', 'create', 'update', 'delete'],
-  contextSearch:  ['read'],
-  webSearch:      ['read'],
-  skillPublishing: ['read', 'create', 'update', 'delete'],
-  memoryPublishing: ['read', 'create'],
-  memoryRecall: ['read'],
-  documentRag:    ['read'],
-  dataProcessor:  ['read'],
-  scheduledWorkflows: ['read', 'create', 'update', 'delete', 'execute'],
-  semrush: ['read'],
-  omsSiteData: ['read'],
+export type BuiltInRoleDefaults = {
+  readonly MEMBER: boolean;
+  readonly COMPANY_ADMIN: boolean;
+  readonly SUPER_ADMIN: boolean;
 };
 
-/** Default permission per tool per built-in company role. */
-export const TOOL_DEFAULT_PERMISSIONS: Record<CanonicalToolId, { MEMBER: boolean; COMPANY_ADMIN: boolean; SUPER_ADMIN: boolean }> = {
-  larkMessaging:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkContacts:   { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkTask:       { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkCalendar:   { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkMeeting:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkDoc:        { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkBase:       { MEMBER: false, COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  larkApproval:   { MEMBER: false, COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleGmail:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleDrive:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleCalendar: { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleDocs:     { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleSheets:   { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleSlides:   { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleForms:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleTasks:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleContacts: { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleChat:     { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  googleAppsScript: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  canvaDesign:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  // Records are ordinary day-to-day work. Schema and automation edit the shape
-  // of a base — including delete_table / delete_automation — so they follow the
-  // larkBase precedent and stay off for members until an admin grants them.
-  airtableBase:       { MEMBER: true,  COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  airtableRecords:    { MEMBER: true,  COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  airtableSchema:     { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  airtableAutomation: { MEMBER: false, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  // A ceiling, not a grant. AITable is department-grant-only in tool-policy, so
-  // this permissive MEMBER default is only what makes granting it to a
-  // department possible at all; the grant-only list is what keeps it away from
-  // everyone who has no department selected, and the company-admin floor in
-  // permission.service is what hands it to administrators. Setting MEMBER false
-  // here would instead make the tool permanently ungrantable.
-  aitableDatasheets:  { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  aitableFields:      { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  zohoCrm:        { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  zohoBooks:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  contextSearch:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  webSearch:      { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  skillPublishing: { MEMBER: false, COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  memoryPublishing: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  memoryRecall: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  documentRag:    { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  dataProcessor:  { MEMBER: true,  COMPANY_ADMIN: true,  SUPER_ADMIN: true },
-  scheduledWorkflows: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  // A ceiling, not a grant. Semrush is a metered company subscription, so it is
-  // department-grant-only in tool-policy: this permissive default is what lets
-  // an admin grant it to a department at all, and the grant-only list is what
-  // stops it reaching everyone who has no department selected.
-  semrush: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
-  // OMS inventory access is deliberately fixed to live company administrators.
-  // PermissionService strips normal role overrides before applying that rule.
-  // A ceiling, not a grant. OMS stays department-grant-only in
-  // permission.service, so raising this lets an admin grant it to a role
-  // without handing it to every member who has no department selected.
-  omsSiteData: { MEMBER: true, COMPANY_ADMIN: true, SUPER_ADMIN: true },
+const ALL_ROLES: BuiltInRoleDefaults = {
+  MEMBER: true,
+  COMPANY_ADMIN: true,
+  SUPER_ADMIN: true,
 };
+
+const ADMIN_ONLY: BuiltInRoleDefaults = {
+  MEMBER: false,
+  COMPANY_ADMIN: true,
+  SUPER_ADMIN: true,
+};
+
+function defineCapability<const Family extends ToolFamily, const Actions extends readonly string[]>(
+  family: Family,
+  supportedActions: Actions,
+  defaultPermissions: BuiltInRoleDefaults = ALL_ROLES,
+) {
+  return { family, supportedActions, defaultPermissions } as const;
+}
+
+/**
+ * Canonical governed capability taxonomy.
+ *
+ * Family, supported actions, and built-in role ceilings are defined together
+ * so a new tool cannot be added to one policy map and silently omitted from
+ * another. Runtime implementations and PermissionService remain authoritative
+ * for execution; this object does not register or grant a tool.
+ *
+ * `runCommand` is intentionally absent. It runs on the user's own machine and
+ * is gated per command, so it is exempt from company/department RBAC.
+ */
+export const TOOL_CAPABILITY_DEFINITIONS = {
+  larkMessaging:  defineCapability('lark', ['read', 'send']),
+  larkContacts:   defineCapability('lark', ['read']),
+  larkTask:       defineCapability('lark', ['read', 'create', 'update', 'delete']),
+  larkCalendar:   defineCapability('lark', ['read', 'create', 'update', 'delete']),
+  larkMeeting:    defineCapability('lark', ['read']),
+  larkDoc:        defineCapability('lark', ['read', 'create', 'update']),
+  larkBase:       defineCapability('lark', ['read', 'create', 'update', 'delete'], ADMIN_ONLY),
+  larkApproval:   defineCapability('lark', ['read', 'create'], ADMIN_ONLY),
+
+  googleGmail:      defineCapability('google', ['read', 'create', 'update', 'delete', 'send']),
+  googleDrive:      defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleCalendar:   defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleDocs:       defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleSheets:     defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleSlides:     defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleForms:      defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleTasks:      defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleContacts:   defineCapability('google', ['read', 'create', 'update', 'delete']),
+  googleChat:       defineCapability('google', ['read', 'send', 'update']),
+  googleAppsScript: defineCapability('google', ['read', 'create', 'update', 'delete', 'execute'], ADMIN_ONLY),
+
+  canvaDesign: defineCapability('canva', ['read', 'create', 'update']),
+
+  // Records are ordinary day-to-day work. Schema and automation edit the shape
+  // of a base, so they remain off for members until an administrator grants them.
+  airtableBase:       defineCapability('airtable', ['read']),
+  airtableRecords:    defineCapability('airtable', ['read', 'create', 'update', 'delete']),
+  airtableSchema:     defineCapability('airtable', ['read', 'create', 'update', 'delete'], ADMIN_ONLY),
+  airtableAutomation: defineCapability('airtable', ['read', 'create', 'update', 'delete'], ADMIN_ONLY),
+
+  // AITable is a distinct product. Its vocabulary keeps these IDs visibly
+  // separate from Airtable in the catalogue.
+  aitableDatasheets: defineCapability('aitable', ['read', 'create', 'update', 'delete']),
+  // Fusion API can create and delete a field but has no update endpoint.
+  aitableFields:     defineCapability('aitable', ['read', 'create', 'delete']),
+
+  zohoCrm:   defineCapability('zoho', ['read', 'create', 'update', 'delete']),
+  zohoBooks: defineCapability('zoho', ['read', 'create', 'update', 'delete']),
+
+  contextSearch:   defineCapability('context', ['read']),
+  webSearch:       defineCapability('context', ['read']),
+  skillPublishing: defineCapability('skills', ['read', 'create', 'update', 'delete'], ADMIN_ONLY),
+  memoryPublishing: defineCapability('memory', ['read', 'create']),
+  memoryRecall:     defineCapability('memory', ['read']),
+  documentRag:      defineCapability('rag', ['read']),
+  dataProcessor:    defineCapability('data', ['read']),
+  scheduledWorkflows: defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
+
+  // These permissive MEMBER values are ceilings, not grants. Department-only
+  // policy keeps both tools unavailable until explicitly granted.
+  semrush:     defineCapability('semrush', ['read']),
+  omsSiteData: defineCapability('oms', ['read']),
+} as const;
+
+export type CanonicalToolId = keyof typeof TOOL_CAPABILITY_DEFINITIONS;
+
+/** All canonical governed tool IDs, in stable catalogue order. */
+export const CANONICAL_TOOL_IDS = Object.freeze(
+  Object.keys(TOOL_CAPABILITY_DEFINITIONS) as CanonicalToolId[],
+);
+
+function mapCapabilities<Value>(
+  select: (definition: typeof TOOL_CAPABILITY_DEFINITIONS[CanonicalToolId]) => Value,
+): Record<CanonicalToolId, Value> {
+  return Object.fromEntries(
+    CANONICAL_TOOL_IDS.map(toolId => [toolId, select(TOOL_CAPABILITY_DEFINITIONS[toolId])]),
+  ) as Record<CanonicalToolId, Value>;
+}
+
+export const TOOL_FAMILY_MAP: Readonly<Record<CanonicalToolId, ToolFamily>> =
+  mapCapabilities<ToolFamily>(definition => definition.family);
+export const TOOL_SUPPORTED_ACTIONS: Readonly<Record<CanonicalToolId, readonly string[]>> =
+  mapCapabilities<readonly string[]>(definition => definition.supportedActions);
+export const TOOL_DEFAULT_PERMISSIONS: Readonly<Record<CanonicalToolId, BuiltInRoleDefaults>> =
+  mapCapabilities<BuiltInRoleDefaults>(definition => definition.defaultPermissions);
+
+/** Every canonical tool ID in one family, in stable catalogue order. */
+export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
+  return CANONICAL_TOOL_IDS.filter(toolId => TOOL_CAPABILITY_DEFINITIONS[toolId].family === family);
+}
 
 /**
  * Content-addressed revision for every permission snapshot derived from the

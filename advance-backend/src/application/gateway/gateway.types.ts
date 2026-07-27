@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TOOL_FAMILY_IDS } from '../../domain/tools/tool-id';
 
 export const GATEWAY_OPS = [
   'capabilities.get',
@@ -152,7 +153,11 @@ export const connectionsListPayloadSchema = z.object({
 
 export const toolsListPayloadSchema = z.object({
   toolId: z.string().min(1).optional(),
-}).strict();
+  family: z.enum(TOOL_FAMILY_IDS).optional(),
+}).strict().refine(
+  value => !(value.toolId && value.family),
+  { message: 'Use either toolId or family, not both.' },
+);
 
 export interface GatewayErrorBody {
   readonly code: GatewayStatus;

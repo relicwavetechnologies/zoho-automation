@@ -50,7 +50,14 @@ import {
 } from './google-orchestration.service';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
 import { AIRTABLE_TOOL_IDS } from '../airtable/airtable-mcp-manifest';
-import { TOOL_PERMISSION_POLICY_REVISION, toolIdsForFamily, type CanonicalToolId } from '../../domain/tools/tool-id';
+import {
+  TOOL_FAMILY_DEFINITIONS,
+  TOOL_PERMISSION_POLICY_REVISION,
+  isToolFamily,
+  toolIdsForFamily,
+  type CanonicalToolId,
+  type ToolFamily,
+} from '../../domain/tools/tool-id';
 import {
   WorkResolutionService,
   withWorkDiscoveryPermissions as withGatewayDiscoveryPermissions,
@@ -245,29 +252,57 @@ export class GatewayDispatcher {
     }
 
     const discoveryPerm = withGatewayDiscoveryPermissions(perm);
-    const requestedToolId = parsed.data.toolId;
     const permittedTools = this.deps.toolRegistry
       .forRuntime(discoveryPerm)
       .filter((tool) => tool.id !== 'runCommand');
-    const selectedTools = requestedToolId
-      ? permittedTools.filter((tool) => tool.id === requestedToolId)
-      : permittedTools;
-    if (requestedToolId && selectedTools.length === 0) {
-      return gatewayFailure('unknown_tool', `Tool is unavailable or not permitted: ${requestedToolId}`);
+
+    const requestedToolId = parsed.data.toolId;
+    const exactTools = requestedToolId
+      ? permittedTools.filter(tool => tool.id === requestedToolId)
+      : [];
+    const legacyFamily = requestedToolId && exactTools.length === 0 && isToolFamily(requestedToolId)
+      ? requestedToolId
+      : undefined;
+    const requestedFamily = parsed.data.family ?? legacyFamily;
+    const selectedTools = exactTools.length > 0
+      ? exactTools
+      : requestedFamily
+        ? permittedTools.filter(tool => tool.family === requestedFamily)
+        : requestedToolId
+          ? []
+          : permittedTools;
+
+    if ((requestedToolId || requestedFamily) && selectedTools.length === 0) {
+      const selector = requestedToolId ?? requestedFamily;
+      return gatewayFailure('unknown_tool', `Tool or family is unavailable or not permitted: ${selector}`);
     }
+
+    const includeContract = exactTools.length > 0;
     const tools = selectedTools
       .map((tool) => ({
         id: tool.id,
         family: tool.family,
         description: tool.description,
         allowedActions: [...(discoveryPerm.allowedActionsByTool.get(asToolId(tool.id)) ?? [])],
-        ...(requestedToolId ? {
+        ...(includeContract ? {
           parameterDocs: tool.parameterDocs,
           argsSchema: serializeToolArgsSchema(tool.argsSchema, { $refStrategy: 'none' }),
         } : {}),
       }));
 
-    return gatewaySuccess({ tools });
+    return gatewaySuccess({
+      ...(includeContract ? {
+        selection: { kind: 'tool', id: String(exactTools[0]!.id) },
+      } : requestedFamily ? {
+        selection: {
+          kind: 'family',
+          id: requestedFamily,
+          displayName: TOOL_FAMILY_DEFINITIONS[requestedFamily as ToolFamily].displayName,
+          requestedAs: legacyFamily ? 'legacy_tool_id' : 'family',
+        },
+      } : {}),
+      tools,
+    });
   }
 
   private async handleSkillsList(

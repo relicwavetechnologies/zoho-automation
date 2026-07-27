@@ -1781,6 +1781,93 @@ describe('GatewayDispatcher', () => {
     assert.equal(unavailable.status, 'unknown_tool');
   });
 
+  it('lists a permitted family without exposing every child contract and keeps invocation exact', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      id: asToolId('airtableRecords'),
+      family: 'airtable',
+      description: 'Airtable records',
+    }));
+    registry.register(makeFakeTool({
+      id: asToolId('airtableSchema'),
+      family: 'airtable',
+      description: 'Airtable schema',
+    }));
+    registry.register(makeFakeTool({
+      id: asToolId('larkBase'),
+      family: 'lark',
+      description: 'Lark Base',
+    }));
+
+    const perm = makeAllowedPerm('airtableRecords', ['read']);
+    perm.allowedToolIds.add(asToolId('airtableSchema'));
+    perm.allowedActionsByTool.set(asToolId('airtableSchema'), new Set(['read']));
+    const permissions = makePermissionService(perm);
+    const dispatcher = new GatewayDispatcher({
+      permissions,
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions,
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      logger: noopLogger,
+    });
+
+    const family = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { family: 'airtable' },
+    }, member);
+    assert.equal(family.ok, true);
+    assert.deepEqual(family.data, {
+      selection: {
+        kind: 'family',
+        id: 'airtable',
+        displayName: 'Airtable',
+        requestedAs: 'family',
+      },
+      tools: [
+        {
+          id: 'airtableRecords',
+          family: 'airtable',
+          description: 'Airtable records',
+          allowedActions: ['read'],
+        },
+        {
+          id: 'airtableSchema',
+          family: 'airtable',
+          description: 'Airtable schema',
+          allowedActions: ['read'],
+        },
+      ],
+    });
+
+    const legacyFamily = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolId: 'airtable' },
+    }, member);
+    assert.equal(legacyFamily.ok, true);
+    assert.equal((legacyFamily.data as any).selection.requestedAs, 'legacy_tool_id');
+    assert.equal((legacyFamily.data as any).tools.length, 2);
+
+    const exact = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolId: 'airtableRecords' },
+    }, member);
+    assert.equal(exact.ok, true);
+    assert.equal((exact.data as any).selection.kind, 'tool');
+    assert.equal(typeof (exact.data as any).tools[0].argsSchema, 'object');
+
+    const invocation = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { toolId: 'airtable', args: {} },
+    }, member);
+    assert.equal(invocation.ok, false);
+    assert.equal(invocation.status, 'unknown_tool');
+  });
+
   it('exposes skillPublishing to department managers even without explicit RBAC rows', async () => {
     const registry = new ToolRegistry();
     const { prisma } = makeSkillPublishingPrisma();
