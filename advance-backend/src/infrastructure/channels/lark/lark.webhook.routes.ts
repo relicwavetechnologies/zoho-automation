@@ -800,8 +800,53 @@ async function processInBackground(
     incoming.userExternalId,
     tenantKey,
   );
+  let identity = identityResult.ok ? identityResult.value : null;
+  let signInReason: string | undefined;
 
-  if (!identityResult.ok || !identityResult.value) {
+  if (identity?.activeDepartmentId && deps.prisma && deps.connectionRepo) {
+    const activeDepartmentId = identity.activeDepartmentId;
+    const activeMemberships = await deps.prisma.departmentMembership.findMany({
+      where: {
+        userId: identity.userId,
+        status: 'active',
+        department: { companyId: identity.companyId, status: 'active' },
+      },
+      select: { departmentId: true },
+      take: 2,
+    });
+
+    if (!activeMemberships.some(({ departmentId }) => departmentId === activeDepartmentId)) {
+      const nextDepartmentId = activeMemberships.length === 1
+        ? activeMemberships[0]!.departmentId
+        : null;
+      const revoked = await deps.connectionRepo.revokeLarkConnectionsForUser(
+        identity.companyId,
+        identity.userId,
+      );
+      if (!revoked.ok) throw new Error(`Failed to refresh changed department access: ${revoked.error.message}`);
+      await deps.prisma.userDepartmentPreference.updateMany({
+        where: {
+          userId: identity.userId,
+          companyId: identity.companyId,
+          activeDepartmentId,
+        },
+        data: { activeDepartmentId: nextDepartmentId },
+      });
+      await deps.channelIdentityRepo.invalidateIdentityCache?.(incoming.userExternalId);
+      log.warn('webhook.identity.department_changed', {
+        companyId: identity.companyId,
+        userId: identity.userId,
+        staleDepartmentId: activeDepartmentId,
+        nextDepartmentId,
+        revokedConnectionCount: revoked.value,
+        correlationId,
+      });
+      signInReason = 'Your department access changed, so I signed you out to refresh your permissions. Connect again to continue.';
+      identity = null;
+    }
+  }
+
+  if (!identityResult.ok || !identity) {
     let ambientCompanyId: string | null = null;
     if (incoming.chatType === 'group') {
       const companyResult = await deps.channelIdentityRepo.resolveLarkTenantCompanyId(tenantKey);
@@ -860,14 +905,14 @@ async function processInBackground(
         const name = pending.value.displayName ?? pending.value.email;
         const card = await deps.adapter.sendCardToChat(
           String(incoming.chatId),
-          buildSignInCard({ name, url: loginUrl }),
+          buildSignInCard({ name, url: loginUrl, ...(signInReason ? { reason: signInReason } : {}) }),
         );
         if (!card.ok) {
           // A working link in a plain message beats a button nobody received.
           log.warn('webhook.login_prompt.card_failed', {
             error: card.error.message, correlationId,
           });
-          await tell(signInFallbackText({ name, url: loginUrl }));
+          await tell(signInFallbackText({ name, url: loginUrl, ...(signInReason ? { reason: signInReason } : {}) }));
         }
         log.info('webhook.login_prompt.sent', {
           larkOpenId: incoming.userExternalId,
@@ -909,7 +954,6 @@ async function processInBackground(
     return;
   }
 
-  const identity = identityResult.value;
   const routing = buildLarkRoutingKeys({
     companyId: String(identity.companyId),
     incoming,
@@ -1378,9 +1422,17 @@ async function handleSlashCommand(args: {
   incoming: IncomingMessage;
   chatType?: string;
   conversation: ConversationHandle;
-  identity: { companyId: string; userId: string; aiRole: string; activeDepartmentId?: string | null };
+  identity: {
+    companyId: string;
+    userId: string;
+    aiRole: string;
+    activeDepartmentId?: string | null;
+    displayName?: string;
+    email?: string;
+  };
   deps: {
     adapter: LarkChannelAdapter;
+    channelIdentityRepo: ChannelIdentityRepoPort;
     conversationRepo: ConversationRepoPort;
     logger: Logger;
     mem0?: Mem0Service;
@@ -1529,10 +1581,18 @@ async function handleSlashCommand(args: {
     }
 
     log.info('webhook.command.login.initiated', { userId: identity.userId, correlationId });
-    await reply(
-      `To connect your Lark account, open this link in your browser:\n\n${url}\n\n` +
-      `After you authorise, I'll send you a confirmation here. The link expires in 10 minutes.`,
+    const name = identity.displayName ?? identity.email ?? 'there';
+    const card = await deps.adapter.sendCardToChat(
+      String(incoming.chatId),
+      buildSignInCard({ name, url }),
     );
+    if (!card.ok) {
+      log.warn('webhook.command.login.card_failed', {
+        error: card.error.message,
+        correlationId,
+      });
+      await reply(signInFallbackText({ name, url }));
+    }
     return;
   }
 
@@ -1543,11 +1603,21 @@ async function handleSlashCommand(args: {
       return;
     }
     const result = await deps.connectionRepo.revokeLarkConnectionsForUser(identity.companyId, identity.userId);
-    if (result.ok && result.value > 0) {
+    if (!result.ok) {
+      log.warn('webhook.command.logout.failed', {
+        userId: identity.userId,
+        error: result.error.message,
+        correlationId,
+      });
+      await reply('Could not disconnect your Lark account. Please try again.');
+      return;
+    }
+    await deps.channelIdentityRepo.invalidateIdentityCache?.(incoming.userExternalId);
+    if (result.value > 0) {
       log.info('webhook.command.logout.ok', { userId: identity.userId, correlationId });
-      await reply('Disconnected. Your personal Lark token has been removed — actions will now run as the Divo bot.');
+      await reply('Disconnected. Your personal Lark sign-in has been removed. Send me another message whenever you want to reconnect.');
     } else {
-      await reply('No connected account found. Type /login to connect.');
+      await reply('No connected account found. Send me another message to connect.');
     }
     return;
   }

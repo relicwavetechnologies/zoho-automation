@@ -44,8 +44,9 @@ export const SIGN_IN_MISSING_EMAIL =
 export const signInFallbackText = (input: {
   readonly name: string;
   readonly url: string;
+  readonly reason?: string;
 }): string =>
-  `Hi ${input.name} — one quick step before I can work for you.\n\n`
+  `${input.reason ?? `Hi ${input.name} — one quick step before I can work for you.`}\n\n`
   + `Connect your Lark account:\n${input.url}\n\n`
   + `The link expires in ${SIGN_IN_LINK_TTL_MINUTES} minutes. `
   + "I'll answer your message as soon as you're connected — no need to send it again.";
@@ -62,6 +63,7 @@ export const signInFallbackText = (input: {
 export const buildSignInCard = (input: {
   readonly name: string;
   readonly url: string;
+  readonly reason?: string;
 }): string => {
   const card = {
     schema: '2.0',
@@ -76,7 +78,7 @@ export const buildSignInCard = (input: {
       elements: [
         {
           tag: 'markdown',
-          content: `Hi ${input.name} — one quick step before I can work for you.`,
+          content: input.reason ?? `Hi ${input.name} — one quick step before I can work for you.`,
         },
         {
           tag: 'button',

@@ -75,6 +75,8 @@ export interface ChannelIdentityRepoPort {
     larkOpenId: string,
     tenantKey?: string,
   ): Promise<Result<PendingLarkLoginResolution | null, InfraError>>;
+  /** Invalidates cached Lark identity after auth or department context changes. */
+  invalidateIdentityCache?(larkOpenId: string): Promise<void>;
   /** Resolves an internal user only within the authoritative company context. */
   resolveByUserId(
     userId: string,
@@ -269,8 +271,10 @@ export class ChannelIdentityRepository implements ChannelIdentityRepoPort {
   /** Invalidate cached identity for a Lark user (call after OAuth link created/updated). */
   async invalidateIdentityCache(larkOpenId: string): Promise<void> {
     if (this.cache) {
-      void this.cache.del(identityCacheKey(larkOpenId));
-      void this.cache.scanDel(`lark:id:v3:*:${larkOpenId}`);
+      await Promise.all([
+        this.cache.del(identityCacheKey(larkOpenId)),
+        this.cache.scanDel(`lark:id:v3:*:${larkOpenId}`),
+      ]);
     }
   }
 

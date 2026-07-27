@@ -23,6 +23,7 @@ interface LarkTestIdentity {
   aiRole: string;
   channel: 'lark';
   activeDepartmentId?: string;
+  displayName?: string;
   email?: string;
 }
 
@@ -128,6 +129,10 @@ async function runWebhook(body: unknown, options: {
   tenantCompanyId?: string | null;
   /** Whether Lark OAuth is configured on this deployment. */
   oauthConfigured?: boolean;
+  /** Active memberships after the saved Lark department context changed. */
+  changedDepartmentMemberships?: string[];
+  /** Number of user-owned Lark connections revoked by an auth command. */
+  larkConnectionCount?: number;
   setupAdapter?: (adapter: LarkChannelAdapter) => void;
   shareResolverService?: {
     isMemoryReviewAction(cardEvent: unknown): boolean;
@@ -165,6 +170,9 @@ async function runWebhook(body: unknown, options: {
   const engineInputs: unknown[] = [];
   const serializerKeys: string[] = [];
   const identityLookups: Array<{ openId: string; tenantKey: string }> = [];
+  const invalidatedIdentities: string[] = [];
+  const revokedLarkUsers: Array<{ companyId: string; userId: string }> = [];
+  const departmentPreferenceUpdates: unknown[] = [];
   const background: Promise<void>[] = [];
   const logEvents: Array<{ event: string; fields: Record<string, unknown> }> = [];
   let status = 200;
@@ -216,6 +224,7 @@ async function runWebhook(body: unknown, options: {
       resolveLarkTenantCompanyId: async () =>
         ok(options.tenantCompanyId === undefined ? 'company-1' : options.tenantCompanyId),
       prepareLarkLogin: async () => ok(options.pendingLogin ?? null),
+      invalidateIdentityCache: async (openId: string) => { invalidatedIdentities.push(openId); },
     } as any,
     conversationRepo: {
       // Only `appendTurn` is exercised here: it is how an attachment with no
@@ -296,6 +305,33 @@ async function runWebhook(body: unknown, options: {
           } as any,
         }
       : {}),
+    ...(options.changedDepartmentMemberships || options.larkConnectionCount !== undefined
+      ? {
+          ...(options.changedDepartmentMemberships
+            ? {
+                prisma: {
+                  departmentMembership: {
+                    findMany: async () =>
+                      options.changedDepartmentMemberships!.map(departmentId => ({ departmentId })),
+                  },
+                  userDepartmentPreference: {
+                    updateMany: async (input: unknown) => {
+                      departmentPreferenceUpdates.push(input);
+                      return { count: 1 };
+                    },
+                  },
+                  runtimeConversation: { upsert: async () => ({}) },
+                } as any,
+              }
+            : {}),
+          connectionRepo: {
+            revokeLarkConnectionsForUser: async (companyId: string, userId: string) => {
+              revokedLarkUsers.push({ companyId, userId });
+              return ok(options.larkConnectionCount ?? 1);
+            },
+          } as any,
+        }
+      : {}),
     ...(options.oauthConfigured
       ? {
           larkOAuthService: {
@@ -370,6 +406,9 @@ async function runWebhook(body: unknown, options: {
     engineInputs,
     serializerKeys,
     identityLookups,
+    invalidatedIdentities,
+    revokedLarkUsers,
+    departmentPreferenceUpdates,
     logEvents,
     retainedMessages,
     appendedTurns,
@@ -786,6 +825,7 @@ function noticesSent(adapter: any): string[] {
 function captureOutbound(adapter: any): void {
   adapter.__sentTexts = [];
   adapter.__sentCards = [];
+  adapter.__finalReplies = [];
   adapter.sendToChatId = async (_chatId: string, text: string) => {
     adapter.__sentTexts.push(text);
     return ok('om_notice');
@@ -793,6 +833,10 @@ function captureOutbound(adapter: any): void {
   adapter.sendCardToChat = async (_chatId: string, card: string) => {
     adapter.__sentCards.push(card);
     return ok({ messageId: 'om_card' });
+  };
+  adapter.sendFinalReply = async (_conversation: unknown, reply: { text: string }) => {
+    adapter.__finalReplies.push(reply.text);
+    return ok({ messageId: 'om_reply' });
   };
 }
 
@@ -876,6 +920,40 @@ describe('Lark first contact', () => {
     assert.deepEqual(noticesSent(adapter), [], 'no duplicate plain-text prompt');
   });
 
+  it('signs out and offers the Connect button when the saved department is stale', async () => {
+    let adapter: any;
+    const result = await runWebhook(firstTimer(), {
+      identity: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MANAGER',
+        channel: 'lark',
+        activeDepartmentId: 'dept-finance',
+      },
+      changedDepartmentMemberships: ['dept-tech'],
+      oauthConfigured: true,
+      pendingLogin: {
+        status: 'ready', companyId: 'company-1', userId: 'user-1',
+        larkOpenId: 'ou_sender', displayName: 'Alice', email: 'alice@example.com',
+      },
+      setupAdapter: a => { adapter = a; captureOutbound(a); },
+    });
+
+    assert.ok(!result.order.includes('engine'), 'stale authority never reaches the agent');
+    assert.deepEqual(result.revokedLarkUsers, [{ companyId: 'company-1', userId: 'user-1' }]);
+    assert.deepEqual(result.invalidatedIdentities, ['ou_sender']);
+    assert.deepEqual(result.departmentPreferenceUpdates, [{
+      where: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        activeDepartmentId: 'dept-finance',
+      },
+      data: { activeDepartmentId: 'dept-tech' },
+    }]);
+    const card = JSON.parse(JSON.parse(adapter.__sentCards[0]).card);
+    assert.match(card.body.elements[0].content, /department access changed/i);
+  });
+
   it('falls back to a plain link when the card cannot be sent', async () => {
     let adapter: any;
     await runWebhook(firstTimer(), {
@@ -897,6 +975,46 @@ describe('Lark first contact', () => {
     // A working link in an ugly message beats a button nobody received.
     assert.equal(noticesSent(adapter).length, 1);
     assert.match(noticesSent(adapter)[0]!, /https:\/\/lark\.example\/authorize/);
+  });
+});
+
+describe('Lark auth commands', () => {
+  it('renders /login as the same Connect button used for first contact', async () => {
+    let adapter: any;
+    const result = await runWebhook(makeEvent({ chatType: 'p2p', text: '/login' }), {
+      identity: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        channel: 'lark',
+        displayName: 'Alice',
+      },
+      oauthConfigured: true,
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.ok(!result.order.includes('engine'), 'auth command never reaches the agent');
+    assert.equal(adapter.__sentCards.length, 1, 'the URL is protected behind a button');
+    assert.deepEqual(adapter.__finalReplies, [], 'no raw authorization URL is posted');
+    const card = JSON.parse(JSON.parse(adapter.__sentCards[0]).card);
+    const button = card.body.elements.find((element: any) => element.tag === 'button');
+    assert.equal(button.behaviors[0].type, 'open_url');
+    assert.match(button.behaviors[0].default_url, /^https:\/\/lark\.example\/authorize\?/);
+  });
+
+  it('revokes /logout and clears the cached identity before offering reconnect', async () => {
+    let adapter: any;
+    const result = await runWebhook(makeEvent({ chatType: 'p2p', text: '/logout' }), {
+      larkConnectionCount: 1,
+      setupAdapter: value => { adapter = value; captureOutbound(value); },
+    });
+
+    assert.ok(!result.order.includes('engine'), 'auth command never reaches the agent');
+    assert.deepEqual(result.revokedLarkUsers, [{ companyId: 'company-1', userId: 'user-1' }]);
+    assert.deepEqual(result.invalidatedIdentities, ['ou_sender']);
+    assert.deepEqual(adapter.__finalReplies, [
+      'Disconnected. Your personal Lark sign-in has been removed. Send me another message whenever you want to reconnect.',
+    ]);
   });
 });
 
