@@ -130,6 +130,7 @@ async function runWebhook(body: unknown, options: {
   oauthConfigured?: boolean;
   setupAdapter?: (adapter: LarkChannelAdapter) => void;
   shareResolverService?: {
+    isMemoryReviewAction(cardEvent: unknown): boolean;
     isShareAction(cardEvent: unknown): boolean;
     handle(cardEvent: unknown, actor: unknown): Promise<{ responseBody: Record<string, unknown> }>;
   };
@@ -646,6 +647,7 @@ describe('Lark webhook card authorization', () => {
         channel: 'lark',
       },
       shareResolverService: {
+        isMemoryReviewAction: () => false,
         isShareAction: () => true,
         handle: async (_event, actor) => {
           receivedActor = actor;

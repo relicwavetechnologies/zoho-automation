@@ -125,7 +125,7 @@ describe('admin auth company signup provisioning', () => {
     assert.match(capturedUpsert.create.markdown, /divo_memory_review/);
     assert.match(capturedUpsert.create.markdown, /only `proposalId` and the proposed `bullets`/);
     assert.match(capturedUpsert.create.markdown, /Never pass `departmentId` or `allowedTargets`/);
-    assert.match(capturedUpsert.create.markdown, /desktop-configured department context/);
+    assert.match(capturedUpsert.create.markdown, /review surface independently checks storage availability and current canonical targets/);
     assert.equal(auditRecords.length, 1);
   });
 });
