@@ -44,6 +44,7 @@ describe('admin auth company signup provisioning', () => {
     const companyId = '11111111-2222-4333-8444-555555555555';
     const expectedSkill = buildShareMemorySystemSkill(companyId);
     let capturedUpsert: any = null;
+    const createdSkillSlugs: string[] = [];
     const tx = {
       user: {
         create: async ({ data }: any) => ({ id: 'user-1', ...data }),
@@ -53,12 +54,15 @@ describe('admin auth company signup provisioning', () => {
       },
       skill: {
         findFirst: async () => null,
-        create: async ({ data }: any) => ({
-          ...data,
-          revision: data.revision ?? 1,
-          createdBy: data.createdBy ?? null,
-          updatedBy: data.updatedBy ?? null,
-        }),
+        create: async ({ data }: any) => {
+          createdSkillSlugs.push(data.slug);
+          return {
+            ...data,
+            revision: data.revision ?? 1,
+            createdBy: data.createdBy ?? null,
+            updatedBy: data.updatedBy ?? null,
+          };
+        },
         update: async ({ data }: any) => ({ ...data }),
         upsert: async (args: any) => {
           capturedUpsert = args;
@@ -126,6 +130,16 @@ describe('admin auth company signup provisioning', () => {
     assert.match(capturedUpsert.create.markdown, /only `proposalId` and the proposed `bullets`/);
     assert.match(capturedUpsert.create.markdown, /Never pass `departmentId` or `allowedTargets`/);
     assert.match(capturedUpsert.create.markdown, /review surface independently checks storage availability and current canonical targets/);
+    for (const slug of [
+      'airtable-core',
+      'airtable-schema-ops',
+      'airtable-automation-ops',
+      'aitable-datasheets',
+      'aitable-fields',
+      'divo-semrush-seo-research',
+    ]) {
+      assert(createdSkillSlugs.includes(slug), `missing signup system skill: ${slug}`);
+    }
     assert.equal(auditRecords.length, 1);
   });
 });

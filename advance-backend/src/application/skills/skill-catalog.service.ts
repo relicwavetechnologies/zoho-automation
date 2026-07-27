@@ -2,6 +2,13 @@ import type { SkillRepoPort, SkillRow } from '../../infrastructure/persistence/s
 import type { PermissionResult } from '../permissions/permission.types';
 import type { Logger } from '../../shared/logger';
 import { asToolId } from '../../shared/ids';
+import {
+  TOOL_FAMILY_DEFINITIONS,
+  TOOL_FAMILY_IDS,
+  TOOL_FAMILY_MAP,
+  isCanonicalToolId,
+  type ToolFamily,
+} from '../../domain/tools/tool-id';
 import { larkSkillCjkFields } from './lark-skill-language-policy';
 
 export interface CatalogSkill {
@@ -213,7 +220,7 @@ const EXTERNAL_PERSON_TOKENS = new Set([
 interface AnalyzedQuery {
   readonly normalized: string;
   readonly tokens: ReadonlySet<string>;
-  readonly provider?: 'lark' | 'google';
+  readonly explicitFamilies: ReadonlySet<ToolFamily>;
   readonly contactIntent: boolean;
   readonly contactSource: 'company' | 'external' | 'unspecified';
 }
@@ -229,11 +236,13 @@ function tokenize(value: string): string[] {
 function analyzeQuery(value: string): AnalyzedQuery {
   const normalized = tokenize(value).join(' ');
   const tokens = new Set(tokenize(value));
-  const provider = tokens.has('lark')
-    ? 'lark'
-    : tokens.has('google') || tokens.has('gmail')
-      ? 'google'
-      : undefined;
+  const explicitFamilies = new Set<ToolFamily>();
+  for (const familyId of TOOL_FAMILY_IDS) {
+    if (TOOL_FAMILY_DEFINITIONS[familyId].routingAliases.some((alias) =>
+      includesExactPhrase(normalized, tokenize(alias).join(' ')))) {
+      explicitFamilies.add(familyId);
+    }
+  }
   const contactIntent = [...tokens].some((token) => CONTACT_ENTITY_TOKENS.has(token))
     || includesExactPhrase(normalized, 'address book');
   const external = [...tokens].some((token) => EXTERNAL_PERSON_TOKENS.has(token))
@@ -243,7 +252,7 @@ function analyzeQuery(value: string): AnalyzedQuery {
   return {
     normalized,
     tokens,
-    ...(provider ? { provider } : {}),
+    explicitFamilies,
     contactIntent,
     contactSource: external ? 'external' : company ? 'company' : 'unspecified',
   };
@@ -278,23 +287,30 @@ function scoreSkill(skill: CatalogSkill, query: AnalyzedQuery): number {
     if (normalizedAlias && includesExactPhrase(query.normalized, normalizedAlias)) score += 10;
   }
 
-  const provider = skillProvider(skill);
+  const providerFamilies = skillProviderFamilies(skill);
   const contactSkill = skill.toolIds.some((toolId) => toolId === 'larkContacts' || toolId === 'googleContacts');
-  if (query.provider && provider === query.provider) score += 30;
-  if (query.provider && provider && provider !== query.provider) score -= 15;
+  if (query.explicitFamilies.size > 0) {
+    const familyMatch = [...query.explicitFamilies].some(family => providerFamilies.has(family));
+    if (familyMatch) score += 30;
+    else if (providerFamilies.size > 0) score -= 15;
+  }
 
   if (query.contactIntent && contactSkill) {
     score += 25;
-    if (query.provider === 'lark') score += provider === 'lark' ? 20 : -20;
-    else if (query.provider === 'google') score += provider === 'google' ? 20 : -20;
-    else if (query.contactSource === 'external') score += provider === 'google' ? 20 : -10;
-    else score += provider === 'lark' ? 15 : 0;
+    if (query.explicitFamilies.has('lark')) score += providerFamilies.has('lark') ? 20 : -20;
+    else if (query.explicitFamilies.has('google')) score += providerFamilies.has('google') ? 20 : -20;
+    else if (query.contactSource === 'external') score += providerFamilies.has('google') ? 20 : -10;
+    else score += providerFamilies.has('lark') ? 15 : 0;
   }
   return score;
 }
 
-function skillProvider(skill: CatalogSkill): 'lark' | 'google' | undefined {
-  if (skill.toolIds.some((toolId) => toolId.startsWith('lark'))) return 'lark';
-  if (skill.toolIds.some((toolId) => toolId.startsWith('google'))) return 'google';
-  return undefined;
+function skillProviderFamilies(skill: CatalogSkill): ReadonlySet<ToolFamily> {
+  const families = new Set<ToolFamily>();
+  for (const toolId of skill.toolIds) {
+    if (!isCanonicalToolId(toolId)) continue;
+    const family = TOOL_FAMILY_MAP[toolId];
+    if (TOOL_FAMILY_DEFINITIONS[family].routingAliases.length > 0) families.add(family);
+  }
+  return families;
 }

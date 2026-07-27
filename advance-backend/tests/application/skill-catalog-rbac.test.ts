@@ -201,6 +201,50 @@ describe('SkillCatalogService — governed contact routing', () => {
   });
 });
 
+describe('SkillCatalogService — provider-family routing', () => {
+  const candidates = [
+    { ...row('airtable-core', ['airtableRecords']), name: 'Airtable Core', tags: ['bases', 'tables', 'records'] },
+    { ...row('lark-base', ['larkBase']), name: 'Lark Base', tags: ['bases', 'tables', 'records'] },
+    { ...row('aitable-data', ['aitableDatasheets']), name: 'AITable Datasheets', tags: ['datasheets', 'records'] },
+    { ...row('zoho-finance', ['zohoBooks']), name: 'Zoho Finance', tags: ['invoices', 'books'] },
+    { ...row('semrush-research', ['semrush']), name: 'SEO Research', tags: ['rankings', 'domains'] },
+    { ...row('oms-inventory', ['omsSiteData']), name: 'Site Inventory', tags: ['inventory', 'sites'] },
+    { ...row('airtable-to-zoho', ['airtableRecords', 'zohoBooks']), name: 'Airtable to Zoho', tags: ['sync'] },
+  ];
+  const providerPermission = {
+    allowedToolIds: new Set(candidates.flatMap(candidate =>
+      candidate.toolIds.map(toolId => asToolId(toolId)))),
+    allowedActionsByTool: new Map(),
+    decisions: [],
+  } as unknown as PermissionResult;
+
+  async function search(query: string) {
+    const service = new SkillCatalogService({ repo: makeRepo(candidates), logger: noopLogger });
+    return service.searchVisible({
+      companyId: 'co',
+      departmentId: 'dep',
+      permission: providerPermission,
+      grantedSkillIds: new Set(candidates.map(candidate => candidate.id)),
+      query,
+      limit: 8,
+    });
+  }
+
+  it('uses explicit product names to disambiguate overlapping business nouns', async () => {
+    assert.equal((await search('Explore Airtable bases, tables, and records'))[0]?.skill.id, 'airtable-core');
+    assert.equal((await search('Explore Lark Base tables and records'))[0]?.skill.id, 'lark-base');
+    assert.equal((await search('Review AITable datasheet records'))[0]?.skill.id, 'aitable-data');
+    assert.equal((await search('Check Zoho invoices'))[0]?.skill.id, 'zoho-finance');
+    assert.equal((await search('Use Semrush for domain rankings'))[0]?.skill.id, 'semrush-research');
+    assert.equal((await search('Search OMS site inventory'))[0]?.skill.id, 'oms-inventory');
+  });
+
+  it('keeps a genuine cross-provider skill eligible when both products are explicit', async () => {
+    const matches = await search('Sync Airtable records into Zoho');
+    assert(matches.some(match => match.skill.id === 'airtable-to-zoho'));
+  });
+});
+
 describe('SkillCatalogService — scheduling intent routing', () => {
   const scheduledWork = {
     ...row('schedule-divo-work', ['scheduledWorkflows']),

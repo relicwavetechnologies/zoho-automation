@@ -34,24 +34,25 @@ export type ToolFamilyDefinition = {
   readonly connectionMode: 'member_selectable' | 'backend_managed' | 'none';
   readonly connectionProvider?: CapabilityConnectionProvider;
   readonly skillMode: 'none' | 'optional' | 'required';
+  readonly routingAliases: readonly string[];
 };
 
 export const TOOL_FAMILY_DEFINITIONS: Record<ToolFamily, ToolFamilyDefinition> = {
-  lark:       { displayName: 'Lark', connectionMode: 'member_selectable', connectionProvider: 'lark', skillMode: 'optional' },
-  google:     { displayName: 'Google Workspace', connectionMode: 'member_selectable', connectionProvider: 'google_workspace', skillMode: 'optional' },
-  canva:      { displayName: 'Canva', connectionMode: 'member_selectable', connectionProvider: 'canva', skillMode: 'optional' },
-  airtable:   { displayName: 'Airtable', connectionMode: 'member_selectable', connectionProvider: 'airtable', skillMode: 'optional' },
-  aitable:    { displayName: 'AITable', connectionMode: 'member_selectable', connectionProvider: 'aitable', skillMode: 'optional' },
-  zoho:       { displayName: 'Zoho', connectionMode: 'member_selectable', connectionProvider: 'zoho', skillMode: 'optional' },
-  context:    { displayName: 'Search and context', connectionMode: 'none', skillMode: 'none' },
-  skills:     { displayName: 'Skills', connectionMode: 'none', skillMode: 'optional' },
-  memory:     { displayName: 'Memory', connectionMode: 'none', skillMode: 'optional' },
-  rag:        { displayName: 'Document retrieval', connectionMode: 'none', skillMode: 'optional' },
-  data:       { displayName: 'Data processing', connectionMode: 'none', skillMode: 'optional' },
-  execution:  { displayName: 'Local execution', connectionMode: 'none', skillMode: 'optional' },
-  scheduling: { displayName: 'Scheduled work', connectionMode: 'none', skillMode: 'required' },
-  semrush:    { displayName: 'Semrush', connectionMode: 'backend_managed', skillMode: 'optional' },
-  oms:        { displayName: 'OMS', connectionMode: 'backend_managed', skillMode: 'optional' },
+  lark:       { displayName: 'Lark', connectionMode: 'member_selectable', connectionProvider: 'lark', skillMode: 'optional', routingAliases: ['lark', 'feishu'] },
+  google:     { displayName: 'Google Workspace', connectionMode: 'member_selectable', connectionProvider: 'google_workspace', skillMode: 'optional', routingAliases: ['google', 'google workspace', 'gmail'] },
+  canva:      { displayName: 'Canva', connectionMode: 'member_selectable', connectionProvider: 'canva', skillMode: 'optional', routingAliases: ['canva'] },
+  airtable:   { displayName: 'Airtable', connectionMode: 'member_selectable', connectionProvider: 'airtable', skillMode: 'optional', routingAliases: ['airtable'] },
+  aitable:    { displayName: 'AITable', connectionMode: 'member_selectable', connectionProvider: 'aitable', skillMode: 'optional', routingAliases: ['aitable'] },
+  zoho:       { displayName: 'Zoho', connectionMode: 'member_selectable', connectionProvider: 'zoho', skillMode: 'optional', routingAliases: ['zoho'] },
+  context:    { displayName: 'Search and context', connectionMode: 'none', skillMode: 'none', routingAliases: [] },
+  skills:     { displayName: 'Skills', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  memory:     { displayName: 'Memory', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  rag:        { displayName: 'Document retrieval', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  data:       { displayName: 'Data processing', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  execution:  { displayName: 'Local execution', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  scheduling: { displayName: 'Scheduled work', connectionMode: 'none', skillMode: 'required', routingAliases: [] },
+  semrush:    { displayName: 'Semrush', connectionMode: 'backend_managed', skillMode: 'optional', routingAliases: ['semrush'] },
+  oms:        { displayName: 'OMS', connectionMode: 'backend_managed', skillMode: 'optional', routingAliases: ['oms'] },
 };
 
 export function isToolFamily(value: string): value is ToolFamily {

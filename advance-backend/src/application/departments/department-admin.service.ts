@@ -12,6 +12,7 @@ import {
 import { unknownSkillToolIds } from '../skills/skill-tool-validation';
 import { recordSkillRegistryMutation } from '../skills/skill-registry-versioning';
 import { larkSkillEnglishOnlyError } from '../skills/lark-skill-language-policy';
+import { provisionZohoFinanceSystemSkills } from '../skills/zoho-finance-system-skills';
 import { isFixedToolPolicy, isDepartmentGrantOnlyTool } from '../../domain/tools/tool-policy';
 
 export interface DepartmentAdminServiceDeps {
@@ -526,6 +527,8 @@ export class DepartmentAdminService {
             ),
           });
         }
+
+        await provisionZohoFinanceSystemSkills(tx, companyId);
 
         return { created, managerRole, memberRole };
       });

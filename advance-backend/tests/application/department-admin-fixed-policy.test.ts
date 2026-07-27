@@ -50,6 +50,49 @@ describe('DepartmentAdminService fixed policy', () => {
     assert.equal(memberTemplateGrants().some(grant => grant.toolId === 'omsSiteData'), false);
   });
 
+  it('provisions the canonical Zoho recipes when a Finance department is created', async () => {
+    const createdSkillSlugs: string[] = [];
+    let roleIndex = 0;
+    const finance = { id: 'dept-finance', companyId: 'company-1', name: 'Finance', slug: 'finance', status: 'active' };
+    const tx = {
+      department: {
+        create: async () => finance,
+        findMany: async () => [finance],
+      },
+      departmentRole: {
+        create: async ({ data }: any) => ({ id: `role-${++roleIndex}`, ...data }),
+      },
+      departmentAgentConfig: { create: async () => ({}) },
+      departmentToolPermission: { createMany: async () => ({ count: 1 }) },
+      skill: {
+        findFirst: async () => null,
+        create: async ({ data }: any) => {
+          createdSkillSlugs.push(data.slug);
+          return { ...data, revision: 1, createdBy: null, updatedBy: null };
+        },
+      },
+      skillVersion: { upsert: async () => ({}) },
+      skillRegistryRevision: { upsert: async () => ({}) },
+      skillAccessGrant: { upsert: async () => ({}) },
+    };
+    const service = new DepartmentAdminService({
+      prisma: {
+        department: { findFirst: async () => null },
+        $transaction: async (run: (client: typeof tx) => Promise<unknown>) => run(tx),
+      } as any,
+      logger,
+    } as any);
+
+    const result = await service.createDepartment('company-1', 'actor-1', { name: 'Finance' });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(createdSkillSlugs, [
+      'finance-ops-core',
+      'zoho-books-bill',
+      'zoho-bill-notify-accounts',
+    ]);
+  });
+
   it('invalidates the exact department permission cache after membership changes', async () => {
     const invalidations: string[] = [];
     const service = new DepartmentAdminService({
