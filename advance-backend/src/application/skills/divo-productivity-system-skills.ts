@@ -75,38 +75,54 @@ export async function provisionDivoProductivitySystemSkill(
   definition: DivoProductivitySystemSkillDefinition,
 ): Promise<{ id: string; outcome: 'created' | 'updated' | 'existing' | 'skipped' }> {
   const folderId = await ensureFolder(db, companyId);
-  const current = await db.skill.findFirst({
+  let current = await db.skill.findFirst({
     where: { companyId, slug: definition.slug, status: { not: 'archived' } },
     select: EXISTING_SKILL_SELECT,
   }) as ExistingSkill | null;
   if (current && !current.isSystem) return { id: current.id, outcome: 'skipped' };
 
-  let skill: ExistingSkill;
-  let outcome: 'created' | 'updated' | 'existing';
+  let skill: ExistingSkill | undefined;
+  let outcome: 'created' | 'updated' | 'existing' | undefined;
   if (!current) {
-    skill = await db.skill.create({
-      data: buildDivoProductivitySystemSkill(companyId, folderId, definition),
-      select: EXISTING_SKILL_SELECT,
-    }) as ExistingSkill;
-    await recordSkillRegistryMutation(db, skill, 'system');
-    outcome = 'created';
-  } else if (matchesDefinition(current, folderId, definition)) {
-    skill = current;
-    outcome = 'existing';
-  } else {
-    skill = await db.skill.update({
-      where: { id: current.id },
-      data: {
-        ...definitionFields(folderId, definition),
-        toolIds: [...definition.toolIds],
-        tags: [...definition.tags],
-        revision: { increment: 1 },
-      },
-      select: EXISTING_SKILL_SELECT,
-    }) as ExistingSkill;
-    await recordSkillRegistryMutation(db, skill, 'system');
-    outcome = 'updated';
+    try {
+      skill = await db.skill.create({
+        data: buildDivoProductivitySystemSkill(companyId, folderId, definition),
+        select: EXISTING_SKILL_SELECT,
+      }) as ExistingSkill;
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') throw error;
+      current = await db.skill.findFirst({
+        where: { companyId, slug: definition.slug, status: { not: 'archived' } },
+        select: EXISTING_SKILL_SELECT,
+      }) as ExistingSkill | null;
+      if (!current) throw error;
+      if (!current.isSystem) return { id: current.id, outcome: 'skipped' };
+    }
+    if (skill) {
+      await recordSkillRegistryMutation(db, skill, 'system');
+      outcome = 'created';
+    }
   }
+  if (current) {
+    if (matchesDefinition(current, folderId, definition)) {
+      skill = current;
+      outcome = 'existing';
+    } else {
+      skill = await db.skill.update({
+        where: { id: current.id },
+        data: {
+          ...definitionFields(folderId, definition),
+          toolIds: [...definition.toolIds],
+          tags: [...definition.tags],
+          revision: { increment: 1 },
+        },
+        select: EXISTING_SKILL_SELECT,
+      }) as ExistingSkill;
+      await recordSkillRegistryMutation(db, skill, 'system');
+      outcome = 'updated';
+    }
+  }
+  if (!skill || !outcome) throw new Error(`Failed to reconcile system skill: ${definition.slug}`);
 
   await db.skillAccessGrant.upsert({
     where: {

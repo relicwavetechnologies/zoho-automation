@@ -8,13 +8,17 @@
  * like a real user message would.
  *
  * Usage:
- *   pnpm tsx scripts/run-engine-harness.ts                     # default prompt (P2P)
+ *   pnpm tsx scripts/run-engine-harness.ts                     # Abhishek → Abhishek DM
  *   pnpm tsx scripts/run-engine-harness.ts "your prompt here"
- *   pnpm tsx scripts/run-engine-harness.ts --group "your prompt here"
+ *   pnpm tsx scripts/run-engine-harness.ts --allow-impersonation --user "Anish Suman" "your prompt"
+ *   pnpm tsx scripts/run-engine-harness.ts --chat-id oc_x --chat-type group "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --debug-sigs        # dump every transformParams call
  *
- * Group mode sends to the test group chat instead of P2P, including group
- * context (conversation array) in the engine run — mirrors real group behavior.
+ * `--user` selects a DB-linked Lark identity by exact email, exact display
+ * name, or open_id. It changes the authenticated principal, never exposes or
+ * copies that member's stored credential. Non-default users require
+ * `--allow-impersonation`. Custom delivery IDs must be configured in the
+ * comma-separated HARNESS_LARK_ALLOWED_CHAT_IDS environment variable.
  */
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
@@ -27,19 +31,147 @@ import type { RunContext } from '../src/domain/orchestration/run-context';
 import type { ConversationHandle } from '../src/application/channels/channel.adapter';
 
 const DEFAULT_PROMPT = "make a task 'hrm8 deployment' and assign it to anish";
-const ABHISHEK_OPEN_ID = 'ou_48b958c283635491b756c0ef23f47159';
-const ANISH_OPEN_ID    = 'ou_a1c4b19abc483d674dde1955142e6b7d';
+const DEFAULT_USER_SELECTOR = 'abhishek@emiactech.com';
 const P2P_CHAT_ID      = 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50';
 const GROUP_CHAT_ID    = 'oc_b9169aab0765f46b2fe9147068e3c79f';
 
-const args = process.argv.slice(2);
-const debugSigs = args.includes('--debug-sigs');
-const groupMode = args.includes('--group');
-const asAnish   = args.includes('--as-anish');
-const prompt    = args.filter(a => !a.startsWith('--'))[0] ?? DEFAULT_PROMPT;
+export interface EngineHarnessOptions {
+  readonly userSelector: string;
+  readonly chatId: string;
+  readonly chatType: 'p2p' | 'group';
+  readonly prompt: string;
+  readonly debugSigs: boolean;
+  readonly allowImpersonation: boolean;
+  readonly help: boolean;
+}
+
+export function parseEngineHarnessArgs(
+  args: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): EngineHarnessOptions {
+  let userSelector = DEFAULT_USER_SELECTOR;
+  let explicitChatId: string | undefined;
+  let chatType: 'p2p' | 'group' = 'p2p';
+  let debugSigs = false;
+  let allowImpersonation = false;
+  let help = false;
+  const promptParts: string[] = [];
+
+  for (let index = 0; index < args.length; index++) {
+    const value = args[index];
+    if (value === '--') {
+      promptParts.push(...args.slice(index + 1));
+      break;
+    }
+    if (value === '--debug-sigs') {
+      debugSigs = true;
+      continue;
+    }
+    if (value === '--allow-impersonation') {
+      allowImpersonation = true;
+      continue;
+    }
+    if (value === '--group') {
+      chatType = 'group';
+      continue;
+    }
+    if (value === '--as-anish') {
+      userSelector = 'Anish Suman';
+      continue;
+    }
+    if (value === '--help' || value === '-h') {
+      help = true;
+      continue;
+    }
+    if (value === '--user' || value === '--chat-id' || value === '--chat-type') {
+      const optionValue = args[++index]?.trim();
+      if (!optionValue) throw new Error(`${value} requires a value`);
+      if (value === '--user') userSelector = optionValue;
+      if (value === '--chat-id') explicitChatId = optionValue;
+      if (value === '--chat-type') {
+        if (optionValue !== 'p2p' && optionValue !== 'group') {
+          throw new Error('--chat-type must be p2p or group');
+        }
+        chatType = optionValue;
+      }
+      continue;
+    }
+    if (value?.startsWith('--')) throw new Error(`Unknown option: ${value}`);
+    if (value) promptParts.push(value);
+  }
+
+  if (
+    userSelector.toLowerCase() !== DEFAULT_USER_SELECTOR.toLowerCase()
+    && !allowImpersonation
+  ) {
+    throw new Error('Selecting a non-default Lark principal requires --allow-impersonation');
+  }
+  const resolvedChatId = explicitChatId
+    ?? (chatType === 'group'
+      ? GROUP_CHAT_ID
+      : env.HARNESS_LARK_CHAT_ID?.trim() || P2P_CHAT_ID);
+  const allowedChatIds = new Set([
+    P2P_CHAT_ID,
+    GROUP_CHAT_ID,
+    ...(env.HARNESS_LARK_ALLOWED_CHAT_IDS ?? '').split(',').map(value => value.trim()),
+  ].filter((value): value is string => Boolean(value)));
+  if (!allowedChatIds.has(resolvedChatId)) {
+    throw new Error(`Chat ${resolvedChatId} is not in HARNESS_LARK_ALLOWED_CHAT_IDS`);
+  }
+
+  return {
+    userSelector,
+    chatId: resolvedChatId,
+    chatType,
+    prompt: promptParts.join(' ').trim() || DEFAULT_PROMPT,
+    debugSigs,
+    allowImpersonation,
+    help,
+  };
+}
+
+type HarnessIdentityStore = {
+  channelIdentity: {
+    findMany(input: unknown): Promise<Array<{
+      larkOpenId: string | null;
+      displayName: string | null;
+      email: string | null;
+    }>>;
+  };
+};
+
+export async function resolveHarnessOpenId(
+  db: HarnessIdentityStore,
+  selector: string,
+): Promise<string> {
+  const normalized = selector.trim();
+  const selectorFilter = normalized.startsWith('ou_')
+    ? [{ larkOpenId: normalized }]
+    : [
+        { email: { equals: normalized, mode: 'insensitive' } },
+        { displayName: { equals: normalized, mode: 'insensitive' } },
+      ];
+  const matches = await db.channelIdentity.findMany({
+    where: {
+      channel: 'lark',
+      larkOpenId: { not: null },
+      OR: selectorFilter,
+    },
+    select: { larkOpenId: true, displayName: true, email: true },
+    orderBy: { updatedAt: 'desc' },
+    take: 2,
+  });
+  if (matches.length === 0) {
+    throw new Error(`No DB-linked Lark identity matches ${JSON.stringify(normalized)}`);
+  }
+  if (matches.length > 1) {
+    throw new Error(`Lark identity ${JSON.stringify(normalized)} is ambiguous; pass its exact open_id`);
+  }
+  return matches[0]!.larkOpenId!;
+}
 
 // Optional: install global hook so we can trace what hits Gemini.
-if (debugSigs) {
+function installGeminiSignatureTrace() {
   const realFetch = global.fetch;
   global.fetch = (async (...fa: Parameters<typeof fetch>) => {
     const url = String(fa[0]);
@@ -64,42 +196,49 @@ if (debugSigs) {
 }
 
 async function main() {
-  const chatId = groupMode ? GROUP_CHAT_ID : P2P_CHAT_ID;
-  const chatType = groupMode ? 'group' : 'p2p';
-  const userOpenId = asAnish ? ANISH_OPEN_ID : ABHISHEK_OPEN_ID;
+  const options = parseEngineHarnessArgs(process.argv.slice(2));
+  if (options.help) {
+    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--debug-sigs] [prompt]');
+    return;
+  }
+  if (options.debugSigs) installGeminiSignatureTrace();
 
   console.log('\n=== run-engine-harness ===');
-  console.log(`mode:   ${chatType}`);
-  console.log(`user:   ${asAnish ? 'Anish Suman' : 'Abhishek Verma'} (${userOpenId})`);
-  console.log(`chatId: ${chatId}`);
-  console.log(`prompt: ${JSON.stringify(prompt)}`);
-  console.log(`debug-sigs: ${debugSigs}\n`);
+  console.log(`mode:   ${options.chatType}`);
+  console.log(`user selector: ${options.userSelector}`);
+  console.log(`chatId: ${options.chatId}`);
+  console.log(`prompt: ${JSON.stringify(options.prompt)}`);
+  console.log(`debug-sigs: ${options.debugSigs}\n`);
 
   const env       = loadAndValidateEnv(process.env);
   const container = await buildContainer(env);
   const { engine, larkAdapter, channelIdentityRepo, prisma, approvalGate } = container;
 
   // ── 1. Resolve identity (mirrors webhook) ─────────────────────────────────
+  const userOpenId = await resolveHarnessOpenId(prisma, options.userSelector);
   const identityResult = await channelIdentityRepo.resolveByLarkOpenId(userOpenId);
   if (!identityResult.ok || !identityResult.value) {
     console.error(`Identity not found for openId=${userOpenId}`);
     process.exit(1);
   }
   const identity = identityResult.value;
-  console.log(`identity: companyId=${identity.companyId} userId=${identity.userId} role=${identity.aiRole} dept=${identity.activeDepartmentId ?? '∅'}\n`);
+  console.log(`identity: ${identity.displayName ?? identity.email ?? userOpenId} (${userOpenId})`);
+  console.log(`principal: companyId=${identity.companyId} userId=${identity.userId} role=${identity.aiRole} dept=${identity.activeDepartmentId ?? '∅'}\n`);
 
   // ── 2. Build IncomingMessage + RunContext exactly like the webhook ────────
   const now = new Date();
   const messageId = `om_harness_${randomUUID()}`;
   const traceId   = asCorrelationId(`${messageId}-${now.getTime()}`);
+  console.log(`traceId: ${traceId}`);
+  console.log(`requestId: ${messageId}\n`);
 
   const incoming: IncomingMessage = {
     channel:        'lark',
     messageId:      asMessageId(messageId),
-    chatId:         asChatId(chatId),
-    chatType,
+    chatId:         asChatId(options.chatId),
+    chatType:       options.chatType,
     userExternalId: userOpenId,
-    text:           prompt,
+    text:           options.prompt,
     attachments:    [],
     timestamp:      now.toISOString(),
     traceId,
@@ -116,7 +255,7 @@ async function main() {
     traceId:        String(traceId),
     requestId:      messageId,
     userExternalId: userOpenId,
-    chatId,
+    chatId:         options.chatId,
     ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
   };
 
@@ -124,14 +263,14 @@ async function main() {
     channel:          'lark',
     chatId:           incoming.chatId,
     replyToMessageId: incoming.messageId,
-    replyInThread:    groupMode,
+    replyInThread:    options.chatType === 'group',
     correlationId:    traceId,
   };
 
   // ── 2b. Pre-flight: dump group context if group mode ──────────────────────
-  if (groupMode && container.chatContextService) {
+  if (options.chatType === 'group' && container.chatContextService) {
     const ctxResult = await container.chatContextService.loadContext(
-      identity.companyId, chatId,
+      identity.companyId, options.chatId,
     );
     if (ctxResult?.ok && ctxResult.value) {
       const win = ctxResult.value;
@@ -152,16 +291,16 @@ async function main() {
   }
 
   // ── 3. Store this message in group context (mirrors webhook snapshot) ─────
-  if (groupMode && container.chatContextService) {
+  if (options.chatType === 'group' && container.chatContextService) {
     await container.chatContextService.appendMessage({
       companyId: identity.companyId,
-      chatId,
+      chatId: options.chatId,
       chatType: 'group',
       messageId,
       senderOpenId: userOpenId,
       senderName: identity.displayName || identity.email || identity.userId,
       role: 'user',
-      content: prompt,
+      content: options.prompt,
       createdAt: now.toISOString(),
       botMentioned: true,
     });
@@ -194,4 +333,6 @@ async function main() {
   process.exit(0);
 }
 
-main().catch(e => { console.error('CRASH:', e); process.exit(2); });
+if (require.main === module) {
+  main().catch(e => { console.error('CRASH:', e); process.exit(2); });
+}

@@ -14,17 +14,17 @@ import { AIRTABLE_PRODUCTS } from '../src/application/airtable/airtable-mcp-mani
  *   pnpm tsx scripts/seed-registered-tools.ts
  */
 
-interface ToolSeed {
-  toolId: string;
-  name: string;
-  description: string;
-  category: string;
-  domain: string;
-  hitlRequired?: boolean;
-  guardrails?: string[];
+export interface RegisteredToolSeed {
+  readonly toolId: string;
+  readonly name: string;
+  readonly description: string;
+  readonly category: string;
+  readonly domain: string;
+  readonly hitlRequired?: boolean;
+  readonly guardrails?: readonly string[];
 }
 
-const TOOLS: ToolSeed[] = [
+export const REGISTERED_TOOL_SEEDS: readonly RegisteredToolSeed[] = [
   { toolId: 'larkMessaging', name: 'Lark Messaging', description: 'Send and reply to Lark messages and DMs.', category: 'communication', domain: 'lark' },
   { toolId: 'larkContacts', name: 'Lark Contacts', description: 'Resolve and search Lark employee contacts.', category: 'directory', domain: 'lark' },
   { toolId: 'larkTask', name: 'Lark Tasks', description: 'Create, read, update and complete Lark tasks and tasklists.', category: 'productivity', domain: 'lark' },
@@ -33,7 +33,7 @@ const TOOLS: ToolSeed[] = [
   { toolId: 'larkDoc', name: 'Lark Docs', description: 'Read and write Lark documents.', category: 'documents', domain: 'lark' },
   { toolId: 'larkBase', name: 'Lark Base', description: 'Read and write Lark Base tables and records.', category: 'data', domain: 'lark' },
   { toolId: 'larkApproval', name: 'Lark Approval', description: 'Manage Lark approval workflows.', category: 'workflow', domain: 'lark', hitlRequired: true },
-  ...GOOGLE_WORKSPACE_PRODUCTS.map((product): ToolSeed => ({
+  ...GOOGLE_WORKSPACE_PRODUCTS.map((product): RegisteredToolSeed => ({
     toolId: product.toolId,
     name: product.name,
     description: product.description,
@@ -58,7 +58,7 @@ const TOOLS: ToolSeed[] = [
       'Each operation is authorized by the backend before the Canva MCP is called',
     ],
   },
-  ...AIRTABLE_PRODUCTS.map((product): ToolSeed => ({
+  ...AIRTABLE_PRODUCTS.map((product): RegisteredToolSeed => ({
     toolId: product.toolId,
     name: product.name,
     description: product.description,
@@ -126,6 +126,7 @@ const TOOLS: ToolSeed[] = [
   },
   { toolId: 'documentRag', name: 'Document RAG', description: 'Ingest and retrieve uploaded documents.', category: 'knowledge', domain: 'rag' },
   { toolId: 'dataProcessor', name: 'Data Processor', description: 'Transform and process datasets in a sandbox.', category: 'data', domain: 'data' },
+  { toolId: 'scheduledWorkflows', name: 'Scheduled Workflows', description: 'Create, manage, and run governed scheduled workflows.', category: 'workflow', domain: 'scheduling', hitlRequired: true },
   {
     toolId: 'semrush',
     name: 'Semrush SEO Research',
@@ -168,40 +169,42 @@ const TOOLS: ToolSeed[] = [
   },
 ];
 
+type RegisteredToolStore = Pick<PrismaClient, 'registeredTool'>;
+
+export async function seedRegisteredTools(db: RegisteredToolStore) {
+  const result = await db.registeredTool.createMany({
+    data: REGISTERED_TOOL_SEEDS.map(t => ({
+      toolId: t.toolId,
+      name: t.name,
+      description: t.description,
+      category: t.category,
+      domain: t.domain,
+      hitlRequired: t.hitlRequired ?? false,
+      guardrails: [...(t.guardrails ?? [])],
+      engines: [],
+      deprecated: false,
+    })),
+    skipDuplicates: true,
+  });
+  return {
+    created: result.count,
+    skipped: REGISTERED_TOOL_SEEDS.length - result.count,
+  };
+}
+
 async function main() {
   const prisma = new PrismaClient();
-  let created = 0;
-  let skipped = 0;
   try {
-    for (const t of TOOLS) {
-      const existing = await prisma.registeredTool.findUnique({ where: { toolId: t.toolId } });
-      if (existing) {
-        skipped += 1;
-        continue;
-      }
-      await prisma.registeredTool.create({
-        data: {
-          toolId: t.toolId,
-          name: t.name,
-          description: t.description,
-          category: t.category,
-          domain: t.domain,
-          hitlRequired: t.hitlRequired ?? false,
-          guardrails: t.guardrails ?? [],
-          engines: [],
-          deprecated: false,
-        },
-      });
-      created += 1;
-      console.log(`+ created RegisteredTool: ${t.toolId}`);
-    }
-    console.log(`\nDone — ${created} created, ${skipped} already present (untouched).`);
+    const result = await seedRegisteredTools(prisma);
+    console.log(`\nDone — ${result.created} created, ${result.skipped} already present (untouched).`);
   } finally {
     await prisma.$disconnect();
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

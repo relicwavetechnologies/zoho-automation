@@ -7,9 +7,11 @@ import type {
   ConnectionProvider,
   ConnectionRegistryPort,
 } from '../connections/connection-registry.port';
-import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
-import { AIRTABLE_TOOL_IDS } from '../airtable/airtable-mcp-manifest';
-import { toolIdsForFamily, type CanonicalToolId } from '../../domain/tools/tool-id';
+import {
+  TOOL_FAMILY_DEFINITIONS,
+  TOOL_FAMILY_MAP,
+  isCanonicalToolId,
+} from '../../domain/tools/tool-id';
 import { withWorkDiscoveryPermissions } from './work-resolution.service';
 import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
 
@@ -20,17 +22,6 @@ export const serializeToolArgsSchema = zodToJsonSchema as unknown as (
   schema: unknown,
   options: { $refStrategy: 'none' },
 ) => unknown;
-
-export const LARK_CONNECTION_TOOL_IDS = new Set([
-  'larkTask',
-  'larkMessaging',
-  'larkContacts',
-  'larkCalendar',
-  'larkMeeting',
-  'larkDoc',
-  'larkBase',
-  'larkApproval',
-]);
 
 export type WorkBootstrapAdvisory = {
   readonly code:
@@ -239,24 +230,12 @@ export function listAccessibleConnectionsFor(
   }
 }
 
-const AITABLE_TOOL_IDS = toolIdsForFamily('aitable');
-
 export function connectionProvidersForToolIds(toolIds: readonly string[]): ConnectionProvider[] {
   const providers = new Set<ConnectionProvider>();
   for (const toolId of toolIds) {
-    if (GOOGLE_WORKSPACE_TOOL_IDS.includes(toolId as (typeof GOOGLE_WORKSPACE_TOOL_IDS)[number])) {
-      providers.add('google_workspace');
-    } else if (toolId === 'zohoCrm' || toolId === 'zohoBooks') {
-      providers.add('zoho');
-    } else if (toolId === 'canvaDesign') {
-      providers.add('canva');
-    } else if (AIRTABLE_TOOL_IDS.includes(toolId)) {
-      providers.add('airtable');
-    } else if (AITABLE_TOOL_IDS.includes(toolId as CanonicalToolId)) {
-      providers.add('aitable');
-    } else if (LARK_CONNECTION_TOOL_IDS.has(toolId)) {
-      providers.add('lark');
-    }
+    if (!isCanonicalToolId(toolId)) continue;
+    const provider = TOOL_FAMILY_DEFINITIONS[TOOL_FAMILY_MAP[toolId]].connectionProvider;
+    if (provider) providers.add(provider);
   }
   return [...providers];
 }

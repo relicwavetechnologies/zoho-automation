@@ -1,6 +1,6 @@
 # Divo Dynamic Capability Discovery — Living Specification
 
-> Status: **discussion and evidence collection**
+> Status: **implemented through catalogue/harness integration; deployment reconciliation and live harness cases pending**
 >
 > Last updated: **2026-07-28**
 >
@@ -525,30 +525,44 @@ The registry should drive:
 3. Existing-company reconciliation.
 4. Skill/tool invariant tests.
 
-Current confirmed drift:
+Historical drift addressed by the implementation:
 
-- Airtable has three static skills but zero live company skill rows.
-- AITable has static skills but zero live company skill rows.
+- Airtable and AITable static recipes now have source-controlled company-skill
+  definitions, new-company provisioning, and existing-company reconciliation.
 - Canva has no live skill; whether it needs an optional recipe remains open.
-- Zoho and Semrush have provisioners but are omitted from the current
-  new-company signup provisioning list.
+- Zoho Finance recipes are provisioned when a Finance-like department is
+  created. Semrush is included in new-company provisioning.
 
 Reconciliation should be an explicit idempotent deployment step. Application
 startup should perform read-only validation rather than silently rewriting
-company skills.
+company skills. The implementation provides:
+
+```text
+pnpm tsx scripts/reconcile-capabilities.ts
+```
+
+It uses conflict-safe create-missing-only insertion for `RegisteredTool` rows
+and idempotently reconciles Lark, Google Workspace, Airtable/AITable, Zoho
+Finance, Semrush, and OMS recipes for existing companies. Concurrent deployment
+jobs preserve existing tool rows, and system-skill creation re-reads the
+deterministic-ID winner after a unique race instead of failing the whole run.
+It does not grant tool permissions or expose credentials.
 
 ## 10. Registered-tool reconciliation
 
 The database catalogue and runtime registry also drift.
 
-Current live finding:
+Historical live finding:
 
 - `larkMeeting` is canonical and registered at runtime.
 - Its focused Lark skill exists.
 - Its `RegisteredTool` database row is missing.
 
-The registered-tool catalogue should be reconciled from the same capability
-definitions during deployment. Permission rows are not automatically granted.
+The seed now contains every canonical governed tool, including
+`scheduledWorkflows`, and a regression invariant fails if a new canonical tool
+lacks catalogue metadata. The idempotent reconciliation command repairs
+missing rows such as `larkMeeting` during deployment. Existing rows and
+permission grants remain untouched.
 
 Startup/readiness validation should report:
 
@@ -585,8 +599,18 @@ Required regression:
 
 ## 12. Validation harness
 
-The planned Lark agent harness should be used to validate discovery behaviour
+The Lark agent harness can now be used to validate discovery behaviour
 against the real engine without exposing credentials.
+
+It defaults to Abhishek's DB-linked identity and DM. Selecting another
+principal requires both `--allow-impersonation` and
+`--user <email|exact name|open_id>`. Delivery accepts `--chat-id` only for the
+built-in test chats or IDs configured in `HARNESS_LARK_ALLOWED_CHAT_IDS`;
+`--chat-type p2p|group` controls context behaviour. Missing or ambiguous
+identities and unapproved destinations fail before engine dispatch. The trace
+prints the authenticated principal, department, trace ID, request ID, called
+tools, and final reply summary. Stored Lark credentials are never printed or
+copied.
 
 For each family, the harness should support assertions such as:
 
@@ -656,22 +680,23 @@ permission-filtered, and consistent across backend, desktop, skills, and UI.
 
 ## 15. Implementation waves
 
-Implementation has not started.
+Implementation is complete through the bounded 100% integration checkpoint.
+The unchecked items below remain explicit follow-up work.
 
 ### Wave 1 — capability identity and discovery
 
-- [ ] Introduce central family and leaf capability definitions.
-- [ ] Derive current canonical/family maps from those definitions.
-- [ ] Add exact `family` selection to `tools.list`.
-- [ ] Add safe read-only compatibility for family names in the old field.
-- [ ] Add structured ambiguity for family names passed to execution.
-- [ ] Add all-family discovery invariants.
+- [x] Introduce central family and leaf capability definitions.
+- [x] Derive current canonical/family maps from those definitions.
+- [x] Add exact `family` selection to `tools.list`.
+- [x] Add safe read-only compatibility for family names in the old field.
+- [x] Add structured ambiguity for family names passed to execution.
+- [x] Add all-family discovery invariants.
 
 ### Wave 2 — bootstrap and agent contract
 
-- [ ] Add capability bootstrap v3.
-- [ ] Preserve v2 parsing during rollout.
-- [ ] Render explicit families, leaf tools, descriptions, connection mode, and
+- [x] Add capability bootstrap v3.
+- [x] Preserve v2 parsing during rollout.
+- [x] Render explicit families, leaf tools, descriptions, connection mode, and
       optional skills.
 - [ ] Remove duplicated provider lists from model instructions where runtime
       bootstrap can supply them.
@@ -680,18 +705,18 @@ Implementation has not started.
 ### Wave 3 — skills and routing
 
 - [ ] Create one system-skill template registry.
-- [ ] Provision Airtable and AITable skills into the database-backed catalogue.
+- [x] Provision Airtable and AITable skills into the database-backed catalogue.
 - [ ] Include every system template in new-company provisioning.
-- [ ] Add idempotent existing-company reconciliation.
-- [ ] Generalize provider-aware skill ranking.
-- [ ] Add Airtable/Lark collision regressions.
+- [x] Add idempotent existing-company reconciliation.
+- [x] Generalize provider-aware skill ranking.
+- [x] Add Airtable/Lark collision regressions.
 
 ### Wave 4 — catalogue and UI parity
 
 - [ ] Reconcile `RegisteredTool` from capability definitions.
-- [ ] Repair the missing `larkMeeting` row.
+- [x] Add `larkMeeting` to idempotent reconciliation; deployment execution remains pending.
 - [ ] Render desktop tool groups from backend family metadata.
-- [ ] Add deployment and readiness drift checks.
+- [x] Add deployment reconciliation and build-time canonical catalogue drift checks.
 - [ ] Decide the `airtableBase` lifecycle before removing or hiding anything.
 
 ### Wave 5 — real-agent validation
@@ -699,7 +724,7 @@ Implementation has not started.
 - [ ] Add harness assertions for Airtable, OMS, Semrush, Lark, and Zoho.
 - [ ] Run read-only production-like prompts through the real engine.
 - [ ] Verify trace clarity, small-model recovery, and no cross-provider routing.
-- [ ] Run focused tests and typecheck.
+- [x] Run focused tests and typecheck.
 - [ ] Run the requested independent cold review.
 
 ## 16. Evidence inspected

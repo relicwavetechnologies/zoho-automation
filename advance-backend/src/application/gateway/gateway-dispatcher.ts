@@ -48,14 +48,10 @@ import {
   isGoogleVendorOnboardingRequest,
   type GoogleVendorOnboardingResolution,
 } from './google-orchestration.service';
-import { GOOGLE_WORKSPACE_TOOL_IDS } from '../google/google-workspace-mcp-manifest';
-import { AIRTABLE_TOOL_IDS } from '../airtable/airtable-mcp-manifest';
 import {
   TOOL_FAMILY_DEFINITIONS,
   TOOL_PERMISSION_POLICY_REVISION,
   isToolFamily,
-  toolIdsForFamily,
-  type CanonicalToolId,
   type ToolFamily,
 } from '../../domain/tools/tool-id';
 import {
@@ -64,8 +60,8 @@ import {
 } from './work-resolution.service';
 import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
 import {
-  LARK_CONNECTION_TOOL_IDS,
   WorkBootstrapService,
+  connectionProvidersForToolIds,
   listAccessibleConnectionsFor,
   serializeAccessibleConnection,
   serializeToolArgsSchema,
@@ -913,33 +909,10 @@ export class GatewayDispatcher {
     }
 
     const provider = parsed.data.provider;
-    const canUseGoogle = GOOGLE_WORKSPACE_TOOL_IDS.some((toolId) =>
-      perm.allowedToolIds.has(asToolId(toolId)),
-    );
-    const canUseZoho = ['zohoCrm', 'zohoBooks'].some((toolId) =>
-      perm.allowedToolIds.has(asToolId(toolId)),
-    );
-    const canUseCanva = perm.allowedToolIds.has(asToolId('canvaDesign'));
-    const canUseAirtable = AIRTABLE_TOOL_IDS.some((toolId) =>
-      perm.allowedToolIds.has(asToolId(toolId as CanonicalToolId)),
-    );
-    const canUseAitable = toolIdsForFamily('aitable').some((toolId) =>
-      perm.allowedToolIds.has(asToolId(toolId)),
-    );
-    const canUseLark = [...LARK_CONNECTION_TOOL_IDS]
-      .some((toolId) => perm.allowedToolIds.has(asToolId(toolId)));
-
-    // Exhaustive on ConnectionProvider so a newly added provider fails the
-    // build here rather than silently listing another provider's accounts.
-    const permitted: Record<ConnectionProvider, boolean> = {
-      google_workspace: canUseGoogle,
-      zoho:             canUseZoho,
-      canva:            canUseCanva,
-      airtable:         canUseAirtable,
-      aitable:          canUseAitable,
-      lark:             canUseLark,
-    };
-    if (!permitted[provider]) {
+    const permittedProviders = new Set(connectionProvidersForToolIds(
+      [...perm.allowedToolIds].map(String),
+    ));
+    if (!permittedProviders.has(provider)) {
       return gatewaySuccess({ connections: [] });
     }
 
