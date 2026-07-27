@@ -35,7 +35,7 @@ export interface DivoDepartmentPersonaContext {
 }
 
 export interface DivoCapabilityBootstrap {
-	version: 1 | 2;
+	version: 1 | 2 | 3;
 	registryRevision?: number;
 	departmentFunction: "finance" | "general";
 	companyRole: string;
@@ -50,6 +50,24 @@ export interface DivoCapabilityBootstrap {
 	availableTools: Array<{
 		toolId: string;
 		actions: string[];
+	}>;
+	families?: Array<{
+		familyId: string;
+		displayName: string;
+		connectionMode: "member_selectable" | "backend_managed" | "none";
+		connectionProvider?: string;
+		skillMode: "none" | "optional" | "required";
+		tools: Array<{
+			toolId: string;
+			displayName: string;
+			description: string;
+			actions: string[];
+		}>;
+		skills: Array<{
+			skillId: string;
+			name: string;
+			mode: "none" | "optional" | "required";
+		}>;
 	}>;
 	preferredSkills: Array<{
 		id: string;
@@ -140,10 +158,26 @@ function formatCapabilityBootstrap(bootstrap: DivoCapabilityBootstrap | null | u
 		}
 	}
 
-	if (bootstrap.availableTools.length > 0) {
-		lines.push("", "Available governed tool families:");
+	if (bootstrap.availableTools.length > 0 && !bootstrap.families?.length) {
+		lines.push("", "Available governed tools (legacy compact index):");
 		for (const tool of bootstrap.availableTools) {
 			lines.push(`- ${safeInline(tool.toolId)}: ${tool.actions.map(safeInline).join(", ")}`);
+		}
+	}
+
+	if (bootstrap.families?.length) {
+		lines.push("", "Available governed capability families:");
+		for (const family of bootstrap.families) {
+			const connection = family.connectionProvider
+				? `${family.connectionMode} via ${family.connectionProvider}`
+				: family.connectionMode;
+			lines.push(`- ${safeInline(family.displayName)} [family=${safeInline(family.familyId)}; connection=${safeInline(connection)}; skill=${safeInline(family.skillMode)}]`);
+			for (const tool of family.tools) {
+				lines.push(`  - ${safeInline(tool.displayName)} [toolId=${safeInline(tool.toolId)}; actions=${tool.actions.map(safeInline).join(", ")}]: ${safeInline(tool.description)}`);
+			}
+			for (const skill of family.skills) {
+				lines.push(`  - Recipe: ${safeInline(skill.name)} [skillId=${safeInline(skill.skillId)}; mode=${safeInline(skill.mode)}]`);
+			}
 		}
 	}
 
@@ -237,7 +271,7 @@ ${MEMBER_DEPARTMENTS_CLOSE_TAG}`;
 function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap | null {
 	if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
 	const raw = candidate as Record<string, unknown>;
-	if (raw.version !== 1 && raw.version !== 2) return null;
+	if (raw.version !== 1 && raw.version !== 2 && raw.version !== 3) return null;
 	if (raw.departmentFunction !== "finance" && raw.departmentFunction !== "general") return null;
 	if (raw.version === 1 && raw.departmentFunction !== "finance") return null;
 	const companyRole = boundedString(raw.companyRole, 120);
@@ -294,6 +328,73 @@ function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap |
 			return toolId && actions.length > 0 ? [{ toolId, actions }] : [];
 		})
 		: preferredTools;
+	const availableActionsByTool = new Map(
+		availableTools.map(tool => [tool.toolId, new Set(tool.actions)]),
+	);
+
+	const families: NonNullable<DivoCapabilityBootstrap["families"]> = Array.isArray(raw.families)
+		? raw.families.slice(0, 16).flatMap((item) => {
+			if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+			const family = item as Record<string, unknown>;
+			const familyId = boundedString(family.familyId, 80);
+			const displayName = boundedString(family.displayName, 160);
+			const connectionMode = family.connectionMode;
+			const connectionProvider = boundedString(family.connectionProvider, 80);
+			const skillMode = family.skillMode;
+			if (
+				!familyId ||
+				!displayName ||
+				(connectionMode !== "member_selectable" && connectionMode !== "backend_managed" && connectionMode !== "none") ||
+				(skillMode !== "none" && skillMode !== "optional" && skillMode !== "required") ||
+				(connectionMode === "member_selectable" && !connectionProvider)
+			) {
+				return [];
+			}
+
+			const tools = Array.isArray(family.tools)
+				? family.tools.slice(0, 12).flatMap((entry) => {
+					if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+					const tool = entry as Record<string, unknown>;
+					const toolId = boundedString(tool.toolId, 120);
+					const toolName = boundedString(tool.displayName, 160);
+					const description = boundedString(tool.description, 500);
+					const actions = Array.isArray(tool.actions)
+						? tool.actions.slice(0, 8).flatMap(action => boundedString(action, 40) ?? [])
+						: [];
+					const permittedActions = toolId
+						? actions.filter(action => availableActionsByTool.get(toolId)?.has(action))
+						: [];
+					return toolId && toolId !== familyId && toolName && description && permittedActions.length > 0
+						? [{ toolId, displayName: toolName, description, actions: permittedActions }]
+						: [];
+				})
+				: [];
+			if (tools.length === 0) return [];
+
+			const skills: NonNullable<DivoCapabilityBootstrap["families"]>[number]["skills"] = Array.isArray(family.skills)
+				? family.skills.slice(0, 8).flatMap((entry) => {
+					if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+					const skill = entry as Record<string, unknown>;
+					const skillId = boundedString(skill.skillId, 200);
+					const name = boundedString(skill.name, 160);
+					const mode = skill.mode;
+					return skillId && name && (mode === "none" || mode === "optional" || mode === "required")
+						? [{ skillId, name, mode }]
+						: [];
+				})
+				: [];
+
+			return [{
+				familyId,
+				displayName,
+				connectionMode,
+				...(connectionProvider ? { connectionProvider } : {}),
+				skillMode,
+				tools,
+				skills,
+			}];
+		})
+		: [];
 
 	const routingHints = Array.isArray(raw.routingHints)
 		? raw.routingHints.slice(0, 12).flatMap(hint => boundedString(hint, 500) ?? [])
@@ -322,6 +423,7 @@ function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap |
 		departmentRole,
 		availableSkills,
 		availableTools,
+		families,
 		preferredSkills,
 		preferredTools,
 		routingHints,

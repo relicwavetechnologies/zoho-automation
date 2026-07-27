@@ -67,6 +67,28 @@ describe('desktop capability bootstrap', () => {
       && hint.includes('do not resolve or search for a research skill first')));
     assert.ok(!bootstrap.routingHints.some(hint => hint.includes('zohoCrm')));
     assert.deepEqual(bootstrap.zohoConnection, { accessibleCount: 0 });
+    assert.deepEqual(bootstrap.families.find(family => family.familyId === 'zoho'), {
+      familyId: 'zoho',
+      displayName: 'Zoho',
+      connectionMode: 'member_selectable',
+      connectionProvider: 'zoho',
+      skillMode: 'optional',
+      tools: [{
+        toolId: 'zohoBooks',
+        actions: ['read'],
+        displayName: 'Zoho Books',
+        description: 'Use Zoho Books for governed access to invoices.',
+      }],
+      skills: [{
+        skillId: 'finance-core-id',
+        name: 'Finance Ops Core',
+        mode: 'optional',
+      }, {
+        skillId: 'bill-write-id',
+        name: 'Zoho Books Bill Recording',
+        mode: 'optional',
+      }],
+    });
   });
 
   it('builds a generic RBAC-filtered catalogue without Finance assumptions for another department', () => {
@@ -92,7 +114,7 @@ describe('desktop capability bootstrap', () => {
       registryRevision: 13,
     });
 
-    assert.equal(bootstrap.version, 2);
+    assert.equal(bootstrap.version, 3);
     assert.equal(bootstrap.departmentFunction, 'general');
     assert.equal(bootstrap.registryRevision, 13);
     assert.deepEqual(bootstrap.availableSkills, [{
@@ -108,6 +130,28 @@ describe('desktop capability bootstrap', () => {
       { toolId: 'webSearch', actions: ['read'] },
       { toolId: 'zohoBooks', actions: ['read'] },
     ]);
+    assert.deepEqual(bootstrap.families.map(family => family.familyId), [
+      'lark',
+      'zoho',
+      'context',
+      'scheduling',
+    ]);
+    assert.deepEqual(
+      bootstrap.families.find(family => family.familyId === 'scheduling'),
+      {
+        familyId: 'scheduling',
+        displayName: 'Scheduled work',
+        connectionMode: 'none',
+        skillMode: 'required',
+        tools: [{
+          toolId: 'scheduledWorkflows',
+          actions: ['execute'],
+          displayName: 'Scheduled Work',
+          description: 'Use Scheduled Work for governed access to schedules.',
+        }],
+        skills: [],
+      },
+    );
     assert.deepEqual(bootstrap.preferredSkills, []);
     assert.equal(bootstrap.routingHints.length, 1);
     assert.match(bootstrap.routingHints[0] ?? '', /invoke webSearch directly/);

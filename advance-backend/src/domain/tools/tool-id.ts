@@ -21,28 +21,45 @@ export const TOOL_FAMILY_IDS = [
 
 export type ToolFamily = typeof TOOL_FAMILY_IDS[number];
 
-export const TOOL_FAMILY_DEFINITIONS: Record<ToolFamily, {
+export type CapabilityConnectionProvider =
+  | 'google_workspace'
+  | 'zoho'
+  | 'canva'
+  | 'airtable'
+  | 'aitable'
+  | 'lark';
+
+export type ToolFamilyDefinition = {
   readonly displayName: string;
-}> = {
-  lark:       { displayName: 'Lark' },
-  google:     { displayName: 'Google Workspace' },
-  canva:      { displayName: 'Canva' },
-  airtable:   { displayName: 'Airtable' },
-  aitable:    { displayName: 'AITable' },
-  zoho:       { displayName: 'Zoho' },
-  context:    { displayName: 'Search and context' },
-  skills:     { displayName: 'Skills' },
-  memory:     { displayName: 'Memory' },
-  rag:        { displayName: 'Document retrieval' },
-  data:       { displayName: 'Data processing' },
-  execution:  { displayName: 'Local execution' },
-  scheduling: { displayName: 'Scheduled work' },
-  semrush:    { displayName: 'Semrush' },
-  oms:        { displayName: 'OMS' },
+  readonly connectionMode: 'member_selectable' | 'backend_managed' | 'none';
+  readonly connectionProvider?: CapabilityConnectionProvider;
+  readonly skillMode: 'none' | 'optional' | 'required';
+};
+
+export const TOOL_FAMILY_DEFINITIONS: Record<ToolFamily, ToolFamilyDefinition> = {
+  lark:       { displayName: 'Lark', connectionMode: 'member_selectable', connectionProvider: 'lark', skillMode: 'optional' },
+  google:     { displayName: 'Google Workspace', connectionMode: 'member_selectable', connectionProvider: 'google_workspace', skillMode: 'optional' },
+  canva:      { displayName: 'Canva', connectionMode: 'member_selectable', connectionProvider: 'canva', skillMode: 'optional' },
+  airtable:   { displayName: 'Airtable', connectionMode: 'member_selectable', connectionProvider: 'airtable', skillMode: 'optional' },
+  aitable:    { displayName: 'AITable', connectionMode: 'member_selectable', connectionProvider: 'aitable', skillMode: 'optional' },
+  zoho:       { displayName: 'Zoho', connectionMode: 'member_selectable', connectionProvider: 'zoho', skillMode: 'optional' },
+  context:    { displayName: 'Search and context', connectionMode: 'none', skillMode: 'none' },
+  skills:     { displayName: 'Skills', connectionMode: 'none', skillMode: 'optional' },
+  memory:     { displayName: 'Memory', connectionMode: 'none', skillMode: 'optional' },
+  rag:        { displayName: 'Document retrieval', connectionMode: 'none', skillMode: 'optional' },
+  data:       { displayName: 'Data processing', connectionMode: 'none', skillMode: 'optional' },
+  execution:  { displayName: 'Local execution', connectionMode: 'none', skillMode: 'optional' },
+  scheduling: { displayName: 'Scheduled work', connectionMode: 'none', skillMode: 'required' },
+  semrush:    { displayName: 'Semrush', connectionMode: 'backend_managed', skillMode: 'optional' },
+  oms:        { displayName: 'OMS', connectionMode: 'backend_managed', skillMode: 'optional' },
 };
 
 export function isToolFamily(value: string): value is ToolFamily {
   return Object.prototype.hasOwnProperty.call(TOOL_FAMILY_DEFINITIONS, value);
+}
+
+export function isCanonicalToolId(value: string): value is CanonicalToolId {
+  return Object.prototype.hasOwnProperty.call(TOOL_CAPABILITY_DEFINITIONS, value);
 }
 
 export type BuiltInRoleDefaults = {

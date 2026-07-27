@@ -122,7 +122,7 @@ pub(crate) async fn refresh_runtime_context<R: Runtime>(app: &AppHandle<R>) -> R
         let response = divo_desktop_json_request(
             app,
             reqwest::Method::GET,
-            &format!("/runtime-context?departmentId={department_id}"),
+            &format!("/runtime-context?departmentId={department_id}&capabilityVersion=3"),
             None,
             "Divo runtime context refresh",
         )

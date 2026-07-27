@@ -169,6 +169,67 @@ describe("department persona", () => {
 		assert.match(prompt, /Use divo_skill_resolve only as a fallback/);
 	});
 
+	it("injects the v3 family hierarchy without treating family IDs as executable tools", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "divo-capability-v3-"));
+		const path = join(directory, "runtime-context.json");
+		await writeFile(path, JSON.stringify({
+			departmentName: "Operations",
+			capabilityBootstrap: {
+				version: 3,
+				registryRevision: 15,
+				departmentFunction: "general",
+				companyRole: "MEMBER",
+				departmentRole: "MANAGER",
+				availableSkills: [],
+				availableTools: [{ toolId: "airtableSchema", actions: ["read"] }],
+				families: [{
+					familyId: "airtable",
+					displayName: "Airtable",
+					connectionMode: "member_selectable",
+					connectionProvider: "airtable",
+					skillMode: "optional",
+					tools: [{
+						toolId: "airtableSchema",
+						displayName: "Airtable Schema",
+						description: "Inspect Airtable tables and fields.",
+						actions: ["read", "delete"],
+					}, {
+						toolId: "airtable",
+						displayName: "Wrong family leaf",
+						description: "A family is not executable.",
+						actions: ["read"],
+					}, {
+						toolId: "larkBase",
+						displayName: "Denied cross-family leaf",
+						description: "This tool is not in the RBAC-visible leaf index.",
+						actions: ["read"],
+					}],
+					skills: [{
+						skillId: "airtable-core-id",
+						name: "Airtable Core",
+						mode: "optional",
+					}],
+				}],
+				preferredSkills: [],
+				preferredTools: [],
+				routingHints: [],
+			},
+		}));
+
+		const prompt = composeDivoSystemPrompt(
+			"Base prompt",
+			COMPANY_PROMPT,
+			await readDepartmentPersonaContext(path),
+		);
+		assert.match(prompt, /Airtable \[family=airtable; connection=member_selectable via airtable; skill=optional\]/);
+		assert.match(prompt, /Airtable Schema \[toolId=airtableSchema; actions=read\]/);
+		assert.doesNotMatch(prompt, /actions=read, delete/);
+		assert.match(prompt, /Airtable Core \[skillId=airtable-core-id; mode=optional\]/);
+		assert.doesNotMatch(prompt, /toolId=airtable;/);
+		assert.doesNotMatch(prompt, /toolId=larkBase/);
+		assert.doesNotMatch(prompt, /legacy compact index/);
+	});
+
 	it("rejects malformed capability bootstrap data", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "divo-capability-invalid-"));
 		const path = join(directory, "runtime-context.json");

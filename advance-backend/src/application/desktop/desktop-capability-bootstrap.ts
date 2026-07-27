@@ -1,6 +1,13 @@
 import type { CatalogSkill } from '../skills/skill-catalog.service';
 import type { PermissionResult } from '../permissions/permission.types';
 import { GOVERNED_LOCAL_WORKFLOW_CRITERION } from '../skills/governed-local-routing';
+import {
+  TOOL_FAMILY_DEFINITIONS,
+  TOOL_FAMILY_IDS,
+  TOOL_FAMILY_MAP,
+  isCanonicalToolId,
+} from '../../domain/tools/tool-id';
+import { toolLabel } from '../../domain/tools/tool-labels';
 
 const FINANCE_TOOL_PRIORITY = ['zohoBooks', 'zohoCrm', 'webSearch'] as const;
 const ACTION_PRIORITY = ['read', 'create', 'update', 'delete', 'send', 'execute'] as const;
@@ -11,7 +18,7 @@ const FINANCE_SKILL_PRIORITY = [
 ] as const;
 
 export interface DesktopCapabilityBootstrap {
-  readonly version: 2;
+  readonly version: 3;
   readonly registryRevision: number;
   readonly departmentFunction: 'finance' | 'general';
   readonly companyRole: string;
@@ -26,6 +33,24 @@ export interface DesktopCapabilityBootstrap {
   readonly availableTools: readonly {
     readonly toolId: string;
     readonly actions: readonly string[];
+  }[];
+  readonly families: readonly {
+    readonly familyId: string;
+    readonly displayName: string;
+    readonly connectionMode: 'member_selectable' | 'backend_managed' | 'none';
+    readonly connectionProvider?: string;
+    readonly skillMode: 'none' | 'optional' | 'required';
+    readonly tools: readonly {
+      readonly toolId: string;
+      readonly displayName: string;
+      readonly description: string;
+      readonly actions: readonly string[];
+    }[];
+    readonly skills: readonly {
+      readonly skillId: string;
+      readonly name: string;
+      readonly mode: 'none' | 'optional' | 'required';
+    }[];
   }[];
   readonly preferredSkills: readonly {
     readonly id: string;
@@ -84,6 +109,43 @@ export function buildDesktopCapabilityBootstrap(input: {
       description: skill.description,
       revision: skill.revision,
     }));
+
+  const families = TOOL_FAMILY_IDS.flatMap((familyId) => {
+    const tools = availableTools.flatMap((tool) => {
+      if (!isCanonicalToolId(tool.toolId) || TOOL_FAMILY_MAP[tool.toolId] !== familyId) return [];
+      const label = toolLabel(tool.toolId);
+      return [{
+        ...tool,
+        displayName: label.name,
+        description: `Use ${label.name} for governed access to ${label.noun}.`,
+      }];
+    });
+    if (tools.length === 0) return [];
+
+    const familyToolIds = new Set(tools.map(tool => tool.toolId));
+    const definition = TOOL_FAMILY_DEFINITIONS[familyId];
+    const skills = input.visibleSkills
+      .filter(skill => skill.toolIds.some(toolId => familyToolIds.has(toolId)))
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, 8)
+      .map(skill => ({
+        skillId: skill.id,
+        name: skill.name,
+        mode: definition.skillMode,
+      }));
+
+    return [{
+      familyId,
+      displayName: definition.displayName,
+      connectionMode: definition.connectionMode,
+      ...(definition.connectionProvider
+        ? { connectionProvider: definition.connectionProvider }
+        : {}),
+      skillMode: definition.skillMode,
+      tools,
+      skills,
+    }];
+  });
 
   const preferredTools = finance ? FINANCE_TOOL_PRIORITY.flatMap((toolId) => {
     const actions = input.permission.allowedActionsByTool.get(toolId as never);
@@ -168,13 +230,14 @@ export function buildDesktopCapabilityBootstrap(input: {
   const soleConnection = connections?.length === 1 ? connections[0] : undefined;
 
   return {
-    version: 2,
+    version: 3,
     registryRevision: input.registryRevision,
     departmentFunction: finance ? 'finance' : 'general',
     companyRole: input.companyRole,
     departmentRole: String(input.permission.department?.roleSlug ?? 'member'),
     availableSkills,
     availableTools,
+    families,
     preferredSkills,
     preferredTools,
     routingHints,

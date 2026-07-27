@@ -167,6 +167,7 @@ const zohoSelfClientSchema = z.object({
 
 const runtimeContextQuerySchema = z.object({
   departmentId: z.string().uuid().optional(),
+  capabilityVersion: z.literal('3').optional(),
 });
 
 const connectionManagerGovernanceUpdateSchema = z.object({
@@ -1016,6 +1017,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       departmentId: typeof req.query.departmentId === 'string'
         ? req.query.departmentId
         : undefined,
+      capabilityVersion: typeof req.query.capabilityVersion === 'string'
+        ? req.query.capabilityVersion
+        : undefined,
     });
     if (!parsed.success) {
       res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? 'Invalid departmentId' });
@@ -1114,7 +1118,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
             grantedSkillIds,
             limit: 50,
           });
-          capabilityBootstrap = buildDesktopCapabilityBootstrap({
+          const builtBootstrap = buildDesktopCapabilityBootstrap({
             departmentName: membership.department.name,
             departmentSlug: membership.department.slug,
             companyRole,
@@ -1129,6 +1133,13 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
               })),
             } : {}),
           });
+          if (parsed.data.capabilityVersion === '3') {
+            capabilityBootstrap = builtBootstrap;
+          } else {
+            const { families, ...legacyBootstrap } = builtBootstrap;
+            void families;
+            capabilityBootstrap = { ...legacyBootstrap, version: 2 };
+          }
         }
       } catch (error) {
         log.warn('runtime_context.capability_bootstrap_failed', {
