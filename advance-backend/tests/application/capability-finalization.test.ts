@@ -167,6 +167,8 @@ describe('Lark engine harness controls', () => {
     assert.equal(defaults.model, 'flash');
     assert.equal(defaults.trace, true);
     assert.equal(defaults.freshContext, false);
+    assert.equal(defaults.groupReplyMode, 'threaded');
+    assert.equal(defaults.threadRootMessageId, undefined);
     assert.deepEqual(
       parseEngineHarnessArgs([
         '--model', 'pro',
@@ -174,6 +176,7 @@ describe('Lark engine harness controls', () => {
         '--user', 'Anish Suman',
         '--chat-id', 'oc_custom',
         '--chat-type', 'group',
+        '--group-mode', 'inline',
         '--fresh-context',
         'list', 'Airtable', 'bases',
       ], { HARNESS_LARK_ALLOWED_CHAT_IDS: 'oc_custom' }),
@@ -181,6 +184,7 @@ describe('Lark engine harness controls', () => {
         userSelector: 'Anish Suman',
         chatId: 'oc_custom',
         chatType: 'group',
+        groupReplyMode: 'inline',
         model: 'pro',
         prompt: 'list Airtable bases',
         debugSigs: false,
@@ -207,6 +211,22 @@ describe('Lark engine harness controls', () => {
       /flash or pro/,
     );
     assert.throws(
+      () => parseEngineHarnessArgs(['--group-mode', 'sideways'], {}),
+      /threaded or inline/,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--thread-root', 'om_root'], {}),
+      /requires a group chat/,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--group', '--group-mode', 'inline', '--thread-root', 'om_root'], {}),
+      /requires --group-mode threaded/,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--group', '--fresh-context', '--thread-root', 'om_root'], {}),
+      /cannot be combined with --fresh-context/,
+    );
+    assert.throws(
       () => parseEngineHarnessArgs(['--chat-id', 'oc_untrusted'], {}),
       /HARNESS_LARK_ALLOWED_CHAT_IDS/,
     );
@@ -220,6 +240,10 @@ describe('Lark engine harness controls', () => {
         HARNESS_LARK_ALLOWED_CHAT_IDS: 'oc_allowed_dm',
       }).chatId,
       'oc_b9169aab0765f46b2fe9147068e3c79f',
+    );
+    assert.equal(
+      parseEngineHarnessArgs(['--group', '--thread-root', 'om_root'], {}).threadRootMessageId,
+      'om_root',
     );
   });
 

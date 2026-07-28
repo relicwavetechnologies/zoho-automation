@@ -163,8 +163,6 @@ export class LarkStatusCoordinator {
       t.declared ? `${t.declared.done}/${t.declared.total}:${t.declared.current ?? ''}` : '',
       t.liveLabel,
       t.narrationActive,
-      
-
       t.ledger?.map(r => `${r.status}:${r.label}:${r.count}:${r.outcome}`).join('|'),
       t.plan?.map(p => `${p.status}:${p.title}:${p.subtitle ?? ''}`).join('|'),
     ].filter(Boolean);

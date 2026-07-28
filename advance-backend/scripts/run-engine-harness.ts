@@ -13,7 +13,9 @@
  *   pnpm tsx scripts/run-engine-harness.ts --model pro "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --allow-impersonation --user "Anish Suman" "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --fresh-context --allow-impersonation --user "Shivam Bhateja" "your prompt"
- *   pnpm tsx scripts/run-engine-harness.ts --chat-id oc_x --chat-type group "your prompt"
+ *   pnpm tsx scripts/run-engine-harness.ts --group "your prompt" # seeds a real Lark thread
+ *   pnpm tsx scripts/run-engine-harness.ts --group --thread-root om_x "follow-up prompt"
+ *   pnpm tsx scripts/run-engine-harness.ts --group --group-mode inline "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --full-debug        # detailed latest-agent-run.log
  *
  * `--user` selects a DB-linked Lark identity by exact email, exact display
@@ -53,6 +55,8 @@ export interface EngineHarnessOptions {
   readonly userSelector: string;
   readonly chatId: string;
   readonly chatType: 'p2p' | 'group';
+  readonly groupReplyMode: 'threaded' | 'inline';
+  readonly threadRootMessageId?: string;
   readonly model: HarnessModel;
   readonly prompt: string;
   readonly debugSigs: boolean;
@@ -70,6 +74,8 @@ export function parseEngineHarnessArgs(
   let userSelector = DEFAULT_USER_SELECTOR;
   let explicitChatId: string | undefined;
   let chatType: 'p2p' | 'group' = 'p2p';
+  let groupReplyMode: 'threaded' | 'inline' = 'threaded';
+  let threadRootMessageId: string | undefined;
   let model: HarnessModel = 'flash';
   let debugSigs = false;
   let trace = true;
@@ -117,11 +123,19 @@ export function parseEngineHarnessArgs(
       help = true;
       continue;
     }
-    if (value === '--user' || value === '--chat-id' || value === '--chat-type' || value === '--model') {
+    if (
+      value === '--user'
+      || value === '--chat-id'
+      || value === '--chat-type'
+      || value === '--group-mode'
+      || value === '--thread-root'
+      || value === '--model'
+    ) {
       const optionValue = args[++index]?.trim();
       if (!optionValue) throw new Error(`${value} requires a value`);
       if (value === '--user') userSelector = optionValue;
       if (value === '--chat-id') explicitChatId = optionValue;
+      if (value === '--thread-root') threadRootMessageId = optionValue;
       if (value === '--model') {
         if (optionValue !== 'flash' && optionValue !== 'pro') {
           throw new Error('--model must be flash or pro');
@@ -134,6 +148,12 @@ export function parseEngineHarnessArgs(
         }
         chatType = optionValue;
       }
+      if (value === '--group-mode') {
+        if (optionValue !== 'threaded' && optionValue !== 'inline') {
+          throw new Error('--group-mode must be threaded or inline');
+        }
+        groupReplyMode = optionValue;
+      }
       continue;
     }
     if (value?.startsWith('--')) throw new Error(`Unknown option: ${value}`);
@@ -145,6 +165,15 @@ export function parseEngineHarnessArgs(
     && !allowImpersonation
   ) {
     throw new Error('Selecting a non-default Lark principal requires --allow-impersonation');
+  }
+  if (threadRootMessageId && chatType !== 'group') {
+    throw new Error('--thread-root requires a group chat');
+  }
+  if (threadRootMessageId && groupReplyMode !== 'threaded') {
+    throw new Error('--thread-root requires --group-mode threaded');
+  }
+  if (threadRootMessageId && freshContext) {
+    throw new Error('--thread-root cannot be combined with --fresh-context');
   }
   const resolvedChatId = explicitChatId
     ?? (chatType === 'group'
@@ -163,6 +192,8 @@ export function parseEngineHarnessArgs(
     userSelector,
     chatId: resolvedChatId,
     chatType,
+    groupReplyMode,
+    ...(threadRootMessageId ? { threadRootMessageId } : {}),
     model,
     prompt: promptParts.join(' ').trim() || DEFAULT_PROMPT,
     debugSigs,
@@ -439,7 +470,7 @@ function installGeminiSignatureTrace() {
 async function main() {
   const options = parseEngineHarnessArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro] [--fresh-context] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--no-trace] [--full-debug] [prompt]');
+    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro] [--fresh-context] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [--full-debug] [prompt]');
     return;
   }
   if (options.debugSigs) installGeminiSignatureTrace();
@@ -448,6 +479,7 @@ async function main() {
 
   console.log('\n=== run-engine-harness ===');
   console.log(`mode:   ${options.chatType}`);
+  if (options.chatType === 'group') console.log(`group reply mode: ${options.groupReplyMode}`);
   console.log(`model:  ${options.model} (${requestedModelId})`);
   console.log(`user selector: ${options.userSelector}`);
   console.log(`delivery chatId: ${options.chatId}`);
@@ -485,10 +517,34 @@ async function main() {
   console.log(`principal: companyId=${identity.companyId} userId=${identity.userId} role=${identity.aiRole} dept=${identity.activeDepartmentId ?? '∅'}\n`);
 
   // ── 2. Build IncomingMessage + RunContext exactly like the webhook ────────
+  let threadRootMessageId = options.threadRootMessageId;
+  let seededThread = false;
+  if (
+    options.chatType === 'group'
+    && options.groupReplyMode === 'threaded'
+    && !threadRootMessageId
+  ) {
+    const seed = await larkAdapter.sendToChatId(
+      options.chatId,
+      JSON.stringify({
+        msg_type: 'text',
+        content: JSON.stringify({ text: `🧪 Divo engine harness\n${options.prompt}` }),
+      }),
+    );
+    if (!seed.ok) throw seed.error;
+    threadRootMessageId = seed.value;
+    seededThread = true;
+    console.log(`seeded Lark thread root: ${threadRootMessageId}`);
+  }
+
   const now = new Date();
-  const messageId = `om_harness_${randomUUID()}`;
+  const messageId = seededThread
+    ? threadRootMessageId!
+    : `om_harness_${randomUUID()}`;
   const traceId   = asCorrelationId(`${messageId}-${now.getTime()}`);
-  const contextChatId = options.freshContext
+  const contextChatId = options.chatType === 'group' && options.groupReplyMode === 'threaded'
+    ? options.chatId
+    : options.freshContext
     ? `harness_fresh_${messageId}`
     : options.chatId;
   console.log(`traceId: ${traceId}`);
@@ -507,6 +563,10 @@ async function main() {
     traceId,
     mentions:       [],
     mentionsSelf:   true,
+    ...(options.chatType === 'group' ? { groupReplyMode: options.groupReplyMode } : {}),
+    ...(!seededThread && threadRootMessageId
+      ? { rootMessageId: asMessageId(threadRootMessageId) }
+      : {}),
     raw:            {},
   };
 
@@ -525,8 +585,12 @@ async function main() {
   const conversation: ConversationHandle = {
     channel:          'lark',
     chatId:           asChatId(options.chatId),
-    replyToMessageId: incoming.messageId,
-    replyInThread:    options.chatType === 'group',
+    ...(threadRootMessageId
+      ? { replyToMessageId: asMessageId(threadRootMessageId) }
+      : {}),
+    ...(options.chatType === 'group'
+      ? { replyInThread: options.groupReplyMode === 'threaded' }
+      : {}),
     correlationId:    traceId,
   };
 

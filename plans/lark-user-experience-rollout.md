@@ -2,9 +2,9 @@
 
 > Living roadmap for making Divo reliable and complete inside Lark.
 >
-> **Current priority:** Zoho end-to-end readiness  
-> **Status:** Planning and discovery  
-> **Owner:** Abhishek / Divo engineering  
+> **Current priority:** Zoho end-to-end readiness
+> **Status:** Planning and discovery
+> **Owner:** Abhishek / Divo engineering
 > **Last updated:** 2026-07-27
 
 ---
@@ -347,4 +347,3 @@ Add ideas here before promoting them into a wave.
 - [ ] Hold a focused architecture discussion for personal memory.
 - [ ] Confirm whether “Airtable E2E” means Airtable, AITable, or both.
 - [ ] Add newly discovered requirements to this file before implementation begins.
-
