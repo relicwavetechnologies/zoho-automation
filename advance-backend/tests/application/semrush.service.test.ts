@@ -59,6 +59,38 @@ describe('SemrushService', () => {
     ]);
   });
 
+  for (const code of ['provider_failure', 'rate_limited', 'timeout'] as const) {
+    it(`keeps the cached webhook key and does not retry after ${code}`, async () => {
+      const providerKeys: string[] = [];
+      let webhookCalls = 0;
+      const service = new SemrushService(
+        {
+          fetch: async ({ apiKey }: { apiKey: string }) => {
+            providerKeys.push(apiKey);
+            if (providerKeys.length === 1) throw new SemrushServiceError(code, code);
+            return { operation: 'domain_overview', status: 'complete', coverage: {}, rows: [{ Dn: 'example.com' }] };
+          },
+        } as any,
+        undefined,
+        logger,
+        'https://keys.example.test/semrush',
+        async () => {
+          webhookCalls += 1;
+          return Response.json({ api_key: 'active-key', status: 'active' });
+        },
+      );
+
+      await assert.rejects(
+        () => service.execute(args),
+        (error: unknown) => error instanceof SemrushServiceError && error.code === code,
+      );
+      await service.execute(args);
+
+      assert.equal(webhookCalls, 1);
+      assert.deepEqual(providerKeys, ['active-key', 'active-key']);
+    });
+  }
+
   it('invalidates a rejected key, retries once with a different webhook key, and caches it', async () => {
     const providerKeys: string[] = [];
     const webhookKeys = ['expired-key', 'replacement-key'];
