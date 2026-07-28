@@ -210,8 +210,16 @@ describe('Lark family clients through the official SDK boundary', () => {
       ['heading1', 3],
       ['heading2', 4],
       ['heading3', 5],
+      ['heading4', 6],
+      ['heading5', 7],
+      ['heading6', 8],
+      ['heading7', 9],
+      ['heading8', 10],
+      ['heading9', 11],
       ['bullet', 12],
+      ['ordered', 13],
       ['code', 14],
+      ['quote', 15],
       ['todo', 17],
     ] as const;
 
@@ -235,6 +243,49 @@ describe('Lark family clients through the official SDK boundary', () => {
         },
       ]);
     }
+  });
+
+  it('creates dividers and formatted rich-text blocks with native Docx fields', async () => {
+    const { sdkClient, requests } = sdkStub(request => request.method === 'GET'
+      ? { document: { document_id: 'doc-root' } }
+      : {});
+    const client = new LarkDocClient(deps(sdkClient));
+
+    await client.appendBlocks('doc-1', [
+      { blockType: 'divider' },
+      {
+        blockType: 'ordered',
+        content: 'First step',
+        textStyle: {
+          bold: true,
+          underline: true,
+          textColor: 5,
+          link: 'https://example.com/guide',
+        },
+        blockStyle: { align: 'center', backgroundColor: 'LightBlueBackground' },
+      },
+    ]);
+
+    assert.deepEqual((requests[1]?.data as any).children, [
+      { block_type: 22, divider: {} },
+      {
+        block_type: 13,
+        ordered: {
+          elements: [{
+            text_run: {
+              content: 'First step',
+              text_element_style: {
+                bold: true,
+                underline: true,
+                text_color: 5,
+                link: { url: 'https%3A%2F%2Fexample.com%2Fguide' },
+              },
+            },
+          }],
+          style: { align: 2, background_color: 'LightBlueBackground' },
+        },
+      },
+    ]);
   });
 
   it('removes a duplicate marker from native bullet blocks', async () => {
@@ -322,19 +373,48 @@ describe('Lark family clients through the official SDK boundary', () => {
     ]);
   });
 
-  it('updates rich text using the documented patch operation', async () => {
+  it('updates rich text and block style using the documented patch operations', async () => {
     const { sdkClient, requests } = sdkStub(() => ({}));
+    const client = new LarkDocClient(deps(sdkClient));
 
-    await new LarkDocClient(deps(sdkClient)).updateBlock('doc-1', 'block-1', 'Updated');
+    await client.updateBlock('doc-1', 'block-1', 'Updated', {
+      italic: true,
+      inlineCode: true,
+    });
+    await client.updateBlockStyle('doc-1', 'block-1', {
+      done: true,
+      folded: false,
+      wrap: true,
+    });
 
-    assert.deepEqual(requests, [{
-      method: 'PATCH',
-      url: '/open-apis/docx/v1/documents/doc-1/blocks/block-1',
-      params: { document_revision_id: -1 },
-      data: {
-        update_text_elements: { elements: [{ text_run: { content: 'Updated' } }] },
+    assert.deepEqual(requests, [
+      {
+        method: 'PATCH',
+        url: '/open-apis/docx/v1/documents/doc-1/blocks/block-1',
+        params: { document_revision_id: -1 },
+        data: {
+          update_text_elements: {
+            elements: [{
+              text_run: {
+                content: 'Updated',
+                text_element_style: { italic: true, inline_code: true },
+              },
+            }],
+          },
+        },
       },
-    }]);
+      {
+        method: 'PATCH',
+        url: '/open-apis/docx/v1/documents/doc-1/blocks/block-1',
+        params: { document_revision_id: -1 },
+        data: {
+          update_text_style: {
+            style: { done: true, folded: false, wrap: true },
+            fields: [2, 3, 5],
+          },
+        },
+      },
+    ]);
   });
 
   it('retrieves raw document content, paginates blocks, and deletes a child by its parent range', async () => {

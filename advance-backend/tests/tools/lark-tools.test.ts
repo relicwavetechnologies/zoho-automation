@@ -650,6 +650,7 @@ describe('larkCalendar tool', () => {
 describe('larkDoc tool', () => {
   const appendedBatches: unknown[] = [];
   const insertedTables: unknown[] = [];
+  const updatedStyles: unknown[] = [];
   const fakeClient = {
     getDoc:       async () => ({ title: 'Doc', content: '...' }),
     createDoc:    async () => ({ docToken: 'doc-abc', url: 'https://example.larksuite.com/docx/doc-abc' }),
@@ -657,6 +658,7 @@ describe('larkDoc tool', () => {
     appendBlocks: async (_docToken: string, blocks: unknown[]) => { appendedBatches.push(blocks); },
     listBlocks:   async () => [{ type: 'text', content: 'hello' }],
     updateBlock:  async () => {},
+    updateBlockStyle: async (_docToken: string, _blockId: string, style: unknown) => { updatedStyles.push(style); },
     deleteBlock:  async () => {},
     insertTable:  async (_docToken: string, params: unknown) => { insertedTables.push(params); },
     shareDoc:     async () => ({}),
@@ -745,13 +747,41 @@ describe('larkDoc tool', () => {
       const tool = createLarkDocTool({ client: fakeClient });
       const blocks = [
         { content: 'Overview', blockType: 'heading1' as const },
-        { content: 'First point', blockType: 'bullet' as const },
-        { content: 'Follow up', blockType: 'todo' as const },
+        { content: 'First point', blockType: 'ordered' as const, textStyle: { bold: true } },
+        { content: 'Follow up', blockType: 'todo' as const, blockStyle: { done: false } },
+        { blockType: 'divider' as const },
       ];
       const r = await tool.execute({ op: 'append_blocks', docToken: 'doc-abc', blocks }, ctx);
+      const invalidDivider = await tool.execute({
+        op: 'append_blocks',
+        docToken: 'doc-abc',
+        blocks: [{ blockType: 'divider', content: 'not visible' }],
+      }, ctx);
 
       assert.equal(r.ok, true);
       assert.deepEqual(appendedBatches, [blocks]);
+      assert.equal(invalidDivider.ok, false);
+    });
+
+    it('update_block_style requires and forwards at least one style field', async () => {
+      updatedStyles.length = 0;
+      const tool = createLarkDocTool({ client: fakeClient });
+      const valid = await tool.execute({
+        op: 'update_block_style',
+        docToken: 'doc-abc',
+        blockId: 'block-1',
+        blockStyle: { done: true },
+      }, ctx);
+      const invalid = await tool.execute({
+        op: 'update_block_style',
+        docToken: 'doc-abc',
+        blockId: 'block-1',
+        blockStyle: {},
+      }, ctx);
+
+      assert.equal(valid.ok, true);
+      assert.deepEqual(updatedStyles, [{ done: true }]);
+      assert.equal(invalid.ok, false);
     });
 
     it('insert_table: passes body data and rejects rows outside declared dimensions', async () => {

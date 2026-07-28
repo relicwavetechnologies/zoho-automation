@@ -4,9 +4,9 @@
 >
 > Last updated: **2026-07-28**
 >
-> Scope: inventory and implement the complete pinned Lark SDK/OpenAPI surface
-> through Divo's governed backend gateway, then make that surface reliably
-> usable by the agent through a sequential router and recipe tree.
+> Scope: implement SDK parity for the eight existing Divo Lark families:
+> Documents/Drive, Task v2, Messaging, Calendar, Base, Approval, Meetings, and
+> Contacts.
 >
 > Current implementation focus: **SDK inventory, gateway contracts, provider
 > adapters, governance, and verification only. Skill routing is deferred until
@@ -33,9 +33,11 @@
 
 ## 1. Goal
 
-Reach auditable Lark SDK parity without putting the SDK, credentials, or policy
-inside the agent runtime. Every operation exposed by the pinned SDK version
-must be inventoried and assigned an explicit state:
+Reach auditable parity for the eight target Divo families without putting the
+SDK, credentials, or policy inside the agent runtime. The target covers 510
+unique SDK endpoints across nine SDK services (`docx` and `drive` jointly form
+the Documents/Drive family). Every target operation must be assigned an
+explicit state:
 
 - implemented and verified;
 - implemented but awaiting live verification;
@@ -43,9 +45,9 @@ must be inventoried and assigned an explicit state:
 - intentionally unavailable because Divo policy forbids it;
 - not yet implemented, with an owner and rollout phase.
 
-No SDK operation should be silently absent. Implemented operations must be
-available through structured Divo contracts and navigable through a small,
-sequential skill tree:
+No target operation should be silently absent. The full 1,628-endpoint SDK
+inventory remains as a drift detector, but non-target services do not count
+toward executable parity.
 
 ```text
 Lark router
@@ -68,7 +70,7 @@ an SDK method can be called.
 
 | Gate | Requirement |
 |---|---|
-| Coverage parity | Every operation in the pinned SDK/OpenAPI catalogue is present in the generated inventory |
+| Coverage parity | Every operation in the eight target families is classified against the pinned SDK inventory |
 | Gateway parity | Every supported operation has a typed backend contract and provider adapter |
 | Governance parity | Token mode, scopes, RBAC action, approval policy, audit behavior, and idempotency are declared |
 | Agent parity | The operation is reachable through the router tree, has the necessary recipe guidance, and has truthful verification behavior |
@@ -392,12 +394,10 @@ For each SDK family:
 - [ ] Verify representative reads and writes against a dev Lark tenant.
 - [ ] Publish the family parity percentage and explicit blockers.
 
-Rollout order should be based on user value and risk, while inventory remains
-complete from the beginning:
+Rollout order is based on user value and risk:
 
 1. Documents/Drive, Task v2, Messaging, and Calendar.
 2. Base, Contacts, Approval, Meetings, and currently connected families.
-3. Remaining SDK families discovered by the generated inventory.
 
 ### Phase 9 — Advanced and high-risk capabilities
 
@@ -490,6 +490,8 @@ reliable selection, recovery, governance, and verification.
 | Native Lark document `todo` block support | `[~]` | Local implementation and focused tests completed; deployment/live verification pending |
 | Exact pinned SDK baseline | `[x]` | SDK `1.71.0`; 1,628 unique endpoints across 55 services |
 | Generated full SDK inventory | `[x]` | `pnpm lark:sdk-parity` and focused drift test |
+| Executable parity target | `[x]` | 510 unique endpoints across the nine SDK services backing eight Divo families |
+| Document text blocks and formatting | `[~]` | Headings 4–9, ordered, quote, divider, inline styles, and block-style update implemented locally |
 | Current-tool gap report | `[ ]` | |
 | Canonical parity manifest | `[ ]` | |
 | Gateway parity framework | `[ ]` | |
@@ -530,6 +532,9 @@ they must use the same governed router and leaf contract.
 - Moving credentials, RBAC, or HITL into skills or the model runtime.
 - Advanced Lark administration or bulk mutation support.
 - Refactoring unrelated skill catalogue or orchestration code.
+- Wiki, Sheets, Mail, OKR, Attendance, Helpdesk, Hire, CoreHR, Payroll,
+  Search, Security, and all other SDK services outside the eight target
+  families.
 
 The complete SDK inventory is in scope from Phase 0. Implementing every family
 inside the first vertical slice is not.
@@ -540,6 +545,7 @@ inside the first vertical slice is not.
 |---|---|---|
 | 2026-07-28 | The primary project is full governed Lark SDK parity | Skill routing alone does not add missing provider capabilities |
 | 2026-07-28 | Inventory the entire pinned SDK before broad implementation | Prevents undocumented gaps and allows measurable parity |
+| 2026-07-28 | Limit executable parity to the eight existing Divo Lark families | The remaining SDK products are not required for this project |
 | 2026-07-28 | Report inventory, gateway, governance, and agent parity separately | Avoids a misleading single “100%” claim |
 | 2026-07-28 | Use sequential root → family → leaf routing | Reduces context overload and semantic collisions |
 | 2026-07-28 | Search exposes summaries; selection loads instructions | Preserves discovery without flooding the model |
@@ -549,8 +555,8 @@ inside the first vertical slice is not.
 
 ## 15. Open questions
 
-- [ ] Does “full parity” include deprecated/beta endpoints, or should they be
-  inventoried but excluded from the executable target?
+- [ ] Within the eight target families, should deprecated/beta endpoints be
+  executable or classified as intentionally unavailable?
 - [ ] Which Lark products are unavailable in the connected tenant edition?
 - [ ] Which provider operations must remain intentionally unavailable under
   Divo policy despite SDK support?

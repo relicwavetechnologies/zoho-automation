@@ -13,16 +13,55 @@ import {
   type LarkUserTokenResolver,
 } from './lark-user-connection';
 
+const BlockTypeSchema = z.enum([
+  'text',
+  'heading1', 'heading2', 'heading3', 'heading4', 'heading5', 'heading6', 'heading7', 'heading8', 'heading9',
+  'bullet', 'ordered', 'code', 'quote', 'todo', 'divider',
+]);
+const TextStyleSchema = z.object({
+  bold: z.boolean().optional(),
+  italic: z.boolean().optional(),
+  strikethrough: z.boolean().optional(),
+  underline: z.boolean().optional(),
+  inlineCode: z.boolean().optional(),
+  backgroundColor: z.number().int().min(1).max(15).optional(),
+  textColor: z.number().int().min(1).max(7).optional(),
+  link: z.string().url().refine(value => /^https?:\/\//i.test(value), 'link must use http or https').optional(),
+}).strict();
+const BlockStyleSchema = z.object({
+  align: z.enum(['left', 'center', 'right']).optional(),
+  done: z.boolean().optional(),
+  folded: z.boolean().optional(),
+  codeLanguage: z.number().int().min(1).max(75).optional(),
+  wrap: z.boolean().optional(),
+  backgroundColor: z.enum([
+    'LightGrayBackground', 'LightRedBackground', 'LightOrangeBackground', 'LightYellowBackground',
+    'LightGreenBackground', 'LightBlueBackground', 'LightPurpleBackground', 'PaleGrayBackground',
+    'DarkGrayBackground', 'DarkRedBackground', 'DarkOrangeBackground', 'DarkYellowBackground',
+    'DarkGreenBackground', 'DarkBlueBackground', 'DarkPurpleBackground',
+  ]).optional(),
+  indentationLevel: z.enum(['NoIndent', 'OneLevelIndent']).optional(),
+}).strict();
+const BlockSchema = z.object({
+  content: z.string().min(1).max(100_000).optional(),
+  blockType: BlockTypeSchema.optional(),
+  textStyle: TextStyleSchema.optional(),
+  blockStyle: BlockStyleSchema.optional(),
+});
+
+export type LarkDocTextStyle = z.infer<typeof TextStyleSchema>;
+export type LarkDocBlockStyle = z.infer<typeof BlockStyleSchema>;
+export type LarkDocBlockInput = z.infer<typeof BlockSchema>;
+
 const Schema = z.object({
-  op: z.enum(['get', 'create', 'list_blocks', 'append_block', 'append_blocks', 'update_block', 'delete_block', 'insert_table', 'share']),
+  op: z.enum(['get', 'create', 'list_blocks', 'append_block', 'append_blocks', 'update_block', 'update_block_style', 'delete_block', 'insert_table', 'share']),
   docToken: z.string().optional(),
   title: z.string().optional(),
-  content: z.string().optional(),
-  blockType: z.enum(['text', 'heading1', 'heading2', 'heading3', 'bullet', 'code', 'todo']).optional(),
-  blocks: z.array(z.object({
-    content: z.string().min(1),
-    blockType: z.enum(['text', 'heading1', 'heading2', 'heading3', 'bullet', 'code', 'todo']).optional(),
-  })).min(1).max(100).optional(),
+  content: z.string().max(100_000).optional(),
+  blockType: BlockTypeSchema.optional(),
+  textStyle: TextStyleSchema.optional(),
+  blockStyle: BlockStyleSchema.optional(),
+  blocks: z.array(BlockSchema).min(1).max(50).optional(),
   blockId: z.string().optional(),
   rows: z.number().int().min(1).max(50).optional(),
   cols: z.number().int().min(1).max(20).optional(),
@@ -46,10 +85,11 @@ type Res = z.infer<typeof ResultSchema>;
 export interface LarkDocClientPort {
   getDoc(docToken: string): Promise<unknown>;
   createDoc(title: string): Promise<{ docToken: string; url?: string }>;
-  appendBlock(docToken: string, content: string, blockType?: string): Promise<void>;
-  appendBlocks(docToken: string, blocks: Array<{ content: string; blockType?: string }>): Promise<void>;
+  appendBlock(docToken: string, content: string, blockType?: LarkDocBlockInput['blockType'], textStyle?: LarkDocTextStyle, blockStyle?: LarkDocBlockStyle): Promise<void>;
+  appendBlocks(docToken: string, blocks: LarkDocBlockInput[]): Promise<void>;
   listBlocks(docToken: string): Promise<unknown[]>;
-  updateBlock(docToken: string, blockId: string, content: string): Promise<void>;
+  updateBlock(docToken: string, blockId: string, content: string, textStyle?: LarkDocTextStyle): Promise<void>;
+  updateBlockStyle(docToken: string, blockId: string, style: LarkDocBlockStyle): Promise<void>;
   deleteBlock(docToken: string, blockId: string): Promise<void>;
   insertTable(docToken: string, params: { afterBlockId?: string; rows: number; cols: number; headers?: string[]; data?: string[][] }): Promise<void>;
   shareDoc(docToken: string, visibility: string): Promise<{ shareUrl?: string }>;
@@ -71,14 +111,17 @@ export const createLarkDocTool = (deps: {
   actionGroups: new Set(['read', 'create', 'update']),
   argsSchema: Schema,
   resultSchema: ResultSchema,
-  description: 'Read, create, and edit Lark Docs — batch append structured blocks, insert populated tables, update/delete blocks, and share docs.',
+  description: 'Read, create, and edit Lark Docs — create and format native text/list/todo/divider blocks, insert populated tables, update/delete blocks, and share docs.',
   parameterDocs: `
-- op: get|create|list_blocks|append_block|append_blocks|update_block|delete_block|insert_table|share
+- op: get|create|list_blocks|append_block|append_blocks|update_block|update_block_style|delete_block|insert_table|share
 - docToken: Lark doc token (required for all except create)
 - title: Doc title (required for create)
 - create always returns docToken and resolves the canonical Lark document URL when Drive metadata provides it
-- content: Block text content (for append_block, update_block)
-- blockType: text|heading1|heading2|heading3|bullet|code|todo (default: text). Use todo for an interactive document checklist; do not imitate one with bullet characters or emoji.
+- content: Block text content (for append_block, update_block). Omit only for a divider.
+- blockType: text|heading1..heading9|bullet|ordered|code|quote|todo|divider (default: text). Use todo for an interactive document checklist; do not imitate one with bullet characters or emoji.
+- textStyle: Optional inline bold, italic, strikethrough, underline, inlineCode, backgroundColor (1–15), textColor (1–7), and link URL.
+- blockStyle: Optional align, todo done, folded, codeLanguage (1–75), wrap, backgroundColor, or indentationLevel. update_block_style requires blockId and at least one style field.
+- Use done only on todo blocks; codeLanguage/wrap only on code; indentationLevel only on text; folded only on headings, text, ordered, bullet, or todo.
 - blocks: Ordered content blocks for append_blocks. Prefer this over many append_block calls when writing a section or document.
 - For bullet blocks, provide plain text without a leading bullet character.
 - blockId: Block ID (required for update_block, delete_block; optional afterBlockId for insert_table)
@@ -133,20 +176,23 @@ export const createLarkDocTool = (deps: {
           });
         }
         case 'append_block': {
-          if (!args.docToken || !args.content)
-            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken and content required' }));
+          if (!args.docToken || (!args.content && args.blockType !== 'divider'))
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken and content required unless blockType is divider' }));
+          if (args.blockType === 'divider' && Boolean(args.content || args.textStyle || args.blockStyle))
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'divider blocks cannot contain content or styles' }));
           ctx.onProgress?.('Updating document…');
-          await client.appendBlock(args.docToken, args.content, args.blockType);
+          await client.appendBlock(args.docToken, args.content ?? '', args.blockType, args.textStyle, args.blockStyle);
           return ok({ success: true, message: 'Block appended' });
         }
         case 'append_blocks': {
-          if (!args.docToken || !args.blocks)
-            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken and blocks required' }));
+          if (!args.docToken || !args.blocks
+            || args.blocks.some(block =>
+              block.blockType === 'divider'
+                ? Boolean(block.content || block.textStyle || block.blockStyle)
+                : !block.content))
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'non-divider blocks require content; divider blocks cannot contain content or styles' }));
           ctx.onProgress?.('Updating document…');
-          await client.appendBlocks(args.docToken, args.blocks.map(block => ({
-            content: block.content,
-            ...(block.blockType ? { blockType: block.blockType } : {}),
-          })));
+          await client.appendBlocks(args.docToken, args.blocks);
           return ok({ success: true, message: `${args.blocks.length} blocks appended` });
         }
         case 'list_blocks': {
@@ -156,8 +202,14 @@ export const createLarkDocTool = (deps: {
         case 'update_block': {
           if (!args.docToken || !args.blockId || !args.content)
             return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken, blockId, and content required' }));
-          await client.updateBlock(args.docToken, args.blockId, args.content);
+          await client.updateBlock(args.docToken, args.blockId, args.content, args.textStyle);
           return ok({ success: true, message: 'Block updated' });
+        }
+        case 'update_block_style': {
+          if (!args.docToken || !args.blockId || !args.blockStyle || Object.keys(args.blockStyle).length === 0)
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken, blockId, and blockStyle required' }));
+          await client.updateBlockStyle(args.docToken, args.blockId, args.blockStyle);
+          return ok({ success: true, message: 'Block style updated' });
         }
         case 'delete_block': {
           if (!args.docToken || !args.blockId)

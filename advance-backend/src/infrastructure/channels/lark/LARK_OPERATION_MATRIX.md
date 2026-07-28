@@ -17,6 +17,13 @@ inventory coverage only; it does not mean every endpoint is executable through
 Divo. Gateway, governance, contract-test, and live-provider coverage are
 tracked separately.
 
+Executable parity is intentionally limited to eight existing Divo families:
+Documents/Drive, Task v2, Messaging, Calendar, Base, Approval, Meetings, and
+Contacts. Those families map to 510 unique endpoints across the `docx`, `drive`,
+`task`, `im`, `calendar`, `bitable`, `approval`, `vc`, and `contact` SDK
+services. Other SDK services remain inventoried for drift detection but are not
+parity targets.
+
 | Divo capability | Lark API family | Token mode | Required Lark permissions (minimum) | SDK path |
 | --- | --- | --- | --- | --- |
 | `larkMessaging` (managed connection) | IM v1 chat-history reads | User access token from resolved `IntegrationConnection` | `im:message.group_msg:get_as_user`, `im:message.p2p_msg:get_as_user`, and `im:chat:read` | SDK `request` fallback until each existing operation is converted to the generated method |
