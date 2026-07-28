@@ -740,9 +740,20 @@ export class LarkChannelAdapter implements ChannelAdapter {
   // ── sendToChatId ──────────────────────────────────────────────────────
   // Sends a message to a chatId. Pass replyToMessageId to quote-reply a specific message.
 
-  async sendToChatId(chatId: string, content: string, replyToMessageId?: string): Promise<Result<string, ChannelError>> {
+  async sendToChatId(
+    chatId: string,
+    content: string,
+    replyToMessageId?: string,
+    idempotencyKey?: string,
+  ): Promise<Result<string, ChannelError>> {
     try {
-      const result = await this.messagingClient.sendMessage(chatId, content, replyToMessageId);
+      const result = await this.messagingClient.sendMessage(
+        chatId,
+        content,
+        replyToMessageId,
+        undefined,
+        idempotencyKey,
+      );
       return ok(result.messageId);
     } catch (e) {
       return err(new ChannelError({ channel: 'lark', stage: 'send_status', reason: 'upstream_5xx', cause: e }));

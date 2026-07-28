@@ -3,11 +3,13 @@ import type { CanonicalToolId } from '../../domain/tools/tool-id';
 
 /**
  * Airtable ships a hosted remote MCP server; Divo is only a client. There is no
- * sidecar to run (unlike the private Google Workspace MCP) and no REST fallback:
- * a live `tools/list` capture proved the MCP is a strict superset of Airtable's
+ * sidecar to run (unlike the private Google Workspace MCP). Interactive tools
+ * use MCP because a live `tools/list` capture proved it is a strict superset of Airtable's
  * REST Web API — 8000-record pages instead of 100, a structured filter tree
  * instead of hand-escaped filterByFormula, and interfaces/forms/automations that
- * REST does not expose at all.
+ * REST does not expose at all. Complete unfiltered CSV exports use the Web API's
+ * deterministic offset pagination because hosted MCP record calls can time out
+ * on wide tables; the same backend-owned bearer and RBAC boundary still apply.
  */
 export const AIRTABLE_MCP_SOURCE = Object.freeze({
   server: 'https://mcp.airtable.com/mcp',

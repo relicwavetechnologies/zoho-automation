@@ -131,6 +131,7 @@ import { VectorDocumentRepository } from './infrastructure/persistence/vector-do
 import { FileAccessPolicyRepository } from './infrastructure/persistence/file-access-policy.repository';
 import { IngestionService } from './application/ingestion/ingestion.service';
 import { IngestionQueue } from './application/ingestion/ingestion.queue';
+import { AirtableExportQueue } from './application/airtable/airtable-export.queue';
 import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
 import { PersonaLearningQueue } from './application/persona-learning/persona-learning.queue';
 import { DeepSeekPersonaLearningExtractor } from './application/persona-learning/persona-learning.extractor';
@@ -168,7 +169,10 @@ import { createLarkBaseTool } from './application/orchestration/tools/families/l
 import { createLarkApprovalTool } from './application/orchestration/tools/families/lark-approval.tool';
 import { createGoogleWorkspaceMcpTools } from './application/orchestration/tools/families/google-workspace-mcp.tool';
 import { createCanvaDesignTool } from './application/orchestration/tools/families/canva-design.tool';
-import { createAirtableMcpTools } from './application/orchestration/tools/families/airtable-mcp.tool';
+import {
+  createAirtableMcpTools,
+  type ResolveAirtableMcpConnection,
+} from './application/orchestration/tools/families/airtable-mcp.tool';
 import { createAitableTools } from './application/orchestration/tools/families/aitable.tool';
 import { hasAirtableScopeGroups } from './application/airtable/airtable-mcp-manifest';
 import { createZohoCrmTool } from './application/orchestration/tools/families/zoho-crm.tool';
@@ -299,6 +303,8 @@ export interface Container {
   // Document RAG
   ingestionService: IngestionService;
   ingestionQueue: IngestionQueue;
+  airtableExportQueue: AirtableExportQueue;
+  airtableConnectionResolver: ResolveAirtableMcpConnection;
   larkIngressQueue: LarkIngressQueue;
   // Manager learning P1–P4. Promotion remains isolated from memory, skills, and RBAC.
   personaLearningQueue: PersonaLearningQueue;
@@ -1240,6 +1246,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   const ingestionQueue = new IngestionQueue(queueRedisUrl, env.REDIS_INGESTION_QUEUE_NAME);
+  const airtableExportQueue = new AirtableExportQueue(queueRedisUrl);
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
   const personaLearningQueue = new PersonaLearningQueue(
     queueRedisUrl,
@@ -1513,7 +1520,12 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     toolRegistry.register(tool);
   }
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
-  for (const tool of createAirtableMcpTools({ getConnection: getAirtableMcpConnection })) {
+  for (const tool of createAirtableMcpTools({
+    getConnection: getAirtableMcpConnection,
+    cloudinary: cloudinaryAdapter,
+    csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+    exportQueue: airtableExportQueue,
+  })) {
     toolRegistry.register(tool);
   }
   for (const tool of createAitableTools({
@@ -1909,6 +1921,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Document RAG
     ingestionService,
     ingestionQueue,
+    airtableExportQueue,
+    airtableConnectionResolver: getAirtableMcpConnection,
     larkIngressQueue,
     personaLearningQueue,
     personaLearningService,

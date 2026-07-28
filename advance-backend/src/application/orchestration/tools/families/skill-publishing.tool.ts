@@ -249,7 +249,9 @@ function canPublishCompany(ctx: ToolExecutionContext): boolean {
 function canPublishDepartment(departmentId: string | undefined, ctx: ToolExecutionContext): boolean {
   const targetDepartmentId = resolveDepartmentId(departmentId, ctx);
   if (!targetDepartmentId) return false;
-  return hasDepartmentCreateGrant(ctx.perm) || ctx.perm.department?.roleSlug === 'MANAGER';
+  return String(ctx.runContext.departmentId ?? '') === targetDepartmentId
+    && String(ctx.perm.department?.id ?? '') === targetDepartmentId
+    && (hasDepartmentCreateGrant(ctx.perm) || ctx.perm.department?.roleSlug === 'MANAGER');
 }
 
 function hasDepartmentCreateGrant(perm: PermissionResult): boolean {

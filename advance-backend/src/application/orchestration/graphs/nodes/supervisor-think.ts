@@ -31,7 +31,7 @@ import { enforceContextBudget } from '../../engine/context-budget-enforcer';
 import { getToolLabels } from '../../agents/tool-labels';
 import { LARK_MODEL_PREFERENCE } from '../../../proxy/lark-inference.service';
 
-// Must be longer than DYNAMIC_AGENT_TIMEOUT_MS (300s) + buffer for retries.
+// Must be longer than DYNAMIC_AGENT_TIMEOUT_MS (600s) + buffer for retries.
 // A failed agent + retry can take 300s+300s; supervisor must outlast that.
 const SUPERVISOR_TIMEOUT_MS = 660_000;
 

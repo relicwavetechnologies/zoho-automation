@@ -185,6 +185,39 @@ and the MCP transport are actively closed. If cancellation happens during
 automatic preload, no model or provider action starts and the member receives
 a truthful no-action timeout response.
 
+### 2.8 DECIDED — Large reads leave the interactive agent lifecycle
+
+Ordinary record reads return a byte-bounded preview to the model. A request
+for the complete Airtable dataset is acknowledged immediately and queued in
+BullMQ; the worker creates a temporary CSV and delivers its signed link back
+to the originating Lark chat.
+
+The queue payload contains only routing and validated operation data. It never
+contains an Airtable access token, refresh token, PAT, or fetched records. The
+worker re-resolves active company membership, department-scoped RBAC, the
+manifest operation, and the governed connection immediately before reading.
+Completion is persisted on the job before Lark delivery, and a stable Lark
+idempotency key makes delivery retry-safe.
+
+Interactive agent runs have a ten-minute minimum active timeout. Setting the
+supervisor timeout to `0` still intentionally disables it for local
+development. Background exports are not bounded by the interactive lifecycle;
+their safety bounds are provider pagination limits, a 64 MB record buffer
+ceiling, BullMQ retries, and the temporary-link TTL.
+
+### 2.9 DECIDED — Harness authority, context, and delivery are independent
+
+The engine harness supports `--fresh-context`. In this mode it authenticates
+the selected DB-linked Lark member normally, gives the engine a unique empty
+conversation key, disables optional persistent memory for the run, and still
+delivers status and final cards to the separately allowlisted destination.
+
+This makes access tests trustworthy: a run on behalf of another member cannot
+answer from the delivery DM's prior transcript, while RBAC and connection
+selection still use that member's real identity. System contracts, governed
+recipes, and backend policy remain loaded because they are execution
+instructions, not prior user context.
+
 ## 3. Desired agent flows
 
 ### 3.1 Connection-backed direct tool

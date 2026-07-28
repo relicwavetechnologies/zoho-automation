@@ -13,12 +13,14 @@
 
 import { v2 as cloudinary } from 'cloudinary';
 import { Readable } from 'node:stream';
+import { randomUUID } from 'node:crypto';
 import type { Logger } from '../../shared/logger';
 import type { CachePort } from '../../shared/cache';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type CloudinaryResourceType = 'image' | 'video' | 'raw' | 'auto';
+type CloudinaryDeliveryType = 'upload' | 'private' | 'authenticated';
 
 export interface CloudinaryUploadResult {
   readonly publicId:         string;
@@ -86,6 +88,7 @@ export class CloudinaryAdapter {
     companyId: string;
     assetId?:  string;
     tags?:     string[];
+    deliveryType?: CloudinaryDeliveryType;
   }): Promise<CloudinaryUploadResult> {
     this.assertConfigured();
     const resourceType = mimeToResourceType(input.mimeType);
@@ -101,6 +104,7 @@ export class CloudinaryAdapter {
           unique_filename: true,
           folder:          `${input.folder}/${input.companyId}`,
           tags:            [`company:${input.companyId}`, ...(input.tags ?? [])],
+          type:            input.deliveryType ?? 'upload',
         },
         (err, result) => {
           if (err || !result) {
@@ -156,13 +160,16 @@ export class CloudinaryAdapter {
 
     let uploaded: CloudinaryUploadResult;
     try {
+      const uniqueAssetId = fileName.replace(/\.csv$/i, '') + `-${randomUUID()}.csv`;
       uploaded = await this.uploadBuffer({
         buffer:    input.buffer,
         mimeType:  'text/csv',
         fileName,
         folder:    'temp_exports',
         companyId: input.companyId,
+        assetId:   uniqueAssetId,
         tags:      ['temp_export'],
+        deliveryType: 'authenticated',
       });
     } catch (e) {
       this.logger.error('cloudinary.csv_upload.failed', {
@@ -173,14 +180,14 @@ export class CloudinaryAdapter {
       return null;
     }
 
-    // Generate a signed URL with expiry.
-    // Files are uploaded with type='upload' (default), so the URL must also use type='upload'.
-    // Using type='authenticated' here would 404 because the asset lives in the 'upload' namespace.
-    const signedUrl = cloudinary.url(uploaded.publicId, {
+    // Authenticated delivery makes the asset itself private; this API URL is
+    // signed and checked on every download rather than exposing a public CDN
+    // URL with a signature-looking path.
+    const signedUrl = cloudinary.utils.private_download_url(uploaded.publicId, 'csv', {
       resource_type: 'raw',
-      sign_url:      true,
-      type:          'upload',
+      type:          'authenticated',
       expires_at:    expireAt,
+      attachment:    true,
     });
 
     // Register in Redis for background cleanup (TTL = same as link TTL + 1 min buffer)
@@ -231,51 +238,59 @@ export class CloudinaryAdapter {
     const ttlSeconds = input.ttlSeconds ?? 86_400;
     const nowMs = (input.now ?? new Date()).getTime();
     const maxPages = input.maxPages ?? 20;
-    let nextCursor: string | undefined;
     let scanned = 0;
     let deleted = 0;
     let failed = 0;
 
-    for (let page = 0; page < maxPages; page++) {
-      const response = await cloudinary.api.resources_by_tag('temp_export', {
-        resource_type: 'raw',
-        max_results:  500,
-        ...(nextCursor ? { next_cursor: nextCursor } : {}),
-      }) as {
-        resources?: Array<{ public_id?: string; created_at?: string }>;
-        next_cursor?: string;
-      };
+    // Include legacy public exports until they have aged out, while all new
+    // exports use authenticated delivery.
+    for (const deliveryType of ['authenticated', 'upload'] as const) {
+      let nextCursor: string | undefined;
+      for (let page = 0; page < maxPages; page++) {
+        const response = await cloudinary.api.resources_by_tag('temp_export', {
+          resource_type: 'raw',
+          type: deliveryType,
+          max_results:  500,
+          ...(nextCursor ? { next_cursor: nextCursor } : {}),
+        }) as {
+          resources?: Array<{ public_id?: string; created_at?: string }>;
+          next_cursor?: string;
+        };
 
-      const resources = Array.isArray(response.resources) ? response.resources : [];
-      scanned += resources.length;
-      const expiredIds = resources
-        .filter((resource) => {
-          if (!resource.public_id || !resource.created_at) return false;
-          const createdAtMs = new Date(resource.created_at).getTime();
-          return Number.isFinite(createdAtMs) && createdAtMs + ttlSeconds * 1000 <= nowMs;
-        })
-        .map(resource => resource.public_id as string);
+        const resources = Array.isArray(response.resources) ? response.resources : [];
+        scanned += resources.length;
+        const expiredIds = resources
+          .filter((resource) => {
+            if (!resource.public_id || !resource.created_at) return false;
+            const createdAtMs = new Date(resource.created_at).getTime();
+            return Number.isFinite(createdAtMs) && createdAtMs + ttlSeconds * 1000 <= nowMs;
+          })
+          .map(resource => resource.public_id as string);
 
-      if (expiredIds.length > 0) {
-        try {
-          const result = await cloudinary.api.delete_resources(expiredIds, { resource_type: 'raw' }) as {
-            deleted?: Record<string, string>;
-          };
-          const deletedMap = result.deleted ?? {};
-          const deletedCount = Object.values(deletedMap).filter(status => status === 'deleted' || status === 'not_found').length;
-          deleted += deletedCount;
-          failed += expiredIds.length - deletedCount;
-        } catch (error) {
-          failed += expiredIds.length;
-          this.logger.warn('cloudinary.cleanup.delete_failed', {
-            count: expiredIds.length,
-            error: error instanceof Error ? error.message : String(error),
-          });
+        if (expiredIds.length > 0) {
+          try {
+            const result = await cloudinary.api.delete_resources(expiredIds, {
+              resource_type: 'raw',
+              type: deliveryType,
+            }) as {
+              deleted?: Record<string, string>;
+            };
+            const deletedMap = result.deleted ?? {};
+            const deletedCount = Object.values(deletedMap).filter(status => status === 'deleted' || status === 'not_found').length;
+            deleted += deletedCount;
+            failed += expiredIds.length - deletedCount;
+          } catch (error) {
+            failed += expiredIds.length;
+            this.logger.warn('cloudinary.cleanup.delete_failed', {
+              count: expiredIds.length,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
-      }
 
-      nextCursor = response.next_cursor;
-      if (!nextCursor) break;
+        nextCursor = response.next_cursor;
+        if (!nextCursor) break;
+      }
     }
 
     this.logger.info('cloudinary.cleanup.temp_exports.done', { scanned, deleted, failed });

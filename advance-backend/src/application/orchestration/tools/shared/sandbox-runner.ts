@@ -96,8 +96,9 @@ export function runInSandbox(input: SandboxInput): SandboxResult {
 // ─── CSV helpers ──────────────────────────────────────────────────────────────
 
 function escapeCsvCell(v: unknown): string {
-  const s = String(v ?? '');
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+  const source = String(v ?? '');
+  const s = /^[=+\-@]/.test(source) ? `'${source}` : source;
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;

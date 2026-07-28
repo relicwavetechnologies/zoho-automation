@@ -90,7 +90,7 @@ import { FinalAnswerAccumulator } from './final-answer';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MAX_SUPERVISOR_STEPS = 200;
-const DEFAULT_SUPERVISOR_TIMEOUT_MS = 300_000;
+const DEFAULT_SUPERVISOR_TIMEOUT_MS = 600_000;
 
 // ─── Public I/O ───────────────────────────────────────────────────────────────
 

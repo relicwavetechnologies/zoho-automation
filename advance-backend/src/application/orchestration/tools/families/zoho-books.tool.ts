@@ -27,7 +27,8 @@
  *                            top-10 customers, return summary + CSV link when > threshold
  *
  * Token safety:
- *   - CRUD ops return at most `limit` records (default 25, max 100)
+ *   - Plain list ops return at most `limit` records (default 25, max 100)
+ *     and fetch only one bounded page unless exportAll was explicitly requested
  *   - build_overdue_report always passes only summary + top-N inline to LLM;
  *     full dataset is uploaded as a Cloudinary CSV with a 24 h signed link
  */
@@ -180,7 +181,7 @@ const listOpToModule: Record<string, ZohoBooksModule> = {
   search_transactions:   'banktransactions',
 };
 
-const INLINE_SCRIPT_LIMIT = 50;
+const INLINE_SCRIPT_LIMIT = 10;
 
 const amountFields = new Set([
   'amount',
@@ -274,6 +275,14 @@ const commonColumns = {
   status: { key: 'status', header: 'Status' } satisfies ZohoListCsvColumn<Record<string, unknown>>,
   currency: { key: 'currency_code', header: 'Currency' } satisfies ZohoListCsvColumn<Record<string, unknown>>,
 };
+
+const projectListItems = (
+  items: readonly Record<string, unknown>[],
+  columns: readonly ZohoListCsvColumn<Record<string, unknown>>[],
+): Record<string, unknown>[] =>
+  items.map(item => Object.fromEntries(
+    columns.map(column => [column.key, column.value ? column.value(item) : item[column.key]]),
+  ));
 
 function formatZohoResult(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(formatZohoResult);
@@ -426,7 +435,18 @@ async function executeScriptMode(
   if (args.exportCsv && resultArray && resultArray.length > 0 && scriptDeps.cloudinary.isAvailable) {
     try {
       const firstRow = resultArray[0] as Record<string, unknown>;
-      const columns = args.csvColumns ?? Object.keys(firstRow);
+      const availableColumns = Object.keys(firstRow);
+      const requestedColumns = args.csvColumns ?? [];
+      const invalidColumns = requestedColumns.filter(column => !availableColumns.includes(column));
+      const columns = requestedColumns.length > 0 && invalidColumns.length === 0
+        ? requestedColumns
+        : availableColumns;
+      if (invalidColumns.length > 0) {
+        ctx.logger.warn('zohoBooks.script_mode.invalid_csv_columns', {
+          invalidColumns,
+          fallbackColumnCount: availableColumns.length,
+        });
+      }
       const csvBuffer = arrayToCsv(columns, resultArray);
       const dateStr = new Date().toISOString().slice(0, 10);
       const exported = await scriptDeps.cloudinary.uploadCsvBuffer({
@@ -508,16 +528,18 @@ export const createZohoBooksTool = (deps: {
 
   description: [
     'Access Zoho Books: 19 operations for invoices, bills, expenses, payments, contacts, bank transactions, and reports.',
-    'All list operations fetch ALL records (up to 4000) with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
-    'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to any list op.',
+    'Plain list operations fetch one bounded page and return only the requested limit.',
+    'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
     'Use _amount_inr/_balance_inr for all INR calculations — pre-converted using Zoho exchange rates, guaranteed correct.',
     'Set exportCsv=true or exportAll=true for downloadable CSV.',
+    'Full CSV example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact UUID>"}. Keep every field top-level.',
   ].join(' '),
 
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
     'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
     'read params: accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100)',
+    'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for all records, an export, or an aggregate requiring the complete dataset.',
     'write params: invoiceId, email, fields',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     '',
@@ -623,19 +645,6 @@ export const createZohoBooksTool = (deps: {
       }));
     }
 
-    if (listOpToModule[args.op]) {
-      return executeScriptMode(
-        { ...args, script: 'return data', exportCsv: args.exportAll || args.exportCsv },
-        ctx,
-        {
-          booksClient: deps.booksClient,
-          cloudinary:  deps.cloudinary,
-          csvLinkTtl:  deps.csvLinkTtl,
-          ...(personalizedScope ? { scopeFilter, requesterEmail: requesterEmail! } : {}),
-        },
-      );
-    }
-
     // ── CRUD operations (use simple client) ──────────────────────────────────
     ctx.logger.info('zoho_books.tool.get_client', { companyId, userId, op: args.op });
     const client = await deps.getClient(
@@ -666,7 +675,6 @@ export const createZohoBooksTool = (deps: {
       });
 
     const dateFilter = dateParams(args);
-    const isNarrowList = Boolean(args.status && (args.dateFrom || args.dateTo));
     const listWithExport = async (
       moduleName: ZohoBooksModule,
       moduleLabel: string,
@@ -687,7 +695,7 @@ export const createZohoBooksTool = (deps: {
         filters: { ...scopeFilter, ...options.filters },
         ...(options.query ? { query: options.query } : {}),
         exportAll: args.exportAll === true,
-        narrowFilter: isNarrowList,
+        offerExportOnOverflow: args.limit === undefined,
         inlineThreshold: args.limit ?? deps.inlineThreshold ?? 25,
         csvTtlSeconds: deps.csvLinkTtl ?? 86_400,
         fileNameParts: options.fileNameParts ?? [
@@ -701,12 +709,13 @@ export const createZohoBooksTool = (deps: {
         cloudinary: deps.cloudinary,
         logger: ctx.logger,
       });
+      const modelItems = projectListItems(result.items, options.columns);
 
       return {
         success: true,
         message: result.summary,
         data: formatZohoResult({
-          items: result.items,
+          items: modelItems,
           totalCount: result.totalCount,
           ...(result.csvLink ? { csvLink: result.csvLink } : {}),
           ...(result.csvPublicId ? { csvPublicId: result.csvPublicId } : {}),
@@ -716,8 +725,14 @@ export const createZohoBooksTool = (deps: {
           suggestExport: result.suggestExport,
         }),
         report: {
-          ...result,
-          items: formatZohoResult(result.items),
+          totalCount: result.totalCount,
+          summary: result.summary,
+          truncated: result.truncated,
+          hasMore: result.hasMore,
+          suggestExport: result.suggestExport,
+          ...(result.csvLink ? { csvLink: result.csvLink } : {}),
+          ...(result.csvPublicId ? { csvPublicId: result.csvPublicId } : {}),
+          ...(result.csvExpiresAt ? { csvExpiresAt: result.csvExpiresAt } : {}),
         },
         ...(result.csvLink ? { csvLink: result.csvLink } : {}),
         ...(result.csvPublicId ? { csvPublicId: result.csvPublicId } : {}),

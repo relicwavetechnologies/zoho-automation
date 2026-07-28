@@ -12,6 +12,7 @@
  *   pnpm tsx scripts/run-engine-harness.ts "your prompt here"
  *   pnpm tsx scripts/run-engine-harness.ts --model pro "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --allow-impersonation --user "Anish Suman" "your prompt"
+ *   pnpm tsx scripts/run-engine-harness.ts --fresh-context --allow-impersonation --user "Shivam Bhateja" "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --chat-id oc_x --chat-type group "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --full-debug        # detailed latest-agent-run.log
  *
@@ -56,6 +57,7 @@ export interface EngineHarnessOptions {
   readonly debugSigs: boolean;
   readonly trace: boolean;
   readonly fullDebug: boolean;
+  readonly freshContext: boolean;
   readonly allowImpersonation: boolean;
   readonly help: boolean;
 }
@@ -71,6 +73,7 @@ export function parseEngineHarnessArgs(
   let debugSigs = false;
   let trace = true;
   let fullDebug = false;
+  let freshContext = false;
   let allowImpersonation = false;
   let help = false;
   const promptParts: string[] = [];
@@ -91,6 +94,10 @@ export function parseEngineHarnessArgs(
     }
     if (value === '--full-debug') {
       fullDebug = true;
+      continue;
+    }
+    if (value === '--fresh-context') {
+      freshContext = true;
       continue;
     }
     if (value === '--allow-impersonation') {
@@ -160,6 +167,7 @@ export function parseEngineHarnessArgs(
     debugSigs,
     trace,
     fullDebug,
+    freshContext,
     allowImpersonation,
     help,
   };
@@ -368,7 +376,7 @@ function installGeminiSignatureTrace() {
 async function main() {
   const options = parseEngineHarnessArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--no-trace] [--full-debug] [prompt]');
+    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro] [--fresh-context] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--no-trace] [--full-debug] [prompt]');
     return;
   }
   if (options.debugSigs) installGeminiSignatureTrace();
@@ -379,12 +387,15 @@ async function main() {
   console.log(`mode:   ${options.chatType}`);
   console.log(`model:  ${options.model} (${requestedModelId})`);
   console.log(`user selector: ${options.userSelector}`);
-  console.log(`chatId: ${options.chatId}`);
+  console.log(`delivery chatId: ${options.chatId}`);
+  console.log(`fresh context: ${options.freshContext}`);
   console.log(`prompt: ${JSON.stringify(options.prompt)}`);
   console.log(`persisted trace: ${options.trace}`);
   console.log(`full debug: ${options.fullDebug}\n`);
 
-  const env       = loadAndValidateEnv(process.env);
+  const env = loadAndValidateEnv(options.freshContext
+    ? { ...process.env, MEM0_ENABLED: 'false' }
+    : process.env);
   const container = await buildContainer(env);
   const { engine, larkAdapter, channelIdentityRepo, prisma, approvalGate } = container;
 
@@ -403,13 +414,17 @@ async function main() {
   const now = new Date();
   const messageId = `om_harness_${randomUUID()}`;
   const traceId   = asCorrelationId(`${messageId}-${now.getTime()}`);
+  const contextChatId = options.freshContext
+    ? `harness_fresh_${messageId}`
+    : options.chatId;
   console.log(`traceId: ${traceId}`);
   console.log(`requestId: ${messageId}\n`);
+  console.log(`context chatId: ${contextChatId}\n`);
 
   const incoming: IncomingMessage = {
     channel:        'lark',
     messageId:      asMessageId(messageId),
-    chatId:         asChatId(options.chatId),
+    chatId:         asChatId(contextChatId),
     chatType:       options.chatType,
     userExternalId: userOpenId,
     text:           options.prompt,
@@ -435,7 +450,7 @@ async function main() {
 
   const conversation: ConversationHandle = {
     channel:          'lark',
-    chatId:           incoming.chatId,
+    chatId:           asChatId(options.chatId),
     replyToMessageId: incoming.messageId,
     replyInThread:    options.chatType === 'group',
     correlationId:    traceId,
@@ -444,7 +459,7 @@ async function main() {
   // ── 2b. Pre-flight: dump group context if group mode ──────────────────────
   if (options.chatType === 'group' && container.chatContextService) {
     const ctxResult = await container.chatContextService.loadContext(
-      identity.companyId, options.chatId,
+      identity.companyId, contextChatId,
     );
     if (ctxResult?.ok && ctxResult.value) {
       const win = ctxResult.value;
@@ -468,7 +483,7 @@ async function main() {
   if (options.chatType === 'group' && container.chatContextService) {
     await container.chatContextService.appendMessage({
       companyId: identity.companyId,
-      chatId: options.chatId,
+      chatId: contextChatId,
       chatType: 'group',
       messageId,
       senderOpenId: userOpenId,

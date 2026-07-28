@@ -299,8 +299,11 @@ const EnvSchema = z.object({
   DYNAMIC_GRAPH_ENABLED: booleanStr.default('false'),
   UNIFIED_AGENT_MODE:    booleanStr.default('false'),
 
-  // Set to 0 to disable supervisor timeout (useful for local dev with slow models)
-  SUPERVISOR_TIMEOUT_MS: z.coerce.number().int().min(0).default(300_000),
+  // Set to 0 to disable supervisor timeout (useful for local dev with slow models).
+  // Active timeouts are clamped so an older 5-minute deployment value cannot
+  // silently reintroduce the lifecycle limit.
+  SUPERVISOR_TIMEOUT_MS: z.coerce.number().int().min(0).default(600_000)
+    .transform(value => value === 0 ? 0 : Math.max(value, 600_000)),
 
   // ── Scheduled workflow executor ──────────────────────────────────────────
   SCHEDULED_WORKFLOW_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(120_000),

@@ -19,7 +19,7 @@ import {
 } from '../tool-trace';
 import { debugAgentStart, debugAgentResult } from '../../../../shared/debug-run-log';
 
-const DYNAMIC_AGENT_TIMEOUT_MS = 300_000;
+const DYNAMIC_AGENT_TIMEOUT_MS = 600_000;
 
 export interface RunDynamicAgentInput {
   readonly task: string;

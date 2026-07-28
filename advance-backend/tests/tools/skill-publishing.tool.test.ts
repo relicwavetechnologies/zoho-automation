@@ -132,6 +132,37 @@ describe('skillPublishing tool', () => {
     }]);
   });
 
+  it('denies department managers publishing into another department context', async () => {
+    const { prisma, getCreated } = makePrisma();
+    const tool = createSkillPublishingTool({ prisma });
+    const args = {
+      operation: 'publish' as const,
+      scope: 'department' as const,
+      departmentId: 'dept-2',
+      name: 'Sales Follow Up',
+      markdown: '# Sales Follow Up',
+      toolIds: ['larkTask'],
+    };
+    const ctx = makeCtx(undefined, undefined, {
+      departmentId: asDepartmentId('dept-1'),
+    });
+    const perm = {
+      ...makeDeniedPerm(),
+      department: {
+        id: asDepartmentId('dept-1'),
+        name: 'Finance',
+        roleSlug: 'MANAGER' as never,
+        zohoReadScope: 'personalized' as const,
+      },
+    };
+
+    const result = await tool.execute(args, { ...ctx, perm });
+
+    assert.equal(result.ok, false);
+    assert.equal((result as any).error.payload.reason, 'permission_denied');
+    assert.equal(getCreated(), null);
+  });
+
   it('publishes instruction-only skills without fake backend tool dependencies', async () => {
     const { prisma } = makePrisma();
     const tool = createSkillPublishingTool({ prisma });

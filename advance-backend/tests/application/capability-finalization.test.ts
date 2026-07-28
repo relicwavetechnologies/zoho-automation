@@ -165,6 +165,7 @@ describe('Lark engine harness controls', () => {
     assert.equal(defaults.chatId, 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50');
     assert.equal(defaults.model, 'flash');
     assert.equal(defaults.trace, true);
+    assert.equal(defaults.freshContext, false);
     assert.deepEqual(
       parseEngineHarnessArgs([
         '--model', 'pro',
@@ -172,6 +173,7 @@ describe('Lark engine harness controls', () => {
         '--user', 'Anish Suman',
         '--chat-id', 'oc_custom',
         '--chat-type', 'group',
+        '--fresh-context',
         'list', 'Airtable', 'bases',
       ], { HARNESS_LARK_ALLOWED_CHAT_IDS: 'oc_custom' }),
       {
@@ -183,6 +185,7 @@ describe('Lark engine harness controls', () => {
         debugSigs: false,
         trace: true,
         fullDebug: false,
+        freshContext: true,
         allowImpersonation: true,
         help: false,
       },

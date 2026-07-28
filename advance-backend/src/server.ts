@@ -48,6 +48,7 @@ import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
+import { AirtableExportWorker } from './application/airtable/airtable-export.worker';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
 import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
 import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
@@ -121,6 +122,18 @@ export const createServer = (c: Container) => {
     summaryModel:     c.model,
   });
   ingestionWorker.start();
+
+  const airtableExportWorker = new AirtableExportWorker({
+    redisUrl: c.queueRedisUrl,
+    getConnection: c.airtableConnectionResolver,
+    identityRepo: c.channelIdentityRepo,
+    permissions: c.permissions,
+    cloudinary: c.cloudinaryAdapter,
+    larkAdapter: c.larkAdapter,
+    logger: c.logger,
+    csvLinkTtl: c.env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
+  });
+  airtableExportWorker.start();
 
   // Manager persona promotion remains independent from memory, skills, RBAC,
   // and runtime prompt delivery. P5 adds a separate read-only delivery path.
