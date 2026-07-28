@@ -304,6 +304,7 @@ type ZohoStatusResponse = {
       accountName: string | null
       ownerType: 'user' | 'company'
       access: DivoConnectionAccess
+      canManage: boolean
       scopes: string[]
       connectedAt: string
       lastUsedAt: string | null
@@ -1162,7 +1163,12 @@ function ZohoPluginDetail({
     }
   }
 
-  const connections = (status?.connections ?? []).map(toZohoConnectionModel)
+  const statusConnections = status?.connections ?? []
+  const connections = statusConnections.map(toZohoConnectionModel)
+  const manageableConnectionIds = new Set(
+    statusConnections.filter(connection => connection.canManage).map(connection => connection.connectionId)
+  )
+  const primaryManageConnection = connections.find(connection => manageableConnectionIds.has(connection.id)) ?? null
   const legacyConnection = status?.legacyConnection ?? null
   const connected = Boolean(status?.connected)
   const canManage = Boolean(status?.canManage)
@@ -1185,28 +1191,30 @@ function ZohoPluginDetail({
                 <Button size="sm" onClick={onReconnectDivo}>
                   Connect Divo
                 </Button>
-              ) : canManage ? (
+              ) : (
                 <>
-                  {connections.length ? (
+                  {primaryManageConnection ? (
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setManageConnection(connections[0] ?? null)}
+                      onClick={() => setManageConnection(primaryManageConnection)}
                     >
                       Manage access
                     </Button>
                   ) : null}
-                  {connected ? (
+                  {canManage && connected ? (
                     <Button variant="outline" size="sm" onClick={() => void disconnectZoho()} disabled={isBusy}>
                       Disconnect all
                     </Button>
                   ) : null}
-                  <Button size="sm" onClick={() => openZohoConnect()} disabled={isBusy}>
-                    <KeyRound className="size-4" />
-                    Add Zoho
-                  </Button>
+                  {canManage ? (
+                    <Button size="sm" onClick={() => openZohoConnect()} disabled={isBusy}>
+                      <KeyRound className="size-4" />
+                      Add Zoho
+                    </Button>
+                  ) : null}
                 </>
-              ) : null}
+              )}
             </div>
           </div>
 
@@ -1232,7 +1240,7 @@ function ZohoPluginDetail({
             <div className="grid min-w-72 grid-cols-3 gap-2">
               <Metric value={connected ? 'On' : 'Off'} label="Connection" />
               <Metric value={connections.length ? String(connections.length) : legacyConnection ? 'Legacy' : '0'} label="Accounts" />
-              <Metric value={canManage ? 'Admin' : 'Member'} label="Access" />
+              <Metric value={canManage || primaryManageConnection ? 'Admin' : 'Member'} label="Access" />
             </div>
           </div>
         </header>
@@ -1261,7 +1269,7 @@ function ZohoPluginDetail({
                   onManage={() => setManageConnection(connection)}
                   onReconnect={() => openZohoConnect(connection)}
                   onDisconnect={() => setDisconnectConnection(connection)}
-                  canManage={canManage}
+                  canManage={manageableConnectionIds.has(connection.id)}
                   busy={connectionActionId === connection.id}
                 />
               ))

@@ -233,6 +233,44 @@ describe('desktop auth routes', () => {
     assert.deepEqual(revoked, [{ companyId: 'company-1', connectionId: 'zoho-1', provider: 'zoho' }]);
   });
 
+  it('marks a manually provisioned Zoho connection as manageable by its creator', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        zohoConnection: { findUnique: async () => null },
+        integrationConnection: {
+          findMany: async () => [{
+            id: 'zoho-1',
+            ownerUserId: null,
+            createdBy: 'user-1',
+          }],
+        },
+      },
+      connectionRepo: {
+        listAccessibleZohoConnections: async () => ({
+          ok: true,
+          value: [{
+            connectionId: 'zoho-1',
+            label: 'Finance account',
+            accountName: 'Finance',
+            ownerType: 'company',
+            access: 'read_only',
+            scopes: ['ZohoBooks.fullaccess.READ'],
+            connectedAt: new Date('2026-07-01T00:00:00.000Z'),
+          }],
+        }),
+      },
+    }));
+
+    const result = await callRoute(router, 'GET', '/zoho/status', {
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.canManage, false);
+    assert.equal(result.body.data.connections[0].access, 'read_only');
+    assert.equal(result.body.data.connections[0].canManage, true);
+  });
+
   it('disconnects only the selected shared Canva connection for an admin accessor', async () => {
     const revoked: unknown[] = [];
     const router = createDesktopAuthRoutes(makeDeps({

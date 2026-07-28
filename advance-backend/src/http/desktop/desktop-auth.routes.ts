@@ -2673,6 +2673,19 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         res.status(500).json({ success: false, message: connections.error.message });
         return;
       }
+      const managementRows = await deps.prisma.integrationConnection.findMany({
+        where: {
+          id: { in: connections.value.map(connection => connection.connectionId) },
+          companyId,
+          provider: 'zoho',
+          revokedAt: null,
+        },
+        select: {
+          id: true,
+          ownerUserId: true,
+          createdBy: true,
+        },
+      });
       const legacyRecord = await deps.prisma.zohoConnection.findUnique({
         where: {
           companyId_environment: { companyId, environment: 'prod' },
@@ -2689,23 +2702,35 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           tokenFailureCode: true,
         },
       });
+      const managementByConnectionId = new Map(
+        managementRows.map(connection => [connection.id, connection]),
+      );
+      const canManageCompanyConnections = COMPANY_ADMIN_ROLES.has(role);
       const legacyConnected = Boolean(legacyRecord && legacyRecord.status === 'CONNECTED');
       res.json({
         success: true,
         data: {
           connected: connections.value.length > 0 || legacyConnected,
-          canManage: COMPANY_ADMIN_ROLES.has(role),
-          connections: connections.value.map(connection => ({
-            connectionId: connection.connectionId,
-            label:        connection.label,
-            accountEmail: connection.accountEmail ?? null,
-            accountName:  connection.accountName ?? null,
-            ownerType:    connection.ownerType,
-            access:       connection.access,
-            scopes:       connection.scopes,
-            connectedAt:  connection.connectedAt.toISOString(),
-            lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
-          })),
+          canManage: canManageCompanyConnections,
+          connections: connections.value.map(connection => {
+            const management = managementByConnectionId.get(connection.connectionId);
+            return {
+              connectionId: connection.connectionId,
+              label:        connection.label,
+              accountEmail: connection.accountEmail ?? null,
+              accountName:  connection.accountName ?? null,
+              ownerType:    connection.ownerType,
+              access:       connection.access,
+              canManage:
+                canManageCompanyConnections ||
+                connection.access === 'admin' ||
+                management?.ownerUserId === userId ||
+                management?.createdBy === userId,
+              scopes:       connection.scopes,
+              connectedAt:  connection.connectedAt.toISOString(),
+              lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
+            };
+          }),
           legacyConnection: legacyRecord ? {
             connectionId: legacyRecord.id,
             environment: legacyRecord.environment,

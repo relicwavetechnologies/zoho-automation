@@ -21,7 +21,7 @@ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: h.openUrl }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('lucide-react', () => {
   const Icon = () => null
-  return { ArrowLeft: Icon, Brain: Icon, Building2: Icon, CalendarDays: Icon, Check: Icon, ChevronRight: Icon, Cpu: Icon, ExternalLink: Icon, FileSearch: Icon, Globe: Icon, KeyRound: Icon, Lock: Icon, MessageSquare: Icon, Plus: Icon, RefreshCw: Icon, RotateCw: Icon, ScanSearch: Icon, Search: Icon, Share2: Icon, ShieldCheck: Icon, SquareTerminal: Icon, Trash2: Icon, User: Icon, Users: Icon }
+  return { ArrowLeft: Icon, Brain: Icon, Building2: Icon, CalendarDays: Icon, Check: Icon, ChevronRight: Icon, Cpu: Icon, ExternalLink: Icon, FileSearch: Icon, Globe: Icon, KeyRound: Icon, Lock: Icon, MessageSquare: Icon, Plus: Icon, RefreshCw: Icon, RotateCw: Icon, ScanSearch: Icon, Search: Icon, Share2: Icon, ShieldCheck: Icon, SquareTerminal: Icon, Trash2: Icon, User: Icon, Users: Icon, XIcon: Icon }
 })
 vi.mock('@/components/ui/button', () => ({ Button: ({ children, asChild: _asChild, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean }) => <button {...props}>{children}</button> }))
 vi.mock('@/components/ui/dialog', () => ({
@@ -75,8 +75,8 @@ const zohoStatus = {
   success: true,
   data: {
     connected: true,
-    canManage: true,
-    connections: [{ connectionId: 'zoho-1', label: 'Zoho Finance', accountEmail: 'finance@example.com', accountName: 'Finance', ownerType: 'company', access: 'admin', scopes: ['ZohoCRM.modules.ALL'], connectedAt: '2026-07-01T00:00:00.000Z', lastUsedAt: '2026-07-12T00:00:00.000Z' }],
+    canManage: false,
+    connections: [{ connectionId: 'zoho-1', label: 'Zoho Finance', accountEmail: 'finance@example.com', accountName: 'Finance', ownerType: 'company', access: 'read_only', canManage: true, scopes: ['ZohoCRM.modules.ALL'], connectedAt: '2026-07-01T00:00:00.000Z', lastUsedAt: '2026-07-12T00:00:00.000Z' }],
     legacyConnection: null,
   },
 }
@@ -258,6 +258,7 @@ describe('PluginDetailRoute inventory-gated presentation', () => {
 
     expect((await screen.findAllByText('Zoho Finance')).length).toBeGreaterThan(0)
     expect(screen.getByText('ZohoCRM.modules.ALL')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Manage access' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Access' })).toBeInTheDocument()
     view.rerender(<PluginDetailRoute />)
     await waitFor(() => {
