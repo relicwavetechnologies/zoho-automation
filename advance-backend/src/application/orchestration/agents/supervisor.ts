@@ -691,7 +691,7 @@ export class SupervisorAgent {
             if (chunk.type === 'tool-call') {
               // Whatever was said leading up to this was working, not answering.
               answer.onToolCall();
-              aggregator.recordCall(chunk.toolName);
+              aggregator.recordCall(chunk.toolName, chunk.input);
               toolTimers.set(chunk.toolName, Date.now());
               currentStatusHandle = await statusChannel.editStatus(currentStatusHandle, {
                 kind: 'status', terminal: false, timeline: aggregator.snapshot(),

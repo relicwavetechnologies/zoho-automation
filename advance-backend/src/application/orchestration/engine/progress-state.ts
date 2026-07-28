@@ -14,7 +14,7 @@ import type {
   ChannelTimeline,
   ChannelToolFamily,
 } from '../../../domain/channel/outbound';
-import { getToolLabels } from '../agents/tool-labels';
+import { getToolLabels, hasToolLabels } from '../agents/tool-labels';
 import { previewToolResult } from '../agents/tool-result-preview';
 
 const EXECUTION_TRACE_STEP_LIMIT = 5;
@@ -298,8 +298,23 @@ const FAMILY_LEDGER_LABEL: Record<ChannelToolFamily, string> = {
 function ledgerLabel(step: ProgressStep, family: ChannelToolFamily): string {
   const byFamily = FAMILY_LEDGER_LABEL[family];
   if (byFamily) return byFamily;
-  // 'other' covers skill discovery and dynamic tool calls — use the tool's own noun.
-  return getToolLabels(step.agentSlug).done;
+  // 'other' covers skill discovery and orchestration verbs, which have nouns.
+  if (hasToolLabels(step.agentSlug)) return getToolLabels(step.agentSlug).done;
+  // Everything else is a dispatched vendor tool. Derive the vendor from the id
+  // ("airtableRecords" → "Airtable") so a tool added later needs no map entry.
+  return vendorFromToolId(step.agentSlug);
+}
+
+/** First word of a tool id, title-cased: airtableRecords → Airtable, oms_site_data → Oms. */
+export function vendorFromToolId(toolId: string): string {
+  const head = toolId
+    .replace(/^agent_/, '')
+    .split(/[_\-.]/)[0]!
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(' ')[0]!
+    .trim();
+  if (!head) return 'Tool';
+  return head.charAt(0).toUpperCase() + head.slice(1);
 }
 
 function ledgerOutcome(step: ProgressStep): string {

@@ -477,7 +477,7 @@ async function runSupervisorStream(input: {
         });
       }
       if (input.aggregator && input.statusChannel) {
-        input.aggregator.recordCall(chunk.toolName);
+        input.aggregator.recordCall(chunk.toolName, chunk.input);
         statusHandle = await input.statusChannel.editStatus(statusHandle, {
           kind: 'status', terminal: false, timeline: input.aggregator.snapshot(),
         });

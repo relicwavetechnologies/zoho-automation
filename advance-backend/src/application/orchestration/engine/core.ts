@@ -60,15 +60,31 @@ const SUBJECT_MAX_CHARS = 52;
  * model call, because this runs before the first token and must not delay the
  * card that tells the user Divo heard them.
  */
-export function summarizeRequest(text: string): string | undefined {
-  const flat = (text ?? '')
-    .replace(/@_user_\d+/g, '')
+/** Flatten to plain prose — the card header is a plain_text field, so markup would render literally. */
+function flattenRequest(text: string): string {
+  return (text ?? '')
+    .replace(/@_user_\d+/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[*_~`#>]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+export function summarizeRequest(text: string): string | undefined {
+  const flat = flattenRequest(text);
   if (!flat) return undefined;
 
-  const firstSentence = flat.split(/(?<=[.!?])\s+/)[0] ?? flat;
-  const trimmed = firstSentence.replace(/[.!?,;:]+$/u, '').trim();
+  // "Hi. Pull the overdue invoices." must title the card with the request, not
+  // the greeting — so a stub first sentence falls through to the full text.
+  const sentences = flat.split(/(?<=[.!?])\s+/);
+  const first = sentences[0]?.replace(/[.!?,;:]+$/u, '').trim() ?? '';
+  const isStub = first.length < 15 || first.split(/\s+/).filter(Boolean).length < 3;
+  const source = isStub && sentences.length > 1
+    ? sentences.slice(1).join(' ').trim()
+    : first;
+
+  const trimmed = source.replace(/[.!?,;:]+$/u, '').trim();
   if (!trimmed) return undefined;
   if (trimmed.length <= SUBJECT_MAX_CHARS) return trimmed;
 

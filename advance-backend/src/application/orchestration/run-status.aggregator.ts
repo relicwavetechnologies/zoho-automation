@@ -24,6 +24,10 @@ import { NarrationBuffer } from './narration-buffer';
 export class RunStatusAggregator {
   private liveLabel = 'Working…';
   private subject: string | undefined = undefined;
+  /** call_tool → the tool it dispatched, so results settle on the same step. */
+  private readonly dispatched = new Map<string, string>();
+  /** Checklist items that were already done before this run touched the list. */
+  private inheritedTodos: Set<string> | undefined = undefined;
   private readonly progress: ProgressState = createProgressState();
   private readonly narration = new NarrationBuffer();
 
@@ -37,24 +41,26 @@ export class RunStatusAggregator {
     return this.narration.append(delta);
   }
 
-  recordCall(toolName: string): void {
+  recordCall(toolName: string, args?: unknown): void {
     this.narration.unfreeze();
     if (this.progress.phase === 'synthesizing') {
       setPhase(this.progress, 'executing');
     }
     this.narration.flush();
-    const { verb } = getToolLabels(toolName);
+    const slug = dispatchedToolId(toolName, args) ?? toolName;
+    const { verb } = getToolLabels(slug);
     this.narration.pushActivityLine(verb);
     this.liveLabel = verb;
 
-    addPlanStep(this.progress, toolName);
+    this.dispatched.set(toolName, slug);
+    addPlanStep(this.progress, slug);
   }
 
   recordResult(toolName: string, output: unknown): void {
-    markStepDone(this.progress, toolName, output);
+    markStepDone(this.progress, this.dispatched.get(toolName) ?? toolName, output);
     if (toolName === 'manageTodos') {
       const todos = parseDeclaredTodos(output);
-      if (todos) setDeclaredTodos(this.progress, todos);
+      if (todos) setDeclaredTodos(this.progress, this.thisRunsTodos(todos));
     }
     this.narration.completeCurrent();
     // Do not enter synthesizing here — more tool calls often follow in the same
@@ -62,7 +68,7 @@ export class RunStatusAggregator {
   }
 
   recordFailure(toolName: string, error: string): void {
-    markStepFailed(this.progress, toolName, error);
+    markStepFailed(this.progress, this.dispatched.get(toolName) ?? toolName, error);
   }
 
   /** Returns true when the status card should refresh. */
@@ -97,6 +103,40 @@ export class RunStatusAggregator {
   getExecutionTrace(): string {
     return renderExecutionTrace(this.progress);
   }
+
+  /**
+   * manageTodos is chat-scoped with a 24h TTL, so the list it echoes back can
+   * still hold items completed for an earlier request. Counting those would open
+   * a fresh run at "Step 4 of 4" — the exact dishonesty this card removed. Items
+   * already done when this run first looked are treated as someone else's.
+   */
+  private thisRunsTodos(todos: readonly DeclaredTodo[]): DeclaredTodo[] {
+    if (!this.inheritedTodos) {
+      this.inheritedTodos = new Set(
+        todos.filter(t => t.status === 'done').map(t => t.title),
+      );
+    }
+    return todos.filter(t => !this.inheritedTodos!.has(t.title));
+  }
+}
+
+/**
+ * Production routes almost everything through the `call_tool` dispatcher, so the
+ * tool name on the wire is always "call_tool" and the ledger read "Tool · 4
+ * calls". The vendor the model actually reached is in the arguments.
+ */
+export function dispatchedToolId(toolName: string, args: unknown): string | undefined {
+  if (toolName !== 'call_tool' || typeof args !== 'object' || args === null) return undefined;
+  const record = args as Record<string, unknown>;
+  const direct = record['toolId'];
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  // Some callers wrap the payload one level deeper.
+  const nested = record['input'];
+  if (typeof nested === 'object' && nested !== null) {
+    const inner = (nested as Record<string, unknown>)['toolId'];
+    if (typeof inner === 'string' && inner.trim()) return inner.trim();
+  }
+  return undefined;
 }
 
 /**

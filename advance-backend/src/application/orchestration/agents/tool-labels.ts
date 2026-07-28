@@ -59,3 +59,8 @@ const FALLBACK: ToolLabels = { verb: 'Working…', called: 'Working', done: 'Don
 export function getToolLabels(toolName: string): ToolLabels {
   return LABELS[toolName] ?? FALLBACK;
 }
+
+/** False when getToolLabels would return the generic fallback. */
+export function hasToolLabels(toolName: string): boolean {
+  return LABELS[toolName] !== undefined;
+}
