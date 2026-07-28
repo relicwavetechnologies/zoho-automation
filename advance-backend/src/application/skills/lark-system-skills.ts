@@ -6,6 +6,19 @@ import {
   GOVERNED_DIRECT_ACTION_CRITERION,
   GOVERNED_LOCAL_WORKFLOW_ROUTE,
 } from './governed-local-routing';
+import { larkDocumentsMarkdown } from './lark-system-skills/documents';
+import { createLarkRouterSkill } from './lark-system-skills/router';
+import {
+  larkCalendarMarkdown,
+  larkMeetingsMarkdown,
+  larkTasksMarkdown,
+} from './lark-system-skills/work-management';
+import {
+  larkApprovalsMarkdown,
+  larkBaseMarkdown,
+  larkContactsMarkdown,
+  larkMessagingMarkdown,
+} from './lark-system-skills/workspace';
 
 export interface LarkSystemSkillDefinition {
   readonly slug: string;
@@ -25,47 +38,18 @@ const LARK_USER_CONNECTION = `- Reuse an exact \`connectionId\` already supplied
 - Never invent an ID or call \`connections.list\` merely to rediscover an account the backend can select.`;
 
 export const LARK_SYSTEM_SKILLS: readonly LarkSystemSkillDefinition[] = [
+  createLarkRouterSkill(LARK_GOVERNED_ROUTING),
   {
     slug: 'lark-documents',
     name: 'Lark Documents',
-    summary: 'Create polished Lark documents, structure their content with blocks and tables, edit existing documents, and return the real Lark link.',
+    summary: 'Create and edit Lark documents with native todos and rich blocks, and organize the implemented subset of Lark Drive.',
     toolIds: ['larkDoc'],
     tags: ['lark', 'documents', 'writing', 'reports', 'notes'],
     sortOrder: 10,
-    markdown: `# Lark Documents
-
-Use this skill for Lark documents, meeting notes, reports, plans, briefs, SOPs, and structured write-ups.
-
-## Connection
-
-${LARK_USER_CONNECTION}
-- If several accounts are returned and the member did not identify one, ask which account to use.
-- ${LARK_GOVERNED_ROUTING}
-
-## Create a polished document
-
-1. Decide a concise title from the member's request. Create the document with \`larkDoc\` operation \`create\`.
-2. Preserve both \`docToken\` and \`url\` from the successful response. The returned \`url\` is canonical; never construct or search for a URL from \`docToken\`.
-3. Build the document in a readable order using \`append_block\`:
-   - a short purpose or executive summary;
-   - meaningful \`heading1\` / \`heading2\` sections;
-   - short paragraphs and \`bullet\` blocks;
-   - a table only when rows and columns improve comprehension.
-4. Keep each block focused. Do not place an entire report in one text block.
-5. Confirm completion with the title and a clickable link using the exact returned \`url\`.
-
-## Edit an existing document
-
-1. Use \`list_blocks\` to identify the exact \`blockId\` before updating or deleting content.
-2. Use \`update_block\` or \`delete_block\` only for the member's requested change.
-3. Use \`insert_table\` with explicit row and column counts. Ask for clarification if the desired structure is ambiguous.
-
-## Safety and truthfulness
-
-- Never claim a document or block was created unless the tool returned success.
-- Never use a guessed tenant hostname or expose internal IDs when a canonical URL is available.
-- If the response is missing \`url\`, report that the document was created but the link was not returned; do not recover it with local shell commands.
-- Respect Divo RBAC and approval results exactly.`,
+    markdown: larkDocumentsMarkdown({
+      userConnection: LARK_USER_CONNECTION,
+      governedRouting: LARK_GOVERNED_ROUTING,
+    }),
   },
   {
     slug: 'lark-tasks',
@@ -75,25 +59,10 @@ ${LARK_USER_CONNECTION}
     toolIds: ['larkTask'],
     tags: ['lark', 'tasks', 'todos', 'tasklists', 'productivity'],
     sortOrder: 20,
-    markdown: `# Lark Tasks
-
-Use this skill for todos, follow-ups, reminders, assignments, subtasks, and tasklists in Lark.
-
-## Connection
-
-${LARK_USER_CONNECTION}
-- ${LARK_GOVERNED_ROUTING}
-
-## Operating rules
-
-- Use \`create\` for a task and preserve the member's requested title.
-- Set assignees only when the member explicitly assigns or delegates the task. A person mentioned as part of a meeting title is not automatically an assignee.
-- Use \`assignToMe\` for “me” rather than searching for the requester by name.
-- Include a due date only when one was given or confirmed; use an ISO timestamp with timezone offset.
-- Use \`create_subtask\` with the parent task ID, and use tasklist operations for project grouping.
-- Read the current task before a destructive or ambiguous update.
-
-Return the useful task title, assignee, and due date. Never claim completion while approval is pending.`,
+    markdown: larkTasksMarkdown({
+      userConnection: LARK_USER_CONNECTION,
+      governedRouting: LARK_GOVERNED_ROUTING,
+    }),
   },
   {
     slug: 'lark-calendar',
@@ -102,19 +71,10 @@ Return the useful task title, assignee, and due date. Never claim completion whi
     toolIds: ['larkCalendar'],
     tags: ['lark', 'calendar', 'meetings', 'availability', 'events'],
     sortOrder: 30,
-    markdown: `# Lark Calendar
-
-Use this skill for meetings, events, schedules, attendees, recurring events, and free/busy checks.
-
-${LARK_USER_CONNECTION}
-- Use explicit ISO start and end times with timezone offsets. Use a 30-minute duration only when duration is omitted.
-- Add attendees only when explicitly requested. Resolve names and ask when several people match.
-- Use \`free_busy\` for availability; a person's open ID is not a calendar ID.
-- Use recurring-event operations with an explicit recurrence rule for repeating meetings.
-- Use attendee update operations for additions/removals instead of recreating an event.
-- ${LARK_GOVERNED_ROUTING}
-
-Confirm the event title, local date/time, timezone, and attendees. Never claim creation or update without tool success.`,
+    markdown: larkCalendarMarkdown({
+      userConnection: LARK_USER_CONNECTION,
+      governedRouting: LARK_GOVERNED_ROUTING,
+    }),
   },
   {
     slug: 'lark-meetings',
@@ -123,25 +83,10 @@ Confirm the event title, local date/time, timezone, and attendees. Never claim c
     toolIds: ['larkMeeting'],
     tags: ['lark', 'meetings', 'video-conferencing', 'recordings'],
     sortOrder: 35,
-    markdown: `# Lark Meetings
-
-Use this skill to find Lark video meetings, inspect a known meeting, or retrieve its recording link.
-
-## Connection
-
-${LARK_USER_CONNECTION}
-- If several accounts are returned, ask the member which connection to use. Never guess.
-- ${LARK_GOVERNED_ROUTING}
-
-## Operating rules
-
-- Use \`search\` for a meeting title, keyword, or a bounded historical time range. Lark requires \`startTime\` and \`endTime\` as Unix timestamps in seconds when filtering by time.
-- Use \`get\` only after a meeting ID is known from a search or trusted context.
-- Use \`get_recording\` only with a known meeting ID. Return the exact Lark recording URL when the API returns one; never fabricate a link.
-- This is read-only: it cannot join, end, invite participants to, remove participants from, or record a live meeting.
-- A missing recording is a valid outcome. State that it was not available instead of claiming one exists.
-
-Confirm the meeting title and time when present, and give the canonical recording link only when returned by Lark.`,
+    markdown: larkMeetingsMarkdown({
+      userConnection: LARK_USER_CONNECTION,
+      governedRouting: LARK_GOVERNED_ROUTING,
+    }),
   },
   {
     slug: 'lark-messaging',
@@ -150,21 +95,10 @@ Confirm the meeting title and time when present, and give the canonical recordin
     toolIds: ['larkMessaging'],
     tags: ['lark', 'messaging', 'chat', 'dm', 'mentions'],
     sortOrder: 40,
-    markdown: `# Lark Messaging
-
-Use this skill for direct messages, group messages, replies, message search, and mentions.
-
-${LARK_USER_CONNECTION}
-- Send only when the member explicitly asked to send and named a recipient or destination.
-- When the current message's \`<lark_mentioned_people>\` block contains an \`openId\`, pass that exact value as \`recipientOpenId\` for a DM or in \`mentionOpenIds\` for a group mention. These IDs are valid only for the current inbound turn.
-- For a plain-language recipient who was not structurally mentioned, use recipient-name resolution and ask when the match is ambiguous.
-- For a group, list chats first to resolve the chat. If Divo is absent, tell the member it must be added.
-- Never transcribe, infer, or reuse an ID from prose or an earlier turn.
-- Outbound messages use a Divo Card 2.0 by default, so provide clean Markdown. Use plain-text delivery only when the member explicitly needs plain text.
-- Preserve approval state: pending is not sent, rejected is not sent.
-- ${LARK_GOVERNED_ROUTING}
-
-Confirm the destination and a short description of what was sent without exposing raw IDs.`,
+    markdown: larkMessagingMarkdown({
+      userConnection: LARK_USER_CONNECTION,
+      governedRouting: LARK_GOVERNED_ROUTING,
+    }),
   },
   {
     slug: 'lark-contacts',
@@ -180,19 +114,7 @@ Confirm the destination and a short description of what was sent without exposin
       'resolve person',
     ],
     sortOrder: 50,
-    markdown: `# Lark Contacts
-
-Use this skill to resolve people before messaging, assigning tasks, or inviting calendar attendees.
-
-- Use lookup for a name or email and list-department only when department traversal is explicitly needed.
-- Return all plausible candidates when a name is ambiguous; never pick one silently.
-- Treat open IDs and user IDs as internal routing values, not user-facing identity.
-- Request only the directory detail needed for the member's task.
-- Contacts may be an installed-company capability; Divo still enforces company policy and audit.
-- Use internalRouting only to pass a resolved person into another Lark action. Never include that block or any Lark ID in user-facing output.
-- ${LARK_GOVERNED_ROUTING}
-
-In user-facing output, prefer the person's name, email, job title, department names, and organization when available. Omit fields the governed directory did not return.`,
+    markdown: larkContactsMarkdown(LARK_GOVERNED_ROUTING),
   },
   {
     slug: 'lark-base',
@@ -202,16 +124,10 @@ In user-facing output, prefer the person's name, email, job title, department na
     toolIds: ['larkBase'],
     tags: ['lark', 'base', 'bitable', 'records', 'tables'],
     sortOrder: 60,
-    markdown: `# Lark Base
-
-Use this skill for Lark Base record lookup and mutation.
-
-${LARK_USER_CONNECTION}
-- Require the exact Base app and table identifiers supplied or resolved from trusted context.
-- Read before updating when the target record is unclear. Never guess field names or record IDs.
-- Preserve typed field values and structured results returned by Lark.
-- Confirm the exact record-level mutation; never claim completion while approval is pending.
-- ${LARK_GOVERNED_ROUTING}`,
+    markdown: larkBaseMarkdown({
+      userConnection: LARK_USER_CONNECTION,
+      governedRouting: LARK_GOVERNED_ROUTING,
+    }),
   },
   {
     slug: 'lark-approvals',
@@ -220,18 +136,7 @@ ${LARK_USER_CONNECTION}
     toolIds: ['larkApproval'],
     tags: ['lark', 'approvals', 'workflow', 'forms', 'hitl'],
     sortOrder: 70,
-    markdown: `# Lark Approvals
-
-Use this skill for native Lark approval definitions, instances, and submissions.
-
-- Native approvals use the company-installed Lark application and remain governed by Divo permission checks, HITL policy, and audit.
-- List or inspect the approval definition before creation when its required fields are not known.
-- Submit only form values explicitly supplied or confirmed by the member.
-- Preserve instance codes internally for follow-up reads, but present human-readable status and definition names.
-- Pending, rejected, denied, or misconfigured actions are not successful submissions.
-- ${LARK_GOVERNED_ROUTING}
-
-Return the approval name, current status, and next required action.`,
+    markdown: larkApprovalsMarkdown(LARK_GOVERNED_ROUTING),
   },
 ] as const;
 

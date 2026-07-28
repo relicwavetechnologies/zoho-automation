@@ -4,7 +4,7 @@ export const larkSkill: Skill = {
   id: 'lark',
   name: 'Lark Operations',
   description: 'Tasks, messaging, calendar, video meetings, docs, contacts, approvals, Base tables',
-  toolIds: ['larkTask', 'larkMessaging', 'larkCalendar', 'larkMeeting', 'larkDoc', 'larkBase', 'larkApproval'],
+  toolIds: ['larkTask', 'larkMessaging', 'larkCalendar', 'larkMeeting', 'larkDoc', 'larkContacts', 'larkBase', 'larkApproval'],
   instructions: `ROUTING — pick the right tool:
 - "schedule / book / set up a meeting" → larkCalendar (NEVER larkTask)
 - "create task / todo / follow-up / reminder" → larkTask (NEVER larkCalendar)
@@ -12,6 +12,10 @@ export const larkSkill: Skill = {
 - "find past meeting / meeting details / recording" → larkMeeting
 - "my open tasks / pending" → larkTask listOpenMine
 - "approvals waiting on me" → larkApproval
+
+SKILL TREE:
+- For Lark work, load lark-router first, then the one family skill it selects.
+- The selected family skill and loaded tool schema define the complete current scope. Do not infer unlisted capabilities from the Lark SDK.
 
 TASK CREATION:
 - Title = the full natural-language description verbatim.
@@ -45,7 +49,10 @@ MESSAGING:
 DOCS:
 - Create only when asked. Return the doc title and the canonical URL returned by Lark.
 - Never construct a document URL from docToken. If create succeeds, preserve its url exactly.
-- Edit: list_blocks to get blockId, then update_block. Insert table: insert_table with rows + cols.
+- "to-dos / checklist in the document" → larkDoc todo blocks. Never imitate checkboxes with bullets or emoji.
+- Prefer append_blocks for a section. Rich text uses textStyle; block behavior uses blockStyle.
+- Edit: list_blocks to get blockId, then update_block/update_block_style/delete_block. Keep tables within 9×9.
+- Drive scope is metadata, list, create folder, copy, move, and move-task status only. A successful move_file means accepted; use check_drive_task when task_id is returned before claiming completion.
 
 HINGLISH: Mixed-language requests map to the same English action. Language never changes tool choice.
 

@@ -5,6 +5,29 @@ import {
   provisionLarkSystemSkills,
 } from '../../src/application/skills/lark-system-skills.ts';
 import { larkSkillCjkFields } from '../../src/application/skills/lark-skill-language-policy.ts';
+import { createLarkApprovalTool } from '../../src/application/orchestration/tools/families/lark-approval.tool.ts';
+import { createLarkBaseTool } from '../../src/application/orchestration/tools/families/lark-base.tool.ts';
+import { createLarkCalendarTool } from '../../src/application/orchestration/tools/families/lark-calendar.tool.ts';
+import { createLarkContactsTool } from '../../src/application/orchestration/tools/families/lark-contacts.tool.ts';
+import { createLarkDocTool } from '../../src/application/orchestration/tools/families/lark-doc.tool.ts';
+import { createLarkMeetingTool } from '../../src/application/orchestration/tools/families/lark-meeting.tool.ts';
+import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
+import { createLarkTaskTool } from '../../src/application/orchestration/tools/families/lark-task.tool.ts';
+
+function operationOptions(schema: unknown): readonly string[] {
+  type SchemaNode = {
+    _def?: {
+      schema?: SchemaNode;
+      shape?: (() => { op?: { options?: readonly string[] } }) | { op?: { options?: readonly string[] } };
+    };
+  };
+  let node = schema as SchemaNode;
+  while (node._def?.schema) node = node._def.schema;
+  const rawShape = node._def?.shape;
+  const shape = typeof rawShape === 'function' ? rawShape() : rawShape;
+  assert(shape?.op?.options, 'tool schema must expose an op enum');
+  return shape.op.options;
+}
 
 describe('Lark system skill provisioning', () => {
   it('covers every governed Lark tool as a focused company skill', () => {
@@ -20,7 +43,41 @@ describe('Lark system skill provisioning', () => {
       'larkMessaging',
       'larkTask',
     ]);
-    assert.equal(LARK_SYSTEM_SKILLS.length, 8);
+    assert.equal(LARK_SYSTEM_SKILLS.length, 9);
+  });
+
+  it('routes through a tool-free top-level skill before the exact family recipe', () => {
+    const router = LARK_SYSTEM_SKILLS.find((skill) => skill.slug === 'lark-router');
+    assert(router);
+    assert.deepEqual(router.toolIds, []);
+    for (const slug of [
+      'lark-documents', 'lark-tasks', 'lark-calendar', 'lark-meetings',
+      'lark-messaging', 'lark-contacts', 'lark-base', 'lark-approvals',
+    ]) {
+      assert.match(router.markdown, new RegExp(`\\\`${slug}\\\``));
+    }
+  });
+
+  it('keeps every family skill operation list identical to its tool schema', () => {
+    const tools = [
+      createLarkTaskTool({} as never),
+      createLarkMessagingTool({} as never),
+      createLarkCalendarTool({} as never),
+      createLarkMeetingTool({} as never),
+      createLarkDocTool({} as never),
+      createLarkContactsTool({} as never),
+      createLarkBaseTool({} as never),
+      createLarkApprovalTool({} as never),
+    ];
+
+    for (const tool of tools) {
+      const skill = LARK_SYSTEM_SKILLS.find((candidate) => candidate.toolIds.includes(String(tool.id)));
+      assert(skill, `missing skill for ${tool.id}`);
+      const section = skill.markdown.match(/## Implemented operations\s+([^\n]+)/);
+      assert(section, `${skill.slug} must declare implemented operations`);
+      const declared = [...section[1]!.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+      assert.deepEqual(declared, [...operationOptions(tool.argsSchema)], `${skill.slug} operation drift`);
+    }
   });
 
   it('keeps every system Lark skill free of CJK content', () => {
