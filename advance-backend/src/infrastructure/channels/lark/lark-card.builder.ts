@@ -828,6 +828,9 @@ export interface StatusCardInput {
 /**
  * In-flight status card ("work ledger" layout).
  *
+ * This is the canonical renderer. The legacy circular-progress/side-rail
+ * template is deprecated because it presented inferred progress as fact.
+ *
  * Body, top to bottom: the live line, the state + honest counter, an optional
  * declared-plan bar, then one ledger line per tool family. No progress ring (its
  * percentage was derived from a denominator the run cannot know) and no trace

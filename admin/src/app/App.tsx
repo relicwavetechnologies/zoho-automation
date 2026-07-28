@@ -22,6 +22,7 @@ import { RunDetailPage } from "@/pages/RunDetailPage"
 import { MemoriesPage } from "@/pages/MemoriesPage"
 import { SkillsLabPage } from "@/pages/SkillsLabPage"
 import { SettingsPage } from "@/pages/SettingsPage"
+import { MockDashboardPage } from "@/pages/MockDashboardPage"
 
 type ProtectedProps = {
   children: JSX.Element
@@ -64,6 +65,7 @@ export function App() {
     <>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/mock-dashboard" element={<MockDashboardPage />} />
         <Route path="/desktop-login" element={<MemberLoginPage />} />
         <Route path="/member-login" element={<MemberLoginPage />} />
         <Route path="/signup/company-admin" element={<CompanyAdminSignupPage />} />

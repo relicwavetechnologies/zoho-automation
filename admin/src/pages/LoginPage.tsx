@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { Loader2 } from "lucide-react"
+import { ArrowRight, Loader2 } from "lucide-react"
 import { AuthCard } from "@/components/admin/auth-card"
 import { ErrorCallout } from "@/components/admin/error-callout"
 import { Button } from "@/components/ui/button"
@@ -65,6 +65,15 @@ export function LoginPage() {
         <Button type="submit" className="w-full rounded-full" disabled={submitting}>
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           Sign in
+        </Button>
+        <div className="relative py-1">
+          <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
+          <div className="relative flex justify-center text-[10px] uppercase tracking-[0.18em]">
+            <span className="bg-card px-3 text-muted-foreground">Explore first</span>
+          </div>
+        </div>
+        <Button asChild type="button" variant="outline" className="w-full">
+          <Link to="/mock-dashboard">Open mock dashboard <ArrowRight className="h-4 w-4" /></Link>
         </Button>
         <div className="flex flex-wrap justify-between gap-2 text-sm text-muted-foreground">
           <Link className="hover:text-foreground" to="/signup/company-admin">Create workspace</Link>

@@ -183,12 +183,12 @@ describe('SemrushClient', () => {
     assert.equal(calls, 1);
   });
 
-  for (const status of [401, 403]) {
-    it(`maps HTTP ${status} to provider_auth_failed without retrying`, async () => {
+  for (const [status, body] of [[401, 'denied'], [403, 'ERROR 120 :: WRONG KEY - ID PAIR']] as const) {
+    it(`maps a ${status} bad-key response to provider_auth_failed without retrying`, async () => {
       let calls = 0;
       const client = new SemrushClient({
         timeoutMs: 1_000,
-        fetchImpl: async () => { calls += 1; return new Response('denied', { status }); },
+        fetchImpl: async () => { calls += 1; return new Response(body, { status }); },
       });
       await assert.rejects(
         () => client.fetch({ apiKey: 'key', args: { operation: 'domain_overview', domain: 'example.com' } }),
@@ -197,6 +197,16 @@ describe('SemrushClient', () => {
       assert.equal(calls, 1);
     });
   }
+
+  it('does not misreport an unexplained HTTP 403 or exhausted units as a bad key', async () => {
+    for (const [body, code] of [['forbidden', 'provider_failure'], ['ERROR 132 :: API UNITS BALANCE IS ZERO', 'provider_insufficient_units']] as const) {
+      const client = new SemrushClient({ timeoutMs: 1_000, fetchImpl: async () => new Response(body, { status: 403 }) });
+      await assert.rejects(
+        () => client.fetch({ apiKey: 'key', args: { operation: 'domain_overview', domain: 'example.com' } }),
+        (error: unknown) => error instanceof SemrushServiceError && error.code === code,
+      );
+    }
+  });
 
   it('maps provider failures and ambiguous timeouts without retrying', async () => {
     const unavailable = new SemrushClient({ timeoutMs: 1_000, fetchImpl: async () => new Response('unavailable', { status: 503 }) });

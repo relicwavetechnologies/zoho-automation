@@ -203,9 +203,11 @@ export class SemrushClient {
       });
       if (response.ok) return response;
       const body = (await response.text()).slice(0, 500);
-      if (response.status === 401 || response.status === 403) throw new SemrushServiceError('provider_auth_failed', 'Semrush rejected the configured API key.');
+      if (/ERROR 132|API UNITS BALANCE IS ZERO/i.test(body)) throw new SemrushServiceError('provider_insufficient_units', 'Semrush reports insufficient API units.');
+      if (response.status === 401 || /ERROR (?:110|120)\b|INVALID IMPORT KEY|WRONG KEY/i.test(body)) {
+        throw new SemrushServiceError('provider_auth_failed', 'Semrush rejected the configured API key.');
+      }
       if (response.status === 429) throw new SemrushServiceError('rate_limited', 'Semrush rate limit reached; no retry was attempted.');
-      if (body.includes('ERROR 132')) throw new SemrushServiceError('provider_insufficient_units', 'Semrush reports insufficient API units.');
       throw new SemrushServiceError('provider_failure', `Semrush request failed with HTTP ${response.status}.`);
     } catch (error) {
       if (error instanceof SemrushServiceError) throw error;
