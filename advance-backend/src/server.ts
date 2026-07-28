@@ -20,7 +20,6 @@ import { createMemberAuthMiddleware } from './http/middleware/member-auth.middle
 import { createDesktopToolsRoutes } from './http/desktop/desktop-tools.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
-import { PermissionWriteService } from './application/permissions/permission-write.service';
 import { createFilesRouter } from './http/files/files.routes';
 import { createAgentsRoutes } from './http/agents/agents.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
@@ -299,20 +298,10 @@ export const createServer = (c: Container) => {
   app.use(
     '/admin',
     createAdminPermissionRoutes({
-      toolPermRepo:    c.toolPermRepo,
-      toolActionRepo:  c.toolActionRepo,
-      deptToolPermRepo: c.deptToolPermRepo,
-      permissions:     c.permissions,
-      logger:          c.logger,
-      auditService:    c.auditService,
-      permissionWrites: new PermissionWriteService({
-        toolActionRepo: c.toolActionRepo,
-        deptToolPermRepo: c.deptToolPermRepo,
-        deptUserOverrideRepo: c.deptUserOverrideRepo,
-        permissions: c.permissions,
-        auditService: c.auditService,
-        toolRegistry: c.toolRegistry,
-      }),
+      toolPermRepo: c.toolPermRepo,
+      permissions:  c.permissions,
+      logger:       c.logger,
+      auditService: c.auditService,
     }),
   );
 
