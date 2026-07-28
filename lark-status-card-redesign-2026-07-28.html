@@ -186,6 +186,16 @@
           desktop plan subtitle, so internal ids leaked there. Now cleaned once, at the source.</li>
         <li>The action count is kept <b>beside</b> the fraction (“Step 1 of 5 · 12 actions · 40s”): a model that
           adds todos and forgets to tick them would otherwise freeze the counter for a whole run.</li>
+        <li><b>Then a live run to a real Lark DM found the one that mattered most.</b> Production reaches almost
+          every tool through the <code style="font:12px var(--mono)">call_tool</code> dispatcher, so the name on
+          the wire is always “call_tool” — the ledger rendered <b>“Tool · 4 calls”</b> for a run that hit Zoho
+          three times and Airtable once, and <code style="font:12px var(--mono)">airtableRecords</code> (absent
+          from the label map) rendered as <b>“Done”</b>. Every mockup on this page used direct tool names, so
+          nothing here would ever have shown it. Labels now resolve the dispatched tool id and derive the vendor
+          from it, so tools added later need no map entry.</li>
+        <li>A <b>second request in the same chat</b> inherited the previous request's finished todos — chat-scoped,
+          24h TTL — and opened at “Step 4 of 4” having done one action. The dishonest fraction, back through the
+          new honest path. Items already done when a run first reads the list are now excluded from both halves.</li>
         <li>Two things were <b>deleted rather than kept</b>: the terminal “Done/Blocked” status-card branches
           (unreachable — the final card always replaces the status card) and every
           <code style="font:12px var(--mono)">standard_icon</code> token on the status card (an unrecognised
