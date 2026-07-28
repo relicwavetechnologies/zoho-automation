@@ -183,6 +183,27 @@ type GoogleManageResponse = {
   message?: string
 }
 
+type GoogleDataExportProfile = {
+  version: 1
+  enabled: true
+  acknowledged: true
+  googleConnectionId: string
+  accountEmail: string
+  readerDomain: string
+  access: 'company_reader'
+}
+
+type GoogleDataExportProfileResponse = {
+  success: boolean
+  data?: {
+    profile: GoogleDataExportProfile | null
+    configuredAt: string | null
+    configuredBy: string | null
+    version: number
+  }
+  message?: string
+}
+
 type ManageAccessProvider = 'google' | 'zoho' | 'canva' | 'lark' | 'airtable'
 
 type CloudProviderConfig = {
@@ -864,6 +885,9 @@ function PluginDetailContent() {
             <PiContextCard connections={connections} />
           </aside>
         </section>
+        {cloudProvider.provider === 'google' ? (
+          <GoogleDataExportSetup connections={adminConnections} />
+        ) : null}
         <ToolAccessBlock items={liveGroup.childTools} onUpdated={() => void loadToolInventory()} />
       </main>
 
@@ -898,6 +922,95 @@ function PluginDetailContent() {
         onOpenChange={(open) => { if (!open) setDisconnectConnection(null) }}
       />
     </div>
+  )
+}
+
+function GoogleDataExportSetup({ connections }: { connections: DivoConnection[] }) {
+  const [profile, setProfile] = useState<GoogleDataExportProfile | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [unavailable, setUnavailable] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const response = await invoke<GoogleDataExportProfileResponse>('divo_google_data_export_profile')
+      if (!response.success) throw new Error(response.message ?? 'Data export profile request failed')
+      setProfile(response.data?.profile ?? null)
+      setUnavailable(false)
+    } catch {
+      setUnavailable(true)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { void load() }, [load])
+
+  const configure = async (connection: DivoConnection) => {
+    setBusyId(connection.id)
+    try {
+      const response = await invoke<GoogleDataExportProfileResponse>('divo_google_configure_data_export', {
+        connectionId: connection.id,
+        connection_id: connection.id,
+      })
+      if (!response.success) throw new Error(response.message ?? 'Data export setup failed')
+      setProfile(response.data?.profile ?? null)
+      toast.success('Company data export enabled', {
+        description: `${connection.accountEmail} will create private read-only exports for each invoker.`,
+      })
+    } catch (error) {
+      toast.error('Could not enable company data export', { description: String(error) })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  if (unavailable) return null
+  return (
+    <section className="rounded-lg border border-border/70 bg-card/20 p-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40 text-muted-foreground">
+            <ShieldCheck className="size-5" />
+          </span>
+          <div>
+            <h2 className="text-sm font-medium">Secure company data exports</h2>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
+              Divo pages source data outside model context, transforms it in a networkless sandbox,
+              then creates a Google Sheet or Drive CSV. Delivery is fixed to the verified invoker as reader.
+            </p>
+            {profile ? (
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
+                <Lock className="size-3.5" />
+                Enabled with {profile.accountEmail} · invoker-only reader
+              </p>
+            ) : null}
+          </div>
+        </div>
+        {!loading && connections.length > 0 ? (
+          <div className="flex flex-wrap justify-end gap-2">
+            {connections.map(connection => (
+              <Button
+                key={connection.id}
+                size="sm"
+                variant={profile?.googleConnectionId === connection.id ? 'outline' : 'default'}
+                disabled={busyId !== null || profile?.googleConnectionId === connection.id}
+                onClick={() => void configure(connection)}
+              >
+                {profile?.googleConnectionId === connection.id ? <Check className="size-4" /> : <ShieldCheck className="size-4" />}
+                {profile?.googleConnectionId === connection.id ? 'Export account active' : `Use ${connection.accountEmail}`}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {!loading && !profile && connections.length === 0 ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Add an admin Google connection, then acknowledge it here as the company export account.
+        </p>
+      ) : null}
+    </section>
   )
 }
 

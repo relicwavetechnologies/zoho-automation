@@ -7,6 +7,7 @@ import { provisionLarkSkillsForExistingCompanies } from '../src/application/skil
 import { provisionDivoOmsSiteDataForExistingCompanies } from '../src/application/skills/oms-site-data-system-skill';
 import { provisionDivoSemrushForExistingCompanies } from '../src/application/skills/semrush-system-skill';
 import { provisionZohoFinanceSkillsForExistingCompanies } from '../src/application/skills/zoho-finance-system-skills';
+import { provisionDataExportSystemSkillForExistingCompanies } from '../src/application/skills/data-export-system-skill';
 import { seedRegisteredTools } from './seed-registered-tools';
 
 export async function provisionConnectedProviderSkillsForExistingCompanies(prisma: PrismaClient) {
@@ -29,6 +30,7 @@ export async function reconcileCapabilities(prisma: PrismaClient) {
     google: await provisionGoogleWorkspaceSkillsForExistingCompanies(prisma),
     airtableAndAitable: await provisionConnectedProviderSkillsForExistingCompanies(prisma),
     zoho: await provisionZohoFinanceSkillsForExistingCompanies(prisma),
+    dataExport: await provisionDataExportSystemSkillForExistingCompanies(prisma),
     semrush: await provisionDivoSemrushForExistingCompanies(prisma),
     oms: await provisionDivoOmsSiteDataForExistingCompanies(prisma),
   };

@@ -48,7 +48,12 @@ export const TOOL_FAMILY_DEFINITIONS: Record<ToolFamily, ToolFamilyDefinition> =
   skills:     { displayName: 'Skills', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
   memory:     { displayName: 'Memory', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
   rag:        { displayName: 'Document retrieval', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
-  data:       { displayName: 'Data processing', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
+  data:       {
+    displayName: 'Data processing',
+    connectionMode: 'none',
+    skillMode: 'optional',
+    routingAliases: ['export data', 'full export', 'complete csv', 'google sheet', 'large dataset'],
+  },
   execution:  { displayName: 'Local execution', connectionMode: 'none', skillMode: 'optional', routingAliases: [] },
   scheduling: { displayName: 'Scheduled work', connectionMode: 'none', skillMode: 'required', routingAliases: [] },
   semrush:    { displayName: 'Semrush', connectionMode: 'backend_managed', skillMode: 'optional', routingAliases: ['semrush'] },
@@ -164,6 +169,7 @@ export const TOOL_CAPABILITY_DEFINITIONS = {
   memoryRecall:     defineCapability('memory', ['read']),
   documentRag:      defineCapability('rag', ['read']),
   dataProcessor:    defineCapability('data', ['read']),
+  dataExport:       defineCapability('data', ['create']),
   scheduledWorkflows: defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
 
   // These permissive MEMBER values are ceilings, not grants. Department-only
@@ -194,6 +200,31 @@ export const TOOL_SUPPORTED_ACTIONS: Readonly<Record<CanonicalToolId, readonly s
 export const TOOL_DEFAULT_PERMISSIONS: Readonly<Record<CanonicalToolId, BuiltInRoleDefaults>> =
   mapCapabilities<BuiltInRoleDefaults>(definition => definition.defaultPermissions);
 
+/**
+ * Capabilities whose department permission is derived from another granted
+ * capability. This keeps orchestration helpers such as dataExport available
+ * when a role can read a supported source, without requiring duplicate
+ * department permission rows for every helper.
+ */
+export const TOOL_DERIVED_PERMISSIONS = [
+  {
+    toolId: 'dataExport',
+    action: 'create',
+    anyOf: [
+      { toolId: 'airtableBase', action: 'read' },
+      { toolId: 'airtableRecords', action: 'read' },
+      { toolId: 'zohoBooks', action: 'read' },
+    ],
+  },
+] as const satisfies readonly {
+  readonly toolId: CanonicalToolId;
+  readonly action: string;
+  readonly anyOf: readonly {
+    readonly toolId: CanonicalToolId;
+    readonly action: string;
+  }[];
+}[];
+
 /** Every canonical tool ID in one family, in stable catalogue order. */
 export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
   return CANONICAL_TOOL_IDS.filter(toolId => TOOL_CAPABILITY_DEFINITIONS[toolId].family === family);
@@ -209,6 +240,7 @@ export const TOOL_PERMISSION_POLICY_REVISION = createHash('sha256')
     toolIds: CANONICAL_TOOL_IDS,
     supportedActions: TOOL_SUPPORTED_ACTIONS,
     defaults: TOOL_DEFAULT_PERMISSIONS,
+    derivedPermissions: TOOL_DERIVED_PERMISSIONS,
   }))
   .digest('hex')
   .slice(0, 16);

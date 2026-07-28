@@ -18,6 +18,7 @@ import {
 } from '../../src/application/airtable/airtable-mcp-manifest.ts';
 import type { ToolActionGroup } from '../../src/domain/permissions/tool-action-group.ts';
 import { TOOL_SUPPORTED_ACTIONS } from '../../src/domain/tools/tool-id.ts';
+import { asToolId } from '../../src/shared/ids.ts';
 import {
   compactAirtableMcpResult,
   unwrapAirtableMcpResult,
@@ -175,6 +176,24 @@ describe('airtableRecords permissionCheck', () => {
     );
     assert.equal(result.ok, false);
   });
+
+  it('requires dataExport:create before a complete export can be queued', () => {
+    const denied = tool.permissionCheck(
+      { op: 'call', nativeTool: 'list_records_for_table', input: {}, exportAll: true } as any,
+      makeAllowedPerm('airtableRecords', ['read']),
+    );
+    const allowedPerm = makeAllowedPerm('airtableRecords', ['read']);
+    allowedPerm.allowedToolIds.add(asToolId('dataExport'));
+    allowedPerm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+    const allowed = tool.permissionCheck(
+      { op: 'call', nativeTool: 'list_records_for_table', input: {}, exportAll: true } as any,
+      allowedPerm,
+    );
+
+    assert.equal(denied.ok, false);
+    assert.equal(!denied.ok && denied.error.payload.toolId, 'dataExport');
+    assert.equal(allowed.ok, true);
+  });
 });
 
 describe('airtable args schema', () => {
@@ -320,86 +339,6 @@ describe('airtable execute', () => {
     assert.equal(value.data.hasMore, true);
   });
 
-  it('exports every cursor page to CSV while returning only a bounded preview to the model', async () => {
-    const calls: Array<Record<string, unknown>> = [];
-    let uploadedCsv: Buffer | undefined;
-    const cloudinary = {
-      isAvailable: true,
-      uploadCsvBuffer: async (input: { buffer: Buffer }) => {
-        uploadedCsv = input.buffer;
-        return {
-          publicId: 'temp_exports/company/export.csv',
-          signedUrl: 'https://example.test/signed.csv',
-          expiresAt: '2026-07-29T00:00:00.000Z',
-        };
-      },
-    };
-    const [records] = createAirtableMcpTools({
-      cloudinary: cloudinary as any,
-      csvLinkTtl: 86_400,
-      getConnection: async () => ({
-        status: 'resolved' as const,
-        connection: {
-          client: {
-            describeTool: async () => ({ name: 'list_records_for_table', inputSchema: { type: 'object' } }),
-            listRecordsPage: async (input: Record<string, unknown>) => {
-              calls.push(input);
-              if (!input['offset']) {
-                return {
-                  records: [{
-                    id: 'rec1',
-                    createdTime: '2026-07-28T00:00:00.000Z',
-                    fields: {
-                      Name: 'First, "quoted"\norder',
-                      Formula: '=2+2',
-                      Metadata: { priority: 'high' },
-                    },
-                  }],
-                  nextCursor: 'cursor-2',
-                };
-              }
-              return {
-                records: [{
-                  id: 'rec2',
-                  fields: { Name: 'Second order', Extra: 'last\rline' },
-                }],
-              };
-            },
-            callTool: async () => { throw new Error('MCP must not handle complete unfiltered exports'); },
-          },
-        },
-      }),
-    });
-    const result = await records!.execute(
-      {
-        op: 'call',
-        nativeTool: 'list_records_for_table',
-        connectionId: '11111111-1111-4111-8111-111111111111',
-        input: { baseId: 'app1', tableId: 'tbl1', pageSize: 1, cursor: 'ignored' },
-        exportAll: true,
-      } as any,
-      makeCtx('airtableRecords', ['read']),
-    );
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(calls, [
-      { baseId: 'app1', tableId: 'tbl1' },
-      { baseId: 'app1', tableId: 'tbl1', offset: 'cursor-2' },
-    ]);
-    const value = result.ok ? result.value as any : null;
-    assert.equal(value.totalFetched, 2);
-    assert.equal(value.sourceTruncated, false);
-    assert.equal(value.csvLink, 'https://example.test/signed.csv');
-    assert.equal(value.data.records.length, 2);
-    assert.ok(uploadedCsv);
-    const csv = uploadedCsv.toString('utf8');
-    assert.match(csv, /^record_id,created_time,Name,Formula,Metadata,Extra\n/);
-    assert.match(csv, /"First, ""quoted""\norder"/);
-    assert.match(csv, /'=2\+2/);
-    assert.match(csv, /"{""priority"":""high""}"/);
-    assert.match(csv, /"last\rline"/);
-  });
-
   it('queues a complete Lark export without putting credentials or records in the job', async () => {
     const jobs: unknown[] = [];
     let providerRead = false;
@@ -423,6 +362,13 @@ describe('airtable execute', () => {
         },
       }),
     });
+    const ctx = makeCtx('airtableRecords', ['read'], {
+      chatId: 'oc_test',
+      requestId: 'om_test',
+      traceId: 'trace_test',
+    });
+    ctx.perm.allowedToolIds.add(asToolId('dataExport'));
+    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
     const result = await records!.execute(
       {
         op: 'call',
@@ -431,102 +377,19 @@ describe('airtable execute', () => {
         input: { baseId: 'app1', tableId: 'tbl1' },
         exportAll: true,
       } as any,
-      makeCtx('airtableRecords', ['read'], {
-        chatId: 'oc_test',
-        requestId: 'om_test',
-        traceId: 'trace_test',
-      }),
+      ctx,
     );
 
     assert.equal(result.ok, true);
     assert.equal(result.ok && result.value.exportQueued, true);
     assert.equal(result.ok && result.value.exportJobId, 'atx_job');
+    assert.match(result.ok ? result.value.message : '', /5,000-row cap/i);
+    assert.match(result.ok ? result.value.message : '', /not be described as complete/i);
     assert.equal(providerRead, false, 'interactive execution must not fetch the full dataset');
     assert.equal(jobs.length, 1);
     const serialized = JSON.stringify(jobs[0]);
     assert.doesNotMatch(serialized, /accessToken|refreshToken|apiKey|credential/i);
     assert.match(serialized, /"chatId":"oc_test"/);
-  });
-
-  it('keeps filtered list exports on MCP so selection criteria are not dropped', async () => {
-    const mcpInputs: Array<Record<string, unknown>> = [];
-    let restCalls = 0;
-    const filters = {
-      operator: 'and',
-      operands: [{ operator: '=', operands: ['fldStatus', 'Paid'] }],
-    };
-    const [records] = createAirtableMcpTools({
-      cloudinary: { isAvailable: false } as any,
-      getConnection: async () => ({
-        status: 'resolved' as const,
-        connection: {
-          client: {
-            describeTool: async () => ({ name: 'list_records_for_table', inputSchema: { type: 'object' } }),
-            listFieldNamesForTable: async () => new Map(),
-            listRecordsPage: async () => {
-              restCalls += 1;
-              return { records: [] };
-            },
-            callTool: async (_name: string, input: Record<string, unknown>) => {
-              mcpInputs.push(input);
-              return { records: [] };
-            },
-          },
-        },
-      }),
-    });
-
-    const result = await records!.execute({
-      op: 'call',
-      nativeTool: 'list_records_for_table',
-      connectionId: '11111111-1111-4111-8111-111111111111',
-      input: { baseId: 'app1', tableId: 'tbl1', fieldIds: ['fldName'], filters },
-      exportAll: true,
-    } as any, makeCtx('airtableBase', ['read']));
-
-    assert.equal(result.ok, true);
-    assert.equal(restCalls, 0);
-    assert.equal(mcpInputs.length, 1);
-    assert.deepEqual(mcpInputs[0]?.['filters'], filters);
-  });
-
-  it('stops a repeating Airtable cursor without looping forever', async () => {
-    let callCount = 0;
-    const [records] = createAirtableMcpTools({
-      cloudinary: {
-        isAvailable: false,
-      } as any,
-      getConnection: async () => ({
-        status: 'resolved' as const,
-        connection: {
-          client: {
-            describeTool: async () => ({ name: 'search_records', inputSchema: { type: 'object' } }),
-            callTool: async () => {
-              callCount += 1;
-              return { records: [{ id: `rec${callCount}`, fields: {} }], nextCursor: 'same-cursor' };
-            },
-          },
-        },
-      }),
-    });
-    const result = await records!.execute(
-      {
-        op: 'call',
-        nativeTool: 'search_records',
-        connectionId: '11111111-1111-4111-8111-111111111111',
-        input: { baseId: 'app1', tableId: 'tbl1', searchTerm: 'test' },
-        exportAll: true,
-      } as any,
-      makeCtx('airtableRecords', ['read']),
-    );
-
-    assert.equal(callCount, 2);
-    assert.equal(result.ok, true);
-    const value = result.ok ? result.value as any : null;
-    assert.equal(value.success, false);
-    assert.equal(value.totalFetched, 2);
-    assert.equal(value.sourceTruncated, true);
-    assert.equal(value.csvLink, undefined);
   });
 
   it('converts an upstream throw into a tool error instead of propagating it', async () => {

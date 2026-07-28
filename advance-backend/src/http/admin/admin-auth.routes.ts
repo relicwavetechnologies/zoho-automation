@@ -17,6 +17,7 @@ import { provisionDivoOmsSiteDataSystemSkill } from '../../application/skills/om
 import { provisionDivoLocalPythonSystemSkill } from '../../application/skills/divo-local-python-system-skill';
 import { provisionDivoSemrushSystemSkill } from '../../application/skills/semrush-system-skill';
 import { provisionConnectedProviderSystemSkills } from '../../application/skills/connected-provider-system-skills';
+import { provisionDataExportSystemSkill } from '../../application/skills/data-export-system-skill';
 
 type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
@@ -407,6 +408,7 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
         await provisionLarkSystemSkills(tx, company.id);
         await provisionGoogleWorkspaceSystemSkills(tx, company.id);
         await provisionConnectedProviderSystemSkills(tx, company.id);
+        await provisionDataExportSystemSkill(tx, company.id);
         await provisionScheduleDivoWorkSystemSkill(tx, company.id);
         await provisionDivoDocumentIntelligenceSystemSkill(tx, company.id);
         await provisionDivoPresentationsSystemSkill(tx, company.id);

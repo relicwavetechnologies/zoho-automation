@@ -48,7 +48,7 @@ import { createDesktopWsGateway } from './http/desktop/desktop-ws.gateway';
 import { createAirnoteRoutes } from './http/airnote/airnote.routes';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
-import { AirtableExportWorker } from './application/airtable/airtable-export.worker';
+import { DataExportWorker } from './application/data-export/data-export.worker';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
 import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
 import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
@@ -123,17 +123,17 @@ export const createServer = (c: Container) => {
   });
   ingestionWorker.start();
 
-  const airtableExportWorker = new AirtableExportWorker({
+  const dataExportWorker = new DataExportWorker({
     redisUrl: c.queueRedisUrl,
-    getConnection: c.airtableConnectionResolver,
+    sources: c.dataExportSources,
+    sink: c.googleWorkspaceExportSink,
     identityRepo: c.channelIdentityRepo,
     permissions: c.permissions,
-    cloudinary: c.cloudinaryAdapter,
+    resolveGoogleAuth: c.resolveGoogleExportAuth,
     larkAdapter: c.larkAdapter,
     logger: c.logger,
-    csvLinkTtl: c.env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   });
-  airtableExportWorker.start();
+  dataExportWorker.start();
 
   // Manager persona promotion remains independent from memory, skills, RBAC,
   // and runtime prompt delivery. P5 adds a separate read-only delivery path.

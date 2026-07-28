@@ -909,6 +909,31 @@ export class IntegrationConnectionRepository {
     }
   }
 
+  /**
+   * Internal-only resolver for the single Google connection an administrator
+   * acknowledged as the company export sink. Member tools must continue to use
+   * findAccessibleGoogleConnection; this path grants no general Google access.
+   */
+  async findCompanyGoogleExportConnection(input: {
+    readonly companyId: string;
+    readonly connectionId: string;
+  }): Promise<Result<DecryptedIntegrationConnection | null, InfraError>> {
+    try {
+      const record = await this.db.integrationConnection.findFirst({
+        where: {
+          id: input.connectionId,
+          companyId: input.companyId,
+          provider: GOOGLE_PROVIDER,
+          revokedAt: null,
+          status: 'connected',
+        },
+      });
+      return ok(record ? this.decrypt(record) : null);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'IntegrationConnection.findCompanyGoogleExportConnection', e));
+    }
+  }
+
   async listAccessibleLarkConnections(input: {
     readonly companyId: string;
     readonly userId: string;

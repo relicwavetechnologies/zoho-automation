@@ -54,7 +54,6 @@ const memCache: CachePort = {
   },
 };
 
-const cloudinary: any = { isAvailable: false, uploadCsvBuffer: async () => null };
 
 function buildCtx(opts: {
   companyId: string;
@@ -141,7 +140,7 @@ async function main() {
   const connRepo     = new ZohoConnectionRepository(prisma, env);
   const tokenService = new ZohoTokenService(connRepo, memCache, env, log);
   const booksClient  = new ZohoBooksPaginatedClient(tokenService, env.ZOHO_API_BASE_URL);
-  const financeOps   = new ZohoFinanceOps(booksClient, cloudinary, log);
+  const financeOps   = new ZohoFinanceOps(booksClient, log);
 
   const resolveOrgId = async (cId: string, token: string): Promise<string | null> => {
     try {
@@ -164,7 +163,7 @@ async function main() {
 
   const tool = createZohoBooksTool({
     getClient: async (cId) => getClient(cId),
-    booksClient, financeOps, cloudinary,
+    booksClient, financeOps,
   });
 
   const deptId = anishMembership?.departmentId ?? '';

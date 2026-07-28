@@ -45,52 +45,15 @@ describe('Zoho Books schema synthetic fields', () => {
   });
 });
 
-describe('dataProcessor Zoho source accuracy hints', () => {
-  it('exposes _balance, sample fields, full-unit formatAmount, and truncation warning', async () => {
-    const tool = createDataProcessorTool({
-      cloudinary: { isAvailable: false, uploadCsvBuffer: async () => null } as any,
-      booksClient: {
-        listAllRecords: async () => ({
-          organizationId: 'org-1',
-          items: [
-            {
-              bill_id: 'bill-1',
-              bill_number: 'BILL-1',
-              vendor_name: 'Acme',
-              total: 7670,
-              balance: 1170,
-              currency_code: 'INR',
-              date: '2026-04-15',
-              due_date: '2026-04-30',
-            },
-          ],
-          truncated: true,
-        }),
-      } as any,
-    });
-
+describe('dataProcessor bounded input', () => {
+  it('processes direct small data without owning provider fetch or export logic', async () => {
+    const tool = createDataProcessorTool();
     const result = await tool.execute({
-      zohoSource: { module: 'bills' },
-      script: [
-        'const outstanding = data.reduce((sum, bill) => sum + bill._balance, 0);',
-        'return {',
-        '  outstanding,',
-        '  total: data[0]._total,',
-        '  formattedTotal: formatAmount(data[0]._total, data[0].currency_code),',
-        '  sampleFields: schema.sampleFieldNames,',
-        '};',
-      ].join('\n'),
+      data: [{ amount: 10 }, { amount: 20 }],
+      script: 'return data.reduce((sum, item) => sum + item.amount, 0)',
     }, makeCtx('dataProcessor', ['read']));
-
     assert.equal(result.ok, true);
-    const value = (result as any).value;
-    assert.equal(value.data.outstanding, 1170);
-    assert.equal(value.data.total, 7670);
-    assert.equal(value.data.formattedTotal, '₹7,670.00');
-    assert.equal(value.sourceTruncated, true);
-    assert.match(value.message, /DATA INCOMPLETE/);
-    assert.equal(value.moduleSchema.balanceField, 'balance -> item._balance (unpaid/outstanding)');
-    assert.ok(value.data.sampleFields.includes('vendor_name'));
-    assert.ok(value.moduleSchema.sampleFieldNames.includes('due_date'));
+    assert.equal((result as any).value.data, 30);
+    assert.doesNotMatch(tool.description, /Cloudinary|Zoho source/i);
   });
 });

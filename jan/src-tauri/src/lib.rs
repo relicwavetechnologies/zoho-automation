@@ -130,6 +130,8 @@ macro_rules! invoke_commands_with_extras {
         core::divo::commands::divo_gateway_request,
         core::divo::commands::divo_google_authorize_url,
         core::divo::commands::divo_google_status,
+        core::divo::commands::divo_google_data_export_profile,
+        core::divo::commands::divo_google_configure_data_export,
         core::divo::commands::divo_google_manage_access,
         core::divo::commands::divo_connection_update_governance,
         core::divo::commands::divo_google_grant_access,

@@ -61,6 +61,7 @@ export const TOOL_LABELS: Readonly<Record<CanonicalToolId, ToolLabel>> = {
   memoryRecall:       { name: 'Memory Recall',    noun: 'memories' },
   documentRag:        { name: 'Document Knowledge', noun: 'documents' },
   dataProcessor:      { name: 'Data Processor',   noun: 'data' },
+  dataExport:         { name: 'Secure Data Export', noun: 'exports' },
   scheduledWorkflows: { name: 'Scheduled Work',   noun: 'schedules' },
   semrush:            { name: 'Semrush',          noun: 'SEO data' },
   omsSiteData:        { name: 'OMS Site Data',    noun: 'site inventory' },

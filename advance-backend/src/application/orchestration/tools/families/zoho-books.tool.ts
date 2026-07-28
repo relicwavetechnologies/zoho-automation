@@ -24,13 +24,12 @@
  *
  *   Reports (exhaustive pagination + token-safe output):
  *     build_overdue_report — scan ALL overdue invoices, compute aging buckets,
- *                            top-10 customers, return summary + CSV link when > threshold
+ *                            top-10 customers, return a bounded summary
  *
  * Token safety:
  *   - Plain list ops return at most `limit` records (default 25, max 100)
  *     and fetch only one bounded page unless exportAll was explicitly requested
- *   - build_overdue_report always passes only summary + top-N inline to LLM;
- *     full dataset is uploaded as a Cloudinary CSV with a 24 h signed link
+ *   - Governed artifacts are delivered only by dataExport and obey its central row ceiling
  */
 
 import { z } from 'zod';
@@ -41,15 +40,19 @@ import { PermissionError, ToolError }      from '../../../../shared/errors';
 import type { ToolActionGroup }            from '../../../../domain/permissions/tool-action-group';
 import { asToolId }                        from '../../../../shared/ids';
 import type { ZohoFinanceOps }             from '../../../zoho/zoho-finance-ops';
-import type { CloudinaryAdapter }          from '../../../../infrastructure/cloudinary/cloudinary.adapter';
 import { mapZohoError }                    from '../../../zoho/zoho-error.utils';
 import { formatAmount, formatDate }        from '../../../zoho/zoho-format.utils';
 import { normalizeStatus, parseDateFilter } from '../../../zoho/zoho-filter.utils';
 import { handleZohoList, type ZohoListCsvColumn } from '../../../zoho/zoho-list-handler';
 import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../../infrastructure/zoho/zoho-books-paginated.client';
 import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../../infrastructure/zoho/zoho-books-schema.cache';
-import { runInSandbox, arrayToCsv, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
+import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../../shared/zoho-personalization';
+import type { DataExportQueue } from '../../../data-export/data-export.queue';
+import {
+  DATA_EXPORT_ROW_LIMIT,
+  type DataExportJobPayload,
+} from '../../../data-export/data-export.types';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
@@ -103,8 +106,6 @@ const Schema = z.object({
   // Script mode — auto-escalates list ops to exhaustive fetch + VM sandbox
   script:     z.string().optional(),
   scriptArgs: z.record(z.unknown()).optional(),
-  exportCsv:  z.boolean().optional(),
-  csvColumns: z.array(z.string()).optional(),
 });
 
 type Args = z.infer<typeof Schema>;
@@ -116,9 +117,6 @@ const ResultSchema = z.object({
   message:      z.string().optional(),
   // Report fields (present only for build_overdue_report)
   report:       z.unknown().optional(),
-  csvLink:      z.string().optional(),
-  csvPublicId:  z.string().optional(),
-  csvExpiresAt: z.string().optional(),
   truncated:    z.boolean().optional(),
   hasMore:      z.boolean().optional(),
   suggestExport: z.boolean().optional(),
@@ -127,6 +125,8 @@ const ResultSchema = z.object({
   totalFetched:    z.number().optional(),
   moduleSchema:    z.unknown().optional(),
   sourceTruncated: z.boolean().optional(),
+  exportQueued: z.boolean().optional(),
+  exportJobId: z.string().optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -350,7 +350,7 @@ const singleDateValue = (input: string): string => parseDateFilter(input).to;
 async function executeScriptMode(
   args: Args,
   ctx: ToolExecutionContext,
-  scriptDeps: { booksClient: ZohoBooksPaginatedClient; cloudinary: CloudinaryAdapter; csvLinkTtl?: number | undefined; scopeFilter?: Record<string, unknown>; requesterEmail?: string | undefined },
+  scriptDeps: { booksClient: ZohoBooksPaginatedClient; scopeFilter?: Record<string, unknown>; requesterEmail?: string | undefined },
 ): Promise<Result<Res, ToolError>> {
   const { companyId } = ctx.runContext;
   const moduleName = listOpToModule[args.op]! as ZohoBooksModule;
@@ -428,43 +428,6 @@ async function executeScriptMode(
 
   ctx.onProgress?.(`Analysis complete — ${sandboxResult.rowCount ?? 1} results from ${items.length} records`);
 
-  let csvLink: string | undefined;
-  let csvPublicId: string | undefined;
-  let csvExpiresAt: string | undefined;
-
-  if (args.exportCsv && resultArray && resultArray.length > 0 && scriptDeps.cloudinary.isAvailable) {
-    try {
-      const firstRow = resultArray[0] as Record<string, unknown>;
-      const availableColumns = Object.keys(firstRow);
-      const requestedColumns = args.csvColumns ?? [];
-      const invalidColumns = requestedColumns.filter(column => !availableColumns.includes(column));
-      const columns = requestedColumns.length > 0 && invalidColumns.length === 0
-        ? requestedColumns
-        : availableColumns;
-      if (invalidColumns.length > 0) {
-        ctx.logger.warn('zohoBooks.script_mode.invalid_csv_columns', {
-          invalidColumns,
-          fallbackColumnCount: availableColumns.length,
-        });
-      }
-      const csvBuffer = arrayToCsv(columns, resultArray);
-      const dateStr = new Date().toISOString().slice(0, 10);
-      const exported = await scriptDeps.cloudinary.uploadCsvBuffer({
-        buffer: csvBuffer,
-        fileName: `divo-export-${dateStr}-${companyId.slice(0, 8)}.csv`,
-        companyId,
-        ttlSeconds: scriptDeps.csvLinkTtl ?? 86_400,
-      });
-      if (exported) {
-        csvLink = exported.signedUrl;
-        csvPublicId = exported.publicId;
-        csvExpiresAt = exported.expiresAt;
-      }
-    } catch (e) {
-      ctx.logger.warn('zohoBooks.script_mode.csv_failed', { error: String(e) });
-    }
-  }
-
   const inlineData = resultArray && resultArray.length > INLINE_SCRIPT_LIMIT
     ? resultArray.slice(0, INLINE_SCRIPT_LIMIT) : sandboxResult.result;
 
@@ -485,7 +448,6 @@ async function executeScriptMode(
     parts.push(`Processed into ${resultArray.length} rows.`);
     if (resultArray.length > INLINE_SCRIPT_LIMIT) parts.push(`Showing first ${INLINE_SCRIPT_LIMIT} inline.`);
   }
-  if (csvLink) parts.push('Full CSV available via download link.');
 
   return ok({
     success: true,
@@ -495,9 +457,6 @@ async function executeScriptMode(
     totalFetched: items.length,
     moduleSchema: schemaHint,
     sourceTruncated: fetchResult.truncated,
-    ...(csvLink ? { csvLink } : {}),
-    ...(csvPublicId ? { csvPublicId } : {}),
-    ...(csvExpiresAt ? { csvExpiresAt } : {}),
   });
 }
 
@@ -515,10 +474,8 @@ export const createZohoBooksTool = (deps: {
   booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
-  /** CSV export storage for generic list operations. */
-  cloudinary:    CloudinaryAdapter;
+  exportQueue?: Pick<DataExportQueue, 'enqueue'>;
   inlineThreshold?: number;
-  csvLinkTtl?:      number;
 }): Tool<Args, Res> => ({
   id:           asToolId('zohoBooks'),
   family:       'zoho',
@@ -531,15 +488,15 @@ export const createZohoBooksTool = (deps: {
     'Plain list operations fetch one bounded page and return only the requested limit.',
     'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
     'Use _amount_inr/_balance_inr for all INR calculations — pre-converted using Zoho exchange rates, guaranteed correct.',
-    'Set exportCsv=true or exportAll=true for downloadable CSV.',
-    'Full CSV example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact UUID>"}. Keep every field top-level.',
+    `Set exportAll=true for a governed Google export capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user asks for more or every row, disclose the cap and never call the result complete.`,
+    'Export example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact UUID>"}. Keep every field top-level.',
   ].join(' '),
 
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
     'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
     'read params: accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100)',
-    'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for all records, an export, or an aggregate requiring the complete dataset.',
+    'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for an export or an aggregate within script mode’s documented 4,000-record ceiling.',
     'write params: invoiceId, email, fields',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     '',
@@ -551,13 +508,19 @@ export const createZohoBooksTool = (deps: {
     '  formatAmount(value, currency) and formatDate(iso) are available in the sandbox.',
     '  Example: "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,outstanding:0}; g[v].count++; g[v].outstanding+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.outstanding-a.outstanding)"',
     'scriptArgs: extra parameters available as `args` in the script',
-    'exportCsv: true to upload script result as CSV with download link',
-    'csvColumns: column order for CSV (auto-detected if omitted)',
+    `Script results stay bounded inline. For a governed source artifact of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows, use exportAll=true or dataExport.`,
   ].join('\n'),
 
   permissionCheck(args, perm) {
     const action: ToolActionGroup = readOps.has(args.op) ? 'read' : createOps.has(args.op) ? 'create' : 'delete';
     const allowed = perm.allowedActionsByTool.get(asToolId('zohoBooks'))?.has(action) ?? false;
+    if (
+      allowed
+      && args.exportAll
+      && !perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')
+    ) {
+      return err(new PermissionError({ toolId: 'dataExport', action: 'create', reason: 'not_allowed' }));
+    }
     return allowed
       ? ok(action)
       : err(new PermissionError({ toolId: 'zohoBooks', action, reason: 'not_allowed' }));
@@ -591,7 +554,7 @@ export const createZohoBooksTool = (deps: {
       }
     }
 
-    // ── Report operations (use financeOps — deep pagination + CSV) ──────────
+    // ── Report operations (server-side aggregation, bounded model result) ───
     if (args.op === 'build_overdue_report') {
       if (personalizedScope) {
         return err(new ToolError({
@@ -628,14 +591,72 @@ export const createZohoBooksTool = (deps: {
 
     const scopeFilter: Record<string, unknown> = personalizedScope ? { email: requesterEmail! } : {};
 
+    const exportModule = listOpToModule[args.op];
+    if (args.exportAll && exportModule) {
+      if (!ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
+        return err(new ToolError({
+          toolId: 'dataExport',
+          reason: 'permission_denied',
+          message: `Governed Zoho Books exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows are not permitted for this member`,
+        }));
+      }
+      if (personalizedScope) {
+        return err(new ToolError({
+          toolId: 'zohoBooks',
+          reason: 'permission_denied',
+          message: `Governed Zoho exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows require full company Zoho read scope`,
+        }));
+      }
+      if (
+        !deps.exportQueue
+        || ctx.runContext.channel !== 'lark'
+        || !ctx.runContext.chatId
+        || !args.connectionId
+      ) {
+        return err(new ToolError({
+          toolId: 'zohoBooks',
+          reason: 'bad_args',
+          message: `Governed Zoho exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows require an exact connection UUID and a Lark chat for delivery`,
+        }));
+      }
+      const payload: DataExportJobPayload = {
+        companyId,
+        userId,
+        ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
+        source: {
+          kind: 'zoho_books',
+          connectionId: args.connectionId,
+          module: exportModule,
+          ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+          filters: {
+            ...dateParams(args),
+            ...(args.status ? { status: normalizeStatus(args.status) } : {}),
+          },
+          ...(args.searchQuery ? { query: args.searchQuery } : {}),
+        },
+        destination: {
+          format: 'auto',
+          title: `Zoho Books ${exportModule} export`,
+        },
+        chatId: ctx.runContext.chatId,
+        requestId: ctx.runContext.requestId ?? ctx.correlationId,
+        ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
+      };
+      const exportJobId = await deps.exportQueue.enqueue(payload);
+      return ok({
+        success: true,
+        exportQueued: true,
+        exportJobId,
+        message: `Zoho Books export queued through dataExport with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. I will deliver the verified invoker-only Google reader link to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
+      });
+    }
+
     // ── Script mode (auto-escalate list ops to exhaustive fetch + sandbox) ──
     if (args.script) {
       const moduleName = listOpToModule[args.op];
       if (moduleName) {
         return executeScriptMode(args, ctx, {
           booksClient: deps.booksClient,
-          cloudinary:  deps.cloudinary,
-          csvLinkTtl:  deps.csvLinkTtl,
           ...(personalizedScope ? { scopeFilter, requesterEmail: requesterEmail! } : {}),
         });
       }
@@ -675,7 +696,7 @@ export const createZohoBooksTool = (deps: {
       });
 
     const dateFilter = dateParams(args);
-    const listWithExport = async (
+    const listBounded = async (
       moduleName: ZohoBooksModule,
       moduleLabel: string,
       options: {
@@ -683,7 +704,6 @@ export const createZohoBooksTool = (deps: {
         query?: string;
         amountKeys?: string[];
         columns: readonly ZohoListCsvColumn<Record<string, unknown>>[];
-        fileNameParts?: readonly string[];
       },
     ) => {
       const result = await handleZohoList({
@@ -694,20 +714,14 @@ export const createZohoBooksTool = (deps: {
         ...(args.organizationId ? { organizationId: args.organizationId } : {}),
         filters: { ...scopeFilter, ...options.filters },
         ...(options.query ? { query: options.query } : {}),
-        exportAll: args.exportAll === true,
         offerExportOnOverflow: args.limit === undefined,
         inlineThreshold: args.limit ?? deps.inlineThreshold ?? 25,
-        csvTtlSeconds: deps.csvLinkTtl ?? 86_400,
-        fileNameParts: options.fileNameParts ?? [
-          ...(args.dateFrom ? [args.dateFrom] : []),
-          ...(args.dateTo ? [args.dateTo] : []),
-          ...(args.status ? [args.status] : []),
-        ],
-        csvColumns: options.columns,
+        ...(personalizedScope
+          ? { postFilter: (items: readonly Record<string, unknown>[]) =>
+              filterZohoRecordsByEmail(items, requesterEmail!) }
+          : {}),
         summarize: (items) => summarizeRecords(moduleLabel, options.amountKeys ?? [], items),
         booksClient: deps.booksClient,
-        cloudinary: deps.cloudinary,
-        logger: ctx.logger,
       });
       const modelItems = projectListItems(result.items, options.columns);
 
@@ -717,9 +731,6 @@ export const createZohoBooksTool = (deps: {
         data: formatZohoResult({
           items: modelItems,
           totalCount: result.totalCount,
-          ...(result.csvLink ? { csvLink: result.csvLink } : {}),
-          ...(result.csvPublicId ? { csvPublicId: result.csvPublicId } : {}),
-          ...(result.csvExpiresAt ? { csvExpiresAt: result.csvExpiresAt } : {}),
           truncated: result.truncated,
           hasMore: result.hasMore,
           suggestExport: result.suggestExport,
@@ -730,13 +741,7 @@ export const createZohoBooksTool = (deps: {
           truncated: result.truncated,
           hasMore: result.hasMore,
           suggestExport: result.suggestExport,
-          ...(result.csvLink ? { csvLink: result.csvLink } : {}),
-          ...(result.csvPublicId ? { csvPublicId: result.csvPublicId } : {}),
-          ...(result.csvExpiresAt ? { csvExpiresAt: result.csvExpiresAt } : {}),
         },
-        ...(result.csvLink ? { csvLink: result.csvLink } : {}),
-        ...(result.csvPublicId ? { csvPublicId: result.csvPublicId } : {}),
-        ...(result.csvExpiresAt ? { csvExpiresAt: result.csvExpiresAt } : {}),
         truncated: result.truncated,
         hasMore: result.hasMore,
         suggestExport: result.suggestExport,
@@ -746,7 +751,7 @@ export const createZohoBooksTool = (deps: {
     try {
       switch (args.op) {
         case 'list_invoices':
-          return ok(await listWithExport('invoices', 'invoices', {
+          return ok(await listBounded('invoices', 'invoices', {
             filters: dateFilter,
             amountKeys: ['total', 'balance', 'amount_due'],
             columns: [
@@ -806,7 +811,7 @@ export const createZohoBooksTool = (deps: {
         }
 
         case 'list_contacts':
-          return ok(await listWithExport('contacts', 'contacts', {
+          return ok(await listBounded('contacts', 'contacts', {
             ...(args.searchQuery ? { query: args.searchQuery } : {}),
             columns: [
               commonColumns.id('Contact ID'),
@@ -827,7 +832,7 @@ export const createZohoBooksTool = (deps: {
         }
 
         case 'list_expenses':
-          return ok(await listWithExport('expenses', 'expenses', {
+          return ok(await listBounded('expenses', 'expenses', {
             filters: dateFilter,
             amountKeys: ['total', 'amount'],
             columns: [
@@ -842,7 +847,7 @@ export const createZohoBooksTool = (deps: {
           }));
 
         case 'list_bills':
-          return ok(await listWithExport('bills', 'bills', {
+          return ok(await listBounded('bills', 'bills', {
             filters: dateFilter,
             amountKeys: ['total', 'balance', 'amount_due'],
             columns: [
@@ -859,7 +864,7 @@ export const createZohoBooksTool = (deps: {
           }));
 
         case 'list_payments':
-          return ok(await listWithExport('customerpayments', 'payments', {
+          return ok(await listBounded('customerpayments', 'payments', {
             filters: dateFilter,
             amountKeys: ['amount', 'payment_amount'],
             columns: [
@@ -898,7 +903,7 @@ export const createZohoBooksTool = (deps: {
         }
 
         case 'list_bank_transactions':
-          return ok(await listWithExport('banktransactions', 'bank transactions', {
+          return ok(await listBounded('banktransactions', 'bank transactions', {
             filters: dateFilter,
             amountKeys: ['amount'],
             columns: [
@@ -914,11 +919,10 @@ export const createZohoBooksTool = (deps: {
 
         case 'search_transactions': {
           if (!args.searchQuery) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'searchQuery required for search_transactions' }));
-          return ok(await listWithExport('banktransactions', 'transaction search results', {
+          return ok(await listBounded('banktransactions', 'transaction search results', {
             filters: dateFilter,
             query: args.searchQuery,
             amountKeys: ['amount'],
-            fileNameParts: ['search', args.searchQuery],
             columns: [
               commonColumns.id('Transaction ID'),
               { key: 'transaction_type', header: 'Type' },

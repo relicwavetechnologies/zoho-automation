@@ -1254,6 +1254,46 @@ pub async fn divo_google_status<R: Runtime>(app: AppHandle<R>) -> Result<Value, 
     Ok(parsed)
 }
 
+/// Read the fixed company-reader export profile. The backend returns only
+/// connection identity and policy metadata; OAuth credentials never cross.
+#[tauri::command]
+pub async fn divo_google_data_export_profile<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Value, String> {
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::GET,
+        "/google/data-export-profile",
+        None,
+        "Google data export profile",
+    )
+    .await
+}
+
+/// A company admin acknowledges one exact Google connection as Divo's export
+/// sink. Audience remains fixed to company-reader in the backend.
+#[tauri::command]
+pub async fn divo_google_configure_data_export<R: Runtime>(
+    app: AppHandle<R>,
+    connection_id: String,
+) -> Result<Value, String> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err("connectionId is required".into());
+    }
+    divo_desktop_json_request(
+        &app,
+        reqwest::Method::PUT,
+        "/google/data-export-profile",
+        Some(json!({
+            "googleConnectionId": connection_id,
+            "acknowledged": true,
+        })),
+        "Google data export setup",
+    )
+    .await
+}
+
 /// Read users/departments/roles and active grants for one Google connection.
 #[tauri::command]
 pub async fn divo_google_manage_access<R: Runtime>(

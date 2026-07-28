@@ -126,6 +126,20 @@ export const REGISTERED_TOOL_SEEDS: readonly RegisteredToolSeed[] = [
   },
   { toolId: 'documentRag', name: 'Document RAG', description: 'Ingest and retrieve uploaded documents.', category: 'knowledge', domain: 'rag' },
   { toolId: 'dataProcessor', name: 'Data Processor', description: 'Transform and process datasets in a sandbox.', category: 'data', domain: 'data' },
+  {
+    toolId: 'dataExport',
+    name: 'Secure Data Export',
+    description: 'Stream complete governed datasets into invoker-only Google Sheets or Drive CSV files.',
+    category: 'data',
+    domain: 'data',
+    guardrails: [
+      'Raw datasets remain outside model context',
+      'Only registered source adapters and the configured company Google sink are available',
+      'Transform scripts run without network, credentials, filesystem, or dynamic code generation',
+      'The backend re-checks source RBAC, invoker access, invoker-only output sharing, and artifact integrity',
+      'Export access changes and additional recipients are unsupported',
+    ],
+  },
   { toolId: 'scheduledWorkflows', name: 'Scheduled Workflows', description: 'Create, manage, and run governed scheduled workflows.', category: 'workflow', domain: 'scheduling', hitlRequired: true },
   {
     toolId: 'semrush',

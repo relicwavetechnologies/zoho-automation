@@ -18,8 +18,6 @@ const env    = loadAndValidateEnv(process.env);
 const prisma = new PrismaClient();
 const log: any = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, child: () => log };
 
-const cloudinary: any = { isAvailable: false, uploadCsvBuffer: async () => null };
-
 async function main() {
   const company = await prisma.company.findFirst();
   if (!company) throw new Error('No company');
@@ -33,11 +31,11 @@ async function main() {
   const connRepo     = new ZohoConnectionRepository(prisma, env);
   const tokenService = new ZohoTokenService(connRepo, cache, env, log);
   const booksClient  = new ZohoBooksPaginatedClient(tokenService, env.ZOHO_API_BASE_URL);
-  const financeOps   = new ZohoFinanceOps(booksClient, cloudinary, log);
+  const financeOps   = new ZohoFinanceOps(booksClient, log);
 
   const tool = createZohoBooksTool({
     getClient:   async () => null,
-    booksClient, financeOps, cloudinary,
+    booksClient, financeOps,
   });
 
   const ctx: any = {

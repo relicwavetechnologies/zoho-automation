@@ -19,6 +19,7 @@ import {
 import {
   parseEngineHarnessArgs,
   resolveHarnessOpenId,
+  waitForDataExports,
 } from '../../scripts/run-engine-harness';
 import {
   REGISTERED_TOOL_SEEDS,
@@ -241,6 +242,42 @@ describe('Lark engine harness controls', () => {
         ],
       } }, 'Same Name'),
       /ambiguous/,
+    );
+  });
+
+  it('extends the export wait while row progress continues and rejects a stalled job', async () => {
+    let now = 0;
+    let polls = 0;
+    const progressingQueue = {
+      getJobCounts: async () => (
+        ++polls < 5
+          ? { waiting: 0, active: 1, delayed: 0 }
+          : { waiting: 0, active: 0, delayed: 0 }
+      ),
+      getJobs: async () => [{ id: 'job-1', progress: { stage: 'reading', rowsRead: polls * 100 } }],
+    };
+    await waitForDataExports(progressingQueue, {
+      inactivityMs: 3,
+      pollMs: 2,
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+      onProgress: () => undefined,
+    });
+    assert(now > 3, 'total runtime may exceed the inactivity window while progress continues');
+
+    now = 0;
+    await assert.rejects(
+      () => waitForDataExports({
+        getJobCounts: async () => ({ waiting: 0, active: 1, delayed: 0 }),
+        getJobs: async () => [{ id: 'job-2', progress: { stage: 'reading', rowsRead: 100 } }],
+      }, {
+        inactivityMs: 3,
+        pollMs: 2,
+        now: () => now,
+        sleep: async (ms) => { now += ms; },
+        onProgress: () => undefined,
+      }),
+      /no queue or row progress/i,
     );
   });
 });

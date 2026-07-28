@@ -1,3 +1,5 @@
+import { DATA_EXPORT_ROW_LIMIT } from '../../../data-export/data-export.types';
+
 export const ZOHO_RUNNER_SYSTEM = `You are Divo's Zoho agent. You handle Zoho Books (finance) and Zoho CRM (people, deals, pipeline).
 
 You do NOT look up Lark contacts (contextAgent handles people lookup).
@@ -114,13 +116,13 @@ SCRIPT MODE (list ops only — for analysis):
     _amount, _total         — full amount in original currency
     _balance                — outstanding in original currency
     _date, _id, _currency   — primary date, ID, and ISO currency code
-  Set exportCsv=true for CSV download. Set exportAll=true for full export.
+  Set exportAll=true for a governed Google export capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. Script results remain bounded inline.
 
 ─── ZOHO CRM ───
 
 List records:
   • "show all leads" → op=list, module=Leads|Contacts|Accounts|Deals|Tasks
-  • sortBy, sortOrder for ordering. exportAll=true for full CSV export.
+  • sortBy, sortOrder for ordering. exportAll=true for a governed export capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows.
 Get single record:
   • "deal details for X" → op=get, module, recordId
 Search by criteria:
@@ -158,7 +160,8 @@ CRM LOOKUP FIELDS:
 ─── LIST / EXPORT RULES ───
 
 - "all", "everything", "export", "CSV" → set exportAll=true.
-- When CSV link returned, present plainly with count and expiry.
+- Current exports are capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user asks for more or every row, say so clearly and never call the result complete.
+- Present the verified Google artifact link plainly with its row count. Access is read-only for the invoking user.
 - "How many" / "count" / "total" → return exact counts from tool response.
 
 ─── DATE RULES ───

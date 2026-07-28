@@ -7,11 +7,11 @@ import { PermissionError, ToolError } from '../../../../shared/errors';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { TOOL_SUPPORTED_ACTIONS } from '../../../../domain/tools/tool-id';
 import { asToolId } from '../../../../shared/ids';
-import type { CloudinaryAdapter } from '../../../../infrastructure/cloudinary/cloudinary.adapter';
-import type {
-  AirtableExportJobPayload,
-  AirtableExportQueue,
-} from '../../../airtable/airtable-export.queue';
+import type { DataExportQueue } from '../../../data-export/data-export.queue';
+import {
+  DATA_EXPORT_ROW_LIMIT,
+  type DataExportJobPayload,
+} from '../../../data-export/data-export.types';
 import {
   AIRTABLE_MCP_AUTH_CONTRACT,
   AIRTABLE_PRODUCTS,
@@ -46,11 +46,6 @@ const ResultSchema = z.object({
   nativeTool: z.string(),
   data: z.unknown().optional(),
   message: z.string().optional(),
-  csvLink: z.string().optional(),
-  csvPublicId: z.string().optional(),
-  csvExpiresAt: z.string().optional(),
-  totalFetched: z.number().optional(),
-  sourceTruncated: z.boolean().optional(),
   exportQueued: z.boolean().optional(),
   exportJobId: z.string().optional(),
 });
@@ -61,17 +56,6 @@ const RECORD_READ_OPERATIONS = new Set(['list_records_for_table', 'search_record
 const RECORD_PREVIEW_LIMIT = 10;
 const RECORD_PREVIEW_MAX_BYTES = 24_000;
 const RECORD_PREVIEW_MAX_FIELD_BYTES = 2_000;
-const EXPORT_MAX_PAGE_SIZE = 1_000;
-const EXPORT_TARGET_CELLS_PER_PAGE = 24_000;
-const MCP_EXPORT_MAX_PAGES = 100;
-const REST_EXPORT_MAX_PAGES = 1_000;
-const EXPORT_MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
-const REST_EXPORT_INPUT_KEYS = new Set([
-  'baseId',
-  'tableId',
-  'fieldIds',
-  'returnFieldsByFieldId',
-]);
 
 export interface AirtableMcpToolDescription {
   readonly name: string;
@@ -129,9 +113,7 @@ export type ResolveAirtableMcpConnection = (input: {
 
 export function createAirtableMcpTools(deps: {
   readonly getConnection: ResolveAirtableMcpConnection;
-  readonly cloudinary?: CloudinaryAdapter;
-  readonly csvLinkTtl?: number;
-  readonly exportQueue?: Pick<AirtableExportQueue, 'enqueue'>;
+  readonly exportQueue?: Pick<DataExportQueue, 'enqueue'>;
 }): Tool<AirtableMcpArgs, AirtableMcpToolResult>[] {
   return AIRTABLE_PRODUCTS.map((product) => createProductTool(product, deps));
 }
@@ -156,9 +138,7 @@ function createProductTool(
   product: AirtableProductDefinition,
   deps: {
     readonly getConnection: ResolveAirtableMcpConnection;
-    readonly cloudinary?: CloudinaryAdapter;
-    readonly csvLinkTtl?: number;
-    readonly exportQueue?: Pick<AirtableExportQueue, 'enqueue'>;
+    readonly exportQueue?: Pick<DataExportQueue, 'enqueue'>;
   },
 ): Tool<AirtableMcpArgs, AirtableMcpToolResult> {
   const supportedActions = new Set<ToolActionGroup>(
@@ -178,7 +158,7 @@ function createProductTool(
       'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent; input may be omitted for describe.',
       `nativeTool: one of ${nativeToolNames.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${AIRTABLE_MCP_AUTH_CONTRACT.agentGuidance}`,
-      'Record reads are capped to a byte-safe preview. For a complete record CSV, set top-level exportAll=true on list_records_for_table or search_records; do not fetch cursors manually or use another storage tool.',
+      `Record reads are capped to a byte-safe preview. For a governed artifact of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows, set top-level exportAll=true; disclose this cap whenever the user asks for more or every row.`,
     ].join(' '),
 
     permissionCheck(args, permission) {
@@ -203,6 +183,12 @@ function createProductTool(
       const missing = required.find(action => !(granted?.has(action) ?? false));
       if (missing) {
         return err(new PermissionError({ toolId: product.toolId, action: missing, reason: 'not_allowed' }));
+      }
+      if (
+        args.exportAll
+        && !permission.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')
+      ) {
+        return err(new PermissionError({ toolId: 'dataExport', action: 'create', reason: 'not_allowed' }));
       }
       // Report the operation's own action group so approval gating, audit rows
       // and the approval card all describe the write the member actually asked
@@ -265,6 +251,13 @@ function createProductTool(
 
         ctx.onProgress?.(`${progressVerb(action)} ${product.name}…`);
         if (args.exportAll) {
+          if (!ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
+            return err(new ToolError({
+              toolId: 'dataExport',
+              reason: 'permission_denied',
+              message: `Governed Airtable exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows are not permitted for this member`,
+            }));
+          }
           if (!RECORD_READ_OPERATIONS.has(args.nativeTool)) {
             return badArgs(product.toolId, 'exportAll is supported only for Airtable record list/search operations');
           }
@@ -274,14 +267,21 @@ function createProductTool(
             && ctx.runContext.chatId
             && args.connectionId
           ) {
-            const payload: AirtableExportJobPayload = {
+            const payload: DataExportJobPayload = {
               companyId: ctx.runContext.companyId,
               userId: ctx.runContext.userId,
               ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
-              connectionId: args.connectionId,
-              toolId: product.toolId,
-              nativeTool: args.nativeTool as AirtableExportJobPayload['nativeTool'],
-              input: args.input ?? {},
+              source: {
+                kind: 'airtable_records',
+                connectionId: args.connectionId,
+                toolId: product.toolId as 'airtableBase' | 'airtableRecords',
+                nativeTool: args.nativeTool as 'list_records_for_table' | 'search_records',
+                input: args.input ?? {},
+              },
+              destination: {
+                format: 'auto',
+                title: `Airtable ${String(args.input?.['tableId'] ?? 'records')} export`,
+              },
               chatId: ctx.runContext.chatId,
               requestId: ctx.runContext.requestId ?? ctx.correlationId,
               ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
@@ -292,17 +292,10 @@ function createProductTool(
               nativeTool: args.nativeTool,
               exportQueued: true,
               exportJobId,
-              message: 'Airtable export queued. I will deliver the temporary CSV link to this Lark chat when it is ready.',
+              message: `Airtable export queued through dataExport with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. I will deliver the verified invoker-only Google reader link to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
             });
           }
-          return exportAirtableRecords({
-            args,
-            ctx,
-            client: connection.client,
-            toolId: product.toolId,
-            ...(deps.cloudinary ? { cloudinary: deps.cloudinary } : {}),
-            ...(deps.csvLinkTtl !== undefined ? { csvLinkTtl: deps.csvLinkTtl } : {}),
-          });
+          return badArgs(product.toolId, `Governed exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows require a Lark chat so dataExport can deliver the verified Google artifact`);
         }
 
         const nativeInput = RECORD_READ_OPERATIONS.has(args.nativeTool)
@@ -321,7 +314,7 @@ function createProductTool(
           nativeTool: args.nativeTool,
           data: modelData,
           message: RECORD_READ_OPERATIONS.has(args.nativeTool)
-            ? `${product.name} preview completed. Set top-level exportAll=true on this same tool call for a complete temporary CSV; do not fetch cursors manually.`
+            ? `${product.name} preview completed. Set top-level exportAll=true on this same call for a governed invoker-only export capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows.`
             : `${product.name} operation completed`,
         });
       } catch (cause) {
@@ -393,219 +386,6 @@ function compactRecord(value: unknown): unknown {
     fieldCount: Object.keys(sourceFields).length,
     ...(omittedFieldCount > 0 ? { omittedFieldCount } : {}),
   };
-}
-
-export async function exportAirtableRecords(input: {
-  readonly args: AirtableMcpArgs;
-  readonly ctx: ToolExecutionContext;
-  readonly client: AirtableMcpPort;
-  readonly toolId: AirtableProductDefinition['toolId'];
-  readonly cloudinary?: CloudinaryAdapter;
-  readonly csvLinkTtl?: number;
-}): Promise<Result<AirtableMcpToolResult, ToolError>> {
-  const records: Record<string, unknown>[] = [];
-  const baseInput = { ...(input.args.input ?? {}) };
-  delete baseInput['cursor'];
-  delete baseInput['pageSize'];
-  let cursor: string | undefined;
-  let sourceTruncated = false;
-  let bufferedBytes = 0;
-  const seenCursors = new Set<string>();
-  const baseId = String(baseInput['baseId'] ?? '');
-  const tableId = String(baseInput['tableId'] ?? '');
-  const useRestList = input.args.nativeTool === 'list_records_for_table'
-    && Boolean(baseId && tableId && input.client.listRecordsPage)
-    && Object.keys(baseInput).every(key => REST_EXPORT_INPUT_KEYS.has(key));
-  const fieldNames = !useRestList && baseId && tableId
-    ? await input.client.listFieldNamesForTable?.(baseId, tableId, input.ctx.abortSignal) ?? new Map()
-    : new Map<string, string>();
-  const selectedFieldCount = Array.isArray(baseInput['fieldIds'])
-    ? baseInput['fieldIds'].length
-    : fieldNames.size;
-  const pageSize = useRestList
-    ? 100
-    : Math.max(
-        1,
-        Math.min(
-          EXPORT_MAX_PAGE_SIZE,
-          Math.floor(EXPORT_TARGET_CELLS_PER_PAGE / Math.max(1, selectedFieldCount)),
-        ),
-      );
-
-  const maxPages = useRestList ? REST_EXPORT_MAX_PAGES : MCP_EXPORT_MAX_PAGES;
-  pageLoop: for (let page = 0; page < maxPages; page += 1) {
-    input.ctx.abortSignal?.throwIfAborted();
-    input.ctx.onProgress?.(`Exporting Airtable records — page ${page + 1}…`);
-    const fieldIds = Array.isArray(baseInput['fieldIds'])
-      ? baseInput['fieldIds'].filter((value): value is string => typeof value === 'string')
-      : undefined;
-    const pageResult = useRestList
-      ? await input.client.listRecordsPage!({
-          baseId,
-          tableId,
-          ...(fieldIds ? { fieldIds } : {}),
-          ...(cursor ? { offset: cursor } : {}),
-        }, input.ctx.abortSignal)
-      : await input.client.callTool(input.args.nativeTool, {
-          ...baseInput,
-          pageSize,
-          ...(cursor ? { cursor } : {}),
-        }, {
-          ...(input.ctx.abortSignal ? { signal: input.ctx.abortSignal } : {}),
-          maxTotalTimeoutMs: 60_000,
-        });
-    if (!isRecord(pageResult) || !Array.isArray(pageResult['records'])) {
-      return err(new ToolError({
-        toolId: input.toolId,
-        reason: 'upstream_failure',
-        message: `${input.args.nativeTool} returned an unexpected record response`,
-      }));
-    }
-    for (const record of pageResult['records'].filter(isRecord)) {
-      const recordBytes = Buffer.byteLength(JSON.stringify(record), 'utf8');
-      if (bufferedBytes + recordBytes > EXPORT_MAX_BUFFERED_BYTES) {
-        sourceTruncated = true;
-        break pageLoop;
-      }
-      records.push(record);
-      bufferedBytes += recordBytes;
-    }
-    const nextCursor = typeof pageResult['nextCursor'] === 'string' && pageResult['nextCursor'].trim()
-      ? pageResult['nextCursor']
-      : undefined;
-    if (!nextCursor) {
-      cursor = undefined;
-      break;
-    }
-    if (seenCursors.has(nextCursor) || page === maxPages - 1) {
-      sourceTruncated = true;
-      cursor = nextCursor;
-      break;
-    }
-    seenCursors.add(nextCursor);
-    cursor = nextCursor;
-  }
-
-  const preview = compactRecordResult({
-    records: records.slice(0, RECORD_PREVIEW_LIMIT),
-    ...(cursor ? { nextCursor: cursor } : {}),
-  });
-  if (!input.cloudinary?.isAvailable) {
-    return ok({
-      success: false,
-      nativeTool: input.args.nativeTool,
-      data: preview,
-      totalFetched: records.length,
-      sourceTruncated,
-      message: 'Airtable records were read, but temporary CSV storage is unavailable. The full dataset was not returned to the model.',
-    });
-  }
-  if (records.length === 0) {
-    return ok({
-      success: true,
-      nativeTool: input.args.nativeTool,
-      data: preview,
-      totalFetched: 0,
-      sourceTruncated,
-      message: 'No Airtable records matched the request, so no CSV was created.',
-    });
-  }
-
-  const rows = records.map(record => flattenAirtableRecord(record, fieldNames));
-  const columns = collectColumns(rows);
-  const csvBuffer = buildCsv(columns, rows);
-  const safeBaseId = safeFilePart(baseId || 'base');
-  const safeTableId = safeFilePart(tableId || 'records');
-  const exported = await input.cloudinary.uploadCsvBuffer({
-    buffer: csvBuffer,
-    fileName: `airtable-${safeBaseId}-${safeTableId}-${new Date().toISOString().slice(0, 10)}.csv`,
-    companyId: input.ctx.runContext.companyId,
-    ttlSeconds: input.csvLinkTtl ?? 86_400,
-  });
-  if (!exported) {
-    return ok({
-      success: false,
-      nativeTool: input.args.nativeTool,
-      data: preview,
-      totalFetched: records.length,
-      sourceTruncated,
-      message: 'Airtable records were read, but CSV upload failed. The full dataset was not returned to the model.',
-    });
-  }
-
-  input.ctx.logger.info('airtable.records.csv_exported', {
-    companyId: input.ctx.runContext.companyId,
-    nativeTool: input.args.nativeTool,
-    recordsFetched: records.length,
-    sourceTruncated,
-    expiresAt: exported.expiresAt,
-  });
-  return ok({
-    success: true,
-    nativeTool: input.args.nativeTool,
-    data: preview,
-    csvLink: exported.signedUrl,
-    csvPublicId: exported.publicId,
-    csvExpiresAt: exported.expiresAt,
-    totalFetched: records.length,
-    sourceTruncated,
-    message: `Exported ${records.length} Airtable records to a temporary CSV.${sourceTruncated ? ' Pagination safety limit reached; additional records may exist.' : ''}`,
-  });
-}
-
-function flattenAirtableRecord(
-  record: Record<string, unknown>,
-  fieldNames: ReadonlyMap<string, string>,
-): Record<string, unknown> {
-  const row: Record<string, unknown> = {
-    record_id: record['id'] ?? '',
-    created_time: record['createdTime'] ?? record['created_time'] ?? '',
-  };
-  const fields = isRecord(record['cellValuesByFieldId'])
-    ? record['cellValuesByFieldId']
-    : isRecord(record['fields'])
-      ? record['fields']
-      : {};
-  for (const [fieldIdOrName, value] of Object.entries(fields)) {
-    row[fieldNames.get(fieldIdOrName) ?? fieldIdOrName] = csvValue(value);
-  }
-  return row;
-}
-
-function csvValue(value: unknown): unknown {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
-  return JSON.stringify(value);
-}
-
-function collectColumns(rows: readonly Record<string, unknown>[]): string[] {
-  const columns = new Set<string>(['record_id', 'created_time']);
-  for (const row of rows) {
-    for (const key of Object.keys(row)) columns.add(key);
-  }
-  return [...columns];
-}
-
-function buildCsv(columns: readonly string[], rows: readonly Record<string, unknown>[]): Buffer {
-  const lines = [
-    columns.map(escapeCsvCell).join(','),
-    ...rows.map(row => columns.map(column => escapeCsvCell(row[column])).join(',')),
-  ];
-  return Buffer.from(lines.join('\n'), 'utf8');
-}
-
-function escapeCsvCell(value: unknown): string {
-  const raw = typeof value === 'string' && /^[=+\-@]/.test(value)
-    ? `'${value}`
-    : String(value ?? '');
-  if (raw.includes(',') || raw.includes('"') || raw.includes('\n') || raw.includes('\r')) {
-    return `"${raw.replace(/"/g, '""')}"`;
-  }
-  return raw;
-}
-
-function safeFilePart(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'records';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

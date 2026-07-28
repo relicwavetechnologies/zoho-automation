@@ -296,7 +296,6 @@ describe('zohoBooks tool', () => {
       getClient,
       financeOps,
       booksClient: fakePaginatedBooksClient,
-      cloudinary: { isAvailable: false, uploadCsvBuffer: async () => null } as any,
     });
 
   const noClient  = async () => null;
@@ -346,20 +345,20 @@ describe('zohoBooks tool', () => {
 
     it('personalized scope filters Books records after Zoho responds', async () => {
       const booksClient = {
-        listAllRecords: async () => ({
+        listRecords: async () => ({
           organizationId: 'org-1',
           items: [
             { invoice_id: 'inv-owned', email: 'member@example.com', total: 10 },
             { invoice_id: 'inv-other', email: 'other@example.com', total: 20 },
           ],
-          truncated: false,
+          hasMore: false,
+          page: 1,
         }),
       } as unknown as ZohoBooksPaginatedClient;
       const tool = createZohoBooksTool({
         getClient: yesClient,
         financeOps: fakeFinanceOps as ZohoFinanceOps,
         booksClient,
-        cloudinary: { isAvailable: false, uploadCsvBuffer: async () => null } as any,
       });
       const personalized = makeCtx('zohoBooks', ['read'], { requesterEmail: 'member@example.com' });
       (personalized.perm as any).department = { zohoReadScope: 'personalized' };
@@ -367,7 +366,10 @@ describe('zohoBooks tool', () => {
       const r = await tool.execute({ op: 'list_invoices' }, personalized);
 
       assert.equal(r.ok, true);
-      assert.deepEqual((r as any).value.data.map((record: { invoice_id: string }) => record.invoice_id), ['inv-owned']);
+      assert.deepEqual(
+        (r as any).value.data.items.map((record: { id: string }) => record.id),
+        ['inv-owned'],
+      );
     });
 
     it('personalized scope rejects aggregate Books reports', async () => {
@@ -424,7 +426,6 @@ describe('zohoBooks tool', () => {
         getClient: yesClient,
         financeOps: fakeFinanceOps as ZohoFinanceOps,
         booksClient: throwingPaginated,
-        cloudinary: { isAvailable: false, uploadCsvBuffer: async () => null } as any,
       });
       const r = await tool.execute({ op: 'list_invoices' }, ctx);
       assert.equal(r.ok, false);

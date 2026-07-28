@@ -39,6 +39,7 @@ import { asCompanyRoleSlug } from '../src/domain/permissions/company-role';
 import type { IncomingMessage } from '../src/domain/channel/incoming-message';
 import type { RunContext } from '../src/domain/orchestration/run-context';
 import type { ConversationHandle } from '../src/application/channels/channel.adapter';
+import { DataExportWorker } from '../src/application/data-export/data-export.worker';
 
 const DEFAULT_PROMPT = 'Reply with exactly: Divo Flash harness is working. Do not call any tools.';
 const DEFAULT_USER_SELECTOR = 'abhishek@emiactech.com';
@@ -244,6 +245,68 @@ type HarnessTrace = {
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+export async function waitForDataExports(
+  queue: {
+    getJobCounts(
+      ...types: Array<'waiting' | 'active' | 'delayed'>
+    ): Promise<Record<'waiting' | 'active' | 'delayed', number>>;
+    getJobs(
+      types: Array<'active'>,
+      start?: number,
+      end?: number,
+      asc?: boolean,
+    ): Promise<Array<{ id?: string; progress: unknown }>>;
+  },
+  options: {
+    inactivityMs?: number;
+    pollMs?: number;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    onProgress?: (message: string) => void;
+  } = {},
+): Promise<void> {
+  const inactivityMs = options.inactivityMs ?? 10 * 60 * 1_000;
+  const pollMs = options.pollMs ?? 1_000;
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? delay;
+  const onProgress = options.onProgress ?? console.log;
+  let deadline = now() + inactivityMs;
+  let lastActivity = '';
+
+  while (true) {
+    const counts = await queue.getJobCounts('waiting', 'active', 'delayed');
+    if (counts.waiting === 0 && counts.active === 0 && counts.delayed === 0) return;
+    const activeJobs = counts.active > 0
+      ? await queue.getJobs(['active'], 0, -1, true)
+      : [];
+    const activity = JSON.stringify({
+      counts,
+      jobs: activeJobs.map(job => ({ id: job.id, progress: job.progress })),
+    });
+    if (activity !== lastActivity) {
+      lastActivity = activity;
+      deadline = now() + inactivityMs;
+      for (const job of activeJobs) {
+        onProgress(`data export progress: job=${job.id ?? 'unknown'} ${formatExportProgress(job.progress)}`);
+      }
+    }
+    if (now() >= deadline) {
+      throw new Error('Data export made no queue or row progress for 10 minutes');
+    }
+    await sleep(pollMs);
+  }
+}
+
+function formatExportProgress(progress: unknown): string {
+  if (!progress || typeof progress !== 'object' || Array.isArray(progress)) return 'stage=starting';
+  const value = progress as Record<string, unknown>;
+  return [
+    typeof value['stage'] === 'string' ? `stage=${value['stage']}` : undefined,
+    typeof value['rowsRead'] === 'number' ? `rows=${value['rowsRead']}` : undefined,
+    typeof value['pagesRead'] === 'number' ? `pages=${value['pagesRead']}` : undefined,
+  ].filter(Boolean).join(' ');
+}
+
 function compactTracePayload(payload: unknown): string {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return '';
   const source = payload as Record<string, unknown>;
@@ -398,6 +461,17 @@ async function main() {
     : process.env);
   const container = await buildContainer(env);
   const { engine, larkAdapter, channelIdentityRepo, prisma, approvalGate } = container;
+  const dataExportWorker = new DataExportWorker({
+    redisUrl: container.queueRedisUrl,
+    sources: container.dataExportSources,
+    sink: container.googleWorkspaceExportSink,
+    identityRepo: container.channelIdentityRepo,
+    permissions: container.permissions,
+    resolveGoogleAuth: container.resolveGoogleExportAuth,
+    larkAdapter: container.larkAdapter,
+    logger: container.logger,
+  });
+  dataExportWorker.start();
 
   // ── 1. Resolve identity (mirrors webhook) ─────────────────────────────────
   const userOpenId = await resolveHarnessOpenId(prisma, options.userSelector);
@@ -521,6 +595,7 @@ async function main() {
         requestedModelId,
       });
     }
+    await dataExportWorker.stop();
     await prisma.$disconnect();
     process.exit(1);
   }
@@ -539,6 +614,8 @@ async function main() {
   if (options.fullDebug) {
     console.log(`full debug log: ${join(process.cwd(), 'latest-agent-run.log')}`);
   }
+  await waitForDataExports(container.dataExportQueue.getQueue());
+  await dataExportWorker.stop();
   await prisma.$disconnect();
   process.exit(0);
 }

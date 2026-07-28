@@ -777,6 +777,54 @@ describe('PermissionService', () => {
       assert.equal(result.value.allowedToolIds.has(asToolId('airtableRecords')), false);
     });
 
+    it('derives dataExport:create from a supported department source read grant', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'airtableRecords', actionGroup: 'read', allowed: true },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.equal(result.value.allowedActionsByTool.get(asToolId('dataExport'))?.has('create'), true);
+      assert.equal(
+        result.value.decisions.find(decision => String(decision.toolId) === 'dataExport')?.source,
+        'derived',
+      );
+    });
+
+    it('honors an explicit department denial of derived dataExport access', async () => {
+      const deptToolPermRepo: DeptToolPermissionRepoPort = {
+        getForDeptRole: async () => ok([
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'zohoBooks', actionGroup: 'read', allowed: true },
+          { departmentId: DEPT_ID, roleId: 'role_member_001', toolId: 'dataExport', actionGroup: 'create', allowed: false },
+        ]),
+        upsert: async () => ok({} as any),
+      };
+      const svc = new PermissionServiceImpl(buildDeps({
+        deptRepo: { getMembership: async () => ok(membershipRow()) },
+        deptToolPermRepo,
+      }));
+      const result = await svc.resolve(baseQuery({
+        companyRole: 'MEMBER' as any,
+        departmentId: DEPT_ID as any,
+      }));
+
+      assert.ok(result.ok);
+      assert.equal(
+        result.value.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') ?? false,
+        false,
+      );
+    });
+
     // The admin grant is a floor. OMS is exclusive and replaces whatever the
     // department says; Airtable must not, or opening it to a role later would
     // be silently overwritten by the admin's narrower action set.

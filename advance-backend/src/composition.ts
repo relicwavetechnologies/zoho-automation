@@ -77,7 +77,7 @@ import { SemrushService } from './application/semrush/semrush.service';
 import { CompanyOmsConnectionRepository } from './infrastructure/persistence/company-oms-connection.repository';
 import { OmsSiteDataClient } from './infrastructure/oms/oms-site-data.client';
 import { CompanyOmsSiteDataService } from './application/oms/company-oms-site-data.service';
-import { hasGoogleScopeGroups } from './domain/google/google-workspace-scope';
+import { GOOGLE_SCOPE, hasGoogleScopeGroups } from './domain/google/google-workspace-scope';
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
 import { ZohoCrmClient } from './infrastructure/zoho/zoho-crm.client';
@@ -131,7 +131,14 @@ import { VectorDocumentRepository } from './infrastructure/persistence/vector-do
 import { FileAccessPolicyRepository } from './infrastructure/persistence/file-access-policy.repository';
 import { IngestionService } from './application/ingestion/ingestion.service';
 import { IngestionQueue } from './application/ingestion/ingestion.queue';
-import { AirtableExportQueue } from './application/airtable/airtable-export.queue';
+import { DataExportQueue } from './application/data-export/data-export.queue';
+import { DataExportSourceRegistry } from './application/data-export/data-export.types';
+import {
+  AirtableDataExportSource,
+  ZohoBooksDataExportSource,
+} from './application/data-export/data-export.sources';
+import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
+import { parseDataExportProfile, DATA_EXPORT_CAPABILITY_ID } from './application/data-export/data-export.profile';
 import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
 import { PersonaLearningQueue } from './application/persona-learning/persona-learning.queue';
 import { DeepSeekPersonaLearningExtractor } from './application/persona-learning/persona-learning.extractor';
@@ -183,6 +190,7 @@ import { createSkillPublishingTool } from './application/orchestration/tools/fam
 import { createMemoryPublishingTool } from './application/orchestration/tools/families/memory-publishing.tool';
 import { createMemoryRecallTool } from './application/orchestration/tools/families/memory-recall.tool';
 import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
+import { createDataExportTool } from './application/orchestration/tools/families/data-export.tool';
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/orchestration/tools/families/scheduled-workflows.tool';
 import { createSemrushTool } from './application/orchestration/tools/families/semrush.tool';
@@ -303,7 +311,13 @@ export interface Container {
   // Document RAG
   ingestionService: IngestionService;
   ingestionQueue: IngestionQueue;
-  airtableExportQueue: AirtableExportQueue;
+  dataExportQueue: DataExportQueue;
+  dataExportSources: DataExportSourceRegistry;
+  googleWorkspaceExportSink: GoogleWorkspaceExportSink;
+  resolveGoogleExportAuth: (companyId: string) => Promise<{
+    readonly accessToken: string;
+    readonly readerDomain: string;
+  }>;
   airtableConnectionResolver: ResolveAirtableMcpConnection;
   larkIngressQueue: LarkIngressQueue;
   // Manager learning P1–P4. Promotion remains isolated from memory, skills, and RBAC.
@@ -835,6 +849,48 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     }
   }
 
+  async function resolveGoogleExportAuth(companyId: string): Promise<{
+    readonly accessToken: string;
+    readonly readerDomain: string;
+  }> {
+    const configured = await prisma.companyCapabilityGovernance.findUnique({
+      where: {
+        companyId_capabilityId: { companyId, capabilityId: DATA_EXPORT_CAPABILITY_ID },
+      },
+      select: { policyJson: true },
+    });
+    const profile = configured ? parseDataExportProfile(configured.policyJson) : null;
+    if (!profile) {
+      throw new Error('Company data export is not configured by an administrator');
+    }
+    const resolved = await integrationConnectionRepo.findCompanyGoogleExportConnection({
+      companyId,
+      connectionId: profile.googleConnectionId,
+    });
+    if (!resolved.ok || !resolved.value?.refreshToken) {
+      throw new Error('Configured Google export connection is unavailable');
+    }
+    const connection = resolved.value;
+    const refreshToken = connection.refreshToken;
+    if (!refreshToken) throw new Error('Configured Google export connection has no refresh token');
+    if (connection.accountEmail?.trim().toLowerCase() !== profile.accountEmail) {
+      throw new Error('Configured Google export account identity changed; administrator acknowledgement is required again');
+    }
+    if (!hasGoogleScopeGroups(connection.scopes, [
+      [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],
+      [GOOGLE_SCOPE.sheetsFull],
+    ])) {
+      throw new Error('Configured Google export connection no longer has Drive and Sheets write scopes');
+    }
+    const accessToken = await googleOAuthService.getValidAccessToken({
+      companyId,
+      userId: `data-export:${connection.id}`,
+      refreshToken,
+    });
+    await integrationConnectionRepo.touchLastUsed(connection.id);
+    return { accessToken, readerDomain: profile.readerDomain };
+  }
+
   /**
    * Resolve one Airtable account for a tool call, refreshing its token first
    * when needed. Airtable rotates the refresh token on every refresh and kills
@@ -1246,7 +1302,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   );
 
   const ingestionQueue = new IngestionQueue(queueRedisUrl, env.REDIS_INGESTION_QUEUE_NAME);
-  const airtableExportQueue = new AirtableExportQueue(queueRedisUrl);
+  const dataExportQueue = new DataExportQueue(queueRedisUrl);
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
   const personaLearningQueue = new PersonaLearningQueue(
     queueRedisUrl,
@@ -1324,13 +1380,15 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
+  const dataExportSources = new DataExportSourceRegistry();
+  dataExportSources.register(new AirtableDataExportSource(getAirtableMcpConnection));
+  dataExportSources.register(new ZohoBooksDataExportSource(zohoPaginatedBooksClient));
+  const googleWorkspaceExportSink = new GoogleWorkspaceExportSink();
 
   const zohoFinanceOps = new ZohoFinanceOps(
     zohoPaginatedBooksClient,
-    cloudinaryAdapter,
     logger.child({ service: 'zoho-finance-ops' }),
     env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
-    env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   );
 
   // ── Zoho CRM paginated client + CRM ops ──────────────────────────────────
@@ -1522,9 +1580,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   for (const tool of createAirtableMcpTools({
     getConnection: getAirtableMcpConnection,
-    cloudinary: cloudinaryAdapter,
-    csvLinkTtl: env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
-    exportQueue: airtableExportQueue,
+    exportQueue: dataExportQueue,
   })) {
     toolRegistry.register(tool);
   }
@@ -1545,9 +1601,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     getClient:       getZohoBooksClient,
     booksClient:     zohoPaginatedBooksClient,
     financeOps:      zohoFinanceOps,
-    cloudinary:      cloudinaryAdapter,
+    exportQueue:     dataExportQueue,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
-    csvLinkTtl:      env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
   }));
   toolRegistry.register(createContextSearchTool({ broker: contextSearchBroker }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
@@ -1555,11 +1610,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createMemoryPublishingTool({ mem0: mem0Service }));
   toolRegistry.register(createMemoryRecallTool({ mem0: mem0Service, departmentRepo: deptRepo }));
   toolRegistry.register(new DocumentRagTool(documentRagBroker));
-  toolRegistry.register(createDataProcessorTool({
-    cloudinary:  cloudinaryAdapter,
-    booksClient: zohoPaginatedBooksClient,
-    csvLinkTtl:  env.ZOHO_BOOKS_CSV_LINK_TTL_SECONDS,
-  }));
+  toolRegistry.register(createDataProcessorTool());
+  toolRegistry.register(createDataExportTool({ queue: dataExportQueue }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,
     cloudinary: cloudinaryAdapter,
@@ -1921,7 +1973,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     // Document RAG
     ingestionService,
     ingestionQueue,
-    airtableExportQueue,
+    dataExportQueue,
+    dataExportSources,
+    googleWorkspaceExportSink,
+    resolveGoogleExportAuth,
     airtableConnectionResolver: getAirtableMcpConnection,
     larkIngressQueue,
     personaLearningQueue,

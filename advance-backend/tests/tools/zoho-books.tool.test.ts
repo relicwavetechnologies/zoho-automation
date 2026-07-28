@@ -12,6 +12,7 @@ import { formatAmount, formatDate } from '../../src/application/zoho/zoho-format
 import { normalizeStatus, parseDateFilter } from '../../src/application/zoho/zoho-filter.utils.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 import { arrayToCsv } from '../../src/application/orchestration/tools/shared/sandbox-runner.ts';
+import { asToolId } from '../../src/shared/ids.ts';
 
 const fakeSimpleClient: ZohoBooksClientPort = {
   listInvoices:  async () => [{ invoice_id: 'inv-1', total: 100, currency_code: 'USD', date: '2026-05-10' }],
@@ -87,7 +88,6 @@ function makeTool(overrides: {
     getClient:       async () => overrides.simpleClient ?? fakeSimpleClient,
     booksClient:     overrides.booksClient ?? makeBooksClient(),
     financeOps:      overrides.financeOps ?? (fakeFinanceOps as ZohoFinanceOps),
-    cloudinary:      { isAvailable: false, uploadCsvBuffer: async () => null } as any,
     inlineThreshold: 25,
   });
 }
@@ -104,6 +104,25 @@ describe('zohoBooks expanded permissions', () => {
 
     const del = tool.permissionCheck({ op: 'void_invoice' }, makeAllowedPerm('zohoBooks', ['delete']));
     assert.equal((del as any).value, 'delete');
+  });
+
+  it('requires dataExport:create for exportAll', () => {
+    const tool = makeTool();
+    const denied = tool.permissionCheck(
+      { op: 'list_invoices', exportAll: true },
+      makeAllowedPerm('zohoBooks', ['read']),
+    );
+    const allowedPerm = makeAllowedPerm('zohoBooks', ['read']);
+    allowedPerm.allowedToolIds.add(asToolId('dataExport'));
+    allowedPerm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+    const allowed = tool.permissionCheck(
+      { op: 'list_invoices', exportAll: true },
+      allowedPerm,
+    );
+
+    assert.equal(denied.ok, false);
+    assert.equal(!denied.ok && denied.error.payload.toolId, 'dataExport');
+    assert.equal(allowed.ok, true);
   });
 });
 
@@ -252,38 +271,17 @@ describe('zohoBooks expanded execution', () => {
   });
 
   it('exports every list operation through the tool contract when exportAll=true', async () => {
-    const modules: string[] = [];
-    const uploads: string[] = [];
-    const booksClient = {
-      listRecords: async (input: any) => {
-        modules.push(`page:${input.moduleName}`);
-        return { organizationId: 'org-1', items: [{ id: 'first' }], hasMore: true, page: 1 };
-      },
-      listAllRecords: async (input: any) => {
-        modules.push(`all:${input.moduleName}`);
-        return {
-          organizationId: 'org-1',
-          items: Array.from({ length: 30 }, (_, i) => ({
-            id: `${input.moduleName}-${i}`,
-            total: i + 1,
-            amount: i + 1,
-            currency_code: 'USD',
-          })),
-          truncated: false,
-        };
-      },
-    } as unknown as ZohoBooksPaginatedClient;
+    const jobs: any[] = [];
     const tool = createZohoBooksTool({
       getClient: async () => fakeSimpleClient,
-      booksClient,
+      booksClient: makeBooksClient(),
       financeOps: fakeFinanceOps as ZohoFinanceOps,
-      cloudinary: {
-        isAvailable: true,
-        uploadCsvBuffer: async (input: { fileName: string }) => {
-          uploads.push(input.fileName);
-          return { publicId: input.fileName, signedUrl: `https://cdn.example.com/${input.fileName}`, expiresAt: '2026-05-11T00:00:00.000Z' };
+      exportQueue: {
+        enqueue: async (payload) => {
+          jobs.push(payload);
+          return `dtx-${jobs.length}`;
         },
-      } as any,
+      },
       inlineThreshold: 25,
     });
 
@@ -298,25 +296,37 @@ describe('zohoBooks expanded execution', () => {
     ];
 
     for (const args of ops) {
-      const result = await tool.execute({ ...args, exportAll: true }, ctx);
+      const ctx = makeCtx('zohoBooks', ['read'], {
+        chatId: 'oc_test',
+        requestId: `om_test_${args.op}`,
+      });
+      ctx.perm.allowedToolIds.add(asToolId('dataExport'));
+      ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
+      const result = await tool.execute({
+        ...args,
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        exportAll: true,
+      }, ctx);
       assert.equal(result.ok, true);
-      assert.match((result as any).value.csvLink, /^https:\/\/cdn\.example\.com\//);
+      assert.equal((result as any).value.exportQueued, true);
+      assert.match((result as any).value.message, /5,000-row cap/i);
+      assert.match((result as any).value.message, /not be described as complete/i);
     }
 
-    assert.deepEqual(modules.filter(m => m.startsWith('all:')), [
-      'all:invoices',
-      'all:bills',
-      'all:customerpayments',
-      'all:expenses',
-      'all:contacts',
-      'all:banktransactions',
-      'all:banktransactions',
+    assert.deepEqual(jobs.map(job => job.source.module), [
+      'invoices',
+      'bills',
+      'customerpayments',
+      'expenses',
+      'contacts',
+      'banktransactions',
+      'banktransactions',
     ]);
-    assert.equal(uploads.length, ops.length);
+    assert.ok(jobs.every(job => job.source.kind === 'zoho_books'));
+    assert.ok(jobs.every(job => job.destination.format === 'auto'));
   });
 
-  it('falls back to real field keys for invalid script CSV labels and bounds model rows', async () => {
-    let csv = '';
+  it('bounds script results inline and leaves complete artifacts to dataExport', async () => {
     const booksClient = {
       listAllRecords: async () => ({
         organizationId: 'org-1',
@@ -334,32 +344,18 @@ describe('zohoBooks expanded execution', () => {
       getClient: async () => fakeSimpleClient,
       booksClient,
       financeOps: fakeFinanceOps as ZohoFinanceOps,
-      cloudinary: {
-        isAvailable: true,
-        uploadCsvBuffer: async (input: { buffer: Buffer }) => {
-          csv = input.buffer.toString('utf8');
-          return {
-            publicId: 'temp_exports/co/export.csv',
-            signedUrl: 'https://cdn.example.com/export.csv',
-            expiresAt: '2026-05-11T00:00:00.000Z',
-          };
-        },
-      } as any,
     });
 
     const result = await tool.execute({
       op: 'list_invoices',
       script: 'return data',
-      exportCsv: true,
-      csvColumns: ['Invoice Number', 'Customer Name', 'Total (INR)'],
     }, ctx);
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal((result.value.data as unknown[]).length, 10);
-    assert.match(csv, /^invoice_id,invoice_number,customer_name,total,currency_code,/);
-    assert.match(csv, /inv-0,INV-0,Customer 0,1,INR/);
-    assert.doesNotMatch(csv, /^Invoice Number,Customer Name,Total \(INR\)\n,,,/);
+    assert.match(result.value.message ?? '', /Showing first 10 inline/i);
+    assert.equal(result.value.csvLink, undefined);
   });
 });
 

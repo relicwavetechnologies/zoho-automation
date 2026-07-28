@@ -56,6 +56,7 @@ interface ZohoConnectionAuth {
   readonly userId?: string;
   readonly connectionId?: string;
   readonly minimumAccess?: IntegrationGrantAccess;
+  readonly signal?: AbortSignal;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -153,6 +154,7 @@ export class ZohoBooksPaginatedClient {
 
     const res = await fetch(url, {
       ...init,
+      ...(auth.signal ? { signal: auth.signal } : {}),
       headers: {
         'Authorization': `Zoho-oauthtoken ${token}`,
         'Content-Type':  'application/json',
@@ -259,6 +261,7 @@ export class ZohoBooksPaginatedClient {
     page?:          number;         // if set, fetch only this page
     perPage?:       number;         // 1-200, default 25
     maxPages?:      number;         // override 20-page cap
+    signal?:        AbortSignal;
   }): Promise<ZohoBooksListResult> {
     const orgId   = await this.resolveOrganizationId(input.companyId, input.organizationId, input);
     const perPage = Math.max(1, Math.min(200, input.perPage ?? 25));
