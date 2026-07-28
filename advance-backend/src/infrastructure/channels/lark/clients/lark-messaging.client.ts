@@ -50,6 +50,14 @@ interface BotIdentity {
   name?: string;
 }
 
+export interface LarkThreadMessage {
+  readonly messageId: string;
+  readonly text: string;
+  readonly senderId: string;
+  readonly senderName?: string;
+  readonly timestamp: string;
+}
+
 /**
  * SDK-backed client for Lark bot messaging APIs.
  * All business logic lives in LarkChannelAdapter, not here.
@@ -78,6 +86,24 @@ export class LarkMessagingClient {
       openId,
       ...(data.bot?.bot_name ? { name: data.bot.bot_name } : {}),
     };
+  }
+
+  async listThreadMessages(threadId: string, limit = 12): Promise<LarkThreadMessage[]> {
+    type ListResponse = { items?: Array<Record<string, unknown>> };
+    const data = await this.sdk.request<ListResponse>(
+      'GET',
+      '/open-apis/im/v1/messages',
+      {
+        query: {
+          container_id_type: 'thread',
+          container_id: threadId,
+          sort_type: 'ByCreateTimeDesc',
+          page_size: Math.min(50, Math.max(1, limit)),
+          with_sender_name: 'true',
+        },
+      },
+    );
+    return (data.items ?? []).map(message => messageFromLarkApi(message));
   }
 
   /**
@@ -451,6 +477,7 @@ type ToolMessage = {
   messageId: string;
   text: string;
   senderId: string;
+  senderName?: string;
   timestamp: string;
 };
 
@@ -463,6 +490,9 @@ function messageFromLarkApi(message: Record<string, unknown>, fallbackMessageId 
     messageId: stringValue(message['message_id']) || fallbackMessageId,
     text: extractLarkMessageText(messageType, content),
     senderId: stringValue(sender?.['id']),
+    ...(stringValue(sender?.['sender_name'])
+      ? { senderName: stringValue(sender?.['sender_name']) }
+      : {}),
     timestamp: stringValue(message['create_time']),
   };
 }

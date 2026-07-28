@@ -427,9 +427,12 @@ export class OrchestrationEngine {
       && (historicalGroupWindow.recentMessages.length > 0 || historicalGroupWindow.summary)
       ? historicalGroupWindow
       : undefined;
-    const groupContext = groupContextWindow
+    const storedGroupContext = groupContextWindow
       ? formatGroupContextForPrompt(groupContextWindow)
       : undefined;
+    const groupContext = [storedGroupContext, incoming.referenceContext]
+      .filter((value): value is string => Boolean(value))
+      .join('\n\n') || undefined;
 
     const multimodalCtx = groupContextWindow
       ? formatGroupContextMultimodal(groupContextWindow)
@@ -438,6 +441,13 @@ export class OrchestrationEngine {
     debugGroupContext(groupContext);
 
     const supervisorHistory = history;
+    const adjacentContextMissing = Boolean(incoming.requiresAdjacentContext && !groupContext);
+    const supervisorUserMessage = adjacentContextMissing
+      ? 'The adjacent Lark context needed for this bare mention is unavailable. Ask the user to repeat what they want; do not infer it from older conversation history.'
+      : incoming.text;
+    const supervisorTools = adjacentContextMissing
+      ? availableTools.filter(tool => String(tool.id) !== 'larkMessaging')
+      : availableTools;
 
     // ── 5. Run supervisor ─────────────────────────────────────────────────
     log.info('engine.pre_supervisor.duration', { ms: this.deps.clock.nowMs() - runStartMs });
@@ -445,7 +455,7 @@ export class OrchestrationEngine {
     const inlineImageUrls = incoming.imageUrls ?? [];
 
     const supervisorResult = await this.deps.supervisor.run({
-      userMessage:    incoming.text,
+      userMessage:    supervisorUserMessage,
       history:        supervisorHistory,
       channelType:    incoming.channel,
       channelId:      incoming.chatId,
@@ -453,7 +463,7 @@ export class OrchestrationEngine {
       runContext,
       statusChannel,
       aggregator,
-      permittedTools: availableTools,
+      permittedTools: supervisorTools,
       ...(tracer !== undefined ? { tracer } : {}),
       ...(approvalGate !== undefined ? { approvalGate } : {}),
       ...(memoryContext ? { memoryContext } : {}),

@@ -1532,8 +1532,50 @@ async function processInBackground(
 
   // Bare @Divo mention with no text — synthesize a contextual prompt so
   // the engine can respond to whatever was said above in the group chat.
-  let effectiveIncoming: IncomingMessage = (!text && incoming.mentionsSelf && incoming.chatType === 'group')
-    ? { ...incoming, text: 'Respond to the latest messages above in this group chat.' }
+  const bareMention = !text && incoming.mentionsSelf && incoming.chatType === 'group';
+  let referenceContext: string | undefined;
+  if (bareMention && incoming.threadId) {
+    try {
+      const currentTime = Date.parse(incoming.timestamp);
+      const preceding = (await deps.adapter.listThreadMessages(incoming.threadId, 12))
+        .filter(message => {
+          if (message.messageId === String(incoming.messageId)) return false;
+          const messageTime = Number(message.timestamp);
+          return !Number.isFinite(currentTime)
+            || !Number.isFinite(messageTime)
+            || messageTime <= currentTime;
+        })
+        .filter(message => message.text.trim())
+        .slice(0, 6)
+        .sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+      if (preceding.length > 0) {
+        referenceContext = [
+          'CURRENT LARK THREAD — adjacent messages immediately preceding the current bare mention:',
+          ...preceding.map(message => {
+            const sender = deps.adapter.isBotOpenId(message.senderId)
+              ? 'Divo'
+              : message.senderName?.trim() || 'A colleague';
+            return `[${message.timestamp}] ${sender}: ${message.text.slice(0, 2_000)}`;
+          }),
+        ].join('\n');
+      }
+    } catch (error) {
+      log.warn('webhook.thread_context.fetch_failed', {
+        chatId: incoming.chatId,
+        messageId: incoming.messageId,
+        threadId: incoming.threadId,
+        error: String(error),
+      });
+    }
+  }
+
+  let effectiveIncoming: IncomingMessage = bareMention
+    ? {
+        ...incoming,
+        text: 'Use the supplied adjacent Lark context to respond to the latest substantive user message.',
+        requiresAdjacentContext: true,
+        ...(referenceContext ? { referenceContext } : {}),
+      }
     : incoming;
 
   // Inject parent message context for quote-replies (text + images from quoted message)

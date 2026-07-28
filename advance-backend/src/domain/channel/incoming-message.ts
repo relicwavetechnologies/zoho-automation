@@ -66,6 +66,13 @@ export interface IncomingMessage {
   readonly attachments: readonly AttachmentRef[];
   /** Image URLs (Cloudinary or base64 data URLs) for multimodal LLM embedding in P2P. */
   readonly imageUrls?: readonly string[];
+  /**
+   * Ephemeral channel history supplied as untrusted reference data for this
+   * turn only. It is never persisted as an addressed user instruction.
+   */
+  readonly referenceContext?: string;
+  /** True when this turn is meaningless unless adjacent channel context exists. */
+  readonly requiresAdjacentContext?: boolean;
   readonly timestamp: string;         // ISO 8601
   /** Direct message being replied to; distinct from root/thread ownership. */
   readonly parentMessageId?: MessageId;

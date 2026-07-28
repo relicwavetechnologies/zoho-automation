@@ -94,6 +94,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
     return Boolean(openId && this.botOpenId && openId === this.botOpenId);
   }
 
+  async listThreadMessages(threadId: string, limit?: number) {
+    return this.messagingClient.listThreadMessages(threadId, limit);
+  }
+
   // ── parseIncoming ────────────────────────────────────────────────────
 
   parseIncoming(raw: unknown): Result<IncomingMessage, ChannelError> {
