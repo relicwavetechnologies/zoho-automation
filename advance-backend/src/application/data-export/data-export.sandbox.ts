@@ -230,6 +230,14 @@ export async function transformExportPage(
 
 function sandboxLaunch(): { readonly command: string; readonly args: readonly string[] } {
   const nodeArgs = ['--permission', '--disable-proto=throw', '-e', TRANSFORM_RUNNER];
+  // GitHub-hosted runners forbid user namespaces. Keep the weaker launcher
+  // impossible outside an explicitly opted-in test process.
+  if (
+    process.env['NODE_ENV'] === 'test'
+    && process.env['DATA_EXPORT_UNISOLATED_TEST_MODE'] === 'true'
+  ) {
+    return { command: process.execPath, args: nodeArgs };
+  }
   if (process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec')) {
     const nodeDirectory = sandboxProfileLiteral(dirname(process.execPath));
     const profile = [
