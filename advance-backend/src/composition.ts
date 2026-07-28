@@ -699,6 +699,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     new SemrushClient({ timeoutMs: env.SEMRUSH_TIMEOUT_MS }),
     env.SEMRUSH_API_KEY,
     logger.child({ service: 'semrush' }),
+    env.SEMRUSH_API_KEY_WEBHOOK_URL,
   );
   const companyOmsSiteDataService = new CompanyOmsSiteDataService(
     companyOmsConnectionRepo,

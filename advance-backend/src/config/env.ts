@@ -159,6 +159,7 @@ const EnvSchema = z.object({
   // Semrush is a normal server-side integration. Its API key never reaches
   // Desktop or Pi; the backend uses it only with fixed official endpoints.
   SEMRUSH_API_KEY: z.string().optional(),
+  SEMRUSH_API_KEY_WEBHOOK_URL: z.string().url().optional(),
   SEMRUSH_TIMEOUT_MS:             positiveInt(15_000),
   // OMS Site Data keys are company-owned and persisted encrypted. The
   // composition fallback preserves existing deployments while allowing an

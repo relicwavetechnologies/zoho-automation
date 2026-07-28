@@ -204,7 +204,7 @@ export class SemrushClient {
       if (response.ok) return response;
       const body = (await response.text()).slice(0, 500);
       if (/ERROR 132|API UNITS BALANCE IS ZERO/i.test(body)) throw new SemrushServiceError('provider_insufficient_units', 'Semrush reports insufficient API units.');
-      if (response.status === 401 || /ERROR (?:110|120)\b|INVALID IMPORT KEY|WRONG KEY/i.test(body)) {
+      if (response.status === 401 || /ERROR (?:70|110|120|121|122)\b|INVALID IMPORT KEY|WRONG (?:KEY|FORMAT)/i.test(body)) {
         throw new SemrushServiceError('provider_auth_failed', 'Semrush rejected the configured API key.');
       }
       if (response.status === 429) throw new SemrushServiceError('rate_limited', 'Semrush rate limit reached; no retry was attempted.');
@@ -243,6 +243,9 @@ function readSemrushRows(text: string): Array<Record<string, string>> {
   if (!trimmed) throw new SemrushServiceError('provider_failure', 'Semrush returned an empty response body.');
   if (/ERROR 132|API UNITS BALANCE IS ZERO/i.test(trimmed)) {
     throw new SemrushServiceError('provider_insufficient_units', 'Semrush reports insufficient API units.');
+  }
+  if (/^ERROR\s+(?:70|110|120|121|122)\b|INVALID IMPORT KEY|WRONG (?:KEY|FORMAT)/i.test(trimmed)) {
+    throw new SemrushServiceError('provider_auth_failed', 'Semrush rejected the configured API key.');
   }
   if (/^ERROR\s+50\b/i.test(trimmed) || /NOTHING FOUND/i.test(trimmed)) return [];
   const firstLine = trimmed.split(/\r?\n/, 1)[0] ?? '';
