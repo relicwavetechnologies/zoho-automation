@@ -492,6 +492,7 @@ reliable selection, recovery, governance, and verification.
 | Generated full SDK inventory | `[x]` | `pnpm lark:sdk-parity` and focused drift test |
 | Executable parity target | `[x]` | 510 unique endpoints across the nine SDK services backing eight Divo families |
 | Document text blocks and formatting | `[~]` | Headings 4–9, ordered, quote, divider, inline styles, and block-style update implemented locally |
+| Drive organization operations | `[~]` | Metadata, paginated folder listing, folder creation, file copy, and file move implemented locally |
 | Current-tool gap report | `[ ]` | |
 | Canonical parity manifest | `[ ]` | |
 | Gateway parity framework | `[ ]` | |

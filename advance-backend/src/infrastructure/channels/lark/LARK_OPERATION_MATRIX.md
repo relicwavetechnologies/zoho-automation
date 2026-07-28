@@ -31,7 +31,7 @@ parity targets.
 | `larkCalendar` | Calendar v4 | User access token | event create/read/update/delete, calendar read, and free/busy read matching action | SDK `request` fallback |
 | `larkMeeting` | Video Conferencing v1 | User access token | `vc:meeting.search:read`, `vc:meeting.meetingevent:read`, `vc:record:readonly` | SDK `request` fallback; read-only search/detail/recording |
 | `larkTask` | Task v2 | User access token | task read/write plus tasklist read/write matching action | SDK `request` fallback |
-| `larkDoc`, files and Drive content | Docx / Drive v1 | User access token | docs/drive read or write matching action | Generated IM file download where supported; SDK `request` fallback otherwise |
+| `larkDoc`, files and Drive content | Docx / Drive v1 | User access token | docs/drive read or write matching action | SDK `request`; Drive metadata, folder listing/creation, file copy, and file move are mapped to the pinned v1 endpoints |
 | `larkBase` | Bitable v1 | User access token | `bitable:app` for current read/write record operations | SDK `request` fallback |
 | `larkContacts` | Contact v3 | Installed app tenant token | tenant-approved contact permissions | SDK `request` fallback |
 | `larkApproval` | Approval v4 | Installed app tenant token | approval instance/definition permissions | SDK `request` fallback |
@@ -49,3 +49,16 @@ User-resource actions may execute only after Divo resolves a requested
 exactly one accessible Lark connection; otherwise it returns a structured
 connection-selection result. Tenant-only capabilities are company-governed and
 are never represented as a shareable personal account.
+
+The current Drive organization slice exposes:
+
+- `POST /open-apis/drive/v1/metas/batch_query` as a read action;
+- `GET /open-apis/drive/v1/files` as a read action with provider pagination;
+- `POST /open-apis/drive/v1/files/create_folder` as a create action;
+- `POST /open-apis/drive/v1/files/:file_token/copy` as a create action;
+- `POST /open-apis/drive/v1/files/:file_token/move` as an update action;
+- `GET /open-apis/drive/v1/files/task_check` as a read action for asynchronous move status.
+
+Folder creation and copying require Drive write access. Moving additionally
+requires management access to the source, edit access to its current location,
+and edit access to the target folder. Delete remains outside this slice.

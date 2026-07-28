@@ -3,6 +3,9 @@ import type {
   LarkDocBlockStyle,
   LarkDocClientPort,
   LarkDocTextStyle,
+  LarkCopyableDriveFileType,
+  LarkDriveFileType,
+  LarkMovableDriveFileType,
 } from '../../../../application/orchestration/tools/families/lark-doc.tool';
 import { LarkApiError, LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
@@ -305,6 +308,102 @@ export class LarkDocClient implements LarkDocClientPort {
       { body: { external_access_entity: externalEntity, security_entity: securityEntity } },
     );
     return {};
+  }
+
+  async getDriveMetadata(fileToken: string, fileType: LarkDriveFileType): Promise<unknown> {
+    const data = await this.http.request<{ metas?: DocRecord[]; failed_list?: DocRecord[] }>(
+      'POST',
+      '/open-apis/drive/v1/metas/batch_query',
+      {
+        body: {
+          request_docs: [{ doc_token: fileToken, doc_type: fileType }],
+          with_url: true,
+        },
+      },
+    );
+    const metadata = data.metas?.[0];
+    if (!metadata) {
+      const failure = data.failed_list?.[0];
+      const rawCode = failure?.['code'];
+      const code = typeof rawCode === 'number' ? rawCode : undefined;
+      throw new LarkApiError(
+        `Lark Drive did not return metadata${failure ? `: ${JSON.stringify(failure)}` : ''}`,
+        200,
+        code,
+      );
+    }
+    return { metadata };
+  }
+
+  async listDriveFiles(params: {
+    folderToken?: string;
+    pageSize?: number;
+    pageToken?: string;
+    orderBy?: 'EditedTime' | 'CreatedTime';
+    direction?: 'ASC' | 'DESC';
+  }): Promise<unknown> {
+    return this.http.request(
+      'GET',
+      '/open-apis/drive/v1/files',
+      {
+        query: {
+          ...(params.folderToken !== undefined ? { folder_token: params.folderToken } : {}),
+          ...(params.pageSize !== undefined ? { page_size: params.pageSize } : {}),
+          ...(params.pageToken ? { page_token: params.pageToken } : {}),
+          ...(params.orderBy ? { order_by: params.orderBy } : {}),
+          ...(params.direction ? { direction: params.direction } : {}),
+        },
+      },
+    );
+  }
+
+  async createDriveFolder(name: string, folderToken?: string): Promise<unknown> {
+    return this.http.request(
+      'POST',
+      '/open-apis/drive/v1/files/create_folder',
+      { body: { name, folder_token: folderToken ?? '' } },
+    );
+  }
+
+  async copyDriveFile(
+    fileToken: string,
+    params: { fileType: LarkCopyableDriveFileType; name: string; folderToken?: string },
+  ): Promise<unknown> {
+    return this.http.request(
+      'POST',
+      `/open-apis/drive/v1/files/${encodeURIComponent(fileToken)}/copy`,
+      {
+        body: {
+          name: params.name,
+          type: params.fileType,
+          folder_token: params.folderToken ?? '',
+        },
+      },
+    );
+  }
+
+  async moveDriveFile(
+    fileToken: string,
+    params: { fileType: LarkMovableDriveFileType; folderToken?: string },
+  ): Promise<unknown> {
+    return this.http.request(
+      'POST',
+      `/open-apis/drive/v1/files/${encodeURIComponent(fileToken)}/move`,
+      {
+        body: {
+          type: params.fileType,
+          folder_token: params.folderToken ?? '',
+        },
+      },
+    );
+  }
+
+  async checkDriveTask(taskId: string): Promise<unknown> {
+    return this.http.request(
+      'GET',
+      '/open-apis/drive/v1/files/task_check',
+      { query: { task_id: taskId } },
+    );
   }
 }
 

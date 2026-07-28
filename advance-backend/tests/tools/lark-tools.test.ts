@@ -651,6 +651,7 @@ describe('larkDoc tool', () => {
   const appendedBatches: unknown[] = [];
   const insertedTables: unknown[] = [];
   const updatedStyles: unknown[] = [];
+  const driveCalls: unknown[] = [];
   const fakeClient = {
     getDoc:       async () => ({ title: 'Doc', content: '...' }),
     createDoc:    async () => ({ docToken: 'doc-abc', url: 'https://example.larksuite.com/docx/doc-abc' }),
@@ -662,6 +663,21 @@ describe('larkDoc tool', () => {
     deleteBlock:  async () => {},
     insertTable:  async (_docToken: string, params: unknown) => { insertedTables.push(params); },
     shareDoc:     async () => ({}),
+    getDriveMetadata: async (fileToken: string, fileType: string) => ({ fileToken, fileType }),
+    listDriveFiles: async (params: unknown) => ({ params }),
+    createDriveFolder: async (name: string, folderToken?: string) => {
+      driveCalls.push({ op: 'create_folder', name, folderToken });
+      return { token: 'folder-new' };
+    },
+    copyDriveFile: async (fileToken: string, params: unknown) => {
+      driveCalls.push({ op: 'copy_file', fileToken, params });
+      return { token: 'file-copy' };
+    },
+    moveDriveFile: async (fileToken: string, params: unknown) => {
+      driveCalls.push({ op: 'move_file', fileToken, params });
+      return { taskId: 'move-1' };
+    },
+    checkDriveTask: async (taskId: string) => ({ taskId, status: 'success' }),
   };
 
   describe('permissionCheck', () => {
@@ -681,6 +697,26 @@ describe('larkDoc tool', () => {
       const tool = createLarkDocTool({ client: fakeClient });
       const r = tool.permissionCheck({ op: 'append_block' }, makeAllowedPerm('larkDoc', ['update']));
       assert.equal((r as any).value, 'update');
+    });
+
+    it('maps Drive reads, copies, and moves to the matching action groups', () => {
+      const tool = createLarkDocTool({ client: fakeClient });
+      assert.equal(
+        (tool.permissionCheck({ op: 'list_files' }, makeAllowedPerm('larkDoc', ['read'])) as any).value,
+        'read',
+      );
+      assert.equal(
+        (tool.permissionCheck({ op: 'check_drive_task' }, makeAllowedPerm('larkDoc', ['read'])) as any).value,
+        'read',
+      );
+      assert.equal(
+        (tool.permissionCheck({ op: 'copy_file' }, makeAllowedPerm('larkDoc', ['create'])) as any).value,
+        'create',
+      );
+      assert.equal(
+        (tool.permissionCheck({ op: 'move_file' }, makeAllowedPerm('larkDoc', ['update'])) as any).value,
+        'update',
+      );
     });
 
     it('denies when not allowed', () => {
@@ -812,6 +848,77 @@ describe('larkDoc tool', () => {
         data: [['Abhishek', 'Open']],
       }]);
       assert.equal(invalid.ok, false);
+    });
+
+    it('Drive organization operations validate and forward provider parameters', async () => {
+      driveCalls.length = 0;
+      const tool = createLarkDocTool({ client: fakeClient });
+      assert.equal(
+        tool.argsSchema.safeParse({ op: 'create_folder', name: 'é'.repeat(129) }).success,
+        false,
+      );
+
+      const metadata = await tool.execute({
+        op: 'get_metadata',
+        fileToken: 'doc-1',
+        fileType: 'docx',
+      }, ctx);
+      const listing = await tool.execute({
+        op: 'list_files',
+        folderToken: 'folder-1',
+        pageSize: 50,
+        orderBy: 'CreatedTime',
+        direction: 'ASC',
+      }, ctx);
+      const folder = await tool.execute({
+        op: 'create_folder',
+        name: 'Launch',
+        folderToken: 'folder-1',
+      }, ctx);
+      const copy = await tool.execute({
+        op: 'copy_file',
+        fileToken: 'doc-1',
+        fileType: 'docx',
+        name: 'Launch copy',
+        folderToken: 'folder-2',
+      }, ctx);
+      const move = await tool.execute({
+        op: 'move_file',
+        fileToken: 'doc-1',
+        fileType: 'docx',
+        folderToken: 'folder-3',
+      }, ctx);
+      const moveStatus = await tool.execute({
+        op: 'check_drive_task',
+        taskId: 'move-1',
+      }, ctx);
+      const invalidCopy = await tool.execute({
+        op: 'copy_file',
+        fileToken: 'folder-1',
+        fileType: 'folder',
+        name: 'Folder copy',
+      }, ctx);
+
+      assert.equal(metadata.ok, true);
+      assert.equal(listing.ok, true);
+      assert.equal(folder.ok, true);
+      assert.equal(copy.ok, true);
+      assert.equal(move.ok, true);
+      assert.equal(moveStatus.ok, true);
+      assert.equal(invalidCopy.ok, false);
+      assert.deepEqual(driveCalls, [
+        { op: 'create_folder', name: 'Launch', folderToken: 'folder-1' },
+        {
+          op: 'copy_file',
+          fileToken: 'doc-1',
+          params: { fileType: 'docx', name: 'Launch copy', folderToken: 'folder-2' },
+        },
+        {
+          op: 'move_file',
+          fileToken: 'doc-1',
+          params: { fileType: 'docx', folderToken: 'folder-3' },
+        },
+      ]);
     });
 
     it('infra throws → upstream_failure', async () => {

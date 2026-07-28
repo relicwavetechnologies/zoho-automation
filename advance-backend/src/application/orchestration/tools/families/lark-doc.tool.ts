@@ -48,13 +48,33 @@ const BlockSchema = z.object({
   textStyle: TextStyleSchema.optional(),
   blockStyle: BlockStyleSchema.optional(),
 });
+const DriveFileTypeSchema = z.enum([
+  'doc', 'sheet', 'bitable', 'mindnote', 'file', 'wiki', 'docx', 'folder', 'synced_block', 'slides',
+]);
+const CopyableDriveFileTypeSchema = z.enum([
+  'file', 'doc', 'sheet', 'bitable', 'docx', 'mindnote', 'slides',
+]);
+const MovableDriveFileTypeSchema = z.enum([
+  'file', 'docx', 'bitable', 'doc', 'sheet', 'mindnote', 'folder', 'slides',
+]);
+const DriveNameSchema = z.string().min(1).refine(
+  value => Buffer.byteLength(value, 'utf8') <= 256,
+  'name must be at most 256 UTF-8 bytes',
+);
 
 export type LarkDocTextStyle = z.infer<typeof TextStyleSchema>;
 export type LarkDocBlockStyle = z.infer<typeof BlockStyleSchema>;
 export type LarkDocBlockInput = z.infer<typeof BlockSchema>;
+export type LarkDriveFileType = z.infer<typeof DriveFileTypeSchema>;
+export type LarkCopyableDriveFileType = z.infer<typeof CopyableDriveFileTypeSchema>;
+export type LarkMovableDriveFileType = z.infer<typeof MovableDriveFileTypeSchema>;
 
 const Schema = z.object({
-  op: z.enum(['get', 'create', 'list_blocks', 'append_block', 'append_blocks', 'update_block', 'update_block_style', 'delete_block', 'insert_table', 'share']),
+  op: z.enum([
+    'get', 'create', 'list_blocks', 'append_block', 'append_blocks', 'update_block', 'update_block_style',
+    'delete_block', 'insert_table', 'share', 'get_metadata', 'list_files', 'create_folder', 'copy_file', 'move_file',
+    'check_drive_task',
+  ]),
   docToken: z.string().optional(),
   title: z.string().optional(),
   content: z.string().max(100_000).optional(),
@@ -68,6 +88,15 @@ const Schema = z.object({
   headers: z.array(z.string()).optional(),
   data: z.array(z.array(z.string())).max(50).optional(),
   visibility: z.enum(['anyone', 'tenant', 'specified']).optional(),
+  fileToken: z.string().optional(),
+  fileType: DriveFileTypeSchema.optional(),
+  folderToken: z.string().optional(),
+  name: DriveNameSchema.optional(),
+  pageSize: z.number().int().min(1).max(200).optional(),
+  pageToken: z.string().optional(),
+  orderBy: z.enum(['EditedTime', 'CreatedTime']).optional(),
+  direction: z.enum(['ASC', 'DESC']).optional(),
+  taskId: z.string().optional(),
   /** Exact Divo-managed Lark connection when more than one is accessible. */
   connectionId: z.string().uuid().optional(),
 });
@@ -93,11 +122,17 @@ export interface LarkDocClientPort {
   deleteBlock(docToken: string, blockId: string): Promise<void>;
   insertTable(docToken: string, params: { afterBlockId?: string; rows: number; cols: number; headers?: string[]; data?: string[][] }): Promise<void>;
   shareDoc(docToken: string, visibility: string): Promise<{ shareUrl?: string }>;
+  getDriveMetadata(fileToken: string, fileType: LarkDriveFileType): Promise<unknown>;
+  listDriveFiles(params: { folderToken?: string; pageSize?: number; pageToken?: string; orderBy?: 'EditedTime' | 'CreatedTime'; direction?: 'ASC' | 'DESC' }): Promise<unknown>;
+  createDriveFolder(name: string, folderToken?: string): Promise<unknown>;
+  copyDriveFile(fileToken: string, params: { fileType: LarkCopyableDriveFileType; name: string; folderToken?: string }): Promise<unknown>;
+  moveDriveFile(fileToken: string, params: { fileType: LarkMovableDriveFileType; folderToken?: string }): Promise<unknown>;
+  checkDriveTask(taskId: string): Promise<unknown>;
 }
 
 const inferAction = (op: Args['op']): ToolActionGroup => {
-  if (op === 'get' || op === 'list_blocks') return 'read';
-  if (op === 'create') return 'create';
+  if (op === 'get' || op === 'list_blocks' || op === 'get_metadata' || op === 'list_files' || op === 'check_drive_task') return 'read';
+  if (op === 'create' || op === 'create_folder' || op === 'copy_file') return 'create';
   return 'update';
 };
 
@@ -111,10 +146,10 @@ export const createLarkDocTool = (deps: {
   actionGroups: new Set(['read', 'create', 'update']),
   argsSchema: Schema,
   resultSchema: ResultSchema,
-  description: 'Read, create, and edit Lark Docs — create and format native text/list/todo/divider blocks, insert populated tables, update/delete blocks, and share docs.',
+  description: 'Read, create, and edit Lark Docs and organize Drive content — native formatted blocks, tables, metadata, folders, file listing, copy, move, and sharing.',
   parameterDocs: `
-- op: get|create|list_blocks|append_block|append_blocks|update_block|update_block_style|delete_block|insert_table|share
-- docToken: Lark doc token (required for all except create)
+- op: get|create|list_blocks|append_block|append_blocks|update_block|update_block_style|delete_block|insert_table|share|get_metadata|list_files|create_folder|copy_file|move_file|check_drive_task
+- docToken: Lark doc token (required for Docx operations except create)
 - title: Doc title (required for create)
 - create always returns docToken and resolves the canonical Lark document URL when Drive metadata provides it
 - content: Block text content (for append_block, update_block). Omit only for a divider.
@@ -129,6 +164,11 @@ export const createLarkDocTool = (deps: {
 - headers: Column header strings (optional, for insert_table)
 - data: Table body rows (optional, for insert_table). Put row/column data here instead of appending it as bullets after an empty table.
 - visibility: anyone|tenant|specified (required for share)
+- fileToken, fileType: Drive file token and matching provider type (required for get_metadata, copy_file, move_file)
+- folderToken: Parent/target folder token. Omit for the user's Drive root.
+- name: Folder name for create_folder or destination filename for copy_file (maximum 256 UTF-8 bytes)
+- pageSize, pageToken, orderBy, direction: Optional list_files pagination and sorting controls
+- taskId: Async Drive task ID (required for check_drive_task; use when move_file returns task_id)
 - connectionId: Exact accessible Lark UUID. In backend-hosted channels, omit it when no account was supplied; the backend selects only one accessible account or returns exact choices.
   `.trim(),
 
@@ -241,6 +281,62 @@ export const createLarkDocTool = (deps: {
             return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'docToken and visibility required' }));
           const r = await client.shareDoc(args.docToken, args.visibility);
           return ok({ success: true, docToken: args.docToken, data: r, message: 'Doc sharing updated' });
+        }
+        case 'get_metadata': {
+          if (!args.fileToken || !args.fileType)
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'fileToken and fileType required' }));
+          return ok({ success: true, data: await client.getDriveMetadata(args.fileToken, args.fileType) });
+        }
+        case 'list_files': {
+          return ok({
+            success: true,
+            data: await client.listDriveFiles({
+              ...(args.folderToken !== undefined ? { folderToken: args.folderToken } : {}),
+              ...(args.pageSize !== undefined ? { pageSize: args.pageSize } : {}),
+              ...(args.pageToken ? { pageToken: args.pageToken } : {}),
+              ...(args.orderBy ? { orderBy: args.orderBy } : {}),
+              ...(args.direction ? { direction: args.direction } : {}),
+            }),
+          });
+        }
+        case 'create_folder': {
+          if (!args.name)
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'name required' }));
+          return ok({
+            success: true,
+            data: await client.createDriveFolder(args.name, args.folderToken),
+            message: 'Folder created',
+          });
+        }
+        case 'copy_file': {
+          if (!args.fileToken || !args.name || !args.fileType || !CopyableDriveFileTypeSchema.safeParse(args.fileType).success)
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'fileToken, copyable fileType, and name required' }));
+          return ok({
+            success: true,
+            data: await client.copyDriveFile(args.fileToken, {
+              fileType: args.fileType as LarkCopyableDriveFileType,
+              name: args.name,
+              ...(args.folderToken !== undefined ? { folderToken: args.folderToken } : {}),
+            }),
+            message: 'File copied',
+          });
+        }
+        case 'move_file': {
+          if (!args.fileToken || !args.fileType || !MovableDriveFileTypeSchema.safeParse(args.fileType).success)
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'fileToken and movable fileType required' }));
+          return ok({
+            success: true,
+            data: await client.moveDriveFile(args.fileToken, {
+              fileType: args.fileType as LarkMovableDriveFileType,
+              ...(args.folderToken !== undefined ? { folderToken: args.folderToken } : {}),
+            }),
+            message: 'Move accepted',
+          });
+        }
+        case 'check_drive_task': {
+          if (!args.taskId)
+            return err(new ToolError({ toolId: 'larkDoc', reason: 'bad_args', message: 'taskId required' }));
+          return ok({ success: true, data: await client.checkDriveTask(args.taskId) });
         }
       }
     } catch (e) {
