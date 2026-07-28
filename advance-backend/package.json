@@ -25,6 +25,7 @@
     "provision:semrush-skill": "tsx scripts/provision-semrush-skill.ts",
     "provision:oms-site-data-skill": "tsx scripts/provision-oms-site-data-skill.ts",
     "provision:divo-local-python-skill": "tsx scripts/provision-divo-local-python-skill.ts",
+    "lark:sdk-parity": "tsx scripts/report-lark-sdk-parity.ts",
     "backfill:dept-permissions": "tsx scripts/backfill-dept-permissions.ts",
     "migrate:lark-connections": "tsx scripts/migrate-lark-user-auth-links.ts",
     "test": "node --import tsx --test 'tests/**/*.test.ts'",

@@ -18,10 +18,10 @@ const Schema = z.object({
   docToken: z.string().optional(),
   title: z.string().optional(),
   content: z.string().optional(),
-  blockType: z.enum(['text', 'heading1', 'heading2', 'heading3', 'bullet', 'code']).optional(),
+  blockType: z.enum(['text', 'heading1', 'heading2', 'heading3', 'bullet', 'code', 'todo']).optional(),
   blocks: z.array(z.object({
     content: z.string().min(1),
-    blockType: z.enum(['text', 'heading1', 'heading2', 'heading3', 'bullet', 'code']).optional(),
+    blockType: z.enum(['text', 'heading1', 'heading2', 'heading3', 'bullet', 'code', 'todo']).optional(),
   })).min(1).max(100).optional(),
   blockId: z.string().optional(),
   rows: z.number().int().min(1).max(50).optional(),
@@ -78,7 +78,7 @@ export const createLarkDocTool = (deps: {
 - title: Doc title (required for create)
 - create always returns docToken and resolves the canonical Lark document URL when Drive metadata provides it
 - content: Block text content (for append_block, update_block)
-- blockType: text|heading1|heading2|heading3|bullet|code (default: text)
+- blockType: text|heading1|heading2|heading3|bullet|code|todo (default: text). Use todo for an interactive document checklist; do not imitate one with bullet characters or emoji.
 - blocks: Ordered content blocks for append_blocks. Prefer this over many append_block calls when writing a section or document.
 - For bullet blocks, provide plain text without a leading bullet character.
 - blockId: Block ID (required for update_block, delete_block; optional afterBlockId for insert_table)

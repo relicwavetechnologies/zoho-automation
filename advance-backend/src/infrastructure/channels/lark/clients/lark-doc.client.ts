@@ -10,6 +10,7 @@ const BLOCK_TYPE_NUM = {
   heading3: 5,
   bullet:   12,
   code:     14,
+  todo:     17,
 } as const;
 
 type SupportedBlockType = keyof typeof BLOCK_TYPE_NUM;

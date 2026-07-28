@@ -746,6 +746,7 @@ describe('larkDoc tool', () => {
       const blocks = [
         { content: 'Overview', blockType: 'heading1' as const },
         { content: 'First point', blockType: 'bullet' as const },
+        { content: 'Follow up', blockType: 'todo' as const },
       ];
       const r = await tool.execute({ op: 'append_blocks', docToken: 'doc-abc', blocks }, ctx);
 

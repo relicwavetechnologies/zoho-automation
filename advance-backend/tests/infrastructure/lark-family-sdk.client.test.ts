@@ -212,6 +212,7 @@ describe('Lark family clients through the official SDK boundary', () => {
       ['heading3', 5],
       ['bullet', 12],
       ['code', 14],
+      ['todo', 17],
     ] as const;
 
     for (const [blockType, blockTypeNumber] of cases) {

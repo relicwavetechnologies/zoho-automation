@@ -4,6 +4,19 @@ Divo owns connection selection, token encryption and refresh, grants, RBAC,
 approval policy, and audit records. The Lark SDK is only the provider transport.
 No desktop or Pi process receives an OAuth refresh token or Lark app secret.
 
+## SDK parity baseline
+
+The reviewed `@larksuiteoapi/node-sdk` `1.71.0` runtime contains 1,628 unique
+HTTP method/path pairs across 55 services. Generated aliases that resolve to
+the same HTTP operation are counted once. The canonical endpoint-set SHA-256 is
+`e638665bd341fcb240279f4b918c498c5a34dc229d7f74cc82d2aa13304a37fa`.
+
+Run `pnpm lark:sdk-parity` whenever the SDK changes. A mismatch fails so new,
+removed, or changed SDK operations cannot pass unnoticed. This baseline proves
+inventory coverage only; it does not mean every endpoint is executable through
+Divo. Gateway, governance, contract-test, and live-provider coverage are
+tracked separately.
+
 | Divo capability | Lark API family | Token mode | Required Lark permissions (minimum) | SDK path |
 | --- | --- | --- | --- | --- |
 | `larkMessaging` (managed connection) | IM v1 chat-history reads | User access token from resolved `IntegrationConnection` | `im:message.group_msg:get_as_user`, `im:message.p2p_msg:get_as_user`, and `im:chat:read` | SDK `request` fallback until each existing operation is converted to the generated method |
