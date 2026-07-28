@@ -311,10 +311,11 @@ export class SupervisorAgent {
           limit: 100,
         });
         // A skill grant permits reading the recipe; PermissionService still
-        // governs execution. The server agent receives only skills that have
-        // at least one executable tool in this request.
+        // governs execution. Instruction-only routers remain visible without
+        // granting authority; executable recipes require one permitted tool.
         visibleSkills = grantedSkills.filter((skill) =>
-          skill.toolIds.some((toolId) => governedPermittedToolIds.has(toolId)),
+          skill.toolIds.length === 0
+          || skill.toolIds.some((toolId) => governedPermittedToolIds.has(toolId)),
         );
       } catch (error) {
         // Discovery is fail-closed. Tool execution remains protected by the

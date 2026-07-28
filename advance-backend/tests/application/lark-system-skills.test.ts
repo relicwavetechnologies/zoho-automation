@@ -13,6 +13,7 @@ import { createLarkDocTool } from '../../src/application/orchestration/tools/fam
 import { createLarkMeetingTool } from '../../src/application/orchestration/tools/families/lark-meeting.tool.ts';
 import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
 import { createLarkTaskTool } from '../../src/application/orchestration/tools/families/lark-task.tool.ts';
+import { createDefaultSkillRegistry } from '../../src/application/skills/index.ts';
 
 function operationOptions(schema: unknown): readonly string[] {
   type SchemaNode = {
@@ -44,6 +45,10 @@ describe('Lark system skill provisioning', () => {
       'larkTask',
     ]);
     assert.equal(LARK_SYSTEM_SKILLS.length, 9);
+  });
+
+  it('keeps Lark skills out of the legacy in-memory registry', () => {
+    assert.equal(createDefaultSkillRegistry().getById('lark'), null);
   });
 
   it('routes through a tool-free top-level skill before the exact family recipe', () => {
@@ -124,13 +129,17 @@ describe('Lark system skill provisioning', () => {
 
   it('creates an organized company-wide Lark skill set and grants it to the whole company', async () => {
     const createdSkills: Record<string, unknown>[] = [];
+    const createdFolders: Record<string, unknown>[] = [];
     const grants: Record<string, unknown>[] = [];
     const versions: Record<string, unknown>[] = [];
     const aliases: Record<string, unknown>[] = [];
     const db = {
       skillFolder: {
         findFirst: async () => null,
-        upsert: async () => ({ id: 'lark-folder' }),
+        upsert: async ({ create }: { create: Record<string, unknown> }) => {
+          createdFolders.push(create);
+          return { id: create.slug === 'lark' ? 'lark-folder' : `${String(create.slug)}-folder` };
+        },
       },
       skill: {
         findFirst: async () => null,
@@ -179,6 +188,17 @@ describe('Lark system skill provisioning', () => {
       existing: 0,
       skipped: 0,
     });
+    const expectedFolders = new Map([
+      ['lark-router', 'lark-folder'],
+      ['lark-documents', 'documents-drive-folder'],
+      ['lark-tasks', 'tasks-folder'],
+      ['lark-calendar', 'calendar-folder'],
+      ['lark-meetings', 'meetings-folder'],
+      ['lark-messaging', 'messaging-folder'],
+      ['lark-contacts', 'contacts-folder'],
+      ['lark-base', 'base-folder'],
+      ['lark-approvals', 'approvals-folder'],
+    ]);
     assert.deepEqual(
       createdSkills.map((skill) => ({
         slug: skill.slug,
@@ -188,11 +208,13 @@ describe('Lark system skill provisioning', () => {
       })),
       LARK_SYSTEM_SKILLS.map((skill) => ({
         slug: skill.slug,
-        folderId: 'lark-folder',
+        folderId: expectedFolders.get(skill.slug),
         scope: 'global',
         isSystem: true,
       })),
     );
+    assert.equal(createdFolders.length, 9);
+    assert.equal(createdFolders.filter((folder) => folder.parentId === 'lark-folder').length, 8);
     assert.equal(versions.length, LARK_SYSTEM_SKILLS.length);
     const contacts = createdSkills.find((skill) => skill.slug === 'lark-contacts');
     assert(aliases.some((alias) => alias.skillId === contacts?.id && alias.alias === 'company directory'));

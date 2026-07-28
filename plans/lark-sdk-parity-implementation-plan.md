@@ -337,21 +337,21 @@ credible.
 
 ### Phase 3 — Registry and recipe contract
 
-- [ ] Define router and leaf node metadata.
-- [ ] Define stable slugs and revisions.
-- [ ] Define capability-to-recipe requirements.
+- [x] Define router and leaf node metadata.
+- [x] Define stable slugs and revisions.
+- [x] Define capability-to-recipe requirements.
 - [ ] Define the structured `skill_reference_required` recovery result.
 - [ ] Define request-scoped resolved-path tracking.
-- [ ] Confirm existing nested `SkillFolder.parentId` can represent the tree
+- [x] Confirm existing nested `SkillFolder.parentId` can represent the tree
   without a schema migration.
 
 ### Phase 4 — Hierarchical resolution
 
-- [ ] Provision the Lark root router.
-- [ ] Provision nested family folders and family routers.
+- [x] Provision the Lark root router.
+- [x] Provision nested family folders and family recipes.
 - [ ] Return lightweight child summaries from router resolution.
-- [ ] Load full instructions only for the selected node.
-- [ ] Restrict every lookup to permission-visible skills and tools.
+- [x] Load full instructions only for the selected node.
+- [x] Restrict every lookup to permission-visible skills and tools.
 - [ ] Cache resolved node IDs and revisions for the run.
 
 ### Phase 5 — Preflight and recovery
@@ -497,10 +497,11 @@ reliable selection, recovery, governance, and verification.
 | Canonical parity manifest | `[ ]` | |
 | Gateway parity framework | `[ ]` | |
 | Tree taxonomy initial version | `[x]` | Recorded in this plan |
-| Router/leaf metadata contract | `[ ]` | |
-| Hierarchical resolver | `[ ]` | |
+| Database-only Lark skill runtime | `[x]` | Legacy in-memory Lark skill removed; governed runtime reads company-granted DB skills |
+| Router/leaf metadata contract | `[x]` | Tool-free root router plus eight exact operation-aligned family recipes |
+| Hierarchical resolver | `[~]` | Root and nested family folders provisioned; preflight enforcement and resolved-path caching remain |
 | Preflight recovery gate | `[ ]` | |
-| Document checklist vertical slice | `[ ]` | |
+| Document checklist vertical slice | `[~]` | Native todo operation and truthful document recipe complete; production/live verification remains |
 | First 50% rollout | `[ ]` | |
 | Full SDK family rollout | `[ ]` | |
 | 100% inventory parity | `[ ]` | |

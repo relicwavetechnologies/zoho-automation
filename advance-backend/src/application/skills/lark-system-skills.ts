@@ -148,6 +148,16 @@ const LARK_FOLDER = {
   status: 'active',
   sortOrder: 20,
 } as const;
+const LARK_FAMILY_FOLDERS = [
+  { name: 'Documents and Drive', slug: 'documents-drive', skillSlug: 'lark-documents', sortOrder: 10 },
+  { name: 'Tasks', slug: 'tasks', skillSlug: 'lark-tasks', sortOrder: 20 },
+  { name: 'Calendar', slug: 'calendar', skillSlug: 'lark-calendar', sortOrder: 30 },
+  { name: 'Meetings', slug: 'meetings', skillSlug: 'lark-meetings', sortOrder: 35 },
+  { name: 'Messaging', slug: 'messaging', skillSlug: 'lark-messaging', sortOrder: 40 },
+  { name: 'Contacts', slug: 'contacts', skillSlug: 'lark-contacts', sortOrder: 50 },
+  { name: 'Base', slug: 'base', skillSlug: 'lark-base', sortOrder: 60 },
+  { name: 'Approvals', slug: 'approvals', skillSlug: 'lark-approvals', sortOrder: 70 },
+] as const;
 
 type LarkSkillStore = Pick<
   Prisma.TransactionClient,
@@ -212,13 +222,14 @@ export async function provisionLarkSystemSkills(
     if (languageError) throw new Error(`Invalid system skill "${definition.slug}": ${languageError}`);
   }
 
-  const folderId = await ensureLarkFolder(db, companyId);
+  const { folderId, familyFolderIds } = await ensureLarkFolders(db, companyId);
   let created = 0;
   let updated = 0;
   let existing = 0;
   let skipped = 0;
 
   for (const definition of LARK_SYSTEM_SKILLS) {
+    const definitionFolderId = familyFolderIds.get(definition.slug) ?? folderId;
     let current = await db.skill.findFirst({
       where: { companyId, slug: definition.slug, status: { not: 'archived' } },
       select: EXISTING_SKILL_SELECT,
@@ -243,18 +254,18 @@ export async function provisionLarkSystemSkills(
     let skill: ExistingSkill;
     if (!current) {
       skill = await db.skill.create({
-        data: buildLarkSystemSkill(companyId, folderId, definition),
+        data: buildLarkSystemSkill(companyId, definitionFolderId, definition),
       }) as ExistingSkill;
       await recordSkillRegistryMutation(db, skill, 'system');
       created += 1;
-    } else if (matchesDefinition(current, folderId, definition)) {
+    } else if (matchesDefinition(current, definitionFolderId, definition)) {
       skill = current;
       existing += 1;
     } else {
       skill = await db.skill.update({
         where: { id: current.id },
         data: {
-          ...definitionFields(folderId, definition),
+          ...definitionFields(definitionFolderId, definition),
           toolIds: [...definition.toolIds],
           tags: [...definition.tags],
           revision: { increment: 1 },
@@ -302,7 +313,10 @@ export function buildLarkSystemSkill(
   };
 }
 
-async function ensureLarkFolder(db: LarkSkillStore, companyId: string): Promise<string> {
+async function ensureLarkFolders(
+  db: LarkSkillStore,
+  companyId: string,
+): Promise<{ folderId: string; familyFolderIds: ReadonlyMap<string, string> }> {
   const existing = await db.skillFolder.findFirst({
     where: {
       companyId,
@@ -313,9 +327,7 @@ async function ensureLarkFolder(db: LarkSkillStore, companyId: string): Promise<
     },
     select: { id: true },
   });
-  if (existing) return existing.id;
-
-  const folder = await db.skillFolder.upsert({
+  const folderId = existing?.id ?? (await db.skillFolder.upsert({
     where: { id: deterministicId(companyId, 'folder:lark') },
     create: {
       id: deterministicId(companyId, 'folder:lark'),
@@ -324,8 +336,45 @@ async function ensureLarkFolder(db: LarkSkillStore, companyId: string): Promise<
     },
     update: { ...LARK_FOLDER },
     select: { id: true },
-  });
-  return folder.id;
+  })).id;
+
+  const familyFolderIds = new Map<string, string>();
+  for (const family of LARK_FAMILY_FOLDERS) {
+    const current = await db.skillFolder.findFirst({
+      where: {
+        companyId,
+        departmentId: null,
+        parentId: folderId,
+        slug: family.slug,
+        status: 'active',
+      },
+      select: { id: true },
+    });
+    const familyFolderId = current?.id ?? (await db.skillFolder.upsert({
+      where: { id: deterministicId(companyId, `folder:lark:${family.slug}`) },
+      create: {
+        id: deterministicId(companyId, `folder:lark:${family.slug}`),
+        companyId,
+        departmentId: null,
+        parentId: folderId,
+        name: family.name,
+        slug: family.slug,
+        status: 'active',
+        sortOrder: family.sortOrder,
+      },
+      update: {
+        departmentId: null,
+        parentId: folderId,
+        name: family.name,
+        slug: family.slug,
+        status: 'active',
+        sortOrder: family.sortOrder,
+      },
+      select: { id: true },
+    })).id;
+    familyFolderIds.set(family.skillSlug, familyFolderId);
+  }
+  return { folderId, familyFolderIds };
 }
 
 function definitionFields(folderId: string, definition: LarkSystemSkillDefinition) {
