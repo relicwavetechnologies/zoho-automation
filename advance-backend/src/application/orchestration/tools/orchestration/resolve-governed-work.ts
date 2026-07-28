@@ -35,7 +35,7 @@ export function createResolveGovernedWorkTool(input: {
 }) {
   const runtimeInputSchema = input.expectedQuery === undefined
     ? inputSchema
-    : z.object({}).describe('The backend resolves the current user request automatically.');
+    : z.object({}).describe('Call with no arguments to resolve the exact current user request.');
 
   return dynamicTool({
     description:

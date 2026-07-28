@@ -57,23 +57,26 @@ const inferAction = (op: LarkMsgArgs['op']): ToolActionGroup => {
   return 'read';
 };
 
-function lockedCurrentChatId(ctx: ToolExecutionContext): string | null {
-  if (ctx.runContext.deliveryMode !== 'current_chat_only') return null;
+function runtimeOwnedCurrentChatId(ctx: ToolExecutionContext): string | null {
   if (ctx.runContext.channel !== 'lark') return null;
   return ctx.runContext.chatId ?? null;
 }
 
-function runtimeDeliveryOpenId(ctx: ToolExecutionContext): string | null {
-  if (ctx.runContext.deliveryMode !== 'scheduled_runtime_delivery') return null;
-  if (ctx.runContext.channel !== 'lark') return null;
-  return ctx.runContext.chatId ?? null;
+function runtimeOwnedOpenIds(ctx: ToolExecutionContext): Set<string> {
+  if (ctx.runContext.channel !== 'lark') return new Set();
+  return new Set([
+    ctx.runContext.userExternalId,
+    ctx.runContext.deliveryMode === 'scheduled_runtime_delivery'
+      ? ctx.runContext.chatId
+      : undefined,
+  ].filter((value): value is string => Boolean(value)));
 }
 
 function runtimeDeliveryError(): ToolError {
   return new ToolError({
     toolId: 'larkMessaging',
     reason: 'bad_args',
-    message: 'The scheduled runtime owns final delivery. Return the content as the final reply instead of sending it with larkMessaging.',
+    message: 'The runtime owns final delivery to this Lark conversation. Return the content as the final reply instead of sending it with larkMessaging.',
   });
 }
 
@@ -150,14 +153,14 @@ export const createLarkMessagingTool = (deps: {
       // backend-owned client after this connection check authorizes the member.
       const readClient = userConnection.status === 'resolved' ? userConnection.client : deps.client;
       const rendering = args.rendering ?? 'card';
-      const lockedChatId = lockedCurrentChatId(ctx);
+      const runtimeChatId = runtimeOwnedCurrentChatId(ctx);
       switch (args.op) {
         case 'send': {
           if (!args.text) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'text required for send' }));
           if (ctx.runContext.deliveryMode === 'scheduled_runtime_delivery') {
             return err(runtimeDeliveryError());
           }
-          if (lockedChatId && (!args.chatId || args.chatId === lockedChatId)) {
+          if (runtimeChatId && (!args.chatId || args.chatId === runtimeChatId)) {
             return err(runtimeDeliveryError());
           }
           if (!args.chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for send' }));
@@ -169,6 +172,10 @@ export const createLarkMessagingTool = (deps: {
           if (
             ctx.runContext.deliveryMode === 'current_chat_only'
             || ctx.runContext.deliveryMode === 'scheduled_runtime_delivery'
+            || (
+              ctx.runContext.channel === 'lark'
+              && args.messageId === ctx.runContext.replyToMessageId
+            )
           ) {
             return err(runtimeDeliveryError());
           }
@@ -211,11 +218,7 @@ export const createLarkMessagingTool = (deps: {
           } else {
             return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'recipientOpenId or recipientName required for send_dm' }));
           }
-          const runtimeOpenId = runtimeDeliveryOpenId(ctx)
-            ?? (ctx.runContext.deliveryMode === 'current_chat_only' && ctx.runContext.channel === 'lark'
-              ? ctx.runContext.userExternalId ?? null
-              : null);
-          if (openId === runtimeOpenId) {
+          if (runtimeOwnedOpenIds(ctx).has(openId)) {
             return err(runtimeDeliveryError());
           }
           const r = await deps.client.sendDm(openId, args.text, { rendering });
@@ -240,7 +243,7 @@ export const createLarkMessagingTool = (deps: {
           if (!args.mentionOpenIds?.length && !args.mentionNames?.length) {
             return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'mentionOpenIds or mentionNames required for mention' }));
           }
-          if (lockedChatId && (!args.chatId || args.chatId === lockedChatId)) {
+          if (runtimeChatId && (!args.chatId || args.chatId === runtimeChatId)) {
             return err(runtimeDeliveryError());
           }
           if (!args.chatId) return err(new ToolError({ toolId: 'larkMessaging', reason: 'bad_args', message: 'chatId and text required for mention' }));

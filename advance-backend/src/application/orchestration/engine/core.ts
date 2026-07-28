@@ -24,8 +24,6 @@ import { resolveBranding } from '../department-branding';
 import { RunStatusAggregator } from '../run-status.aggregator';
 import type { Mem0Service } from '../../memory/mem0.service';
 import type { ConversationSummarizer } from './conversation-summarizer';
-import type { LanguageModel } from 'ai';
-import { classifyMessage, runFastPath } from './fast-path';
 import { buildExecutionSummary } from './execution-summary';
 import { LARK_ENGLISH_OUTPUT_POLICY } from '../lark-language-policy';
 import {
@@ -140,8 +138,6 @@ export interface OrchestrationEngineDeps {
   clock:        Clock;
   executionRepo?: ExecutionRepository;
   mem0?: Mem0Service;
-  /** When provided, simple messages (greetings, chitchat) skip the full supervisor loop. */
-  fastPathModel?: LanguageModel;
   /** When provided, group chat context is loaded and injected into the supervisor prompt. */
   chatContext?: LarkChatContextService;
   /** When provided, fires background summarization for the current conversation key. */
@@ -357,9 +353,12 @@ export class OrchestrationEngine {
       timeline: aggregator.snapshot(),
     });
 
+    const isScheduledDelivery = runContext.deliveryMode === 'current_chat_only'
+      || runContext.deliveryMode === 'scheduled_runtime_delivery';
+
     // ── 3. Discover allowed tools ─────────────────────────────────────────
     const availableTools = this.deps.toolRegistry.forRuntime(perm);
-    if (availableTools.length === 0) {
+    if (availableTools.length === 0 && (runContext.channel !== 'lark' || isScheduledDelivery)) {
       log.warn('engine.no_tools_available');
       tracer?.fail('no_tools', 'No tools available for this role');
       const noToolsReply: FinalReply = {
@@ -377,8 +376,6 @@ export class OrchestrationEngine {
     // Scheduled runs are compiled to be self-contained. Their target can be an
     // originating chat or a synthetic runtime destination such as a creator
     // open_id, so loading interactive history would be wrong in either case.
-    const isScheduledDelivery = runContext.deliveryMode === 'current_chat_only'
-      || runContext.deliveryMode === 'scheduled_runtime_delivery';
     const isNativeThreadReply = incoming.chatType === 'group'
       && incoming.groupReplyMode !== 'inline'
       && Boolean(incoming.rootMessageId || incoming.threadId);
@@ -415,54 +412,10 @@ export class OrchestrationEngine {
       turns: history.turns.map(t => ({ role: t.role, content: t.content })),
     });
 
-    // ── 4b. Fast-path: skip supervisor for simple messages (greetings, chitchat) ──
-    if (this.deps.fastPathModel && classifyMessage(incoming.text) === 'SIMPLE') {
-      log.info('engine.fast_path.triggered', { messageLength: incoming.text.length });
-
-      const fastResult = await runFastPath({
-        userMessage: incoming.text,
-        history:     history.turns.map(t => ({ role: t.role as 'user' | 'assistant', content: t.content })),
-        model:       larkModel ?? this.deps.fastPathModel,
-        log,
-        abortSignal: abortController.signal,
-      });
-
-      const fastReply: FinalReply = {
-        kind: 'final', text: fastResult.text, format: 'text', branding,
-      };
-
-      abortController.signal.throwIfAborted();
-      // Sequential append — sequence ordering matters (user before assistant).
-      await this.deps.history.appendTurn(conversationKey, {
-        role: 'user', content: userHistoryContent(incoming), timestamp: incoming.timestamp,
-      }, conversationScope);
-      abortController.signal.throwIfAborted();
-      await this.deps.history.appendTurn(conversationKey, {
-        role: 'assistant', content: fastResult.text,
-        timestamp: this.deps.clock.now().toISOString(),
-      }, conversationScope);
-
-      if (this.deps.conversationSummarizer) {
-        const summaryKey = String(conversationKey);
-        setImmediate(() => {
-          this.deps.conversationSummarizer!.maybeSummarize(summaryKey, conversationScope, larkModel)
-            .catch(e => log.warn('engine.summarization.failed', { error: String(e) }));
-        });
-      }
-
-      abortController.signal.throwIfAborted();
-      await channelAdapter.sendFinalReply(conversation, fastReply);
-
-      const fpMs = this.deps.clock.nowMs() - runStartMs;
-      log.info('engine.fast_path.complete', { durationMs: fpMs });
-      tracer?.complete(fastResult.text.slice(0, 500));
-      return ok({ finalReply: fastReply, toolsCalled: [] });
-    }
-
-    // ── 4c. Loaded persistent memory context ─────────────────────────────
+    // ── 4b. Loaded persistent memory context ─────────────────────────────
     if (memoryContext) debugMemoryContext(memoryContext);
 
-    // ── 4d. Loaded group chat context (if applicable) ────────────────────
+    // ── 4c. Loaded group chat context (if applicable) ────────────────────
     const isGroupWithContext = incoming.chatType === 'group'
       && groupContextResult?.ok
       && groupContextResult.value.recentMessages.length > 0;

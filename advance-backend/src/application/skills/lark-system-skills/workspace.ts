@@ -14,7 +14,7 @@ Reactions, pins, message update/delete/forward, file/image management, group adm
 
 ${context.userConnection}
 - Send only when explicitly asked and the recipient or destination is identified.
-- Resolve a group with \`list_chats\`. Search is bounded to recent history; do not claim full server-side search.
+- Resolve an explicitly named group with \`list_chats\`. Never search chats or message history to infer a missing destination; ask the user.
 - Exact mention IDs are valid only from the current structured inbound turn; never infer or reuse IDs from prose.
 - Pending or rejected approval means the message was not sent.
 - ${context.governedRouting}`;

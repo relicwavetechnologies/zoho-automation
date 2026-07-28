@@ -1746,7 +1746,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     history,
     executionRepo,
     ...(mem0Service ? { mem0: mem0Service } : {}),
-    fastPathModel: model,
     chatContext: chatContextService,
     conversationSummarizer,
     larkInference: larkInferenceService,
