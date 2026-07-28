@@ -18,8 +18,8 @@ export class LarkFileClient {
     });
   }
 
-  async downloadFile(messageId: string, fileKey: string): Promise<Buffer> {
-    return this.downloadResource(messageId, fileKey, 'file');
+  async downloadFile(messageId: string, fileKey: string, maxBytes?: number): Promise<Buffer> {
+    return this.downloadResource(messageId, fileKey, 'file', maxBytes);
   }
 
   async downloadImage(messageId: string, imageKey: string): Promise<Buffer> {
@@ -30,6 +30,7 @@ export class LarkFileClient {
     messageId: string,
     fileKey: string,
     type: 'file' | 'image',
+    maxBytes?: number,
   ): Promise<Buffer> {
     try {
       const response = await this.client.im.v1.messageResource.get({
@@ -37,8 +38,14 @@ export class LarkFileClient {
         params: { type },
       });
       const chunks: Buffer[] = [];
+      let totalBytes = 0;
       for await (const chunk of response.getReadableStream()) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalBytes += bytes.length;
+        if (maxBytes !== undefined && totalBytes > maxBytes) {
+          throw new Error(`Lark resource exceeds the ${maxBytes}-byte download limit`);
+        }
+        chunks.push(bytes);
       }
       return Buffer.concat(chunks);
     } catch (error) {

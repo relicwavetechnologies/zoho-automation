@@ -55,6 +55,8 @@ import { userFacingMessageOf } from '../../../shared/user-facing-error';
 const MEM0_SEARCH_TIMEOUT_MS = 500;
 
 const SUBJECT_MAX_CHARS = 52;
+const VOICE_TRANSCRIPT_REDACTED = '[voice transcript redacted]';
+const VOICE_HISTORY_PLACEHOLDER = '[Voice note transcript omitted after processing.]';
 
 /**
  * Title the status card with the user's own words. Deliberately mechanical — no
@@ -180,6 +182,13 @@ export class OrchestrationEngine {
       userId:    runContext.userId,
       companyId: runContext.companyId,
     });
+    const hasVoiceTranscript = incoming.attachments.some(attachment => attachment.type === 'audio');
+    const telemetryUserMessage = hasVoiceTranscript
+      ? VOICE_TRANSCRIPT_REDACTED
+      : incoming.text;
+    const historyUserMessage = hasVoiceTranscript
+      ? VOICE_HISTORY_PLACEHOLDER
+      : incoming.text;
 
     const abortController = new AbortController();
     if (input.abortSignal?.aborted) {
@@ -201,13 +210,13 @@ export class OrchestrationEngine {
     }
 
     try {
-    log.info('engine.run.start', { userMessage: incoming.text.slice(0, 100) });
+    log.info('engine.run.start', { userMessage: telemetryUserMessage.slice(0, 100) });
 
     debugRunStart({
       chatId: String(incoming.chatId),
       userId: String(runContext.userId),
       companyId: String(runContext.companyId),
-      userMessage: incoming.text,
+      userMessage: telemetryUserMessage,
       traceId: runContext.traceId ?? incoming.traceId,
     });
 
@@ -434,7 +443,9 @@ export class OrchestrationEngine {
       abortController.signal.throwIfAborted();
       // Sequential append — sequence ordering matters (user before assistant).
       await this.deps.history.appendTurn(conversationKey, {
-        role: 'user', content: userHistoryContent(incoming), timestamp: incoming.timestamp,
+        role: 'user',
+        content: userHistoryContent(incoming, historyUserMessage),
+        timestamp: incoming.timestamp,
       }, conversationScope);
       abortController.signal.throwIfAborted();
       await this.deps.history.appendTurn(conversationKey, {
@@ -663,7 +674,7 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
     // ── 6. Persist conversation turn ──────────────────────────────────────
     await this.deps.history.appendTurn(conversationKey, {
       role:      'user',
-      content:   userHistoryContent(incoming),
+      content:   userHistoryContent(incoming, historyUserMessage),
       timestamp: incoming.timestamp,
     }, conversationScope);
     abortController.signal.throwIfAborted();
@@ -771,7 +782,7 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
         companyId:      String(runContext.companyId),
         ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
         userRole:       String(runContext.companyRole),
-        userMessage:    incoming.text,
+        userMessage:    historyUserMessage,
         assistantReply: finalReply.text,
       };
       setImmediate(() => {

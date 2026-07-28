@@ -43,9 +43,12 @@ const clock: Clock = {
 };
 
 describe('OrchestrationEngine', () => {
-  it('starts status, history, memory, and group context before invoking supervisor', async () => {
+  it('starts context work before the supervisor and redacts voice-derived persistence', async () => {
     const started: string[] = [];
     const loggerEvents: Array<{ event: string; data?: Record<string, unknown> }> = [];
+    const appendedTurns: Array<{ role: string; content: string }> = [];
+    const memoryExtractions: Array<{ userMessage: string }> = [];
+    const voiceTranscript = 'SECRET_VOICE_TRANSCRIPT list my tasks';
     const toolId = asToolId('larkTask');
     const perm: PermissionResult = {
       allowedToolIds: new Set([toolId]),
@@ -79,8 +82,8 @@ describe('OrchestrationEngine', () => {
       chatId: asChatId('chat-1'),
       chatType: 'group',
       userExternalId: 'ou_1',
-      text: 'list my tasks',
-      attachments: [],
+      text: voiceTranscript,
+      attachments: [{ type: 'audio', fileKey: 'file_voice_1', mimeType: 'audio/ogg' }],
       timestamp: '2026-05-14T00:00:00.000Z',
       traceId: asCorrelationId('corr-1'),
       mentions: [],
@@ -142,7 +145,9 @@ describe('OrchestrationEngine', () => {
           await wait(25);
           return ok({ turns: [], truncated: false, tokenEstimate: 0 });
         },
-        appendTurn: async () => undefined,
+        appendTurn: async (_key: unknown, turn: { role: string; content: string }) => {
+          appendedTurns.push(turn);
+        },
       } as unknown as OrchestrationEngineDeps['history'],
       mem0: {
         searchForContext: async () => {
@@ -150,7 +155,10 @@ describe('OrchestrationEngine', () => {
           await wait(25);
           return 'remembered context';
         },
-        extractAndStore: async () => ({ attemptedScopes: [], storedMemories: 0, scopes: [] }),
+        extractAndStore: async (input: { userMessage: string }) => {
+          memoryExtractions.push(input);
+          return { attemptedScopes: [], storedMemories: 0, scopes: [] };
+        },
       } as unknown as OrchestrationEngineDeps['mem0'],
       chatContext: {
         loadContext: async () => {
@@ -166,7 +174,7 @@ describe('OrchestrationEngine', () => {
           assert.ok(input.groupContext?.includes('Alice'));
           assert.doesNotMatch(input.groupContext ?? '', /raw current message|current attachment OCR/);
           assert.deepEqual(input.history.turns, []);
-          assert.equal(input.userMessage, 'list my tasks');
+          assert.equal(input.userMessage, voiceTranscript, 'the model still receives the transcript');
           assert.equal((input.model as { modelId?: string } | undefined)?.modelId, 'deepseek-v4-pro');
           assert.equal(typeof input.resolveModel, 'function');
           return ok({
@@ -207,6 +215,18 @@ describe('OrchestrationEngine', () => {
     assert.equal(result.ok, true);
     assert.equal(started.at(-1), 'supervisor');
     assert.ok(loggerEvents.some(entry => entry.event === 'engine.pre_supervisor.duration'));
+    assert.equal(
+      (loggerEvents.find(entry => entry.event === 'engine.run.start')?.data)?.['userMessage'],
+      '[voice transcript redacted]',
+    );
+    assert.doesNotMatch(JSON.stringify(loggerEvents), /SECRET_VOICE_TRANSCRIPT/);
+    assert.match(appendedTurns[0]?.content ?? '', /Voice note transcript omitted after processing/);
+    assert.doesNotMatch(appendedTurns[0]?.content ?? '', /SECRET_VOICE_TRANSCRIPT/);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(
+      memoryExtractions[0]?.userMessage,
+      '[Voice note transcript omitted after processing.]',
+    );
   });
 
   /**

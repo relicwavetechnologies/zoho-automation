@@ -53,6 +53,8 @@ import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worke
 import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
 import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
+import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
+import { ElevenLabsTranscriptionClient } from './infrastructure/ai/transcription/elevenlabs-transcription.client';
 
 export const createServer = (c: Container) => {
   const app = express();
@@ -71,6 +73,12 @@ export const createServer = (c: Container) => {
       'http://tauri.localhost',
     ].filter(Boolean),
   );
+  const voiceTranscriber = c.env.ELEVEN_LABS_API_KEY
+    ? new ElevenLabsTranscriptionClient({ apiKey: c.env.ELEVEN_LABS_API_KEY })
+    : undefined;
+  const voiceFileClient = voiceTranscriber
+    ? new LarkFileClient(c.env, c.logger)
+    : undefined;
 
   const larkWebhookDeps: LarkWebhookDeps = {
     adapter:               c.larkAdapter,
@@ -98,6 +106,9 @@ export const createServer = (c: Container) => {
     batchingEnabled:       c.env.LARK_MESSAGE_BATCHING === 'on',
     prisma:                c.prisma,
     larkContactsClient:    c.larkContactsClient,
+    ...(voiceFileClient && voiceTranscriber
+      ? { voiceFileClient, voiceTranscriber }
+      : {}),
   };
 
   const larkIngressWorker = new LarkIngressWorker({

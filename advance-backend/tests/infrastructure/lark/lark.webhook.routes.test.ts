@@ -10,6 +10,7 @@ import {
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
 import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
 import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
+import { ElevenLabsTranscriptionClient } from '../../../src/infrastructure/ai/transcription/elevenlabs-transcription.client.ts';
 import { err, ok } from '../../../src/shared/result.ts';
 import { ChannelError, OrchestrationError } from '../../../src/shared/errors.ts';
 import type { Logger } from '../../../src/shared/logger.ts';
@@ -38,6 +39,8 @@ function makeEvent(input: {
   file?: { key: string; name: string };
   /** Attach an image — the one media kind Divo actually reads over Lark. */
   image?: { key: string };
+  /** Attach a Lark voice note. Duration is reported by Lark in milliseconds. */
+  voice?: { key: string; durationMs?: number };
   /** Override sender and message identity to model several people in one room. */
   senderOpenId?: string;
   messageId?: string;
@@ -79,12 +82,14 @@ function makeEvent(input: {
         message_id: input.messageId ?? 'om_1',
         chat_id: 'oc_1',
         chat_type: input.chatType,
-        message_type: input.file ? 'file' : input.image ? 'image' : 'text',
+        message_type: input.file ? 'file' : input.image ? 'image' : input.voice ? 'audio' : 'text',
         content: input.file
           ? JSON.stringify({ file_key: input.file.key, file_name: input.file.name })
           : input.image
             ? JSON.stringify({ image_key: input.image.key })
-            : JSON.stringify({ text }),
+            : input.voice
+              ? JSON.stringify({ file_key: input.voice.key, duration: input.voice.durationMs })
+              : JSON.stringify({ text }),
         create_time: '1700000000000',
         ...(input.rootId === null ? {} : { root_id: input.rootId ?? 'om_root' }),
         ...(input.parentId === null ? {} : { parent_id: input.parentId ?? 'om_parent' }),
@@ -185,6 +190,14 @@ async function runWebhook(body: unknown, options: {
   }>;
   /** Optional busy-lane notice state. */
   busyNotices?: BusyLaneNotices;
+  /** Voice-note bytes downloaded from Lark. */
+  voiceFileClient?: LarkWebhookDeps['voiceFileClient'];
+  /** Speech-to-text provider used for voice notes. */
+  voiceTranscriber?: LarkWebhookDeps['voiceTranscriber'];
+  /** Previously cached transcript for a retried Lark event. */
+  cachedVoiceTranscript?: string | null;
+  voiceCacheReadFails?: boolean;
+  voiceCacheWriteFails?: boolean;
 } = {}) {
   const order: string[] = [];
   const retainedMessages: Array<Record<string, unknown>> = [];
@@ -206,6 +219,7 @@ async function runWebhook(body: unknown, options: {
   const groupModeUpdates: unknown[] = [];
   const background: Promise<void>[] = [];
   const logEvents: Array<{ event: string; fields: Record<string, unknown> }> = [];
+  const cacheWrites: Array<{ key: string; value: string; ttlSeconds: number }> = [];
   let status = 200;
   let responseBody: unknown;
   const createLogger = (bindings: Record<string, unknown> = {}): Logger => ({
@@ -362,7 +376,20 @@ async function runWebhook(body: unknown, options: {
       : {}),
     batchingEnabled: Boolean(options.batchCandidates),
     ...(options.busyNotices ? { busyNotices: options.busyNotices } : {}),
-    cache: { setNx: async () => ok(true), set: async () => ok(true) } as any,
+    ...(options.voiceFileClient ? { voiceFileClient: options.voiceFileClient } : {}),
+    ...(options.voiceTranscriber ? { voiceTranscriber: options.voiceTranscriber } : {}),
+    cache: {
+      get: async () => options.voiceCacheReadFails
+        ? err(new Error('cache read failed'))
+        : ok(options.cachedVoiceTranscript ?? null),
+      setNx: async () => ok(true),
+      set: async (key: string, value: string, ttlSeconds: number) => {
+        cacheWrites.push({ key, value, ttlSeconds });
+        return options.voiceCacheWriteFails
+          ? err(new Error('cache write failed'))
+          : ok(true);
+      },
+    } as any,
     ...(options.bootstrapped
       ? {
           // Enough of the real bootstrap for it to succeed: a bound workspace,
@@ -508,6 +535,7 @@ async function runWebhook(body: unknown, options: {
     acceptedCompanyIds,
     completedBatchReceipts,
     groupModeUpdates,
+    cacheWrites,
     processQueuedReceipt,
   };
 }
@@ -1579,6 +1607,236 @@ describe('Post-login replay', () => {
     await replayLarkMessageAfterLogin({ nonsense: true } as any, base.routeDeps as any);
 
     assert.equal(base.engineInputs.length, before, 'no run started');
+  });
+});
+
+describe('Lark voice notes', () => {
+  it('transcribes a private voice note with Scribe v2 and reuses the cached transcript', async () => {
+    const downloads: unknown[][] = [];
+    let request: { url: string; apiKey: string | null; modelId: FormDataEntryValue | null } | undefined;
+    const transcriber = new ElevenLabsTranscriptionClient({
+      apiKey: 'eleven-secret',
+      fetchImpl: (async (url, init) => {
+        const form = init?.body as FormData;
+        request = {
+          url: String(url),
+          apiKey: new Headers(init?.headers).get('xi-api-key'),
+          modelId: form.get('model_id'),
+        };
+        assert.ok(form.get('file') instanceof Blob);
+        return new Response(JSON.stringify({
+          text: '  Send the report.  ',
+          language_code: 'en',
+          language_probability: 0.99,
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch,
+    });
+
+    const first = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      messageId: 'om_voice_1',
+      voice: { key: 'file_voice_1', durationMs: 12_000 },
+    }), {
+      voiceFileClient: {
+        downloadFile: async (...args: unknown[]) => {
+          downloads.push(args);
+          return Buffer.from('fake-ogg');
+        },
+      },
+      voiceTranscriber: transcriber,
+    });
+
+    assert.deepEqual(downloads, [['om_voice_1', 'file_voice_1', 25 * 1_024 * 1_024]]);
+    assert.deepEqual(request, {
+      url: 'https://api.elevenlabs.io/v1/speech-to-text',
+      apiKey: 'eleven-secret',
+      modelId: 'scribe_v2',
+    });
+    assert.equal((first.engineInputs[0] as any).incoming.text, 'Send the report.');
+    assert.deepEqual((first.engineInputs[0] as any).incoming.attachments, [{
+      type: 'audio',
+      fileKey: 'file_voice_1',
+      mimeType: 'audio/ogg',
+      name: 'voice-note.ogg',
+    }]);
+    assert.deepEqual(first.cacheWrites, [{
+      key: 'lark:voice-transcript:tenant-1:om_voice_1',
+      value: 'Send the report.',
+      ttlSeconds: 7 * 60 * 60,
+    }]);
+
+    const retry = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      messageId: 'om_voice_1',
+      voice: { key: 'file_voice_1', durationMs: 12_000 },
+    }), {
+      cachedVoiceTranscript: 'Send the report.',
+    });
+    assert.equal((retry.engineInputs[0] as any).incoming.text, 'Send the report.');
+    assert.ok(retry.logEvents.some(entry => entry.event === 'webhook.voice.cache_hit'));
+  });
+
+  it('ignores voice notes in group chats without downloading them', async () => {
+    let downloads = 0;
+    let transcriptions = 0;
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      voice: { key: 'file_voice_group', durationMs: 5_000 },
+    }), {
+      voiceFileClient: {
+        downloadFile: async () => {
+          downloads += 1;
+          return Buffer.from('not expected');
+        },
+      },
+      voiceTranscriber: {
+        transcribe: async () => {
+          transcriptions += 1;
+          return { text: 'not expected' };
+        },
+      },
+    });
+
+    assert.equal(downloads, 0);
+    assert.equal(transcriptions, 0);
+    assert.equal(result.engineInputs.length, 0);
+    assert.ok(result.logEvents.some(entry => entry.event === 'webhook.voice.group_ignored'));
+  });
+
+  it('transcribes referenced audio when a group reply explicitly mentions Divo', async () => {
+    const downloads: unknown[][] = [];
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      text: 'summarize this',
+      parentId: 'om_voice_parent',
+    }), {
+      parentMessage: {
+        messageId: 'om_voice_parent',
+        status: 'available',
+        messageType: 'audio',
+        text: '',
+        senderExternalId: 'ou_alice',
+        imageUrls: [],
+        audioAttachment: { fileKey: 'file_voice_parent', durationMs: 8_000 },
+      },
+      voiceFileClient: {
+        downloadFile: async (...args: unknown[]) => {
+          downloads.push(args);
+          return Buffer.from('fake-ogg');
+        },
+      },
+      voiceTranscriber: {
+        transcribe: async () => ({ text: 'Revenue grew by twelve percent.' }),
+      },
+    });
+
+    assert.deepEqual(
+      downloads,
+      [['om_voice_parent', 'file_voice_parent', 25 * 1_024 * 1_024]],
+    );
+    const engineInput = result.engineInputs[0] as any;
+    assert.match(engineInput.incoming.text, /Voice note transcript: Revenue grew by twelve percent/);
+    assert.match(engineInput.incoming.text, /summarize this/);
+    assert.equal(engineInput.incoming.attachments[0]?.type, 'audio');
+    assert.equal(engineInput.runContext.userId, 'user-1', 'the replying user remains the authority');
+    assert.deepEqual(result.cacheWrites, [{
+      key: 'lark:voice-transcript:tenant-1:om_voice_parent',
+      value: 'Revenue grew by twelve percent.',
+      ttlSeconds: 7 * 60 * 60,
+    }]);
+  });
+
+  it('fails closed for over-limit and failed private transcriptions', async () => {
+    const unknownDuration = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      voice: { key: 'file_voice_unknown' },
+    }), {
+      setupAdapter: captureOutbound,
+    });
+    assert.equal(unknownDuration.engineInputs.length, 0);
+    assert.match(noticesSent(unknownDuration.routeDeps.adapter)[0]!, /verify the length/i);
+
+    const tooLong = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      voice: { key: 'file_voice_long', durationMs: 10 * 60_000 + 1 },
+    }), {
+      setupAdapter: captureOutbound,
+    });
+    assert.equal(tooLong.engineInputs.length, 0);
+    assert.match(noticesSent(tooLong.routeDeps.adapter)[0]!, /10-minute limit/i);
+
+    const failed = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      voice: { key: 'file_voice_failed', durationMs: 2_000 },
+    }), {
+      setupAdapter: captureOutbound,
+      voiceFileClient: {
+        downloadFile: async () => Buffer.from('fake-ogg'),
+      },
+      voiceTranscriber: {
+        transcribe: async () => { throw new Error('provider unavailable'); },
+      },
+    });
+    assert.equal(failed.engineInputs.length, 0);
+    assert.match(noticesSent(failed.routeDeps.adapter)[0]!, /could not transcribe/i);
+
+    let cacheReadProviderCalls = 0;
+    const cacheReadFailed = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      voice: { key: 'file_voice_cache_read', durationMs: 2_000 },
+    }), {
+      setupAdapter: captureOutbound,
+      voiceCacheReadFails: true,
+      voiceFileClient: {
+        downloadFile: async () => Buffer.from('fake-ogg'),
+      },
+      voiceTranscriber: {
+        transcribe: async () => {
+          cacheReadProviderCalls += 1;
+          return { text: 'must not run' };
+        },
+      },
+    });
+    assert.equal(cacheReadProviderCalls, 0);
+    assert.equal(cacheReadFailed.engineInputs.length, 0);
+    assert.match(noticesSent(cacheReadFailed.routeDeps.adapter)[0]!, /temporarily unavailable/i);
+
+    const oversized = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      voice: { key: 'file_voice_oversized', durationMs: 2_000 },
+    }), {
+      setupAdapter: captureOutbound,
+      voiceFileClient: {
+        downloadFile: async () => Buffer.from('fake-ogg'),
+      },
+      voiceTranscriber: {
+        transcribe: async () => ({ text: 'x'.repeat(50_001) }),
+      },
+    });
+    assert.equal(oversized.engineInputs.length, 0);
+    assert.deepEqual(oversized.cacheWrites, []);
+    assert.match(noticesSent(oversized.routeDeps.adapter)[0]!, /too much text/i);
+
+    const cacheWriteFailed = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      voice: { key: 'file_voice_cache_write', durationMs: 2_000 },
+    }), {
+      setupAdapter: captureOutbound,
+      voiceCacheWriteFails: true,
+      voiceFileClient: {
+        downloadFile: async () => Buffer.from('fake-ogg'),
+      },
+      voiceTranscriber: {
+        transcribe: async () => ({ text: 'Do not run the engine.' }),
+      },
+    });
+    assert.equal(cacheWriteFailed.engineInputs.length, 0);
+    assert.match(noticesSent(cacheWriteFailed.routeDeps.adapter)[0]!, /temporarily unavailable/i);
   });
 });
 

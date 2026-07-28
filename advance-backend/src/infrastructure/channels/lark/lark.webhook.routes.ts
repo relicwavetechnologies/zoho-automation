@@ -44,13 +44,19 @@ import {
   verifyLarkWebhookRequest,
   maybeDecryptLarkBody,
 } from './lark-security';
-import { parseLarkAttachments, type LarkAttachment } from './lark-attachment.parser';
+import {
+  parseLarkAttachments,
+  type LarkAttachment,
+  type LarkAudioAttachment,
+} from './lark-attachment.parser';
 import type { InlineContextResult } from './lark-inline-context';
 import type { LarkChatContextService } from '../../../application/chat-context/lark-chat-context.service';
 import type { PrismaClient } from '../../../generated/prisma';
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
 import type { LarkContactsClient } from './clients/lark-contacts.client';
+import type { LarkFileClient } from './clients/lark-file.client';
+import type { ElevenLabsTranscriptionClient } from '../../ai/transcription/elevenlabs-transcription.client';
 import {
   buildLarkDurableIngressLaneKey,
   buildLarkIngressLaneKey,
@@ -121,6 +127,8 @@ export interface LarkWebhookDeps {
   larkOAuthService?: LarkOAuthService;
   connectionRepo?: IntegrationConnectionRepository;
   cache: CachePort;
+  voiceFileClient?: Pick<LarkFileClient, 'downloadFile'>;
+  voiceTranscriber?: Pick<ElevenLabsTranscriptionClient, 'transcribe'>;
   /** Per-lane serializer — preserves FIFO within one DM, thread, or group requester. */
   serializer: ChatMessageSerializer;
   /**
@@ -1311,14 +1319,66 @@ async function processInBackground(
     correlationId,
   };
 
-  const attachments = parseLarkAttachments(rawEvent);
+  const messageAttachments = parseLarkAttachments(rawEvent);
+  const voiceAttachment = messageAttachments.find(
+    (attachment): attachment is LarkAudioAttachment => attachment.type === 'audio',
+  );
+  const attachments = messageAttachments.filter(
+    (attachment): attachment is LarkAttachment => attachment.type !== 'audio',
+  );
+  if (voiceAttachment) {
+    if (incoming.chatType !== 'p2p') {
+      log.debug('webhook.voice.group_ignored');
+      return;
+    }
+
+    const transcript = await transcribeLarkVoiceNote({
+      attachment: voiceAttachment,
+      incoming,
+      deps,
+      log,
+      ...(signal ? { signal } : {}),
+    });
+    if (!transcript) return;
+
+    const voiceIncoming = withLarkSenderName(
+      appendLarkMentionContext({
+        ...incoming,
+        text: transcript,
+        attachments: [
+          ...incoming.attachments,
+          {
+            type: 'audio',
+            fileKey: voiceAttachment.key,
+            mimeType: voiceAttachment.mimeType,
+            name: voiceAttachment.fileName,
+          },
+        ],
+      }),
+      identity,
+    );
+    const result = await deps.engine.run({
+      incoming: voiceIncoming,
+      runContext,
+      conversation,
+      channelAdapter: deps.adapter,
+      ...(signal ? { abortSignal: signal } : {}),
+      ...(approvalGate ? { approvalGate } : {}),
+    });
+    if (!result.ok) {
+      log.error('webhook.engine.failed', { error: result.error.message, correlationId });
+      await rethrowIfDeliveryNeedsRetry(result.error, incoming, deps, log);
+    }
+    return;
+  }
+
   const explicitlyAddressed = shouldStartLarkAgent(incoming);
   const mayContinueThread =
     incoming.chatType === 'group'
     && incoming.groupReplyMode !== 'inline'
     && Boolean(incoming.rootMessageId || incoming.threadId)
     && Boolean(incoming.replyToMessageId);
-  const parentRef = (explicitlyAddressed || mayContinueThread) && incoming.replyToMessageId
+  let parentRef = (explicitlyAddressed || mayContinueThread) && incoming.replyToMessageId
     ? await (deps.fetchParentMessage ?? fetchParentMessage)({
         parentMessageId: String(incoming.replyToMessageId),
         env: deps.env,
@@ -1334,6 +1394,24 @@ async function processInBackground(
     && parentRef?.status === 'available'
     && deps.adapter.isBotOpenId(parentRef.senderExternalId);
   const shouldRespond = explicitlyAddressed || continuesDivoThread;
+  if (explicitlyAddressed && parentRef?.status === 'available' && parentRef.audioAttachment) {
+    const transcript = await transcribeLarkVoiceNote({
+      attachment: {
+        type: 'audio',
+        key: parentRef.audioAttachment.fileKey,
+        fileName: 'voice-note.ogg',
+        mimeType: 'audio/ogg',
+        messageId: parentRef.messageId,
+        durationMs: parentRef.audioAttachment.durationMs,
+      },
+      incoming,
+      deps,
+      log,
+      ...(signal ? { signal } : {}),
+    });
+    if (!transcript) return;
+    parentRef = { ...parentRef, text: `Voice note transcript: ${transcript}` };
+  }
 
   // Divo is in the room but was not addressed. Preparing an attachment is not a
   // read — it pulls the image out of Lark and sends it to an OCR provider. That
@@ -1548,6 +1626,19 @@ async function processInBackground(
       ...effectiveIncoming,
       ...(prefix ? { text: `${prefix}\n\n${currentText}` } : {}),
       ...(mergedImages.length > 0 ? { imageUrls: mergedImages } : {}),
+      ...(parentRef.audioAttachment
+        ? {
+            attachments: [
+              ...effectiveIncoming.attachments,
+              {
+                type: 'audio' as const,
+                fileKey: parentRef.audioAttachment.fileKey,
+                mimeType: 'audio/ogg',
+                name: 'voice-note.ogg',
+              },
+            ],
+          }
+        : {}),
     };
   }
 
@@ -2239,6 +2330,121 @@ async function handleSlashCommand(args: {
 
   // Unknown command — let the engine handle it as a regular message
   log.info('webhook.command.unknown_routed_to_engine', { cmd, correlationId });
+}
+
+const MAX_LARK_VOICE_BYTES = 25 * 1_024 * 1_024;
+const MAX_LARK_VOICE_DURATION_MS = 10 * 60_000;
+const MAX_LARK_VOICE_TRANSCRIPT_CHARS = 50_000;
+const LARK_VOICE_CACHE_TTL_SECONDS = 7 * 60 * 60;
+
+async function transcribeLarkVoiceNote(input: {
+  attachment: LarkAudioAttachment;
+  incoming: IncomingMessage;
+  deps: Pick<
+    LarkWebhookDeps,
+    'adapter' | 'cache' | 'voiceFileClient' | 'voiceTranscriber'
+  >;
+  log: Logger;
+  signal?: AbortSignal;
+}): Promise<string | null> {
+  const { attachment, incoming, deps, log } = input;
+  const notify = async (text: string): Promise<void> => {
+    const sent = await deps.adapter.sendToChatId(
+      String(incoming.chatId),
+      text,
+      String(incoming.messageId),
+    );
+    if (!sent.ok) log.warn('webhook.voice.notice_failed', { error: sent.error.message });
+  };
+
+  if (attachment.durationMs === null) {
+    log.info('webhook.voice.duration_missing');
+    await notify(
+      'I could not verify the length of that voice note. Please send it again or type your request.',
+    );
+    return null;
+  }
+  if (attachment.durationMs > MAX_LARK_VOICE_DURATION_MS) {
+    log.info('webhook.voice.duration_rejected', { durationMs: attachment.durationMs });
+    await notify('That voice note is longer than the 10-minute limit. Please send a shorter one.');
+    return null;
+  }
+
+  const cacheKey =
+    `lark:voice-transcript:${incoming.tenantKey ?? 'unknown'}:${attachment.messageId}`;
+  const cached = await deps.cache.get<string>(cacheKey);
+  if (cached.ok && cached.value?.trim()) {
+    log.info('webhook.voice.cache_hit');
+    return cached.value.trim();
+  }
+  if (!cached.ok) {
+    log.warn('webhook.voice.cache_read_failed', { error: cached.error.message });
+    await notify('Voice transcription is temporarily unavailable. Please try again later.');
+    return null;
+  }
+
+  if (!deps.voiceFileClient || !deps.voiceTranscriber) {
+    log.warn('webhook.voice.not_configured');
+    await notify('Voice transcription is not available right now. Please type your request.');
+    return null;
+  }
+
+  try {
+    await deps.adapter.reactToIncoming(incoming.messageId, '📥');
+  } catch { /* acknowledgement is best-effort */ }
+
+  try {
+    const audio = await deps.voiceFileClient.downloadFile(
+      attachment.messageId,
+      attachment.key,
+      MAX_LARK_VOICE_BYTES,
+    );
+    if (audio.length === 0) throw new Error('Lark returned an empty voice resource');
+    if (audio.length > MAX_LARK_VOICE_BYTES) {
+      throw new Error(`Lark voice resource exceeds ${MAX_LARK_VOICE_BYTES} bytes`);
+    }
+
+    const result = await deps.voiceTranscriber.transcribe({
+      audio,
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      ...(input.signal ? { abortSignal: input.signal } : {}),
+    });
+    const transcript = result.text.trim();
+    if (!transcript) throw new Error('ElevenLabs returned an empty transcript');
+    if (transcript.length > MAX_LARK_VOICE_TRANSCRIPT_CHARS) {
+      log.warn('webhook.voice.transcript_too_long', { transcriptLength: transcript.length });
+      await notify('That voice note produced too much text to process. Please send a shorter one.');
+      return null;
+    }
+
+    const stored = await deps.cache.set(
+      cacheKey,
+      transcript,
+      LARK_VOICE_CACHE_TTL_SECONDS,
+    );
+    if (!stored.ok) {
+      log.warn('webhook.voice.cache_write_failed', { error: stored.error.message });
+      await notify('Voice transcription is temporarily unavailable. Please try again later.');
+      return null;
+    }
+    log.info('webhook.voice.transcribed', {
+      bytes: audio.length,
+      durationMs: attachment.durationMs,
+      provider: 'elevenlabs',
+      model: 'scribe_v2',
+      languageCode: result.languageCode ?? null,
+    });
+    return transcript;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log.warn('webhook.voice.transcription_failed', { error: reason.slice(0, 200) });
+    const tooLarge = /exceeds|download limit/i.test(reason);
+    await notify(tooLarge
+      ? 'That voice note is larger than the 25 MB limit. Please send a shorter one.'
+      : 'I could not transcribe that voice note. Please send it again or type your request.');
+    return null;
+  }
 }
 
 function isTokenExpired(expiresAt: Date | null | undefined): boolean {

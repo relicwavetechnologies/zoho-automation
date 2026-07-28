@@ -22,7 +22,12 @@ import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity
 import type { ReferencedMessage } from '../../../domain/channel/incoming-message';
 import { extractInteractiveCardText } from './lark-message-content';
 
-export type ParentMessageResult = ReferencedMessage;
+export type ParentMessageResult = ReferencedMessage & {
+  readonly audioAttachment?: {
+    readonly fileKey: string;
+    readonly durationMs: number | null;
+  };
+};
 
 export async function fetchParentMessage(input: {
   parentMessageId: string;
@@ -72,6 +77,7 @@ export async function fetchParentMessage(input: {
     let text = '';
     const imageUrls: string[] = [];
     let omittedImageCount = 0;
+    let audioAttachment: ParentMessageResult['audioAttachment'];
 
     if (msgType === 'text') {
       text = (content['text'] as string) ?? '';
@@ -108,6 +114,16 @@ export async function fetchParentMessage(input: {
         : unsupportedDocumentNotice(fileName);
     } else if (msgType === 'media') {
       text = '[Media/Video]';
+    } else if (msgType === 'audio') {
+      const fileKey = content['file_key'];
+      const duration = Number(content['duration']);
+      if (typeof fileKey !== 'string' || !fileKey) {
+        return unavailableParent(parentMessageId, 'unsupported', msgType);
+      }
+      audioAttachment = {
+        fileKey,
+        durationMs: Number.isFinite(duration) && duration > 0 ? duration : null,
+      };
     } else if (msgType === 'interactive') {
       text = extractInteractiveCardText(content);
     } else {
@@ -141,6 +157,7 @@ export async function fetchParentMessage(input: {
       ...(senderName ? { senderName } : {}),
       imageUrls,
       ...(omittedImageCount > 0 ? { omittedImageCount } : {}),
+      ...(audioAttachment ? { audioAttachment } : {}),
     };
   } catch (e) {
     log.warn('parent_message.error', { error: e instanceof Error ? e.message : String(e) });

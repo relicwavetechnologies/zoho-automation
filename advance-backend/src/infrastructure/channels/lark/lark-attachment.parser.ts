@@ -1,9 +1,10 @@
 /**
- * Parse Lark message events to extract file/image attachments.
+ * Parse Lark message events to extract file/image/audio attachments.
  *
  * Lark sends attachments via:
  *   - message_type = 'file'  → content.file_key
  *   - message_type = 'image' → content.image_key
+ *   - message_type = 'audio' → content.file_key + duration
  *   - message_type = 'post'  → rich text, images inside paragraphs
  *   - message_type = 'sticker' → skip
  */
@@ -16,6 +17,17 @@ export interface LarkAttachment {
   /** Lark message_id — required for the message-resource download endpoint. */
   messageId:  string;
 }
+
+export interface LarkAudioAttachment {
+  type:       'audio';
+  key:        string;
+  fileName:   string;
+  mimeType:   string;
+  messageId:  string;
+  durationMs: number | null;
+}
+
+export type LarkMessageAttachment = LarkAttachment | LarkAudioAttachment;
 
 const IMAGE_MIME_BY_EXT: Record<string, string> = {
   png:  'image/png',
@@ -49,7 +61,7 @@ function mimeForFile(fileName: string): string {
   return map[ext] ?? 'application/octet-stream';
 }
 
-export function parseLarkAttachments(raw: unknown): LarkAttachment[] {
+export function parseLarkAttachments(raw: unknown): LarkMessageAttachment[] {
   const event = raw as Record<string, unknown>;
   const eventData = event['event'] as Record<string, unknown> | undefined;
   const message  = eventData?.['message'] as Record<string, unknown> | undefined;
@@ -64,7 +76,7 @@ export function parseLarkAttachments(raw: unknown): LarkAttachment[] {
     try { parsed = JSON.parse(contentRaw) as Record<string, unknown>; } catch { /* ignore */ }
   }
 
-  const results: LarkAttachment[] = [];
+  const results: LarkMessageAttachment[] = [];
   const seenKeys = new Set<string>();
 
   if (messageType === 'file') {
@@ -73,6 +85,20 @@ export function parseLarkAttachments(raw: unknown): LarkAttachment[] {
     if (fileKey && !seenKeys.has(fileKey)) {
       seenKeys.add(fileKey);
       results.push({ type: 'file', key: fileKey, fileName, mimeType: mimeForFile(fileName), messageId });
+    }
+  } else if (messageType === 'audio') {
+    const fileKey = (parsed['file_key'] as string | undefined) ?? '';
+    const duration = Number(parsed['duration']);
+    if (fileKey && !seenKeys.has(fileKey)) {
+      seenKeys.add(fileKey);
+      results.push({
+        type: 'audio',
+        key: fileKey,
+        fileName: 'voice-note.ogg',
+        mimeType: 'audio/ogg',
+        messageId,
+        durationMs: Number.isFinite(duration) && duration > 0 ? duration : null,
+      });
     }
   } else if (messageType === 'image') {
     const imageKey = (parsed['image_key'] as string | undefined) ?? '';
