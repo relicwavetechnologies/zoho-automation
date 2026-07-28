@@ -56,9 +56,13 @@ export interface RunContext {
   readonly approvalGrants?: ReadonlyArray<ApprovalGrant>;
   /**
    * The Lark chat_id for this run's conversation.
-   * Used by the approval gate for idempotency keying and card delivery.
+   * Used for actual Lark delivery and chat-scoped provider operations.
    */
   readonly chatId?: string;
+  /** Immutable Lark reply target retained across deferred approval execution. */
+  readonly replyToMessageId?: string;
+  /** Whether Lark should keep deferred delivery inside the originating thread. */
+  readonly replyInThread?: boolean;
   /**
    * Marks headless scheduled execution so conversation history and background
    * memory work are skipped. current_chat_only additionally locks messaging

@@ -1,11 +1,12 @@
 /**
- * Working context is per thread; ambient room context is per chat.
+ * Working context is per thread. Ambient room context is available only when
+ * opening a top-level turn (or when the group uses inline mode).
  *
  * The pure key function is covered in tests/domain/conversation-key.test.ts.
  * What this file proves is that the engine actually uses it — that a turn's
- * history reads and writes carry the thread key while delivery and the room
- * transcript keep using the bare chat ID. Those are different keys for the
- * same run, and only an engine-level test shows both at once.
+ * history reads and writes carry the thread key while top-level room context
+ * uses the bare chat ID. Those are different keys for a seed turn, and only an
+ * engine-level test shows both at once.
  */
 
 import { describe, it } from 'node:test';
@@ -42,6 +43,13 @@ interface Observed {
   loadedKeys: string[];
   appendedKeys: string[];
   roomContextChatIds: string[];
+  supervisorHistories?: unknown[];
+  supervisorGroupContexts?: Array<string | undefined>;
+  appendedTurns?: Array<Record<string, unknown>>;
+  summarizedKeys?: string[];
+  executionRefs?: Array<{ chatId?: string; threadId?: string }>;
+  inferenceThreadIds?: Array<string | undefined>;
+  supervisorChatIds?: Array<string | undefined>;
 }
 
 async function runTurn(
@@ -52,6 +60,11 @@ async function runTurn(
     threadId?: string;
     text: string;
     userExternalId?: string;
+    senderName?: string;
+    groupReplyMode?: 'threaded' | 'inline';
+    historyTurns?: Array<Record<string, unknown>>;
+    roomMessages?: Array<Record<string, unknown>>;
+    toolResults?: Array<{ toolName: string; output: string }>;
   },
 ): Promise<void> {
   // A run with no permitted tools short-circuits before history is ever loaded,
@@ -80,6 +93,7 @@ async function runTurn(
     chatId: asChatId(CHAT_ID),
     chatType: 'group',
     userExternalId: message.userExternalId ?? 'ou_alice',
+    ...(message.senderName ? { senderName: message.senderName } : {}),
     text: message.text,
     attachments: [],
     timestamp: '2026-07-26T00:00:00.000Z',
@@ -89,6 +103,7 @@ async function runTurn(
     raw: {},
     ...(message.rootMessageId ? { rootMessageId: asMessageId(message.rootMessageId) } : {}),
     ...(message.threadId ? { threadId: message.threadId } : {}),
+    ...(message.groupReplyMode ? { groupReplyMode: message.groupReplyMode } : {}),
   };
 
   const conversation: ConversationHandle = {
@@ -116,26 +131,76 @@ async function runTurn(
     history: {
       loadWindow: async (key: unknown) => {
         observed.loadedKeys.push(String(key));
-        return ok({ turns: [], truncated: false, tokenEstimate: 0 });
+        return ok({
+          turns: message.historyTurns ?? [],
+          truncated: false,
+          tokenEstimate: 0,
+        });
       },
-      appendTurn: async (key: unknown) => {
+      appendTurn: async (key: unknown, turn: Record<string, unknown>) => {
         observed.appendedKeys.push(String(key));
+        observed.appendedTurns?.push(turn);
       },
     } as unknown as OrchestrationEngineDeps['history'],
     chatContext: {
       loadContext: async (_companyId: string, chatId: string) => {
         observed.roomContextChatIds.push(chatId);
-        return ok({ summary: null, recentMessages: [], totalMessageCount: 0 });
+        return ok({
+          summary: null,
+          recentMessages: message.roomMessages ?? [],
+          totalMessageCount: message.roomMessages?.length ?? 0,
+        });
       },
     } as unknown as OrchestrationEngineDeps['chatContext'],
     supervisor: {
-      run: async () => ok({
-        finalReply: { kind: 'final', text: 'done', format: 'text' },
-        toolsCalled: [],
-        toolResults: [],
-      }),
+      run: async (input: { history: unknown; groupContext?: string; chatId?: string }) => {
+        observed.supervisorHistories?.push(input.history);
+        observed.supervisorGroupContexts?.push(input.groupContext);
+        observed.supervisorChatIds?.push(input.chatId);
+        return ok({
+          finalReply: { kind: 'final', text: 'done', format: 'text' },
+          toolsCalled: [],
+          toolResults: message.toolResults ?? [],
+        });
+      },
       getModel: () => { throw new Error('not used'); },
     } as unknown as OrchestrationEngineDeps['supervisor'],
+    ...(observed.summarizedKeys
+      ? {
+          conversationSummarizer: {
+            maybeSummarize: async (key: string) => {
+              observed.summarizedKeys!.push(key);
+            },
+          } as unknown as OrchestrationEngineDeps['conversationSummarizer'],
+        }
+      : {}),
+    ...(observed.executionRefs
+      ? {
+          executionRepo: {
+            create: async (input: { chatId?: string; threadId?: string }) => {
+              observed.executionRefs!.push({
+                ...(input.chatId ? { chatId: input.chatId } : {}),
+                ...(input.threadId ? { threadId: input.threadId } : {}),
+              });
+              return `run-${observed.executionRefs!.length}`;
+            },
+            appendEvent: async () => {},
+            appendStepResult: async () => {},
+            complete: async () => {},
+            fail: async () => {},
+          } as unknown as OrchestrationEngineDeps['executionRepo'],
+        }
+      : {}),
+    ...(observed.inferenceThreadIds
+      ? {
+          larkInference: {
+            createModel: async (input: { threadId?: string }) => {
+              observed.inferenceThreadIds!.push(input.threadId);
+              return {} as never;
+            },
+          } as unknown as OrchestrationEngineDeps['larkInference'],
+        }
+      : {}),
     logger: noopLogger,
     clock,
   };
@@ -171,6 +236,51 @@ describe('thread context isolation', () => {
     assert.equal(new Set(observed.loadedKeys).size, 2, 'the two threads read different history');
   });
 
+  it('schedules long-history maintenance independently for each thread', async () => {
+    const observed: Observed = {
+      loadedKeys: [],
+      appendedKeys: [],
+      roomContextChatIds: [],
+      summarizedKeys: [],
+    };
+
+    await runTurn(observed, { messageId: 'om_a2', rootMessageId: 'om_alice', text: 'continue A' });
+    await runTurn(observed, { messageId: 'om_b2', rootMessageId: 'om_bob', text: 'continue B' });
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    assert.deepEqual(observed.summarizedKeys, [
+      `${CHAT_ID}:thread:om_alice`,
+      `${CHAT_ID}:thread:om_bob`,
+    ]);
+  });
+
+  it('keeps execution, inference, and approval scopes distinct across sibling threads', async () => {
+    const observed: Observed = {
+      loadedKeys: [],
+      appendedKeys: [],
+      roomContextChatIds: [],
+      executionRefs: [],
+      inferenceThreadIds: [],
+      supervisorChatIds: [],
+    };
+
+    await runTurn(observed, { messageId: 'om_a2', rootMessageId: 'om_alice', text: 'run A' });
+    await runTurn(observed, { messageId: 'om_b2', rootMessageId: 'om_bob', text: 'run B' });
+
+    assert.deepEqual(observed.executionRefs, [
+      { chatId: CHAT_ID, threadId: `${CHAT_ID}:thread:om_alice` },
+      { chatId: CHAT_ID, threadId: `${CHAT_ID}:thread:om_bob` },
+    ]);
+    assert.deepEqual(observed.inferenceThreadIds, [
+      `${CHAT_ID}:thread:om_alice`,
+      `${CHAT_ID}:thread:om_bob`,
+    ]);
+    assert.deepEqual(observed.supervisorChatIds, [
+      `${CHAT_ID}:thread:om_alice`,
+      `${CHAT_ID}:thread:om_bob`,
+    ]);
+  });
+
   it('writes a turn back under the same thread key it read', async () => {
     const observed: Observed = { loadedKeys: [], appendedKeys: [], roomContextChatIds: [] };
 
@@ -188,11 +298,99 @@ describe('thread context isolation', () => {
   it('keeps ambient room context keyed on the chat, not the thread', async () => {
     const observed: Observed = { loadedKeys: [], appendedKeys: [], roomContextChatIds: [] };
 
-    await runTurn(observed, { messageId: 'om_a2', rootMessageId: 'om_alice', text: 'hello' });
+    await runTurn(observed, { messageId: 'om_alice', text: 'hello' });
 
-    // Room-level ambient context is deliberately shared: it is what everyone in
-    // the room already said out loud. Only the working context is partitioned.
+    // A new top-level turn may use the room transcript to understand what
+    // everyone already said. Thread follow-ups use their own history instead.
     assert.deepEqual(observed.roomContextChatIds, [CHAT_ID]);
+  });
+
+  it('keeps bounded room context available in inline mode', async () => {
+    const observed: Observed = {
+      loadedKeys: [],
+      appendedKeys: [],
+      roomContextChatIds: [],
+      supervisorGroupContexts: [],
+    };
+
+    await runTurn(observed, {
+      messageId: 'om_a2',
+      rootMessageId: 'om_alice',
+      groupReplyMode: 'inline',
+      text: 'continue',
+      roomMessages: [{
+        id: 'om_room',
+        senderOpenId: 'ou_bob',
+        senderName: 'Bob',
+        role: 'user',
+        content: 'shared room context',
+        createdAt: '2026-07-26T00:00:00.000Z',
+        botMentioned: true,
+      }],
+    });
+
+    assert.deepEqual(observed.roomContextChatIds, [CHAT_ID]);
+    assert.match(observed.supervisorGroupContexts?.[0] ?? '', /shared room context/);
+  });
+
+  it('uses thread history without importing sibling room context on a follow-up', async () => {
+    const observed: Observed = {
+      loadedKeys: [],
+      appendedKeys: [],
+      roomContextChatIds: [],
+      supervisorHistories: [],
+      supervisorGroupContexts: [],
+    };
+
+    await runTurn(observed, {
+      messageId: 'om_a2',
+      rootMessageId: 'om_alice',
+      text: 'continue',
+      historyTurns: [{
+        id: 'turn-1',
+        role: 'assistant',
+        content: 'Alice-thread answer',
+        timestamp: '2026-07-26T00:00:00.000Z',
+      }],
+      roomMessages: [{
+        id: 'om_bob',
+        senderOpenId: 'ou_bob',
+        senderName: 'Bob',
+        role: 'user',
+        content: 'private sibling topic',
+        createdAt: '2026-07-26T00:00:00.000Z',
+        botMentioned: true,
+      }],
+    });
+
+    assert.deepEqual(observed.roomContextChatIds, []);
+    assert.equal((observed.supervisorHistories?.[0] as any).turns[0].content, 'Alice-thread answer');
+    assert.deepEqual(observed.supervisorGroupContexts, [undefined]);
+  });
+
+  it('attributes shared-thread speakers and stores only the visible reply', async () => {
+    const observed: Observed = {
+      loadedKeys: [],
+      appendedKeys: [],
+      roomContextChatIds: [],
+      appendedTurns: [],
+    };
+
+    await runTurn(observed, {
+      messageId: 'om_a2',
+      rootMessageId: 'om_alice',
+      text: 'show the balance',
+      senderName: 'Bob',
+      userExternalId: 'ou_bob',
+      toolResults: [{
+        toolName: 'privateLedger',
+        output: 'secret raw account payload',
+      }],
+    });
+
+    assert.equal(observed.appendedTurns?.[0]?.['content'], '[Lark sender: Bob]\nshow the balance');
+    assert.equal(observed.appendedTurns?.[1]?.['content'], 'done');
+    assert.doesNotMatch(String(observed.appendedTurns?.[1]?.['content']), /secret raw account payload/);
   });
 
   it('lets a follow-up find the top-level message that opened its thread', async () => {

@@ -29,7 +29,14 @@ import type { Mem0Service } from '../../../application/memory/mem0.service';
 import type { LarkOAuthService } from '../../lark/lark-oauth.service';
 import type { IntegrationConnectionRepository } from '../../persistence/integration-connection.repository';
 import type { CachePort } from '../../../shared/cache';
-import { asCompanyId, asUserId, asCorrelationId, asDepartmentId } from '../../../shared/ids';
+import {
+  asChatId,
+  asCompanyId,
+  asCorrelationId,
+  asDepartmentId,
+  asMessageId,
+  asUserId,
+} from '../../../shared/ids';
 import { asCompanyRoleSlug } from '../../../domain/permissions/company-role';
 import type { ConversationHandle } from '../../../application/channels/channel.adapter';
 import type { IncomingMessage } from '../../../domain/channel/incoming-message';
@@ -44,7 +51,11 @@ import type { PrismaClient } from '../../../generated/prisma';
 import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
 import { fetchParentMessage, buildParentContextPrefix, type ParentMessageResult } from './lark-parent-message';
 import type { LarkContactsClient } from './clients/lark-contacts.client';
-import { buildLarkIngressLaneKey, buildLarkRoutingKeys } from './lark-routing';
+import {
+  buildLarkDurableIngressLaneKey,
+  buildLarkIngressLaneKey,
+  buildLarkRoutingKeys,
+} from './lark-routing';
 import type {
   ChannelDeliveryRepoPort,
   ResumableDelivery,
@@ -69,6 +80,15 @@ import {
   MAX_INLINE_IMAGE_BYTES,
 } from './lark-media-support';
 import { conversationKeyForMessage } from '../../../domain/conversation/conversation-key';
+import { userHistoryContent } from '../../../domain/conversation/history-content';
+import {
+  buildLarkGroupSettingsCard,
+  DEFAULT_LARK_GROUP_MODE,
+  loadLarkGroupMode,
+  saveLarkGroupMode,
+  withLarkGroupMode,
+} from './lark-group-mode';
+import { parseLarkFinalDeliveryEnvelope } from './lark-final-delivery';
 import {
   buildSignInCard,
   signInFallbackText,
@@ -127,6 +147,8 @@ export interface LarkWebhookDeps {
   /** Optional: absent means a retried run re-runs the agent, as before Wave 5. */
   channelDeliveryRepo?: ChannelDeliveryRepoPort;
   larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
+  /** Test seam for parent authorship/content lookup; production uses Lark. */
+  fetchParentMessage?: typeof fetchParentMessage;
 }
 
 export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
@@ -241,6 +263,58 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
           // Handle interrupt button clicks on status cards
           const actionValue = (cardEvent as any)?.action?.value;
           const actionObj = typeof actionValue === 'string' ? (() => { try { return JSON.parse(actionValue); } catch { return null; } })() : actionValue;
+          if (actionObj?.action === 'set_group_mode') {
+            const mode = actionObj.mode;
+            const chatId = (cardEvent as any)?.context?.open_chat_id
+              ?? (cardEvent as any)?.open_chat_id;
+            const appId = eventHeader?.['app_id'];
+            const isAdmin = actor.aiRole === 'COMPANY_ADMIN'
+              || actor.aiRole === 'SUPER_ADMIN';
+            if (!isAdmin) {
+              res.status(200).json({
+                toast: { type: 'warning', content: 'Only a company admin can change group settings.' },
+              });
+              return;
+            }
+            if (
+              !deps.prisma
+              || !actor.tenantKey
+              || typeof chatId !== 'string'
+              || typeof appId !== 'string'
+              || (mode !== 'threaded' && mode !== 'inline')
+            ) {
+              res.status(200).json({
+                toast: { type: 'error', content: 'Divo could not identify this group setting.' },
+              });
+              return;
+            }
+            await saveLarkGroupMode(
+              deps.prisma,
+              {
+                companyId: actor.companyId,
+                tenantKey: actor.tenantKey,
+                appId,
+                chatId,
+              },
+              mode,
+              actor.userId,
+            );
+            log.info('webhook.group_mode.updated', {
+              companyId: actor.companyId,
+              chatId,
+              mode,
+              actorUserId: actor.userId,
+            });
+            res.status(200).json({
+              toast: {
+                type: 'success',
+                content: mode === 'threaded'
+                  ? 'Divo will start a thread for each new request.'
+                  : 'Divo will reply inline in this group.',
+              },
+            });
+            return;
+          }
           if (actionObj?.action === 'interrupt_run') {
             const messageId = (cardEvent as any)?.open_message_id
               ?? (cardEvent as any)?.context?.open_message_id
@@ -313,17 +387,36 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
       res.status(200).json({ ok: true });
       return;
     }
+    const admittedCompany = await deps.channelIdentityRepo
+      .resolveLarkTenantCompanyId(tenantKey);
+    if (!admittedCompany.ok) {
+      requestLog.error('webhook.identity.tenant_binding_lookup_failed', {
+        error: admittedCompany.error.message,
+      });
+      res.status(503).json({ error: 'ingress_unavailable' });
+      return;
+    }
+    const admittedCompanyId = admittedCompany.value ?? undefined;
+    const routedIncoming = await resolveIncomingGroupMode(
+      incoming,
+      deps,
+      admittedCompanyId,
+    );
 
     // ── Step 5: Persist before ACK so Lark retries any failed admission ──────
     const receipt = await deps.ingressReceiptRepo.accept({
       channel: 'lark',
       tenantKey,
+      ...(admittedCompanyId ? { companyId: admittedCompanyId } : {}),
       messageId: String(incoming.messageId),
       payload: event,
       // Recorded here rather than derived later so a run can find the rest of
       // its burst with one indexed read instead of re-parsing every pending
       // payload in the channel.
-      laneKey: buildLarkIngressLaneKey(incoming),
+      laneKey: buildLarkDurableIngressLaneKey(
+        routedIncoming,
+        admittedCompanyId,
+      ),
       ...(typeof eventHeader?.['event_id'] === 'string'
         ? { eventId: eventHeader['event_id'] }
         : {}),
@@ -450,10 +543,11 @@ export async function replayLarkMessageAfterLogin(
   }
   if (!isLarkHumanMessage(parsed.value)) return;
 
-  const incoming: IncomingMessage = {
+  const parsedIncoming: IncomingMessage = {
     ...parsed.value,
     traceId: asCorrelationId(`${String(parsed.value.traceId)}:replay`),
   };
+  const incoming = await resolveIncomingGroupMode(parsedIncoming, deps);
   const log = createLarkRequestLog(
     deps.logger.child({ route: 'lark-webhook', trigger: 'post_login_replay' }),
     incoming,
@@ -506,14 +600,31 @@ export async function processAcceptedLarkReceipt(
     throw new Error(`Persisted Lark ingress payload is invalid: ${parsed.error.payload.reason}`);
   }
 
-  const incoming = parsed.value;
-  if (!isLarkHumanMessage(incoming)) return;
+  const parsedIncoming = parsed.value;
+  if (!isLarkHumanMessage(parsedIncoming)) return;
   if (
-    incoming.tenantKey !== receipt.tenantKey
-    || String(incoming.messageId) !== receipt.messageId
+    parsedIncoming.tenantKey !== receipt.tenantKey
+    || String(parsedIncoming.messageId) !== receipt.messageId
   ) {
     throw new Error('Persisted Lark ingress identity does not match its receipt');
   }
+  if (receipt.companyId) {
+    const currentCompany = await deps.channelIdentityRepo
+      .resolveLarkTenantCompanyId(receipt.tenantKey);
+    if (!currentCompany.ok || currentCompany.value !== receipt.companyId) {
+      throw new Error('Persisted Lark ingress company binding changed');
+    }
+  }
+  const resolvedIncoming = await resolveIncomingGroupMode(
+    parsedIncoming,
+    deps,
+    receipt.companyId,
+  );
+  const incoming = withStoredLarkIngressMode(
+    resolvedIncoming,
+    receipt.laneKey,
+    receipt.companyId,
+  );
 
   const eventHeader = event['header'] as Record<string, unknown> | undefined;
   const requestLog = createLarkRequestLog(
@@ -548,6 +659,11 @@ export async function processAcceptedLarkReceipt(
 
   const executionLaneKey = buildLarkIngressLaneKey(incoming);
 
+  if (isStopCommand(incoming.text)) {
+    await handleStopBeforeLane(incoming, deps, requestLog);
+    return;
+  }
+
   // Decided before queueing, because "is this lane busy" is only true while the
   // previous turn is still running — asking after `runAndWait` has admitted
   // this task would always answer yes, and every message would look queued.
@@ -567,6 +683,10 @@ export async function processAcceptedLarkReceipt(
         String(incoming.chatId),
         BUSY_NOTICE_TEXT,
         String(incoming.messageId),
+        undefined,
+        incoming.chatType === 'group'
+          ? incoming.groupReplyMode !== 'inline'
+          : undefined,
       );
       if (!sent.ok) {
         requestLog.warn('webhook.busy_notice.failed', { error: sent.error.message });
@@ -589,11 +709,19 @@ export async function processAcceptedLarkReceipt(
       let turnMessage = incoming;
       if (deps.batchingEnabled && deps.ingressReceiptRepo) {
         const absorbed = await absorbLaneBurst({
-          anchor: toBatchableMessage(incoming, event, receipt.acceptedAt.getTime()),
+          anchor: toBatchableMessage(
+            incoming,
+            event,
+            receipt.acceptedAt.getTime(),
+            receipt.laneKey,
+          ),
           anchorReceiptId: receipt.receiptId,
           repo: deps.ingressReceiptRepo,
           adapter: deps.adapter,
           log: requestLog,
+          ...(incoming.groupReplyMode
+            ? { groupReplyMode: incoming.groupReplyMode }
+            : {}),
         });
         absorbedReceiptIds = absorbed.absorbedReceiptIds;
         if (absorbed.batch.merged.length > 0) {
@@ -705,12 +833,25 @@ async function resumeLarkDelivery(
   deps: LarkWebhookDeps,
   log: Logger,
 ): Promise<void> {
-  const reply = resumable.payload as unknown as FinalReply;
+  const stored = parseLarkFinalDeliveryEnvelope(resumable.payload);
+  const reply = stored?.reply ?? resumable.payload as unknown as FinalReply;
   const conversation: ConversationHandle = {
     channel: 'lark',
-    chatId: incoming.chatId,
-    replyToMessageId: incoming.messageId,
-    replyInThread: incoming.chatType === 'group',
+    chatId: stored ? asChatId(stored.target.chatId) : incoming.chatId,
+    ...(stored?.target.replyToMessageId
+      ? { replyToMessageId: asMessageId(stored.target.replyToMessageId) }
+      : stored
+        ? {}
+        : { replyToMessageId: incoming.messageId }),
+    ...(stored?.target.replyInThread !== undefined
+      ? { replyInThread: stored.target.replyInThread }
+      : stored
+        ? {}
+        : {
+            replyInThread:
+              incoming.chatType === 'group'
+              && incoming.groupReplyMode !== 'inline',
+          }),
     correlationId: asCorrelationId(incoming.traceId),
   };
 
@@ -725,6 +866,66 @@ async function resumeLarkDelivery(
     throw new Error(`Lark delivery resume failed: ${result.error.payload.reason}`);
   }
   log.info('webhook.delivery.resumed', { deliveryId: resumable.deliveryId });
+}
+
+async function resolveIncomingGroupMode(
+  incoming: IncomingMessage,
+  deps: Pick<LarkWebhookDeps, 'channelIdentityRepo' | 'logger' | 'prisma'>,
+  knownCompanyId?: string,
+): Promise<IncomingMessage> {
+  if (incoming.chatType !== 'group') return incoming;
+  if (!deps.prisma || !incoming.tenantKey) {
+    return withLarkGroupMode(incoming, DEFAULT_LARK_GROUP_MODE);
+  }
+
+  let companyId = knownCompanyId;
+  if (!companyId) {
+    const company = await deps.channelIdentityRepo
+      .resolveLarkTenantCompanyId(incoming.tenantKey);
+    companyId = company.ok ? company.value ?? undefined : undefined;
+  }
+  if (!companyId) {
+    return withLarkGroupMode(incoming, DEFAULT_LARK_GROUP_MODE);
+  }
+
+  try {
+    const mode = await loadLarkGroupMode(deps.prisma, {
+      companyId,
+      tenantKey: incoming.tenantKey,
+      ...(incoming.appId ? { appId: incoming.appId } : {}),
+      chatId: String(incoming.chatId),
+    });
+    return withLarkGroupMode(incoming, mode);
+  } catch (error) {
+    deps.logger.warn('webhook.group_mode.load_failed', {
+      companyId,
+      chatId: incoming.chatId,
+      error: String(error),
+    });
+    return withLarkGroupMode(incoming, DEFAULT_LARK_GROUP_MODE);
+  }
+}
+
+function withStoredLarkIngressMode(
+  incoming: IncomingMessage,
+  laneKey: string | undefined,
+  companyId: string | undefined,
+): IncomingMessage {
+  if (incoming.chatType !== 'group' || !laneKey) return incoming;
+
+  const inline = withLarkGroupMode(incoming, 'inline');
+  if (buildLarkDurableIngressLaneKey(inline, companyId) === laneKey) return inline;
+
+  const threaded = withLarkGroupMode(incoming, 'threaded');
+  if (buildLarkDurableIngressLaneKey(threaded, companyId) === laneKey) return threaded;
+
+  // Inline mode did not exist when legacy `ingress-lane` receipts were
+  // written. A requester-shaped legacy key is therefore the old top-level
+  // threaded fallback, not evidence that the group was configured inline.
+  return (
+    buildLarkIngressLaneKey(threaded) === laneKey
+    || buildLarkIngressLaneKey(inline) === laneKey
+  ) ? threaded : incoming;
 }
 
 async function rethrowIfDeliveryNeedsRetry(
@@ -834,6 +1035,7 @@ async function processInBackground(
     ingestionQueue?: Pick<IngestionQueue, 'enqueue'>;
     prisma?: PrismaClient;
     larkContactsClient?: Pick<LarkContactsClient, 'getTenantKey' | 'getUser'>;
+    fetchParentMessage?: typeof fetchParentMessage;
   },
   log: Logger,
   approvalGate?: ApprovalGateService,
@@ -939,7 +1141,15 @@ async function processInBackground(
     // return, so a new customer — whose workspace is by definition not yet
     // connected — got silence that looked exactly like Divo being broken.
     const tell = (text: string) =>
-      deps.adapter.sendToChatId(String(incoming.chatId), text, String(incoming.messageId))
+      deps.adapter.sendToChatId(
+        String(incoming.chatId),
+        text,
+        String(incoming.messageId),
+        undefined,
+        incoming.chatType === 'group'
+          ? incoming.groupReplyMode !== 'inline'
+          : undefined,
+      )
         .catch(e => log.warn('webhook.first_touch.notice_failed', {
           error: String(e), correlationId,
         }));
@@ -970,6 +1180,10 @@ async function processInBackground(
         const card = await deps.adapter.sendCardToChat(
           String(incoming.chatId),
           buildSignInCard({ name, url: loginUrl, ...(signInReason ? { reason: signInReason } : {}) }),
+          incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
+          incoming.chatType === 'group'
+            ? incoming.groupReplyMode !== 'inline'
+            : undefined,
         );
         if (!card.ok) {
           // A working link in a plain message beats a button nobody received.
@@ -1079,6 +1293,10 @@ async function processInBackground(
     userExternalId: incoming.userExternalId,   // Lark open_id — tools use this as default assignee
     ...(mentionedLarkOpenIds.length > 0 ? { mentionedLarkOpenIds } : {}),
     chatId:         String(incoming.chatId),
+    replyToMessageId: String(incoming.messageId),
+    replyInThread:
+      incoming.chatType === 'group'
+      && incoming.groupReplyMode !== 'inline',
     ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
     ...(identity.email ? { requesterEmail: identity.email } : {}),
   };
@@ -1087,18 +1305,41 @@ async function processInBackground(
     channel:            'lark',
     chatId:             incoming.chatId,
     replyToMessageId:   incoming.messageId,
-    replyInThread:      incoming.chatType === 'group',
+    replyInThread:
+      incoming.chatType === 'group'
+      && incoming.groupReplyMode !== 'inline',
     correlationId,
   };
 
   const attachments = parseLarkAttachments(rawEvent);
-  const shouldRespond = shouldStartLarkAgent(incoming);
+  const explicitlyAddressed = shouldStartLarkAgent(incoming);
+  const mayContinueThread =
+    incoming.chatType === 'group'
+    && incoming.groupReplyMode !== 'inline'
+    && Boolean(incoming.rootMessageId || incoming.threadId)
+    && Boolean(incoming.replyToMessageId);
+  const parentRef = (explicitlyAddressed || mayContinueThread) && incoming.replyToMessageId
+    ? await (deps.fetchParentMessage ?? fetchParentMessage)({
+        parentMessageId: String(incoming.replyToMessageId),
+        env: deps.env,
+        logger: log,
+        channelIdentityRepo: deps.channelIdentityRepo,
+        companyId: identity.companyId,
+        chatId: String(incoming.chatId),
+        tenantKey,
+        includeContent: explicitlyAddressed,
+      })
+    : null;
+  const continuesDivoThread = mayContinueThread
+    && parentRef?.status === 'available'
+    && deps.adapter.isBotOpenId(parentRef.senderExternalId);
+  const shouldRespond = explicitlyAddressed || continuesDivoThread;
 
   // Divo is in the room but was not addressed. Preparing an attachment is not a
   // read — it pulls the image out of Lark and sends it to an OCR provider. That
   // only happens on an explicit opt-in, and the decision must be made *before*
   // the work, not after.
-  const untagged = isUntaggedGroupMessage(incoming);
+  const untagged = isUntaggedGroupMessage(incoming) && !continuesDivoThread;
   // Only an untagged message consults the policy, so only an untagged message
   // pays for the lookup. Resolved here rather than inside the branch below
   // because the decision has to precede the work, not filter its output.
@@ -1113,32 +1354,18 @@ async function processInBackground(
     policy: effectivePolicy,
   });
 
-  // Fetch parent message (quote-reply context) in parallel with attachment prep.
-  const [preparedAttachments, parentRef] = await Promise.all([
-    mayProcessAttachments
-      ? prepareLarkAttachmentContexts({
-          incoming,
-          identity,
-          attachments,
-          deps,
-          log,
-          shouldReact: shouldRespond,
-          untagged,
-          policy: effectivePolicy,
-        })
-      : Promise.resolve([] as PreparedAttachmentContext[]),
-    shouldRespond && incoming.replyToMessageId
-      ? fetchParentMessage({
-          parentMessageId: String(incoming.replyToMessageId),
-          env: deps.env,
-          logger: log,
-          channelIdentityRepo: deps.channelIdentityRepo,
-          companyId: identity.companyId,
-          chatId: String(incoming.chatId),
-          tenantKey,
-        })
-      : Promise.resolve(null),
-  ]);
+  const preparedAttachments = mayProcessAttachments
+    ? await prepareLarkAttachmentContexts({
+        incoming,
+        identity,
+        attachments,
+        deps,
+        log,
+        shouldReact: shouldRespond,
+        untagged,
+        policy: effectivePolicy,
+      })
+    : [];
 
   if (untagged) {
     // Logged as the policy actually applied, not as the policy configured, so a
@@ -1202,8 +1429,14 @@ async function processInBackground(
             messageId: String(incoming.messageId),
             ...(incoming.threadId ? { threadId: String(incoming.threadId) } : {}),
             ...(incoming.rootMessageId ? { rootMessageId: String(incoming.rootMessageId) } : {}),
+            userExternalId: incoming.userExternalId,
+            ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
           }) as never,
-          { role: 'user', content: seen, timestamp: incoming.timestamp },
+          {
+            role: 'user',
+            content: userHistoryContent(withLarkSenderName(incoming, identity), seen),
+            timestamp: incoming.timestamp,
+          },
           { companyId: identity.companyId, channel: 'lark' },
         ).catch(e => log.warn('webhook.attachment.await_question.persist_failed', {
           error: String(e),
@@ -1264,7 +1497,7 @@ async function processInBackground(
     });
 
     const result = await deps.engine.run({
-      incoming:       enrichedIncoming,
+      incoming:       withLarkSenderName(enrichedIncoming, identity),
       runContext,
       conversation,
       channelAdapter: deps.adapter,
@@ -1337,7 +1570,7 @@ async function processInBackground(
 
   // ── Normal message → orchestration engine ─────────────────────────────────
   const result = await deps.engine.run({
-    incoming: effectiveIncoming,
+    incoming: withLarkSenderName(effectiveIncoming, identity),
     runContext,
     conversation,
     channelAdapter: deps.adapter,
@@ -1498,6 +1731,61 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return values.find(value => typeof value === 'string' && value.trim().length > 0) as string | undefined;
 }
 
+const isStopCommand = (text: string | undefined): boolean =>
+  (text ?? '').trim().toLowerCase() === '/stop';
+
+async function handleStopBeforeLane(
+  incoming: IncomingMessage,
+  deps: Pick<LarkWebhookDeps, 'adapter' | 'channelIdentityRepo'>,
+  log: Logger,
+): Promise<void> {
+  const tenantKey = incoming.tenantKey;
+  const identity = tenantKey
+    ? await deps.channelIdentityRepo.resolveByLarkTenantIdentity(
+      incoming.userExternalId,
+      tenantKey,
+    )
+    : null;
+  if (!identity?.ok || !identity.value) {
+    await deps.adapter.sendToChatId(
+      String(incoming.chatId),
+      'I could not verify who is trying to stop this run.',
+      String(incoming.messageId),
+      undefined,
+      incoming.chatType === 'group'
+        ? incoming.groupReplyMode !== 'inline'
+        : undefined,
+    );
+    return;
+  }
+
+  const result = deps.adapter.interruptConversation(
+    conversationKeyForMessage(incoming),
+    {
+      userId: identity.value.userId,
+      companyId: identity.value.companyId,
+      aiRole: identity.value.aiRole,
+    },
+  );
+  const text = result === 'aborted'
+    ? 'Stop requested for this conversation.'
+    : result === 'forbidden'
+      ? 'You are not authorized to stop this run.'
+      : 'There is no active run in this conversation.';
+  const sent = await deps.adapter.sendToChatId(
+    String(incoming.chatId),
+    text,
+    String(incoming.messageId),
+    undefined,
+    incoming.chatType === 'group'
+      ? incoming.groupReplyMode !== 'inline'
+      : undefined,
+  );
+  if (!sent.ok) {
+    log.warn('webhook.command.stop.reply_failed', { error: sent.error.message });
+  }
+}
+
 async function handleSlashCommand(args: {
   text: string;
   incoming: IncomingMessage;
@@ -1541,15 +1829,110 @@ async function handleSlashCommand(args: {
     }
   };
 
-  if (cmd === '/clear') {
-    // Clears the chat and every thread under it. Working context is thread-
-    // scoped, so clearing the single chat-keyed conversation would report
-    // success while leaving each thread's transcript untouched. Company-scoped
-    // because a bare chat-key lookup is not bound to the asking tenant.
-    const clearResult = await deps.conversationRepo.clearChatHistories(
-      String(incoming.chatId),
-      { companyId: identity.companyId, channel: 'lark' },
+  if (cmd === '/group-mode' || cmd === '/group-settings') {
+    const isAdmin = identity.aiRole === 'COMPANY_ADMIN'
+      || identity.aiRole === 'SUPER_ADMIN';
+    if (incoming.chatType !== 'group') {
+      await reply('Group reply settings are only available inside a group chat.');
+      return;
+    }
+    if (!isAdmin) {
+      await reply('Only a company admin can change group reply settings.');
+      return;
+    }
+    if (!deps.prisma || !incoming.tenantKey) {
+      await reply('Group reply settings are not available on this server.');
+      return;
+    }
+
+    const address = {
+      companyId: identity.companyId,
+      tenantKey: incoming.tenantKey,
+      ...(incoming.appId ? { appId: incoming.appId } : {}),
+      chatId: String(incoming.chatId),
+    };
+    const requested = text.slice(cmd.length).trim().toLowerCase();
+    if (requested && requested !== 'status' && requested !== 'threaded' && requested !== 'inline') {
+      await reply('Usage: `/group-mode threaded`, `/group-mode inline`, or `/group-mode status`.');
+      return;
+    }
+
+    let mode = await loadLarkGroupMode(deps.prisma, address);
+    if (requested === 'threaded' || requested === 'inline') {
+      mode = requested;
+      await saveLarkGroupMode(deps.prisma, address, mode, identity.userId);
+      log.info('webhook.group_mode.updated', {
+        companyId: identity.companyId,
+        chatId: incoming.chatId,
+        mode,
+        actorUserId: identity.userId,
+        correlationId,
+      });
+    }
+
+    if (cmd === '/group-settings' || !requested || requested === 'status') {
+      const sent = await deps.adapter.sendCardToChat(
+        String(incoming.chatId),
+        buildLarkGroupSettingsCard(mode),
+        String(incoming.messageId),
+        incoming.groupReplyMode !== 'inline',
+      );
+      if (!sent.ok) {
+        log.warn('webhook.command.group_settings.card_failed', {
+          error: sent.error.message,
+          correlationId,
+        });
+        await reply(`Current group reply mode: **${mode}**.`);
+      }
+      return;
+    }
+
+    await reply(
+      mode === 'threaded'
+        ? 'Done. New requests will open their own Divo thread.'
+        : 'Done. Divo will reply inline in this group.',
     );
+    return;
+  }
+
+  if (cmd === '/clear') {
+    const normalized = text.trim().toLowerCase();
+    const isRoomClear = normalized === '/clear room'
+      || normalized === '/clear room confirm';
+    const isAdmin = identity.aiRole === 'COMPANY_ADMIN'
+      || identity.aiRole === 'SUPER_ADMIN';
+
+    if (isRoomClear && incoming.chatType !== 'group') {
+      await reply('`/clear room` is only available inside a group chat.');
+      return;
+    }
+    if (isRoomClear && !isAdmin) {
+      await reply('Only a company admin can clear every Divo conversation in this group.');
+      return;
+    }
+    if (normalized === '/clear room') {
+      await reply(
+        'This clears Divo history for every thread in this group. '
+        + 'To confirm, send `/clear room confirm`.',
+      );
+      return;
+    }
+    if (
+      incoming.chatType === 'group'
+      && incoming.groupReplyMode !== 'inline'
+      && !incoming.rootMessageId
+      && !incoming.threadId
+      && !isRoomClear
+    ) {
+      await reply('Run `/clear` inside the thread you want to reset.');
+      return;
+    }
+
+    const scope = { companyId: identity.companyId, channel: 'lark' as const };
+    const conversationKey = conversationKeyForMessage(incoming);
+    const clearResult = normalized === '/clear room confirm'
+      ? await deps.conversationRepo.clearChatHistories(String(incoming.chatId), scope)
+      : await deps.conversationRepo.clearHistory(conversationKey, scope);
     if (!clearResult.ok) {
       log.warn('webhook.command.clear.failed', {
         chatId:        incoming.chatId,
@@ -1559,15 +1942,20 @@ async function handleSlashCommand(args: {
       await reply('Could not clear history — please try again.');
       return;
     }
-    if (deps.chatContextService) {
+    if (normalized === '/clear room confirm' && deps.chatContextService) {
       await deps.chatContextService.clear(identity.companyId, String(incoming.chatId));
     }
     log.info('webhook.command.clear.ok', {
       chatId: incoming.chatId,
-      conversationsCleared: clearResult.value,
+      clearTarget: normalized === '/clear room confirm' ? 'room' : conversationKey,
+      cleared: clearResult.value,
       correlationId,
     });
-    await reply('Done. Conversation history cleared — I\'ll start fresh from here.');
+    await reply(
+      normalized === '/clear room confirm'
+        ? 'Done. Divo history for this group and all its threads is cleared.'
+        : 'Done. This conversation is cleared — I\'ll start fresh from here.',
+    );
     return;
   }
 
@@ -1666,6 +2054,10 @@ async function handleSlashCommand(args: {
     const card = await deps.adapter.sendCardToChat(
       String(incoming.chatId),
       buildSignInCard({ name, url }),
+      incoming.chatType === 'group' ? String(incoming.messageId) : undefined,
+      incoming.chatType === 'group'
+        ? incoming.groupReplyMode !== 'inline'
+        : undefined,
     );
     if (!card.ok) {
       log.warn('webhook.command.login.card_failed', {
@@ -1819,7 +2211,11 @@ async function handleSlashCommand(args: {
     await reply(
       '**Divo Commands**\n\n' +
       '**Conversation**\n' +
-      '`/clear` — Wipe conversation memory for this chat. Divo starts fresh.\n' +
+      '`/clear` — Reset this DM, thread, or inline session.\n' +
+      '`/clear room` — Admin-only two-step reset for every thread in this group.\n' +
+      '`/stop` — Stop the active run in this conversation.\n' +
+      '`/group-settings` — Admin-only group reply settings.\n' +
+      '`/group-mode threaded|inline|status` — Configure or inspect group replies.\n' +
       '`/remember <fact>` — Save a fact Divo will recall in future chats.\n' +
       '  _Example:_ `/remember Acme Corp uses net-30 payment terms`\n\n' +
       '**Account**\n' +
@@ -1835,7 +2231,7 @@ async function handleSlashCommand(args: {
       '**Collaboration**\n' +
       '`/share` — Share your most recently indexed file with your team.\n\n' +
       '**Tips**\n' +
-      '• In group chats, @mention Divo to talk to it.\n' +
+      '• @mention Divo to start a group request; replies inside its thread continue naturally.\n' +
       '• Upload a file and ask Divo to analyze it — PDFs, CSVs, and docs are all supported.',
     );
     return;
@@ -1856,6 +2252,14 @@ type LarkResolvedIdentity = {
   displayName?: string | null;
   email?: string | null;
 };
+
+const withLarkSenderName = (
+  incoming: IncomingMessage,
+  identity: LarkResolvedIdentity,
+): IncomingMessage => ({
+  ...incoming,
+  senderName: identity.displayName || identity.email || identity.userId,
+});
 
 type PreparedAttachmentContext = {
   attachment: LarkAttachment;
@@ -2117,6 +2521,9 @@ async function enqueueLarkDocumentIngestion(input: {
       // The worker treats replyToMessageId as "post the result here". Omitting
       // it is what makes indexing silent.
       ...(input.announce ? { replyToMessageId: String(incoming.messageId) } : {}),
+      ...(incoming.chatType === 'group'
+        ? { replyInThread: incoming.groupReplyMode !== 'inline' }
+        : {}),
       groupContextMessageId: String(incoming.messageId),
       larkChatId: String(incoming.chatId),
       visibility: 'personal',

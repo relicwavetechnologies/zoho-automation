@@ -32,6 +32,8 @@ export async function fetchParentMessage(input: {
   companyId: string;
   chatId: string;
   tenantKey: string;
+  /** False when only stable parent authorship is needed for thread admission. */
+  includeContent?: boolean;
   sdkClient?: LarkSdkClient;
 }): Promise<ParentMessageResult> {
   const { parentMessageId, env, logger, companyId, chatId } = input;
@@ -56,6 +58,17 @@ export async function fetchParentMessage(input: {
     }
 
     const { msgType, content, senderOpenId } = msg;
+    if (input.includeContent === false) {
+      return {
+        messageId: parentMessageId,
+        status: 'available',
+        messageType: msgType,
+        text: '',
+        senderExternalId: senderOpenId,
+        imageUrls: [],
+      };
+    }
+
     let text = '';
     const imageUrls: string[] = [];
     let omittedImageCount = 0;

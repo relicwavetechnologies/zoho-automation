@@ -36,23 +36,17 @@ const installationParts = (input: RoutingInput): readonly string[] => [
 /**
  * Lane identity, which is NOT the same as conversation identity.
  *
- * `conversationKeyForMessage` (domain/conversation/conversation-key.ts) prefers
- * the root message and falls back to the message's own ID, so a thread's seed
- * turn and its replies share one context key. This prefers `thread_id` and
- * falls back to the requester, because a lane only has to answer "what must not
- * run concurrently" and lane selection must stay synchronous and authority-free.
- *
- * The divergence is deliberate but not free: a seed message (no `thread_id`,
- * lane = requester) and its first reply (lane = thread) occupy different lanes
- * while writing to one conversation key, so their history appends are not
- * serialised against each other. `appendTurn` claims sequence numbers with an
- * atomic increment, so this reorders rather than corrupts. Unifying the two is
- * tracked against Wave 3's distributed-lease work rather than patched here,
- * because changing lane identity changes ordering guarantees.
+ * Threaded groups use the same root-first identity as working history. A
+ * top-level message is the future thread root, so its own message ID keeps the
+ * seed turn and every reply on one serial lane. Inline groups have no thread
+ * root and instead serialize each requester's private group context.
  */
 const laneParts = (incoming: IncomingMessage): readonly string[] => {
   if (incoming.chatType === 'p2p') return ['dm'];
-  const threadIdentity = incoming.threadId ?? incoming.rootMessageId;
+  if (incoming.groupReplyMode === 'inline') {
+    return ['requester', incoming.userExternalId];
+  }
+  const threadIdentity = incoming.rootMessageId ?? incoming.threadId ?? incoming.messageId;
   return threadIdentity
     ? ['thread', String(threadIdentity)]
     : ['requester', incoming.userExternalId];
@@ -64,6 +58,18 @@ export const buildLarkRoomKey = (input: RoutingInput): string =>
 export const buildLarkIngressLaneKey = (incoming: IncomingMessage): string =>
   key('lark', 'ingress-lane', ...channelParts(incoming), ...laneParts(incoming));
 
+export const buildLarkDurableIngressLaneKey = (
+  incoming: IncomingMessage,
+  companyId?: string,
+): string =>
+  key(
+    'lark',
+    'ingress-receipt-lane',
+    companyId ?? 'unbound',
+    ...channelParts(incoming),
+    ...laneParts(incoming),
+  );
+
 export const buildLarkExecutionLaneKey = (input: RoutingInput): string =>
   key('lark', 'lane', ...installationParts(input), ...laneParts(input.incoming));
 
@@ -71,7 +77,7 @@ export const buildLarkDeliveryTarget = (input: RoutingInput): {
   key: string;
   target: LarkDeliveryTarget;
 } => {
-  const threadIdentity = input.incoming.threadId ?? input.incoming.rootMessageId;
+  const threadIdentity = input.incoming.rootMessageId ?? input.incoming.threadId;
   return {
     key: key(
       'lark',
@@ -87,7 +93,9 @@ export const buildLarkDeliveryTarget = (input: RoutingInput): {
         ? { rootMessageId: String(input.incoming.rootMessageId) }
         : {}),
       ...(input.incoming.threadId ? { threadId: input.incoming.threadId } : {}),
-      replyInThread: input.incoming.chatType === 'group',
+      replyInThread:
+        input.incoming.chatType === 'group'
+        && input.incoming.groupReplyMode !== 'inline',
     },
   };
 };

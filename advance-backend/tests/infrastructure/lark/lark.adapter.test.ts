@@ -10,6 +10,7 @@ import type { Logger } from '../../../src/shared/logger.ts';
 import type { ConversationHandle } from '../../../src/application/channels/channel.adapter.ts';
 import type { FinalReply } from '../../../src/domain/channel/outbound.ts';
 import { LarkApiError } from '../../../src/infrastructure/channels/lark/clients/lark-http.client.ts';
+import { ok } from '../../../src/shared/result.ts';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -608,6 +609,7 @@ describe('LarkChannelAdapter run interruption', () => {
     adapter.registerAbortController('corr-1', controller, {
       userId: 'user-1',
       companyId: 'company-1',
+      conversationKey: 'oc_1:thread:om_1',
     });
 
     const result = adapter.interruptRun('corr-1', {
@@ -631,6 +633,7 @@ describe('LarkChannelAdapter run interruption', () => {
     adapter.registerAbortController('corr-1', controller, {
       userId: 'owner-1',
       companyId: 'company-1',
+      conversationKey: 'oc_1:thread:om_1',
     });
 
     assert.equal(adapter.interruptRun('corr-1', {
@@ -652,6 +655,7 @@ describe('LarkChannelAdapter run interruption', () => {
     adapter.registerAbortController('corr-1', controller, {
       userId: 'owner-1',
       companyId: 'company-1',
+      conversationKey: 'oc_1:thread:om_1',
     });
 
     assert.equal(adapter.interruptRun('corr-1', {
@@ -660,6 +664,30 @@ describe('LarkChannelAdapter run interruption', () => {
       aiRole: 'SUPER_ADMIN',
     }), 'forbidden');
     assert.equal(controller.signal.aborted, false);
+  });
+
+  it('interrupts only the active run in the requested conversation', () => {
+    const adapter = makeAdapter();
+    const first = new AbortController();
+    const second = new AbortController();
+    adapter.registerAbortController('corr-1', first, {
+      userId: 'user-1',
+      companyId: 'company-1',
+      conversationKey: 'oc_1:thread:om_1',
+    });
+    adapter.registerAbortController('corr-2', second, {
+      userId: 'user-1',
+      companyId: 'company-1',
+      conversationKey: 'oc_1:thread:om_2',
+    });
+
+    assert.equal(adapter.interruptConversation('oc_1:thread:om_2', {
+      userId: 'user-1',
+      companyId: 'company-1',
+      aiRole: 'MEMBER',
+    }), 'aborted');
+    assert.equal(first.signal.aborted, false);
+    assert.equal(second.signal.aborted, true);
   });
 });
 
@@ -692,6 +720,30 @@ describe('LarkChannelAdapter.sendDirectCard', () => {
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.equal(result.error.payload.reason, 'upstream_5xx');
+  });
+});
+
+describe('LarkChannelAdapter.sendToChatId', () => {
+  it('passes an explicit inline reply mode to the messaging client', async () => {
+    const adapter = makeAdapter();
+    let call: unknown;
+    (adapter as any).messagingClient = {
+      sendMessage: async (...args: unknown[]) => {
+        call = args;
+        return { messageId: 'om_notice' };
+      },
+    };
+
+    const result = await adapter.sendToChatId(
+      'oc_group',
+      'Queued.',
+      'om_trigger',
+      undefined,
+      false,
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(call, ['oc_group', 'Queued.', 'om_trigger', false, undefined]);
   });
 });
 
@@ -906,6 +958,50 @@ describe('LarkChannelAdapter delivery timing', () => {
 });
 
 describe('LarkChannelAdapter.sendFinalReply', () => {
+  it('stores the immutable target with a resumable reply', async () => {
+    let reserved: Record<string, unknown> | undefined;
+    const adapter = new LarkChannelAdapter({
+      env: fakeEnv,
+      logger: noopLogger,
+      botOpenId: 'ou_bot',
+      deliveryRepo: {
+        reserve: async input => {
+          reserved = input as unknown as Record<string, unknown>;
+          return ok({
+            outcome: 'reserved' as const,
+            record: {
+              deliveryId: 'delivery-1',
+              attempts: 1,
+              firstAttemptAt: new Date(),
+            },
+          });
+        },
+        markDelivered: async () => ok(undefined),
+        markFailed: async () => ok(undefined),
+        listRetryable: async () => ok([]),
+        findResumable: async () => ok(null),
+      },
+    });
+    (adapter as any).messagingClient = {
+      sendMessage: async () => ({ messageId: 'om_sent' }),
+      updateMessage: async () => undefined,
+      addReaction: async () => undefined,
+    };
+    const conversation: ConversationHandle = {
+      ...makeConversation(),
+      replyInThread: false,
+    };
+
+    const result = await adapter.sendFinalReply(conversation, makeReply('# Done'));
+
+    assert.equal(result.ok, true);
+    assert.deepEqual((reserved?.['payload'] as any)?.target, {
+      chatId: 'oc_chat',
+      replyToMessageId: 'om_parent',
+      replyInThread: false,
+    });
+  });
+
   it('finalizes a one-card reply in place when the status coordinator succeeds', async () => {
     const adapter = makeAdapter();
     const sendCalls: unknown[][] = [];

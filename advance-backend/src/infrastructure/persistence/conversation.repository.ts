@@ -25,13 +25,11 @@ export interface ConversationMeta {
 export interface ConversationRepoPort {
   getHistory(chatId: string, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
   appendTurn(chatId: string, turn: Omit<Turn, 'id'>, scope?: ConversationScope): Promise<Result<Turn, InfraError>>;
+  /** Clear one exact DM, thread, or inline-requester conversation. */
+  clearHistory(chatId: string, scope: ConversationScope): Promise<Result<boolean, InfraError>>;
   /**
-   * Clear every conversation belonging to a chat, including the thread-scoped
-   * ones underneath it.
-   *
-   * There is deliberately no single-key variant. Working context is keyed per
-   * thread, so "clear this chat" is a sweep, and an exact-key clear would
-   * report success while leaving every thread's transcript in place.
+   * Clear every conversation belonging to a chat, including thread-scoped and
+   * inline-requester conversations underneath it.
    */
   clearChatHistories(chatId: string, scope: ConversationScope): Promise<Result<number, InfraError>>;
   getConversationMeta(chatId: string, scope?: ConversationScope): Promise<Result<ConversationMeta | null, InfraError>>;
@@ -192,6 +190,37 @@ export class ConversationRepository implements ConversationRepoPort {
     }
   }
 
+  async clearHistory(
+    chatId: string,
+    scope: ConversationScope,
+  ): Promise<Result<boolean, InfraError>> {
+    try {
+      const conversation = await this.db.runtimeConversation.findUnique({
+        where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
+        select: { id: true },
+      });
+      if (conversation) {
+        await this.db.runtimeConversationMessage.deleteMany({
+          where: { conversationId: conversation.id },
+        });
+        await this.db.runtimeConversation.update({
+          where: { id: conversation.id },
+          data: {
+            summaryJson: Prisma.JsonNull,
+            summaryUpdatedAt: null,
+            lastSummarizedSequence: 0,
+          },
+        });
+      }
+      if (this.cache) {
+        void this.cache.del(conversationCacheKey(chatId, scope));
+      }
+      return ok(Boolean(conversation));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'clearHistory', e));
+    }
+  }
+
   async clearChatHistories(
     chatId: string,
     scope: ConversationScope,
@@ -211,6 +240,7 @@ export class ConversationRepository implements ConversationRepoPort {
             // in a chat ID would otherwise let one member's `/clear` match
             // every conversation in their company.
             { channelConversationKey: { startsWith: `${escapeLikePrefix(chatId)}:thread:` } },
+            { channelConversationKey: { startsWith: `${escapeLikePrefix(chatId)}:user:` } },
           ],
         },
         select: { id: true, channelConversationKey: true },

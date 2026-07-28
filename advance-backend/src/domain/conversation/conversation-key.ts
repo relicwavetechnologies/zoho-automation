@@ -26,10 +26,18 @@ export interface ConversationKeyInput {
   readonly messageId?: string;
   readonly threadId?: string;
   readonly rootMessageId?: string;
+  readonly userExternalId?: string;
+  readonly groupReplyMode?: 'threaded' | 'inline';
 }
 
 export const conversationKeyForMessage = (input: ConversationKeyInput): string => {
   if (input.chatType !== 'group') return String(input.chatId);
+
+  if (input.groupReplyMode === 'inline') {
+    return input.userExternalId
+      ? `${String(input.chatId)}:user:${String(input.userExternalId)}`
+      : String(input.chatId);
+  }
 
   // Root before thread ID, deliberately. Lark assigns a topic ID only once the
   // thread exists, so the message that seeds a thread has no `thread_id` while

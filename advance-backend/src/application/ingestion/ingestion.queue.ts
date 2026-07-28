@@ -22,6 +22,8 @@ export interface IngestionJobPayload {
   chatId?:        string;
   /** Message ID of the original file message to quote-reply to when indexing finishes. */
   replyToMessageId?: string;
+  /** Immutable delivery mode captured when the job is queued. */
+  replyInThread?: boolean;
   /** Group-context message ID to update after background indexing. */
   groupContextMessageId?: string;
   /**

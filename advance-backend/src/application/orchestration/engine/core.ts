@@ -49,6 +49,7 @@ import {
 import { generateText } from 'ai';
 import type { ConversationScope } from '../../../domain/conversation/conversation-scope';
 import { conversationKeyForMessage } from '../../../domain/conversation/conversation-key';
+import { userHistoryContent } from '../../../domain/conversation/history-content';
 import { userFacingMessageOf } from '../../../shared/user-facing-error';
 
 const MEM0_SEARCH_TIMEOUT_MS = 500;
@@ -143,7 +144,7 @@ export interface OrchestrationEngineDeps {
   fastPathModel?: LanguageModel;
   /** When provided, group chat context is loaded and injected into the supervisor prompt. */
   chatContext?: LarkChatContextService;
-  /** When provided, fires background conversation summarization after each turn (DMs only). */
+  /** When provided, fires background summarization for the current conversation key. */
   conversationSummarizer?: ConversationSummarizer;
   /** Backend-owned DeepSeek Flash model factory for first-class Lark runs. */
   larkInference?: LarkInferenceService;
@@ -161,15 +162,16 @@ export class OrchestrationEngine {
       companyId: String(runContext.companyId),
       channel: runContext.channel,
     };
-    // Working context is per thread, not per room. Delivery, status cards, and
-    // telemetry keep using `incoming.chatId` — only history reads and writes
-    // move to this key, so a group's threads stop sharing one transcript.
+    // One canonical conversation key scopes history, approvals, summaries,
+    // telemetry, and per-run tools. Actual Lark delivery still uses chatId.
     const conversationKey = conversationKeyForMessage({
       chatId: String(incoming.chatId),
       chatType: incoming.chatType,
       messageId: String(incoming.messageId),
       ...(incoming.threadId ? { threadId: String(incoming.threadId) } : {}),
       ...(incoming.rootMessageId ? { rootMessageId: String(incoming.rootMessageId) } : {}),
+      userExternalId: incoming.userExternalId,
+      ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
     }) as unknown as ChatId;
 
     const log = this.deps.logger.child({
@@ -194,6 +196,7 @@ export class OrchestrationEngine {
       (channelAdapter as any).registerAbortController(corrId, abortController, {
         userId: String(runContext.userId),
         companyId: String(runContext.companyId),
+        conversationKey: String(conversationKey),
       });
     }
 
@@ -220,7 +223,7 @@ export class OrchestrationEngine {
           ...(runContext.userId    ? { userId:     runContext.userId }              : {}),
           ...(runContext.requestId ? { requestId:  runContext.requestId }           : {}),
           ...(incoming.chatId     ? { chatId:     String(incoming.chatId) }        : {}),
-          ...(incoming.chatId     ? { threadId:   String(incoming.chatId) }        : {}),
+          ...(incoming.chatId     ? { threadId:   String(conversationKey) }        : {}),
           ...(incoming.messageId  ? { messageId:  String(incoming.messageId) }     : {}),
         });
         tracer = new OrchestrationTracer(runId, this.deps.executionRepo, log, runStartMs);
@@ -247,7 +250,7 @@ export class OrchestrationEngine {
         runContext,
         ...(tracer ? { executionRunId: tracer.executionRunId } : {}),
         ...(tracer ? { tracer } : {}),
-        threadId: String(incoming.chatId),
+        threadId: String(conversationKey),
         agentTarget: 'lark.orchestration',
         ...(input.larkModelId ? { requestedModelId: input.larkModelId } : {}),
       })
@@ -376,6 +379,11 @@ export class OrchestrationEngine {
     // open_id, so loading interactive history would be wrong in either case.
     const isScheduledDelivery = runContext.deliveryMode === 'current_chat_only'
       || runContext.deliveryMode === 'scheduled_runtime_delivery';
+    const isNativeThreadReply = incoming.chatType === 'group'
+      && incoming.groupReplyMode !== 'inline'
+      && Boolean(incoming.rootMessageId || incoming.threadId);
+    const shouldLoadGroupContext = incoming.chatType === 'group'
+      && !isNativeThreadReply;
     const [historyResult, memoryContext, groupContextResult] = await Promise.all([
       isScheduledDelivery
         ? Promise.resolve({ ok: true as const, value: { turns: [], truncated: false, tokenEstimate: 0 } })
@@ -390,7 +398,7 @@ export class OrchestrationEngine {
         runContext,
         log,
       }),
-      incoming.chatType === 'group' && this.deps.chatContext
+      shouldLoadGroupContext && this.deps.chatContext
         ? this.deps.chatContext.loadContext(String(runContext.companyId), String(incoming.chatId))
         : Promise.resolve(null),
       statusPromise,
@@ -426,7 +434,7 @@ export class OrchestrationEngine {
       abortController.signal.throwIfAborted();
       // Sequential append — sequence ordering matters (user before assistant).
       await this.deps.history.appendTurn(conversationKey, {
-        role: 'user', content: incoming.text, timestamp: incoming.timestamp,
+        role: 'user', content: userHistoryContent(incoming), timestamp: incoming.timestamp,
       }, conversationScope);
       abortController.signal.throwIfAborted();
       await this.deps.history.appendTurn(conversationKey, {
@@ -434,7 +442,7 @@ export class OrchestrationEngine {
         timestamp: this.deps.clock.now().toISOString(),
       }, conversationScope);
 
-      if (incoming.chatType !== 'group' && this.deps.conversationSummarizer) {
+      if (this.deps.conversationSummarizer) {
         const summaryKey = String(conversationKey);
         setImmediate(() => {
           this.deps.conversationSummarizer!.maybeSummarize(summaryKey, conversationScope, larkModel)
@@ -476,11 +484,7 @@ export class OrchestrationEngine {
 
     debugGroupContext(groupContext);
 
-    // The room transcript is the single source of historical group context.
-    // Previous turns must not be reintroduced as actionable user requests.
-    const supervisorHistory = incoming.chatType === 'group'
-      ? { turns: [], truncated: false, tokenEstimate: 0 }
-      : history;
+    const supervisorHistory = history;
 
     // ── 5. Run supervisor ─────────────────────────────────────────────────
     log.info('engine.pre_supervisor.duration', { ms: this.deps.clock.nowMs() - runStartMs });
@@ -504,7 +508,7 @@ export class OrchestrationEngine {
       ...(groupContext ? { groupContext } : {}),
       ...(multimodalCtx?.hasImages ? { groupContextParts: multimodalCtx.parts, groupContextSystemHeader: multimodalCtx.systemHeader } : {}),
       ...(inlineImageUrls.length > 0 ? { inlineImageUrls } : {}),
-      chatId:         String(conversation.chatId),
+      chatId:         String(conversationKey),
       abortSignal:    abortController.signal,
       ...(larkModel ? {
         model: larkModel,
@@ -649,7 +653,9 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
       branding,
       ...(executionTrace ? { executionTrace } : {}),
     };
-    const executionLog = buildExecutionSummary(toolResults);
+    const executionLog = incoming.chatType === 'group'
+      ? null
+      : buildExecutionSummary(toolResults);
     const assistantHistoryContent = executionLog
       ? `${executionLog}\n\n[Reply]\n${finalReply.text}`
       : finalReply.text;
@@ -657,7 +663,7 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
     // ── 6. Persist conversation turn ──────────────────────────────────────
     await this.deps.history.appendTurn(conversationKey, {
       role:      'user',
-      content:   incoming.text,
+      content:   userHistoryContent(incoming),
       timestamp: incoming.timestamp,
     }, conversationScope);
     abortController.signal.throwIfAborted();
@@ -668,10 +674,9 @@ ${incoming.channel === 'lark' ? `- ${LARK_ENGLISH_OUTPUT_POLICY}` : ''}`,
     }, conversationScope);
     abortController.signal.throwIfAborted();
 
-    // ── 6b. Background conversation summarization (DMs only) ─────────────
+    // ── 6b. Background per-conversation summarization ───────────────────
     if (
       !isScheduledDelivery
-      && incoming.chatType !== 'group'
       && this.deps.conversationSummarizer
     ) {
       const summaryKey = String(conversationKey);

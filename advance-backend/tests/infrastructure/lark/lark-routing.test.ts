@@ -30,16 +30,54 @@ function incoming(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
 }
 
 describe('Lark routing keys', () => {
-  it('separates top-level group requests by requester', () => {
+  it('separates top-level group requests by their future thread roots', () => {
     const alice = buildLarkExecutionLaneKey({
       companyId: 'company-1',
-      incoming: incoming({ userExternalId: 'ou_alice' }),
+      incoming: incoming({ messageId: asMessageId('om_alice'), userExternalId: 'ou_alice' }),
     });
     const bob = buildLarkExecutionLaneKey({
       companyId: 'company-1',
-      incoming: incoming({ userExternalId: 'ou_bob' }),
+      incoming: incoming({ messageId: asMessageId('om_bob'), userExternalId: 'ou_bob' }),
     });
     assert.notEqual(alice, bob);
+  });
+
+  it('uses the root message as the threaded seed lane', () => {
+    const seed = buildLarkExecutionLaneKey({
+      companyId: 'company-1',
+      incoming: incoming({ messageId: asMessageId('om_root') }),
+    });
+    const reply = buildLarkExecutionLaneKey({
+      companyId: 'company-1',
+      incoming: incoming({
+        messageId: asMessageId('om_reply'),
+        rootMessageId: asMessageId('om_root'),
+        threadId: 'omt_1',
+      }),
+    });
+    assert.equal(seed, reply);
+  });
+
+  it('keeps inline group turns on the requester lane and out of threads', () => {
+    const first = buildLarkRoutingKeys({
+      companyId: 'company-1',
+      incoming: incoming({
+        messageId: asMessageId('om_1'),
+        userExternalId: 'ou_alice',
+        groupReplyMode: 'inline',
+      }),
+    });
+    const second = buildLarkRoutingKeys({
+      companyId: 'company-1',
+      incoming: incoming({
+        messageId: asMessageId('om_2'),
+        userExternalId: 'ou_alice',
+        groupReplyMode: 'inline',
+      }),
+    });
+
+    assert.equal(first.executionLaneKey, second.executionLaneKey);
+    assert.equal(first.deliveryTarget.replyInThread, false);
   });
 
   it('keeps different requesters in one thread on the same lane', () => {

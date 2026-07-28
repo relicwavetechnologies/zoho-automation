@@ -68,6 +68,7 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
 
   const completions: unknown[] = [];
   const finalTexts: string[] = [];
+  const finalConversations: unknown[] = [];
   let resumedChatId: string | undefined;
   const service = new ApprovalResumerService({
     approvalRepo: {
@@ -78,7 +79,8 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
     larkAdapter: {
       restoreStatusCoordinator: () => {},
       sendStatus: async () => ok({}),
-      sendFinalReply: async (_conversation: unknown, reply: { text: string }) => {
+      sendFinalReply: async (conversation: unknown, reply: { text: string }) => {
+        finalConversations.push(conversation);
         finalTexts.push(reply.text);
         return ok({});
       },
@@ -109,6 +111,7 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
     executed,
     completions,
     finalTexts,
+    finalConversations,
     getResumedChatId: () => resumedChatId,
   };
 }
@@ -130,10 +133,40 @@ describe('ApprovalResumerService', () => {
 
     assert.deepEqual(harness.executed, [{ title: 'Approved document' }]);
     assert.equal(harness.completions.length, 1);
-    assert.equal(harness.getResumedChatId(), 'chat-1');
+    assert.equal(
+      harness.getResumedChatId(),
+      'chat-1:approval:department:dept-1:manager:user-manager',
+    );
     assert.equal(resolvedTenantKey, 'tenant-1');
     assert.match(harness.finalTexts[0] ?? '', /Approved action completed/);
     assert.match(harness.finalTexts[0] ?? '', /documentUrl/);
+  });
+
+  it('delivers a deferred approval result back to its immutable thread target', async () => {
+    const harness = makeExecutableResumer(approvedRow('approved', {
+      replyToMessageId: 'om_request',
+      replyInThread: true,
+      statusMessageId: null,
+    }), {
+      resolveByLarkTenantIdentity: async () => ok({
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        channel: 'lark',
+        larkOpenId: 'ou-user-1',
+        activeDepartmentId: 'dept-1',
+      }),
+    });
+
+    await harness.service.resume('approval-1', 'approved');
+
+    assert.deepEqual(harness.finalConversations[0], {
+      channel: 'lark',
+      chatId: 'chat-1',
+      replyToMessageId: 'om_request',
+      replyInThread: true,
+      correlationId: 'approval-approval-1',
+    });
   });
 
   it('resumes a desktop approval by authenticated user ID without requiring a Lark tenant', async () => {

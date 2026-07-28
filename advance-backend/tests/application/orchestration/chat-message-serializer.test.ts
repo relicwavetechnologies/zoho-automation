@@ -91,9 +91,8 @@ describe('ChatMessageSerializer global concurrency', () => {
   }
 
   it('bounds parallel runs by default rather than inheriting no limit', async () => {
-    // Group lanes are per-requester, so a busy room opens one lane per person.
-    // An unbounded default lets a single burst start as many concurrent agent
-    // runs as there are people talking.
+    // Group work can open one lane per thread (or requester in inline mode).
+    // An unbounded default lets one room burst start arbitrarily many runs.
     const serializer = new ChatMessageSerializer({ timeoutMs: 5_000 });
 
     const peak = await measurePeak(serializer, DEFAULT_MAX_CONCURRENT + 3);

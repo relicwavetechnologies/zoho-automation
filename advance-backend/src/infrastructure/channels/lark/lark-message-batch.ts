@@ -21,9 +21,10 @@ export const toBatchableMessage = (
   incoming: IncomingMessage,
   rawEvent: Record<string, unknown>,
   acceptedAtMs: number,
+  laneKey = buildLarkIngressLaneKey(incoming),
 ): BatchableMessage => ({
   messageId: String(incoming.messageId),
-  laneKey: buildLarkIngressLaneKey(incoming),
+  laneKey,
   requesterExternalId: incoming.userExternalId,
   chatId: String(incoming.chatId),
   threadId: incoming.threadId,
@@ -63,6 +64,7 @@ export const absorbLaneBurst = async (input: {
   repo: IngressReceiptRepoPort;
   adapter: Pick<LarkChannelAdapter, 'parseIncoming'>;
   log: Logger;
+  groupReplyMode?: IncomingMessage['groupReplyMode'];
   bounds?: BatchBounds;
 }): Promise<AbsorbedBatch> => {
   const { anchor, repo, adapter, log } = input;
@@ -84,8 +86,16 @@ export const absorbLaneBurst = async (input: {
   for (const row of pending.value) {
     const parsed = adapter.parseIncoming(row.payload);
     if (!parsed.ok) continue;
+    const candidate = parsed.value.chatType === 'group' && input.groupReplyMode
+      ? { ...parsed.value, groupReplyMode: input.groupReplyMode }
+      : parsed.value;
     candidates.push({
-      message: toBatchableMessage(parsed.value, row.payload, row.acceptedAt.getTime()),
+      message: toBatchableMessage(
+        candidate,
+        row.payload,
+        row.acceptedAt.getTime(),
+        anchor.laneKey,
+      ),
       receiptId: row.receiptId,
     });
   }

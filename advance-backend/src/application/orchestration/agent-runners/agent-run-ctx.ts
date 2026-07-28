@@ -40,7 +40,7 @@ export interface AgentRunCtx {
   tracer?:     OrchestrationTracer;
   /** HITL approval gate — when present, non-read tool actions are pre-approved. */
   approvalGate?: ApprovalGateService;
-  /** Lark chat_id used by the approval gate for idempotency. */
+  /** Canonical conversation scope used by the approval gate. */
   chatId?:       string;
   /** Group-chat rolling summary and recent transcript. */
   groupContext?: string;

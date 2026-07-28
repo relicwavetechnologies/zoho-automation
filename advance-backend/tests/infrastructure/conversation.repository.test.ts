@@ -264,6 +264,71 @@ describe('ConversationRepository.appendTurn', () => {
   });
 });
 
+describe('ConversationRepository.clearHistory', () => {
+  it('clears only the exact scoped conversation and its cached window', async () => {
+    const calls: { find?: any; deleted?: any; updated?: any } = {};
+    const db = {
+      runtimeConversation: {
+        findUnique: async (input: unknown) => {
+          calls.find = input;
+          return { id: 'conv-thread' };
+        },
+        update: async (input: unknown) => {
+          calls.updated = input;
+          return {};
+        },
+      },
+      runtimeConversationMessage: {
+        deleteMany: async (input: unknown) => {
+          calls.deleted = input;
+          return { count: 2 };
+        },
+      },
+    };
+    const cache = makeCache();
+    const repo = new ConversationRepository(db as any, cache);
+    const key = `${CHAT_KEY}:thread:om_alice`;
+
+    const result = await repo.clearHistory(key, SCOPE);
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.deepEqual(result, { ok: true, value: true });
+    assert.deepEqual(
+      calls.find.where.companyId_channel_channelConversationKey,
+      { companyId: 'company-1', channel: 'lark', channelConversationKey: key },
+    );
+    assert.deepEqual(calls.deleted.where, { conversationId: 'conv-thread' });
+    assert.equal(calls.updated.where.id, 'conv-thread');
+    assert.equal(calls.updated.data.lastSummarizedSequence, 0);
+    assert.ok(cache.delCalls.includes(conversationCacheKey(key, SCOPE)));
+  });
+
+  it('invalidates a stale cache without issuing deletes when no row exists', async () => {
+    let deleted = false;
+    const db = {
+      runtimeConversation: {
+        findUnique: async () => null,
+        update: async () => ({}),
+      },
+      runtimeConversationMessage: {
+        deleteMany: async () => {
+          deleted = true;
+          return { count: 0 };
+        },
+      },
+    };
+    const cache = makeCache();
+    const repo = new ConversationRepository(db as any, cache);
+
+    const result = await repo.clearHistory(CHAT_KEY, SCOPE);
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.deepEqual(result, { ok: true, value: false });
+    assert.equal(deleted, false);
+    assert.ok(cache.delCalls.includes(conversationCacheKey(CHAT_KEY, SCOPE)));
+  });
+});
+
 
 describe('ConversationRepository.clearChatHistories', () => {
   /** Records the queries a clear issues, so the match rule itself is inspectable. */
@@ -283,17 +348,18 @@ describe('ConversationRepository.clearChatHistories', () => {
     };
   }
 
-  it('clears the chat and every thread beneath it', async () => {
+  it('clears the chat, every thread, and every inline requester beneath it', async () => {
     const { db, calls } = makeSweepDb([
       { id: 'conv-room', channelConversationKey: CHAT_KEY },
       { id: 'conv-a', channelConversationKey: `${CHAT_KEY}:thread:om_alice` },
       { id: 'conv-b', channelConversationKey: `${CHAT_KEY}:thread:om_bob` },
+      { id: 'conv-inline', channelConversationKey: `${CHAT_KEY}:user:ou_alice` },
     ]);
     const repo = new ConversationRepository(db as any, makeCache());
 
     const result = await repo.clearChatHistories(CHAT_KEY, SCOPE);
 
-    assert.deepEqual(result, { ok: true, value: 3 });
+    assert.deepEqual(result, { ok: true, value: 4 });
     // Since working context became thread-scoped, clearing one exact key would
     // report success while leaving each thread's transcript intact.
     assert.deepEqual(calls.find.where.OR, [
@@ -301,8 +367,12 @@ describe('ConversationRepository.clearChatHistories', () => {
       // `_` is a LIKE wildcard and real Lark chat IDs contain one, so the
       // prefix arm is escaped while the equality arm is not.
       { channelConversationKey: { startsWith: 'chat\\_001:thread:' } },
+      { channelConversationKey: { startsWith: 'chat\\_001:user:' } },
     ]);
-    assert.deepEqual(calls.deleteMany.where.conversationId.in, ['conv-room', 'conv-a', 'conv-b']);
+    assert.deepEqual(
+      calls.deleteMany.where.conversationId.in,
+      ['conv-room', 'conv-a', 'conv-b', 'conv-inline'],
+    );
     assert.equal(calls.updateMany.data.lastSummarizedSequence, 0);
   });
 
@@ -364,9 +434,11 @@ describe('ConversationRepository.clearChatHistories LIKE safety', () => {
     // `startsWith` compiles to LIKE without escaping, and this is a delete path
     // whose match set comes from an event payload. Unescaped, `oc%` would match
     // every conversation in the company.
-    const prefix = where.OR[1].channelConversationKey.startsWith;
-    assert.equal(prefix, 'oc\\%\\_1:thread:');
-    assert.ok(!prefix.includes('%:'), 'no bare wildcard survives into the pattern');
+    const prefixes = where.OR.slice(1).map(
+      (arm: any) => arm.channelConversationKey.startsWith,
+    );
+    assert.deepEqual(prefixes, ['oc\\%\\_1:thread:', 'oc\\%\\_1:user:']);
+    assert.ok(prefixes.every((prefix: string) => !prefix.includes('%:')));
   });
 
   it('leaves an ordinary chat ID untouched', async () => {
@@ -383,6 +455,7 @@ describe('ConversationRepository.clearChatHistories LIKE safety', () => {
     await repo.clearChatHistories('ocabc123', SCOPE);
 
     assert.equal(where.OR[1].channelConversationKey.startsWith, 'ocabc123:thread:');
+    assert.equal(where.OR[2].channelConversationKey.startsWith, 'ocabc123:user:');
     // The exact-key arm is an equality match and must stay unescaped.
     assert.equal(where.OR[0].channelConversationKey, 'ocabc123');
   });

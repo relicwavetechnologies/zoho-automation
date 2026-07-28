@@ -516,7 +516,10 @@ describe('ApprovalGateService', () => {
       action: 'send',
       args: { op: 'send', to: ['boss@company.com'], subject: 'Q2 Report' },
       perm: makePermission(),
-      runContext: makeRunContext(),
+      runContext: makeRunContext({
+        replyToMessageId: 'om_request',
+        replyInThread: true,
+      }),
       chatId: CHAT_ID,
       argsSummary: 'Send email to boss@company.com: Q2 Report',
     });
@@ -530,6 +533,8 @@ describe('ApprovalGateService', () => {
     assert.equal(approval.toolId, String(TOOL_ID));
     assert.equal(approval.actionGroup, 'send');
     assert.equal(approval.status, 'pending');
+    assert.equal((approval.metadataJson as any).replyToMessageId, 'om_request');
+    assert.equal((approval.metadataJson as any).replyInThread, true);
 
     // Card sent to manager
     assert.equal(lark.sentCards.length, 1);
@@ -621,6 +626,62 @@ describe('ApprovalGateService', () => {
     );
     assert.equal(repo.store.size, 2);
     assert.equal(lark.sentCards.length, 2);
+  });
+
+  it('keeps identical requests in different Lark threads isolated and pinned to their source', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const base = {
+      toolId: String(TOOL_ID),
+      action: 'send' as ToolActionGroup,
+      args: { op: 'send', to: ['x@y.com'], subject: 'Thread-scoped request' },
+      perm: makePermission(),
+      argsSummary: 'Send an email from a Lark thread',
+    };
+
+    const first = await gate.check({
+      ...base,
+      chatId: `${CHAT_ID}:thread:om_a`,
+      runContext: makeRunContext({
+        replyToMessageId: 'om_a_request',
+        replyInThread: true,
+      }),
+    });
+    const second = await gate.check({
+      ...base,
+      chatId: `${CHAT_ID}:thread:om_b`,
+      runContext: makeRunContext({
+        replyToMessageId: 'om_b_request',
+        replyInThread: true,
+      }),
+    });
+
+    assert.equal(first.kind, 'pending');
+    assert.equal(second.kind, 'pending');
+    assert.equal(repo.store.size, 2);
+    assert.deepEqual(
+      [...repo.store.values()].map(row => {
+        const metadata = row.metadataJson as Record<string, unknown>;
+        return {
+          sourceChatId: metadata['sourceChatId'],
+          replyToMessageId: metadata['replyToMessageId'],
+          scope: metadata['chatId'],
+        };
+      }),
+      [
+        {
+          sourceChatId: CHAT_ID,
+          replyToMessageId: 'om_a_request',
+          scope: `${CHAT_ID}:thread:om_a:requester:${REQUESTER}:approval:department_manager:${MANAGER}:department:none`,
+        },
+        {
+          sourceChatId: CHAT_ID,
+          replyToMessageId: 'om_b_request',
+          scope: `${CHAT_ID}:thread:om_b:requester:${REQUESTER}:approval:department_manager:${MANAGER}:department:none`,
+        },
+      ],
+    );
   });
 
   it('reuses a compatible pre-upgrade pending approval without sending another card', async () => {

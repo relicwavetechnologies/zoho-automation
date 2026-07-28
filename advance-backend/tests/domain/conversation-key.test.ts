@@ -10,6 +10,34 @@ describe('conversation key', () => {
     );
   });
 
+  it('keys inline group conversations per user', () => {
+    const alice = conversationKeyForMessage({
+      chatId: 'oc_room',
+      chatType: 'group',
+      messageId: 'om_1',
+      userExternalId: 'ou_alice',
+      groupReplyMode: 'inline',
+    });
+    const aliceLater = conversationKeyForMessage({
+      chatId: 'oc_room',
+      chatType: 'group',
+      messageId: 'om_2',
+      userExternalId: 'ou_alice',
+      groupReplyMode: 'inline',
+    });
+    const bob = conversationKeyForMessage({
+      chatId: 'oc_room',
+      chatType: 'group',
+      messageId: 'om_3',
+      userExternalId: 'ou_bob',
+      groupReplyMode: 'inline',
+    });
+
+    assert.equal(alice, 'oc_room:user:ou_alice');
+    assert.equal(aliceLater, alice);
+    assert.notEqual(bob, alice);
+  });
+
   it('separates two threads in the same group chat', () => {
     const alice = conversationKeyForMessage({
       chatId: 'oc_room', chatType: 'group', messageId: 'om_a2', rootMessageId: 'om_alice',

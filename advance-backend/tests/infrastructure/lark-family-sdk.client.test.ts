@@ -48,6 +48,49 @@ describe('Lark family clients through the official SDK boundary', () => {
     assert.deepEqual(requests[0], { method: 'GET', url: '/open-apis/bot/v3/info' });
   });
 
+  it('uses the reply endpoint for threaded and inline replies', async () => {
+    const { sdkClient, requests } = sdkStub(() => ({ message_id: 'om_reply' }));
+    const client = new LarkMessagingClient({
+      appId: 'app',
+      appSecret: 'secret',
+      logger: noopLogger,
+      sdkClient,
+    });
+
+    await client.sendMessage(
+      'oc_group',
+      JSON.stringify({ msg_type: 'text', content: { text: 'Done' } }),
+      'om_trigger',
+      true,
+      'delivery-1',
+    );
+    await client.sendMessage(
+      'oc_group',
+      JSON.stringify({ msg_type: 'text', content: { text: 'Inline' } }),
+      'om_trigger_2',
+      false,
+    );
+
+    assert.deepEqual(requests, [{
+      method: 'POST',
+      url: '/open-apis/im/v1/messages/om_trigger/reply',
+      data: {
+        content: JSON.stringify({ text: 'Done' }),
+        msg_type: 'text',
+        reply_in_thread: true,
+        uuid: 'delivery-1',
+      },
+    }, {
+      method: 'POST',
+      url: '/open-apis/im/v1/messages/om_trigger_2/reply',
+      data: {
+        content: JSON.stringify({ text: 'Inline' }),
+        msg_type: 'text',
+        reply_in_thread: false,
+      },
+    }]);
+  });
+
   it('maps task records while preserving the documented SDK request', async () => {
     const { sdkClient, requests } = sdkStub(() => ({ task: { guid: 'task-1', summary: 'Ship SDK', completed: true } }));
     const task = await new LarkTaskClient(deps(sdkClient)).getTask('task-1');
@@ -478,6 +521,106 @@ describe('Lark family clients through the official SDK boundary', () => {
           request_docs: [{ doc_token: 'doc-1', doc_type: 'docx' }],
           with_url: true,
         },
+      },
+    ]);
+  });
+
+  it('reads Drive metadata and a paginated folder listing with documented query fields', async () => {
+    const { sdkClient, requests } = sdkStub(request => request.url.includes('/metas/')
+      ? { metas: [{ doc_token: 'doc-1', doc_type: 'docx', title: 'Launch notes' }] }
+      : { files: [{ token: 'doc-1', type: 'docx', name: 'Launch notes' }], has_more: true, next_page_token: 'next' });
+    const client = new LarkDocClient(deps(sdkClient));
+
+    assert.deepEqual(await client.getDriveMetadata('doc-1', 'docx'), {
+      metadata: { doc_token: 'doc-1', doc_type: 'docx', title: 'Launch notes' },
+    });
+    assert.deepEqual(await client.listDriveFiles({
+      folderToken: 'folder-1',
+      pageSize: 50,
+      pageToken: 'page-1',
+      orderBy: 'CreatedTime',
+      direction: 'ASC',
+    }), {
+      files: [{ token: 'doc-1', type: 'docx', name: 'Launch notes' }],
+      has_more: true,
+      next_page_token: 'next',
+    });
+
+    assert.deepEqual(requests, [
+      {
+        method: 'POST',
+        url: '/open-apis/drive/v1/metas/batch_query',
+        data: {
+          request_docs: [{ doc_token: 'doc-1', doc_type: 'docx' }],
+          with_url: true,
+        },
+      },
+      {
+        method: 'GET',
+        url: '/open-apis/drive/v1/files',
+        params: {
+          folder_token: 'folder-1',
+          page_size: 50,
+          page_token: 'page-1',
+          order_by: 'CreatedTime',
+          direction: 'ASC',
+        },
+      },
+    ]);
+  });
+
+  it('rejects a Drive metadata response that contains only a provider failure', async () => {
+    const { sdkClient } = sdkStub(() => ({
+      failed_list: [{ token: 'doc-missing', code: 1069302 }],
+    }));
+
+    await assert.rejects(
+      () => new LarkDocClient(deps(sdkClient)).getDriveMetadata('doc-missing', 'docx'),
+      /did not return metadata.*1069302/,
+    );
+  });
+
+  it('creates folders and copies or moves Drive files with documented request bodies', async () => {
+    const { sdkClient, requests } = sdkStub(request => {
+      if (request.url.endsWith('/create_folder')) return { token: 'folder-2' };
+      if (request.url.endsWith('/copy')) return { file: { token: 'doc-copy', type: 'docx' } };
+      if (request.url.endsWith('/task_check')) return { status: 'success' };
+      return { task_id: 'move-task-1' };
+    });
+    const client = new LarkDocClient(deps(sdkClient));
+
+    assert.deepEqual(await client.createDriveFolder('Launch', 'folder-1'), { token: 'folder-2' });
+    assert.deepEqual(await client.copyDriveFile('doc-1', {
+      fileType: 'docx',
+      name: 'Launch copy',
+      folderToken: 'folder-2',
+    }), { file: { token: 'doc-copy', type: 'docx' } });
+    assert.deepEqual(await client.moveDriveFile('doc-copy', {
+      fileType: 'docx',
+      folderToken: 'folder-3',
+    }), { task_id: 'move-task-1' });
+    assert.deepEqual(await client.checkDriveTask('move-task-1'), { status: 'success' });
+
+    assert.deepEqual(requests, [
+      {
+        method: 'POST',
+        url: '/open-apis/drive/v1/files/create_folder',
+        data: { name: 'Launch', folder_token: 'folder-1' },
+      },
+      {
+        method: 'POST',
+        url: '/open-apis/drive/v1/files/doc-1/copy',
+        data: { name: 'Launch copy', type: 'docx', folder_token: 'folder-2' },
+      },
+      {
+        method: 'POST',
+        url: '/open-apis/drive/v1/files/doc-copy/move',
+        data: { type: 'docx', folder_token: 'folder-3' },
+      },
+      {
+        method: 'GET',
+        url: '/open-apis/drive/v1/files/task_check',
+        params: { task_id: 'move-task-1' },
       },
     ]);
   });

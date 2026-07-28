@@ -117,22 +117,27 @@ export class LarkMessagingClient {
     } catch { /* not a wrapper — send as-is */ }
 
     const body: Record<string, unknown> = {
-      receive_id: receiveId,
-      content:    apiContent,
-      msg_type:   msgType,
+      content:  apiContent,
+      msg_type: msgType,
     };
     if (replyToMessageId) {
       body['reply_in_thread'] = replyInThread ?? true;
-      body['quote_reply_msg_id'] = replyToMessageId;
+    } else {
+      body['receive_id'] = receiveId;
     }
     if (idempotencyKey) {
       body['uuid'] = idempotencyKey;
     }
 
+    const path = replyToMessageId
+      ? `/open-apis/im/v1/messages/${encodeURIComponent(replyToMessageId)}/reply`
+      : '/open-apis/im/v1/messages';
     const data = await this.sdk.request<{ message_id?: string }>(
       'POST',
-      '/open-apis/im/v1/messages',
-      { query: { receive_id_type: 'chat_id' }, body },
+      path,
+      replyToMessageId
+        ? { body }
+        : { query: { receive_id_type: 'chat_id' }, body },
     );
     return { messageId: data.message_id ?? '' };
   }
@@ -186,17 +191,13 @@ export class LarkMessagingClient {
    * caller works for a DM and a group alike — a card that only reaches direct
    * chats would silently degrade to nothing in the group case.
    */
-  async sendCardToChat(chatId: string, cardContent: string): Promise<{ messageId: string }> {
-    const { msgType, apiContent } = unwrapCardPayload(cardContent);
-    const data = await this.sdk.request<{ message_id?: string }>(
-      'POST',
-      '/open-apis/im/v1/messages',
-      {
-        query: { receive_id_type: 'chat_id' },
-        body: { receive_id: chatId, content: apiContent, msg_type: msgType },
-      },
-    );
-    return { messageId: data.message_id ?? '' };
+  async sendCardToChat(
+    chatId: string,
+    cardContent: string,
+    replyToMessageId?: string,
+    replyInThread?: boolean,
+  ): Promise<{ messageId: string }> {
+    return this.sendMessage(chatId, cardContent, replyToMessageId, replyInThread);
   }
 
   async addReaction(messageId: string, reactionType: string): Promise<void> {

@@ -2,6 +2,7 @@ import type { ChatId, CorrelationId, MessageId } from '../../shared/ids';
 
 export type ChannelKey = 'lark' | 'desktop' | 'airnote';
 export type ChatType = 'p2p' | 'group';
+export type GroupReplyMode = 'threaded' | 'inline';
 
 export interface AttachmentRef {
   readonly type: 'image' | 'file' | 'audio';
@@ -52,6 +53,8 @@ export interface IncomingMessage {
   /** Additional stable sender identities when supplied by the channel. */
   readonly senderUserId?: string;
   readonly senderUnionId?: string;
+  /** Resolved human-readable sender identity for shared conversation history. */
+  readonly senderName?: string;
   /** Lark sender type when supplied by the channel event. */
   readonly senderType?: 'user' | 'bot' | 'app' | 'unknown';
   /**
@@ -70,6 +73,11 @@ export interface IncomingMessage {
   readonly rootMessageId?: MessageId;
   /** Native Lark thread identity when supplied. */
   readonly threadId?: string;
+  /**
+   * Group delivery and working-context mode resolved by the backend.
+   * Absent means the safe product default: one context per thread.
+   */
+  readonly groupReplyMode?: GroupReplyMode;
   /** Compatibility alias for callers that still expect the direct parent. */
   readonly replyToMessageId?: MessageId;
   readonly traceId: CorrelationId;

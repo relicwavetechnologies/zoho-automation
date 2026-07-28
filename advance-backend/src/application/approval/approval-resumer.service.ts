@@ -1,12 +1,20 @@
 import type { RuntimeApprovalRepository } from '../../infrastructure/persistence/runtime-approval.repository';
 import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark.adapter';
+import type { ConversationHandle } from '../channels/channel.adapter';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
 import type { Logger } from '../../shared/logger';
 import type { ApprovalGateService } from './approval-gate.service';
 import type { PermissionService } from '../permissions/permission.service';
 import type { ToolExecutor, RuntimeToolExecutionOutcome } from '../gateway/tool-executor';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
-import { asChatId, asCompanyId, asCorrelationId, asDepartmentId, asUserId } from '../../shared/ids';
+import {
+  asChatId,
+  asCompanyId,
+  asCorrelationId,
+  asDepartmentId,
+  asMessageId,
+  asUserId,
+} from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { isAutomationPlanApproval } from '../gateway/automation-plan.service';
 import type { AutomationPlanExecutor } from '../gateway/automation-plan.executor';
@@ -71,6 +79,10 @@ export class ApprovalResumerService {
     const requesterLarkOpenId = asNonEmptyString(meta['requesterLarkOpenId']);
     const tenantKey = asNonEmptyString(meta['tenantKey']);
     const statusMessageId = asNonEmptyString(meta['statusMessageId']);
+    const replyToMessageId = asNonEmptyString(meta['replyToMessageId']);
+    const replyInThread = typeof meta['replyInThread'] === 'boolean'
+      ? meta['replyInThread']
+      : undefined;
     const approvalCompanyId = asNonEmptyString(approval.companyId);
 
     if (!chatId || !requesterId || !approvalCompanyId) {
@@ -82,6 +94,8 @@ export class ApprovalResumerService {
     const conversation = {
       channel: 'lark' as const,
       chatId: asChatId(chatId),
+      ...(replyToMessageId ? { replyToMessageId: asMessageId(replyToMessageId) } : {}),
+      ...(replyInThread !== undefined ? { replyInThread } : {}),
       correlationId,
     };
     if (statusMessageId) {
@@ -190,7 +204,7 @@ export class ApprovalResumerService {
       runContext,
       perm: permissionResult.value,
       approvalGate: this.deps.approvalGate,
-      chatId,
+      chatId: storedChatId ?? chatId,
       expectedAction: approval.actionGroup as ToolActionGroup,
     });
     await this.finishApprovedAction(approvalId, conversation, outcome);
@@ -198,7 +212,7 @@ export class ApprovalResumerService {
 
   private async finishApprovedAction(
     approvalId: string,
-    conversation: { channel: 'lark'; chatId: ReturnType<typeof asChatId>; correlationId: ReturnType<typeof asCorrelationId> },
+    conversation: ConversationHandle,
     outcome: RuntimeToolExecutionOutcome,
   ): Promise<void> {
     if (outcome.status === 'success') {
@@ -222,7 +236,7 @@ export class ApprovalResumerService {
   }
 
   private async deliverFinal(
-    conversation: { channel: 'lark'; chatId: ReturnType<typeof asChatId>; correlationId: ReturnType<typeof asCorrelationId> },
+    conversation: ConversationHandle,
     text: string,
   ): Promise<void> {
     const delivered = await this.deps.larkAdapter.sendFinalReply(conversation, {

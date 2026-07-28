@@ -6,6 +6,7 @@ import { err, ok, type Result } from '../../shared/result';
 export interface AcceptIngressReceiptInput {
   channel: string;
   tenantKey: string;
+  companyId?: string;
   eventId?: string;
   messageId: string;
   payload: Record<string, unknown>;
@@ -31,6 +32,10 @@ export interface IngressReceipt {
   tenantKey: string;
   messageId: string;
   payload: Record<string, unknown>;
+  /** Company that owned the tenant when this event was admitted. */
+  companyId?: string;
+  /** Immutable execution lane chosen when the event was admitted. */
+  laneKey?: string;
   /** Attempt number of this claim, starting at 1. Recorded for observability. */
   attempts: number;
   /** When Lark's delivery was durably accepted. Owns the dead-letter decision. */
@@ -130,6 +135,7 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
           tenantKey: input.tenantKey,
           messageId: input.messageId,
           payloadJson: input.payload as Prisma.InputJsonObject,
+          ...(input.companyId ? { companyId: input.companyId } : {}),
           ...(input.eventId ? { eventId: input.eventId } : {}),
           ...(input.laneKey ? { laneKey: input.laneKey } : {}),
         },
@@ -218,6 +224,8 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
           tenantKey: true,
           messageId: true,
           payloadJson: true,
+          companyId: true,
+          laneKey: true,
           attempts: true,
           acceptedAt: true,
         },
@@ -230,6 +238,8 @@ export class IngressReceiptRepository implements IngressReceiptRepoPort {
           tenantKey: row.tenantKey,
           messageId: row.messageId,
           payload: row.payloadJson as Record<string, unknown>,
+          ...(row.companyId ? { companyId: row.companyId } : {}),
+          ...(row.laneKey ? { laneKey: row.laneKey } : {}),
           attempts: row.attempts,
           acceptedAt: row.acceptedAt,
         },

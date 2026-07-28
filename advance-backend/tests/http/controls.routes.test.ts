@@ -375,3 +375,74 @@ describe('PUT /lark-untagged-policy', () => {
     assert.equal(audited[0].metadata['lark.untagged.attachments'], 'process');
   });
 });
+
+describe('Lark group mode controls', () => {
+  function makeGroupModePrisma(value: string | null = null) {
+    const upserts: any[] = [];
+    return {
+      upserts,
+      prisma: {
+        adminControlState: {
+          findUnique: async () => value === null ? null : { value },
+          upsert: async (input: any) => { upserts.push(input); return {}; },
+        },
+      } as any,
+    };
+  }
+
+  it('reports threaded when the group has no override', async () => {
+    const { prisma } = makeGroupModePrisma();
+    const router = createControlsRoutes({ prisma, logger: noopLogger, env: FAKE_ENV });
+
+    const { status, body } = await callRoute(router, 'GET', '/lark-group-mode', {
+      query: { tenantKey: 'tenant-1', appId: 'app-1', chatId: 'oc-1' },
+    });
+
+    assert.equal(status, 200);
+    assert.equal((body as any).data.mode, 'threaded');
+  });
+
+  it('persists a company-scoped inline override and audits it', async () => {
+    const { prisma, upserts } = makeGroupModePrisma();
+    const audits: any[] = [];
+    const router = createControlsRoutes({
+      prisma,
+      logger: noopLogger,
+      env: FAKE_ENV,
+      audit: { record: (input: any) => { audits.push(input); } } as any,
+    });
+
+    const { status, body } = await callRoute(router, 'PUT', '/lark-group-mode', {
+      body: {
+        tenantKey: 'tenant-1',
+        appId: 'app-1',
+        chatId: 'oc-1',
+        mode: 'inline',
+      },
+    });
+
+    assert.equal(status, 200);
+    assert.equal((body as any).data.mode, 'inline');
+    assert.equal(upserts.length, 1);
+    assert.equal(upserts[0].create.companyId, 'co-1');
+    assert.equal(upserts[0].create.updatedBy, 'u-1');
+    assert.equal(audits[0].action, 'controls.lark_group_mode.set');
+  });
+
+  it('rejects invalid modes and cross-company writes', async () => {
+    const { prisma, upserts } = makeGroupModePrisma();
+    const router = createControlsRoutes({ prisma, logger: noopLogger, env: FAKE_ENV });
+
+    const invalid = await callRoute(router, 'PUT', '/lark-group-mode', {
+      body: { tenantKey: 'tenant-1', chatId: 'oc-1', mode: 'sometimes' },
+    });
+    const forbidden = await callRoute(router, 'PUT', '/lark-group-mode', {
+      query: { companyId: 'co-other' },
+      body: { tenantKey: 'tenant-1', chatId: 'oc-1', mode: 'inline' },
+    });
+
+    assert.equal(invalid.status, 400);
+    assert.equal(forbidden.status, 403);
+    assert.deepEqual(upserts, []);
+  });
+});

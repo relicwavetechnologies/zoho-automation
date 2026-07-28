@@ -30,7 +30,7 @@ export interface ApprovalGateInput {
   args:           unknown;
   perm:           PermissionResult;
   runContext:     RunContext;
-  /** Lark chat_id of the requester's conversation — used for idempotency key. */
+  /** Canonical conversation scope used for approval idempotency. */
   chatId:         string;
   /** Human-readable summary of what the tool call would do (shown on approval card). */
   argsSummary:    string;
@@ -104,6 +104,9 @@ export class ApprovalGateService {
     const argsHash      = computeArgsHash(args);
     const requesterId = String(runContext.userId);
     const departmentId = runContext.departmentId ? String(runContext.departmentId) : null;
+    const sourceChatId = runContext.channel === 'lark' && runContext.chatId
+      ? String(runContext.chatId)
+      : chatId;
     const scopedChatId = approvalScopeKey(
       chatId,
       requirement,
@@ -155,10 +158,12 @@ export class ApprovalGateService {
             ? String(runContext.tenantId)
             : null,
           departmentId,
-          approvalOrigin:         approvalOriginFromChatId(chatId),
+          approvalOrigin:         approvalOriginFromChatId(sourceChatId),
           statusMessageId:        statusMessageId ?? null,
           chatId: scopedChatId,
-          sourceChatId: chatId,
+          sourceChatId,
+          replyToMessageId:       runContext.replyToMessageId ?? null,
+          replyInThread:          runContext.replyInThread ?? null,
           resolvedManagerOpenId:  manager.larkOpenId,
           resolvedManagerUserId:  manager.userId,
           resolvedManagerName:    manager.displayName,

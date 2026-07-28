@@ -64,6 +64,7 @@ TASK — NEW OPS:
 DOC RULES:
 - Create docs only when asked. Return the doc title and the canonical URL returned by Lark.
 - Never construct a document URL from docToken. If create succeeds, preserve its url exactly.
+- "to-dos / checklist in the document" → larkDoc todo blocks. Never imitate checkboxes with bullets or emoji.
 - "Edit block X" → list_blocks first to get blockId, then update_block with content.
 - "Delete block X" → delete_block with blockId.
 - "Add a table" → insert_table with rows + cols (and optional headers).

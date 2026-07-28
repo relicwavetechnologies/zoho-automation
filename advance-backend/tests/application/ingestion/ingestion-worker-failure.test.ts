@@ -22,7 +22,10 @@ const noopLogger: Logger = {
 
 type Recorded = {
   attachmentUpdates: Array<Record<string, unknown>>;
-  cardsSent: string[];
+  cardsSent: Array<{
+    card: string;
+    replyInThread?: boolean;
+  }>;
 };
 
 /** Drives `process` directly; BullMQ itself is not under test. */
@@ -35,7 +38,13 @@ async function runFailingJob(payload: Record<string, unknown>): Promise<Recorded
       ingestBuffer: async () => { throw new Error('extractor exploded'); },
     } as never,
     larkAdapter: {
-      sendToChatId: async (_chatId: string, card: string) => { recorded.cardsSent.push(card); },
+      sendToChatId: async (
+        _chatId: string,
+        card: string,
+        _replyToMessageId?: string,
+        _idempotencyKey?: string,
+        replyInThread?: boolean,
+      ) => { recorded.cardsSent.push({ card, replyInThread }); },
     } as never,
     env: {} as TypedEnv,
     logger: noopLogger,
@@ -59,6 +68,47 @@ async function runFailingJob(payload: Record<string, unknown>): Promise<Recorded
     /extractor exploded/,
     'the job still fails so BullMQ records it',
   );
+  return recorded;
+}
+
+async function runSuccessfulJob(payload: Record<string, unknown>): Promise<Recorded> {
+  const recorded: Recorded = { attachmentUpdates: [], cardsSent: [] };
+
+  const worker = new IngestionWorker({
+    redisUrl: 'redis://unused',
+    ingestionService: {
+      ingestBuffer: async () => ({
+        fileAssetId: 'asset-1',
+        chunkCount: 2,
+        documentClass: 'document',
+        cloudinaryUrl: '',
+      }),
+    } as never,
+    larkAdapter: {
+      sendToChatId: async (
+        _chatId: string,
+        card: string,
+        _replyToMessageId?: string,
+        _idempotencyKey?: string,
+        replyInThread?: boolean,
+      ) => { recorded.cardsSent.push({ card, replyInThread }); },
+    } as never,
+    env: {} as TypedEnv,
+    logger: noopLogger,
+  });
+
+  const job = {
+    id: 'job-1',
+    data: {
+      jobType: 'buffer',
+      bufferBase64: Buffer.from('x').toString('base64'),
+      ...payload,
+    },
+    attemptsMade: 0,
+    opts: { attempts: 3 },
+  };
+
+  await (worker as unknown as { process(j: unknown): Promise<void> }).process(job);
   return recorded;
 }
 
@@ -87,7 +137,17 @@ describe('ingestion worker — terminal failure', () => {
 
     assert.equal(recorded.attachmentUpdates[0]?.['ingestionStatus'], 'failed');
     assert.equal(recorded.cardsSent.length, 1);
-    assert.match(recorded.cardsSent[0]!, /Failed to index/);
+    assert.match(recorded.cardsSent[0]!.card, /Failed to index/);
+  });
+
+  it('preserves inline delivery for the terminal failure card', async () => {
+    const recorded = await runFailingJob({
+      ...base,
+      replyToMessageId: 'om_1',
+      replyInThread: false,
+    });
+
+    assert.deepEqual(recorded.cardsSent.map(card => card.replyInThread), [false]);
   });
 
   it('does not leave the attachment reading "processing"', async () => {
@@ -100,5 +160,19 @@ describe('ingestion worker — terminal failure', () => {
       !recorded.attachmentUpdates.some(a => a['ingestionStatus'] === 'processing'),
       'no stale processing status survives',
     );
+  });
+});
+
+describe('ingestion worker — successful delivery', () => {
+  it('preserves inline delivery for the indexed card', async () => {
+    const recorded = await runSuccessfulJob({
+      ...base,
+      replyToMessageId: 'om_1',
+      replyInThread: false,
+    });
+
+    assert.equal(recorded.cardsSent.length, 1);
+    assert.match(recorded.cardsSent[0]!.card, /Indexed/);
+    assert.equal(recorded.cardsSent[0]!.replyInThread, false);
   });
 });

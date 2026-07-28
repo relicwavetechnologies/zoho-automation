@@ -19,13 +19,18 @@ import {
   LarkStatusDrainTimeoutError,
 } from './lark-status.coordinator';
 import { buildFinalCard, planFinalCards } from './lark-card.builder';
+import { buildLarkFinalDeliveryEnvelope } from './lark-final-delivery';
 
-interface LarkRunOwner {
+interface LarkRunIdentity {
   readonly userId: string;
   readonly companyId: string;
 }
 
-export interface LarkInterruptActor extends LarkRunOwner {
+interface LarkRunOwner extends LarkRunIdentity {
+  readonly conversationKey: string;
+}
+
+export interface LarkInterruptActor extends LarkRunIdentity {
   readonly aiRole: string;
 }
 
@@ -83,6 +88,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
         consequence: 'group_mentions_disabled',
       });
     }
+  }
+
+  isBotOpenId(openId: string | undefined): boolean {
+    return Boolean(openId && this.botOpenId && openId === this.botOpenId);
   }
 
   // ── parseIncoming ────────────────────────────────────────────────────
@@ -323,7 +332,10 @@ export class LarkChannelAdapter implements ChannelAdapter {
       chatId: String(conversation.chatId),
       // Stored so a delivery that fails after the agent finished can be resent
       // without re-running the tools that produced it.
-      payload: reply as unknown as Record<string, unknown>,
+      payload: buildLarkFinalDeliveryEnvelope(
+        conversation,
+        reply,
+      ) as unknown as Record<string, unknown>,
     });
 
     if (!reservation.ok) {
@@ -623,9 +635,16 @@ export class LarkChannelAdapter implements ChannelAdapter {
   async sendCardToChat(
     chatId: string,
     cardContent: string,
+    replyToMessageId?: string,
+    replyInThread?: boolean,
   ): Promise<Result<{ messageId: string }, ChannelError>> {
     try {
-      return ok(await this.messagingClient.sendCardToChat(chatId, cardContent));
+      return ok(await this.messagingClient.sendCardToChat(
+        chatId,
+        cardContent,
+        replyToMessageId,
+        replyInThread,
+      ));
     } catch (e) {
       return err(new ChannelError({
         channel: 'lark',
@@ -712,6 +731,16 @@ export class LarkChannelAdapter implements ChannelAdapter {
     return 'aborted';
   }
 
+  /** Interrupt the active run in one exact DM, thread, or inline-user session. */
+  interruptConversation(
+    conversationKey: string,
+    actor: LarkInterruptActor,
+  ): LarkInterruptResult {
+    const active = [...this.runOwners.entries()]
+      .find(([, owner]) => owner.conversationKey === conversationKey);
+    return active ? this.interruptRun(active[0], actor) : 'not_found';
+  }
+
   /** Find the correlationId for a run by its status message ID. */
   findCorrelationByStatusMessage(messageId: string): string | undefined {
     for (const [corrId, coordinator] of this.coordinators) {
@@ -745,13 +774,14 @@ export class LarkChannelAdapter implements ChannelAdapter {
     content: string,
     replyToMessageId?: string,
     idempotencyKey?: string,
+    replyInThread?: boolean,
   ): Promise<Result<string, ChannelError>> {
     try {
       const result = await this.messagingClient.sendMessage(
         chatId,
         content,
         replyToMessageId,
-        undefined,
+        replyInThread,
         idempotencyKey,
       );
       return ok(result.messageId);

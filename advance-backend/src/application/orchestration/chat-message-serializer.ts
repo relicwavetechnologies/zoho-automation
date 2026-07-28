@@ -1,11 +1,11 @@
 /**
- * ChatMessageSerializer — per-chat sequential processing with no Redis locks.
+ * ChatMessageSerializer — per-lane sequential processing with no Redis locks.
  *
- * Each chatId gets a Promise chain. Incoming tasks queue behind whatever is
- * currently running — like a single-threaded queue per chat.
+ * Each caller-defined lane gets a Promise chain. Incoming tasks queue behind
+ * whatever is currently running in that lane.
  *
  * Features:
- * • Per-chat serialization   — different chats run in parallel (up to maxConcurrent).
+ * • Per-lane serialization   — different lanes run in parallel (up to maxConcurrent).
  * • AbortSignal on timeout   — timed-out tasks are aborted, not just abandoned.
  * • Global backpressure      — maxConcurrent caps total parallel engine.run() calls.
  * • Graceful error isolation — if task N throws, task N+1 still runs.
@@ -36,10 +36,9 @@ export interface SerializerOptions {
    * Maximum number of engine.run() calls allowed across all chats.
    * Additional tasks wait until a slot opens.
    *
-   * Default: `DEFAULT_MAX_CONCURRENT`. Deliberately not Infinity — group lanes
-   * are per-requester, so a busy room opens one lane per person and an
-   * unbounded default lets a single burst start as many concurrent agent runs
-   * as there are people talking.
+   * Default: `DEFAULT_MAX_CONCURRENT`. Deliberately not Infinity — group work
+   * may open one lane per thread (or per requester in inline mode), and an
+   * unbounded default lets a room burst start arbitrarily many agent runs.
    */
   maxConcurrent?: number;
 }

@@ -130,6 +130,7 @@ function createHarness(
       },
     } as any,
     channelIdentityRepo: {
+      resolveLarkTenantCompanyId: async () => ok('company-1'),
       resolveByLarkTenantIdentity: async (openId: string) => ok({
         userId: `user:${openId}`,
         companyId: 'company-1',

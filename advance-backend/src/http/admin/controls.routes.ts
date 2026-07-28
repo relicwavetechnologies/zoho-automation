@@ -6,6 +6,8 @@
  *   GET  /                      — list admin control states (optionally scoped to a company)
  *   GET  /lark-untagged-policy  — effective untagged-group policy for a company
  *   PUT  /lark-untagged-policy  — set a company's untagged-group policy
+ *   GET  /lark-group-mode        — effective reply mode for one Lark group
+ *   PUT  /lark-group-mode        — set the reply mode for one Lark group
  */
 
 import { Router } from 'express';
@@ -20,6 +22,10 @@ import {
   resolveCompanyUntaggedGroupPolicy,
   UNTAGGED_ATTACHMENTS_CONTROL,
 } from '../../infrastructure/channels/lark/lark-untagged-policy';
+import {
+  loadLarkGroupMode,
+  saveLarkGroupMode,
+} from '../../infrastructure/channels/lark/lark-group-mode';
 
 export interface ControlsRoutesDeps {
   prisma: PrismaClient;
@@ -176,6 +182,65 @@ export function createControlsRoutes(deps: ControlsRoutesDeps): Router {
       companyId,
       applied: Object.fromEntries(writes.map(w => [w.controlKey, w.value])),
     }, 'Untagged group policy updated');
+  }));
+
+  const groupAddress = z.object({
+    tenantKey: z.string().min(1).max(200),
+    appId: z.string().min(1).max(200).optional(),
+    chatId: z.string().min(1).max(200),
+  });
+
+  router.get('/lark-group-mode', asyncRoute(async (req, res) => {
+    const companyId = resolveCompanyId(
+      res,
+      typeof req.query.companyId === 'string' ? req.query.companyId : undefined,
+    );
+    if (!companyId) throw routeError(400, 'companyId is required');
+    const parsed = groupAddress.parse(req.query);
+    const address = {
+      tenantKey: parsed.tenantKey,
+      ...(parsed.appId ? { appId: parsed.appId } : {}),
+      chatId: parsed.chatId,
+    };
+    const mode = await loadLarkGroupMode(deps.prisma, { companyId, ...address });
+
+    success(res, { companyId, ...address, mode }, 'Lark group mode loaded');
+  }));
+
+  const groupModeUpdate = groupAddress.extend({
+    mode: z.enum(['threaded', 'inline']),
+  });
+
+  router.put('/lark-group-mode', asyncRoute(async (req, res) => {
+    const companyId = resolveCompanyId(
+      res,
+      typeof req.query.companyId === 'string' ? req.query.companyId : undefined,
+    );
+    if (!companyId) throw routeError(400, 'companyId is required');
+    const update = groupModeUpdate.parse(req.body);
+    const actorId = (res.locals['userId'] as string | undefined) ?? 'unknown';
+    const address = {
+      companyId,
+      tenantKey: update.tenantKey,
+      ...(update.appId ? { appId: update.appId } : {}),
+      chatId: update.chatId,
+    };
+
+    await saveLarkGroupMode(deps.prisma, address, update.mode, actorId);
+    deps.audit?.record({
+      actorId,
+      companyId,
+      action: 'controls.lark_group_mode.set',
+      outcome: 'success',
+      metadata: {
+        tenantKey: update.tenantKey,
+        appId: update.appId ?? null,
+        chatId: update.chatId,
+        mode: update.mode,
+      },
+    });
+
+    success(res, { ...address, mode: update.mode }, 'Lark group mode updated');
   }));
 
   return router;

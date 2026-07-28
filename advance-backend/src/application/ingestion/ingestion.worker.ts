@@ -111,6 +111,8 @@ export class IngestionWorker {
           payload.chatId,
           summaryCard,
           payload.replyToMessageId,
+          undefined,
+          payload.replyInThread,
         ).catch(() => { /* non-fatal */ });
       }
     } catch (e) {
@@ -138,6 +140,8 @@ export class IngestionWorker {
             payload.chatId,
             buildFailedCard(payload.fileName, errMsg),
             payload.replyToMessageId,
+            undefined,
+            payload.replyInThread,
           ).catch(() => { /* non-fatal */ });
         }
       }

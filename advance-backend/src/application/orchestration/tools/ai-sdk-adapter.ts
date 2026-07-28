@@ -31,7 +31,7 @@ export interface AdapterContext {
   clock:         Clock;
   /** When provided, non-read actions are routed through the approval gate. */
   approvalGate?: ApprovalGateService;
-  /** Lark chat_id — required for the approval gate idempotency key. */
+  /** Canonical conversation scope used by approval and per-run tools. */
   chatId?:       string;
   /** Live progress callback — tool updates flow to the user's status bubble. */
   onProgress?:   ((message: string) => void) | undefined;

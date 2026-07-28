@@ -66,7 +66,11 @@ function sdkClient(
 
 function fetchWith(
   response: unknown,
-  options: { imageBytes?: Buffer; onImageDownload?: () => void } = {},
+  options: {
+    imageBytes?: Buffer;
+    onImageDownload?: () => void;
+    includeContent?: boolean;
+  } = {},
 ) {
   identityLookups.length = 0;
   return fetchParentMessage({
@@ -78,6 +82,9 @@ function fetchWith(
     userId: 'user-1',
     chatId: 'oc_expected',
     tenantKey: 'tenant-1',
+    ...(options.includeContent !== undefined
+      ? { includeContent: options.includeContent }
+      : {}),
     sdkClient: sdkClient(response, options.imageBytes, options.onImageDownload),
   });
 }
@@ -110,6 +117,31 @@ describe('Lark parent message references', () => {
       buildParentContextPrefix(result),
       '[Referenced message from Alice: "Please review this."]',
     );
+  });
+
+  it('can verify parent authorship without reading or downloading its content', async () => {
+    let downloads = 0;
+    const result = await fetchWith({
+      code: 0,
+      data: {
+        items: [{
+          chat_id: 'oc_expected',
+          msg_type: 'image',
+          sender: { id: 'ou_divo' },
+          body: { content: JSON.stringify({ image_key: 'img_secret' }) },
+        }],
+      },
+    }, {
+      includeContent: false,
+      onImageDownload: () => { downloads += 1; },
+    });
+
+    assert.equal(result.status, 'available');
+    assert.equal(result.senderExternalId, 'ou_divo');
+    assert.equal(result.text, '');
+    assert.deepEqual(result.imageUrls, []);
+    assert.equal(downloads, 0);
+    assert.deepEqual(identityLookups, []);
   });
 
   it('does not expose content from a different chat', async () => {
