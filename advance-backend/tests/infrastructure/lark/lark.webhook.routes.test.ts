@@ -1822,6 +1822,37 @@ describe('Lark voice notes', () => {
     }]);
   });
 
+  it('uses referenced audio as the context for a later bare group mention', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      text: '',
+      parentId: 'om_voice_parent',
+      threadId: null,
+    }), {
+      parentMessage: {
+        messageId: 'om_voice_parent',
+        status: 'available',
+        messageType: 'audio',
+        text: '',
+        senderExternalId: 'ou_sender',
+        imageUrls: [],
+        audioAttachment: { fileKey: 'file_voice_parent', durationMs: 4_000 },
+      },
+      voiceFileClient: {
+        downloadFile: async () => Buffer.from('fake-ogg'),
+      },
+      voiceTranscriber: {
+        transcribe: async () => ({ text: 'Compare both companies.' }),
+      },
+    });
+
+    const engineInput = result.engineInputs[0] as any;
+    assert.match(engineInput.incoming.text, /Voice note transcript: Compare both companies/);
+    assert.equal(engineInput.incoming.requiresAdjacentContext, undefined);
+    assert.equal(engineInput.incoming.attachments[0]?.type, 'audio');
+  });
+
   it('fails closed for over-limit and failed private transcriptions', async () => {
     const unknownDuration = await runWebhook(makeEvent({
       chatType: 'p2p',

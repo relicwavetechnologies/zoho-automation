@@ -1648,12 +1648,17 @@ async function processInBackground(
   }
 
   let effectiveIncoming: IncomingMessage = bareMention
-    ? {
-        ...incoming,
-        text: 'Use the supplied adjacent Lark context to respond to the latest substantive user message.',
-        requiresAdjacentContext: true,
-        ...(referenceContext ? { referenceContext } : {}),
-      }
+    ? parentRef?.status === 'available'
+      ? {
+          ...incoming,
+          text: 'Respond to the referenced Lark message.',
+        }
+      : {
+          ...incoming,
+          text: 'Use the supplied adjacent Lark context to respond to the latest substantive user message.',
+          requiresAdjacentContext: true,
+          ...(referenceContext ? { referenceContext } : {}),
+        }
     : incoming;
 
   // Inject parent message context for quote-replies (text + images from quoted message)
