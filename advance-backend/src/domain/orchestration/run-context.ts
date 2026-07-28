@@ -65,9 +65,10 @@ export interface RunContext {
   readonly replyInThread?: boolean;
   /**
    * Marks headless scheduled execution so conversation history and background
-   * memory work are skipped. current_chat_only additionally locks messaging
-   * tools to the originating chat; scheduled_runtime_delivery delegates the
-   * final response to a dedicated runtime adapter such as creator Lark DM.
+   * memory work are skipped. All Lark runs reserve delivery to their current
+   * conversation; current_chat_only locks scheduled work to its originating
+   * chat, while scheduled_runtime_delivery delegates the final response to a
+   * dedicated runtime adapter such as creator Lark DM.
    */
   readonly deliveryMode?: 'current_chat_only' | 'scheduled_runtime_delivery';
 }

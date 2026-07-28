@@ -183,7 +183,7 @@ describe('SemrushClient', () => {
     assert.equal(calls, 1);
   });
 
-  for (const [status, body] of [[401, 'denied'], [403, 'ERROR 120 :: WRONG KEY - ID PAIR']] as const) {
+  for (const [status, body] of [[401, 'denied'], [403, 'ERROR 120 :: WRONG KEY - ID PAIR'], [400, 'ERROR 122 :: WRONG FORMAT OR EMPTY KEY']] as const) {
     it(`maps a ${status} bad-key response to provider_auth_failed without retrying`, async () => {
       let calls = 0;
       const client = new SemrushClient({

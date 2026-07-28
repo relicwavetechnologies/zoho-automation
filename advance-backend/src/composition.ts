@@ -699,6 +699,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     new SemrushClient({ timeoutMs: env.SEMRUSH_TIMEOUT_MS }),
     env.SEMRUSH_API_KEY,
     logger.child({ service: 'semrush' }),
+    env.SEMRUSH_API_KEY_WEBHOOK_URL,
   );
   const companyOmsSiteDataService = new CompanyOmsSiteDataService(
     companyOmsConnectionRepo,
@@ -1746,7 +1747,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     history,
     executionRepo,
     ...(mem0Service ? { mem0: mem0Service } : {}),
-    fastPathModel: model,
     chatContext: chatContextService,
     conversationSummarizer,
     larkInference: larkInferenceService,

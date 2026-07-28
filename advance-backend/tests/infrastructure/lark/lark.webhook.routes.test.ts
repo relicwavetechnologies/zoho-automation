@@ -46,6 +46,7 @@ function makeEvent(input: {
   messageId?: string;
   rootId?: string | null;
   parentId?: string | null;
+  threadId?: string | null;
   text?: string;
 }) {
   const mentions = [
@@ -93,6 +94,7 @@ function makeEvent(input: {
         create_time: '1700000000000',
         ...(input.rootId === null ? {} : { root_id: input.rootId ?? 'om_root' }),
         ...(input.parentId === null ? {} : { parent_id: input.parentId ?? 'om_parent' }),
+        ...(input.threadId === null ? {} : input.threadId ? { thread_id: input.threadId } : {}),
         mentions,
       },
     },
@@ -668,6 +670,75 @@ describe('Lark webhook admission', () => {
 
     assert.equal(result.engineInputs.length, 0);
     assert.equal(result.retainedMessages.length, 1);
+    assert.equal(result.appendedTurns.length, 0);
+  });
+
+  it('does not put an unmentioned top-level room message into thread history', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      rootId: null,
+      parentId: null,
+      text: 'Ambient room discussion',
+    }));
+
+    assert.equal(result.engineInputs.length, 0);
+    assert.equal(result.retainedMessages.length, 1);
+    assert.equal(result.appendedTurns.length, 0);
+  });
+
+  it('hydrates a bare mention from only the current native thread', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      rootId: 'om_root',
+      parentId: null,
+      threadId: 'omt_current',
+      text: '',
+    }), {
+      setupAdapter: adapter => {
+        adapter.listThreadMessages = async () => [{
+          messageId: 'om_1',
+          text: '@Divo',
+          senderId: 'ou_sender',
+          senderName: 'Abhishek',
+          timestamp: '1700000000000',
+        }, {
+          messageId: 'om_prior',
+          text: 'use semrush',
+          senderId: 'ou_sender',
+          senderName: 'Abhishek',
+          timestamp: '1699999999000',
+        }, {
+          messageId: 'om_answer',
+          text: 'Earlier HDFC answer',
+          senderId: 'ou_bot',
+          timestamp: '1699999998000',
+        }];
+      },
+    });
+
+    assert.equal(result.engineInputs.length, 1);
+    const incoming = (result.engineInputs[0] as any).incoming;
+    assert.equal(incoming.requiresAdjacentContext, true);
+    assert.match(String(incoming.referenceContext), /Earlier HDFC answer/);
+    assert.match(String(incoming.referenceContext), /use semrush/);
+    assert.doesNotMatch(String(incoming.referenceContext), /@Divo/);
+    assert.equal(result.appendedTurns.length, 0);
+  });
+
+  it('marks a bare mention as context-dependent when adjacent context cannot be fetched', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'group',
+      mentionsBot: true,
+      rootId: 'om_root',
+      parentId: null,
+      text: '',
+    }));
+
+    assert.equal(result.engineInputs.length, 1);
+    const incoming = (result.engineInputs[0] as any).incoming;
+    assert.equal(incoming.requiresAdjacentContext, true);
+    assert.equal(incoming.referenceContext, undefined);
   });
 
   it('does not treat direct replies as agent turns when the group uses inline mode', async () => {

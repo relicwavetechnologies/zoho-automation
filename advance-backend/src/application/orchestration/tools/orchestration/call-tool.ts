@@ -33,7 +33,7 @@ export function createCallToolTool(
     action?: string;
   }) => void,
   runtimeExecutor?: ToolExecutor,
-  isWorkResolved?: () => boolean,
+  isToolResolved?: (toolId: string) => boolean,
 ) {
   const availableIds = registry.ids()
     .filter((toolId) => !allowedToolIds || allowedToolIds.has(String(toolId)))
@@ -56,9 +56,9 @@ export function createCallToolTool(
 
       const { toolId, args } = parsed.data;
 
-      if (isWorkResolved && !isWorkResolved()) {
+      if (isToolResolved && !isToolResolved(toolId)) {
         onDecision?.({ toolId, outcome: 'failure', status: 'work_context_required' });
-        return 'work_context_required: Governed work context was not loaded safely. Do not execute tools; ask the user to retry.';
+        return `work_context_required: Discover an approved skill for "${toolId}" before executing it.`;
       }
 
       adapterCtx.logger.info('call_tool.invoke', { toolId });

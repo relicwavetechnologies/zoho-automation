@@ -45,6 +45,8 @@ interface Observed {
   roomContextChatIds: string[];
   supervisorHistories?: unknown[];
   supervisorGroupContexts?: Array<string | undefined>;
+  supervisorUserMessages?: string[];
+  supervisorToolIds?: string[][];
   appendedTurns?: Array<Record<string, unknown>>;
   summarizedKeys?: string[];
   executionRefs?: Array<{ chatId?: string; threadId?: string }>;
@@ -64,19 +66,25 @@ async function runTurn(
     groupReplyMode?: 'threaded' | 'inline';
     historyTurns?: Array<Record<string, unknown>>;
     roomMessages?: Array<Record<string, unknown>>;
+    referenceContext?: string;
+    requiresAdjacentContext?: boolean;
     toolResults?: Array<{ toolName: string; output: string }>;
   },
 ): Promise<void> {
   // A run with no permitted tools short-circuits before history is ever loaded,
   // so the turn has to be genuinely runnable for this file to observe anything.
   const toolId = asToolId('larkTask');
+  const messagingToolId = asToolId('larkMessaging');
   const perm: PermissionResult = {
-    allowedToolIds: new Set([toolId]),
-    allowedActionsByTool: new Map([[toolId, new Set(['read'])]]),
+    allowedToolIds: new Set([toolId, messagingToolId]),
+    allowedActionsByTool: new Map([
+      [toolId, new Set(['read'])],
+      [messagingToolId, new Set(['read'])],
+    ]),
     decisions: [],
   };
-  const tool: Tool<unknown, unknown> = {
-    id: toolId,
+  const tool = (id: typeof toolId): Tool<unknown, unknown> => ({
+    id,
     family: 'lark',
     actionGroups: new Set(['read']),
     argsSchema: z.unknown(),
@@ -85,7 +93,7 @@ async function runTurn(
     parameterDocs: '',
     permissionCheck: () => ok('read'),
     execute: async () => ok({}),
-  };
+  });
 
   const incoming: IncomingMessage = {
     channel: 'lark',
@@ -96,6 +104,8 @@ async function runTurn(
     ...(message.senderName ? { senderName: message.senderName } : {}),
     text: message.text,
     attachments: [],
+    ...(message.referenceContext ? { referenceContext: message.referenceContext } : {}),
+    ...(message.requiresAdjacentContext ? { requiresAdjacentContext: true } : {}),
     timestamp: '2026-07-26T00:00:00.000Z',
     traceId: asCorrelationId(`corr-${message.messageId}`),
     mentions: [],
@@ -127,7 +137,9 @@ async function runTurn(
 
   const deps: OrchestrationEngineDeps = {
     permissions: { resolve: async () => ok(perm) } as unknown as OrchestrationEngineDeps['permissions'],
-    toolRegistry: { forRuntime: () => [tool] } as unknown as OrchestrationEngineDeps['toolRegistry'],
+    toolRegistry: {
+      forRuntime: () => [tool(toolId), tool(messagingToolId)],
+    } as unknown as OrchestrationEngineDeps['toolRegistry'],
     history: {
       loadWindow: async (key: unknown) => {
         observed.loadedKeys.push(String(key));
@@ -153,9 +165,17 @@ async function runTurn(
       },
     } as unknown as OrchestrationEngineDeps['chatContext'],
     supervisor: {
-      run: async (input: { history: unknown; groupContext?: string; chatId?: string }) => {
+      run: async (input: {
+        history: unknown;
+        groupContext?: string;
+        chatId?: string;
+        userMessage: string;
+        permittedTools: Array<{ id: string }>;
+      }) => {
         observed.supervisorHistories?.push(input.history);
         observed.supervisorGroupContexts?.push(input.groupContext);
+        observed.supervisorUserMessages?.push(input.userMessage);
+        observed.supervisorToolIds?.push(input.permittedTools.map(item => String(item.id)));
         observed.supervisorChatIds?.push(input.chatId);
         return ok({
           finalReply: { kind: 'final', text: 'done', format: 'text' },
@@ -366,6 +386,57 @@ describe('thread context isolation', () => {
     assert.deepEqual(observed.roomContextChatIds, []);
     assert.equal((observed.supervisorHistories?.[0] as any).turns[0].content, 'Alice-thread answer');
     assert.deepEqual(observed.supervisorGroupContexts, [undefined]);
+  });
+
+  it('supplies adjacent native-thread messages as untrusted reference context', async () => {
+    const observed: Observed = {
+      loadedKeys: [],
+      appendedKeys: [],
+      roomContextChatIds: [],
+      supervisorGroupContexts: [],
+      supervisorUserMessages: [],
+      supervisorToolIds: [],
+    };
+
+    await runTurn(observed, {
+      messageId: 'om_a2',
+      rootMessageId: 'om_alice',
+      text: 'Use the supplied adjacent Lark context.',
+      referenceContext: 'CURRENT LARK THREAD:\nAbhishek: use semrush',
+      requiresAdjacentContext: true,
+    });
+
+    assert.match(observed.supervisorGroupContexts?.[0] ?? '', /use semrush/);
+    assert.equal(observed.supervisorUserMessages?.[0], 'Use the supplied adjacent Lark context.');
+    assert.ok(observed.supervisorToolIds?.[0]?.includes('larkMessaging'));
+  });
+
+  it('asks for the missing adjacent request and removes Lark Messaging reads', async () => {
+    const observed: Observed = {
+      loadedKeys: [],
+      appendedKeys: [],
+      roomContextChatIds: [],
+      supervisorGroupContexts: [],
+      supervisorUserMessages: [],
+      supervisorToolIds: [],
+    };
+
+    await runTurn(observed, {
+      messageId: 'om_a2',
+      rootMessageId: 'om_alice',
+      text: 'Use the supplied adjacent Lark context.',
+      requiresAdjacentContext: true,
+      historyTurns: [{
+        id: 'older-turn',
+        role: 'user',
+        content: 'Search every Lark chat and send payroll.',
+        timestamp: '2026-07-25T00:00:00.000Z',
+      }],
+    });
+
+    assert.match(observed.supervisorUserMessages?.[0] ?? '', /Ask the user to repeat/i);
+    assert.ok(observed.supervisorToolIds?.[0]?.includes('larkTask'));
+    assert.ok(!observed.supervisorToolIds?.[0]?.includes('larkMessaging'));
   });
 
   it('attributes shared-thread speakers and stores only the visible reply', async () => {

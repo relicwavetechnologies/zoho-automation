@@ -91,6 +91,43 @@ describe('Lark family clients through the official SDK boundary', () => {
     }]);
   });
 
+  it('lists only one native thread when hydrating a bare mention', async () => {
+    const { sdkClient, requests } = sdkStub(() => ({
+      items: [{
+        message_id: 'om_prior',
+        msg_type: 'text',
+        body: { content: '{"text":"use semrush"}' },
+        sender: { id: 'ou_sender', sender_name: 'Abhishek' },
+        create_time: '1700000000000',
+      }],
+    }));
+    const client = new LarkMessagingClient({
+      appId: 'app',
+      appSecret: 'secret',
+      logger: noopLogger,
+      sdkClient,
+    });
+
+    assert.deepEqual(await client.listThreadMessages('omt_current'), [{
+      messageId: 'om_prior',
+      text: 'use semrush',
+      senderId: 'ou_sender',
+      senderName: 'Abhishek',
+      timestamp: '1700000000000',
+    }]);
+    assert.deepEqual(requests[0], {
+      method: 'GET',
+      url: '/open-apis/im/v1/messages',
+      params: {
+        container_id_type: 'thread',
+        container_id: 'omt_current',
+        sort_type: 'ByCreateTimeDesc',
+        page_size: 12,
+        with_sender_name: 'true',
+      },
+    });
+  });
+
   it('maps task records while preserving the documented SDK request', async () => {
     const { sdkClient, requests } = sdkStub(() => ({ task: { guid: 'task-1', summary: 'Ship SDK', completed: true } }));
     const task = await new LarkTaskClient(deps(sdkClient)).getTask('task-1');

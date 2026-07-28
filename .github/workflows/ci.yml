@@ -57,6 +57,7 @@ jobs:
       CLOUDINARY_API_KEY: test-cloudinary-key
       CLOUDINARY_API_SECRET: test-cloudinary-secret
       ZOHO_TOKEN_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
+      DATA_EXPORT_UNISOLATED_TEST_MODE: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

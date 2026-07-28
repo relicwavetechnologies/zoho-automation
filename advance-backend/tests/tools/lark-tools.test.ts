@@ -326,6 +326,32 @@ describe('larkMessaging tool', () => {
       assert.match((r as any).error.message, /runtime owns final delivery/i);
     });
 
+    it('send: rejects duplicate delivery to the current interactive Lark chat', async () => {
+      let called = false;
+      const interactiveCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'oc_current_chat',
+        replyToMessageId: 'om_current_turn',
+      });
+      const tool = createLarkMessagingTool({
+        client: {
+          ...fakeClient,
+          sendMessage: async () => {
+            called = true;
+            return { messageId: 'msg-duplicate' };
+          },
+        },
+      });
+
+      const r = await tool.execute(
+        { op: 'send', chatId: 'oc_current_chat', text: 'Badhiya bhai!' },
+        interactiveCtx,
+      );
+
+      assert.equal(r.ok, false);
+      assert.equal(called, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
     it('send: preserves an explicit external action to a different chat', async () => {
       let capturedChatId: string | null = null;
       const client = {
@@ -359,6 +385,22 @@ describe('larkMessaging tool', () => {
       const tool = createLarkMessagingTool({ client: fakeClient });
 
       const r = await tool.execute({ op: 'reply', messageId: 'msg-1', text: 'summary' }, lockedCtx);
+
+      assert.equal(r.ok, false);
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('reply: rejects duplicate delivery to the current interactive Lark turn', async () => {
+      const interactiveCtx = makeCtx('larkMessaging', ['send'], {
+        chatId: 'oc_current_chat',
+        replyToMessageId: 'om_current_turn',
+      });
+      const tool = createLarkMessagingTool({ client: fakeClient });
+
+      const r = await tool.execute(
+        { op: 'reply', messageId: 'om_current_turn', text: 'Badhiya bhai!' },
+        interactiveCtx,
+      );
 
       assert.equal(r.ok, false);
       assert.match((r as any).error.message, /runtime owns final delivery/i);
@@ -401,6 +443,35 @@ describe('larkMessaging tool', () => {
       const r = await tool.execute({ op: 'send_dm', text: 'hello', recipientName: 'Abhishek' }, lockedCtx);
       assert.equal(r.ok, false);
       assert.equal((r as any).error.payload.reason, 'bad_args');
+      assert.match((r as any).error.message, /runtime owns final delivery/i);
+    });
+
+    it('send_dm: rejects duplicate delivery to the current interactive requester', async () => {
+      let called = false;
+      const interactiveCtx = makeCtx('larkMessaging', ['read', 'send'], {
+        chatId: 'oc_current_chat',
+        replyToMessageId: 'om_current_turn',
+        userExternalId: 'resolved:Abhishek',
+      });
+      const tool = createLarkMessagingTool({
+        client: {
+          ...fakeClient,
+          sendDm: async () => {
+            called = true;
+            return { messageId: 'dm-duplicate' };
+          },
+        },
+        peopleResolver,
+      });
+
+      const r = await tool.execute({
+        op: 'send_dm',
+        text: 'Badhiya bhai! Aap sunao.',
+        recipientName: 'Abhishek',
+      }, interactiveCtx);
+
+      assert.equal(r.ok, false);
+      assert.equal(called, false);
       assert.match((r as any).error.message, /runtime owns final delivery/i);
     });
 

@@ -30,6 +30,165 @@ describe('SemrushService', () => {
     );
   });
 
+  it('caches the active webhook key across operations', async () => {
+    const providerCalls: unknown[] = [];
+    let webhookCalls = 0;
+    const service = new SemrushService(
+      {
+        fetch: async (input: unknown) => {
+          providerCalls.push(input);
+          return { operation: 'domain_overview', status: 'complete', coverage: {}, rows: [{ Dn: 'example.com' }] };
+        },
+      } as any,
+      'stale-static-key',
+      logger,
+      'https://keys.example.test/semrush',
+      async () => {
+        webhookCalls += 1;
+        return Response.json({ api_key: 'active-key', status: 'active' });
+      },
+    );
+
+    await service.execute(args);
+    await service.execute(args);
+
+    assert.equal(webhookCalls, 1);
+    assert.deepEqual(providerCalls, [
+      { apiKey: 'active-key', args },
+      { apiKey: 'active-key', args },
+    ]);
+  });
+
+  for (const code of ['provider_failure', 'rate_limited', 'timeout'] as const) {
+    it(`keeps the cached webhook key and does not retry after ${code}`, async () => {
+      const providerKeys: string[] = [];
+      let webhookCalls = 0;
+      const service = new SemrushService(
+        {
+          fetch: async ({ apiKey }: { apiKey: string }) => {
+            providerKeys.push(apiKey);
+            if (providerKeys.length === 1) throw new SemrushServiceError(code, code);
+            return { operation: 'domain_overview', status: 'complete', coverage: {}, rows: [{ Dn: 'example.com' }] };
+          },
+        } as any,
+        undefined,
+        logger,
+        'https://keys.example.test/semrush',
+        async () => {
+          webhookCalls += 1;
+          return Response.json({ api_key: 'active-key', status: 'active' });
+        },
+      );
+
+      await assert.rejects(
+        () => service.execute(args),
+        (error: unknown) => error instanceof SemrushServiceError && error.code === code,
+      );
+      await service.execute(args);
+
+      assert.equal(webhookCalls, 1);
+      assert.deepEqual(providerKeys, ['active-key', 'active-key']);
+    });
+  }
+
+  it('invalidates a rejected key, retries once with a different webhook key, and caches it', async () => {
+    const providerKeys: string[] = [];
+    const webhookKeys = ['expired-key', 'replacement-key'];
+    let webhookCalls = 0;
+    const service = new SemrushService(
+      {
+        fetch: async ({ apiKey }: { apiKey: string }) => {
+          providerKeys.push(apiKey);
+          if (apiKey === 'expired-key') {
+            throw new SemrushServiceError('provider_auth_failed', 'Semrush rejected the configured API key.');
+          }
+          return { operation: 'domain_overview', status: 'complete', coverage: {}, rows: [{ Dn: 'example.com' }] };
+        },
+      } as any,
+      undefined,
+      logger,
+      'https://keys.example.test/semrush',
+      async () => Response.json({ api_key: webhookKeys[webhookCalls++], status: 'active' }),
+    );
+
+    await service.execute(args);
+    await service.execute(args);
+
+    assert.equal(webhookCalls, 2);
+    assert.deepEqual(providerKeys, ['expired-key', 'replacement-key', 'replacement-key']);
+  });
+
+  it('does not retry a billed request when the webhook returns the same rejected key', async () => {
+    let providerCalls = 0;
+    let webhookCalls = 0;
+    const service = new SemrushService(
+      {
+        fetch: async () => {
+          providerCalls += 1;
+          throw new SemrushServiceError('provider_auth_failed', 'Semrush rejected the configured API key.');
+        },
+      } as any,
+      undefined,
+      logger,
+      'https://keys.example.test/semrush',
+      async () => {
+        webhookCalls += 1;
+        return Response.json({ api_key: 'same-expired-key', status: 'active' });
+      },
+    );
+
+    await assert.rejects(
+      () => service.execute(args),
+      (error: unknown) => error instanceof SemrushServiceError && error.code === 'provider_auth_failed',
+    );
+
+    assert.equal(webhookCalls, 2);
+    assert.equal(providerCalls, 1);
+  });
+
+  it('invalidates a failed replacement so the next operation can fetch a newer key', async () => {
+    const webhookKeys = ['expired-key', 'also-expired-key', 'working-key'];
+    let webhookCalls = 0;
+    const service = new SemrushService(
+      {
+        fetch: async ({ apiKey }: { apiKey: string }) => {
+          if (apiKey !== 'working-key') {
+            throw new SemrushServiceError('provider_insufficient_units', 'Semrush reports insufficient API units.');
+          }
+          return { operation: 'domain_overview', status: 'complete', coverage: {}, rows: [{ Dn: 'example.com' }] };
+        },
+      } as any,
+      undefined,
+      logger,
+      'https://keys.example.test/semrush',
+      async () => Response.json({ api_key: webhookKeys[webhookCalls++], status: 'active' }),
+    );
+
+    await assert.rejects(
+      () => service.execute(args),
+      (error: unknown) => error instanceof SemrushServiceError && error.code === 'provider_insufficient_units',
+    );
+    const result = await service.execute(args);
+
+    assert.equal(result.status, 'complete');
+    assert.equal(webhookCalls, 3);
+  });
+
+  it('does not fall back to a stale static key when the webhook has no active key', async () => {
+    const service = new SemrushService(
+      { fetch: async () => { throw new Error('must not call'); } } as any,
+      'stale-static-key',
+      logger,
+      'https://keys.example.test/semrush',
+      async () => Response.json({ status: 'error' }),
+    );
+
+    await assert.rejects(
+      () => service.execute(args),
+      (error: unknown) => error instanceof SemrushServiceError && error.code === 'not_configured',
+    );
+  });
+
   it('does not tunnel an operation with no mapped API surface to the provider', async () => {
     // All seven operations now have a verified contract, but the guard is what
     // keeps the next one from reaching Semrush before its contract is proven.
