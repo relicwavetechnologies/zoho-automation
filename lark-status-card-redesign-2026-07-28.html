@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lark status card 2.0 — diagnosis + two structures</title>
+<style>
+  :root{
+    --page:#0e0f11; --panel:#16181b; --panel-2:#1b1e22; --line:#26292e;
+    --ink:#e8e9eb; --ink-2:#9aa1a9; --ink-3:#6b7280;
+    --blue:#4c88ff; --green:#4fd06a; --red:#ff6b66; --amber:#ffb020; --violet:#a78bfa;
+    /* Lark chat surfaces (dark) */
+    --chat-bg:#1a1a1a; --card-bg:#262626; --card-line:#333333;
+    --card-ink:#e6e6e6; --card-ink-2:#8f959e; --card-ink-3:#6f757e;
+    --card-panel:#323232; --card-blue:#4c88ff; --card-green:#4fd06a; --card-red:#ff6b66;
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",Roboto,sans-serif;
+  }
+  html[data-mode="light"]{
+    --chat-bg:#f5f6f7; --card-bg:#ffffff; --card-line:#dee0e3;
+    --card-ink:#1f2329; --card-ink-2:#646a73; --card-ink-3:#8f959e;
+    --card-panel:#f2f3f5; --card-blue:#3370ff; --card-green:#34c724; --card-red:#f54a45;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--ink);font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:var(--blue)}
+  .wrap{max-width:1240px;margin:0 auto;padding:36px 28px 120px}
+
+  /* ── page chrome ─────────────────────────────────────────── */
+  header.top{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap;padding-bottom:22px;border-bottom:1px solid var(--line)}
+  h1{margin:0;font-size:26px;letter-spacing:-.02em;font-weight:650}
+  .sub{color:var(--ink-2);font-size:14px;margin-top:6px}
+  .kicker{font:600 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin-bottom:10px}
+  h2{font-size:19px;font-weight:640;letter-spacing:-.01em;margin:0 0 4px}
+  h3{font-size:15px;font-weight:620;margin:0 0 8px}
+  section{margin-top:52px}
+  .lede{color:var(--ink-2);font-size:14.5px;max-width:78ch;margin:0 0 22px}
+
+  /* ── controls ────────────────────────────────────────────── */
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  button.ctl{background:var(--panel-2);border:1px solid var(--line);color:var(--ink-2);
+    font:500 12.5px var(--sans);padding:7px 12px;border-radius:7px;cursor:pointer;transition:.14s}
+  button.ctl:hover{color:var(--ink);border-color:#3a3f46}
+  button.ctl[aria-pressed="true"]{background:var(--blue);border-color:var(--blue);color:#fff}
+  .scrub{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);padding:6px;border-radius:10px;flex-wrap:wrap}
+  .scrub button{background:transparent;border:0;color:var(--ink-3);font:500 12.5px var(--sans);
+    padding:6px 11px;border-radius:6px;cursor:pointer}
+  .scrub button:hover{color:var(--ink)}
+  .scrub button[aria-pressed="true"]{background:var(--panel-2);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+  .stagebar{position:sticky;top:0;z-index:20;background:linear-gradient(var(--page) 72%,transparent);
+    padding:14px 0 16px;margin-top:34px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .stagemeta{font:12px var(--mono);color:var(--ink-3)}
+
+  /* ── findings ────────────────────────────────────────────── */
+  .finds{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}
+  .find{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 15px}
+  .find .hd{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .sev{font:600 10px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;padding:4px 6px;border-radius:4px}
+  .sev.bug{background:rgba(255,107,102,.14);color:var(--red)}
+  .sev.lie{background:rgba(255,176,32,.14);color:var(--amber)}
+  .sev.noise{background:rgba(167,139,250,.14);color:var(--violet)}
+  .find b{font-weight:620;font-size:14px}
+  .find p{margin:0;color:var(--ink-2);font-size:13.2px}
+  .find code{font:11.5px var(--mono);color:var(--ink-3);background:var(--panel-2);padding:2px 5px;border-radius:4px;
+    display:inline-block;margin-top:9px}
+
+  /* ── Lark chat mock ──────────────────────────────────────── */
+  .chat{background:var(--chat-bg);border-radius:12px;padding:20px 18px;border:1px solid var(--line)}
+  .msgrow{display:flex;gap:10px;align-items:flex-start}
+  .avatar{width:32px;height:32px;border-radius:8px;flex:none;background:linear-gradient(150deg,#4c88ff,#2f6ae0);
+    display:grid;place-items:center;font-size:15px}
+  .msgcol{flex:1;min-width:0}
+  .wholine{display:flex;align-items:center;gap:7px;margin-bottom:6px;font-size:12.5px;color:var(--card-ink-2)}
+  .wholine .nm{color:var(--card-ink);font-weight:600;font-size:13px}
+  .botpill{font:600 9.5px/1 var(--sans);letter-spacing:.04em;background:#c9a227;color:#1a1a1a;padding:3px 4px;border-radius:3px}
+
+  /* the card itself */
+  .lcard{background:var(--card-bg);border:1px solid var(--card-line);border-radius:8px;overflow:hidden;max-width:560px}
+  .lc-head{padding:12px 12px 0;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .lc-title{font-size:16px;font-weight:600;color:var(--card-ink);letter-spacing:-.01em}
+  .lc-sub{padding:2px 12px 0;font-size:12px;color:var(--card-ink-2)}
+  .lc-body{padding:12px}
+  .tag{font-size:11px;padding:1px 6px;border-radius:4px;font-weight:500;line-height:1.5}
+  .tag.blue{background:rgba(76,136,255,.16);color:var(--card-blue)}
+  .tag.green{background:rgba(79,208,106,.16);color:var(--card-green)}
+  .tag.grey{background:rgba(143,149,158,.16);color:var(--card-ink-2)}
+  .el{font-size:14px;color:var(--card-ink);line-height:1.5}
+  .el.note{font-size:12px;color:var(--card-ink-2)}
+  .el b{font-weight:600}
+  .el .g{color:var(--card-ink-2)}
+  .el .ok{color:var(--card-green)}
+  .el .bad{color:var(--card-red)}
+  .el .bl{color:var(--card-blue)}
+  .lc-hr{height:1px;background:var(--card-line);border:0}
+  .panel{background:var(--card-panel);border-radius:6px;padding:7px 9px}
+  .panel .ph{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--card-ink-2);cursor:pointer}
+  .panel .pb{margin-top:8px;font-size:12px;color:var(--card-ink-2);line-height:1.7;white-space:pre-wrap}
+  .lbtn{display:inline-flex;align-items:center;gap:5px;font-size:13px;padding:5px 10px;border-radius:6px;
+    border:1px solid var(--card-line);color:var(--card-ink);background:transparent;cursor:pointer}
+  .lbtn.txt{border-color:transparent;padding:5px 6px}
+  .lbtn.danger-text{color:var(--card-red);border-color:transparent;padding:5px 6px}
+  .lbtn.primary{background:var(--card-blue);border-color:var(--card-blue);color:#fff}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .spread{justify-content:space-between}
+  .bar{display:inline-block;font:12px var(--mono);letter-spacing:1px;color:var(--card-blue)}
+  .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--card-blue);
+    animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.28}50%{opacity:1}}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--card-ink-2);
+    background:var(--card-panel);padding:3px 8px;border-radius:20px}
+
+  /* ── two-up layout ───────────────────────────────────────── */
+  .twoup{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+  @media(max-width:1080px){.twoup{grid-template-columns:1fr}}
+  .opt{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .opt-hd{padding:16px 18px;border-bottom:1px solid var(--line)}
+  .opt-hd .tagline{color:var(--ink-2);font-size:13.2px;margin-top:5px}
+  .opt-body{padding:18px}
+  .opt-foot{padding:14px 18px 18px;border-top:1px solid var(--line);display:grid;gap:10px}
+  ul.tight{margin:0;padding-left:18px;color:var(--ink-2);font-size:13.2px}
+  ul.tight li{margin:3px 0}
+  ul.tight li b{color:var(--ink);font-weight:600}
+  details.json{margin-top:14px;border:1px solid var(--line);border-radius:9px;background:#101215}
+  details.json summary{cursor:pointer;padding:9px 12px;font:600 12px var(--mono);color:var(--ink-2);letter-spacing:.02em}
+  details.json pre{margin:0;padding:0 12px 12px;font:11.5px/1.65 var(--mono);color:#c8ccd4;overflow:auto;max-height:420px}
+  .k{color:#7fb1ff}.s{color:#8fdc9a}.n{color:#e6c07b}
+
+  table{width:100%;border-collapse:collapse;font-size:13.4px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--ink-3);font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase}
+  td b{font-weight:620}
+  .yes{color:var(--green)}.no{color:var(--red)}
+  .callout{border-left:2px solid var(--blue);background:var(--panel);padding:14px 16px;border-radius:0 10px 10px 0;
+    font-size:13.6px;color:var(--ink-2)}
+  .callout b{color:var(--ink)}
+  .pin{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;background:var(--red);
+    color:#fff;font:700 10px var(--mono);vertical-align:middle;margin-left:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div>
+    <div class="kicker">Divo · Lark channel · card json 2.0</div>
+    <h1>Status card: what's lying, and two ways to rebuild it</h1>
+    <div class="sub">Read from <code style="font:12px var(--mono);color:var(--ink-3)">lark-card.builder.ts</code>,
+      <code style="font:12px var(--mono);color:var(--ink-3)">progress-state.ts</code>,
+      <code style="font:12px var(--mono);color:var(--ink-3)">run-status.aggregator.ts</code>,
+      <code style="font:12px var(--mono);color:var(--ink-3)">narration-buffer.ts</code> · 28 Jul 2026</div>
+  </div>
+  <div class="controls">
+    <button class="ctl" id="modeBtn">☀︎ Light</button>
+  </div>
+</header>
+
+<!-- ══════════════════ 0. SHIPPED ══════════════════ -->
+<section style="margin-top:34px">
+  <div class="callout" style="border-left-color:var(--green)">
+    <b>Built: Option B, with the trace panel removed.</b> The status card is now
+    <em>header (your request) → state + honest counter → optional plan bar → grouped ledger → Stop</em>.
+    Deltas from the mockup below, all found while wiring it up:
+    <ul class="tight" style="margin-top:8px">
+      <li>The <b>live line was cut when it would duplicate</b> the state word or the running ledger row —
+        the ledger's <em>●</em> row already is the live indicator.</li>
+      <li><b>No collapsible panel anywhere on the status card</b> (your call: no trace for the user).
+        <code style="font:12px var(--mono)">recent[]</code> — the array that fed “Trace (5)” — was deleted outright,
+        which is what removed the second, contradictory count.</li>
+      <li><b>Header falls back</b> to the state (“Working…”) when the request can't be summarised.</li>
+      <li>Two bugs the wiring exposed: <code style="font:12px var(--mono)">previewToolResult</code> stripped every
+        hyphen, mangling <em>INV-1043</em> and dates in the very strings the ledger shows; and
+        <code style="font:12px var(--mono)">manageTodos</code>' checklist dump leaked into a ledger row.</li>
+      <li>The final answer card <b>keeps</b> its execution-trace panel — it's a separate, tested feature.
+        Say the word and it goes too.</li>
+    </ul>
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)">
+      <b>Then a cold review found four more, all fixed:</b>
+      <ul class="tight" style="margin-top:8px">
+        <li>Elapsed time is now computed <b>at render</b> from <code style="font:12px var(--mono)">startedAtMs</code>.
+          Baked into the snapshot, it froze — the card's 6s heartbeat re-sends the <em>last</em> snapshot, so a
+          four-minute tool call showed the same “1m 04s” the whole way through.</li>
+        <li>A retry that succeeded after a 429 rendered as
+          <b>“✗ Zoho · 2 calls — Created INV-1043”</b> — failure marker over a success. Marker and outcome now
+          always describe the same call.</li>
+        <li>The checklist dump was stripped in the ledger but <b>not</b> in the final-card trace or the
+          desktop plan subtitle, so internal ids leaked there. Now cleaned once, at the source.</li>
+        <li>The action count is kept <b>beside</b> the fraction (“Step 1 of 5 · 12 actions · 40s”): a model that
+          adds todos and forgets to tick them would otherwise freeze the counter for a whole run.</li>
+        <li>Two things were <b>deleted rather than kept</b>: the terminal “Done/Blocked” status-card branches
+          (unreachable — the final card always replaces the status card) and every
+          <code style="font:12px var(--mono)">standard_icon</code> token on the status card (an unrecognised
+          token makes Lark reject the entire card, costing every run its status bubble).</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ 1. DIAGNOSIS ══════════════════ -->
+<section>
+  <h2>1 · What the current card gets wrong</h2>
+  <p class="lede">Everything below is from the code, not guesswork. The screenshot's
+    “Step 11/11 + empty ring + two generic ✓ lines + Trace (5)” is four separate defects stacked in one 220px-tall card.</p>
+
+  <div class="twoup" style="grid-template-columns:minmax(0,560px) 1fr">
+    <div class="chat">
+      <div class="msgrow">
+        <div class="avatar">🤖</div>
+        <div class="msgcol">
+          <div class="wholine"><span class="nm">Divo</span><span class="botpill">BOT</span>
+            <span>| Zoho automation tool integrated into lark</span><span>1:01 PM</span></div>
+          <div class="lcard">
+            <div class="lc-head"><span class="lc-title">Divo AI</span><span class="tag blue">Divo</span></div>
+            <div class="lc-sub" style="font-size:16px;color:var(--card-ink)">Step 11/11 <span class="pin">1</span></div>
+            <div class="lc-body">
+              <div style="display:flex;gap:14px;align-items:center">
+                <div style="width:64px;height:64px;border-radius:50%;flex:none;
+                     background:conic-gradient(var(--card-blue) 0 88%, #2f3946 88% 100%);
+                     mask:radial-gradient(circle, transparent 58%, #000 60%);
+                     -webkit-mask:radial-gradient(circle, transparent 58%, #000 60%)"></div>
+                <div>
+                  <div class="el"><b>Working on your request</b> <span class="pin">2</span></div>
+                  <div class="el" style="margin-top:10px"><span class="ok">✓</span> Finding capabilities… <span class="pin">3</span></div>
+                  <div class="el"><span class="ok">✓</span> Running tool…</div>
+                </div>
+              </div>
+              <hr class="lc-hr" style="margin:14px 0 10px" />
+              <div class="panel"><div class="ph"><span>Trace (5) <span class="pin">4</span></span><span>⌄</span></div></div>
+              <div class="row" style="margin-top:10px"><button class="lbtn danger-text">◼ Stop <span class="pin">5</span></button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="finds">
+      <div class="find">
+        <div class="hd"><span class="sev lie">lie 1</span><b>“Step 11/11” can never be anything else</b></div>
+        <p><code style="all:unset;font:12px var(--mono);color:var(--ink)">addPlanStep()</code> sets
+          <em>totalSteps = steps.length</em> on every call — the denominator <em>is</em> the numerator.
+          Nobody ever knows the total up front, so the fraction is structurally meaningless.</p>
+        <code>progress-state.ts:65-80 · lark-card.builder.ts:154-164</code>
+      </div>
+      <div class="find">
+        <div class="hd"><span class="sev lie">lie 2</span><b>The ring's % is fabricated — and its label doesn't render</b></div>
+        <p>88% comes from <em>completed/total</em>, i.e. from the same fake denominator; it is capped at 88 so it
+          always looks “almost done”. The centre text is empty because VChart wants
+          <em>indicator: [ … ]</em> (an array), not an object — that's why you see a bare donut.</p>
+        <code>progress-state.ts:137-154 · lark-card.builder.ts:125-152</code>
+      </div>
+      <div class="find">
+        <div class="hd"><span class="sev bug">bug 3</span><b>“✓ Running tool…” — done ticks on unfinished wording</b></div>
+        <p>Narration lines are the generic tool <em>verbs</em> (“Finding capabilities…”, “Running tool…”), committed
+          with a ✓ and their trailing ellipsis intact. Two lines describe eleven actions and say nothing about
+          <em>what</em> happened. A past-tense field already exists in tool-labels and is unused.</p>
+        <code>narration-buffer.ts:51-72 · tool-labels.ts:11 (past)</code>
+      </div>
+      <div class="find">
+        <div class="hd"><span class="sev bug">bug 4</span><b>Two different counts in one card</b></div>
+        <p>Header says 11, the panel says 5 — because <em>recent[]</em> is capped at 5 (RECENT_CAP) while
+          <em>steps[]</em> grows. Same card, same run, two numbers, neither explained.</p>
+        <code>run-status.aggregator.ts:24,871-885</code>
+      </div>
+      <div class="find">
+        <div class="hd"><span class="sev noise">noise 5</span><b>The biggest text is a constant</b></div>
+        <p>“Working on your request” is hard-coded and never changes; “Divo AI” + a “Divo” tag repeat the
+          <em>Divo · BOT</em> line Lark already prints above the card. Three of the four largest things on
+          the card carry zero information.</p>
+        <code>lark-card.builder.ts:296, 16, 574</code>
+      </div>
+      <div class="find">
+        <div class="hd"><span class="sev noise">noise 6</span><b>Layout spends 64px on decoration</b></div>
+        <p><em>column_set</em> at weight 1:5 reserves a whole column for a 72px chart, then an hr, then a
+          collapsed panel, then a button — four bands of chrome around two lines of content.</p>
+        <code>lark-card.builder.ts:278-321</code>
+      </div>
+      <div class="find">
+        <div class="hd"><span class="sev bug">bug 7</span><b>The Stop glyph is an emoji, not an icon</b></div>
+        <p><code style="all:unset;font:12px var(--mono);color:var(--ink)">'⏹ Stop'</code> renders as that grey
+          box you're seeing. Card 2.0 buttons take a real
+          <em>icon: { tag:'standard_icon', token:… }</em>.</p>
+        <code>lark-card.builder.ts:896-900</code>
+      </div>
+      <div class="find">
+        <div class="hd"><span class="sev bug">bug 8</span><b>Final-card buttons use 1.0 syntax inside a 2.0 card</b></div>
+        <p>Not in the screenshot but adjacent: the final card declares <em>schema 2.0</em> yet wraps buttons in a
+          <em>tag:'action'</em> container with <em>value:</em>. Card 2.0 has <b>no action container</b> and needs
+          <em>behaviors: [{type:'callback', value:{…}}]</em>. Those buttons can't fire. (The status card already
+          does it correctly — only the final card is wrong.)</p>
+        <code>lark-card.builder.ts:699-711 · docs: “JSON 2.0 no longer supports interactive modules”</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ 2. THE RULE ══════════════════ -->
+<section>
+  <h2>2 · The one rule that fixes the counter</h2>
+  <p class="lede">Aap ne exactly yahi pakda: agent ko pata hi nahi hota kitne steps lagenge — to fraction dikhana hi galat hai.
+    So the card gets three counter modes, and it only ever shows the one it can prove.</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
+    <div class="find"><div class="hd"><span class="sev noise">mode A</span><b>Total unknown → count up</b></div>
+      <p><b>“Working · 6 actions · 38s”.</b> No denominator, ever. Numbers only go up, so nothing can contradict
+        itself. This is the default and covers ~90% of runs.</p></div>
+    <div class="find"><div class="hd"><span class="sev noise">mode B</span><b>Plan declared → real fraction</b></div>
+      <p><b>“Step 3 of 5 · ▰▰▰▱▱”.</b> Only when the model has committed a checklist through
+        <em>manageTodos</em> (chat-scoped, already in the DB). The denominator is a promise the model made,
+        not a side effect of counting.</p></div>
+    <div class="find"><div class="hd"><span class="sev noise">mode C</span><b>Terminal → totals</b></div>
+      <p><b>“Done · 11 actions · 1m 04s”</b> / “Stopped by you” / “Blocked — Zoho auth”. One line, past tense,
+        no ellipsis, no spinner.</p></div>
+  </div>
+  <div class="callout" style="margin-top:14px">
+    <b>And: one number per card.</b> If the header counts actions, the panel title must not count something else —
+    it becomes “All 11 steps”, driven by the same array. The 5-line <code style="font:12px var(--mono)">recent[]</code>
+    cap moves inside the panel where it belongs (“showing last 5”).
+  </div>
+</section>
+
+<!-- ══════════════════ STAGE SCRUBBER ══════════════════ -->
+<div class="stagebar">
+  <div class="scrub" id="scrub"></div>
+  <button class="ctl" id="playBtn">▶ Play run</button>
+  <span class="stagemeta" id="stagemeta"></span>
+</div>
+
+<!-- ══════════════════ 3. THE TWO OPTIONS ══════════════════ -->
+<section style="margin-top:18px">
+  <h2>3 · Two structures</h2>
+  <p class="lede">Both are driven by the same run state below, so you're comparing them in identical situations —
+    scrub the stages or hit Play. Both drop the ring, the fraction, the constant headline and the duplicate count.
+    Every element used is one Card 2.0 supports (markdown · hr · collapsible_panel · column_set · button).</p>
+
+  <div class="twoup">
+    <!-- OPTION A -->
+    <div class="opt">
+      <div class="opt-hd">
+        <h3>Option A — <span style="color:var(--blue)">Status line</span></h3>
+        <div class="tagline">The header <em>is</em> the status. Body = one bold live line, one grey “what just
+          landed” line, everything else folded away. Smallest honest card possible.</div>
+      </div>
+      <div class="opt-body"><div class="chat" id="chatA"></div></div>
+      <div class="opt-foot">
+        <ul class="tight">
+          <li><b>Measured height</b> (this preview, same metrics as Lark PC): <b>142px</b> starting,
+            <b>206px</b> mid-run, <b>222px</b> answer — against <b>263px</b> for today's card.</li>
+          <li><b>Body is 4 elements max:</b> live line · one grey outcome · collapsed panel · Stop.</li>
+          <li><b>Moves:</b> the live line + the seconds. Nothing else redraws, so no jitter at the 1.5s update rate.</li>
+          <li><b>Header:</b> title carries state (“Thinking…” → “Working…” → the answer's subject),
+            subtitle carries the honest counter. Lark already prints “Divo · BOT” above, so the old
+            “Divo AI” title was a duplicate.</li>
+          <li><b>Best if</b> you want the card to feel like a system line, not a dashboard.</li>
+          <li><b>Trade-off:</b> only the newest outcome is visible; the rest is one tap away in the panel.</li>
+        </ul>
+        <details class="json"><summary>card json — current stage</summary><pre id="jsonA"></pre></details>
+      </div>
+    </div>
+
+    <!-- OPTION B -->
+    <div class="opt">
+      <div class="opt-hd">
+        <h3>Option B — <span style="color:var(--violet)">Work ledger</span></h3>
+        <div class="tagline">Branding stays in the header; body opens with a meta row, then an append-only ledger
+          that <em>groups by tool</em> so 11 calls read as three lines with real outcomes.</div>
+      </div>
+      <div class="opt-body"><div class="chat" id="chatB"></div></div>
+      <div class="opt-foot">
+        <ul class="tight">
+          <li><b>Measured height:</b> <b>168px</b> starting, <b>204–222px</b> mid-run, <b>221px</b> answer.
+            Note the 11-action run is 222px — <em>shorter</em> than today's 263px while showing 8× more.</li>
+          <li><b>Grouping is what bounds it:</b> consecutive calls in one family collapse to one line —
+            “✓ Zoho Books · 7 calls — Status → Sent”. A 30-call run is still 3–4 lines.</li>
+          <li><b>Header carries the request</b> (“Invoice for Acme Corp”), not the bot's name — so a chat
+            with five Divo cards is scannable. Source: first todo title, else a 6-word trim of the ask.</li>
+          <li><b>Progress bar</b> appears <em>only</em> in mode B (declared checklist) — see the “Declared plan” stage.</li>
+          <li><b>Best if</b> you want the user to see what actually happened without expanding anything —
+            useful for finance/ops where the audit trail is the point.</li>
+          <li><b>Trade-off:</b> more surface to keep clean; leans on result-preview quality
+            (<code style="font:12px var(--mono)">previewToolResult</code> already produces these strings).</li>
+        </ul>
+        <details class="json"><summary>card json — current stage</summary><pre id="jsonB"></pre></details>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ 4. COMPARE ══════════════════ -->
+<section>
+  <h2>4 · Side by side</h2>
+  <table>
+    <thead><tr><th></th><th>Today</th><th>A · Status line</th><th>B · Work ledger</th></tr></thead>
+    <tbody>
+      <tr><td><b>Honest counter</b></td><td class="no">Step n/n</td><td class="yes">count-up / real fraction</td><td class="yes">count-up / real fraction + bar</td></tr>
+      <tr><td><b>Height, 11-action run</b></td><td class="no">263px</td><td class="yes">206px</td><td>222px</td></tr>
+      <tr><td><b>Height, just started</b></td><td>~200px</td><td class="yes">142px</td><td>168px</td></tr>
+      <tr><td><b>Body elements</b></td><td>6 (chart + 2-col set + hr + panel + button)</td><td class="yes">4</td><td>5</td></tr>
+      <tr><td><b>Tells you what happened</b></td><td class="no">only after expanding</td><td>newest outcome</td><td class="yes">every outcome, grouped</td></tr>
+      <tr><td><b>Survives a 30-call run</b></td><td class="no">counter absurd, trace truncated silently</td><td class="yes">yes — fixed 3 lines</td><td class="yes">yes — grouping</td></tr>
+      <tr><td><b>Redraw jitter</b></td><td class="no">chart + 2 columns re-layout</td><td class="yes">one line changes</td><td>meta row + last ledger row</td></tr>
+      <tr><td><b>Header tells you which run</b></td><td class="no">“Divo AI” on every card</td><td>the run's state</td><td class="yes">the request itself</td></tr>
+      <tr><td><b>Build cost</b></td><td>—</td><td class="yes">~½ day (delete more than you add)</td><td>~1–1.5 days (grouping + todo read)</td></tr>
+    </tbody>
+  </table>
+  <div class="callout" style="margin-top:16px;border-left-color:var(--green)">
+    <b>Decision: B shipped</b> — the ledger is always visible, nothing is hidden behind a tap, and no trace
+    panel appears on the status card. A stays here as the record of the leaner alternative; if the ledger ever
+    feels heavy in a busy group chat, A is the fallback and both share one builder.
+  </div>
+</section>
+
+<!-- ══════════════════ 5. IMPLEMENTATION ══════════════════ -->
+<section>
+  <h2>5 · What changes in code</h2>
+  <table>
+    <thead><tr><th>File</th><th>Change</th></tr></thead>
+    <tbody>
+      <tr><td><b>progress-state.ts</b><br /><span style="color:var(--ink-3)">:65-80, :137-154, :234-240</span></td>
+        <td>Stop writing <em>totalSteps</em> from <em>steps.length</em> — rename to <em>actionCount</em>.
+          Add optional <em>declaredTotal</em> (from the todo repo). Delete <em>computeProgressPct</em>
+          or gate it behind <em>declaredTotal</em>. <em>formatPhaseHeader</em> emits the mode A/B/C string.</td></tr>
+      <tr><td><b>lark-card.builder.ts</b><br /><span style="color:var(--ink-3)">:125-164, :278-321, :699-711, :896</span></td>
+        <td>Delete <em>circularProgressElement</em> and the 1:5 <em>column_set</em>. Replace
+          <em>statusHeaderSubtitle</em> with the counter modes. Panel title from the step array, not
+          <em>recent.length</em>. Final-card buttons → flat elements + <em>behaviors</em>. Stop button →
+          <em>standard_icon</em>, drop the ⏹.</td></tr>
+      <tr><td><b>narration-buffer.ts</b><br /><span style="color:var(--ink-3)">:8, :51-72, :126</span></td>
+        <td>Never commit a <em>GENERIC_ACTIVITY</em> line with a ✓ — generic verbs may only be the live line.
+          On commit, swap in <em>tool-labels.past</em> + the result preview and strip the trailing ellipsis.</td></tr>
+      <tr><td><b>run-status.aggregator.ts</b><br /><span style="color:var(--ink-3)">:24, :97-115</span></td>
+        <td>Snapshot exposes one step array (grouped for B) instead of <em>recent[]</em> + <em>plan[]</em> +
+          <em>narration[]</em> all racing for the same rows. Feed <em>declaredTotal</em> from the todo repo when non-empty.</td></tr>
+      <tr><td><b>tests/infrastructure/lark-card.builder.test.ts</b><br /><span style="color:var(--ink-3)">:43-60</span></td>
+        <td>The test currently <em>asserts</em> the bug (“uses Step N/M in header”). Flip it: assert no
+          denominator unless <em>declaredTotal</em> is set.</td></tr>
+      <tr><td><b>Optional — CardKit streaming</b></td>
+        <td>Real typewriter updates need a card <em>entity</em> (<em>cardkit/v1/cards</em> with
+          <em>streaming_mode:true</em>, 10 req/s per card) — <em>im.v1.message.patch</em> cards can't stream.
+          Not needed for either option; it would just make the live line glide instead of snap.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</div>
+
+<script>
+/* ───────────────────────────────────────────────────────────
+   Run state — one model, both options render from it.
+   ─────────────────────────────────────────────────────────── */
+const STAGES = [
+  { key:'thinking', label:'Thinking', state:{
+      phase:'routing', elapsedMs:1800, actions:[], live:'Reading your request' } },
+  { key:'first', label:'First tool', state:{
+      phase:'executing', elapsedMs:6400, live:'Finding the right capability',
+      actions:[{fam:'divo',famLabel:'Divo',verb:'Finding the right capability',status:'running'}] } },
+  { key:'mid', label:'Mid-run', state:{
+      phase:'executing', elapsedMs:18200, live:'Creating the invoice in Zoho Books',
+      actions:[
+        {fam:'divo',famLabel:'Divo',verb:'Finding the right capability',past:'Found 3 matching capabilities',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Looking up the customer',past:'Matched customer — Acme Corp (CUST-1043)',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Creating the invoice in Zoho Books',status:'running'} ] } },
+  { key:'long', label:'Long run (the screenshot)', state:{
+      phase:'executing', elapsedMs:64000, live:'Attaching the PDF to the Lark task',
+      actions:[
+        {fam:'divo',famLabel:'Divo',verb:'Finding the right capability',past:'Found 3 matching capabilities',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Looking up the customer',past:'Matched customer — Acme Corp (CUST-1043)',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Reading open invoices',past:'3 open invoices, ₹4.12L outstanding',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Creating the invoice',past:'Created INV-1043 — ₹1,85,000',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Attaching line items',past:'6 line items added',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Applying GST',past:'GST 18% applied',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Emailing the invoice',past:'Emailed to ap@acme.com',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Marking as sent',past:'Status → Sent',status:'done'},
+        {fam:'lark',famLabel:'Lark',verb:'Creating the follow-up task',past:'Task “Chase INV-1043” · due 4 Aug',status:'done'},
+        {fam:'lark',famLabel:'Lark',verb:'Assigning the task',past:'Assigned to Priya',status:'done'},
+        {fam:'lark',famLabel:'Lark',verb:'Attaching the PDF to the Lark task',status:'running'} ] } },
+  { key:'plan', label:'Declared plan (mode B)', state:{
+      phase:'executing', elapsedMs:31000, live:'Reconciling the payment',
+      declared:[
+        {title:'Pull August invoices from Zoho', status:'done'},
+        {title:'Match against bank statement', status:'done'},
+        {title:'Reconcile the payment', status:'running'},
+        {title:'File the mismatch report', status:'pending'},
+        {title:'Post the summary to #finance', status:'pending'} ],
+      actions:[
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Pulling August invoices',past:'42 invoices, ₹18.6L billed',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Matching the bank statement',past:'39 matched · 3 unmatched',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Reconciling the payment',status:'running'} ] } },
+  { key:'wrap', label:'Wrapping up', state:{
+      phase:'synthesizing', elapsedMs:71000, live:'Writing your answer',
+      actions:[
+        {fam:'divo',famLabel:'Divo',verb:'Finding the right capability',past:'Found 3 matching capabilities',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Creating the invoice',past:'Created INV-1043 — ₹1,85,000',status:'done'},
+        {fam:'lark',famLabel:'Lark',verb:'Creating the follow-up task',past:'Task “Chase INV-1043” · due 4 Aug',status:'done'} ] } },
+  { key:'done', label:'Answer', state:{
+      phase:'done', elapsedMs:74000, final:true,
+      actions:[
+        {fam:'divo',famLabel:'Divo',verb:'Finding the right capability',past:'Found 3 matching capabilities',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Creating the invoice',past:'Created INV-1043 — ₹1,85,000',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Emailing the invoice',past:'Emailed to ap@acme.com',status:'done'},
+        {fam:'lark',famLabel:'Lark',verb:'Creating the follow-up task',past:'Task “Chase INV-1043” · due 4 Aug',status:'done'} ] } },
+  { key:'blocked', label:'Blocked', state:{
+      phase:'failed', elapsedMs:12000, error:'Zoho Books needs re-authorisation',
+      actions:[
+        {fam:'divo',famLabel:'Divo',verb:'Finding the right capability',past:'Found 3 matching capabilities',status:'done'},
+        {fam:'zoho',famLabel:'Zoho Books',verb:'Creating the invoice',past:'401 — token expired',status:'failed'} ] } },
+];
+
+/* ── helpers ─────────────────────────────────────────────── */
+const fmtDur = ms => {
+  const s = Math.round(ms/1000);
+  return s < 60 ? s + 's' : Math.floor(s/60) + 'm ' + String(s%60).padStart(2,'0') + 's';
+};
+const doneCount = a => a.filter(x=>x.status==='done').length;
+const plural = (n,w) => n + ' ' + w + (n===1?'':'s');
+
+/* Counter modes — the whole point of the redesign. */
+function counterLine(st, withState=true){
+  const n = st.actions.length;
+  if (st.phase === 'done')
+    return (withState?'Done · ':'') + plural(doneCount(st.actions),'action') + ' · ' + fmtDur(st.elapsedMs);
+  if (st.phase === 'failed')
+    return (withState?'Blocked · ':'') + plural(n,'action') + ' · ' + fmtDur(st.elapsedMs);
+  if (st.declared){                                    // mode B — real fraction
+    const d = st.declared.filter(t=>t.status==='done').length;
+    return 'Step ' + (d+1) + ' of ' + st.declared.length + ' · ' + fmtDur(st.elapsedMs);
+  }
+  if (!n) return fmtDur(st.elapsedMs);                 // nothing to count yet
+  return plural(n,'action') + ' · ' + fmtDur(st.elapsedMs);   // mode A — count up
+}
+function stateWord(st){
+  if (st.phase==='done')   return 'Done';
+  if (st.phase==='failed') return 'Blocked';
+  if (st.phase==='synthesizing') return 'Writing your answer';
+  if (st.phase==='routing') return 'Thinking';
+  return 'Working';
+}
+function headerTitle(st){
+  if (st.phase==='done')   return 'Invoice INV-1043 sent to Acme Corp';
+  if (st.phase==='failed') return 'Couldn’t finish';
+  if (st.phase==='synthesizing') return 'Writing your answer…';
+  if (st.phase==='routing') return 'Thinking…';
+  return 'Working…';
+}
+function bar(done,total){
+  return '▰'.repeat(done) + '▱'.repeat(Math.max(0,total-done));
+}
+/* group consecutive actions by tool family — Option B */
+function groupActions(actions){
+  const out=[];
+  for (const a of actions){
+    const last = out[out.length-1];
+    if (last && last.fam===a.fam && last.status!=='running' && a.status!=='running'){
+      last.count++; last.past=a.past??last.past; last.status = a.status==='failed'?'failed':last.status;
+    } else out.push({...a,count:1});
+  }
+  return out;
+}
+
+/* ── card json builders (mirror of the TS builder) ───────── */
+function md(content, opts={}){ return Object.assign({tag:'markdown',content,text_size:'normal'},opts); }
+
+function cardA(st){
+  const grouped = groupActions(st.actions);
+  const running = st.actions.find(a=>a.status==='running');
+  const finished = st.actions.filter(a=>a.status!=='running').slice(-2);
+  const els = [];
+
+  if (st.final){
+    els.push(md('**Invoice INV-1043** — ₹1,85,000 — is created and emailed to ap@acme.com.\n' +
+                'Follow-up task **“Chase INV-1043”** is assigned to Priya, due 4 Aug.'));
+    els.push({tag:'hr',margin:'10px 0 0 0'});
+    els.push(panelJson('run_detail','All '+doneCount(st.actions)+' steps · '+fmtDur(st.elapsedMs),
+      grouped.map(g=>'✓ '+g.famLabel+(g.count>1?' · '+g.count+' calls':'')+' — '+(g.past??g.verb)).join('\n')));
+    els.push(btnJson('Open in Zoho','default','open_url'));
+  } else if (st.phase==='failed'){
+    els.push(md('**'+st.error+'**'));
+    els.push(md("<font color='grey'>✓ "+(st.actions[0].past)+"\n✗ "+st.actions[1].past+'</font>',{text_size:'notation'}));
+    els.push(btnJson('Reconnect Zoho','primary','callback'));
+  } else {
+    els.push(md('**'+(running? running.verb : st.live)+'**'));
+    if (st.declared){                                   // mode B — the bar replaces the ✓ tail
+      const d = st.declared.filter(t=>t.status==='done').length;
+      els.push(md("<font color='blue'>"+bar(d,st.declared.length)+"</font>  <font color='grey'>next · "+
+        (st.declared.find(t=>t.status==='pending')||{title:'—'}).title+'</font>',{text_size:'notation'}));
+    } else if (finished.length) {
+      els.push(md("<font color='grey'>✓ " + (finished[finished.length-1].past ?? finished[finished.length-1].verb) +
+        '</font>', {text_size:'notation'}));
+    }
+    if (st.actions.length>1) els.push(panelJson('run_detail','All '+st.actions.length+' steps',
+      grouped.map(g=>(g.status==='running'?'● ':'✓ ')+g.famLabel+(g.count>1?' · '+g.count+' calls':'')+
+        ' — '+(g.past??g.verb)).join('\n')));
+    els.push(btnJson('Stop','danger_text','callback',{tag:'standard_icon',token:'stop-record_outlined'}));
+  }
+
+  return {
+    schema:'2.0',
+    config:{ width_mode:'fill', update_multi:true, enable_forward:!!st.final,
+             summary:{ content: headerTitle(st)+' — '+counterLine(st) } },
+    header:{ template:'default',
+      title:{ tag:'plain_text', content: headerTitle(st) },
+      subtitle:{ tag:'plain_text', content: counterLine(st) },
+      icon:{ tag:'standard_icon', token: st.phase==='failed'?'warning_outlined':'robot_outlined',
+             color: st.phase==='failed'?'red':'blue' },
+      text_tag_list:[{ tag:'text_tag', text:{tag:'plain_text',content:'Finance'}, color:'green' }] },
+    body:{ padding:'12px', vertical_spacing:'6px', elements: els }
+  };
+}
+
+function cardB(st){
+  const grouped = groupActions(st.actions);
+  const els = [];
+
+  if (st.final){
+    els.push(md('**Invoice INV-1043** — ₹1,85,000 — is created and emailed to ap@acme.com.\n' +
+                'Follow-up task **“Chase INV-1043”** is assigned to Priya, due 4 Aug.'));
+    els.push({tag:'hr',margin:'10px 0 0 0'});
+    els.push(md("<font color='grey'>"+grouped.map(g=>'✓ '+g.famLabel+(g.count>1?' · '+g.count+' calls':'')+
+      ' — '+(g.past??g.verb)).join('\n')+'</font>',{text_size:'notation'}));
+    els.push(btnJson('Open in Zoho','default','open_url'));
+  } else {
+    // meta row: state + honest counter (+ bar only when a plan was declared)
+    els.push(md((st.phase==='failed'?'✗ ':'● ')+'**'+stateWord(st)+'**' +
+      "  <font color='grey'>·  "+counterLine(st,false)+'</font>'));
+    if (st.declared){
+      const d = st.declared.filter(t=>t.status==='done').length;
+      els.push(md("<font color='blue'>"+bar(d,st.declared.length)+"</font>  <font color='grey'>"+
+        st.declared.find(t=>t.status==='running').title+'</font>',{text_size:'notation'}));
+    }
+    els.push({tag:'hr',margin:'6px 0 0 0'});
+    // the ledger — one line per tool family, newest last
+    const rows = grouped.map(g=>{
+      const mark = g.status==='running' ? '●' : g.status==='failed' ? '✗' : '✓';
+      const head = '**'+g.famLabel+'**'+(g.count>1?' · '+g.count+' calls':'');
+      return mark+' '+head+" <font color='grey'>— "+(g.past ?? g.verb)+'</font>';
+    });
+    els.push(md(rows.length? rows.join('\n') : "<font color='grey'>"+st.live+'…</font>',{text_size:'notation'}));
+    if (st.phase==='failed') els.push(btnJson('Reconnect Zoho','primary','callback'));
+    else els.push(btnJson('Stop','danger_text','callback',{tag:'standard_icon',token:'stop-record_outlined'}));
+  }
+
+  return {
+    schema:'2.0',
+    config:{ width_mode:'fill', update_multi:true, enable_forward:!!st.final,
+             summary:{ content:(st.final?'Invoice INV-1043 sent':'Divo is working')+' — '+counterLine(st) } },
+    header:{ template:'default',
+      title:{ tag:'plain_text', content: st.final
+        ? 'Invoice INV-1043 sent to Acme Corp'
+        : (st.declared ? st.declared[0].title.replace(/^Pull /,'Reconcile ') : 'Invoice for Acme Corp') },
+      icon:{ tag:'standard_icon', token:'robot_outlined', color:'blue' },
+      text_tag_list:[{ tag:'text_tag', text:{tag:'plain_text',content:'Finance'}, color:'green' }] },
+    body:{ padding:'12px', vertical_spacing:'6px', elements: els }
+  };
+}
+
+function panelJson(id,title,content){
+  return { tag:'collapsible_panel', element_id:id, expanded:false, padding:'6px 8px',
+    header:{ title:{tag:'plain_text',content:title},
+      icon:{tag:'standard_icon',token:'down-small-ccm_outlined',size:'12px 12px'},
+      icon_position:'right', icon_expanded_angle:-180 },
+    elements:[ md(content,{text_size:'notation'}) ] };
+}
+function btnJson(label,type,behavior,icon){
+  return { tag:'button', element_id:'act_'+label.toLowerCase().replace(/\W+/g,'_'),
+    text:{tag:'plain_text',content:label}, type, size:'small', width:'default',
+    ...(icon?{icon}:{}),
+    behaviors:[ behavior==='open_url'
+      ? { type:'open_url', default_url:'https://books.zoho.com/app#/invoices/1043' }
+      : { type:'callback', value:{ action: label==='Stop'?'interrupt_run':'reconnect_zoho' } } ] };
+}
+
+/* ── mini renderer for the subset of Card 2.0 we use ─────── */
+function inline(s){
+  return s
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/&lt;font color='grey'&gt;([\s\S]*?)&lt;\/font&gt;/g,'<span class="g">$1</span>')
+    .replace(/&lt;font color='blue'&gt;([\s\S]*?)&lt;\/font&gt;/g,'<span class="bl">$1</span>')
+    .replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
+    .replace(/^✓/gm,'<span class="ok">✓</span>')
+    .replace(/^✗/gm,'<span class="bad">✗</span>')
+    .replace(/^●/gm,'<span class="bl">●</span>')
+    .replace(/\n/g,'<br />');
+}
+function renderEl(el){
+  if (el.tag==='markdown'){
+    const cls = el.text_size==='notation' ? 'el note' : 'el';
+    return '<div class="'+cls+'">'+inline(el.content)+'</div>';
+  }
+  if (el.tag==='hr') return '<hr class="lc-hr" style="margin:8px 0" />';
+  if (el.tag==='collapsible_panel'){
+    return '<details class="panel" style="padding:0"><summary class="ph" style="padding:7px 9px;list-style:none">'+
+      '<span>'+el.header.title.content+'</span><span>⌄</span></summary>'+
+      '<div class="pb" style="padding:0 9px 9px">'+inline(el.elements[0].content)+'</div></details>';
+  }
+  if (el.tag==='button'){
+    const cls = el.type==='danger_text'?'lbtn danger-text':el.type==='primary'?'lbtn primary':'lbtn';
+    const ic  = el.icon ? '◼ ' : '';
+    return '<div class="row"><button class="'+cls+'">'+ic+el.text.content+'</button></div>';
+  }
+  return '';
+}
+function renderCard(card){
+  const h = card.header;
+  const tags = (h.text_tag_list||[]).map(t=>'<span class="tag green">'+t.text.content+'</span>').join('');
+  const icon = h.icon ? '<span style="font-size:14px">'+(h.icon.token.startsWith('warning')?'⚠️':'🤖')+'</span>' : '';
+  return '<div class="lcard">'+
+    '<div class="lc-head">'+icon+'<span class="lc-title">'+h.title.content+'</span>'+tags+'</div>'+
+    (h.subtitle?'<div class="lc-sub">'+h.subtitle.content+'</div>':'')+
+    '<div class="lc-body" style="display:grid;gap:6px">'+card.body.elements.map(renderEl).join('')+'</div>'+
+    '</div>';
+}
+function renderChat(target, card, subject){
+  target.innerHTML =
+    '<div class="msgrow"><div class="avatar">🤖</div><div class="msgcol">'+
+      '<div class="wholine"><span class="nm">Divo</span><span class="botpill">BOT</span>'+
+      '<span>| '+subject+'</span><span>1:01 PM</span></div>'+
+      renderCard(card)+
+    '</div></div>';
+}
+
+/* ── json pretty print with colour ───────────────────────── */
+function jsonHl(obj){
+  return JSON.stringify(obj,null,2)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"([^"]+)":/g,'<span class="k">"$1"</span>:')
+    .replace(/: "([^"]*)"/g,': <span class="s">"$1"</span>')
+    .replace(/: (true|false|-?\d+)/g,': <span class="n">$1</span>');
+}
+
+/* ── wiring ──────────────────────────────────────────────── */
+let idx = 3;              // start on the long run — the screenshot's case
+let playing = false, timer = null, tick = null;
+
+const scrub = document.getElementById('scrub');
+STAGES.forEach((s,i)=>{
+  const b = document.createElement('button');
+  b.textContent = s.label; b.onclick = ()=>{ stop(); idx = i; draw(); };
+  scrub.appendChild(b);
+});
+
+function currentState(){
+  const st = structuredClone(STAGES[idx].state);
+  st.actions = st.actions || [];
+  return st;
+}
+function draw(){
+  const st = currentState();
+  [...scrub.children].forEach((b,i)=>b.setAttribute('aria-pressed', String(i===idx)));
+  const subject = 'Zoho automation tool integrated into lark';
+  const a = cardA(st), b = cardB(st);
+  renderChat(document.getElementById('chatA'), a, subject);
+  renderChat(document.getElementById('chatB'), b, subject);
+  document.getElementById('jsonA').innerHTML = jsonHl(a);
+  document.getElementById('jsonB').innerHTML = jsonHl(b);
+  document.getElementById('stagemeta').textContent =
+    'stage: ' + STAGES[idx].key + '  ·  ' + st.actions.length + ' actions  ·  ' + fmtDur(st.elapsedMs) +
+    (st.declared ? '  ·  declared plan of ' + st.declared.length : '  ·  no declared plan');
+}
+function stop(){ playing=false; clearInterval(timer); clearInterval(tick);
+  document.getElementById('playBtn').textContent='▶ Play run'; }
+document.getElementById('playBtn').onclick = ()=>{
+  if (playing){ stop(); return; }
+  playing = true; idx = 0; draw();
+  document.getElementById('playBtn').textContent='◼ Stop';
+  timer = setInterval(()=>{
+    idx++;
+    if (idx >= STAGES.length-1){ idx = STAGES.length-2; draw(); stop(); return; }
+    draw();
+  }, 2600);
+  tick = setInterval(()=>{ STAGES[idx].state.elapsedMs += 1000; draw(); }, 1000);
+};
+document.getElementById('modeBtn').onclick = e=>{
+  const light = document.documentElement.getAttribute('data-mode')==='light';
+  document.documentElement.setAttribute('data-mode', light?'dark':'light');
+  e.target.textContent = light ? '☀︎ Light' : '☾ Dark';
+};
+draw();
+</script>
+</body>
+</html>

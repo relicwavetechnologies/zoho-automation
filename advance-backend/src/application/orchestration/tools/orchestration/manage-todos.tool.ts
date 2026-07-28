@@ -43,9 +43,7 @@ export function createManageTodosTool(
         case 'list': {
           const todos = await repo.listByChatId(args.chatId, userId);
           if (todos.length === 0) return 'No todos for this chat.';
-          return todos
-            .map(t => `[${t.status}] ${t.position}. ${t.title} (id:${t.id})`)
-            .join('\n');
+          return renderTodos(todos);
         }
 
         case 'add': {
@@ -60,7 +58,10 @@ export function createManageTodosTool(
             title:     args.title,
             position:  nextPos,
           });
-          return `Added todo: "${todo.title}" (id:${todo.id})`;
+          return withCurrentList(
+            `Added todo: "${todo.title}" (id:${todo.id})`,
+            await repo.listByChatId(args.chatId, userId),
+          );
         }
 
         case 'update_status': {
@@ -68,7 +69,10 @@ export function createManageTodosTool(
           if (!args.status) return 'error: status is required for update_status';
           const updated = await repo.updateStatus({ id: args.id, status: args.status });
           if (!updated) return `error: todo ${args.id} not found`;
-          return `Updated "${updated.title}" → ${updated.status}`;
+          return withCurrentList(
+            `Updated "${updated.title}" → ${updated.status}`,
+            await repo.listByChatId(args.chatId, userId),
+          );
         }
 
         case 'clear': {
@@ -80,4 +84,25 @@ export function createManageTodosTool(
       return 'error: unknown op';
     },
   });
+}
+
+interface RenderableTodo {
+  id:       string;
+  title:    string;
+  status:   string;
+  position: number;
+}
+
+function renderTodos(todos: readonly RenderableTodo[]): string {
+  return todos
+    .map(t => `[${t.status}] ${t.position}. ${t.title} (id:${t.id})`)
+    .join('\n');
+}
+
+/**
+ * Keep the one-line confirmation (other code matches on it) and append the whole
+ * list, so both the model and the status card always see the current checklist.
+ */
+function withCurrentList(headline: string, todos: readonly RenderableTodo[]): string {
+  return todos.length ? `${headline}\n${renderTodos(todos)}` : headline;
 }

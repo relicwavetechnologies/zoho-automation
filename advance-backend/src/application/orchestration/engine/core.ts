@@ -53,6 +53,31 @@ import { userFacingMessageOf } from '../../../shared/user-facing-error';
 
 const MEM0_SEARCH_TIMEOUT_MS = 500;
 
+const SUBJECT_MAX_CHARS = 52;
+
+/**
+ * Title the status card with the user's own words. Deliberately mechanical — no
+ * model call, because this runs before the first token and must not delay the
+ * card that tells the user Divo heard them.
+ */
+export function summarizeRequest(text: string): string | undefined {
+  const flat = (text ?? '')
+    .replace(/@_user_\d+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!flat) return undefined;
+
+  const firstSentence = flat.split(/(?<=[.!?])\s+/)[0] ?? flat;
+  const trimmed = firstSentence.replace(/[.!?,;:]+$/u, '').trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length <= SUBJECT_MAX_CHARS) return trimmed;
+
+  // Cut on a word boundary so the header never ends mid-word.
+  const cut = trimmed.slice(0, SUBJECT_MAX_CHARS);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 20 ? cut.slice(0, lastSpace) : cut).trim()}…`;
+}
+
 function withoutCurrentIncomingMessage(window: GroupChatWindow, incomingMessageId: string): GroupChatWindow {
   const recentMessages = window.recentMessages.filter(message => message.id !== incomingMessageId);
   if (recentMessages.length === window.recentMessages.length) {
@@ -267,6 +292,7 @@ export class OrchestrationEngine {
 
     const branding   = resolveBranding(perm);
     const aggregator = new RunStatusAggregator();
+    aggregator.setSubject(summarizeRequest(incoming.text));
 
     // ── 2. Build status channel wrapper & send initial card immediately ───
     // Sending before history/tool-discovery so the user sees Divo respond
@@ -309,7 +335,7 @@ export class OrchestrationEngine {
 
     const statusPromise = statusChannel.sendStatus({
       kind: 'status', terminal: false, branding,
-      timeline: { progressPct: 8, liveLabel: 'Thinking…' },
+      timeline: aggregator.snapshot(),
     });
 
     // ── 3. Discover allowed tools ─────────────────────────────────────────

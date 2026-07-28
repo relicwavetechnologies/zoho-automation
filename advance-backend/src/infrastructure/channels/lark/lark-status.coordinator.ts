@@ -153,14 +153,20 @@ export class LarkStatusCoordinator {
   private renderBodyPreview(input: StatusCardInput): string {
     const t = input.timeline;
     if (!t) return 'Working…';
+    // Everything the card renders must appear here, or a real change can be
+    // deduped away as "no update". Elapsed time is deliberately excluded — it
+    // ticks every second and would defeat the rate limiter on its own.
     const parts = [
       t.phase,
-      String(t.progressPct ?? ''),
+      t.state,
+      String(t.actionCount ?? ''),
+      t.declared ? `${t.declared.done}/${t.declared.total}:${t.declared.current ?? ''}` : '',
       t.liveLabel,
-      t.narration?.join('|'),
       t.narrationActive,
+      
+
+      t.ledger?.map(r => `${r.status}:${r.label}:${r.count}:${r.outcome}`).join('|'),
       t.plan?.map(p => `${p.status}:${p.title}:${p.subtitle ?? ''}`).join('|'),
-      t.recent?.join('|'),
     ].filter(Boolean);
     return parts.join('\n');
   }

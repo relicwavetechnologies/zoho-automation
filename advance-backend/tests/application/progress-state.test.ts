@@ -7,6 +7,7 @@ import {
   markStepDone,
   markStepFailed,
   setPhase,
+  setDeclaredTodos,
   toTimeline,
   renderExecutionTrace,
 } from '../../src/application/orchestration/engine/progress-state.ts';
@@ -112,7 +113,7 @@ describe('ProgressState', () => {
       assert.equal(timeline.plan.length, 2);
       assert.equal(timeline.plan[0]!.status, 'done');
       assert.equal(timeline.plan[1]!.status, 'running');
-      assert.equal(timeline.phase, 'Executing · 1/2');
+      assert.equal(timeline.phase, 'Executing · 2 actions');
       assert.equal(timeline.plan[0]!.toolFamily, 'zoho');
       assert.equal(timeline.plan[0]!.subtitle, '5 results');
     });
@@ -125,6 +126,131 @@ describe('ProgressState', () => {
 
       const timeline = toTimeline(state);
       assert.ok(timeline.liveLabel!.includes('Preparing response…'));
+    });
+
+    // The run cannot know how many calls it will need, so counting calls into a
+    // total produced "Step 11/11" — a fraction that could never read otherwise.
+    it('never emits a denominator derived from the call count', () => {
+      const state = createProgressState();
+      for (const tool of ['zohoAgent', 'larkAgent', 'zohoAgent']) {
+        addPlanStep(state, tool);
+        markStepDone(state, tool, 'ok');
+      }
+
+      const timeline = toTimeline(state);
+      assert.equal(timeline.declared, undefined);
+      assert.equal(timeline.actionCount, 3);
+      assert.doesNotMatch(timeline.phase!, /3\/3/);
+    });
+
+    it('emits a fraction only from a declared checklist', () => {
+      const state = createProgressState();
+      addPlanStep(state, 'manageTodos');
+      markStepDone(state, 'manageTodos', 'ok');
+      setDeclaredTodos(state, [
+        { title: 'Pull invoices',  status: 'done' },
+        { title: 'Match payments', status: 'in_progress' },
+        { title: 'File report',    status: 'pending' },
+      ]);
+
+      const timeline = toTimeline(state);
+      assert.deepEqual(timeline.declared, {
+        done: 1, total: 3, current: 'Match payments', next: 'File report',
+      });
+      assert.equal(timeline.phase, 'Executing · 2/3');
+    });
+
+    it('drops a checklist once every item is cancelled', () => {
+      const state = createProgressState();
+      setDeclaredTodos(state, [{ title: 'Abandoned', status: 'cancelled' }]);
+      assert.equal(toTimeline(state).declared, undefined);
+    });
+
+    it('publishes the run start so renderers can tick elapsed themselves', () => {
+      const state = createProgressState();
+      assert.equal(toTimeline(state).startedAtMs, state.startedAt);
+    });
+  });
+
+  describe('ledger', () => {
+    it('collapses consecutive calls to one tool family into a single row', () => {
+      const state = createProgressState();
+      addPlanStep(state, 'zohoAgent');
+      markStepDone(state, 'zohoAgent', 'Matched customer');
+      addPlanStep(state, 'zohoAgent');
+      markStepDone(state, 'zohoAgent', 'Created INV-1043');
+      addPlanStep(state, 'larkAgent');
+      markStepDone(state, 'larkAgent', 'Task created');
+
+      const rows = toTimeline(state).ledger!;
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0]!.label, 'Zoho');
+      assert.equal(rows[0]!.count, 2);
+      assert.equal(rows[0]!.outcome, 'Created INV-1043', 'keeps the newest outcome');
+      assert.equal(rows[1]!.label, 'Lark');
+      assert.equal(rows[1]!.count, 1);
+    });
+
+    it('keeps a running step out of the group above it', () => {
+      const state = createProgressState();
+      addPlanStep(state, 'zohoAgent');
+      markStepDone(state, 'zohoAgent', 'Matched customer');
+      addPlanStep(state, 'zohoAgent');
+
+      const rows = toTimeline(state).ledger!;
+      assert.equal(rows.length, 2);
+      assert.equal(rows[1]!.status, 'running');
+    });
+
+    it('marks a group failed when any call in it failed', () => {
+      const state = createProgressState();
+      addPlanStep(state, 'zohoAgent');
+      markStepDone(state, 'zohoAgent', 'Matched customer');
+      addPlanStep(state, 'zohoAgent');
+      markStepFailed(state, 'zohoAgent', '401 — token expired');
+
+      const rows = toTimeline(state).ledger!;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!.status, 'failed');
+      assert.equal(rows[0]!.outcome, '401 — token expired');
+    });
+
+    // A retry after a 429 used to render "✗ Zoho · 2 calls — Created INV-1043":
+    // the marker described the first call, the outcome the second.
+    it('lets a successful retry clear the failure marker it follows', () => {
+      const state = createProgressState();
+      addPlanStep(state, 'zohoAgent');
+      markStepFailed(state, 'zohoAgent', '429 rate limited');
+      addPlanStep(state, 'zohoAgent');
+      markStepDone(state, 'zohoAgent', 'Created INV-1043');
+
+      const rows = toTimeline(state).ledger!;
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0]!.count, 2);
+      assert.equal(rows[0]!.status, 'done');
+      assert.equal(rows[0]!.outcome, 'Created INV-1043');
+    });
+
+    // manageTodos returns its confirmation plus the whole checklist so the model
+    // sees current state; the ids and [pending] markers are not for users.
+    it('keeps the checklist dump out of every user-facing summary', () => {
+      const state = createProgressState();
+      addPlanStep(state, 'manageTodos');
+      markStepDone(
+        state,
+        'manageTodos',
+        'Updated "Pull invoices" → done\n[done] 1. Pull invoices (id:c1)\n[pending] 2. Reconcile (id:c2)',
+      );
+
+      const timeline = toTimeline(state);
+      for (const text of [
+        timeline.ledger![0]!.outcome,
+        timeline.plan![0]!.subtitle!,
+        renderExecutionTrace(state),
+      ]) {
+        assert.doesNotMatch(text, /\(id:/);
+        assert.doesNotMatch(text, /\[(pending|done|in_progress)\]/);
+      }
     });
   });
 

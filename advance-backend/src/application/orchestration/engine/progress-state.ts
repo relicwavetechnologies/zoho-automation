@@ -7,7 +7,10 @@
  */
 
 import type {
+  ChannelDeclaredPlan,
+  ChannelLedgerRow,
   ChannelPlanStep,
+  ChannelRunState,
   ChannelTimeline,
   ChannelToolFamily,
 } from '../../../domain/channel/outbound';
@@ -40,12 +43,24 @@ export interface ProgressStep {
   completedAt?:    number;
 }
 
+/** A checklist item the model committed to through manageTodos. */
+export interface DeclaredTodo {
+  title:  string;
+  status: 'pending' | 'in_progress' | 'done' | 'cancelled';
+}
+
 export interface ProgressState {
   phase:          ProgressPhase;
   steps:          ProgressStep[];
+  /**
+   * Tool calls seen so far. This is a count, not a total: the run cannot know
+   * how many calls it will need, so this must never become a denominator.
+   */
   totalSteps:     number;
   completedSteps: number;
   startedAt:      number;
+  /** Set only when the model declared a checklist — the one honest denominator. */
+  declaredTodos?: DeclaredTodo[];
 }
 
 // ─── Factory ────────────────────────────────────────────────────────────────
@@ -90,7 +105,9 @@ export function markStepDone(
   step.completedAt = Date.now();
   delete step.toolActivity;
 
-  const preview = previewToolResult(toolName, output);
+  // Clean before previewing: previewToolResult truncates at 80 chars, so a later
+  // strip would leave a half-eaten "[done] 1." behind.
+  const preview = previewToolResult(toolName, cleanToolOutput(toolName, output));
   if (preview) step.resultSummary = preview;
 
   state.completedSteps = state.steps.filter(s => s.status === 'done').length;
@@ -114,6 +131,16 @@ export function setPhase(state: ProgressState, phase: ProgressPhase): void {
   state.phase = phase;
 }
 
+/** Record the checklist the model declared, replacing any earlier snapshot. */
+export function setDeclaredTodos(state: ProgressState, todos: readonly DeclaredTodo[]): void {
+  const live = todos.filter(t => t.status !== 'cancelled');
+  if (live.length === 0) {
+    delete state.declaredTodos;
+    return;
+  }
+  state.declaredTodos = live.map(t => ({ ...t }));
+}
+
 // ─── Conversion to ChannelTimeline ──────────────────────────────────────────
 
 const STEP_MARKERS: Record<StepStatus, string> = {
@@ -134,20 +161,28 @@ export function inferToolFamily(agentSlug: string): ChannelToolFamily {
   return 'other';
 }
 
+/**
+ * Coarse liveness for channels that draw a bar (desktop, AirNote).
+ *
+ * Without a declared checklist there is no completion ratio to compute — the
+ * old formula divided completed steps by "steps seen so far", which is the same
+ * number, so it always read as nearly finished. This ramps monotonically and
+ * stops well short of 100 until the run actually reaches a terminal phase.
+ */
 export function computeProgressPct(state: ProgressState): number {
   switch (state.phase) {
     case 'routing':      return 8;
     case 'planning':     return 18;
     case 'synthesizing': return 92;
     case 'done':         return 100;
-    case 'failed':       return state.totalSteps > 0
-      ? Math.round((state.completedSteps / state.totalSteps) * 100)
-      : 12;
+    case 'failed':       return 100;
     case 'executing': {
-      if (state.totalSteps === 0) return 25;
-      const running = state.steps.some(s => s.status === 'running') ? 8 : 0;
-      const base = 20 + Math.round((state.completedSteps / state.totalSteps) * 68);
-      return Math.min(88, base + running);
+      const todos = state.declaredTodos;
+      if (todos?.length) {
+        const done = todos.filter(t => t.status === 'done').length;
+        return Math.min(90, 20 + Math.round((done / todos.length) * 70));
+      }
+      return Math.min(75, 25 + state.steps.length * 4);
     }
     default: return 10;
   }
@@ -155,14 +190,19 @@ export function computeProgressPct(state: ProgressState): number {
 
 export function toTimeline(state: ProgressState): ChannelTimeline {
   const progressPct = computeProgressPct(state);
-  const phase = formatPhaseHeader(state);
+  const phase       = formatPhaseHeader(state);
+  const declared    = toDeclaredPlan(state);
+  const base: ChannelTimeline = {
+    phase,
+    state:        toRunState(state.phase),
+    progressPct,
+    actionCount:  state.steps.length,
+    startedAtMs:  state.startedAt,
+    ...(declared ? { declared } : {}),
+  };
 
   if (state.steps.length === 0) {
-    return {
-      phase,
-      progressPct,
-      liveLabel: phaseLabel(state.phase),
-    };
+    return { ...base, liveLabel: phaseLabel(state.phase) };
   }
 
   const plan: ChannelPlanStep[] = state.steps.map(step => {
@@ -176,16 +216,111 @@ export function toTimeline(state: ProgressState): ChannelTimeline {
   });
 
   const activeStep = state.steps.find(s => s.status === 'running');
-  const liveLabel = activeStep?.toolActivity ?? phaseLabel(state.phase);
+  const liveLabel  = activeStep?.toolActivity ?? activeStep?.label ?? phaseLabel(state.phase);
+  const ledger     = buildLedger(state);
 
   return {
-    phase,
-    progressPct,
+    ...base,
     completedSteps: state.completedSteps,
     totalSteps:     state.totalSteps,
     plan,
     liveLabel,
+    ...(ledger.length ? { ledger } : {}),
   };
+}
+
+/** Fraction only when the model declared a checklist; otherwise undefined. */
+function toDeclaredPlan(state: ProgressState): ChannelDeclaredPlan | undefined {
+  const todos = state.declaredTodos;
+  if (!todos?.length) return undefined;
+  const done    = todos.filter(t => t.status === 'done').length;
+  const current = todos.find(t => t.status === 'in_progress');
+  const next    = todos.find(t => t.status === 'pending');
+  return {
+    done,
+    total: todos.length,
+    ...(current ? { current: current.title } : {}),
+    ...(next    ? { next:    next.title    } : {}),
+  };
+}
+
+function toRunState(phase: ProgressPhase): ChannelRunState {
+  switch (phase) {
+    case 'routing':      return 'thinking';
+    case 'planning':     return 'planning';
+    case 'executing':    return 'working';
+    case 'synthesizing': return 'writing';
+    case 'done':         return 'done';
+    case 'failed':       return 'blocked';
+    default:             return 'working';
+  }
+}
+
+/**
+ * Collapse consecutive calls to the same tool family into one row, so an
+ * eleven-call run reads as three lines instead of eleven.
+ */
+export function buildLedger(state: ProgressState): ChannelLedgerRow[] {
+  const rows: ChannelLedgerRow[] = [];
+
+  for (const step of state.steps) {
+    const family  = inferToolFamily(step.agentSlug);
+    const label   = ledgerLabel(step, family);
+    const outcome = ledgerOutcome(step);
+    const last    = rows[rows.length - 1];
+
+    if (last && last.label === label && last.status !== 'running' && step.status !== 'running') {
+      rows[rows.length - 1] = {
+        label,
+        count:   last.count + 1,
+        // Marker and outcome must describe the same call, or a retry that
+        // succeeded after a 429 renders as "✗ Zoho — Created INV-1043".
+        outcome: outcome || last.outcome,
+        status:  outcome ? step.status : last.status,
+      };
+      continue;
+    }
+    rows.push({ label, count: 1, outcome, status: step.status });
+  }
+
+  return rows;
+}
+
+const FAMILY_LEDGER_LABEL: Record<ChannelToolFamily, string> = {
+  zoho:          'Zoho',
+  lark:          'Lark',
+  google:        'Google',
+  context:       'Context',
+  orchestration: 'Plan',
+  other:         '',
+};
+
+function ledgerLabel(step: ProgressStep, family: ChannelToolFamily): string {
+  const byFamily = FAMILY_LEDGER_LABEL[family];
+  if (byFamily) return byFamily;
+  // 'other' covers skill discovery and dynamic tool calls — use the tool's own noun.
+  return getToolLabels(step.agentSlug).done;
+}
+
+function ledgerOutcome(step: ProgressStep): string {
+  if (step.status === 'done')    return step.resultSummary ?? pastTenseLabel(step.agentSlug, true);
+  if (step.status === 'failed')  return step.error ?? 'Failed';
+  if (step.status === 'running') return step.toolActivity ?? step.label;
+  return step.label;
+}
+
+/**
+ * manageTodos returns its confirmation followed by the whole checklist, so the
+ * model always sees current state. Users need the confirmation only — the raw
+ * list carries `[pending]` markers and internal ids. Cleaned here, once, so
+ * every reader (ledger, trace, plan subtitle) gets the same clean summary.
+ */
+function cleanToolOutput(toolName: string, output: unknown): unknown {
+  if (toolName !== 'manageTodos' || typeof output !== 'string') return output;
+  return output
+    .replace(/\s*\[(?:pending|in_progress|done|cancelled)\]\s*\d+\..*$/is, '')
+    .replace(/\s*\(id:[^)]*\)/gi, '')
+    .trim();
 }
 
 // ─── Execution trace for final card ────────────────────────────────────────
@@ -231,10 +366,20 @@ function formatStepSubtitle(step: ProgressStep): string | undefined {
   return undefined;
 }
 
+/**
+ * Phase line for channels that show one. A fraction appears only when the model
+ * declared a checklist; otherwise the action count is shown as a count-up,
+ * because the run has no way to know how many calls remain.
+ */
 function formatPhaseHeader(state: ProgressState): string {
   const phaseName = phaseShortLabel(state.phase);
-  if (state.totalSteps > 0) {
-    return `${phaseName} · ${state.completedSteps}/${state.totalSteps}`;
+  const todos = state.declaredTodos;
+  if (todos?.length) {
+    const done = todos.filter(t => t.status === 'done').length;
+    return `${phaseName} · ${Math.min(done + 1, todos.length)}/${todos.length}`;
+  }
+  if (state.steps.length > 0) {
+    return `${phaseName} · ${state.steps.length} action${state.steps.length === 1 ? '' : 's'}`;
   }
   return phaseName;
 }

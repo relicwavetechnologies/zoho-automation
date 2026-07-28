@@ -5,9 +5,9 @@
 
 import type {
   ChannelBranding,
-  ChannelPlanStep,
+  ChannelPlanStepStatus,
+  ChannelRunState,
   ChannelTimeline,
-  ChannelToolFamily,
   InteractiveAction,
 } from '../../../domain/channel/outbound';
 
@@ -113,211 +113,168 @@ function hrElement(margin = '4px 0 0 0'): Record<string, unknown> {
   return { tag: 'hr', margin };
 }
 
-const TOOL_FAMILY_LABEL: Record<ChannelToolFamily, string> = {
-  zoho:          'ZOHO',
-  lark:          'LARK',
-  google:        'GOOGLE',
-  context:       'CTX',
-  orchestration: 'PLAN',
-  other:         '',
+// ── Status card: honest counters + a grouped work ledger ─────────────────────
+
+/** Visible ledger rows; older groups collapse into a counted note, never dropped silently. */
+const LEDGER_VISIBLE_ROWS = 5;
+const LEDGER_OUTCOME_MAX  = 72;
+
+const RUN_STATE_WORD: Record<ChannelRunState, string> = {
+  thinking: 'Thinking',
+  planning: 'Planning',
+  working:  'Working',
+  writing:  'Writing your answer',
+  done:     'Done',
+  blocked:  'Blocked',
 };
 
-function circularProgressElement(pct: number): Record<string, unknown> {
-  const clamped = Math.max(0, Math.min(100, Math.round(pct)));
-  const value   = clamped / 100;
-  return {
-    tag:          'chart',
-    element_id:   'run_progress',
-    height:       '72px',
-    aspect_ratio: '1:1',
-    preview:      false,
-    color_theme:  'brand',
-    chart_spec:   {
-      type:         'circularProgress',
-      data:         { values: [{ type: 'progress', value, text: `${clamped}%` }] },
-      valueField:   'value',
-      categoryField: 'type',
-      seriesField:  'type',
-      radius:       0.85,
-      innerRadius:  0.62,
-      title:        { visible: false },
-      legends:      { visible: false },
-      indicator:    {
-        visible: true,
-        title:   { visible: false },
-        content: [{ visible: true, field: 'text' }],
-      },
-    },
-  };
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  if (total < 60) return `${total}s`;
+  const mins = Math.floor(total / 60);
+  return `${mins}m ${String(total % 60).padStart(2, '0')}s`;
 }
 
-/** Header subtitle: step counter when the run has plan steps (e.g. "Step 2/5"). */
-function statusHeaderSubtitle(timeline?: ChannelTimeline): string | undefined {
-  const total = timeline?.totalSteps;
-  if (!total || total <= 0) return undefined;
-  const completed = timeline.completedSteps ?? 0;
-  const hasRunning = timeline.plan?.some(s => s.status === 'running') ?? false;
-  const current = hasRunning
-    ? Math.min(completed + 1, total)
-    : Math.max(completed, 1);
-  return `Step ${current}/${total}`;
+function actionsPhrase(count: number): string {
+  return `${count} action${count === 1 ? '' : 's'}`;
 }
 
-const SIDE_RAIL_MAX_CHARS = 24;
+/**
+ * The counter, in the only three forms the run can prove:
+ *   declared checklist → "Step 3 of 5"   (the model committed to the total)
+ *   otherwise          → "11 actions"    (count-up; no denominator exists)
+ *   terminal           → totals
+ * Never "n/n", which is what counting tool calls into a total produces.
+ */
+export function statusCounterText(timeline: ChannelTimeline, now = Date.now()): string {
+  const count   = timeline.actionCount ?? 0;
+  const parts: string[] = [];
 
-function shortStepLabel(step: ChannelPlanStep): string {
-  const badge = step.toolFamily && step.toolFamily !== 'other'
-    ? TOOL_FAMILY_LABEL[step.toolFamily]
-    : '';
-  const words = step.title.split(/\s+/).filter(Boolean).slice(0, 2).join(' ');
-  const base  = badge ? `${badge} · ${words}` : words;
-  return base.length > SIDE_RAIL_MAX_CHARS
-    ? `${base.slice(0, SIDE_RAIL_MAX_CHARS - 1)}…`
-    : base;
+  if (timeline.declared && timeline.declared.total > 0) {
+    const { done, total } = timeline.declared;
+    parts.push(`Step ${Math.min(done + 1, total)} of ${total}`);
+  }
+  // Keep counting actions even beside a checklist: a model that adds todos and
+  // forgets to update them would otherwise freeze the counter for a whole run.
+  if (count > 0) parts.push(actionsPhrase(count));
+  if (timeline.startedAtMs !== undefined) {
+    parts.push(formatElapsed(Math.max(0, now - timeline.startedAtMs)));
+  }
+
+  return parts.join(' · ');
 }
 
-function normalizeLiveText(value: string): string {
+/**
+ * Header title: what the user asked for, falling back to the run state. The bot's
+ * name is printed above every card by the client, so repeating it here (the old
+ * "Divo AI") spent the most prominent line on nothing.
+ */
+function statusHeaderTitle(timeline?: ChannelTimeline): string {
+  const subject = timeline?.subject?.trim();
+  if (subject) return subject;
+  return statusStateTitle(timeline);
+}
+
+function statusStateTitle(timeline?: ChannelTimeline): string {
+  const state = timeline?.state;
+  if (!state) return CARD_TITLE;
+  if (state === 'blocked') return 'Couldn’t finish';
+  if (state === 'done')    return 'Done';
+  return `${RUN_STATE_WORD[state]}…`;
+}
+
+function truncateOutcome(value: string): string {
+  const flat = value.replace(/\s+/g, ' ').trim();
+  return flat.length > LEDGER_OUTCOME_MAX ? `${flat.slice(0, LEDGER_OUTCOME_MAX - 1)}…` : flat;
+}
+
+const LEDGER_MARKERS: Record<ChannelPlanStepStatus, string> = {
+  pending: '○',
+  running: '●',
+  done:    '✓',
+  failed:  '✗',
+  skipped: '–',
+};
+
+/**
+ * One line per tool family, newest last: "✓ **Zoho** · 7 calls — Created INV-1043".
+ * Grouping is what keeps an eleven-call run three lines tall.
+ */
+function ledgerMarkdown(timeline: ChannelTimeline): string | undefined {
+  const rows = timeline.ledger;
+  if (!rows?.length) return undefined;
+
+  const hidden  = Math.max(0, rows.length - LEDGER_VISIBLE_ROWS);
+  const visible = hidden > 0 ? rows.slice(-LEDGER_VISIBLE_ROWS) : rows;
+  const lines: string[] = [];
+
+  if (hidden > 0) {
+    lines.push(`<font color='grey'>+ ${hidden} earlier step${hidden === 1 ? '' : 's'}</font>`);
+  }
+  for (const row of visible) {
+    const marker = LEDGER_MARKERS[row.status];
+    const calls  = row.count > 1 ? ` · ${row.count} calls` : '';
+    const label  = `**${row.label}${calls}**`;
+    const tail   = row.outcome ? ` <font color='grey'>— ${truncateOutcome(row.outcome)}</font>` : '';
+    lines.push(`${marker} ${label}${tail}`);
+  }
+  return lines.join('\n');
+}
+
+/** Meta line: what the run is doing right now, plus the honest counter. */
+function statusMetaMarkdown(timeline: ChannelTimeline, now: number): string {
+  const state  = timeline.state ?? 'working';
+  const marker = state === 'blocked' ? '✗' : state === 'done' ? '✓' : '●';
+  const word   = RUN_STATE_WORD[state];
+  const counter = statusCounterText(timeline, now);
+  return counter
+    ? `${marker} **${word}**  <font color='grey'>·  ${counter}</font>`
+    : `${marker} **${word}**`;
+}
+
+/** Text progress bar — only meaningful when a checklist was declared. */
+function declaredBarMarkdown(timeline: ChannelTimeline): string | undefined {
+  const declared = timeline.declared;
+  if (!declared || declared.total <= 0) return undefined;
+  const filled = Math.max(0, Math.min(declared.total, declared.done));
+  const bar    = `${'▰'.repeat(filled)}${'▱'.repeat(declared.total - filled)}`;
+  const label  = declared.current ?? declared.next;
+  return label
+    ? `<font color='blue'>${bar}</font>  <font color='grey'>${truncateOutcome(label)}</font>`
+    : `<font color='blue'>${bar}</font>`;
+}
+
+/**
+ * Phase names that the meta line already carries. When the live label is only
+ * one of these, there is no activity to report and repeating it produced a card
+ * that said "Working" twice.
+ */
+const PHASE_ECHO = new Set([
+  'thinking', 'planning', 'working', 'working on your request',
+  'preparing response', 'writing your answer', 'done', 'failed', 'blocked',
+]);
+
+function normalizeLive(value: string): string {
   return value.replace(/…+$/u, '').trim().toLowerCase();
 }
 
-/** Compact todo rail from plan steps (✓ done, ● running, ○ next). */
-function planToSideRail(plan: readonly ChannelPlanStep[]): string | undefined {
-  const lines: string[] = [];
-  const done = plan.filter(s => s.status === 'done').slice(-2);
-  const running = plan.find(s => s.status === 'running');
-  const pending = plan.filter(s => s.status === 'pending').slice(0, 1);
+/**
+ * The live line exists to carry something the ledger cannot: a streamed sentence
+ * from the model, or the current activity before any tool has run. When it would
+ * only echo the phase name or the running ledger row, it is omitted — that
+ * duplication is what made the old card feel padded.
+ */
+function liveLineMarkdown(timeline: ChannelTimeline): string | undefined {
+  const active = timeline.narrationActive?.trim() || timeline.liveLabel?.trim();
+  if (!active) return undefined;
 
-  for (const step of done) lines.push(`✓ ${shortStepLabel(step)}`);
-  if (running) lines.push(`● ${shortStepLabel(running)}`);
-  for (const step of pending) lines.push(`○ ${shortStepLabel(step)}`);
+  const headline = active.replace(/…+$/u, '').trim() || active;
+  if (PHASE_ECHO.has(headline.toLowerCase())) return undefined;
 
-  return lines.length ? lines.join('\n') : undefined;
-}
+  const runningRow = timeline.ledger?.find(r => r.status === 'running');
+  if (runningRow && normalizeLive(runningRow.outcome) === normalizeLive(headline)) return undefined;
 
-/** Fallback rail from recent trace lines when plan is not populated yet. */
-function recentToSideRail(recent: readonly string[]): string | undefined {
-  const lines: string[] = [];
-  for (const raw of recent.slice(-3)) {
-    const done = /^\[done\]/i.test(raw);
-    const text = raw.replace(/^\[(run|done)\]\s*/i, '').trim();
-    if (!text) continue;
-    const short = text.length > SIDE_RAIL_MAX_CHARS
-      ? `${text.slice(0, SIDE_RAIL_MAX_CHARS - 1)}…`
-      : text;
-    lines.push(done ? `✓ ${short}` : `● ${short}`);
-  }
-  return lines.length ? lines.join('\n') : undefined;
-}
-
-/** Right column: mini todo rail (never a duplicate of the center live line). */
-function buildSideRailMarkdown(timeline: ChannelTimeline): string | undefined {
-  const plan = timeline.plan;
-  if (plan?.length) {
-    const rail = planToSideRail(plan);
-    if (rail) return rail;
-  }
-
-  if (timeline.recent?.length) {
-    const rail = recentToSideRail(timeline.recent);
-    if (!rail) return undefined;
-    const live = normalizeLiveText(timeline.liveLabel ?? '');
-    const first = normalizeLiveText(rail.replace(/^[●○✓]\s*/, '').split('\n')[0] ?? '');
-    if (live && first === live && !rail.includes('\n')) return undefined;
-    return rail;
-  }
-
-  return undefined;
-}
-
-/** One primary line beside the ring (no separate "Executing" headline). */
-function liveStripMarkdown(timeline: ChannelTimeline): string {
-  let live = timeline.liveLabel ?? 'Working…';
-
-  if (
-    timeline.totalSteps
-    && timeline.completedSteps === timeline.totalSteps
-    && !timeline.plan?.some(s => s.status === 'running')
-    && /working/i.test(live)
-  ) {
-    live = 'Preparing response…';
-  }
-
-  return live;
-}
-
-/** Rolling sentences from streamed model text (Cursor-style narration). */
-function buildNarrationMarkdown(timeline: ChannelTimeline): string | undefined {
-  const done = timeline.narration ?? [];
-  const active = timeline.narrationActive?.trim();
-  if (!done.length && !active) return undefined;
-
-  const parts: string[] = [];
-  for (const line of done) {
-    parts.push(`✓ ${line}`);
-  }
-  if (active) {
-    parts.push(`● **${active}**`);
-  }
-  return parts.join('\n');
-}
-
-/** Optional second line: what's queued after the active step. */
-function liveStripSubline(timeline: ChannelTimeline): string | undefined {
-  const plan = timeline.plan;
-  if (!plan?.length) return undefined;
-  const pending = plan.find(s => s.status === 'pending');
-  if (!pending) return undefined;
-  const fam = pending.toolFamily && pending.toolFamily !== 'other'
-    ? TOOL_FAMILY_LABEL[pending.toolFamily]
-    : '';
-  const hint = fam ? `${fam} next` : 'Next step';
-  const words = pending.title.split(/\s+/).filter(Boolean).slice(0, 4).join(' ');
-  return words ? `${hint} · ${words}` : hint;
-}
-
-function liveStatusColumnSet(timeline: ChannelTimeline): Record<string, unknown> {
-  const columns: Record<string, unknown>[] = [
-    {
-      tag:             'column',
-      width:           'weighted',
-      weight:          1,
-      vertical_align:  'center',
-      elements:        [circularProgressElement(timeline.progressPct ?? 10)],
-    },
-    {
-      tag:             'column',
-      width:           'weighted',
-      weight:          5,
-      vertical_align:  'center',
-      elements:        (() => {
-        const narration = buildNarrationMarkdown(timeline);
-        if (narration) {
-          return [{
-            tag:       'markdown',
-            content:   `**Working on your request**\n\n${narration}`,
-            text_size: 'normal',
-          }];
-        }
-        const main = liveStripMarkdown(timeline);
-        const sub  = liveStripSubline(timeline);
-        const headline = main.replace(/…+$/u, '').trim() || main;
-        const content = sub ? `**${headline}**\n${sub}` : main;
-        return [{
-          tag:       'markdown',
-          content,
-          text_size: 'normal',
-        }];
-      })(),
-    },
-  ];
-
-  return {
-    tag:                 'column_set',
-    element_id:          'live_strip',
-    flex_mode:           'none',
-    horizontal_spacing:  '8px',
-    columns,
-  };
+  return `**${headline}**`;
 }
 
 function collapsiblePanel(
@@ -696,16 +653,26 @@ function buildFinalCardResult(input: FinalCardInput & {
     elements.push(traceToCollapsible(executionTrace));
   }
 
+  // Card 2.0 has no `action` container and ignores 1.0's `value` on a button —
+  // callbacks must be declared through `behaviors`, buttons sit in `elements`.
   if (actions?.length) {
     elements.push({
-      tag:    'action',
-      margin: '8px 0 0 0',
-      actions: actions.map((a, i) => ({
-        tag:        'button',
-        element_id: `action_${i + 1}`,
-        text:       { tag: 'plain_text', content: a.label },
-        value:      { action: a.value },
-        type:       a.style === 'primary' ? 'primary' : a.style === 'danger' ? 'danger' : 'default',
+      tag:                'column_set',
+      element_id:         'final_actions',
+      margin:             '8px 0 0 0',
+      flex_mode:          'flow',
+      horizontal_spacing: '8px',
+      columns: actions.map((a, i) => ({
+        tag:      'column',
+        width:    'auto',
+        elements: [{
+          tag:        'button',
+          element_id: `action_${i + 1}`,
+          text:       { tag: 'plain_text', content: a.label },
+          type:       a.style === 'primary' ? 'primary' : a.style === 'danger' ? 'danger' : 'default',
+          size:       'small',
+          behaviors:  [{ type: 'callback', value: { action: a.value } }],
+        }],
       })),
     });
   }
@@ -858,53 +825,102 @@ export interface StatusCardInput {
   actions?:  Array<{ label: string; value: string }>;
 }
 
+/**
+ * In-flight status card ("work ledger" layout).
+ *
+ * Body, top to bottom: the live line, the state + honest counter, an optional
+ * declared-plan bar, then one ledger line per tool family. No progress ring (its
+ * percentage was derived from a denominator the run cannot know) and no trace
+ * panel — the ledger already says what happened, in plain language.
+ */
 export function buildStatusCard(input: StatusCardInput): string {
   const { branding, timeline, actions } = input;
+  const now = Date.now();
   const elements: unknown[] = [];
 
-  if (timeline) {
-    elements.push(liveStatusColumnSet(timeline));
+  if (!timeline) {
+    elements.push(mdElement('**Working…**'));
   } else {
-    elements.push(mdElement('Working…'));
-  }
+    const live = liveLineMarkdown(timeline);
+    if (live) elements.push(mdElement(live));
 
-  if (timeline?.recent?.length) {
-    const recentBody = timeline.recent
-      .map(line => line.replace(/^\[(run|done)\]\s*/i, ''))
-      .join('\n');
-    const traceTitle = timeline.plan?.length
-      ? `Trace (${timeline.recent.length})`
-      : `Trace (${timeline.recent.length}) — tap to expand`;
-    elements.push(hrElement('8px 0 0 0'));
-    elements.push(collapsiblePanel(
-      'recent_panel',
-      traceTitle,
-      recentBody,
-      false,
-    ));
+    // The anchor line: what state the run is in, and the honest counter.
+    elements.push({
+      tag:       'markdown',
+      element_id: 'run_meta',
+      content:   statusMetaMarkdown(timeline, now),
+      text_size: 'normal',
+    });
+
+    const bar = declaredBarMarkdown(timeline);
+    if (bar) {
+      elements.push({ tag: 'markdown', element_id: 'run_bar', content: bar, text_size: 'notation' });
+    }
+
+    const ledger = ledgerMarkdown(timeline);
+    if (ledger) {
+      elements.push(hrElement('6px 0 0 0'));
+      elements.push({
+        tag:       'markdown',
+        element_id: 'run_ledger',
+        content:   ledger,
+        text_size: 'notation',
+      });
+    }
   }
 
   if (actions?.length) {
-    for (const [i, a] of actions.entries()) {
+    for (const a of actions) {
       elements.push({
         tag: 'button', text: { tag: 'plain_text', content: a.label },
-        type: 'default', width: 'default',
+        type: 'default', width: 'default', size: 'small',
         behaviors: [{ type: 'callback', value: { action: a.value } }],
       });
     }
   }
-  elements.push({
-    tag: 'button', text: { tag: 'plain_text', content: '⏹ Stop' },
-    type: 'danger_text', width: 'default', size: 'small',
-    behaviors: [{ type: 'callback', value: { action: 'interrupt_run' } }],
-  });
+
+  if (timeline?.state !== 'done' && timeline?.state !== 'blocked') {
+    elements.push({
+      tag: 'button', element_id: 'stop_run',
+      text: { tag: 'plain_text', content: 'Stop' },
+      type: 'danger_text', width: 'default', size: 'small',
+      behaviors: [{ type: 'callback', value: { action: 'interrupt_run' } }],
+    });
+  }
 
   const card = {
     schema: '2.0',
-    config: { width_mode: 'fill', update_multi: true, enable_forward: false },
-    header: buildHeader(statusHeaderSubtitle(timeline), branding),
-    body:   { vertical_spacing: '8px', padding: '12px 12px 12px 12px', elements },
+    config: {
+      width_mode: 'fill',
+      update_multi: true,
+      enable_forward: false,
+      summary: { content: statusSummary(timeline, now) },
+    },
+    header: buildStatusHeader(timeline, branding),
+    body:   { vertical_spacing: '6px', padding: '12px 12px 12px 12px', elements },
   };
 
   return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
+}
+
+/** Notification preview text — the run's subject and state, not a generic "Divo AI". */
+function statusSummary(timeline: ChannelTimeline | undefined, now: number): string {
+  const title   = statusHeaderTitle(timeline);
+  const state   = statusStateTitle(timeline);
+  const counter = timeline ? statusCounterText(timeline, now) : '';
+  const tail    = [title === state ? '' : state, counter].filter(Boolean).join(' · ');
+  return tail ? `${title} — ${tail}` : title;
+}
+
+function buildStatusHeader(
+  timeline: ChannelTimeline | undefined,
+  branding: ChannelBranding | undefined,
+): Record<string, unknown> {
+  // No header icon: an unrecognised standard_icon token makes Lark reject the
+  // entire card, which would cost every run its status bubble. The state word in
+  // the body already carries the ● / ✗ marker.
+  return {
+    ...buildHeader(undefined, branding),
+    title: { tag: 'plain_text', content: statusHeaderTitle(timeline) },
+  };
 }

@@ -105,12 +105,19 @@ export class NarrationBuffer {
     this.current = line;
   }
 
+  /**
+   * A generic verb ("Running tool…") describes an intention, not an outcome —
+   * committing it produced work-log rows like "✓ Running tool…". Those stay as
+   * the live line only; the settled rows come from real result summaries.
+   */
   private commitCurrentToDone(): void {
     if (!this.current) return;
     const line = this.current;
     this.current = undefined;
-    if (this.done[this.done.length - 1] === line) return;
-    this.done.push(line);
+    if (isGenericActivity(line)) return;
+    const settled = line.replace(/…+$/u, '').trim();
+    if (!settled || this.done[this.done.length - 1] === settled) return;
+    this.done.push(settled);
     while (this.done.length > MAX_LINES) this.done.shift();
   }
 

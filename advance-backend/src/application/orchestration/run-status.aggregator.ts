@@ -1,37 +1,36 @@
 /**
  * Per-run aggregator for supervisor status updates.
- * Tracks recent tool-call/result lines, plan steps, and the current live label.
+ * Tracks plan steps, the declared checklist (when the model committed to one),
+ * and the current live label.
  * One instance per orchestration run; the supervisor records events, the status channel reads snapshots.
  */
 
 import { getToolLabels }    from './agents/tool-labels';
-import { previewToolResult } from './agents/tool-result-preview';
 import type { ChannelTimeline } from '../../domain/channel/outbound';
 import {
+  type DeclaredTodo,
   type ProgressState,
   createProgressState,
   addPlanStep,
   markStepDone,
   markStepFailed,
   setPhase,
+  setDeclaredTodos,
   toTimeline,
-  computeProgressPct,
-  phaseShortLabel,
   renderExecutionTrace,
 } from './engine/progress-state';
 import { NarrationBuffer } from './narration-buffer';
 
-const RECENT_CAP   = 5;
-const LINE_MAX_CHARS = 80;
-/** Show plan todo rail after the first tool call (layout A). */
-const PLAN_STEP_THRESHOLD = 1;
-
 export class RunStatusAggregator {
-  private readonly recent: string[] = [];
   private liveLabel = 'Working…';
+  private subject: string | undefined = undefined;
   private readonly progress: ProgressState = createProgressState();
   private readonly narration = new NarrationBuffer();
-  private callCount = 0;
+
+  /** What the user asked for, in a few words — titles the status card. */
+  setSubject(subject: string | undefined): void {
+    this.subject = subject?.trim() || undefined;
+  }
 
   /** Streamed model text for the status card; returns true if the card should refresh. */
   appendTextDelta(delta: string): boolean {
@@ -44,31 +43,19 @@ export class RunStatusAggregator {
       setPhase(this.progress, 'executing');
     }
     this.narration.flush();
-    const { verb, called } = getToolLabels(toolName);
+    const { verb } = getToolLabels(toolName);
     this.narration.pushActivityLine(verb);
     this.liveLabel = verb;
-    this.push(`[run]  ${called}`);
 
-    this.callCount++;
     addPlanStep(this.progress, toolName);
   }
 
   recordResult(toolName: string, output: unknown): void {
-    const { done } = getToolLabels(toolName);
-    const preview = previewToolResult(toolName, output);
-    const doneLine = preview ? `[done] ${done} — ${preview}` : `[done] ${done}`;
-
-    const { called } = getToolLabels(toolName);
-    const runLine    = `[run]  ${called}`;
-    const lastRunIdx = this.recent.lastIndexOf(runLine);
-
-    if (lastRunIdx !== -1) {
-      this.recent[lastRunIdx] = this.trim(doneLine);
-    } else {
-      this.push(doneLine);
-    }
-
     markStepDone(this.progress, toolName, output);
+    if (toolName === 'manageTodos') {
+      const todos = parseDeclaredTodos(output);
+      if (todos) setDeclaredTodos(this.progress, todos);
+    }
     this.narration.completeCurrent();
     // Do not enter synthesizing here — more tool calls often follow in the same
     // supervisor stream. setSynthesizing() is called when final text starts.
@@ -95,37 +82,44 @@ export class RunStatusAggregator {
   }
 
   snapshot(): ChannelTimeline {
-    const narrLines = this.narration.committedLines();
+    const narrLines  = this.narration.committedLines();
     const narrActive = this.narration.active();
-    const base = this.callCount >= PLAN_STEP_THRESHOLD
-      ? toTimeline(this.progress)
-      : {
-          phase:       phaseShortLabel(this.progress.phase),
-          progressPct: computeProgressPct(this.progress),
-          liveLabel:   narrLines.length || narrActive
-            ? 'Working on your request'
-            : this.liveLabel,
-        };
+    const base = toTimeline(this.progress);
     return {
       ...base,
+      liveLabel: narrActive ?? base.liveLabel ?? this.liveLabel,
+      ...(this.subject ? { subject: this.subject } : {}),
       ...(narrLines.length ? { narration: [...narrLines] as ReadonlyArray<string> } : {}),
       ...(narrActive ? { narrationActive: narrActive } : {}),
-      ...(this.recent.length ? { recent: [...this.recent] as ReadonlyArray<string> } : {}),
     };
   }
 
   getExecutionTrace(): string {
     return renderExecutionTrace(this.progress);
   }
+}
 
-  private trim(line: string): string {
-    return line.length > LINE_MAX_CHARS ? `${line.slice(0, LINE_MAX_CHARS - 1)}…` : line;
-  }
+/**
+ * Read the checklist out of a manageTodos result. The tool renders every live
+ * todo as "[status] 1. Title (id:…)" — the only place a run learns a total it
+ * can honestly divide by, because the model committed to that list itself.
+ */
+const TODO_LINE = /^\s*\[(pending|in_progress|done|cancelled)\]\s*\d+\.\s*(.+?)\s*\(id:[^)]*\)\s*$/i;
 
-  private push(line: string): void {
-    const trimmed = this.trim(line);
-    if (this.recent[this.recent.length - 1] === trimmed) return;
-    this.recent.push(trimmed);
-    if (this.recent.length > RECENT_CAP) this.recent.splice(0, this.recent.length - RECENT_CAP);
+export function parseDeclaredTodos(output: unknown): DeclaredTodo[] | undefined {
+  const text = typeof output === 'string' ? output : undefined;
+  if (!text) return undefined;
+
+  const todos: DeclaredTodo[] = [];
+  for (const line of text.split('\n')) {
+    const match = TODO_LINE.exec(line);
+    if (!match) continue;
+    todos.push({
+      status: match[1]!.toLowerCase() as DeclaredTodo['status'],
+      title:  match[2]!.trim(),
+    });
   }
+  if (todos.length) return todos;
+  // "Todos cleared." / "No todos for this chat." both mean: no declared plan.
+  return /todos cleared|no todos for this chat/i.test(text) ? [] : undefined;
 }
