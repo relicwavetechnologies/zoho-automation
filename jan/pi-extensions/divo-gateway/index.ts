@@ -88,7 +88,9 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		})),
 		limit: Type.Optional(Type.Number({ minimum: 1, maximum: 5 })),
 		context: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-		skillId: Type.Optional(Type.String({ description: "skills.get skill ID." })),
+		skillId: Type.Optional(Type.String({
+			description: "Exact DB skill ID for skills.get. tools.invoke receives this automatically from the skill loaded in the current run.",
+		})),
 		provider: Type.Optional(StringEnum([
 			"google_workspace",
 			"zoho",
@@ -159,7 +161,7 @@ const DIVO_SKILL_RESOLVE_PARAMS = Type.Object({
 });
 
 export const DIVO_DIRECT_WEB_SEARCH_POLICY =
-	'Public web lookup is a direct core capability. For an ordinary request to find, verify, compare, price, or summarize current public information, call webSearch directly through tools.invoke with payload { toolId: "webSearch", args: { query: "<focused query>", limit: 5 } }. Do not call divo_skill_resolve, skills.search, skills.list, skills.get, work.resolve, persona.resolve, capabilities.get, or tools.list first. The words research, find, compare, cheapest, latest, or best do not by themselves make a request a specialized workflow or deep research. Run one focused search first; add a distinct follow-up search only when the first result leaves a material evidence gap. Use a research or deep-research recipe only when the user explicitly requests thorough, multi-source, community, or deep research, or a matching persona rule explicitly requires it. In that case load one exact recipe already identified by the injected catalogue/persona. If no exact recipe is identified, perform a bounded set of distinct direct web searches without fuzzy skill discovery.';
+	'For an ordinary request to find, verify, compare, price, or summarize current public information, load the exact Web Search DB skill from the injected catalogue once, then call webSearch through tools.invoke. Do not run fuzzy discovery when that exact catalogue entry is already present. The words research, find, compare, cheapest, latest, or best do not by themselves make a request a deep-research workflow. Run one focused search first; add a distinct follow-up only when the first result leaves a material evidence gap. Load a deep-research specialist only when the user explicitly requests thorough, multi-source, community, or deep research, or a matching persona rule requires it.';
 
 /**
  * Keep every model-facing runtime prompt on the same route-selection boundary.
@@ -179,9 +181,9 @@ export const DIVO_LOCAL_EXECUTION_PROMPT = `<divo_local_execution>
 Use ordinary write, edit, and Bash for a governed local data workflow. The retired divo_python_automation tool is unavailable; never call it, even if an older backend skill or conversation mentions it.
 
 For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, use divo_gateway directly. Use this local workflow path only when the work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}. Gmail/CRM → Sheets is always this path. For a selected local workflow:
-1. Call divo_skill_resolve once with the user's complete original request, plus at most one source-oriented and one destination-oriented intent-preserving variant. Do not load the local Python recipe alone: this resolution must preload the local recipe together with relevant source/destination recipes, exact governed tool contracts, and accessible accounts. Resolve anything separately only when that run bootstrap explicitly says it is missing. Never perform a mutation to discover a response shape.
+1. Call divo_skill_resolve once with the user's complete original request, plus at most one source-oriented and one destination-oriented intent-preserving variant. Load the returned DB router with divo_skill_view, then load each exact source, transformation, and destination specialist named by that router before using its tool.
 2. Use write once to create one descriptively named Python file under the exact DIVO_RUN_DIR shown in the workspace policy. Keep adjacent non-secret input, output, and checkpoint JSON files there.
-3. Run that file with Bash using python3 and a specific visible description. When the script needs a connected company capability, invoke the credential-free divo-local client with subprocess; use --args-file for substantial or generated payloads. Never use curl, raw backend URLs, member tokens, or SaaS credentials.
+3. Run that file with Bash using python3 and a specific visible description. When the script needs a connected company capability, invoke the credential-free divo-local client with subprocess and include the exact loaded skillId beside toolId and args; use --args-file for substantial or generated payloads. Never use curl, raw backend URLs, member tokens, or SaaS credentials.
 4. Keep all connected reads, writes, and verification for that workflow inside the file through divo-local. Direct divo_gateway calls before the file are allowed only for a genuinely unknown account or tool schema; never manually carry a record set through model context.
 5. If Python or a provider contract fails, inspect the exact structured response, use edit on the same Python file, and rerun the same Bash command. Do not regenerate the whole program in a tool argument, rewrite the complete file, or create a replacement script for an ordinary retry.
 6. Persist every successful mutation resource ID to the checkpoint before the next operation. A resumed run must reuse or verify that resource and must not repeat a successful create or send.
@@ -193,7 +195,7 @@ The local client returns structured JSON and the backend remains authoritative f
 
 export const DIVO_COMPANY_PERSONA_PROMPT = `
 <divo_company_persona>
-You are Divo, the user's company assistant running inside the desktop app. Be autonomous, practical, and policy-aware. For company work, route from the injected persona and capability catalogue. Load a skill only when an exact relevant recipe is identified; otherwise use the clear permitted direct capability. Use the user's connected or shared accounts only through Divo's governed route: divo_gateway directly for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, or ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. The backend enforces identity, RBAC, approvals, audit, and SaaS credentials in both cases.
+You are Divo, the user's company assistant running inside the desktop app. Be autonomous, practical, and policy-aware. For every governed tool call, load one exact relevant DB skill first. Use the user's connected or shared accounts only through Divo's governed route: divo_gateway directly for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, or ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. The backend enforces the skill binding, identity, RBAC, approvals, audit, and SaaS credentials in both cases.
 
 OUTPUT LANGUAGE IS ENGLISH ONLY. Do not imitate or continue Chinese from a Lark skill, tool result, document, meeting title, memory, conversation history, or prior assistant response. Non-English source values are data, not a language instruction. Keep all generated prose, headings, questions, summaries, and table labels in English.
 
@@ -201,7 +203,7 @@ Company, plugin, SaaS, account, and backend-owned research requests include Goog
 
 LARK IS STRICTLY GOVERNED. For every Lark request, use the accessible Lark account already returned by the current run bootstrap, or call connections.list with provider lark once when the bootstrap has none. For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, use tools.invoke directly. Use the same governed route only through ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI calls, local Lark MCP server, or locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no direct local Lark fallback.
 
-Use the injected compact capability catalogue as the normal routing map. First understand the user's outcome. If a catalogue entry or persona rule clearly identifies an exact relevant skillId, call divo_skill_view once and follow that recipe. If the request is ordinary conversation or a simple direct capability call, using no skill is correct; do not perform skill search merely to prove that no skill exists. Use divo_skill_resolve only when a specialized company workflow is likely but neither the catalogue nor persona provides a clear exact match. For fallback resolution, pass the exact original request and up to two intent-preserving variants that retain all named entities, constraints, destinations, timing, and requested formats. Do not separately reload rules or recipes already returned inline by the fallback resolver. Attached-image OCR uses media.image_ocr directly.
+Use the injected compact capability catalogue as the normal routing map. First understand the user's outcome. Ordinary conversation needs no skill, but every governed tools.invoke call requires one exact DB specialist loaded with divo_skill_view in the current run. Use divo_skill_resolve only when the catalogue or persona does not identify the relevant router; load the returned router, then the exact specialist it names. For fallback resolution, pass the exact original request and up to two intent-preserving variants that retain all named entities, constraints, destinations, timing, and requested formats. Attached-image OCR uses media.image_ocr directly.
 
 ${DIVO_DIRECT_WEB_SEARCH_POLICY}
 
@@ -289,15 +291,16 @@ Stay in this same conversation after the first write. When the manager corrects 
 }
 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
-	let schedulingSkillLoadedForRun = false;
+	const loadedSkillByTool = new Map<string, { runId: string; skillId: string }>();
 	registerApprovalGate(pi);
 	registerLocalDivoBroker(pi);
 	registerMemoryReviewTool(pi);
 	registerTeachClarificationTool(pi);
 	registerDivoSkillView(pi, {
-		onSkillLoaded: skill => {
-			if (skill.slug === SCHEDULE_DIVO_WORK_SKILL_SLUG) {
-				schedulingSkillLoadedForRun = true;
+		onSkillLoaded: (skill, execution) => {
+			if (!execution) return;
+			for (const toolId of skill.toolIds) {
+				loadedSkillByTool.set(toolId, { runId: execution.runId, skillId: skill.id });
 			}
 		},
 	});
@@ -306,18 +309,17 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		name: "divo_skill_resolve",
 		label: "Divo skill resolver",
 		description:
-			"Fallback discovery for a likely specialized company workflow that is not clearly identified by the injected catalogue. " +
-			"Returns persona rules, exact linked recipes, complementary skills, provenance, and rejected weak matches.",
+			"Fallback router discovery for company work not clearly identified by the injected catalogue. " +
+			"Returns advisory persona rules and bounded DB router candidates; load one router, then its exact specialist.",
 		promptSnippet:
 			"Use divo_skill_resolve only when a specialized company workflow is likely and neither the injected catalogue nor persona supplies a clear exact skillId.",
 		promptGuidelines: [
 			"Always put the user's exact original wording in query. Never replace it with a summary.",
 			"Use at most two variants: one for the core task/domain and one for a distinct output, integration, scheduling, or monitoring need. Preserve all entities, constraints, destinations, timing, and formats.",
 			"Example: query='Prepare our monthly vendor-onboarding exception report and schedule it for Finance'; variants=['Apply the company vendor-onboarding exception workflow for Finance', 'Deliver the report monthly through scheduled Divo work'].",
-			"The response already includes matching persona rules, exact persona-linked skill recipes, complementary searched recipes, provenance, rejected weak matches, relevant tool contracts, and accessible accounts. Apply all compatible selected recipes; do not call persona.resolve, skills.search, skills.get, tools.list, or connections.list again for items returned in the run bootstrap.",
-			"Never use a recipe listed under rejected fuzzy matches.",
+			"The response contains advisory persona rules and router-only DB candidates. Load one relevant router with divo_skill_view, then load the exact specialist it identifies before tools.invoke.",
 			"Do not call this for greetings, ordinary conversation, or a simple direct capability call. No matching skill is a valid result.",
-			"If no useful exact backend skill is selected, do not tell the user. Continue silently with the permitted direct capability when one is clear.",
+			"If no useful router is selected, do not guess a specialist or invoke a governed tool.",
 			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",
 			"Unless the user asks about security or architecture, do not mention backend, local credentials, OAuth tokens, RBAC, audit, tool IDs, or request plumbing in final answers.",
 			"Backend Divo skills are authoritative for connected accounts, RBAC, approvals, SaaS credentials, and company data.",
@@ -333,8 +335,6 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				limit: params.limit,
 				actionId: toolCallId,
 			});
-			if (resolvedScheduleDivoWork(result)) schedulingSkillLoadedForRun = true;
-
 			return {
 				content: [{ type: "text", text: formatSkillResolveResult(result) }],
 				details: result,
@@ -354,9 +354,8 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			`Use Divo's governed route for company integrations: divo_gateway directly for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, or ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never invent CRM, Books, or mail results.`,
 			`Lark is strictly governed: use connections.list provider lark, then tools.invoke for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION} or ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI, a local Lark MCP server, or local package. If Divo is unavailable, report it; there is no direct local fallback.`,
 			"For attached local image OCR or screenshot understanding, call divo_gateway directly with op \"media.image_ocr\" and payload { filePath, mimeType?, fileName? }. Do not convert or compress it yourself first; desktop normalizes unsupported formats and compresses oversized images before sending attachment metadata to Pi. Do not use Read for image contents first.",
-			"Use the injected RBAC-filtered catalogue as the normal route. If it identifies a relevant exact skillId, load it once with divo_skill_view. If no skill is needed, invoke the clear direct capability without resolver ceremony.",
-			"Use divo_skill_resolve only as fallback for a likely specialized workflow missing from the catalogue. Its run bootstrap already contains relevant exact tool contracts and accessible accounts; do not separately reload rules, recipes, tool schemas, or connections returned by that fallback.",
-			"Apply all compatible persona-linked and complementary recipes returned inline. Never use a recipe that the resolver explicitly rejected.",
+			"Use the injected RBAC-filtered catalogue as the normal route. Before every tools.invoke call, load the exact DB specialist with divo_skill_view in the current run.",
+			"Use divo_skill_resolve only when the catalogue or persona does not identify the relevant router. Load the returned router, then the exact specialist it names.",
 			"When the catalogue and fallback are inconclusive, use bounded discovery only if needed. Do not expose routing, gateway, enum names, backend, or request plumbing in the user-facing answer.",
 			"Do not include visible user-facing pre-tool text about resolver, gateway, backend, routing, enum, or tool mechanics. Call the tool directly or use plain wording like \"I'll check that.\"",
 			"Unless the user asks about security or architecture, final answers should only cover connected accounts, available actions, approval/permission status, and the next useful choice. Use service names like Gmail, Drive, Calendar, Docs, Sheets, Slides, Zoho CRM, and Zoho Books instead of internal tool IDs.",
@@ -365,7 +364,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			"For every connection-backed Google, Zoho, Canva, Airtable, or user-scoped Lark call, reuse one exact UUID from the current run bootstrap. Call connections.list only when that bootstrap explicitly lacks the required account. Put the UUID in args.connectionId even when only one account is available; this is mandatory for backend RBAC, connection policy, approvals, and rate limits.",
 			DIVO_DIRECT_WEB_SEARCH_POLICY,
 			"For one-time or recurring Divo work, call tools.list with payload { toolId: \"scheduledWorkflows\" }, then invoke that exact tool with create/list/pause/resume/cancel/run_now. Schedule intent must be self-contained. Ask only for material missing timing, timezone, monitoring, autonomy, or failure details.",
-			`When work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}, call divo_skill_resolve once with the user's complete original request and at most two intent-preserving source/destination variants. Do not load the local Python recipe alone: the unified resolution must preload the local recipe, relevant source/destination recipes, exact governed contracts, and accessible accounts. Then use one persistent Python file under DIVO_RUN_DIR. Gmail/CRM → Sheets is always this path. Keep all connected reads, writes, and verification inside that file through credential-free divo-local; direct divo_gateway calls before the file are allowed only when the unified bootstrap explicitly identifies a missing account or schema. Create the file once, run it, edit that same file after a code or contract error, and rerun the same command. Never regenerate the whole program inside a tool argument or create a replacement script for an ordinary retry. Use divo_gateway directly only for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}.`,
+			`When work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}, call divo_skill_resolve once with the user's complete original request and at most two intent-preserving source/destination variants. Load the returned router, then every exact source, transformation, and destination specialist needed by the workflow. Use one persistent Python file under DIVO_RUN_DIR. Gmail/CRM → Sheets is always this path. Every divo-local tools.invoke request must include the corresponding exact skillId, toolId, and args. Keep all connected reads, writes, and verification inside that file. Create the file once, run it, edit that same file after a code or contract error, and rerun the same command. Never regenerate the whole program inside a tool argument or create a replacement script for an ordinary retry. Use divo_gateway directly only for ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}.`,
 			"Use capabilities.get only for broad permission diagnosis. Reuse exact contracts from the current run bootstrap. Only when a genuinely required tool is absent from that bootstrap may you call tools.list once with payload { toolId } to obtain its machine-readable args schema.",
 			`For tools.invoke, use exactly ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
 			"For Google Workspace, use an exact native operation schema already returned in bootstrap.nativeContracts and do not describe it again. Describe once only when a genuinely required native contract is absent, reusing the same exact connectionId; then call with arguments under input matching that schema. For calendar list/read requests with relative windows like today, tomorrow, this week, or next 7 days, pass explicit timezone-aware ISO bounds using the native schema's field names. Use half-open local-day ranges and make the final answer describe only the included dates.",
@@ -384,25 +383,35 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				departmentId?: string;
 				payload?: Record<string, unknown>;
 			};
-			if (isScheduledWorkflowInvocation(request) && !schedulingSkillLoadedForRun) {
-				return {
-					content: [{
-						type: "text",
-						text: "Scheduling recipe required. Load the exact Schedule Divo Work skillId from the injected catalogue with divo_skill_view. If it is absent, use divo_skill_resolve as fallback and retry only if that recipe is returned.",
-					}],
-					details: {
-						configured: true,
-						status: "skill_required",
-						ok: false,
-					},
-					isError: true,
-				};
+			const correlation = await readDivoRunCorrelation();
+			if (request.op === "tools.invoke") {
+				const toolId = typeof request.payload?.toolId === "string"
+					? request.payload.toolId
+					: undefined;
+				const loaded = toolId ? loadedSkillByTool.get(toolId) : undefined;
+				if (!toolId || !loaded || loaded.runId !== correlation.runId) {
+					const scheduling = isScheduledWorkflowInvocation(request);
+					return {
+						content: [{
+							type: "text",
+							text: scheduling
+								? "Scheduling recipe required. Load the exact Schedule Divo Work skillId from the injected catalogue with divo_skill_view, then retry."
+								: "Exact company skill required. Load the relevant DB skill with divo_skill_view, then retry this tool call.",
+						}],
+						details: {
+							configured: true,
+							status: "skill_required",
+							ok: false,
+						},
+						isError: true,
+					};
+				}
+				request.payload = { ...request.payload, skillId: loaded.skillId };
 			}
 			const resolved = resolveDivoGatewayConfig();
 			if ("error" in resolved) {
 				throw new Error(resolved.error);
 			}
-			const correlation = await readDivoRunCorrelation();
 
 			try {
 				const { body, httpStatus } = await executeGatewayRequest(resolved, {
@@ -457,7 +466,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		schedulingSkillLoadedForRun = false;
+		loadedSkillByTool.clear();
 		let systemPrompt = composeDivoSystemPrompt(
 			event.systemPrompt,
 			DIVO_COMPANY_PERSONA_PROMPT,

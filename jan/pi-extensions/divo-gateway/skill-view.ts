@@ -106,7 +106,12 @@ export async function loadDivoSkill(
 
 export function registerDivoSkillView(
 	pi: ExtensionAPI,
-	options: { onSkillLoaded?: (skill: DivoLoadedSkill) => void } = {},
+	options: {
+		onSkillLoaded?: (
+			skill: DivoLoadedSkill,
+			execution?: GatewayExecutionContext,
+		) => void;
+	} = {},
 ): void {
 	pi.registerTool({
 		name: "divo_skill_view",
@@ -124,18 +129,17 @@ export function registerDivoSkillView(
 		parameters: DIVO_SKILL_VIEW_PARAMS,
 		async execute(toolCallId, params) {
 			const correlation = await readDivoRunCorrelation().catch(() => undefined);
+			const execution = correlation ? {
+				version: 1 as const,
+				threadId: correlation.threadId,
+				runId: correlation.runId,
+				actionId: toolCallId,
+			} : undefined;
 			const skill = await loadDivoSkill({
 				...params,
-				...(correlation ? {
-					execution: {
-						version: 1,
-						threadId: correlation.threadId,
-						runId: correlation.runId,
-						actionId: toolCallId,
-					},
-				} : {}),
+				...(execution ? { execution } : {}),
 			});
-			options.onSkillLoaded?.(skill);
+			options.onSkillLoaded?.(skill, execution);
 			return {
 				content: [{
 					type: "text",

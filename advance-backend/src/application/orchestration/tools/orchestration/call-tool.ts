@@ -34,10 +34,23 @@ export function createCallToolTool(
   }) => void,
   runtimeExecutor?: ToolExecutor,
   isToolResolved?: (toolId: string) => boolean,
+  resolveExecutionScope?: () => {
+    runContext: AdapterContext['runContext'];
+    perm: AdapterContext['perm'];
+    allowedToolIds?: ReadonlySet<string>;
+  },
+  getWorkContextState?: () => {
+    version: number;
+    terminalFailure?: {
+      status: 'permission_denied' | 'routing_unavailable';
+      message: string;
+    };
+  },
 ) {
   const availableIds = registry.ids()
     .filter((toolId) => !allowedToolIds || allowedToolIds.has(String(toolId)))
     .join(', ');
+  const unresolvedAttempts = new Set<string>();
 
   return dynamicTool({
     description:
@@ -55,10 +68,32 @@ export function createCallToolTool(
       }
 
       const { toolId, args } = parsed.data;
+      const executionScope = resolveExecutionScope?.() ?? {
+        runContext: adapterCtx.runContext,
+        perm: adapterCtx.perm,
+        ...(allowedToolIds ? { allowedToolIds } : {}),
+      };
 
       if (isToolResolved && !isToolResolved(toolId)) {
+        const workContext = getWorkContextState?.() ?? { version: 0 };
+        if (workContext.terminalFailure) {
+          onDecision?.({
+            toolId,
+            outcome: 'failure',
+            status: workContext.terminalFailure.status,
+          });
+          return `${workContext.terminalFailure.status}: ${workContext.terminalFailure.message}`;
+        }
+        const attemptKey = `${workContext.version}:${toolId}`;
+        if (unresolvedAttempts.has(attemptKey)) {
+          onDecision?.({ toolId, outcome: 'failure', status: 'routing_contract_violation' });
+          return `routing_contract_violation: Tool "${toolId}" was retried without any approved skill being loaded. `
+            + 'No tool was run. Do not retry or substitute another capability.';
+        }
+        unresolvedAttempts.add(attemptKey);
         onDecision?.({ toolId, outcome: 'failure', status: 'work_context_required' });
-        return `work_context_required: Discover an approved skill for "${toolId}" before executing it.`;
+        return `work_context_required: Tool "${toolId}" is not authorized in this run because no approved skill granting it has been loaded. `
+          + 'Load the exact router or specialist returned by resolve_work before retrying.';
       }
 
       adapterCtx.logger.info('call_tool.invoke', { toolId });
@@ -70,9 +105,11 @@ export function createCallToolTool(
         const outcome = await runtimeExecutor.executeForRuntime({
           toolId,
           args,
-          runContext: adapterCtx.runContext,
-          perm: adapterCtx.perm,
-          ...(allowedToolIds ? { allowedToolIds } : {}),
+          runContext: executionScope.runContext,
+          perm: executionScope.perm,
+          ...(executionScope.allowedToolIds
+            ? { allowedToolIds: executionScope.allowedToolIds }
+            : {}),
           ...(adapterCtx.approvalGate ? { approvalGate: adapterCtx.approvalGate } : {}),
           ...(adapterCtx.chatId ? { chatId: adapterCtx.chatId } : {}),
           ...(adapterCtx.onProgress ? { onProgress: adapterCtx.onProgress } : {}),
@@ -88,7 +125,7 @@ export function createCallToolTool(
         return outcomeResult;
       }
 
-      if (allowedToolIds && !allowedToolIds.has(toolId)) {
+      if (executionScope.allowedToolIds && !executionScope.allowedToolIds.has(toolId)) {
         adapterCtx.logger.warn('call_tool.permission_denied', {
           toolId,
           reason: 'Tool is not present in the request-scoped permitted tool set',
@@ -119,7 +156,7 @@ export function createCallToolTool(
       const validatedArgs = argsParse.data;
 
       // ── Permission check ─────────────────────────────────────────────────
-      const permCheck = tool.permissionCheck(validatedArgs, adapterCtx.perm);
+      const permCheck = tool.permissionCheck(validatedArgs, executionScope.perm);
       if (!permCheck.ok) {
         adapterCtx.logger.warn('call_tool.permission_denied', {
           toolId,
@@ -140,8 +177,8 @@ export function createCallToolTool(
           toolId:      tool.id,
           action,
           args:        validatedArgs,
-          perm:        adapterCtx.perm,
-          runContext:  adapterCtx.runContext,
+          perm:        executionScope.perm,
+          runContext:  executionScope.runContext,
           chatId:      adapterCtx.chatId,
           argsSummary,
         });
@@ -181,8 +218,8 @@ export function createCallToolTool(
 
       // ── Build execution context ──────────────────────────────────────────
       const execCtx: ToolExecutionContext = {
-        runContext:    adapterCtx.runContext,
-        perm:         adapterCtx.perm,
+        runContext:    executionScope.runContext,
+        perm:         executionScope.perm,
         correlationId: tool.id,
         logger:       adapterCtx.logger.child({ toolId: tool.id }),
         clock:        adapterCtx.clock,

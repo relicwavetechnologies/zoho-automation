@@ -4,6 +4,7 @@ import { asToolId } from '../../shared/ids';
 import type {
   CatalogSkill,
   CatalogSkillSearchResult,
+  RouterSkillCandidate,
   SkillCatalogService,
 } from '../skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
@@ -48,6 +49,7 @@ export interface WorkResolution {
     readonly matchedQueries: readonly string[];
     readonly reason: string;
   }[];
+  readonly routerCandidates?: readonly RouterSkillCandidate[];
   readonly resolutionOrder: readonly string[];
   readonly note: string;
 }
@@ -75,6 +77,7 @@ export class WorkResolutionService {
     readonly permission: PermissionResult;
     readonly query: string;
     readonly variants?: readonly string[];
+    readonly routerSearchOnly?: boolean;
     readonly limit?: number;
     readonly abortSignal?: AbortSignal;
   }): Promise<WorkResolution> {
@@ -90,7 +93,7 @@ export class WorkResolutionService {
       : undefined;
     input.abortSignal?.throwIfAborted();
 
-    const [personaRules, searches] = await Promise.all([
+    const [personaRules, searches, routerCandidates] = await Promise.all([
       input.departmentId && this.deps.managerPersonaRuntime
         ? this.deps.managerPersonaRuntime.resolveDepartmentRules({
           companyId: input.companyId,
@@ -100,15 +103,29 @@ export class WorkResolutionService {
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         })
         : Promise.resolve([]),
-      Promise.all(queries.map(query => this.deps.skillCatalog.searchVisible({
-        companyId: input.companyId,
-        ...(input.departmentId ? { departmentId: input.departmentId } : {}),
-        permission: discoveryPermission,
-        ...(grantedSkillIds ? { grantedSkillIds } : {}),
-        query,
-        limit: 5,
-        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-      }))),
+      input.routerSearchOnly
+        ? Promise.resolve([])
+        : Promise.all(queries.map(query => this.deps.skillCatalog.searchVisible({
+          companyId: input.companyId,
+          ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+          permission: discoveryPermission,
+          ...(grantedSkillIds ? { grantedSkillIds } : {}),
+          query,
+          limit: 5,
+          ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+        }))),
+      input.routerSearchOnly
+        ? this.deps.skillCatalog.searchVisibleRouters({
+          companyId: input.companyId,
+          ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+          permission: discoveryPermission,
+          ...(grantedSkillIds ? { grantedSkillIds } : {}),
+          ...(grantedSkillIds ? { includeGrantedDepartments: true } : {}),
+          query: input.query,
+          ...(input.variants ? { variants: input.variants } : {}),
+          limit: input.limit ?? 3,
+        })
+        : Promise.resolve([]),
     ]);
     input.abortSignal?.throwIfAborted();
 
@@ -117,11 +134,13 @@ export class WorkResolutionService {
       scopeKey: string;
       ruleKey: string;
     }>>();
-    for (const rule of personaRules) {
-      for (const skill of rule.linkedSkills) {
-        const references = personaSkillReferences.get(skill.id) ?? [];
-        references.push({ nodeId: rule.nodeId, scopeKey: rule.scopeKey, ruleKey: rule.ruleKey });
-        personaSkillReferences.set(skill.id, references);
+    if (!input.routerSearchOnly) {
+      for (const rule of personaRules) {
+        for (const skill of rule.linkedSkills) {
+          const references = personaSkillReferences.get(skill.id) ?? [];
+          references.push({ nodeId: rule.nodeId, scopeKey: rule.scopeKey, ruleKey: rule.ruleKey });
+          personaSkillReferences.set(skill.id, references);
+        }
       }
     }
 
@@ -191,12 +210,20 @@ export class WorkResolutionService {
       persona: { rules: personaRules, linkedSkills: personaSkills },
       additionalSkills,
       rejectedSkills,
-      resolutionOrder: [
-        'Apply the current user request and backend policy.',
-        'Apply matching persona rules and their exact linked skill recipes.',
-        'Apply complementary skill-search recipes only where they do not conflict.',
-        'Use injected personal memory only as a compatible default.',
-      ],
+      ...(input.routerSearchOnly ? { routerCandidates } : {}),
+      resolutionOrder: input.routerSearchOnly
+        ? [
+            'Apply the current user request and backend policy.',
+            'Apply matching persona rules only as advisory constraints.',
+            'Choose and load one exact approved DB skill before using its tools.',
+            'Use injected personal memory only as a compatible default.',
+          ]
+        : [
+            'Apply the current user request and backend policy.',
+            'Apply matching persona rules and their exact linked skill recipes.',
+            'Apply complementary skill-search recipes only where they do not conflict.',
+            'Use injected personal memory only as a compatible default.',
+          ],
       note: 'This resolution is advisory context. Backend permission and approval checks remain authoritative.',
     };
   }

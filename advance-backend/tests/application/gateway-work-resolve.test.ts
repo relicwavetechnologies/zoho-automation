@@ -143,6 +143,14 @@ function makeDispatcher() {
     execute: async () => ok({ data: [] }),
   } as any);
   const catalog = {
+    searchVisibleRouters: async ({ query }: { query: string }) => [{
+      skillId: query.includes('Gmail') ? 'google-router' : 'research-router',
+      slug: query.includes('Gmail') ? 'google-workspace-router' : 'research-router',
+      name: query.includes('Gmail') ? 'Google Workspace Router' : 'Research Router',
+      description: 'Routes the request to one exact DB specialist.',
+      score: 12,
+      matchedTerms: query.includes('Gmail') ? ['gmail'] : ['research'],
+    }],
     searchVisible: async ({ query }: { query: string }) => {
       if (query.startsWith('Summarize Gmail')) return [{ skill: gmail, score: 14 }];
       if (query.startsWith('Analyze Gmail records and create')) {
@@ -258,7 +266,7 @@ function makeDispatcher() {
 }
 
 describe('gateway work.resolve', () => {
-  it('merges persona-linked recipes with strong complementary burst-search results', async () => {
+  it('returns only ranked routers and advisory persona rules before a specialist is loaded', async () => {
     const result = await makeDispatcher().dispatch({
       op: 'work.resolve',
       departmentId: 'department-1',
@@ -275,18 +283,14 @@ describe('gateway work.resolve', () => {
     const data = result.data as any;
     assert.equal(data.queries.length, 3);
     assert.equal(data.persona.rules[0].learningSources[0].sourceId, 'teach-session-1');
-    assert.equal(data.persona.linkedSkills[0].skill.id, dashboard.id);
-    assert.match(data.persona.linkedSkills[0].skill.instructions, /tabs, state transitions/i);
-    assert.deepEqual(data.additionalSkills.map((entry: any) => entry.skill.id), [webSearch.id]);
-    assert.ok(data.rejectedSkills.some((entry: any) =>
-      entry.id === seo.id && /relevance threshold/i.test(entry.reason)));
-    assert.ok(data.rejectedSkills.some((entry: any) =>
-      entry.id === oldDashboard.id && /persona-linked/i.test(entry.reason)));
+    assert.deepEqual(data.persona.linkedSkills, []);
+    assert.deepEqual(data.additionalSkills, []);
+    assert.deepEqual(data.rejectedSkills, []);
+    assert.deepEqual(data.routerCandidates.map((entry: any) => entry.skillId), ['research-router']);
     assert.equal(data.bootstrap.version, 1);
     assert.equal(data.bootstrap.scope, 'run');
-    assert.deepEqual(data.bootstrap.tools.map((tool: any) => tool.id), ['webSearch']);
-    assert.equal(data.bootstrap.tools[0].argsSchema.properties.query.type, 'string');
-    assert.ok(data.bootstrap.advisories.some((entry: any) => entry.code === 'contracts_loaded'));
+    assert.deepEqual(data.bootstrap.tools, []);
+    assert.deepEqual(data.bootstrap.connections, []);
   });
 
   it('preserves the exact query and allows no more than two variants', async () => {
@@ -304,7 +308,7 @@ describe('gateway work.resolve', () => {
     assert.match(result.error?.message ?? '', /variants/i);
   });
 
-  it('preloads only the relevant accessible account for selected connection-backed tools', async () => {
+  it('does not preload specialist contracts or accounts from a router match', async () => {
     const result = await makeDispatcher().dispatch({
       op: 'work.resolve',
       departmentId: 'department-1',
@@ -313,42 +317,9 @@ describe('gateway work.resolve', () => {
 
     assert.equal(result.ok, true);
     const data = result.data as any;
-    assert.ok(data.bootstrap.tools.some((tool: any) => tool.id === 'googleGmail'));
-    assert.deepEqual(data.bootstrap.connections.map((connection: any) => connection.provider), ['google_workspace']);
-    assert.equal(data.bootstrap.connections[0].accountEmail, 'member@example.com');
-    assert.ok(data.bootstrap.advisories.some((entry: any) => entry.code === 'connections_loaded'));
-  });
-
-  it('resolves the local, source, and destination recipes with contracts in one run bootstrap', async () => {
-    const result = await makeDispatcher().dispatch({
-      op: 'work.resolve',
-      departmentId: 'department-1',
-      payload: {
-        query: 'Analyze Gmail records and create a verified Google Sheet',
-        variants: [
-          'Read and normalize Gmail records with pagination and deduplication',
-          'Create and verify Google Sheets rows with targeted read-back ranges',
-        ],
-      },
-    }, member);
-
-    assert.equal(result.ok, true);
-    const data = result.data as any;
-    assert.deepEqual(
-      new Set(data.additionalSkills.map((entry: any) => entry.skill.id)),
-      new Set([localPython.id, gmail.id, sheets.id]),
-    );
-    assert.deepEqual(
-      new Set(data.bootstrap.tools.map((tool: any) => tool.id)),
-      new Set(['googleGmail', 'googleSheets']),
-    );
-    assert.deepEqual(
-      data.bootstrap.nativeContracts.map((contract: any) => contract.nativeTool),
-      ['search_gmail_messages', 'modify_sheet_values'],
-    );
-    assert.equal(data.bootstrap.connections.length, 1);
-    assert.ok(data.bootstrap.advisories.some((entry: any) =>
-      entry.code === 'native_contracts_loaded'
-      && /do not call describe again/i.test(entry.instruction)));
+    assert.deepEqual(data.routerCandidates.map((entry: any) => entry.skillId), ['google-router']);
+    assert.deepEqual(data.bootstrap.tools, []);
+    assert.deepEqual(data.bootstrap.connections, []);
+    assert.deepEqual(data.bootstrap.nativeContracts, []);
   });
 });

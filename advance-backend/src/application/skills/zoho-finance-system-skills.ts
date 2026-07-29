@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
-import { financeOpsCoreSkill, zohoBillNotifyAccountsSkill, zohoBooksBillSkill } from './zoho.skill';
+import {
+  financeZohoRouterSkill,
+  zohoBillNotifyAccountsSkill,
+  zohoBooksBillSkill,
+  zohoBooksReadAnalysisSkill,
+  zohoCrmReadAnalysisSkill,
+} from './zoho.skill';
 import { recordSkillRegistryMutation } from './skill-registry-versioning';
 
 export interface ZohoFinanceSystemSkillDefinition {
@@ -15,13 +21,31 @@ export interface ZohoFinanceSystemSkillDefinition {
 
 export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefinition[] = [
   {
-    slug: financeOpsCoreSkill.id,
-    name: financeOpsCoreSkill.name,
-    summary: financeOpsCoreSkill.description,
-    markdown: `# ${financeOpsCoreSkill.name}\n\n${financeOpsCoreSkill.instructions}`,
-    toolIds: financeOpsCoreSkill.toolIds,
-    tags: ['finance', 'zoho', 'books', 'crm', 'reporting'],
+    slug: financeZohoRouterSkill.id,
+    name: financeZohoRouterSkill.name,
+    summary: financeZohoRouterSkill.description,
+    markdown: `# ${financeZohoRouterSkill.name}\n\n${financeZohoRouterSkill.instructions}`,
+    toolIds: financeZohoRouterSkill.toolIds,
+    tags: ['finance', 'zoho', 'books', 'crm', 'router'],
     sortOrder: 10,
+  },
+  {
+    slug: zohoCrmReadAnalysisSkill.id,
+    name: zohoCrmReadAnalysisSkill.name,
+    summary: zohoCrmReadAnalysisSkill.description,
+    markdown: `# ${zohoCrmReadAnalysisSkill.name}\n\n${zohoCrmReadAnalysisSkill.instructions}`,
+    toolIds: zohoCrmReadAnalysisSkill.toolIds,
+    tags: ['finance', 'zoho', 'crm', 'read', 'analysis'],
+    sortOrder: 12,
+  },
+  {
+    slug: zohoBooksReadAnalysisSkill.id,
+    name: zohoBooksReadAnalysisSkill.name,
+    summary: zohoBooksReadAnalysisSkill.description,
+    markdown: `# ${zohoBooksReadAnalysisSkill.name}\n\n${zohoBooksReadAnalysisSkill.instructions}`,
+    toolIds: zohoBooksReadAnalysisSkill.toolIds,
+    tags: ['finance', 'zoho', 'books', 'read', 'reporting', 'analysis'],
+    sortOrder: 15,
   },
   {
     slug: zohoBooksBillSkill.id,

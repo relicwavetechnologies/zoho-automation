@@ -11,6 +11,7 @@ import type {
   ZohoBooksModule,
 } from '../../infrastructure/zoho/zoho-books-paginated.client';
 import {
+  type CurrencyConverter,
   getModuleSchema,
   injectSyntheticFields,
 } from '../../infrastructure/zoho/zoho-books-schema.cache';
@@ -115,16 +116,21 @@ export class AirtableDataExportSource implements DataExportSourceAdapter<Airtabl
 export class ZohoBooksDataExportSource implements DataExportSourceAdapter<ZohoBooksSource> {
   readonly kind = 'zoho_books' as const;
 
-  constructor(private readonly booksClient: ZohoBooksPaginatedClient) {}
+  constructor(
+    private readonly booksClient: ZohoBooksPaginatedClient,
+    private readonly getCurrencyConverter?: () => Promise<CurrencyConverter>,
+  ) {}
 
   async *read(source: ZohoBooksSource, context: {
     readonly companyId: string;
     readonly userId: string;
     readonly signal?: AbortSignal;
   }): AsyncIterable<DataExportPage> {
-    const statuses = statusValues(source.filters?.['status']);
+    const filters = normalizeZohoFilters(source.filters);
+    const statuses = statusValues(filters?.['status']);
     const seen = new Set<string>();
     const schema = getModuleSchema(source.module);
+    const currencyConverter = await this.getCurrencyConverter?.();
     for (const [statusIndex, status] of statuses.entries()) {
       for (let page = 1; page <= ZOHO_PAGE_LIMIT; page += 1) {
         context.signal?.throwIfAborted();
@@ -134,8 +140,8 @@ export class ZohoBooksDataExportSource implements DataExportSourceAdapter<ZohoBo
           connectionId: source.connectionId,
           moduleName: source.module,
           ...(source.organizationId ? { organizationId: source.organizationId } : {}),
-          ...(source.filters
-            ? { filters: { ...source.filters, ...(status ? { status } : {}) } }
+          ...(filters
+            ? { filters: { ...filters, ...(status ? { status } : {}) } }
             : {}),
           ...(source.query ? { query: source.query } : {}),
           page,
@@ -151,7 +157,7 @@ export class ZohoBooksDataExportSource implements DataExportSourceAdapter<ZohoBo
         const sourceTruncated = result.hasMore && page === ZOHO_PAGE_LIMIT;
         const hasMore = result.hasMore || statusIndex < statuses.length - 1;
         yield {
-          rows: injectSyntheticFields(unique, schema),
+          rows: injectSyntheticFields(unique, schema, currencyConverter),
           ...(hasMore ? { hasMore: true } : {}),
           ...(sourceTruncated ? { sourceTruncated: true } : {}),
         };
@@ -159,6 +165,29 @@ export class ZohoBooksDataExportSource implements DataExportSourceAdapter<ZohoBo
       }
     }
   }
+}
+
+function normalizeZohoFilters(
+  filters: Readonly<Record<string, unknown>> | undefined,
+): Record<string, unknown> | undefined {
+  if (!filters) return undefined;
+  const normalized = { ...filters };
+  for (const [canonical, provider] of [
+    ['dateFrom', 'date_start'],
+    ['dateTo', 'date_end'],
+  ] as const) {
+    const value = normalized[canonical];
+    if (value === undefined) continue;
+    if (normalized[provider] !== undefined) {
+      throw new Error(`Zoho source filter cannot include both ${canonical} and ${provider}`);
+    }
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error(`Zoho source filter ${canonical} must be a non-empty date string`);
+    }
+    normalized[provider] = value.trim();
+    delete normalized[canonical];
+  }
+  return normalized;
 }
 
 function flattenAirtableRecord(

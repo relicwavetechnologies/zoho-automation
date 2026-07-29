@@ -1,4 +1,8 @@
 import type { Skill } from './skill.types';
+import {
+  ZOHO_BOOKS_OUTSTANDING_RULE,
+  ZOHO_BOOKS_ROW_CONTRACT,
+} from '../../shared/zoho-books-row-contract';
 
 const ZOHO_CONNECTION_METHOD = `DIVO-GOVERNED ZOHO CONNECTION:
 - Invoke Zoho only through the Divo tool surface available in the current runtime: server channels use call_tool; desktop uses divo_gateway. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
@@ -38,6 +42,65 @@ WRITE SAFETY:
 OUTPUT:
 - Answer in business language: totals, statuses, aging/risk, owners or customers/vendors, and concrete follow-up priorities.
 - Do not expose internal tool IDs, gateway plumbing, raw API dumps, credentials, or guessed IDs in the final answer unless the user asks how it works.`,
+};
+
+export const financeZohoRouterSkill: Skill = {
+  id: 'finance-zoho-router',
+  name: 'Finance and Zoho Router',
+  description: 'Route Zoho Books and CRM requests to the exact approved read, bill, or notification workflow.',
+  toolIds: [],
+  instructions: `Use this instruction-only router to choose the next exact Finance/Zoho skill.
+
+- Zoho Books lookup, read-only reporting, whole-account aggregation, receivables, invoices, payments, bills, expenses, bank transactions, and tax summaries -> load \`zoho-books-read-analysis\`.
+- Zoho CRM customer, lead, contact, account, deal, or case context -> load \`zoho-crm-read-analysis\`.
+- Recording or creating a vendor bill from an invoice or PDF -> load \`zoho-books-bill\`.
+- Recording a bill and then notifying the Accounts Lark group -> load \`zoho-bill-notify-accounts\`.
+
+Preserve explicit read-only constraints. If more than one accessible Zoho account could satisfy the request, ask one short account-choice question using backend-provided labels before calling a Zoho tool. Never guess an account, create a todo, export data, or perform a write merely because routing was ambiguous.`,
+};
+
+export const zohoCrmReadAnalysisSkill: Skill = {
+  id: 'zoho-crm-read-analysis',
+  name: 'Zoho CRM Read and Analysis',
+  description: 'Read and summarize Zoho CRM records without side effects.',
+  toolIds: ['zohoCrm'],
+  instructions: `${ZOHO_CONNECTION_METHOD}
+
+READ ROUTING:
+- Use zohoCrm read operations for customer, lead, contact, account, deal, case, owner, and relationship context.
+- Use narrow search/list filters before fetching a specific record.
+- Stay read-only unless the user explicitly requests a CRM mutation and an approved write specialist is available.
+
+OUTPUT:
+- State the account used, material filters, record type, and confirmed result.
+- Never create, update, delete, export, schedule, message, email, or save anything for a read-only request.`,
+};
+
+export const zohoBooksReadAnalysisSkill: Skill = {
+  id: 'zoho-books-read-analysis',
+  name: 'Zoho Books Read and Analysis',
+  description: 'Read, aggregate, and verify Zoho Books data without side effects, including complete paginated finance calculations.',
+  toolIds: ['zohoBooks', 'dataProcessor'],
+  instructions: `${ZOHO_CONNECTION_METHOD}
+
+READ ROUTING:
+- Bounded lookup or preview -> use the matching zohoBooks read operation with narrow filters.
+- Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.
+- Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.
+- Exact whole-account or potentially large aggregate -> use dataProcessor source mode with kind="zoho_books"; do not start with zohoBooks script mode because script mode is capped at 4,000 records.
+- Aging/overdue report -> use zohoBooks op="build_overdue_report".
+- Require dataProcessor complete=true before describing a source-backed result as exact.
+- Zoho customer-payment list rows may omit original currency. When _currency is UNKNOWN, do not call it INR or produce an original-currency breakdown. _amount_inr remains safe when populated from Zoho bcy_amount; otherwise state that original-currency analysis requires stronger evidence.
+
+ROW CONTRACT:
+${ZOHO_BOOKS_ROW_CONTRACT}
+${ZOHO_BOOKS_OUTSTANDING_RULE}
+
+OUTPUT:
+- State the account used, material filters, count, total, and whether all pages were processed.
+- Preserve Zoho identifiers exactly as returned, including invoice numbers; never add, remove, or reformat identifier characters.
+- Report only figures returned by the tool computation. Do not add uncomputed remainders, percentages, or other derived claims.
+- Never create, update, delete, export, schedule, message, email, or save anything for a read-only request.`,
 };
 
 const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:

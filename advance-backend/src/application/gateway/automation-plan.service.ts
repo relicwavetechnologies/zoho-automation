@@ -15,6 +15,9 @@ import type { RuntimeApprovalRepository, RuntimeApprovalRow } from '../../infras
 import type { GatewayExecutionContext, GatewayMemberContext, GatewayResponse } from './gateway.types';
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
 import type { ToolExecutor, PreflightedToolInvocation } from './tool-executor';
+import type { SkillCatalogService } from '../skills/skill-catalog.service';
+import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
+import { withWorkDiscoveryPermissions } from './work-resolution.service';
 import { buildArgsSummary } from '../orchestration/tools/ai-sdk-adapter';
 import { z } from 'zod';
 import {
@@ -67,6 +70,7 @@ export type AutomationApprovalSignature = z.infer<typeof automationApprovalSigna
 export type AutomationRequiredApprovalSignature = z.infer<typeof automationRequiredApprovalSignatureSchema>;
 
 export const automationPlanStoredInvocationSchema = z.object({
+  skillId: z.string().min(1),
   toolId: z.string().min(1),
   action: z.enum(['create', 'update', 'delete', 'send', 'execute']),
   args: z.record(z.unknown()),
@@ -97,6 +101,8 @@ export type AutomationPlanStoredPayload = z.infer<typeof automationPlanStoredPay
 
 export interface AutomationPlanServiceDeps {
   readonly toolExecutor: ToolExecutor;
+  readonly skillCatalog: SkillCatalogService;
+  readonly skillAccessEnforcement: SkillAccessEnforcementPort;
   readonly permissions: PermissionService;
   readonly approvalRepo: RuntimeApprovalRepository;
   readonly approvalResolver: ApprovalResolverService;
@@ -120,7 +126,7 @@ export class AutomationPlanService {
     execution?: GatewayExecutionContext;
     title: string;
     summary: string;
-    invocations: ReadonlyArray<{ toolId: string; args: Record<string, unknown> }>;
+    invocations: ReadonlyArray<{ skillId: string; toolId: string; args: Record<string, unknown> }>;
   }): Promise<GatewayResponse> {
     const departmentId = input.departmentId;
     if (!departmentId) {
@@ -140,11 +146,32 @@ export class AutomationPlanService {
     if (!permResult.ok) {
       return gatewayFailure('permission_denied', permResult.error.message);
     }
+    const grantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
+      input.member.companyId,
+      input.member.userId,
+    );
 
     // A plan can contain 100 calls. Keep preflight parallel enough to feel
     // responsive, but bounded so one agent turn cannot overwhelm a connector
     // or its rate limit with an unbounded Promise.all burst.
     const preflighted = await mapWithConcurrency(input.invocations, PREFLIGHT_CONCURRENCY, async (invocation) => {
+      const authorized = await this.deps.skillCatalog.authorizesTool({
+        companyId: input.member.companyId,
+        departmentId,
+        permission: withWorkDiscoveryPermissions(permResult.value),
+        grantedSkillIds,
+        skillId: invocation.skillId,
+        toolId: invocation.toolId,
+      });
+      if (!authorized) {
+        return {
+          invocation,
+          response: gatewayFailure(
+            'permission_denied',
+            `Skill "${invocation.skillId}" does not authorize tool "${invocation.toolId}".`,
+          ),
+        };
+      }
       const response = await this.deps.toolExecutor.preflight({
         member: input.member,
         departmentId,
@@ -240,6 +267,7 @@ export class AutomationPlanService {
       summary: input.summary,
       approvalSignature: batchApprovalSignature,
       invocations: calls.map((call, index) => ({
+        skillId: input.invocations[index]!.skillId,
         toolId: call.toolId,
         action: call.action as z.infer<typeof automationPlanStoredInvocationSchema>['action'],
         args: call.args,

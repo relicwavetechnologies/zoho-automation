@@ -169,6 +169,88 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(captures.listInput.filters.date_end, '2026-03-31');
   });
 
+  it('forwards invoice search text and requests newest invoice dates first', async () => {
+    const captures: { listInput?: any } = {};
+    const tool = makeTool({ booksClient: makeBooksClient(captures) });
+
+    const result = await tool.execute({
+      op: 'list_invoices',
+      searchQuery: 'FINV/26-27/093',
+      limit: 5,
+    }, ctx);
+
+    assert.equal(result.ok, true);
+    assert.equal(captures.listInput.moduleName, 'invoices');
+    assert.equal(captures.listInput.query, 'FINV/26-27/093');
+    assert.equal(captures.listInput.filters.sort_column, 'date');
+    assert.equal(captures.listInput.filters.sort_order, 'D');
+  });
+
+  it('resolves an exact human invoice number before fetching full detail', async () => {
+    const captures: { listInput?: any; fetchedId?: string } = {};
+    const booksClient = {
+      listRecords: async (input: unknown) => {
+        captures.listInput = input;
+        return {
+          organizationId: 'org-1',
+          items: [
+            { invoice_id: '1500391000036778001', invoice_number: 'FINV/26-27/093' },
+            { invoice_id: '1500391000036778002', invoice_number: 'FINV/26-27/093-copy' },
+          ],
+          hasMore: false,
+          page: 1,
+        };
+      },
+    } as unknown as ZohoBooksPaginatedClient;
+    const simpleClient = {
+      ...fakeSimpleClient,
+      getInvoice: async (invoiceId: string) => {
+        captures.fetchedId = invoiceId;
+        return { invoice_id: invoiceId, invoice_number: 'FINV/26-27/093' };
+      },
+    };
+    const tool = makeTool({ booksClient, simpleClient });
+
+    const result = await tool.execute({
+      op: 'get_invoice',
+      invoiceId: 'FINV/26-27/093',
+    }, ctx);
+
+    assert.equal(result.ok, true);
+    assert.equal(captures.listInput.query, 'FINV/26-27/093');
+    assert.equal(captures.listInput.perPage, 200);
+    assert.equal(captures.fetchedId, '1500391000036778001');
+    assert.equal((result as any).value.data.invoice_number, 'FINV/26-27/093');
+  });
+
+  it('does not label payment amounts as INR when Zoho omits currency', async () => {
+    const booksClient = {
+      listRecords: async () => ({
+        organizationId: 'org-1',
+        items: [{
+          payment_id: 'payment-1',
+          payment_number: 'PAY-1',
+          customer_name: 'Foreign customer',
+          date: '2026-07-01',
+          amount: 100,
+          bcy_amount: 9_500,
+        }],
+        hasMore: false,
+        page: 1,
+      }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ booksClient });
+
+    const result = await tool.execute({ op: 'list_payments' }, ctx);
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    const item = (result.value.data as any).items[0];
+    assert.equal(item.currency_code, undefined);
+    assert.equal(item.amountFormatted, undefined);
+    assert.match(result.value.message ?? '', /currency unavailable/i);
+  });
+
   it('does not exhaust all pages for a small ordinary list', async () => {
     const captures: { listInput?: any; allInput?: any } = {};
     const booksClient = {

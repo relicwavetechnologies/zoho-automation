@@ -463,13 +463,34 @@ export class OrchestrationEngine {
     // P2P inline images — pass as multimodal content parts (same path as group images)
     const inlineImageUrls = incoming.imageUrls ?? [];
 
+    const supervisorRunContext: RunContext = incoming.channel === 'lark'
+      && incoming.tenantKey
+      ? {
+          ...runContext,
+          connectionAuthorization: {
+            larkOpenId: incoming.userExternalId,
+            larkTenantKey: incoming.tenantKey,
+            chatId: String(incoming.chatId),
+            chatType: incoming.chatType,
+            originalMessageId: String(incoming.messageId),
+            ...(incoming.rootMessageId
+              ? { rootMessageId: String(incoming.rootMessageId) }
+              : {}),
+            replyInThread: conversation.replyInThread ?? false,
+            ...(incoming.groupReplyMode
+              ? { groupReplyMode: incoming.groupReplyMode }
+              : {}),
+            originalRequest: incoming.text,
+          },
+        }
+      : runContext;
     const supervisorResult = await this.deps.supervisor.run({
       userMessage:    supervisorUserMessage,
       history:        supervisorHistory,
       channelType:    incoming.channel,
       channelId:      incoming.chatId,
       perm,
-      runContext,
+      runContext:     supervisorRunContext,
       statusChannel,
       aggregator,
       permittedTools: supervisorTools,

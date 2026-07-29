@@ -19,6 +19,7 @@ export function createResolveGovernedWorkTool(input: {
   readonly departmentId?: string;
   readonly permission: PermissionResult;
   readonly expectedQuery?: string;
+  readonly routerSearchOnly?: boolean;
   readonly abortSignal?: AbortSignal;
   /**
    * Discovery context for the recipes this resolves to — the same bootstrap the
@@ -35,7 +36,9 @@ export function createResolveGovernedWorkTool(input: {
 }) {
   const runtimeInputSchema = input.expectedQuery === undefined
     ? inputSchema
-    : z.object({}).describe('Call with no arguments to resolve the exact current user request.');
+    : z.object({
+      variants: inputSchema.shape.variants,
+    }).strict().describe('The server preserves the exact current request. Supply only optional intent-preserving variants.');
 
   return dynamicTool({
     description:
@@ -47,6 +50,13 @@ export function createResolveGovernedWorkTool(input: {
       let variants: readonly string[] | undefined;
       if (input.expectedQuery !== undefined) {
         query = input.expectedQuery;
+        const parsed = runtimeInputSchema.safeParse(value);
+        if (!parsed.success) {
+          return `error: invalid resolve_work input — ${parsed.error.errors
+            .map(issue => `${issue.path.join('.')}: ${issue.message}`)
+            .join('; ')}`;
+        }
+        variants = parsed.data.variants;
       } else {
         const parsed = inputSchema.safeParse(value);
         if (!parsed.success) {
@@ -67,6 +77,7 @@ export function createResolveGovernedWorkTool(input: {
           permission: input.permission,
           query,
           ...(variants ? { variants } : {}),
+          ...(input.routerSearchOnly ? { routerSearchOnly: true } : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         });
         input.abortSignal?.throwIfAborted();
@@ -150,6 +161,19 @@ function formatWorkResolution(resolution: WorkResolution, hasCanonicalBootstrap:
       skill: item.skill,
     })),
   ];
+  if (resolution.routerCandidates && resolution.routerCandidates.length > 0) {
+    lines.push('', '## Approved router candidates — advisory only; none is loaded');
+    for (const candidate of resolution.routerCandidates) {
+      lines.push(
+        `- ${candidate.skillId} — ${candidate.name}: ${candidate.description} `
+        + `(matched: ${candidate.matchedTerms.join(', ')})`,
+      );
+    }
+    lines.push(
+      'Choose one exact router, reject all candidates, or ask one concise clarification. '
+      + 'Load a chosen router with discover_skill using only its exact skillId.',
+    );
+  }
   if (selected.length > 0) {
     lines.push('', '## Approved recipes');
     for (const item of selected) {
@@ -159,7 +183,7 @@ function formatWorkResolution(resolution: WorkResolution, hasCanonicalBootstrap:
         lines.push(`Permitted capability targets: ${item.skill.toolIds.join(', ')}`);
       }
     }
-  } else {
+  } else if (!resolution.routerCandidates || resolution.routerCandidates.length === 0) {
     lines.push(
       '',
       hasCanonicalBootstrap

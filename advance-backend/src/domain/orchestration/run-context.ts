@@ -71,4 +71,26 @@ export interface RunContext {
    * dedicated runtime adapter such as creator Lark DM.
    */
   readonly deliveryMode?: 'current_chat_only' | 'scheduled_runtime_delivery';
+  /**
+   * Backend-derived Lark request data used only to create a deferred OAuth
+   * continuation. Tools must never accept these identity or reply fields from
+   * model arguments.
+   */
+  readonly connectionAuthorization?: {
+    readonly larkOpenId: string;
+    readonly larkTenantKey: string;
+    readonly chatId: string;
+    readonly chatType: string;
+    readonly originalMessageId: string;
+    readonly rootMessageId?: string;
+    readonly replyInThread: boolean;
+    readonly groupReplyMode?: string;
+    readonly originalRequest: string;
+  };
+  /**
+   * Backend-issued tool IDs that triggered a deferred OAuth continuation.
+   * The fresh run intersects these with current RBAC before treating them as
+   * resolved; callers and model arguments cannot grant tool access here.
+   */
+  readonly continuationToolIds?: ReadonlyArray<string>;
 }

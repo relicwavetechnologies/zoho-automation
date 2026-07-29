@@ -1,20 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { aitableSkills } from '../../src/application/skills/aitable.skill.ts';
-import { createDefaultSkillRegistry } from '../../src/application/skills/index.ts';
 import { AITABLE_TOOL_IDS, aitableOperationNames } from '../../src/application/aitable/aitable-manifest.ts';
 import { CANONICAL_TOOL_IDS, type CanonicalToolId } from '../../src/domain/tools/tool-id.ts';
 
 const allInstructions = aitableSkills.map(skill => skill.instructions).join('\n');
 
 describe('AITable system skills', () => {
-  it('is registered in the default skill registry', () => {
-    const registry = createDefaultSkillRegistry();
-    for (const skill of aitableSkills) {
-      assert.ok(registry.getById(skill.id), `${skill.id} should be registered`);
-    }
-  });
-
   it('only claims tools that exist in the canonical registry', () => {
     for (const skill of aitableSkills) {
       for (const toolId of skill.toolIds) {

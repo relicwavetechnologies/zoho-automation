@@ -1,7 +1,10 @@
 import 'dotenv/config';
 import { resolve } from 'node:path';
 import type { TypedEnv } from './config/env';
-import { resolveRedisUrl } from './config/env';
+import {
+  getGmailPubSubConfig,
+  resolveRedisUrl,
+} from './config/env';
 import { RuntimeApprovalRepository } from './infrastructure/persistence/runtime-approval.repository';
 import { ApprovalInboxService } from './application/approval/approval-inbox.service';
 import { buildApprovalResolutionCard } from './application/approval/approval-card-builder';
@@ -61,6 +64,7 @@ import { AitableClient } from './infrastructure/aitable/aitable.client';
 import { createAitableKeyVerifier, type AitableKeyVerifier } from './application/aitable/aitable-connect.service';
 import { selectAitableConnection } from './application/aitable/aitable-connection-selection';
 import { IntegrationConnectionRepository } from './infrastructure/persistence/integration-connection.repository';
+import { ConnectionAuthorizationRepository } from './infrastructure/persistence/connection-authorization.repository';
 import { ChannelDeliveryRepository } from './infrastructure/persistence/channel-delivery.repository';
 import { ExecutionLaneLeaseRepository } from './infrastructure/persistence/execution-lane-lease.repository';
 import { LaneLeaseHolder } from './application/orchestration/lane-lease.holder';
@@ -78,6 +82,13 @@ import { CompanyOmsConnectionRepository } from './infrastructure/persistence/com
 import { OmsSiteDataClient } from './infrastructure/oms/oms-site-data.client';
 import { CompanyOmsSiteDataService } from './application/oms/company-oms-site-data.service';
 import { GOOGLE_SCOPE, hasGoogleScopeGroups } from './domain/google/google-workspace-scope';
+import { asCompanyRoleSlug } from './domain/permissions/company-role';
+import {
+  asCompanyId,
+  asDepartmentId,
+  asToolId,
+  asUserId,
+} from './shared/ids';
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
 import { ZohoCrmClient } from './infrastructure/zoho/zoho-crm.client';
@@ -140,6 +151,19 @@ import {
 import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
 import { parseDataExportProfile, DATA_EXPORT_CAPABILITY_ID } from './application/data-export/data-export.profile';
 import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
+import {
+  GoogleConnectionContinuationQueue,
+} from './application/connections/google-connection-continuation';
+import {
+  GoogleConnectionAuthorizationService,
+} from './application/connections/google-connection-authorization.service';
+import { MailOpsWorker } from './application/mail-ops/mail-ops.worker';
+import { GmailHistoryClient } from './infrastructure/google/gmail-history.client';
+import { MailOpsRepository } from './infrastructure/persistence/mail-ops.repository';
+import {
+  buildGoogleConnectCard,
+  googleConnectFallbackText,
+} from './infrastructure/channels/lark/lark-google-connect';
 import { PersonaLearningQueue } from './application/persona-learning/persona-learning.queue';
 import { DeepSeekPersonaLearningExtractor } from './application/persona-learning/persona-learning.extractor';
 import { PersonaLearningService } from './application/persona-learning/persona-learning.service';
@@ -193,6 +217,7 @@ import { createDataProcessorTool } from './application/orchestration/tools/famil
 import { createDataExportTool } from './application/orchestration/tools/families/data-export.tool';
 import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/orchestration/tools/families/scheduled-workflows.tool';
+import { createMailAutomationsTool } from './application/orchestration/tools/families/mail-automations.tool';
 import { createSemrushTool } from './application/orchestration/tools/families/semrush.tool';
 import { createOmsSiteDataTool } from './application/orchestration/tools/families/oms-site-data.tool';
 import { ScheduledDesktopChannelAdapter } from './infrastructure/channels/desktop/scheduled-desktop.adapter';
@@ -283,6 +308,11 @@ export interface Container {
   larkOAuthService: LarkOAuthService;
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
+  googleConnectionAuthorization: GoogleConnectionAuthorizationService;
+  googleConnectionContinuationQueue: GoogleConnectionContinuationQueue;
+  connectionAuthorizationRepo: ConnectionAuthorizationRepository;
+  mailOpsRepo: MailOpsRepository;
+  mailOpsWorker: MailOpsWorker;
   canvaMcpOAuthService: CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
   /** AITable has no OAuth; this proves a pasted API key before it is stored. */
@@ -357,6 +387,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     level:   env.LOG_LEVEL,
     service: 'advance-backend',
   });
+  const gmailPubsubConfig = getGmailPubSubConfig(env);
 
   // ── Infra ──────────────────────────────────────────────────────────────
   const prisma = getPrismaClient();
@@ -413,6 +444,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const channelIdentityRepo   = new ChannelIdentityRepository(prisma, cache);
   const larkChatContextRepo   = new LarkChatContextRepository(prisma);
   const ingressReceiptRepo    = new IngressReceiptRepository(prisma);
+  const connectionAuthorizationRepo = new ConnectionAuthorizationRepository(
+    prisma,
+    env.ZOHO_TOKEN_ENCRYPTION_KEY ?? '',
+  );
+  const mailOpsRepo = new MailOpsRepository(prisma);
 
   // ── Permission service ─────────────────────────────────────────────────
   const permissions = new PermissionServiceImpl({
@@ -730,6 +766,73 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   // ── Google OAuth + connection registry ───────────────────────────────────
   const integrationConnectionRepo = new IntegrationConnectionRepository(prisma, env);
   const googleOAuthService        = new GoogleOAuthService({ env, cache, logger: logger.child({ service: 'google-oauth' }) });
+  const googleCallbackBase = new URL(
+    env.GOOGLE_OAUTH_REDIRECT_URI ?? env.BACKEND_PUBLIC_URL,
+  );
+  const googleConnectionCallbackUrl = new URL(
+    '/api/google/connection/callback',
+    googleCallbackBase.origin,
+  ).toString();
+  logger.info('google.connection.redirect_uri.resolved', {
+    redirectUri: googleConnectionCallbackUrl,
+    source: env.GOOGLE_OAUTH_REDIRECT_URI
+      ? 'GOOGLE_OAUTH_REDIRECT_URI_origin'
+      : 'BACKEND_PUBLIC_URL',
+  });
+  const googleConnectionAuthorization = new GoogleConnectionAuthorizationService({
+    intentRepo: connectionAuthorizationRepo,
+    googleOAuth: googleOAuthService,
+    connectionRepo: integrationConnectionRepo,
+    callbackUrl: googleConnectionCallbackUrl,
+    logger,
+  });
+  let deliverGoogleConnect:
+    | ((input: {
+        url: string;
+        reason: string;
+        chatId: string;
+        replyToMessageId: string;
+        replyInThread: boolean;
+      }) => Promise<boolean>)
+    | undefined;
+  const beginGoogleAuthorization = async (input: {
+    toolId: string;
+    reason: string;
+    runContext: import('./domain/orchestration/run-context').RunContext;
+  }) => {
+    const target = input.runContext.connectionAuthorization;
+    if (!target || !deliverGoogleConnect) {
+      return { status: 'unavailable' as const };
+    }
+    const issued = await googleConnectionAuthorization.issue({
+      companyId: String(input.runContext.companyId),
+      userId: String(input.runContext.userId),
+      ...(input.runContext.departmentId
+        ? { departmentId: String(input.runContext.departmentId) }
+        : {}),
+      ...target,
+      requestedToolIds: [input.toolId],
+    });
+    if (issued.outcome === 'already_pending') {
+      return { status: 'already_pending' as const, intentId: issued.intentId };
+    }
+    const delivered = await deliverGoogleConnect({
+      url: issued.authorizeUrl,
+      reason: input.reason,
+      chatId: target.chatId,
+      replyToMessageId: target.originalMessageId,
+      replyInThread: target.replyInThread,
+    });
+    if (!delivered) {
+      logger.error('google.authorization.card_delivery_failed', {
+        intentId: issued.intentId,
+        companyId: input.runContext.companyId,
+        userId: input.runContext.userId,
+      });
+      return { status: 'unavailable' as const };
+    }
+    return { status: 'sent' as const, intentId: issued.intentId };
+  };
   const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog();
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: memoryCache, logger });
   const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: memoryCache, logger });
@@ -848,6 +951,76 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
       });
       return { status: 'unavailable' as const };
     }
+  }
+
+  async function resolveMailAutomationGoogleConnection(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly connectionId?: string;
+    readonly abortSignal?: AbortSignal;
+  }) {
+    input.abortSignal?.throwIfAborted();
+    if (!googleOAuthService.isConfigured()) {
+      return {
+        status: 'unavailable' as const,
+        reason: 'Google OAuth is not configured for Divo.',
+      };
+    }
+    const accessible = await integrationConnectionRepo
+      .listAccessibleGoogleConnections(input);
+    input.abortSignal?.throwIfAborted();
+    if (!accessible.ok) {
+      return {
+        status: 'unavailable' as const,
+        reason: 'Google connections could not be loaded.',
+      };
+    }
+    const owned = accessible.value.filter(connection =>
+      connection.ownerType === 'user'
+      && connection.ownerUserId === input.userId,
+    );
+    const eligible = owned.filter(connection =>
+      connection.access !== 'read_only'
+      && hasGoogleScopeGroups(connection.scopes, [
+        [GOOGLE_SCOPE.gmailModify],
+        [GOOGLE_SCOPE.gmailSend],
+      ]),
+    );
+    const selection = selectAccessibleConnection({
+      connections: eligible,
+      filteredOut: accessible.value.filter(
+        connection => !eligible.includes(connection),
+      ),
+      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
+      minimumAccess: 'read_write',
+    });
+    if (selection.status === 'choose_connection') {
+      return {
+        status: 'choose_connection' as const,
+        connections: publicConnectionChoices(selection.connections),
+      };
+    }
+    if (selection.status === 'unavailable') {
+      return {
+        status: 'unavailable' as const,
+        reason:
+          'Mail Ops needs a user-owned Google account with Gmail read, watch, '
+          + 'and send access. Connect or reconnect Google to continue.',
+      };
+    }
+    if (!selection.connection.accountEmail) {
+      return {
+        status: 'unavailable' as const,
+        reason:
+          'The selected Google connection has no verified mailbox address. '
+          + 'Reconnect Google to continue.',
+      };
+    }
+    return {
+      status: 'resolved' as const,
+      connectionId: selection.connection.connectionId,
+      mailboxEmail: selection.connection.accountEmail,
+    };
   }
 
   async function resolveGoogleExportAuth(companyId: string): Promise<{
@@ -1305,6 +1478,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const ingestionQueue = new IngestionQueue(queueRedisUrl, env.REDIS_INGESTION_QUEUE_NAME);
   const dataExportQueue = new DataExportQueue(queueRedisUrl);
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
+  const googleConnectionContinuationQueue =
+    new GoogleConnectionContinuationQueue(queueRedisUrl);
   const personaLearningQueue = new PersonaLearningQueue(
     queueRedisUrl,
     env.REDIS_PERSONA_LEARNING_QUEUE_NAME,
@@ -1383,7 +1558,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
   const dataExportSources = new DataExportSourceRegistry();
   dataExportSources.register(new AirtableDataExportSource(getAirtableMcpConnection));
-  dataExportSources.register(new ZohoBooksDataExportSource(zohoPaginatedBooksClient));
+  dataExportSources.register(new ZohoBooksDataExportSource(
+    zohoPaginatedBooksClient,
+    async () => {
+      const { getExchangeRates, buildCurrencyUtilities } = await import('./application/zoho/exchange-rate.service');
+      return buildCurrencyUtilities(await getExchangeRates());
+    },
+  ));
   const googleWorkspaceExportSink = new GoogleWorkspaceExportSink();
 
   const zohoFinanceOps = new ZohoFinanceOps(
@@ -1575,9 +1756,18 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createLarkApprovalTool({
     client: larkApprovalClient,
   }));
-  for (const tool of createGoogleWorkspaceMcpTools({ getConnection: getGoogleWorkspaceMcpConnection })) {
+  for (const tool of createGoogleWorkspaceMcpTools({
+    getConnection: getGoogleWorkspaceMcpConnection,
+    beginAuthorization: beginGoogleAuthorization,
+  })) {
     toolRegistry.register(tool);
   }
+  toolRegistry.register(createMailAutomationsTool({
+    repo: mailOpsRepo,
+    pubsubReady: Boolean(gmailPubsubConfig),
+    resolveConnection: resolveMailAutomationGoogleConnection,
+    beginAuthorization: beginGoogleAuthorization,
+  }));
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   for (const tool of createAirtableMcpTools({
     getConnection: getAirtableMcpConnection,
@@ -1611,7 +1801,7 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createMemoryPublishingTool({ mem0: mem0Service }));
   toolRegistry.register(createMemoryRecallTool({ mem0: mem0Service, departmentRepo: deptRepo }));
   toolRegistry.register(new DocumentRagTool(documentRagBroker));
-  toolRegistry.register(createDataProcessorTool());
+  toolRegistry.register(createDataProcessorTool({ sources: dataExportSources }));
   toolRegistry.register(createDataExportTool({ queue: dataExportQueue }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,
@@ -1630,10 +1820,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createScheduledWorkflowsTool({ prisma }));
 
   logger.info('tool.registry.built', { toolCount: toolRegistry.ids().length, tools: toolRegistry.ids() });
-
-  // ── Skill registry (unified agent mode) ───────────────────────────────
-  const { createDefaultSkillRegistry } = await import('./application/skills');
-  const skillRegistry = createDefaultSkillRegistry();
 
   // ── Engine primitives ──────────────────────────────────────────────────
   const history = new HistoryService({ conversationRepo, logger: logger.child({ service: 'history' }) });
@@ -1707,14 +1893,13 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     clock:         systemClock,
     dynamicGraphEnabled: env.DYNAMIC_GRAPH_ENABLED,
     supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
-    unifiedAgentMode: env.UNIFIED_AGENT_MODE,
-    skillRegistry,
     toolRegistry,
     skillCatalog,
     skillAccessEnforcement,
     workResolution,
     workBootstrap,
     toolExecutor: larkRuntimeToolExecutor,
+    permissions,
     auditService,
     ...(mem0Service ? { mem0: mem0Service } : {}),
     ...((env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) ? { geminiApiKey: (env.GEMINI_API_KEY ?? env.GOOGLE_GENERATIVE_AI_API_KEY) as string } : {}),
@@ -1773,6 +1958,99 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     deliveryRepo: channelDeliveryRepo,
   });
   await larkAdapter.initialize();
+  deliverGoogleConnect = async (input) => {
+    const card = await larkAdapter.sendCardToChat(
+      input.chatId,
+      buildGoogleConnectCard(input),
+      input.replyToMessageId,
+      input.replyInThread,
+    );
+    if (card.ok) return true;
+    logger.warn('google.authorization.card_delivery_fallback', {
+      chatId: input.chatId,
+      error: card.error.message,
+    });
+    const fallback = await larkAdapter.sendToChatId(
+      input.chatId,
+      googleConnectFallbackText(input),
+      input.replyToMessageId,
+      undefined,
+      input.replyInThread,
+    );
+    return fallback.ok;
+  };
+  const gmailHistoryClient = new GmailHistoryClient();
+  const mailOpsWorker = new MailOpsWorker({
+    repo: mailOpsRepo,
+    gmail: gmailHistoryClient,
+    resolveAccessToken: async input => {
+      const connection = await integrationConnectionRepo.findAccessibleGoogleConnection({
+        ...input,
+        minimumAccess: 'read_write',
+      });
+      if (!connection.ok) throw connection.error;
+      if (!connection.value?.refreshToken) {
+        throw new Error('Mail Ops Google connection is unavailable.');
+      }
+      return googleOAuthService.getValidAccessToken({
+        companyId: input.companyId,
+        userId: `connection:${input.connectionId}`,
+        refreshToken: connection.value.refreshToken,
+      });
+    },
+    authorizeRule: async input => {
+      const connection = await integrationConnectionRepo
+        .findAccessibleGoogleConnection({
+          companyId: input.companyId,
+          userId: input.userId,
+          connectionId: input.connectionId,
+          minimumAccess: 'read_write',
+        });
+      if (!connection.ok) throw connection.error;
+      if (
+        connection.value?.ownerType !== 'user'
+        || connection.value.ownerUserId !== input.userId
+        || !connection.value.refreshToken
+        || !hasGoogleScopeGroups(connection.value.scopes, [
+          [GOOGLE_SCOPE.gmailModify],
+          [GOOGLE_SCOPE.gmailSend],
+        ])
+      ) return false;
+      const identity = await channelIdentityRepo.resolveByUserId(
+        input.userId,
+        input.companyId,
+      );
+      if (!identity.ok) throw identity.error;
+      if (!identity.value) return false;
+      const resolved = await permissions.resolve({
+        companyId: asCompanyId(input.companyId),
+        userId: asUserId(input.userId),
+        companyRole: asCompanyRoleSlug(identity.value.aiRole),
+        ...(input.departmentId
+          ? { departmentId: asDepartmentId(input.departmentId) }
+          : {}),
+        channel: 'lark',
+      });
+      if (!resolved.ok) throw resolved.error;
+      return resolved.value.allowedActionsByTool
+        .get(asToolId('mailAutomations'))
+        ?.has('execute') ?? false;
+    },
+    deliverLark: async input => {
+      const sent = await larkAdapter.sendToChatId(
+        input.chatId,
+        input.text,
+        undefined,
+        input.idempotencyKey,
+      );
+      if (!sent.ok) throw sent.error;
+      return sent.value;
+    },
+    logger,
+    ...(gmailPubsubConfig
+      ? { pubsubTopicName: gmailPubsubConfig.topic }
+      : {}),
+  });
   const channelRegistry = new ChannelAdapterRegistry();
   channelRegistry.register(larkAdapter);
 
@@ -1813,6 +2091,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     approvalRepo,
     channelIdentityRepo,
     permissions,
+    skillCatalog,
+    skillAccessEnforcement,
     approvalGate,
     approvalResolver,
     toolExecutor: gatewayToolExecutor,
@@ -1851,6 +2131,9 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
 
   const localApprovalIntents = new LocalApprovalIntentService({
     toolExecutor: gatewayToolExecutor,
+    permissions,
+    skillCatalog,
+    skillAccessEnforcement,
     repository: new InMemoryApprovalIntentRepository(),
     clock: systemClock,
     logger: logger.child({ service: 'gateway-local-approval' }),
@@ -1858,6 +2141,8 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
     permissions,
+    skillCatalog,
+    skillAccessEnforcement,
     approvalRepo,
     approvalResolver,
     approvalGate,
@@ -1946,6 +2231,11 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     larkOAuthService,
     // OAuth surfaces
     googleOAuthService,
+    googleConnectionAuthorization,
+    googleConnectionContinuationQueue,
+    connectionAuthorizationRepo,
+    mailOpsRepo,
+    mailOpsWorker,
     canvaMcpOAuthService,
     airtableMcpOAuthService,
     aitableKeyVerifier,

@@ -12,6 +12,9 @@ import {
 import { createAdminAuthRoutes } from './http/admin/admin-auth.routes';
 import { createAdminPermissionRoutes } from './http/admin/permission.routes';
 import { createGoogleAuthRoutes } from './http/google/google-auth.routes';
+import { createGoogleConnectionRoutes } from './http/google/google-connection.routes';
+import { createGmailPubSubRoutes } from './http/google/gmail-pubsub.routes';
+import { GooglePubSubPushVerifier } from './infrastructure/google/google-pubsub-push-auth';
 import { createZohoAuthRoutes } from './http/zoho/zoho-auth.routes';
 import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
 import { createExecutionRoutes } from './http/executions/execution.routes';
@@ -49,6 +52,8 @@ import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { IngestionWorker } from './application/ingestion/ingestion.worker';
 import { DataExportWorker } from './application/data-export/data-export.worker';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
+import { GoogleConnectionContinuationWorker } from './application/connections/google-connection-continuation';
+import { getGmailPubSubConfig } from './config/env';
 import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
 import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
@@ -57,6 +62,7 @@ import { ElevenLabsTranscriptionClient } from './infrastructure/ai/transcription
 
 export const createServer = (c: Container) => {
   const app = express();
+  const gmailPubsubConfig = getGmailPubSubConfig(c.env);
   const allowedOrigins = new Set(
     [
       c.env.APP_BASE_URL,
@@ -118,6 +124,38 @@ export const createServer = (c: Container) => {
     logger: c.logger,
   });
   larkIngressWorker.start();
+
+  const googleConnectionContinuationWorker =
+    new GoogleConnectionContinuationWorker({
+      redisUrl: c.queueRedisUrl,
+      queue: c.googleConnectionContinuationQueue,
+      intentRepo: c.connectionAuthorizationRepo,
+      identityRepo: c.channelIdentityRepo,
+      connectionRepo: c.integrationConnectionRepo,
+      engine: c.engine,
+      channelAdapter: c.larkAdapter,
+      laneLeaseHolder: c.laneLeaseHolder,
+      approvalGate: c.approvalGate,
+      logger: c.logger,
+    });
+  googleConnectionContinuationWorker.start();
+  const recoverGoogleExchanges = () => {
+    const staleBefore = new Date(Date.now() - 2 * 60_000);
+    void c.googleConnectionAuthorization
+      .reconcileStaleExchanges(staleBefore)
+      .catch(error => {
+        c.logger.warn('google.authorization.exchange_reconcile_failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+  recoverGoogleExchanges();
+  const googleExchangeRecoveryTimer = setInterval(
+    recoverGoogleExchanges,
+    60_000,
+  );
+  googleExchangeRecoveryTimer.unref?.();
+  c.mailOpsWorker.start();
 
   // Boot BullMQ ingestion worker (queue lives in container, shared with webhook routes)
   const ingestionWorker = new IngestionWorker({
@@ -321,6 +359,33 @@ export const createServer = (c: Container) => {
       frontendBaseUrl:       c.env.APP_BASE_URL,
     }),
   );
+
+  app.use(
+    '/api/google/connection',
+    createGoogleConnectionRoutes({
+      authorization: c.googleConnectionAuthorization,
+      continuationQueue: c.googleConnectionContinuationQueue,
+      logger: c.logger,
+    }),
+  );
+  if (gmailPubsubConfig) {
+    app.use(
+      '/api/google/gmail-pubsub',
+      createGmailPubSubRoutes({
+        verifier: new GooglePubSubPushVerifier({
+          audience: gmailPubsubConfig.pushAudience,
+          serviceAccountEmail: gmailPubsubConfig.pushServiceAccount,
+        }),
+        expectedSubscription: gmailPubsubConfig.subscription,
+        mailOpsRepo: c.mailOpsRepo,
+        logger: c.logger,
+      }),
+    );
+  } else {
+    c.logger.warn('gmail.pubsub.disabled', {
+      reason: 'GOOGLE_PUBSUB_TOPIC, SUBSCRIPTION, PUSH_AUDIENCE, or PUSH_SERVICE_ACCOUNT is missing',
+    });
+  }
 
   // Zoho OAuth connect + callback
   app.use(

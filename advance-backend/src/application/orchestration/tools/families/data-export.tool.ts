@@ -7,33 +7,13 @@ import type { ToolActionGroup } from '../../../../domain/permissions/tool-action
 import type { DataExportQueue } from '../../../data-export/data-export.queue';
 import {
   DATA_EXPORT_ROW_LIMIT,
+  datasetSourceSchema,
+  datasetSourceToolId,
   type DataExportJobPayload,
 } from '../../../data-export/data-export.types';
 
-const sourceSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('airtable_records'),
-    connectionId: z.string().uuid(),
-    toolId: z.enum(['airtableBase', 'airtableRecords']),
-    nativeTool: z.enum(['list_records_for_table', 'search_records']),
-    input: z.record(z.unknown()),
-  }).strict(),
-  z.object({
-    kind: z.literal('zoho_books'),
-    connectionId: z.string().uuid(),
-    module: z.enum([
-      'contacts', 'invoices', 'estimates', 'creditnotes', 'bills',
-      'salesorders', 'purchaseorders', 'customerpayments', 'vendorpayments',
-      'bankaccounts', 'banktransactions', 'expenses', 'items',
-    ]),
-    organizationId: z.string().optional(),
-    filters: z.record(z.unknown()).optional(),
-    query: z.string().optional(),
-  }).strict(),
-]);
-
 const Schema = z.object({
-  source: sourceSchema,
+  source: datasetSourceSchema,
   transform: z.object({
     script: z.string().min(1).max(20_000),
     args: z.record(z.unknown()).optional(),
@@ -81,9 +61,7 @@ export function createDataExportTool(deps: {
       if (!perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
         return err(new PermissionError({ toolId: 'dataExport', action: 'create', reason: 'not_allowed' }));
       }
-      const sourceToolId = args.source.kind === 'airtable_records'
-        ? args.source.toolId
-        : 'zohoBooks';
+      const sourceToolId = datasetSourceToolId(args.source);
       if (!perm.allowedActionsByTool.get(asToolId(sourceToolId))?.has('read')) {
         return err(new PermissionError({ toolId: sourceToolId, action: 'read', reason: 'not_allowed' }));
       }

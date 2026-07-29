@@ -342,6 +342,43 @@ describe('Google Workspace MCP product tools', () => {
     assert.match(message, /do not retry/);
   });
 
+  it('starts deferred OAuth from backend-owned Lark context when no account exists', async () => {
+    let authorizationInput: any;
+    const gmail = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({
+        status: 'unavailable',
+        reason: 'none_accessible',
+        accessible: [],
+      }),
+      beginAuthorization: async (input) => {
+        authorizationInput = input;
+        return { status: 'sent', intentId: 'intent-1' };
+      },
+    }).find((tool) => tool.id === 'googleGmail')!;
+    const connectionAuthorization = {
+      larkOpenId: 'ou_user',
+      larkTenantKey: 'tenant-1',
+      chatId: 'oc_chat',
+      chatType: 'p2p',
+      originalMessageId: 'om_request',
+      replyInThread: false,
+      originalRequest: 'Find my latest OTP email',
+    };
+
+    const result = await gmail.execute({
+      op: 'call',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      nativeTool: 'search_gmail_messages',
+      input: { query: 'newer_than:1d OTP' },
+    }, makeCtx('googleGmail', ['read'], { connectionAuthorization }));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && (result.value.data as any).code, 'google_workspace_authorization_pending');
+    assert.equal(authorizationInput.toolId, 'googleGmail');
+    assert.deepEqual(authorizationInput.runContext.connectionAuthorization, connectionAuthorization);
+    assert.match(result.ok ? result.value.message ?? '' : '', /fresh run automatically/);
+  });
+
   it('classifies destructive and executable native actions without a fallback switch', () => {
     assert.equal(googleWorkspaceActionFor('manage_event', { action: 'delete' }), 'delete');
     assert.equal(googleWorkspaceActionFor('manage_drive_access', { action: 'grant' }), 'create');

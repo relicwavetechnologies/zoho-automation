@@ -39,6 +39,10 @@ import { ok, err }                         from '../../../../shared/result';
 import { PermissionError, ToolError }      from '../../../../shared/errors';
 import type { ToolActionGroup }            from '../../../../domain/permissions/tool-action-group';
 import { asToolId }                        from '../../../../shared/ids';
+import {
+  ZOHO_BOOKS_OUTSTANDING_RULE,
+  ZOHO_BOOKS_ROW_CONTRACT,
+} from '../../../../shared/zoho-books-row-contract';
 import type { ZohoFinanceOps }             from '../../../zoho/zoho-finance-ops';
 import { mapZohoError }                    from '../../../zoho/zoho-error.utils';
 import { formatAmount, formatDate }        from '../../../zoho/zoho-format.utils';
@@ -219,9 +223,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const displayKey = (key: string): string =>
   key.includes('_') ? `${key}_formatted` : `${key}Formatted`;
 
-const currencyFrom = (record: Record<string, unknown>): string => {
+const currencyFrom = (record: Record<string, unknown>): string | undefined => {
   const currency = record['currency_code'] ?? record['currencyCode'] ?? record['currency'];
-  return typeof currency === 'string' && currency.trim() ? currency : 'INR';
+  return typeof currency === 'string' && currency.trim() ? currency : undefined;
 };
 
 const numericAmount = (value: unknown): number | null => {
@@ -234,6 +238,9 @@ const numericAmount = (value: unknown): number | null => {
 
 const stringValue = (record: Record<string, unknown>, ...keys: string[]): string =>
   keys.map(key => record[key]).find(value => typeof value === 'string' && value.trim().length > 0) as string | undefined ?? '';
+
+const normalizeRecordNumber = (value: string): string => value.trim().toLowerCase();
+const isZohoRecordId = (value: string): boolean => /^\d{10,}$/.test(value.trim());
 
 const amountValue = (record: Record<string, unknown>, ...keys: string[]): number => {
   for (const key of keys) {
@@ -253,12 +260,14 @@ const summarizeRecords = (
 
   const totals = new Map<string, number>();
   for (const item of items) {
-    const currency = currencyFrom(item);
+    const currency = currencyFrom(item) ?? 'UNKNOWN';
     totals.set(currency, (totals.get(currency) ?? 0) + amountValue(item, ...amountKeys));
   }
   const totalText = [...totals.entries()]
     .filter(([, total]) => total !== 0)
-    .map(([currency, total]) => `${formatAmount(total, currency)} (${currency})`)
+    .map(([currency, total]) => currency === 'UNKNOWN'
+      ? `${total.toLocaleString('en-IN')} (currency unavailable)`
+      : `${formatAmount(total, currency)} (${currency})`)
     .join(', ');
   return totalText
     ? `Found ${items.length} ${moduleLabel.toLowerCase()}: ${totalText}.`
@@ -296,7 +305,7 @@ function formatZohoResult(value: unknown): unknown {
 
     if (key.endsWith('_formatted') || key.endsWith('Formatted')) continue;
 
-    if (amountFields.has(key)) {
+    if (amountFields.has(key) && currency) {
       const amount = numericAmount(fieldValue);
       if (amount !== null) formatted[displayKey(key)] = formatAmount(amount, currency);
     }
@@ -487,7 +496,8 @@ export const createZohoBooksTool = (deps: {
     'Access Zoho Books: 19 operations for invoices, bills, expenses, payments, contacts, bank transactions, and reports.',
     'Plain list operations fetch one bounded page and return only the requested limit.',
     'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
-    'Use _amount_inr/_balance_inr for all INR calculations — pre-converted using Zoho exchange rates, guaranteed correct.',
+    'For an exact aggregate that may require more than 4000 records, use dataProcessor source mode instead of script mode.',
+    'Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.',
     `Set exportAll=true for a governed Google export capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user asks for more or every row, disclose the cap and never call the result complete.`,
     'Export example: {"op":"list_invoices","dateFrom":"2026-07-01","dateTo":"2026-07-31","exportAll":true,"connectionId":"<exact UUID>"}. Keep every field top-level.',
   ].join(' '),
@@ -495,15 +505,17 @@ export const createZohoBooksTool = (deps: {
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
     'op: list_invoices|get_invoice|create_invoice|list_contacts|get_contact|list_expenses|list_bills|list_payments|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
-    'read params: accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100)',
+    'read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, exportAll, limit (1-100)',
+    'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
     'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for an export or an aggregate within script mode’s documented 4,000-record ceiling.',
     'write params: invoiceId, email, fields',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     '',
     'SCRIPT MODE (list ops only — for ANALYSIS/GROUPING/AGGREGATION):',
     'script: JS code. Receives data (all records), args (extra params), schema (field hints). Must return a value.',
-    '  _amount_inr/_total_inr = full amount in INR (pre-converted). _balance_inr = outstanding in INR.',
-    '  _amount/_total = original currency. _balance = original outstanding. _currency = ISO code.',
+    `  ${ZOHO_BOOKS_ROW_CONTRACT}`,
+    `  ${ZOHO_BOOKS_OUTSTANDING_RULE}`,
+    '  _amount/_total = original currency amount. _balance = original outstanding. _currency = ISO code or UNKNOWN; never label UNKNOWN as INR.',
     '  For INR sums: use _balance_inr or _amount_inr directly. For "show in USD": fromINR(total, "USD").',
     '  formatAmount(value, currency) and formatDate(iso) are available in the sandbox.',
     '  Example: "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,outstanding:0}; g[v].count++; g[v].outstanding+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.outstanding-a.outstanding)"',
@@ -752,7 +764,12 @@ export const createZohoBooksTool = (deps: {
       switch (args.op) {
         case 'list_invoices':
           return ok(await listBounded('invoices', 'invoices', {
-            filters: dateFilter,
+            filters: {
+              ...dateFilter,
+              sort_column: 'date',
+              sort_order: 'D',
+            },
+            ...(args.searchQuery ? { query: args.searchQuery } : {}),
             amountKeys: ['total', 'balance', 'amount_due'],
             columns: [
               commonColumns.id('Invoice ID'),
@@ -769,7 +786,40 @@ export const createZohoBooksTool = (deps: {
 
         case 'get_invoice': {
           if (!args.invoiceId) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'invoiceId required for get_invoice' }));
-          const invoice = await client.getInvoice(args.invoiceId);
+          let resolvedInvoiceId = args.invoiceId;
+          if (!isZohoRecordId(resolvedInvoiceId)) {
+            const lookup = await deps.booksClient.listRecords({
+              companyId,
+              ...connectionContext,
+              moduleName: 'invoices',
+              ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+              filters: scopeFilter,
+              query: resolvedInvoiceId,
+              page: 1,
+              perPage: 200,
+            });
+            const exact = lookup.items.filter(item =>
+              normalizeRecordNumber(stringValue(item, 'invoice_number'))
+              === normalizeRecordNumber(resolvedInvoiceId));
+            if (exact.length !== 1) {
+              return ok({
+                success: true,
+                data: null,
+                message: exact.length === 0
+                  ? `Invoice number "${resolvedInvoiceId}" was not found`
+                  : `Invoice number "${resolvedInvoiceId}" is ambiguous`,
+              });
+            }
+            resolvedInvoiceId = stringValue(exact[0]!, 'invoice_id');
+            if (!resolvedInvoiceId) {
+              return err(new ToolError({
+                toolId: 'zohoBooks',
+                reason: 'upstream_failure',
+                message: 'Zoho invoice search returned an exact invoice number without an invoice ID',
+              }));
+            }
+          }
+          const invoice = await client.getInvoice(resolvedInvoiceId);
           if (personalizedScope && !recordMatchesZohoEmail(invoice, requesterEmail!)) return ok({ success: true, data: null, message: 'Invoice not found' });
           return ok({ success: true, data: formatZohoResult(invoice) });
         }

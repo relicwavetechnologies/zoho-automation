@@ -71,10 +71,14 @@ export const gatewayRequestSchema = z.object({
 
 export type GatewayRequest = z.infer<typeof gatewayRequestSchema>;
 
-export const toolsInvokePayloadSchema = z.object({
+export const toolInvocationPayloadSchema = z.object({
   toolId: z.string().min(1),
   args: z.record(z.unknown()).default({}),
 }).strict();
+
+export const toolsInvokePayloadSchema = toolInvocationPayloadSchema.extend({
+  skillId: z.string().min(1),
+});
 
 export type ToolsInvokePayload = z.infer<typeof toolsInvokePayloadSchema>;
 
@@ -84,7 +88,7 @@ export type ToolsInvokePayload = z.infer<typeof toolsInvokePayloadSchema>;
  * checked independently so the agent can repair only the rejected entries.
  */
 export const toolsPreflightPayloadSchema = z.object({
-  invocations: z.array(toolsInvokePayloadSchema).min(1).max(20),
+  invocations: z.array(toolInvocationPayloadSchema).min(1).max(20),
 }).strict();
 
 export type ToolsPreflightPayload = z.infer<typeof toolsPreflightPayloadSchema>;

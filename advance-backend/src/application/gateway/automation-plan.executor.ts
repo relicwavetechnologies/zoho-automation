@@ -18,6 +18,9 @@ import {
   parseAutomationPlanPayload,
 } from './automation-plan.service';
 import type { ToolExecutor } from './tool-executor';
+import type { SkillCatalogService } from '../skills/skill-catalog.service';
+import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
+import { withWorkDiscoveryPermissions } from './work-resolution.service';
 
 export interface AutomationPlanExecutorDeps {
   readonly approvalRepo: RuntimeApprovalRepository;
@@ -26,6 +29,8 @@ export interface AutomationPlanExecutorDeps {
   readonly approvalGate: ApprovalGateService;
   readonly approvalResolver: ApprovalResolverService;
   readonly toolExecutor: ToolExecutor;
+  readonly skillCatalog: SkillCatalogService;
+  readonly skillAccessEnforcement: SkillAccessEnforcementPort;
   readonly logger: Logger;
 }
 
@@ -121,6 +126,10 @@ export class AutomationPlanExecutor {
         await this.fail(claimedApproval.id, 'permission_denied', permissionResult.error.message);
         return;
       }
+      const grantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
+        identity.companyId,
+        requesterId,
+      );
 
       const execution = parseExecution(meta['execution']);
       const approvedByUserId = asString(meta['resolvedManagerUserId']);
@@ -161,6 +170,22 @@ export class AutomationPlanExecutor {
       });
       const currentInvocationSignatures: AutomationApprovalSignature[] = [];
       for (const invocation of plan.invocations) {
+        const authorized = await this.deps.skillCatalog.authorizesTool({
+          companyId: identity.companyId,
+          departmentId,
+          permission: withWorkDiscoveryPermissions(permissionResult.value),
+          grantedSkillIds,
+          skillId: invocation.skillId,
+          toolId: invocation.toolId,
+        });
+        if (!authorized) {
+          await this.fail(
+            claimedApproval.id,
+            'permission_denied',
+            `Skill "${invocation.skillId}" no longer authorizes tool "${invocation.toolId}".`,
+          );
+          return;
+        }
         const approvalRequirement = await this.deps.approvalGate.inspect({
           toolId: invocation.toolId,
           action: invocation.action,
@@ -247,6 +272,27 @@ export class AutomationPlanExecutor {
             claimedApproval.id,
             'permission_denied',
             currentPermissionResult.error.message,
+            { title: plan.title, completedCalls: index, totalCalls, results },
+          );
+          return;
+        }
+        const currentGrantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
+          identity.companyId,
+          requesterId,
+        );
+        const skillAuthorized = await this.deps.skillCatalog.authorizesTool({
+          companyId: identity.companyId,
+          departmentId,
+          permission: withWorkDiscoveryPermissions(currentPermissionResult.value),
+          grantedSkillIds: currentGrantedSkillIds,
+          skillId: invocation.skillId,
+          toolId: invocation.toolId,
+        });
+        if (!skillAuthorized) {
+          await this.fail(
+            claimedApproval.id,
+            'permission_denied',
+            `Skill "${invocation.skillId}" no longer authorizes tool "${invocation.toolId}".`,
             { title: plan.title, completedCalls: index, totalCalls, results },
           );
           return;

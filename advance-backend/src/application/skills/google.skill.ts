@@ -1,41 +1,15 @@
-import type { Skill } from './skill.types';
 import {
   GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
   GOOGLE_WORKSPACE_MCP_SOURCE,
   GOOGLE_WORKSPACE_PRODUCTS,
 } from '../google/google-workspace-mcp-manifest';
-import {
-  GOVERNED_DIRECT_ACTION_CRITERION,
-  GOVERNED_LOCAL_WORKFLOW_ROUTE,
-} from './governed-local-routing';
 
 const operationIndex = GOOGLE_WORKSPACE_PRODUCTS
   .map((product) => `- ${product.name} -> ${product.toolId}: ${product.tools.join(', ')}`)
   .join('\n');
-export const googleSkill: Skill = {
-  id: 'google',
-  name: 'Google Workspace',
-  description: 'Compact virtual parent for governed Google Workspace specialist workflows.',
-  // This source-controlled parent is intentionally not a database skill and
-  // does not require every Google product. Planning selects only executable,
-  // RBAC-granted specialist recipes.
-  toolIds: [],
-  instructions: `GOOGLE WORKSPACE EXECUTION METHOD:
-- Google Workspace executes only through Divo's governed route backed by the private server-side Workspace MCP. For ${GOVERNED_DIRECT_ACTION_CRITERION}, use the governed route directly. In Divo Desktop only, ${GOVERNED_LOCAL_WORKFLOW_ROUTE} Never call Google directly from a local command: no Google CLI, direct Google API request, curl, browser automation, local OAuth token, or credential-bearing SDK. divo-local is a Divo gateway wrapper, not a direct Google path.
-- For an explicit multi-product vendor onboarding workflow, follow the onboarding recipe returned by Divo's bounded resolver. Its internal planner selects only the required phases. Do not invoke or search for a raw planning operation yourself. It is never a planner for exports, reports, aggregation, analysis, or a generic Gmail-to-Sheets task.
-- Reuse the exact Google account already returned by the current run bootstrap. Call connections.list once only when the bootstrap explicitly says the required account is missing. Include the selected UUID as connectionId when invoking the product tool so Divo can enforce RBAC, connection policy, and rate limits; never pick a model default.
-- A text reply is an exact choice only when it uniquely identifies one returned option by number or account email. If names or labels still match multiple options, ask again; never infer work versus personal.
-- If no eligible connection is available, tell the member to connect or share a Google Workspace account with the required access/scopes.
-- Never use an email address or label as connectionId. Reuse the same connectionId for both describe and call.
-- Use exact native operation schemas already returned in bootstrap.nativeContracts. Call op="describe" once only for a genuinely required operation whose contract is absent, then follow that schema exactly. The gateway owns RBAC, approvals, sharing, token refresh, and audit.
-- Treat every result advisory with level="required" as part of the operation contract; satisfy it before reporting success.
-- Never invent recipients or resource IDs, never claim an action completed before a successful result, and never expose tokens or MCP endpoint details.`,
-};
-
 /**
- * Server-runner guidance is intentionally separate from the compact staged
- * parent above. The server Google runner has direct product tools, not the
- * desktop/Pi internal vendor-onboarding planning path.
+ * Server-runner guidance is not a selectable skill. Agent-visible routing and
+ * specialist recipes come from the governed DB catalogue.
  */
 export const googleRunnerInstructions = `GOOGLE WORKSPACE EXECUTION METHOD:
 - Google Workspace executes only through Divo's governed product tools backed by the private server-side Workspace MCP. Never use a local Google CLI, direct Google API request, Bash/curl request, browser automation, or local OAuth token.

@@ -9,8 +9,38 @@ describe('Zoho Finance system skill provisioning', () => {
   it('defines the complete source-controlled Finance workflow set', () => {
     assert.deepEqual(
       ZOHO_FINANCE_SYSTEM_SKILLS.map(skill => skill.slug),
-      ['finance-ops-core', 'zoho-books-bill', 'zoho-bill-notify-accounts'],
+      [
+        'finance-zoho-router',
+        'zoho-crm-read-analysis',
+        'zoho-books-read-analysis',
+        'zoho-books-bill',
+        'zoho-bill-notify-accounts',
+      ],
     );
+  });
+
+  it('provisions every specialist referenced by the Finance router', () => {
+    const router = ZOHO_FINANCE_SYSTEM_SKILLS.find(skill => skill.slug === 'finance-zoho-router');
+    assert.ok(router);
+    const provisionedSlugs = new Set(ZOHO_FINANCE_SYSTEM_SKILLS.map(skill => skill.slug));
+    const referencedSlugs = [...router.markdown.matchAll(/load `([^`]+)`/g)]
+      .map(match => match[1]);
+
+    assert.ok(referencedSlugs.length > 0);
+    assert.deepEqual(referencedSlugs.filter(slug => !provisionedSlugs.has(slug)), []);
+  });
+
+  it('keeps the read specialist truthful about exact lookups, latest ordering, and missing currency', () => {
+    const specialist = ZOHO_FINANCE_SYSTEM_SKILLS.find(
+      skill => skill.slug === 'zoho-books-read-analysis',
+    );
+    assert.ok(specialist);
+    assert.match(specialist.markdown, /exact normalized invoice_number match/i);
+    assert.match(specialist.markdown, /sorted by invoice date newest-first/i);
+    assert.match(specialist.markdown, /_currency is UNKNOWN/i);
+    assert.match(specialist.markdown, /do not call it INR/i);
+    assert.match(specialist.markdown, /Preserve Zoho identifiers exactly as returned/i);
+    assert.match(specialist.markdown, /Do not add uncomputed remainders/i);
   });
 
   it('creates department-scoped skills directly under Finance and grants the department', async () => {

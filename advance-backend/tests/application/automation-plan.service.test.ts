@@ -24,6 +24,17 @@ const member: GatewayMemberContext = {
   sessionId: 'session-1',
 };
 
+const skillCatalog = {
+  authorizesTool: async () => true,
+};
+const skillAccessEnforcement = {
+  listGrantedSkillIds: async () => new Set(['skill-1']),
+};
+const skillBindingDeps = {
+  skillCatalog: skillCatalog as any,
+  skillAccessEnforcement,
+};
+
 function createHarness(
   action: 'read' | 'create' = 'create',
   approvalRequirement: ApprovalRequirement | ((input: { args: Record<string, unknown> }) => ApprovalRequirement) = { kind: 'allowed' },
@@ -31,6 +42,7 @@ function createHarness(
   sendCard?: (openId: string, card: string) => Promise<any>,
   persistDelivery?: () => Promise<any>,
   markFailure?: () => Promise<any>,
+  authorizesTool: () => Promise<boolean> = async () => true,
 ) {
   const created: any[] = [];
   const cards: any[] = [];
@@ -43,6 +55,8 @@ function createHarness(
     permissions: {
       resolve: async () => ok({ department: { name: 'Finance' } }),
     } as any,
+    skillCatalog: { authorizesTool } as any,
+    skillAccessEnforcement,
     approvalRepo: {
       createOrReuseActive: async (input: any) => {
         if (
@@ -149,6 +163,33 @@ function createHarness(
 }
 
 describe('AutomationPlanService', () => {
+  it('rejects a mutation that is not bound to its exact visible DB skill', async () => {
+    const { service, created } = createHarness(
+      'create',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      async () => false,
+    );
+
+    const response = await service.create({
+      member,
+      departmentId: 'department-1',
+      title: 'Create summary sheet',
+      summary: 'Create the exact governed output.',
+      invocations: [{
+        skillId: 'revoked-skill',
+        toolId: 'googleSheets',
+        args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } },
+      }],
+    });
+
+    assert.equal(response.status, 'permission_denied');
+    assert.equal(created.length, 0);
+  });
+
   it('stores only exact preflighted mutations and sends a manager card', async () => {
     const { service, created, cards } = createHarness('create');
     const response = await service.create({
@@ -157,7 +198,7 @@ describe('AutomationPlanService', () => {
       execution: { version: 1, threadId: 'thread-1', runId: 'run-1', actionId: 'action-1' },
       title: 'Create daily summary sheet',
       summary: 'Create a Google Sheet with today’s qualified leads.',
-      invocations: [{ toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
+      invocations: [{ skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
     });
 
     assert.equal(response.ok, true);
@@ -187,7 +228,7 @@ describe('AutomationPlanService', () => {
       execution: { version: 1 as const, threadId: 'thread-1', runId: 'run-1', actionId: 'action-1' },
       title: 'Create daily summary sheet',
       summary: 'Create a Google Sheet with today’s qualified leads.',
-      invocations: [{ toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
+      invocations: [{ skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
     };
 
     const first = await service.create(input);
@@ -208,7 +249,7 @@ describe('AutomationPlanService', () => {
       departmentId: 'department-1',
       title: 'Create daily summary sheet',
       summary: 'Create a Google Sheet with today’s qualified leads.',
-      invocations: [{ toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
+      invocations: [{ skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
     };
     const execution = { version: 1 as const, threadId: 'thread-1', runId: 'run-1', actionId: 'action-1' };
 
@@ -243,7 +284,7 @@ describe('AutomationPlanService', () => {
       execution: { version: 1 as const, threadId: 'thread-1', runId: 'run-expired', actionId: 'action-1' },
       title: 'Create daily summary sheet',
       summary: 'Create a Google Sheet with today’s qualified leads.',
-      invocations: [{ toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
+      invocations: [{ skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
     };
 
     const first = await service.create(input);
@@ -268,8 +309,8 @@ describe('AutomationPlanService', () => {
       title: 'Create two reporting sheets',
       summary: 'Create the approved reporting output.',
       invocations: [
-        { toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } },
-        { toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Pipeline' } } },
+        { skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } },
+        { skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Pipeline' } } },
       ],
     };
 
@@ -311,7 +352,7 @@ describe('AutomationPlanService', () => {
       execution: { version: 1 as const, threadId: 'thread-1', runId: 'run-delivery', actionId: 'action-1' },
       title: 'Create delivery-tested sheet',
       summary: 'Create one exact governed sheet.',
-      invocations: [{ toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
+      invocations: [{ skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
     };
 
     const creator = service.create(input);
@@ -361,7 +402,7 @@ describe('AutomationPlanService', () => {
       execution: { version: 1 as const, threadId: 'thread-1', runId: 'run-definite-delivery', actionId: 'action-1' },
       title: 'Create retry-safe sheet',
       summary: 'Create one exact governed sheet.',
-      invocations: [{ toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
+      invocations: [{ skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
     };
 
     const first = await service.create(input);
@@ -390,7 +431,7 @@ describe('AutomationPlanService', () => {
       execution: { version: 1 as const, threadId: 'thread-1', runId: 'run-1', actionId: 'action-1' },
       title: 'Create daily summary sheet',
       summary: 'Create one exact output.',
-      invocations: [{ toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
+      invocations: [{ skillId: 'skill-1', toolId: 'googleSheets', args: { nativeTool: 'create_spreadsheet', input: { title: 'Leads' } } }],
     };
 
     const first = await service.create(input);
@@ -410,7 +451,7 @@ describe('AutomationPlanService', () => {
       departmentId: 'department-1',
       title: 'Read inbox',
       summary: 'Read messages.',
-      invocations: [{ toolId: 'googleGmail', args: { nativeTool: 'search_gmail_messages', input: { query: 'newer_than:1d' } } }],
+      invocations: [{ skillId: 'skill-1', toolId: 'googleGmail', args: { nativeTool: 'search_gmail_messages', input: { query: 'newer_than:1d' } } }],
     });
 
     assert.equal(response.ok, false);
@@ -436,6 +477,7 @@ describe('AutomationPlanService', () => {
       title: 'Create governed sheet',
       summary: 'Create a sheet through a shared connection.',
       invocations: [{
+        skillId: 'skill-1',
         toolId: 'googleSheets',
         args: { connectionId: 'connection-1', nativeTool: 'create_spreadsheet', input: { title: 'Leads' } },
       }],
@@ -484,6 +526,7 @@ describe('AutomationPlanService', () => {
       title: 'Create owner-approved sheet',
       summary: 'Create a sheet through its owner-governed connection.',
       invocations: [{
+        skillId: 'skill-1',
         toolId: 'googleSheets',
         args: { connectionId: 'connection-1', nativeTool: 'create_spreadsheet', input: { title: 'Leads' } },
       }],
@@ -515,8 +558,8 @@ describe('AutomationPlanService', () => {
       title: 'Write two governed accounts',
       summary: 'Write to two separately owned accounts.',
       invocations: [
-        { toolId: 'googleSheets', args: { connectionId: 'connection-1', operation: 'create' } },
-        { toolId: 'googleSheets', args: { connectionId: 'connection-2', operation: 'create' } },
+        { skillId: 'skill-1', toolId: 'googleSheets', args: { connectionId: 'connection-1', operation: 'create' } },
+        { skillId: 'skill-1', toolId: 'googleSheets', args: { connectionId: 'connection-2', operation: 'create' } },
       ],
     });
 
@@ -554,6 +597,7 @@ function createExecutorScenario(
   approvalResolver = createFixedApprovalResolver(currentBatchApproverUserId),
   runtimePreflight: (input: any) => Promise<any> =
     async (input) => ({ status: 'success', toolId: input.toolId, action: input.expectedAction }),
+  authorizesTool: () => Promise<boolean> = async () => true,
 ) {
   const calls: unknown[] = [];
   const failures: any[] = [];
@@ -568,6 +612,8 @@ function createExecutorScenario(
     }),
   };
   const executor = new AutomationPlanExecutor({
+    skillCatalog: { authorizesTool } as any,
+    skillAccessEnforcement,
     approvalRepo: {
       claimApprovedExecution: async () => ok(plan),
       persistExecutingResult: async () => ok(true),
@@ -627,6 +673,7 @@ function createSignedPlan(
       summary: 'Create the exact approved sheet.',
       approvalSignature: batchApprovalSignature,
       invocations: [{
+        skillId: 'skill-1',
         toolId: 'googleSheets',
         action: 'create',
         args,
@@ -652,6 +699,24 @@ function createFixedApprovalResolver(userId: string) {
 }
 
 describe('AutomationPlanExecutor', () => {
+  it('fails closed before deferred execution when the stored skill binding is revoked', async () => {
+    const plan = createSignedPlan({ kind: 'allowed' }, 'manager-1');
+    const { executor, calls, failures } = createExecutorScenario(
+      plan,
+      { kind: 'allowed' },
+      'manager-1',
+      async () => ok({ department: {} }),
+      createFixedApprovalResolver('manager-1'),
+      undefined,
+      async () => false,
+    );
+
+    await executor.resume(plan, 'approved');
+
+    assert.equal(calls.length, 0);
+    assert.equal(failures[0]?.status, 'permission_denied');
+  });
+
   it('fails closed when identity resolution returns a different requester or company', async () => {
     const plan = createSignedPlan({ kind: 'allowed' }, 'manager-1');
     const { executor, calls, failures, channelIdentityRepo } = createExecutorScenario(
@@ -695,6 +760,7 @@ describe('AutomationPlanExecutor', () => {
           connectionScope: null,
         },
         invocations: [{
+          skillId: 'skill-1',
           toolId: 'googleSheets',
           action: 'create',
           args,
@@ -717,6 +783,7 @@ describe('AutomationPlanExecutor', () => {
     } as any;
     refreshPlanHash(plan);
     const executor = new AutomationPlanExecutor({
+      ...skillBindingDeps,
       approvalRepo: {
         claimApprovedExecution: async () => ok(plan),
         persistExecutingResult: async (_id: string, result: unknown) => {
@@ -804,6 +871,7 @@ describe('AutomationPlanExecutor', () => {
           },
         },
         invocations: [{
+          skillId: 'skill-1',
           toolId: 'googleSheets',
           action: 'create',
           args,
@@ -826,6 +894,7 @@ describe('AutomationPlanExecutor', () => {
     } as any;
     refreshPlanHash(plan);
     const executor = new AutomationPlanExecutor({
+      ...skillBindingDeps,
       approvalRepo: {
         claimApprovedExecution: async () => ok(plan),
         persistExecutingResult: async () => ok(true),
@@ -1271,6 +1340,7 @@ describe('AutomationPlanExecutor', () => {
     const plan = createSignedPlan({ kind: 'allowed' }, 'manager-1');
     const checkpoints: any[] = [];
     const executor = new AutomationPlanExecutor({
+      ...skillBindingDeps,
       approvalRepo: {
         claimApprovedExecution: async () => ok(plan),
         persistExecutingResult: async (_id: string, result: unknown) => {

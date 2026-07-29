@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  automationPlanCreatePayloadSchema,
   connectionsListPayloadSchema,
   gatewayRequestSchema,
   skillsSearchPayloadSchema,
@@ -57,8 +58,9 @@ describe('public gateway request contract', () => {
     }).success, false);
   });
 
-  it('accepts only toolId and args inside tools.invoke payload', () => {
+  it('requires an exact skill binding with toolId and args inside tools.invoke payload', () => {
     assert.equal(toolsInvokePayloadSchema.safeParse({
+      skillId: 'google-gmail',
       toolId: 'googleGmail',
       args: {
         connectionId: 'connection-1',
@@ -76,6 +78,27 @@ describe('public gateway request contract', () => {
       input: {},
     });
     assert.equal(malformed.success, false);
+    assert.equal(toolsInvokePayloadSchema.safeParse({
+      toolId: 'googleGmail',
+      args: {},
+    }).success, false);
+  });
+
+  it('requires exact skill bindings for every automation-plan invocation', () => {
+    const plan = {
+      title: 'Create reporting sheet',
+      summary: 'Create the approved reporting output.',
+      invocations: [{
+        skillId: 'google-sheets',
+        toolId: 'googleSheets',
+        args: { nativeTool: 'create_spreadsheet', input: { title: 'Report' } },
+      }],
+    };
+    assert.equal(automationPlanCreatePayloadSchema.safeParse(plan).success, true);
+    assert.equal(automationPlanCreatePayloadSchema.safeParse({
+      ...plan,
+      invocations: [{ toolId: 'googleSheets', args: {} }],
+    }).success, false);
   });
 
   it('requires one exact supported connection provider and rejects unknown search controls', () => {

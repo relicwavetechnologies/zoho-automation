@@ -24,7 +24,7 @@ export interface ResolvedSkill {
 	score: number;
 	confidence: "high" | "medium" | "low";
 	reason: string;
-	source: "persona_link" | "skill_search" | "google_plan";
+	source: "router" | "persona_link" | "skill_search" | "google_plan";
 	toolIds?: string[];
 	instructions?: string;
 	revision?: number;
@@ -83,14 +83,6 @@ interface GoogleVendorOnboardingPlan {
 		name: string;
 		skillId: string;
 		toolId: string;
-		skill?: {
-			id: string;
-			name: string;
-			description: string;
-			instructions: string;
-			toolIds: string[];
-			revision?: number;
-		};
 	}>;
 }
 
@@ -136,26 +128,15 @@ export async function resolveDivoSkills(options: {
 	const vendorOnboarding = work?.googleVendorOnboarding;
 	const googlePlan = vendorOnboarding?.status === "ready" ? vendorOnboarding.plan : null;
 	if (googlePlan) {
-		const first = googlePlan.phases[0]?.skill;
 		const selected: ResolvedSkill = {
-			id: "google",
-			name: "Google Workspace vendor onboarding",
-			description: `Backend-planned ${googlePlan.phases.map((phase) => phase.name).join(" → ")} workflow.`,
+			id: googlePlan.parent.id,
+			name: googlePlan.parent.name,
+			description: googlePlan.parent.description,
 			score: 10,
 			confidence: "high",
-			source: "google_plan",
-			reason: "Matched the governed Google vendor-onboarding workflow.",
-			toolIds: googlePlan.phases.map((phase) => phase.toolId),
-			...(first ? {
-				instructions: [
-					`Google parent guidance (${googlePlan.parent.name}):`,
-					googlePlan.parent.instructions,
-					"",
-					`First specialist recipe (${first.name}):`,
-					first.instructions,
-				].join("\n"),
-				revision: first.revision,
-			} : {}),
+			source: "router",
+			reason: "Matched the governed Google Workspace router.",
+			instructions: googlePlan.parent.instructions,
 			orchestrationPlan: googlePlan,
 		};
 		const results = [selected, ...(work?.results ?? [])];
@@ -230,6 +211,11 @@ export function formatSkillResolveResult(result: SkillResolveResult): string {
 
 	const personaSkills = result.results.filter(skill => skill.source === "persona_link");
 	const searchedSkills = result.results.filter(skill => skill.source === "skill_search");
+	const routers = result.results.filter(skill => skill.source === "router");
+	if (routers.length) {
+		lines.push("Router candidates:");
+		for (const skill of routers) appendSkill(lines, skill);
+	}
 	if (personaSkills.length) {
 		lines.push("Required persona-linked skills:");
 		for (const skill of personaSkills) appendSkill(lines, skill);
@@ -268,7 +254,11 @@ export function formatSkillResolveResult(result: SkillResolveResult): string {
 
 function appendSkill(lines: string[], skill: ResolvedSkill): void {
 	lines.push(`- ${skill.name} · revision ${skill.revision ?? "unknown"} · ${skill.confidence} confidence`);
-	lines.push(`  source: ${skill.source === "persona_link" ? "exact manager-persona link" : "multi-query skill search"}`);
+	lines.push(`  source: ${skill.source === "router"
+		? "router-only DB discovery"
+		: skill.source === "persona_link"
+			? "exact manager-persona link"
+			: "multi-query skill search"}`);
 	lines.push(`  reason: ${skill.reason}`);
 	if (skill.personaReferences?.length) {
 		lines.push(`  references: ${skill.personaReferences.map(reference => `${reference.scopeKey}/${reference.ruleKey}`).join(", ")}`);
@@ -300,24 +290,9 @@ function readGoogleVendorOnboardingPlan(data: unknown): GoogleVendorOnboardingPl
 		const skillId = readString(phase.skillId);
 		const toolId = readString(phase.toolId);
 		if (!id || !name || !skillId || !toolId) return [];
-		const rawSkill = phase.skill;
-		let skill: GoogleVendorOnboardingPlan["phases"][number]["skill"];
-		if (rawSkill && typeof rawSkill === "object") {
-			const candidate = rawSkill as Record<string, unknown>;
-			const skillId = readString(candidate.id);
-			const skillName = readString(candidate.name);
-			const description = readString(candidate.description);
-			const instructions = readString(candidate.instructions);
-			if (!skillId || !skillName || !description || !instructions || !Array.isArray(candidate.toolIds)) return [];
-			skill = {
-				id: skillId, name: skillName, description, instructions,
-				toolIds: candidate.toolIds.filter((item): item is string => typeof item === "string"),
-				revision: typeof candidate.revision === "number" ? candidate.revision : undefined,
-			};
-		}
-		return [{ id, name, skillId, toolId, ...(skill ? { skill } : {}) }];
+		return [{ id, name, skillId, toolId }];
 	});
-	if (!phases.length || !phases[0]?.skill) return null;
+	if (!phases.length) return null;
 	return {
 		workflow: "vendor_onboarding",
 		parent: {
@@ -422,6 +397,7 @@ function readBackendWorkResolution(data: unknown): BackendWorkResolution | null 
 	const personaRules = readPersonaRules(persona.rules);
 	const personaSkills = readResolvedSkills(persona.linkedSkills, "persona_link");
 	const additionalSkills = readResolvedSkills(raw.additionalSkills, "skill_search");
+	const routers = readRouterCandidates(raw.routerCandidates);
 	const rejected = readRejectedSkills(raw.rejectedSkills);
 	const bootstrap = parseWorkBootstrap(raw.bootstrap);
 	const googleVendorOnboarding = readGoogleVendorOnboardingResolution(raw.googleVendorOnboarding);
@@ -429,12 +405,38 @@ function readBackendWorkResolution(data: unknown): BackendWorkResolution | null 
 	if (!queries.length) return null;
 	return {
 		queries,
-		results: [...personaSkills, ...additionalSkills],
+		results: [...routers, ...personaSkills, ...additionalSkills],
 		personaRules,
 		rejected,
 		...(bootstrap ? { bootstrap } : {}),
 		...(googleVendorOnboarding ? { googleVendorOnboarding } : {}),
 	};
+}
+
+function readRouterCandidates(value: unknown): ResolvedSkill[] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((item): ResolvedSkill[] => {
+		if (!item || typeof item !== "object") return [];
+		const raw = item as Record<string, unknown>;
+		const id = readString(raw.skillId);
+		const slug = readString(raw.slug);
+		const name = readString(raw.name);
+		const description = readString(raw.description);
+		if (!id || !slug || !name || !description || typeof raw.score !== "number") return [];
+		return [{
+			id,
+			slug,
+			name,
+			description,
+			score: raw.score,
+			confidence: confidenceForScore(raw.score),
+			source: "router",
+			reason: "Matched the bounded router-only DB search.",
+			matchedQueries: Array.isArray(raw.matchedTerms)
+				? raw.matchedTerms.filter((entry): entry is string => typeof entry === "string")
+				: [],
+		}];
+	});
 }
 
 function readGoogleVendorOnboardingResolution(value: unknown): BackendWorkResolution["googleVendorOnboarding"] | null {

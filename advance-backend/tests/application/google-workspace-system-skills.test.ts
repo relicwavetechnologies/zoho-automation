@@ -26,6 +26,11 @@ describe('Google Workspace system skills', () => {
       assert.doesNotMatch(skill.markdown, /start_google_auth/);
       assert.match(skill.markdown, /OAuth bearer token/);
       assert.match(skill.markdown, /result advisory.*level: "required"/);
+      assert.match(skill.markdown, /no Google account is accessible/);
+      assert.match(skill.markdown, /loading this skill has not sent a card/);
+      assert.match(skill.markdown, /You must invoke `call_tool` exactly once/);
+      assert.match(skill.markdown, /google_workspace_authorization_pending/);
+      assert.match(skill.markdown, /Never invent a Lark operation/);
       assert.doesNotMatch(skill.markdown, /Divo (injects|derives) user_google_email/);
     }
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;

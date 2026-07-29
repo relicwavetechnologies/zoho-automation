@@ -9,6 +9,11 @@ import { provisionDivoSemrushForExistingCompanies } from '../src/application/ski
 import { provisionZohoFinanceSkillsForExistingCompanies } from '../src/application/skills/zoho-finance-system-skills';
 import { provisionDataExportSystemSkillForExistingCompanies } from '../src/application/skills/data-export-system-skill';
 import { seedRegisteredTools } from './seed-registered-tools';
+import {
+  provisionMailOpsPermissionsForExistingCompanies,
+  provisionMailOpsSkillsForExistingCompanies,
+} from '../src/application/skills/mail-ops-system-skills';
+import { provisionScheduleDivoWorkForExistingCompanies } from '../src/application/skills/scheduled-work-system-skill';
 
 export async function provisionConnectedProviderSkillsForExistingCompanies(prisma: PrismaClient) {
   const totals = { companies: 0, created: 0, updated: 0, existing: 0, skipped: 0 };
@@ -33,8 +38,13 @@ export async function reconcileCapabilities(prisma: PrismaClient) {
     dataExport: await provisionDataExportSystemSkillForExistingCompanies(prisma),
     semrush: await provisionDivoSemrushForExistingCompanies(prisma),
     oms: await provisionDivoOmsSiteDataForExistingCompanies(prisma),
+    scheduling: await provisionScheduleDivoWorkForExistingCompanies(prisma),
+    mailOps: await provisionMailOpsSkillsForExistingCompanies(prisma),
   };
-  return { registeredTools, skills };
+  const permissions = {
+    mailOps: await provisionMailOpsPermissionsForExistingCompanies(prisma),
+  };
+  return { registeredTools, skills, permissions };
 }
 
 async function main() {

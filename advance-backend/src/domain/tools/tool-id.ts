@@ -170,6 +170,7 @@ export const TOOL_CAPABILITY_DEFINITIONS = {
   documentRag:      defineCapability('rag', ['read']),
   dataProcessor:    defineCapability('data', ['read']),
   dataExport:       defineCapability('data', ['create']),
+  mailAutomations:  defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
   scheduledWorkflows: defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
 
   // These permissive MEMBER values are ceilings, not grants. Department-only

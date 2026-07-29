@@ -13,13 +13,7 @@ import { createListScheduledTasksTool } from '../../tools/orchestration/list-sch
 import { createCancelScheduledTaskTool } from '../../tools/orchestration/cancel-scheduled-task.tool';
 import { createRunScheduledNowTool } from '../../tools/orchestration/run-scheduled-now.tool';
 import { createRememberFactTool } from '../../tools/orchestration/remember-fact.tool';
-import { createCallToolTool } from '../../tools/orchestration/call-tool';
-import { createDiscoverSkillTool } from '../../tools/orchestration/discover-skill';
-import { buildBrainSystemPrompt } from '../../brain-prompt';
 import { getISTDateTime } from '../../agents/supervisor.prompt';
-import type { SkillRegistry } from '../../../skills/skill-registry';
-import type { ToolRegistry } from '../../tools/tool-registry';
-import type { AdapterContext } from '../../tools/ai-sdk-adapter';
 import type { SupervisorGraphStateValue } from '../dynamic-supervisor.state';
 import type { Mem0Service } from '../../../memory/mem0.service';
 import type { OrchestrationTracer } from '../../../observability/orchestration-tracer';
@@ -27,7 +21,6 @@ import type { StatusChannel } from '../../engine/status-channel';
 import type { RunStatusAggregator } from '../../run-status.aggregator';
 import { redModelSelection } from '../../../../shared/model-selection-log';
 import { buildToolFinishedPayload, isErrorOutput } from '../../agent-runners/tool-trace';
-import { enforceContextBudget } from '../../engine/context-budget-enforcer';
 import { getToolLabels } from '../../agents/tool-labels';
 import { LARK_MODEL_PREFERENCE } from '../../../proxy/lark-inference.service';
 
@@ -83,9 +76,6 @@ export interface SupervisorThinkDeps {
     readonly maxSteps: number;
     readonly temperature: number;
   }) => Promise<{ readonly text: string; readonly toolCalls: string[] }>;
-  readonly unifiedAgentMode?: boolean;
-  readonly skillRegistry?: SkillRegistry;
-  readonly toolRegistry?: ToolRegistry;
 }
 
 export async function supervisorThink(
@@ -113,7 +103,7 @@ export async function supervisorThink(
         }
       : undefined;
 
-    // ── Build messages (shared by both unified and multi-agent paths) ──────
+    // ── Build messages ────────────────────────────────────────────────────
     const hasMultimodalContext = state.groupContextParts.length > 0
       && state.groupContextParts.some(p => p.type === 'image');
 
@@ -147,7 +137,7 @@ export async function supervisorThink(
       messages.push({ role: 'user' as const, content: state.userMessage });
     }
 
-    // ── Orchestration tools (shared by both paths) ────────────────────────
+    // ── Orchestration tools ────────────────────────────────────────────────
     const orchestrationTools = {
       manageTodos: createManageTodosTool(deps.todoRepo, state.runContext),
       scheduleTask: createScheduleTaskTool(deps.prisma, state.runContext),
@@ -157,133 +147,6 @@ export async function supervisorThink(
       ...(deps.mem0 ? { rememberFact: createRememberFactTool(deps.mem0, state.runContext) } : {}),
     } as unknown as ToolSet;
 
-    // ── Unified agent mode (single brain with discover_skill + call_tool) ─
-    if (deps.unifiedAgentMode && deps.skillRegistry && deps.toolRegistry) {
-      const adapterCtx: AdapterContext = {
-        runContext: state.runContext,
-        perm: state.perm,
-        logger: deps.logger,
-        clock: deps.clock,
-        ...(state.approvalGate ? { approvalGate: state.approvalGate } : {}),
-        ...(state.chatId ? { chatId: state.chatId } : {}),
-        ...(onProgress ? { onProgress } : {}),
-      };
-
-      const unifiedTools = {
-        discover_skill: createDiscoverSkillTool(deps.skillRegistry, deps.toolRegistry),
-        call_tool: createCallToolTool(deps.toolRegistry, adapterCtx),
-        ...orchestrationTools,
-      } as unknown as ToolSet;
-
-      // Override system prompt with brain prompt
-      const brainPrompt = buildBrainSystemPrompt({
-        skillCatalog: deps.skillRegistry.catalog(),
-        currentDateTime: getISTDateTime(deps.clock.now()),
-      });
-
-      let brainSystemPrompt = brainPrompt;
-      if (hasMultimodalContext) {
-        brainSystemPrompt += '\n\nGROUP CHAT CONTEXT is provided in the preceding user message with interleaved images.';
-      } else if (state.groupContext) {
-        brainSystemPrompt += `\n\n${state.groupContext}`;
-      }
-      if (hasInlineImages && !hasMultimodalContext) {
-        brainSystemPrompt += '\n\nThe user has attached image(s) to this message. They are embedded in the user message — you can see them directly. Describe, analyze, or answer questions about them without needing any tools.';
-      }
-      if (state.conversationSummary) {
-        brainSystemPrompt += `\n\nCONVERSATION HISTORY SUMMARY (older exchanges, compressed):\n${state.conversationSummary}`;
-      }
-      if (state.memoryContext) {
-        brainSystemPrompt += `\n\nMEMORY CONTEXT:\n${state.memoryContext}`;
-      }
-
-      deps.logger.info('dynamic_graph.think.unified_mode', {
-        toolNames: Object.keys(unifiedTools),
-        toolCount: Object.keys(unifiedTools).length,
-        skillCount: deps.skillRegistry.all().length,
-      });
-
-      // Use the same rootModel resolution as below
-      const larkPinned = state.runContext.channel === 'lark' && isPinnedLarkModel(deps.model);
-      const rootModel = !larkPinned && rootAgent.provider && rootAgent.modelId && deps.resolveModel
-        ? await deps.resolveModel({
-          provider: rootAgent.provider,
-          modelId: rootAgent.modelId,
-          companyId: rootAgent.companyId,
-          agentSlug: rootAgent.slug,
-        })
-        : deps.model;
-
-      const historyTurns = state.conversationHistory.map(m => ({
-        id: '', role: m.role as 'user' | 'assistant', content: m.content, timestamp: '',
-      }));
-      const budgetInput: Parameters<typeof enforceContextBudget>[0] = {
-        systemPrompt: brainSystemPrompt,
-        historyTurns,
-        currentMessage: state.userMessage,
-      };
-      if (state.conversationSummary) budgetInput.conversationSummary = state.conversationSummary;
-      if (state.memoryContext) budgetInput.memoryContext = state.memoryContext;
-      if (state.groupContext) budgetInput.groupContext = state.groupContext;
-      const budgeted = enforceContextBudget(budgetInput);
-
-      if (budgeted.allocation.trimActions.length > 0) {
-        deps.logger.info('context.budget.enforced', {
-          ...budgeted.allocation,
-        });
-      }
-
-      const budgetedMessages: ModelMessage[] = budgeted.historyTurns
-        .filter(t => t.role === 'user' || t.role === 'assistant')
-        .map(t => ({
-          role: t.role as 'user' | 'assistant',
-          content: t.content,
-        }));
-      if (hasMultimodalContext) {
-        const contentParts: UserContent = state.groupContextParts.map(p =>
-          p.type === 'text'
-            ? { type: 'text' as const, text: p.text }
-            : { type: 'image' as const, image: new URL(p.url) },
-        );
-        budgetedMessages.push({ role: 'user' as const, content: contentParts });
-      }
-      if (hasInlineImages && !hasMultimodalContext) {
-        const imageParts: UserContent = [
-          { type: 'text' as const, text: state.userMessage },
-          ...state.inlineImageUrls.map(url => ({
-            type: 'image' as const,
-            image: new URL(url),
-          })),
-        ];
-        budgetedMessages.push({ role: 'user' as const, content: imageParts });
-      } else {
-        budgetedMessages.push({ role: 'user' as const, content: state.userMessage });
-      }
-
-      const outcome = await runSupervisorStream({
-        model: rootModel,
-        system: budgeted.systemPrompt,
-        messages: budgetedMessages,
-        tools: unifiedTools,
-        maxSteps: rootAgent.maxSteps,
-        temperature: rootAgent.temperature,
-        logger: deps.logger,
-        ...(deps.tracer ? { tracer: deps.tracer } : {}),
-        ...(deps.statusChannel ? { statusChannel: deps.statusChannel } : {}),
-        ...(deps.aggregator ? { aggregator: deps.aggregator } : {}),
-      });
-
-      return {
-        supervisorResult: outcome.text.trim() || 'Done.',
-        toolCallsMade: outcome.toolCalls,
-        toolResults: outcome.toolResults,
-        agentDelegations: [],
-        status: 'done',
-        error: null,
-      };
-    }
-
-    // ── Multi-agent path (existing behavior) ──────────────────────────────
     const agentCtx = {
       model: deps.model,
       ...(deps.defaultModel ? { defaultModel: deps.defaultModel } : {}),

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { buildDesktopCapabilityBootstrap } from '../../src/application/desktop/desktop-capability-bootstrap';
-import { googleSkill } from '../../src/application/skills/google.skill';
 import {
   GOVERNED_DIRECT_ACTION_CRITERION,
   GOVERNED_LOCAL_WORKFLOW_CRITERION,
@@ -14,6 +13,7 @@ import {
   financeOpsCoreSkill,
   zohoBillNotifyAccountsSkill,
   zohoBooksBillSkill,
+  zohoBooksReadAnalysisSkill,
 } from '../../src/application/skills/zoho.skill';
 
 const permission = {
@@ -29,7 +29,6 @@ const permission = {
 describe('governed local-workflow instruction contract', () => {
   it('keeps every desktop-published connected-work recipe on one routing boundary', () => {
     const publishedDesktopRecipes = [
-      googleSkill.instructions,
       DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown,
       DIVO_PRESENTATIONS_SYSTEM_SKILL.markdown,
       ...GOOGLE_WORKSPACE_SYSTEM_SKILLS.map((skill) => skill.markdown),
@@ -64,25 +63,21 @@ describe('governed local-workflow instruction contract', () => {
     );
   });
 
-  it('keeps the vendor planner internal to bounded work resolution', () => {
-    assert.doesNotMatch(googleSkill.instructions, /google\.plan/i);
-    assert.match(googleSkill.instructions, /explicit multi-product vendor onboarding workflow/i);
-    assert.match(googleSkill.instructions, /Do not invoke or search for a raw planning operation yourself/i);
-    assert.match(googleSkill.instructions, /never a planner for exports, reports, aggregation, analysis, or a generic Gmail-to-Sheets task/i);
-  });
-
-  it('reuses run bootstrap accounts and native contracts without rediscovery', () => {
-    assert.match(googleSkill.instructions, /Reuse the exact Google account already returned by the current run bootstrap/i);
-    assert.match(googleSkill.instructions, /bootstrap\.nativeContracts/i);
-    assert.match(googleSkill.instructions, /connections\.list once only when the bootstrap explicitly says/i);
-    assert.doesNotMatch(googleSkill.instructions, /Before any op="call", use connections\.list/i);
-    assert.doesNotMatch(googleSkill.instructions, /connectionId may be omitted/i);
-  });
-
   it('keeps Zoho skills aligned with backend-owned connection selection', () => {
-    for (const skill of [financeOpsCoreSkill, zohoBooksBillSkill, zohoBillNotifyAccountsSkill]) {
+    for (const skill of [
+      financeOpsCoreSkill,
+      zohoBooksReadAnalysisSkill,
+      zohoBooksBillSkill,
+      zohoBillNotifyAccountsSkill,
+    ]) {
       assert.match(skill.instructions, /Otherwise omit it: the backend selects an account only when exactly one accessible account qualifies/);
       assert.doesNotMatch(skill.instructions, /Before every Zoho action, use connections\.list|Divo never auto-selects a Zoho account/);
     }
+  });
+
+  it('routes exact whole-account finance aggregates through complete governed sources', () => {
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account or potentially large aggregate -> use dataProcessor source mode/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Number\(_balance_inr\) > 0/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /complete=true before describing a source-backed result as exact/);
   });
 });

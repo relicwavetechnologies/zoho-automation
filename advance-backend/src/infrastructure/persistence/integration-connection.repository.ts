@@ -95,6 +95,8 @@ export interface UpsertGoogleConnectionInput {
   readonly refreshTokenExpiresAt?: Date;
   readonly tokenMetadata?: Record<string, unknown>;
   readonly initialAccess?: IntegrationGrantAccess;
+  /** Atomically releases this OAuth continuation with the connection/grant. */
+  readonly authorizationIntentId?: string;
 }
 
 /**
@@ -330,10 +332,14 @@ export class IntegrationConnectionRepository {
         accountEmail: input.googleEmail,
         externalAccountId: input.googleUserId,
       });
+      if (input.authorizationIntentId && !input.ownerUserId) {
+        throw new Error('A Google authorization intent requires a user-owned connection.');
+      }
 
-      const record = await this.db.integrationConnection.upsert({
-        where: { companyId_dedupeKey: { companyId: input.companyId, dedupeKey: key } },
-        create: {
+      const record = await this.db.$transaction(async (tx) => {
+        const saved = await tx.integrationConnection.upsert({
+          where: { companyId_dedupeKey: { companyId: input.companyId, dedupeKey: key } },
+          create: {
           companyId:             input.companyId,
           provider:              GOOGLE_PROVIDER,
           ownerType:             input.ownerType,
@@ -354,7 +360,7 @@ export class IntegrationConnectionRepository {
           createdBy:             input.createdBy ?? input.ownerUserId ?? null,
           connectedAt:           new Date(),
         },
-        update: {
+          update: {
           label,
           accountEmail,
           accountName,
@@ -369,20 +375,61 @@ export class IntegrationConnectionRepository {
           ...(input.tokenMetadata ? { tokenMetadata: input.tokenMetadata as Prisma.InputJsonValue } : {}),
           revokedAt:             null,
           connectedAt:           new Date(),
-        },
-      });
-
-      const initialUserGrant = input.ownerType === 'user' ? input.ownerUserId : input.createdBy;
-      if (initialUserGrant) {
-        await this.grantConnection({
-          companyId:    input.companyId,
-          connectionId: record.id,
-          granteeType:  'user',
-          granteeId:    initialUserGrant,
-          access:       input.initialAccess ?? 'admin',
-          grantedBy:    input.createdBy ?? initialUserGrant,
+          },
         });
-      }
+
+        const initialUserGrant = input.ownerType === 'user' ? input.ownerUserId : input.createdBy;
+        if (initialUserGrant) {
+          await tx.integrationConnectionGrant.upsert({
+            where: {
+              connectionId_granteeType_granteeId: {
+                connectionId: saved.id,
+                granteeType: 'user',
+                granteeId: initialUserGrant,
+              },
+            },
+            create: {
+              companyId: input.companyId,
+              connectionId: saved.id,
+              granteeType: 'user',
+              granteeId: initialUserGrant,
+              access: input.initialAccess ?? 'admin',
+              grantedBy: input.createdBy ?? initialUserGrant,
+            },
+            update: {
+              access: input.initialAccess ?? 'admin',
+              grantedBy: input.createdBy ?? initialUserGrant,
+              grantedAt: new Date(),
+              revokedAt: null,
+            },
+          });
+        }
+
+        if (input.authorizationIntentId) {
+          const completed = await tx.connectionAuthorizationIntent.updateMany({
+            where: {
+              id: input.authorizationIntentId,
+              companyId: input.companyId,
+              userId: input.ownerUserId!,
+              status: 'exchanging',
+            },
+            data: {
+              status: 'connected',
+              connectionId: saved.id,
+              connectedAt: new Date(),
+              continuationStatus: 'pending',
+              continuationQueuedAt: new Date(),
+              failureCode: null,
+              authorizationCodeEncrypted: null,
+              exchangeTokensEncrypted: null,
+            },
+          });
+          if (completed.count !== 1) {
+            throw new Error('Google authorization intent was no longer claimable.');
+          }
+        }
+        return saved;
+      });
 
       return ok(this.decrypt(record));
     } catch (e) {

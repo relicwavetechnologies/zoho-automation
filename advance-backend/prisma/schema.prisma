@@ -202,109 +202,117 @@ enum ManagerTeachArtifactStatus {
 }
 
 model User {
-  id                                 String                       @id @default(uuid())
-  email                              String                       @unique
+  id                                 String                          @id @default(uuid())
+  email                              String                          @unique
   password                           String
   name                               String?
-  createdAt                          DateTime                     @default(now())
-  updatedAt                          DateTime                     @updatedAt
+  createdAt                          DateTime                        @default(now())
+  updatedAt                          DateTime                        @updatedAt
   adminMemberships                   AdminMembership[]
   adminSessions                      AdminSession[]
   departmentMemberships              DepartmentMembership[]
   departmentUserToolOverrides        DepartmentUserToolOverride[]
-  createdDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigCreatedBy")
-  updatedDepartmentAgentConfigs      DepartmentAgentConfig[]      @relation("DepartmentAgentConfigUpdatedBy")
-  createdCompanyPromptProfiles       CompanyPromptProfile[]       @relation("CompanyPromptProfileCreatedBy")
-  updatedCompanyPromptProfiles       CompanyPromptProfile[]       @relation("CompanyPromptProfileUpdatedBy")
-  createdZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileCreatedBy")
-  updatedZohoConnectionProfiles      ZohoConnectionProfile[]      @relation("ZohoConnectionProfileUpdatedBy")
-  departmentToolPermissionsUpdated   DepartmentToolPermission[]   @relation("DepartmentToolPermissionUpdatedBy")
-  departmentUserToolOverridesUpdated DepartmentUserToolOverride[] @relation("DepartmentUserToolOverrideUpdatedBy")
+  createdDepartmentAgentConfigs      DepartmentAgentConfig[]         @relation("DepartmentAgentConfigCreatedBy")
+  updatedDepartmentAgentConfigs      DepartmentAgentConfig[]         @relation("DepartmentAgentConfigUpdatedBy")
+  createdCompanyPromptProfiles       CompanyPromptProfile[]          @relation("CompanyPromptProfileCreatedBy")
+  updatedCompanyPromptProfiles       CompanyPromptProfile[]          @relation("CompanyPromptProfileUpdatedBy")
+  createdZohoConnectionProfiles      ZohoConnectionProfile[]         @relation("ZohoConnectionProfileCreatedBy")
+  updatedZohoConnectionProfiles      ZohoConnectionProfile[]         @relation("ZohoConnectionProfileUpdatedBy")
+  departmentToolPermissionsUpdated   DepartmentToolPermission[]      @relation("DepartmentToolPermissionUpdatedBy")
+  departmentUserToolOverridesUpdated DepartmentUserToolOverride[]    @relation("DepartmentUserToolOverrideUpdatedBy")
   memberSessions                     MemberSession[]
   desktopHandoffs                    DesktopAuthHandoff[]
   desktopWorkspaces                  DesktopWorkspace[]
   desktopThreads                     DesktopThread[]
-  scheduledWorkflowsCreated          ScheduledWorkflow[]          @relation("ScheduledWorkflowCreatedBy")
+  scheduledWorkflowsCreated          ScheduledWorkflow[]             @relation("ScheduledWorkflowCreatedBy")
   executionRuns                      ExecutionRun[]
   larkAuthLinks                      LarkUserAuthLink[]
-  ownedIntegrationConnections        IntegrationConnection[]      @relation("IntegrationConnectionOwner")
-  createdIntegrationConnections      IntegrationConnection[]      @relation("IntegrationConnectionCreatedBy")
-  createdSerperConnections           CompanySerperConnection[]    @relation("CompanySerperConnectionCreatedBy")
-  createdOmsConnections              CompanyOmsConnection[]       @relation("CompanyOmsConnectionCreatedBy")
-  grantedIntegrationConnectionGrants IntegrationConnectionGrant[] @relation("IntegrationConnectionGrantGrantedBy")
+  ownedIntegrationConnections        IntegrationConnection[]         @relation("IntegrationConnectionOwner")
+  createdIntegrationConnections      IntegrationConnection[]         @relation("IntegrationConnectionCreatedBy")
+  createdSerperConnections           CompanySerperConnection[]       @relation("CompanySerperConnectionCreatedBy")
+  createdOmsConnections              CompanyOmsConnection[]          @relation("CompanyOmsConnectionCreatedBy")
+  grantedIntegrationConnectionGrants IntegrationConnectionGrant[]    @relation("IntegrationConnectionGrantGrantedBy")
   memoryItems                        UserMemoryItem[]
   memoryProfiles                     UserMemoryProfile[]
   departmentPreference               UserDepartmentPreference?
-  personaLearningEvidenceAsManager   PersonaLearningEvidence[]    @relation("PersonaLearningEvidenceManager")
-  personaLearningCandidatesAsManager PersonaLearningCandidate[]   @relation("PersonaLearningCandidateManager")
-  managerPersonaTrees                ManagerPersonaTree[]         @relation("ManagerPersonaTreeManager")
-  managerPersonaNodes                ManagerPersonaNode[]         @relation("ManagerPersonaNodeManager")
-  managerTeachSessions               ManagerTeachSession[]        @relation("ManagerTeachSessionManager")
+  personaLearningEvidenceAsManager   PersonaLearningEvidence[]       @relation("PersonaLearningEvidenceManager")
+  personaLearningCandidatesAsManager PersonaLearningCandidate[]      @relation("PersonaLearningCandidateManager")
+  managerPersonaTrees                ManagerPersonaTree[]            @relation("ManagerPersonaTreeManager")
+  managerPersonaNodes                ManagerPersonaNode[]            @relation("ManagerPersonaNodeManager")
+  managerTeachSessions               ManagerTeachSession[]           @relation("ManagerTeachSessionManager")
+  connectionAuthorizationIntents     ConnectionAuthorizationIntent[]
+  mailboxSubscriptions               MailboxSubscription[]
+  mailAutomationRules                MailAutomationRule[]
 }
 
 model Company {
-  id                          String                       @id @default(uuid())
-  name                        String
-  createdAt                   DateTime                     @default(now())
-  updatedAt                   DateTime                     @updatedAt
-  gatewayApiKey               String?                      @map("gateway_api_key")
-  gatewayUrl                  String?                      @map("gateway_url")
-  gatewayDedicatedAccountId   String?                      @map("gateway_dedicated_account_id")
-  defaultAiProvider           String                       @default("google") @map("default_ai_provider")
-  defaultAiModel              String                       @default("gemini-3.1-flash-lite") @map("default_ai_model")
-  promptProfile               CompanyPromptProfile?
-  departments                 Department[]
-  skills                      Skill[]
-  skillFolders                SkillFolder[]
-  skillAccessGrants           SkillAccessGrant[]
-  skillRegistryRevision       SkillRegistryRevision?
-  zohoConnections             ZohoConnection[]
-  zohoConnectionProfiles      ZohoConnectionProfile[]
-  zohoSyncJobs                ZohoSyncJob[]
-  zohoOAuthConfig             ZohoOAuthConfig?
-  larkTenantBindings          LarkTenantBinding[]
-  larkWorkspaceConfig         LarkWorkspaceConfig?
-  larkOperationalConfig       LarkOperationalConfig?
-  larkDirectorySyncRuns       LarkDirectorySyncRun[]
-  adminMemberships            AdminMembership[]
-  adminSessions               AdminSession[]
-  invites                     CompanyInvite[]
-  mcpActionLogs               McpActionLog[]
-  channelIdentities           ChannelIdentity[]
-  toolPermissions             ToolPermission[]
-  toolActionPermissions       ToolActionPermission[]
-  booksModulePermissions      BooksModulePermission[]
-  zohoRoleAccessPolicies      ZohoRoleAccessPolicy[]
-  aiRoleDefinitions           AiRoleDefinition[]
-  vectorDocuments             VectorDocument[]
-  vectorShareRequests         VectorShareRequest[]
-  memberSessions              MemberSession[]
-  desktopHandoffs             DesktopAuthHandoff[]
-  desktopWorkspaces           DesktopWorkspace[]
-  desktopThreads              DesktopThread[]
-  larkChatContexts            LarkChatContext[]
-  scheduledWorkflows          ScheduledWorkflow[]
-  executionRuns               ExecutionRun[]
-  larkAuthLinks               LarkUserAuthLink[]
-  integrationConnections      IntegrationConnection[]
-  integrationConnectionGrants IntegrationConnectionGrant[]
+  id                              String                            @id @default(uuid())
+  name                            String
+  createdAt                       DateTime                          @default(now())
+  updatedAt                       DateTime                          @updatedAt
+  gatewayApiKey                   String?                           @map("gateway_api_key")
+  gatewayUrl                      String?                           @map("gateway_url")
+  gatewayDedicatedAccountId       String?                           @map("gateway_dedicated_account_id")
+  defaultAiProvider               String                            @default("google") @map("default_ai_provider")
+  defaultAiModel                  String                            @default("gemini-3.1-flash-lite") @map("default_ai_model")
+  promptProfile                   CompanyPromptProfile?
+  departments                     Department[]
+  skills                          Skill[]
+  skillFolders                    SkillFolder[]
+  skillAccessGrants               SkillAccessGrant[]
+  skillRegistryRevision           SkillRegistryRevision?
+  zohoConnections                 ZohoConnection[]
+  zohoConnectionProfiles          ZohoConnectionProfile[]
+  zohoSyncJobs                    ZohoSyncJob[]
+  zohoOAuthConfig                 ZohoOAuthConfig?
+  larkTenantBindings              LarkTenantBinding[]
+  larkWorkspaceConfig             LarkWorkspaceConfig?
+  larkOperationalConfig           LarkOperationalConfig?
+  larkDirectorySyncRuns           LarkDirectorySyncRun[]
+  adminMemberships                AdminMembership[]
+  adminSessions                   AdminSession[]
+  invites                         CompanyInvite[]
+  mcpActionLogs                   McpActionLog[]
+  channelIdentities               ChannelIdentity[]
+  toolPermissions                 ToolPermission[]
+  toolActionPermissions           ToolActionPermission[]
+  booksModulePermissions          BooksModulePermission[]
+  zohoRoleAccessPolicies          ZohoRoleAccessPolicy[]
+  aiRoleDefinitions               AiRoleDefinition[]
+  vectorDocuments                 VectorDocument[]
+  vectorShareRequests             VectorShareRequest[]
+  memberSessions                  MemberSession[]
+  desktopHandoffs                 DesktopAuthHandoff[]
+  desktopWorkspaces               DesktopWorkspace[]
+  desktopThreads                  DesktopThread[]
+  larkChatContexts                LarkChatContext[]
+  scheduledWorkflows              ScheduledWorkflow[]
+  executionRuns                   ExecutionRun[]
+  larkAuthLinks                   LarkUserAuthLink[]
+  integrationConnections          IntegrationConnection[]
+  integrationConnectionGrants     IntegrationConnectionGrant[]
   integrationConnectionGovernance IntegrationConnectionGovernance[]
-  capabilityGovernance        CompanyCapabilityGovernance[]
-  serperConnections           CompanySerperConnection[]
-  omsConnections              CompanyOmsConnection[]
-  fileAssets                  FileAsset[]
-  outboundArtifacts           OutboundArtifact[]
-  userMemoryItems             UserMemoryItem[]
-  userMemoryProfiles          UserMemoryProfile[]
-  taskRuns                    TaskRun[]
-  userDepartmentPreferences   UserDepartmentPreference[]
-  agentDefinitions            AgentDefinition[]
-  channelAgentMappings        ChannelAgentMapping[]
-  personaLearningEvidences    PersonaLearningEvidence[]
-  personaLearningCandidates   PersonaLearningCandidate[]
-  managerPersonaTrees         ManagerPersonaTree[]
-  managerPersonaNodes         ManagerPersonaNode[]
-  managerTeachSessions        ManagerTeachSession[]
+  capabilityGovernance            CompanyCapabilityGovernance[]
+  serperConnections               CompanySerperConnection[]
+  omsConnections                  CompanyOmsConnection[]
+  fileAssets                      FileAsset[]
+  outboundArtifacts               OutboundArtifact[]
+  userMemoryItems                 UserMemoryItem[]
+  userMemoryProfiles              UserMemoryProfile[]
+  taskRuns                        TaskRun[]
+  userDepartmentPreferences       UserDepartmentPreference[]
+  agentDefinitions                AgentDefinition[]
+  channelAgentMappings            ChannelAgentMapping[]
+  personaLearningEvidences        PersonaLearningEvidence[]
+  personaLearningCandidates       PersonaLearningCandidate[]
+  managerPersonaTrees             ManagerPersonaTree[]
+  managerPersonaNodes             ManagerPersonaNode[]
+  managerTeachSessions            ManagerTeachSession[]
+  connectionAuthorizationIntents  ConnectionAuthorizationIntent[]
+  mailboxSubscriptions            MailboxSubscription[]
+  mailAutomationRules             MailAutomationRule[]
+  mailEvents                      MailEvent[]
+  mailDeliveries                  MailDelivery[]
 }
 
 model RegisteredTool {
@@ -868,33 +876,33 @@ model VectorShareRequest {
 /// the run and the segment being delivered, so a retry after a lost HTTP
 /// response finds the existing record instead of sending a second reply.
 model ChannelDelivery {
-  id             String    @id @default(uuid())
-  channel        String
+  id                String    @id @default(uuid())
+  channel           String
   /// Stable across every retry of this segment — also sent to Lark as `uuid`.
-  idempotencyKey String
+  idempotencyKey    String
   /// Correlates every segment belonging to one agent run.
-  runKey         String
+  runKey            String
   /// Which part of the answer this is: final, continuation, or status.
-  purpose        String
-  segmentIndex   Int       @default(0)
-  status         String    @default("pending")
-  attempts       Int       @default(0)
-  companyId      String?
-  chatId         String?
+  purpose           String
+  segmentIndex      Int       @default(0)
+  status            String    @default("pending")
+  attempts          Int       @default(0)
+  companyId         String?
+  chatId            String?
   /// The rendered reply, kept so a failed delivery can be resent without
   /// re-running the agent that produced it. Cleared once delivered.
-  payloadJson    Json?
+  payloadJson       Json?
   /// Provider message ID once the send is confirmed.
   providerMessageId String?
-  lastError      String?
+  lastError         String?
   /// Set when a send failed in a way that leaves delivery genuinely unknown.
-  ambiguous      Boolean   @default(false)
-  firstAttemptAt DateTime  @default(now())
-  startedAt      DateTime?
-  deliveredAt    DateTime?
-  nextAttemptAt  DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  ambiguous         Boolean   @default(false)
+  firstAttemptAt    DateTime  @default(now())
+  startedAt         DateTime?
+  deliveredAt       DateTime?
+  nextAttemptAt     DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   @@unique([channel, idempotencyKey])
   @@index([channel, status, nextAttemptAt])
@@ -1018,62 +1026,65 @@ model CompanyInvite {
 }
 
 model Department {
-  id                        String                       @id @default(uuid())
-  companyId                 String
-  company                   Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  name                      String
-  slug                      String
-  description               String?
-  status                    String                       @default("active")
-  createdAt                 DateTime                     @default(now())
-  updatedAt                 DateTime                     @updatedAt
-  agentConfig               DepartmentAgentConfig?
-  skills                    Skill[]
-  skillFolders              SkillFolder[]
-  roles                     DepartmentRole[]
-  memberships               DepartmentMembership[]
-  toolPermissions           DepartmentToolPermission[]
-  userToolOverrides         DepartmentUserToolOverride[]
-  desktopThreads            DesktopThread[]
-  scheduledWorkflows        ScheduledWorkflow[]
-  personaLearningEvidences  PersonaLearningEvidence[]
-  personaLearningCandidates PersonaLearningCandidate[]
-  managerPersonaTrees       ManagerPersonaTree[]
-  managerPersonaNodes       ManagerPersonaNode[]
-  managerTeachSessions      ManagerTeachSession[]
+  id                             String                          @id @default(uuid())
+  companyId                      String
+  company                        Company                         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name                           String
+  slug                           String
+  description                    String?
+  status                         String                          @default("active")
+  createdAt                      DateTime                        @default(now())
+  updatedAt                      DateTime                        @updatedAt
+  agentConfig                    DepartmentAgentConfig?
+  skills                         Skill[]
+  skillFolders                   SkillFolder[]
+  roles                          DepartmentRole[]
+  memberships                    DepartmentMembership[]
+  toolPermissions                DepartmentToolPermission[]
+  userToolOverrides              DepartmentUserToolOverride[]
+  desktopThreads                 DesktopThread[]
+  scheduledWorkflows             ScheduledWorkflow[]
+  personaLearningEvidences       PersonaLearningEvidence[]
+  personaLearningCandidates      PersonaLearningCandidate[]
+  managerPersonaTrees            ManagerPersonaTree[]
+  managerPersonaNodes            ManagerPersonaNode[]
+  managerTeachSessions           ManagerTeachSession[]
+  connectionAuthorizationIntents ConnectionAuthorizationIntent[]
+  mailAutomationRules            MailAutomationRule[]
 
   @@unique([companyId, slug])
+  @@unique([id, companyId])
   @@index([companyId, status, updatedAt])
 }
 
 model Skill {
-  id           String                    @id @default(uuid())
-  companyId    String
-  company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  departmentId String?
-  department   Department?               @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  folderId     String?
-  folder       SkillFolder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  scope        String
-  name         String
-  slug         String
-  summary      String
-  markdown     String
-  toolIds      String[]                  @default([])
-  tags         String[]                  @default([])
-  status       String                    @default("active")
-  isSystem     Boolean                   @default(false)
-  sortOrder    Int                       @default(0)
-  revision     Int                       @default(1)
-  createdBy    String?
-  updatedBy    String?
-  createdAt    DateTime                  @default(now())
-  updatedAt    DateTime                  @updatedAt
-  versions     SkillVersion[]
-  aliases      SkillAlias[]
-  capabilities SkillCapability[]
-  accessGrants SkillAccessGrant[]
-  personaLinks ManagerPersonaSkillLink[]
+  id                 String                      @id @default(uuid())
+  companyId          String
+  company            Company                     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId       String?
+  department         Department?                 @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  folderId           String?
+  folder             SkillFolder?                @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  scope              String
+  name               String
+  slug               String
+  summary            String
+  markdown           String
+  toolIds            String[]                    @default([])
+  tags               String[]                    @default([])
+  status             String                      @default("active")
+  isSystem           Boolean                     @default(false)
+  sortOrder          Int                         @default(0)
+  revision           Int                         @default(1)
+  createdBy          String?
+  updatedBy          String?
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+  versions           SkillVersion[]
+  aliases            SkillAlias[]
+  capabilities       SkillCapability[]
+  accessGrants       SkillAccessGrant[]
+  personaLinks       ManagerPersonaSkillLink[]
   learningProvenance ManagerLearningProvenance[]
 
   @@index([companyId, scope, status, sortOrder])
@@ -1424,41 +1435,221 @@ model LarkUserAuthLink {
 }
 
 model IntegrationConnection {
-  id                    String                       @id @default(uuid())
+  id                    String                           @id @default(uuid())
   companyId             String
-  company               Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company               Company                          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   provider              String
   ownerType             String
   ownerUserId           String?
-  ownerUser             User?                        @relation("IntegrationConnectionOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  ownerUser             User?                            @relation("IntegrationConnectionOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   label                 String
   accountEmail          String?
   accountName           String?
   externalAccountId     String?
   dedupeKey             String
-  status                String                       @default("connected")
+  status                String                           @default("connected")
   scopes                String[]
   accessTokenEncrypted  String?
   refreshTokenEncrypted String?
   tokenType             String?
-  tokenCipherVersion    Int                          @default(1)
+  tokenCipherVersion    Int                              @default(1)
   accessTokenExpiresAt  DateTime?
   refreshTokenExpiresAt DateTime?
   tokenMetadata         Json?
-  connectedAt           DateTime                     @default(now())
+  connectedAt           DateTime                         @default(now())
   lastUsedAt            DateTime?
   revokedAt             DateTime?
   createdBy             String?
-  createdByUser         User?                        @relation("IntegrationConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  createdAt             DateTime                     @default(now())
-  updatedAt             DateTime                     @updatedAt
+  createdByUser         User?                            @relation("IntegrationConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt             DateTime                         @default(now())
+  updatedAt             DateTime                         @updatedAt
   grants                IntegrationConnectionGrant[]
   governance            IntegrationConnectionGovernance?
+  authorizationIntents  ConnectionAuthorizationIntent[]
+  mailboxSubscription   MailboxSubscription?
 
   @@unique([companyId, dedupeKey])
+  @@unique([id, companyId, ownerUserId])
   @@index([companyId, provider, status])
   @@index([companyId, provider, accountEmail])
   @@index([companyId, ownerUserId])
+}
+
+/// One browser authorization attempt plus the exact agent continuation target.
+///
+/// Only a hash of the browser state is persisted. The callback claims the row
+/// once, then a separate worker starts a fresh agent run from the stored
+/// request; no model stream stays open while the user completes OAuth.
+model ConnectionAuthorizationIntent {
+  id                         String                 @id @default(uuid())
+  stateHash                  String                 @unique
+  activeDedupeKey            String?                @unique
+  provider                   String
+  companyId                  String
+  company                    Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId                     String
+  user                       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId               String?
+  department                 Department?            @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  connectionId               String?
+  connection                 IntegrationConnection? @relation(fields: [connectionId, companyId, userId], references: [id, companyId, ownerUserId], onDelete: Restrict)
+  larkOpenId                 String
+  larkTenantKey              String
+  chatId                     String
+  chatType                   String
+  originalMessageId          String
+  rootMessageId              String?
+  replyInThread              Boolean                @default(false)
+  groupReplyMode             String?
+  originalRequest            String
+  requestedToolIds           String[]               @default([])
+  status                     String                 @default("pending")
+  continuationStatus         String                 @default("blocked")
+  continuationIdempotencyKey String                 @unique
+  continuationRunId          String?
+  correlationId              String                 @unique
+  failureCode                String?
+  authorizationCodeEncrypted String?
+  exchangeTokensEncrypted    String?
+  exchangeStartedAt          DateTime?
+  exchangeAttempts           Int                    @default(0)
+  expiresAt                  DateTime
+  consumedAt                 DateTime?
+  connectedAt                DateTime?
+  continuationQueuedAt       DateTime?
+  continuationStartedAt      DateTime?
+  continuationFinishedAt     DateTime?
+  createdAt                  DateTime               @default(now())
+  updatedAt                  DateTime               @updatedAt
+
+  @@index([companyId, userId, provider, status])
+  @@index([status, expiresAt])
+  @@index([continuationStatus, continuationQueuedAt])
+  @@index([connectionId])
+}
+
+/// One Pub/Sub-triggered history cursor and lease per connected Gmail mailbox.
+/// Rules share this subscription so provider sync cost is per mailbox.
+model MailboxSubscription {
+  id                  String                @id @default(uuid())
+  companyId           String
+  company             Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId              String
+  user                User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connectionId        String                @unique
+  connection          IntegrationConnection @relation(fields: [connectionId, companyId, userId], references: [id, companyId, ownerUserId], onDelete: Cascade)
+  provider            String                @default("google_workspace")
+  mailboxEmail        String
+  status              String                @default("active")
+  historyId           String?
+  nextPollAt          DateTime              @default(now())
+  watchExpirationAt   DateTime?
+  nextWatchRenewalAt  DateTime              @default(now())
+  watchRegisteredAt   DateTime?
+  watchClaimToken     String?
+  watchClaimedAt      DateTime?
+  watchFailureCode    String?
+  signalVersion       Int                   @default(0)
+  lastSignalAt        DateTime?
+  lastSignalHistoryId String?
+  lastSignalMessageId String?
+  claimToken          String?
+  claimedAt           DateTime?
+  lastSyncAt          DateTime?
+  lastSucceededAt     DateTime?
+  lastFailedAt        DateTime?
+  failureCode         String?
+  lastError           String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  rules               MailAutomationRule[]
+  events              MailEvent[]
+
+  @@unique([connectionId, companyId, userId])
+  @@unique([id, companyId])
+  @@unique([id, companyId, userId])
+  @@index([status, nextPollAt])
+  @@index([status, nextWatchRenewalAt])
+  @@index([claimedAt])
+  @@index([companyId, userId, status])
+}
+
+model MailAutomationRule {
+  id              String              @id @default(uuid())
+  companyId       String
+  company         Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdByUserId String
+  createdByUser   User                @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  departmentId    String?
+  department      Department?         @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
+  subscriptionId  String
+  subscription    MailboxSubscription @relation(fields: [subscriptionId, companyId, createdByUserId], references: [id, companyId, userId], onDelete: Cascade)
+  name            String
+  status          String              @default("active")
+  matchJson       Json
+  actionJson      Json
+  destinationJson Json
+  dedupeKey       String?             @unique
+  version         Int                 @default(1)
+  pausedAt        DateTime?
+  archivedAt      DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  deliveries      MailDelivery[]
+
+  @@unique([id, companyId, subscriptionId])
+  @@index([companyId, createdByUserId, status])
+  @@index([subscriptionId, status])
+}
+
+/// A deduplicated new-message event discovered from Gmail history.
+model MailEvent {
+  id                String              @id @default(uuid())
+  companyId         String
+  company           Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  subscriptionId    String
+  subscription      MailboxSubscription @relation(fields: [subscriptionId, companyId], references: [id, companyId], onDelete: Cascade)
+  providerMessageId String
+  providerThreadId  String?
+  historyId         String
+  metadataJson      Json
+  occurredAt        DateTime
+  createdAt         DateTime            @default(now())
+  deliveries        MailDelivery[]
+
+  @@unique([subscriptionId, providerMessageId])
+  @@unique([id, companyId, subscriptionId])
+  @@index([companyId, createdAt])
+  @@index([subscriptionId, historyId])
+}
+
+/// Durable, idempotent execution of one rule against one discovered event.
+model MailDelivery {
+  id                String             @id @default(uuid())
+  companyId         String
+  company           Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ruleId            String
+  subscriptionId    String
+  rule              MailAutomationRule @relation(fields: [ruleId, companyId, subscriptionId], references: [id, companyId, subscriptionId], onDelete: Cascade)
+  eventId           String
+  event             MailEvent          @relation(fields: [eventId, companyId, subscriptionId], references: [id, companyId, subscriptionId], onDelete: Cascade)
+  idempotencyKey    String             @unique
+  status            String             @default("pending")
+  attempts          Int                @default(0)
+  payloadJson       Json?
+  providerMessageId String?
+  lastError         String?
+  ambiguous         Boolean            @default(false)
+  firstAttemptAt    DateTime           @default(now())
+  startedAt         DateTime?
+  deliveredAt       DateTime?
+  nextAttemptAt     DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@unique([ruleId, eventId])
+  @@index([companyId, status, nextAttemptAt])
+  @@index([eventId])
 }
 
 /// Connection-scoped operating controls. Access grants answer who may use a
@@ -1466,20 +1657,20 @@ model IntegrationConnection {
 /// and company-admin overrides are intentionally stored separately so an
 /// override never destroys the manager's original operating preference.
 model IntegrationConnectionGovernance {
-  id                    String                @id @default(uuid())
-  companyId             String
-  company               Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  connectionId          String                @unique
-  connection            IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
-  managerPolicyJson     Json?
-  managerConfiguredBy   String?
-  managerConfiguredAt   DateTime?
-  adminOverrideJson     Json?
-  adminOverriddenBy     String?
-  adminOverriddenAt     DateTime?
-  version               Int                   @default(1)
-  createdAt             DateTime              @default(now())
-  updatedAt             DateTime              @updatedAt
+  id                  String                @id @default(uuid())
+  companyId           String
+  company             Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connectionId        String                @unique
+  connection          IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  managerPolicyJson   Json?
+  managerConfiguredBy String?
+  managerConfiguredAt DateTime?
+  adminOverrideJson   Json?
+  adminOverriddenBy   String?
+  adminOverriddenAt   DateTime?
+  version             Int                   @default(1)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
 
   @@index([companyId, updatedAt])
 }
@@ -1488,16 +1679,16 @@ model IntegrationConnectionGovernance {
 /// shared knowledge. This remains separate from connection governance because
 /// these capabilities may have no OAuth connection or per-user owner.
 model CompanyCapabilityGovernance {
-  id                    String    @id @default(uuid())
-  companyId             String
-  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  capabilityId          String
-  policyJson            Json
-  configuredBy          String?
-  configuredAt          DateTime  @default(now())
-  version               Int       @default(1)
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  id           String   @id @default(uuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  capabilityId String
+  policyJson   Json
+  configuredBy String?
+  configuredAt DateTime @default(now())
+  version      Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@unique([companyId, capabilityId])
   @@index([companyId, updatedAt])
@@ -1506,31 +1697,31 @@ model CompanyCapabilityGovernance {
 /// Company-owned Serper credentials. The raw key is AES-GCM encrypted and never
 /// returned through the desktop API; the fingerprint only supports safe dedupe.
 model CompanySerperConnection {
-  id              String    @id @default(uuid())
-  companyId       String
-  company         Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  label           String
-  apiKeyEncrypted String
-  keyFingerprint  String
-  status          String    @default("connected")
-  priority        Int       @default(0)
-  lastTestedAt    DateTime?
-  lastSucceededAt DateTime?
-  lastFailureAt   DateTime?
-  lastFailureCode String?
-  lastUsedAt      DateTime?
-  successfulRequestCount Int      @default(0)
+  id                     String    @id @default(uuid())
+  companyId              String
+  company                Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  label                  String
+  apiKeyEncrypted        String
+  keyFingerprint         String
+  status                 String    @default("connected")
+  priority               Int       @default(0)
+  lastTestedAt           DateTime?
+  lastSucceededAt        DateTime?
+  lastFailureAt          DateTime?
+  lastFailureCode        String?
+  lastUsedAt             DateTime?
+  successfulRequestCount Int       @default(0)
   // A company admin copies this value from the Serper dashboard. Divo subtracts
   // only requests it observes after this timestamp; it is not a provider-synced balance.
-  creditsAtLastSync       Int?
-  usageAtLastCreditSync   Int      @default(0)
-  creditsSyncedAt         DateTime?
-  unavailableUntil        DateTime?
-  createdBy       String?
-  createdByUser   User?     @relation("CompanySerperConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  revokedAt       DateTime?
+  creditsAtLastSync      Int?
+  usageAtLastCreditSync  Int       @default(0)
+  creditsSyncedAt        DateTime?
+  unavailableUntil       DateTime?
+  createdBy              String?
+  createdByUser          User?     @relation("CompanySerperConnectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  revokedAt              DateTime?
 
   @@unique([companyId, keyFingerprint])
   @@index([companyId, status, priority])
@@ -1954,28 +2145,28 @@ model ManagerPersonaRevision {
 // An active node is promoted by the passive evidence gate or written from an
 // explicit Teach session. It is persona context, never executable authority.
 model ManagerPersonaNode {
-  id              String                       @id @default(uuid())
-  treeId          String
-  tree            ManagerPersonaTree           @relation(fields: [treeId], references: [id], onDelete: Cascade)
-  companyId       String
-  company         Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  managerId       String
-  manager         User                         @relation("ManagerPersonaNodeManager", fields: [managerId], references: [id], onDelete: Cascade)
-  departmentId    String
-  department      Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  kind            PersonaLearningCandidateKind
-  scopeKey        String
-  ruleKey         String
-  instruction     String
-  confidence      Float
-  evidenceCount   Int
-  firstEvidenceAt DateTime
-  lastEvidenceAt  DateTime
-  status          ManagerPersonaNodeStatus     @default(active)
-  createdAt       DateTime                     @default(now())
-  updatedAt       DateTime                     @updatedAt
-  candidates      PersonaLearningCandidate[]   @relation("ManagerPersonaNodeCandidates")
-  skillLinks      ManagerPersonaSkillLink[]
+  id                 String                       @id @default(uuid())
+  treeId             String
+  tree               ManagerPersonaTree           @relation(fields: [treeId], references: [id], onDelete: Cascade)
+  companyId          String
+  company            Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId          String
+  manager            User                         @relation("ManagerPersonaNodeManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId       String
+  department         Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  kind               PersonaLearningCandidateKind
+  scopeKey           String
+  ruleKey            String
+  instruction        String
+  confidence         Float
+  evidenceCount      Int
+  firstEvidenceAt    DateTime
+  lastEvidenceAt     DateTime
+  status             ManagerPersonaNodeStatus     @default(active)
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  candidates         PersonaLearningCandidate[]   @relation("ManagerPersonaNodeCandidates")
+  skillLinks         ManagerPersonaSkillLink[]
   learningProvenance ManagerLearningProvenance[]
 
   @@unique([treeId, kind, scopeKey, ruleKey])
@@ -1999,35 +2190,35 @@ model ManagerPersonaSkillLink {
 // Durable job state for an explicit Teach recording. BullMQ executes the job,
 // while this row is authoritative for progress, retries and cancellation.
 model ManagerTeachSession {
-  id                String                       @id @default(uuid())
-  companyId         String
-  company           Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  managerId         String
-  manager           User                         @relation("ManagerTeachSessionManager", fields: [managerId], references: [id], onDelete: Cascade)
-  departmentId      String
-  department        Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  source            ManagerTeachSource
-  status            ManagerTeachSessionStatus    @default(awaiting_upload)
-  progress          Int                          @default(0)
-  originalFileName  String?
-  mimeType          String?
-  fileSize          Int?
-  queueJobId        String?
-  attempts          Int                          @default(0)
-  cancelRequestedAt DateTime?
-  startedAt         DateTime?
-  completedAt       DateTime?
-  failedAt          DateTime?
-  lastError         String?
-  parentSessionId   String?
-  parentSession     ManagerTeachSession?         @relation("ManagerTeachRefinements", fields: [parentSessionId], references: [id], onDelete: SetNull)
-  refinements       ManagerTeachSession[]        @relation("ManagerTeachRefinements")
-  managerCorrection String?
-  agentMutationKey  String?                      @unique
-  createdAt         DateTime                     @default(now())
-  updatedAt         DateTime                     @updatedAt
-  artifacts         ManagerTeachArtifact[]
-  personaMutation   ManagerTeachPersonaMutation?
+  id                 String                       @id @default(uuid())
+  companyId          String
+  company            Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  managerId          String
+  manager            User                         @relation("ManagerTeachSessionManager", fields: [managerId], references: [id], onDelete: Cascade)
+  departmentId       String
+  department         Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  source             ManagerTeachSource
+  status             ManagerTeachSessionStatus    @default(awaiting_upload)
+  progress           Int                          @default(0)
+  originalFileName   String?
+  mimeType           String?
+  fileSize           Int?
+  queueJobId         String?
+  attempts           Int                          @default(0)
+  cancelRequestedAt  DateTime?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  failedAt           DateTime?
+  lastError          String?
+  parentSessionId    String?
+  parentSession      ManagerTeachSession?         @relation("ManagerTeachRefinements", fields: [parentSessionId], references: [id], onDelete: SetNull)
+  refinements        ManagerTeachSession[]        @relation("ManagerTeachRefinements")
+  managerCorrection  String?
+  agentMutationKey   String?                      @unique
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  artifacts          ManagerTeachArtifact[]
+  personaMutation    ManagerTeachPersonaMutation?
   learningProvenance ManagerLearningProvenance[]
 
   @@index([companyId, departmentId, managerId, createdAt])
@@ -2072,14 +2263,14 @@ model ManagerLearningProvenance {
   mutationId     String
   mutation       ManagerTeachPersonaMutation @relation(fields: [mutationId], references: [id], onDelete: Cascade)
   personaNodeId  String?
-  personaNode    ManagerPersonaNode?          @relation(fields: [personaNodeId], references: [id], onDelete: SetNull)
+  personaNode    ManagerPersonaNode?         @relation(fields: [personaNodeId], references: [id], onDelete: SetNull)
   skillId        String?
-  skill          Skill?                       @relation(fields: [skillId], references: [id], onDelete: SetNull)
+  skill          Skill?                      @relation(fields: [skillId], references: [id], onDelete: SetNull)
   decision       ManagerLearningDecision
-  evidenceRefs   String[]                     @default([])
+  evidenceRefs   String[]                    @default([])
   rationale      String
   priorStateJson Json?
-  createdAt      DateTime                     @default(now())
+  createdAt      DateTime                    @default(now())
 
   @@index([teachSessionId, createdAt])
   @@index([mutationId])

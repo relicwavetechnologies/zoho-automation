@@ -19,8 +19,6 @@ import { SkillsService }   from '../../src/application/context-search/skills.ser
 import type { SkillRepoPort, SkillRow } from '../../src/infrastructure/persistence/skill.repository.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import type { InfraError } from '../../src/shared/errors.ts';
-import { SkillRegistry } from '../../src/application/skills/skill-registry.ts';
-import { createDefaultSkillRegistry } from '../../src/application/skills/index.ts';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -48,82 +46,6 @@ function fakeRow(overrides: Partial<SkillRow> = {}): SkillRow {
     ...overrides,
   };
 }
-
-// ─── SkillRepository ──────────────────────────────────────────────────────────
-
-describe('SkillRegistry', () => {
-  it('returns ranked search results and preserves discover compatibility', () => {
-    const registry = new SkillRegistry([
-      {
-        id: 'google',
-        name: 'Google Workspace',
-        description: 'Gmail Drive Calendar',
-        instructions: 'Use Gmail for inbox and mail tasks.',
-        toolIds: ['googleGmail'],
-      },
-      {
-        id: 'zoho',
-        name: 'Zoho',
-        description: 'CRM and Books',
-        instructions: 'Use for leads and invoices.',
-        toolIds: ['zohoCrm'],
-      },
-    ]);
-
-    const results = registry.search('list my gmail inbox', { limit: 2 });
-    assert.equal(results[0]!.skill.id, 'google');
-    assert.ok(results[0]!.score > 0);
-    assert.equal(registry.discover('gmail inbox')?.id, 'google');
-  });
-
-  it('can search over a filtered skill subset', () => {
-    const google = {
-      id: 'google',
-      name: 'Google Workspace',
-      description: 'Gmail',
-      instructions: 'mail',
-      toolIds: ['googleGmail'],
-    };
-    const zoho = {
-      id: 'zoho',
-      name: 'Zoho',
-      description: 'CRM',
-      instructions: 'mail invoices',
-      toolIds: ['zohoCrm'],
-    };
-    const registry = new SkillRegistry([google, zoho]);
-
-    const results = registry.search('mail', { skills: [zoho] });
-    assert.deepEqual(results.map((r) => r.skill.id), ['zoho']);
-  });
-
-  it('routes finance prompts to core or specialized Zoho skills deterministically', () => {
-    const registry = createDefaultSkillRegistry();
-
-    assert.equal(
-      registry.discover('check our unpaid invoices and recent payments this month')?.id,
-      'finance-ops-core',
-    );
-    assert.equal(
-      registry.discover('record this vendor bill from a PDF invoice in Zoho Books')?.id,
-      'zoho-books-bill',
-    );
-    assert.equal(
-      registry.discover('create the Zoho bill from this PDF and notify Core Accounts')?.id,
-      'zoho-bill-notify-accounts',
-    );
-  });
-
-  it('keeps Finance Ops Core as a router without stale pseudo-tool names', () => {
-    const core = createDefaultSkillRegistry().getById('finance-ops-core');
-    assert.ok(core);
-    assert.doesNotMatch(core.instructions, /\bbooksRead\b/);
-    assert.doesNotMatch(core.instructions, /\bbooksWrite\b/);
-    assert.doesNotMatch(core.instructions, /\bsearchContext\b/);
-    assert.match(core.instructions, /zoho-books-bill/);
-    assert.match(core.instructions, /zoho-bill-notify-accounts/);
-  });
-});
 
 describe('SkillRepository', () => {
   describe('list()', () => {

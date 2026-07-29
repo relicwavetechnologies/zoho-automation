@@ -175,6 +175,10 @@ const EnvSchema = z.object({
   GOOGLE_OAUTH_CLIENT_ID:     z.string().optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
   GOOGLE_OAUTH_REDIRECT_URI:  z.string().optional(),
+  GOOGLE_PUBSUB_TOPIC:        z.string().regex(/^projects\/[^/]+\/topics\/[^/]+$/).optional(),
+  GOOGLE_PUBSUB_SUBSCRIPTION: z.string().regex(/^projects\/[^/]+\/subscriptions\/[^/]+$/).optional(),
+  GOOGLE_PUBSUB_PUSH_AUDIENCE: z.string().url().optional(),
+  GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT: z.string().email().optional(),
   /** Private backend-side Workspace MCP endpoint; never expose it to desktop/Pi. */
   GOOGLE_WORKSPACE_MCP_URL:   z.string().default('http://127.0.0.1:18000/mcp'),
 
@@ -299,7 +303,6 @@ const EnvSchema = z.object({
 
   // ── Dynamic agent graph cutover ───────────────────────────────────────────
   DYNAMIC_GRAPH_ENABLED: booleanStr.default('false'),
-  UNIFIED_AGENT_MODE:    booleanStr.default('false'),
 
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models).
   // Active timeouts are clamped so an older 5-minute deployment value cannot
@@ -318,6 +321,36 @@ const EnvSchema = z.object({
 });
 
 export type TypedEnv = z.infer<typeof EnvSchema>;
+
+type GmailPubSubConfig = {
+  topic: string;
+  subscription: string;
+  pushAudience: string;
+  pushServiceAccount: string;
+};
+
+export const getGmailPubSubConfig = (
+  env: Pick<
+    TypedEnv,
+    | 'GOOGLE_PUBSUB_TOPIC'
+    | 'GOOGLE_PUBSUB_SUBSCRIPTION'
+    | 'GOOGLE_PUBSUB_PUSH_AUDIENCE'
+    | 'GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT'
+  >,
+): GmailPubSubConfig | null => {
+  if (
+    !env.GOOGLE_PUBSUB_TOPIC
+    || !env.GOOGLE_PUBSUB_SUBSCRIPTION
+    || !env.GOOGLE_PUBSUB_PUSH_AUDIENCE
+    || !env.GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT
+  ) return null;
+  return {
+    topic: env.GOOGLE_PUBSUB_TOPIC,
+    subscription: env.GOOGLE_PUBSUB_SUBSCRIPTION,
+    pushAudience: env.GOOGLE_PUBSUB_PUSH_AUDIENCE,
+    pushServiceAccount: env.GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT,
+  };
+};
 
 /**
  * Returns `specific` when it is a non-empty string, otherwise falls back to

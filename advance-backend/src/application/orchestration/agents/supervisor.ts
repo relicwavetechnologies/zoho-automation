@@ -38,7 +38,9 @@ import type { Logger } from '../../../shared/logger';
 import type { Clock } from '../../../shared/clock';
 import type { FinalReply } from '../../../domain/channel/outbound';
 import type { PermissionResult } from '../../permissions/permission.types';
+import type { PermissionService } from '../../permissions/permission.service';
 import type { RunContext } from '../../../domain/orchestration/run-context';
+import { asDepartmentId } from '../../../shared/ids';
 import type { ConversationWindow } from '../../../domain/conversation/turn';
 import type { Tool as AppTool } from '../tools/tool.contract';
 import type { StatusChannel } from '../engine/status-channel';
@@ -90,6 +92,40 @@ import { FinalAnswerAccumulator } from './final-answer';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MAX_SUPERVISOR_STEPS = 200;
+
+function hasGovernedCallToolCode(result: {
+  toolName: string;
+  output: unknown;
+}, code: string): boolean {
+  if (result.toolName !== 'call_tool' || typeof result.output !== 'string') {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(result.output) as {
+      data?: { code?: unknown };
+    };
+    return parsed.data?.code === code;
+  } catch {
+    return false;
+  }
+}
+
+export function isGoogleAuthorizationPendingToolResult(result: {
+  toolName: string;
+  output: unknown;
+}): boolean {
+  return hasGovernedCallToolCode(
+    result,
+    'google_workspace_authorization_pending',
+  );
+}
+
+export function isMailOpsConfigurationRequiredToolResult(result: {
+  toolName: string;
+  output: unknown;
+}): boolean {
+  return hasGovernedCallToolCode(result, 'mail_ops_configuration_required');
+}
 const DEFAULT_SUPERVISOR_TIMEOUT_MS = 600_000;
 
 // ─── Public I/O ───────────────────────────────────────────────────────────────
@@ -173,8 +209,6 @@ export interface SupervisorDeps {
   dynamicSupervisorGraph?: DynamicSupervisorGraph;
   supervisorTimeoutMs?: number;
   mem0?: Mem0Service;
-  unifiedAgentMode?: boolean;
-  skillRegistry?: import('../../skills/skill-registry').SkillRegistry;
   toolRegistry?: import('../tools/tool-registry').ToolRegistry;
   /** DB-backed company skill catalogue used by governed server channels. */
   skillCatalog?: SkillCatalogService;
@@ -186,6 +220,8 @@ export interface SupervisorDeps {
   workBootstrap?: import('../../gateway/work-bootstrap.service').WorkBootstrapService;
   /** Shared governed executor used by backend-hosted channel tool calls. */
   toolExecutor?: ToolExecutor;
+  /** Resolves the department-scoped RBAC snapshot after a router is selected. */
+  permissions?: PermissionService;
   auditService?: Pick<AuditService, 'record'>;
 }
 
@@ -295,7 +331,13 @@ export class SupervisorAgent {
 
     let visibleSkills: CatalogSkill[] = [];
     let grantedSkillIds: ReadonlySet<string> = new Set();
-    const governedPermittedTools = permittedTools.filter((tool) => String(tool.id) !== 'runCommand');
+    let activeRunContext = runContext;
+    let activePermission = perm;
+    const governedPermittedTools = (
+      useGovernedLarkRuntime
+        ? this.deps.toolRegistry!.all()
+        : permittedTools
+    ).filter((tool) => String(tool.id) !== 'runCommand');
     const governedPermittedToolIds = new Set(governedPermittedTools.map((tool) => String(tool.id)));
     if (useGovernedLarkRuntime) {
       try {
@@ -308,6 +350,7 @@ export class SupervisorAgent {
           ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
           permission: perm,
           grantedSkillIds,
+          includeGrantedDepartments: true,
           limit: 100,
         });
         // A skill grant permits reading the recipe; PermissionService still
@@ -326,9 +369,12 @@ export class SupervisorAgent {
       }
     }
 
-    const governedSkillCatalog = visibleSkills.length > 0
-      ? visibleSkills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n')
-      : '- No skills are currently approved for this member.';
+    const visibleRouters = visibleSkills.filter((skill) => skill.tags.includes('router'));
+    const governedSkillCatalog = visibleRouters.length > 0
+      ? visibleRouters
+        .map((skill) => `- ${skill.slug} — ${skill.name}: ${skill.description}`)
+        .join('\n')
+      : '- No routers are currently approved for this member.';
     const systemPrompt = useGovernedLarkRuntime
       ? buildBrainSystemPrompt({
         skillCatalog: governedSkillCatalog,
@@ -441,6 +487,11 @@ export class SupervisorAgent {
     const schedulingSkillResolution = { loaded: false };
     const shareMemorySkillResolution = { loaded: false };
     const resolvedToolIds = new Set<string>();
+    let workContextVersion = 0;
+    let terminalWorkContextFailure: {
+      status: 'permission_denied' | 'routing_unavailable';
+      message: string;
+    } | undefined;
     const timeoutMs = this.deps.supervisorTimeoutMs ?? DEFAULT_SUPERVISOR_TIMEOUT_MS;
     const supervisorAbortSignal = timeoutMs > 0 || input.abortSignal
       ? mergeAbortSignals(timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined, input.abortSignal)
@@ -475,6 +526,16 @@ export class SupervisorAgent {
     const allowedToolIds = new Set(
       [...governedPermittedToolIds].filter(toolId => toolId !== 'memoryPublishing'),
     );
+    const currentAllowedToolIds = () => new Set(
+      [...activePermission.allowedToolIds]
+        .map(String)
+        .filter(toolId => toolId !== 'memoryPublishing'),
+    );
+    for (const toolId of runContext.continuationToolIds ?? []) {
+      if (allowedToolIds.has(toolId) && currentAllowedToolIds().has(toolId)) {
+        resolvedToolIds.add(toolId);
+      }
+    }
     const workResolver = useGovernedLarkRuntime
       ? this.deps.workResolution ?? new WorkResolutionService({
         skillCatalog: this.deps.skillCatalog!,
@@ -491,6 +552,7 @@ export class SupervisorAgent {
           ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
           permission: perm,
           expectedQuery: userMessage,
+          routerSearchOnly: true,
           ...(supervisorAbortSignal ? { abortSignal: supervisorAbortSignal } : {}),
           ...(this.deps.workBootstrap ? { workBootstrap: this.deps.workBootstrap } : {}),
           onResolution: (event) => {
@@ -502,7 +564,7 @@ export class SupervisorAgent {
               : [];
             for (const skill of selectedSkills) {
               for (const toolId of skill.toolIds) {
-                if (allowedToolIds.has(toolId)) resolvedToolIds.add(toolId);
+                if (currentAllowedToolIds().has(toolId)) resolvedToolIds.add(toolId);
               }
             }
             schedulingSkillResolution.loaded ||= selectedSkills.some(
@@ -541,30 +603,52 @@ export class SupervisorAgent {
           ...(runContext.departmentId ? { departmentId: String(runContext.departmentId) } : {}),
           permission: perm,
           grantedSkillIds,
+          expectedQuery: userMessage,
           visibleSkills,
           permittedTools: governedPermittedTools,
           ...(this.deps.workBootstrap ? { workBootstrap: this.deps.workBootstrap } : {}),
-          onDiscovery: (event) => {
-            const skill = event.skillId
-              ? visibleSkills.find(candidate => candidate.id === event.skillId)
-              : undefined;
-            if (event.outcome === 'success' && skill) {
-              for (const toolId of skill.toolIds) {
-                if (allowedToolIds.has(toolId)) resolvedToolIds.add(toolId);
-              }
-              schedulingSkillResolution.loaded ||= skill.slug === SCHEDULE_DIVO_WORK_SKILL_SLUG;
-              shareMemorySkillResolution.loaded ||= skill.slug === SHARE_MEMORY_SKILL_SLUG;
+          ...(this.deps.permissions
+            ? {
+              resolveDepartmentPermission: async (departmentId: string) => {
+                const result = await this.deps.permissions!.resolve({
+                  companyId: runContext.companyId,
+                  userId: runContext.userId,
+                  companyRole: runContext.companyRole,
+                  departmentId: asDepartmentId(departmentId),
+                  channel: runContext.channel,
+                });
+                return result.ok ? result.value : null;
+              },
             }
+            : {}),
+          onSkillLoaded: ({ skill, permission, departmentId }) => {
+            activePermission = permission;
+            activeRunContext = departmentId
+              ? { ...runContext, departmentId: asDepartmentId(departmentId) }
+              : runContext;
+            workContextVersion += 1;
+            for (const toolId of skill.toolIds) {
+              if (currentAllowedToolIds().has(toolId)) resolvedToolIds.add(toolId);
+            }
+            schedulingSkillResolution.loaded ||= skill.slug === SCHEDULE_DIVO_WORK_SKILL_SLUG;
+            shareMemorySkillResolution.loaded ||= skill.slug === SHARE_MEMORY_SKILL_SLUG;
+          },
+          onTerminalFailure: (failure) => {
+            terminalWorkContextFailure = failure;
+          },
+          onDiscovery: (event) => {
             if (this.deps.auditService) {
               void this.deps.auditService.record({
                 actorId: String(runContext.userId),
                 companyId: String(runContext.companyId),
                 action: 'lark.skill.discovery',
-                outcome: event.outcome,
+                outcome: event.outcome === 'candidates' ? 'success' : event.outcome,
                 metadata: {
                   query: event.query,
                   skillId: event.skillId ?? null,
-                  departmentId: runContext.departmentId ? String(runContext.departmentId) : null,
+                  discoveryOutcome: event.outcome,
+                  departmentId: event.departmentId
+                    ?? (activeRunContext.departmentId ? String(activeRunContext.departmentId) : null),
                 },
               });
             }
@@ -587,9 +671,20 @@ export class SupervisorAgent {
             toolId: event.toolId,
             actionGroup: event.action ?? null,
             status: event.status,
-            departmentId: runContext.departmentId ? String(runContext.departmentId) : null,
+            departmentId: activeRunContext.departmentId
+              ? String(activeRunContext.departmentId)
+              : null,
           },
-        }) : undefined, this.deps.toolExecutor, (toolId) => resolvedToolIds.has(toolId)),
+        }) : undefined, this.deps.toolExecutor, (toolId) => resolvedToolIds.has(toolId), () => ({
+          runContext: activeRunContext,
+          perm: activePermission,
+          allowedToolIds: currentAllowedToolIds(),
+        }), () => ({
+          version: workContextVersion,
+          ...(terminalWorkContextFailure
+            ? { terminalFailure: terminalWorkContextFailure }
+            : {}),
+        })),
       } as unknown as ToolSet
       : {} as ToolSet;
 
@@ -640,7 +735,23 @@ export class SupervisorAgent {
             system:  fullSystemPrompt,
             messages,
             tools:   supervisorTools,
-            stopWhen: [stepCountIs(MAX_SUPERVISOR_STEPS)],
+            stopWhen: [
+              stepCountIs(MAX_SUPERVISOR_STEPS),
+              ({ steps }) => steps.some(step =>
+                step.toolResults.some(toolResult =>
+                  isGoogleAuthorizationPendingToolResult(toolResult)
+                  || isMailOpsConfigurationRequiredToolResult(toolResult),
+                ),
+              ),
+              ({ steps }) => steps.some(step =>
+                step.toolResults.some(toolResult => {
+                  const output = String(toolResult.output);
+                  return output.startsWith('permission_denied:')
+                    || output.startsWith('routing_unavailable:')
+                    || output.startsWith('routing_contract_violation:');
+                }),
+              ),
+            ],
             temperature: 0,
             ...(supervisorAbortSignal ? { abortSignal: supervisorAbortSignal } : {}),
           });
@@ -765,6 +876,35 @@ export class SupervisorAgent {
       finalText  = outcome.finalText;
       toolsCalled = outcome.toolsCalled;
       toolResults = outcome.toolResults;
+      if (toolResults.some(isGoogleAuthorizationPendingToolResult)) {
+        finalText =
+          'I sent a secure Google connection link. I’ll continue this request '
+          + 'automatically after you connect—no need to send it again.';
+      } else if (toolResults.some(isMailOpsConfigurationRequiredToolResult)) {
+        finalText =
+          'Mail Ops is the correct capability for this request, but real-time Gmail '
+          + 'notifications are not configured yet. I did not create a rule or substitute '
+          + 'Scheduler or a Gmail filter. Please ask the Divo operator to finish the '
+          + 'Google Pub/Sub setup.';
+      } else if (toolResults.some(result =>
+        result.output.startsWith('permission_denied:')
+      )) {
+        finalText =
+          'You don’t have access to the department or capability required for this request. '
+          + 'No action was performed. Please ask a company administrator to grant access.';
+      } else if (toolResults.some(result =>
+        result.output.startsWith('routing_unavailable:')
+      )) {
+        finalText =
+          'The approved workflow for this request is currently unavailable or misconfigured. '
+          + 'No action was performed.';
+      } else if (toolResults.some(result =>
+        result.output.startsWith('routing_contract_violation:')
+      )) {
+        finalText =
+          'I could not resolve an approved workflow for this request, so I stopped without '
+          + 'retrying or substituting another capability.';
+      }
 
       // If model produced no text but made tool calls, build a summary from
       // agent results so the user sees something useful instead of "Done."
@@ -902,9 +1042,6 @@ export class SupervisorAgent {
       ...(input.tracer ? { tracer: input.tracer } : {}),
       ...(input.statusChannel ? { statusChannel: input.statusChannel } : {}),
       ...(input.aggregator ? { aggregator: input.aggregator } : {}),
-      ...(this.deps.unifiedAgentMode ? { unifiedAgentMode: true } : {}),
-      ...(this.deps.skillRegistry ? { skillRegistry: this.deps.skillRegistry } : {}),
-      ...(this.deps.toolRegistry ? { toolRegistry: this.deps.toolRegistry } : {}),
     });
 
     const memoryContext = input.memoryContext ?? '';

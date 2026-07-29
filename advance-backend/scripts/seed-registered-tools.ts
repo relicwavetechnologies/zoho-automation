@@ -140,6 +140,19 @@ export const REGISTERED_TOOL_SEEDS: readonly RegisteredToolSeed[] = [
       'Export access changes and additional recipients are unsupported',
     ],
   },
+  {
+    toolId: 'mailAutomations',
+    name: 'Mail Ops',
+    description: 'Create and manage durable Gmail arrival rules for forwarding and Lark delivery.',
+    category: 'workflow',
+    domain: 'scheduling',
+    guardrails: [
+      'Rules use only user-owned Google connections',
+      'Matching and OTP forwarding are deterministic and do not invoke an LLM',
+      'Google credentials remain server-side',
+      'Every background execution re-checks current Divo permissions',
+    ],
+  },
   { toolId: 'scheduledWorkflows', name: 'Scheduled Workflows', description: 'Create, manage, and run governed scheduled workflows.', category: 'workflow', domain: 'scheduling', hitlRequired: true },
   {
     toolId: 'semrush',

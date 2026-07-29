@@ -174,6 +174,60 @@ describe('data export source adapters', () => {
     assert.equal(rows[0]?.['_id'], 'inv-1');
   });
 
+  it('maps canonical date filters to Zoho provider parameters', async () => {
+    let capturedFilters: Record<string, unknown> | undefined;
+    const adapter = new ZohoBooksDataExportSource({
+      listRecords: async (input: any) => {
+        capturedFilters = input.filters;
+        return {
+          organizationId: 'org-1',
+          items: [],
+          hasMore: false,
+          page: input.page,
+        };
+      },
+    } as any);
+    for await (const _page of adapter.read({
+      kind: 'zoho_books',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      module: 'expenses',
+      filters: {
+        dateFrom: '2026-07-01',
+        dateTo: '2026-07-29',
+        status: 'unbilled',
+      },
+    }, { companyId: 'co-1', userId: 'user-1' })) {
+      // Exhaust the source so the request is captured.
+    }
+
+    assert.deepEqual(capturedFilters, {
+      date_start: '2026-07-01',
+      date_end: '2026-07-29',
+      status: 'unbilled',
+    });
+  });
+
+  it('rejects ambiguous canonical and provider date filters', async () => {
+    const adapter = new ZohoBooksDataExportSource({
+      listRecords: async () => assert.fail('ambiguous filters must fail before the request'),
+    } as any);
+    const consume = async () => {
+      for await (const _page of adapter.read({
+        kind: 'zoho_books',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        module: 'expenses',
+        filters: {
+          dateFrom: '2026-07-01',
+          date_start: '2026-07-02',
+        },
+      }, { companyId: 'co-1', userId: 'user-1' })) {
+        // No pages expected.
+      }
+    };
+
+    await assert.rejects(consume, /both dateFrom and date_start/i);
+  });
+
   it('marks an exact-cap Zoho status page as incomplete when another status remains', async () => {
     const adapter = new ZohoBooksDataExportSource({
       listRecords: async (input: any) => ({

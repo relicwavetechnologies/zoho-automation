@@ -12,6 +12,12 @@ import { gatewayFailure, gatewaySuccess } from './gateway.types';
 import type { PreparedToolInvocation, ToolExecutor } from './tool-executor';
 import { googleWorkspaceProductByToolId } from '../google/google-workspace-mcp-manifest';
 import { AIRTABLE_PRODUCTS } from '../airtable/airtable-mcp-manifest';
+import type { PermissionService } from '../permissions/permission.service';
+import type { SkillCatalogService } from '../skills/skill-catalog.service';
+import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
+import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
+import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
+import { withWorkDiscoveryPermissions } from './work-resolution.service';
 
 const DEFAULT_INTENT_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_TOMBSTONE_TTL_MS = 10 * 60 * 1000;
@@ -34,6 +40,7 @@ interface StoredApprovalIntent {
   readonly sessionId: string;
   readonly departmentId: string | null;
   readonly execution?: GatewayExecutionContext;
+  readonly skillId: string;
   readonly toolId: string;
   readonly action: ToolActionGroup;
   readonly args: Record<string, unknown>;
@@ -177,6 +184,9 @@ function executionMatches(
 
 export interface LocalApprovalIntentServiceDeps {
   readonly toolExecutor: ToolExecutor;
+  readonly permissions: PermissionService;
+  readonly skillCatalog: SkillCatalogService;
+  readonly skillAccessEnforcement: SkillAccessEnforcementPort;
   readonly repository: InMemoryApprovalIntentRepository;
   readonly clock: Clock;
   readonly logger: Logger;
@@ -193,6 +203,7 @@ export class LocalApprovalIntentService {
   async prepare(input: {
     readonly member: GatewayMemberContext;
     readonly departmentId?: string;
+    readonly skillId: string;
     readonly toolId: string;
     readonly args: Record<string, unknown>;
     readonly execution?: GatewayExecutionContext;
@@ -213,6 +224,7 @@ export class LocalApprovalIntentService {
     input: {
       readonly member: GatewayMemberContext;
       readonly departmentId?: string;
+      readonly skillId: string;
       readonly toolId: string;
       readonly args: Record<string, unknown>;
       readonly execution?: GatewayExecutionContext;
@@ -249,6 +261,7 @@ export class LocalApprovalIntentService {
       sessionId: input.member.sessionId,
       departmentId: input.departmentId ?? null,
       ...(input.execution ? { execution: input.execution } : {}),
+      skillId: input.skillId,
       toolId,
       action,
       args: storedArgs,
@@ -324,6 +337,34 @@ export class LocalApprovalIntentService {
         toolId: claimed.intent.toolId,
       });
       return gatewayFailure('invalid_args', 'Prepared approval payload failed its integrity check. Prepare the action again.');
+    }
+    const permission = await this.deps.permissions.resolve({
+      companyId: asCompanyId(input.member.companyId),
+      userId: asUserId(input.member.userId),
+      companyRole: asCompanyRoleSlug(input.member.aiRole),
+      ...(claimed.intent.departmentId
+        ? { departmentId: asDepartmentId(claimed.intent.departmentId) }
+        : {}),
+      channel: 'desktop',
+    });
+    const grantedSkillIds = await this.deps.skillAccessEnforcement.listGrantedSkillIds(
+      input.member.companyId,
+      input.member.userId,
+    );
+    const authorized = permission.ok && await this.deps.skillCatalog.authorizesTool({
+      companyId: input.member.companyId,
+      ...(claimed.intent.departmentId ? { departmentId: claimed.intent.departmentId } : {}),
+      permission: withWorkDiscoveryPermissions(permission.value),
+      grantedSkillIds,
+      skillId: claimed.intent.skillId,
+      toolId: claimed.intent.toolId,
+    });
+    if (!authorized) {
+      this.deps.repository.consume(input.intentId, claimed.claimToken, this.deps.clock.nowMs());
+      return gatewayFailure(
+        'permission_denied',
+        `Skill "${claimed.intent.skillId}" no longer authorizes tool "${claimed.intent.toolId}". Prepare the action again.`,
+      );
     }
 
     const result = await this.deps.toolExecutor.invoke({

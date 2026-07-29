@@ -23,6 +23,8 @@ export interface SkillRepoPort {
   list(input: {
     companyId: string;
     departmentId?: string;
+    additionalDepartmentSkillIds?: readonly string[];
+    tag?: string;
     limit: number;
   }): Promise<Result<SkillRow[], InfraError>>;
 
@@ -37,6 +39,7 @@ export interface SkillRepoPort {
   findById(input: {
     companyId: string;
     departmentId?: string;
+    additionalDepartmentSkillIds?: readonly string[];
     skillId: string;
     abortSignal?: AbortSignal;
   }): Promise<Result<SkillRow | null, InfraError>>;
@@ -63,11 +66,19 @@ const SELECT = {
   aliases:      { select: { alias: true } },
 } as const;
 
-function visibilityWhere(departmentId?: string) {
+function visibilityWhere(
+  departmentId?: string,
+  additionalDepartmentSkillIds: readonly string[] = [],
+) {
   const companyWideScopes = ['company', 'global'];
-  return departmentId
-    ? { OR: [{ scope: { in: companyWideScopes }, departmentId: null as string | null }, { scope: 'department', departmentId }] }
-    : { scope: { in: companyWideScopes }, departmentId: null as string | null };
+  const visibleScopes = [
+    { scope: { in: companyWideScopes }, departmentId: null as string | null },
+    ...(departmentId ? [{ scope: 'department', departmentId }] : []),
+    ...(additionalDepartmentSkillIds.length > 0
+      ? [{ scope: 'department', id: { in: [...additionalDepartmentSkillIds] } }]
+      : []),
+  ];
+  return visibleScopes.length === 1 ? visibleScopes[0]! : { OR: visibleScopes };
 }
 
 export class SkillRepository implements SkillRepoPort {
@@ -76,15 +87,18 @@ export class SkillRepository implements SkillRepoPort {
   async list(input: {
     companyId: string;
     departmentId?: string;
+    additionalDepartmentSkillIds?: readonly string[];
+    tag?: string;
     limit: number;
   }): Promise<Result<SkillRow[], InfraError>> {
     try {
-      const { companyId, departmentId, limit } = input;
+      const { companyId, departmentId, additionalDepartmentSkillIds, tag, limit } = input;
       const rows = await this.db.skill.findMany({
         where: {
           companyId,
           status: 'active',
-          AND: [visibilityWhere(departmentId)],
+          AND: [visibilityWhere(departmentId, additionalDepartmentSkillIds)],
+          ...(tag ? { tags: { has: tag } } : {}),
         },
         select:  SELECT,
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
@@ -135,19 +149,20 @@ export class SkillRepository implements SkillRepoPort {
   async findById(input: {
     companyId: string;
     departmentId?: string;
+    additionalDepartmentSkillIds?: readonly string[];
     skillId: string;
     abortSignal?: AbortSignal;
   }): Promise<Result<SkillRow | null, InfraError>> {
     try {
       input.abortSignal?.throwIfAborted();
-      const { companyId, departmentId, skillId } = input;
+      const { companyId, departmentId, additionalDepartmentSkillIds, skillId } = input;
 
       const row = await this.db.skill.findFirst({
         where: {
           companyId,
           status: 'active',
           AND: [
-            visibilityWhere(departmentId),
+            visibilityWhere(departmentId, additionalDepartmentSkillIds),
             { OR: [{ id: skillId }, { slug: skillId }] },
           ],
         },

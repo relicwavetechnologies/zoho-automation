@@ -92,15 +92,29 @@ export type ResolveGoogleWorkspaceMcpConnection = (input: {
   readonly abortSignal?: AbortSignal;
 }) => Promise<GoogleWorkspaceMcpConnectionResolution>;
 
+export type BeginGoogleWorkspaceAuthorization = (input: {
+  readonly toolId: string;
+  readonly reason: string;
+  readonly runContext: import('../../../../domain/orchestration/run-context').RunContext;
+}) => Promise<
+  | { readonly status: 'sent'; readonly intentId: string }
+  | { readonly status: 'already_pending'; readonly intentId: string }
+  | { readonly status: 'unavailable' }
+>;
+
 export function createGoogleWorkspaceMcpTools(deps: {
   readonly getConnection: ResolveGoogleWorkspaceMcpConnection;
+  readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
 }): Tool<Args, ToolResult>[] {
   return GOOGLE_WORKSPACE_PRODUCTS.map((product) => createProductTool(product, deps));
 }
 
 function createProductTool(
   product: GoogleWorkspaceProductDefinition,
-  deps: { readonly getConnection: ResolveGoogleWorkspaceMcpConnection },
+  deps: {
+    readonly getConnection: ResolveGoogleWorkspaceMcpConnection;
+    readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
+  },
 ): Tool<Args, ToolResult> {
   const supportedActions = new Set<ToolActionGroup>(
     TOOL_SUPPORTED_ACTIONS[product.toolId] as readonly ToolActionGroup[],
@@ -240,10 +254,34 @@ function createProductTool(
         });
       }
       if (connectionResolution.status === 'unavailable') {
+        const reason = unavailableMessage(product, connectionResolution);
+        if (
+          deps.beginAuthorization
+          && (connectionResolution.accessible?.length ?? 0) === 0
+        ) {
+          const authorization = await deps.beginAuthorization({
+            toolId: product.toolId,
+            reason,
+            runContext: ctx.runContext,
+          });
+          if (authorization.status !== 'unavailable') {
+            return ok({
+              success: false,
+              nativeTool: args.nativeTool,
+              data: {
+                code: 'google_workspace_authorization_pending',
+                intentId: authorization.intentId,
+              },
+              message:
+                'The Google connection card was sent. End this run now; '
+                + 'Divo will start a fresh run automatically after OAuth completes.',
+            });
+          }
+        }
         return err(new ToolError({
           toolId: product.toolId,
           reason: 'unrecoverable',
-          message: unavailableMessage(product, connectionResolution),
+          message: reason,
         }));
       }
       const connection = connectionResolution.connection;

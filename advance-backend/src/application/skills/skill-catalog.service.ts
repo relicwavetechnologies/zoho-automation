@@ -20,12 +20,23 @@ export interface CatalogSkill {
   readonly toolIds: readonly string[];
   readonly aliases: readonly string[];
   readonly tags: readonly string[];
+  readonly departmentId?: string;
   readonly revision: number;
 }
 
 export interface CatalogSkillSearchResult {
   readonly skill: CatalogSkill;
   readonly score: number;
+}
+
+export interface RouterSkillCandidate {
+  readonly skillId: string;
+  readonly slug: string;
+  readonly name: string;
+  readonly description: string;
+  readonly departmentId?: string;
+  readonly score: number;
+  readonly matchedTerms: readonly string[];
 }
 
 export interface SkillCatalogServiceDeps {
@@ -45,11 +56,15 @@ export class SkillCatalogService {
     departmentId?: string;
     permission: PermissionResult;
     grantedSkillIds?: ReadonlySet<string>;
+    includeGrantedDepartments?: boolean;
     limit?: number;
   }): Promise<CatalogSkill[]> {
     const result = await this.deps.repo.list({
       companyId: input.companyId,
       ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      ...(input.includeGrantedDepartments && input.grantedSkillIds
+        ? { additionalDepartmentSkillIds: [...input.grantedSkillIds] }
+        : {}),
       limit: input.limit ?? 50,
     });
     if (!result.ok) {
@@ -97,11 +112,59 @@ export class SkillCatalogService {
       .slice(0, input.limit);
   }
 
+  async searchVisibleRouters(input: {
+    companyId: string;
+    departmentId?: string;
+    permission: PermissionResult;
+    grantedSkillIds?: ReadonlySet<string>;
+    includeGrantedDepartments?: boolean;
+    query: string;
+    variants?: readonly string[];
+    limit: number;
+  }): Promise<RouterSkillCandidate[]> {
+    const queries = [input.query, ...(input.variants ?? []).slice(0, 2)]
+      .map((query) => analyzeQuery(query))
+      .filter((query) => query.tokens.size > 0);
+    if (queries.length === 0) return [];
+
+    const result = await this.deps.repo.list({
+      companyId: input.companyId,
+      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      ...(input.includeGrantedDepartments && input.grantedSkillIds
+        ? { additionalDepartmentSkillIds: [...input.grantedSkillIds] }
+        : {}),
+      tag: 'router',
+      limit: 200,
+    });
+    if (!result.ok) {
+      this.log.warn('skills.catalog.list.failed', { companyId: input.companyId, error: result.error.message });
+      return [];
+    }
+
+    const ranked = result.value
+      .filter((row) => this.isLanguageSafe(row))
+      .map((row) => ({ row, skill: toCatalogSkill(row) }))
+      .filter(({ skill }) => skill.tags.includes('router'))
+      .map(({ row, skill }) => ({ row, candidate: scoreRouterCandidate(skill, queries) }))
+      .filter(({ candidate }) => candidate.score > 0)
+      .sort((a, b) => b.candidate.score - a.candidate.score
+        || a.candidate.name.localeCompare(b.candidate.name));
+
+    if (!ranked[0] || !this.isVisible(ranked[0].row, input.permission, input.grantedSkillIds)) {
+      return [];
+    }
+    return ranked
+      .filter(({ row }) => this.isVisible(row, input.permission, input.grantedSkillIds))
+      .map(({ candidate }) => candidate)
+      .slice(0, input.limit);
+  }
+
   async getVisible(input: {
     companyId: string;
     departmentId?: string;
     permission: PermissionResult;
     grantedSkillIds?: ReadonlySet<string>;
+    includeGrantedDepartments?: boolean;
     skillId: string;
     abortSignal?: AbortSignal;
   }): Promise<CatalogSkill | null> {
@@ -109,6 +172,9 @@ export class SkillCatalogService {
     const result = await this.deps.repo.findById({
       companyId: input.companyId,
       ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      ...(input.includeGrantedDepartments && input.grantedSkillIds
+        ? { additionalDepartmentSkillIds: [...input.grantedSkillIds] }
+        : {}),
       skillId: input.skillId,
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
@@ -125,6 +191,18 @@ export class SkillCatalogService {
       return null;
     }
     return toCatalogSkill(result.value);
+  }
+
+  async authorizesTool(input: {
+    companyId: string;
+    departmentId?: string;
+    permission: PermissionResult;
+    grantedSkillIds?: ReadonlySet<string>;
+    skillId: string;
+    toolId: string;
+  }): Promise<boolean> {
+    const skill = await this.getVisible(input);
+    return skill?.toolIds.includes(input.toolId) ?? false;
   }
 
   async getInScope(input: {
@@ -176,7 +254,7 @@ export class SkillCatalogService {
   ): boolean {
     if (!this.isLanguageSafe(row)) return false;
     const granted = grantedSkillIds ? grantedSkillIds.has(row.id) : true;
-    const executable = row.toolIds.every((toolId) =>
+    const executable = row.toolIds.length === 0 || row.toolIds.some((toolId) =>
       permission.allowedToolIds.has(asToolId(toolId))
     );
     return granted && executable;
@@ -204,6 +282,7 @@ function toCatalogSkill(row: SkillRow): CatalogSkill {
     toolIds: [...row.toolIds],
     aliases: [...(row.aliases ?? [])],
     tags: [...row.tags],
+    ...(row.departmentId ? { departmentId: row.departmentId } : {}),
     revision: row.revision,
   };
 }
@@ -323,4 +402,53 @@ function skillProviderFamilies(skill: CatalogSkill): ReadonlySet<ToolFamily> {
     if (TOOL_FAMILY_DEFINITIONS[family].routingAliases.length > 0) families.add(family);
   }
   return families;
+}
+
+function scoreRouterCandidate(
+  skill: CatalogSkill,
+  queries: readonly AnalyzedQuery[],
+): RouterSkillCandidate {
+  const identityTokens = new Set(tokenize([
+    skill.slug,
+    skill.name,
+    ...skill.tags,
+  ].join(' ')));
+  const aliasTokens = new Set(tokenize(skill.aliases.join(' ')));
+  const descriptionTokens = new Set(tokenize(skill.description));
+  const matchedTerms = new Set<string>();
+  let score = 0;
+
+  queries.forEach((query, queryIndex) => {
+    const weight = queryIndex === 0 ? 2 : 1;
+    for (const word of query.tokens) {
+      const termScore = identityTokens.has(word)
+        ? 5
+        : aliasTokens.has(word)
+          ? 4
+          : descriptionTokens.has(word)
+            ? 2
+            : 0;
+      if (termScore > 0) {
+        score += termScore * weight;
+        matchedTerms.add(word);
+      }
+    }
+    for (const alias of skill.aliases) {
+      const normalizedAlias = tokenize(alias).join(' ');
+      if (normalizedAlias && includesExactPhrase(query.normalized, normalizedAlias)) {
+        score += 10 * weight;
+        matchedTerms.add(alias);
+      }
+    }
+  });
+
+  return {
+    skillId: skill.id,
+    slug: skill.slug,
+    name: skill.name,
+    description: skill.description,
+    ...(skill.departmentId ? { departmentId: skill.departmentId } : {}),
+    score,
+    matchedTerms: [...matchedTerms].sort(),
+  };
 }

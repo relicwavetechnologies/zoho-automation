@@ -3,7 +3,8 @@ import type { CanonicalToolId } from '../../domain/tools/tool-id';
 import { asToolId } from '../../shared/ids';
 import type { PermissionResult } from '../permissions/permission.types';
 import type { CatalogSkill, SkillCatalogService } from '../skills/skill-catalog.service';
-import { googleSkill } from '../skills/google.skill';
+
+const GOOGLE_WORKSPACE_ROUTER_SLUG = 'google-workspace-router';
 
 export const GOOGLE_VENDOR_ONBOARDING_PHASE_IDS = [
   'gmail_source',
@@ -122,7 +123,6 @@ export interface GoogleVendorOnboardingPlan {
     readonly toolId: string;
     readonly requiredActions: readonly ToolActionGroup[];
     readonly handoff: VendorOnboardingPhaseDefinition['handoff'];
-    readonly skill?: Pick<CatalogSkill, 'id' | 'slug' | 'name' | 'description' | 'instructions' | 'toolIds' | 'revision'>;
   }[];
 }
 
@@ -164,9 +164,8 @@ export function deriveGoogleVendorOnboardingPhaseIds(query: string): GoogleVendo
 }
 
 /**
- * Builds a virtual Google parent plan from the live, RBAC-filtered specialist
- * registry. The source-controlled parent is never materialized as a database
- * skill and never requires every Google product to be granted.
+ * Builds the Google parent plan from the live, RBAC-filtered DB router and
+ * specialist registry.
  */
 export async function buildGoogleVendorOnboardingPlan(input: {
   readonly catalog: SkillCatalogService;
@@ -183,19 +182,23 @@ export async function buildGoogleVendorOnboardingPlan(input: {
     ...(input.grantedSkillIds ? { grantedSkillIds: input.grantedSkillIds } : {}),
   });
   const bySlug = new Map(visible.map((skill) => [skill.slug, skill]));
+  const parent = bySlug.get(GOOGLE_WORKSPACE_ROUTER_SLUG);
   const requestedIds = input.phaseIds ?? DEFAULT_VENDOR_ONBOARDING_PHASE_IDS;
   const byKey = new Map(VENDOR_ONBOARDING_PHASES.map((phase) => [phase.key, phase]));
   const requestedPhases = requestedIds.map((id) => byKey.get(id)!);
-  const missing = requestedPhases
+  const missing = [
+    ...(!parent ? ['Google Workspace router'] : []),
+    ...requestedPhases
     .filter((phase) => {
       const skill = bySlug.get(phase.slug);
       const allowedActions = input.permission.allowedActionsByTool.get(asToolId(phase.toolId as CanonicalToolId));
       return !skill || !allowedActions || !phase.requiredActions.every((action) => allowedActions.has(action));
     })
-    .map((phase) => phase.name);
+    .map((phase) => phase.name),
+  ];
   if (missing.length) return { ok: false, missing };
 
-  const phases = requestedPhases.map((phase, index) => {
+  const phases = requestedPhases.map((phase) => {
     const skill = bySlug.get(phase.slug)!;
     return {
       id: phase.key,
@@ -204,10 +207,6 @@ export async function buildGoogleVendorOnboardingPlan(input: {
       toolId: phase.toolId,
       requiredActions: phase.requiredActions,
       handoff: phase.handoff,
-      // One full specialist recipe is enough to start the run. Subsequent
-      // phase IDs are exact and intentionally loaded only immediately before
-      // their phase, keeping the agent context compact.
-      ...(index === 0 ? { skill } : {}),
     };
   });
 
@@ -215,10 +214,10 @@ export async function buildGoogleVendorOnboardingPlan(input: {
     ok: true,
     value: {
       parent: {
-        id: googleSkill.id,
-        name: googleSkill.name,
-        description: googleSkill.description,
-        instructions: googleSkill.instructions,
+        id: parent!.id,
+        name: parent!.name,
+        description: parent!.description,
+        instructions: parent!.instructions,
       },
       workflow: 'vendor_onboarding',
       connection: {

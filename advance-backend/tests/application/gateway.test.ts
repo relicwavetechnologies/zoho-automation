@@ -142,6 +142,19 @@ function makeSkillCatalog(skills: CatalogSkill[]): SkillCatalogService {
 
   return {
     listVisible: async () => skills.filter((skill) => skill.id !== 'blocked-skill'),
+    searchVisibleRouters: async ({ query, limit }: { query: string; limit: number }) =>
+      skills
+        .filter((skill) => skill.id !== 'blocked-skill' && skill.tags?.includes('router'))
+        .map((skill) => ({
+          skillId: skill.id,
+          slug: skill.slug,
+          name: skill.name,
+          description: skill.description,
+          score: score(skill, query),
+          matchedTerms: [],
+        }))
+        .filter((result) => result.score > 0)
+        .slice(0, limit),
     searchVisible: async ({ query, limit }: { query: string; limit: number }) =>
       skills
         .filter((skill) => skill.id !== 'blocked-skill')
@@ -150,6 +163,10 @@ function makeSkillCatalog(skills: CatalogSkill[]): SkillCatalogService {
         .slice(0, limit),
     getVisible: async ({ skillId }: { skillId: string }) =>
       skills.find((skill) => skill.id === skillId && skill.id !== 'blocked-skill') ?? null,
+    authorizesTool: async ({ skillId, toolId }: { skillId: string; toolId: string }) => {
+      const skill = skills.find((candidate) => candidate.id === skillId && candidate.id !== 'blocked-skill');
+      return skill?.toolIds.includes(toolId) ?? false;
+    },
     getInScope: async ({ skillId }: { skillId: string }) =>
       skills.find((skill) => skill.id === skillId) ?? null,
   } as unknown as SkillCatalogService;
@@ -159,9 +176,20 @@ function makeLocalApprovals(
   toolExecutor: ToolExecutor,
   clock: Clock = { now: () => new Date(), nowMs: () => Date.now() },
   intentTtlMs?: number,
+  deps: {
+    permissions?: PermissionService;
+    skillCatalog?: SkillCatalogService;
+  } = {},
 ): LocalApprovalIntentService {
   return new LocalApprovalIntentService({
     toolExecutor,
+    permissions: deps.permissions ?? makePermissionService(),
+    skillCatalog: deps.skillCatalog ?? ({
+      authorizesTool: async () => true,
+    } as unknown as SkillCatalogService),
+    skillAccessEnforcement: {
+      listGrantedSkillIds: async () => new Set(['allowed-skill']),
+    },
     repository: new InMemoryApprovalIntentRepository(),
     clock,
     logger: noopLogger,
@@ -1110,6 +1138,7 @@ describe('LocalApprovalIntentService', () => {
 
     const result = await makeLocalApprovals(executor).prepare({
       member,
+      skillId: 'allowed-skill',
       toolId: 'fakeTool',
       args: { query: 'preview only' },
     });
@@ -1142,6 +1171,7 @@ describe('LocalApprovalIntentService', () => {
 
     const prepared = await approvals.prepare({
       member,
+      skillId: 'allowed-skill',
       toolId: 'fakeTool',
       // Zod strips the unrecognized property, binding the intent to normalized args.
       args: { query: 'original', ignored: 'not executable' },
@@ -1162,6 +1192,48 @@ describe('LocalApprovalIntentService', () => {
     assert.equal(replay.ok, false);
     assert.equal(replay.status, 'approval_intent_consumed');
     assert.equal(executed.length, 1);
+  });
+
+  it('fails a prepared write closed when its exact skill binding is revoked before commit', async () => {
+    let authorized = true;
+    let executions = 0;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      actionGroups: new Set(['update']),
+      permissionCheck: () => ok('update'),
+      execute: async () => {
+        executions++;
+        return ok({ result: 'unexpected' });
+      },
+    }));
+    const permissions = makePermissionService(makeAllowedPerm('fakeTool', ['update']));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const approvals = makeLocalApprovals(executor, undefined, undefined, {
+      permissions,
+      skillCatalog: {
+        authorizesTool: async () => authorized,
+      } as unknown as SkillCatalogService,
+    });
+    const prepared = await approvals.prepare({
+      member,
+      skillId: 'allowed-skill',
+      toolId: 'fakeTool',
+      args: { query: 'bound write' },
+    });
+    authorized = false;
+
+    const committed = await approvals.commit({
+      member,
+      intentId: (prepared.data as any).intentId,
+    });
+
+    assert.equal(committed.status, 'permission_denied');
+    assert.equal(executions, 0);
   });
 
   it('returns deterministic Google Workspace and Zoho presentation payloads for the UI registry', async () => {
@@ -1211,6 +1283,7 @@ describe('LocalApprovalIntentService', () => {
 
     const gmail = await approvals.prepare({
       member,
+      skillId: 'allowed-skill',
       toolId: 'googleGmail',
       args: {
         connectionId: 'google-1',
@@ -1242,6 +1315,7 @@ describe('LocalApprovalIntentService', () => {
 
     const zoho = await approvals.prepare({
       member,
+      skillId: 'allowed-skill',
       toolId: 'zohoCrm',
       args: {
         connectionId: 'zoho-1',
@@ -1279,6 +1353,7 @@ describe('LocalApprovalIntentService', () => {
     const prepared = await approvals.prepare({
       member,
       departmentId: 'dept-1',
+      skillId: 'allowed-skill',
       toolId: 'fakeTool',
       args: { query: 'bound' },
     });
@@ -1327,6 +1402,7 @@ describe('LocalApprovalIntentService', () => {
     };
     const prepared = await approvals.prepare({
       member,
+      skillId: 'allowed-skill',
       toolId: 'fakeTool',
       args: { query: 'isolated' },
       execution,
@@ -1366,6 +1442,7 @@ describe('LocalApprovalIntentService', () => {
     const approvals = makeLocalApprovals(executor, clock, 1_000);
     const prepared = await approvals.prepare({
       member,
+      skillId: 'allowed-skill',
       toolId: 'fakeTool',
       args: { query: 'expire me' },
     });
@@ -1400,7 +1477,12 @@ describe('LocalApprovalIntentService', () => {
       clock: { now: () => new Date(), nowMs: () => Date.now() },
     });
     const approvals = makeLocalApprovals(executor);
-    const prepared = await approvals.prepare({ member, toolId: 'fakeTool', args: { query: 'once' } });
+    const prepared = await approvals.prepare({
+      member,
+      skillId: 'allowed-skill',
+      toolId: 'fakeTool',
+      args: { query: 'once' },
+    });
     const intentId = (prepared.data as any).intentId as string;
 
     const firstCommit = approvals.commit({ member, intentId });
@@ -1439,6 +1521,7 @@ describe('LocalApprovalIntentService', () => {
     const prepared = await approvals.prepare({
       member,
       departmentId: 'dept-1',
+      skillId: 'allowed-skill',
       toolId: 'fakeTool',
       args: { query: 'manager-gated' },
     });
@@ -1483,6 +1566,17 @@ describe('GatewayDispatcher', () => {
     toolIds: [],
     revision: 1,
   };
+  const routerSkill: CatalogSkill = {
+    id: 'work-router',
+    slug: 'work-router',
+    name: 'Allowed Work Router',
+    description: 'Route allowed company work to an exact specialist.',
+    instructions: 'Load allowed-skill for fakeTool work.',
+    toolIds: [],
+    aliases: [],
+    tags: ['router'],
+    revision: 1,
+  };
 
   function makeDispatcher(perm = makeAllowedPerm('fakeTool', ['read'])) {
     const registry = new ToolRegistry();
@@ -1498,7 +1592,7 @@ describe('GatewayDispatcher', () => {
     return new GatewayDispatcher({
       permissions: makePermissionService(perm),
       toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([allowedSkill, blockedSkill, instructionOnlySkill]),
+      skillCatalog: makeSkillCatalog([routerSkill, allowedSkill, blockedSkill, instructionOnlySkill]),
       toolExecutor,
       logger: noopLogger,
     });
@@ -1862,7 +1956,7 @@ describe('GatewayDispatcher', () => {
 
     const invocation = await dispatcher.dispatch({
       op: 'tools.invoke',
-      payload: { toolId: 'airtable', args: {} },
+      payload: { skillId: 'airtable-router', toolId: 'airtable', args: {} },
     }, member);
     assert.equal(invocation.ok, false);
     assert.equal(invocation.status, 'unknown_tool');
@@ -1933,7 +2027,11 @@ describe('GatewayDispatcher', () => {
     const dispatcher = new GatewayDispatcher({
       permissions,
       toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([]),
+      skillCatalog: makeSkillCatalog([{
+        id: 'share-memory', slug: 'share-memory', name: 'Share Memory',
+        description: 'Review and publish durable facts.', instructions: 'Check memory authority.',
+        toolIds: ['memoryPublishing'], revision: 1,
+      }]),
       toolExecutor,
       logger: noopLogger,
     });
@@ -1941,7 +2039,7 @@ describe('GatewayDispatcher', () => {
     const result = await dispatcher.dispatch({
       op: 'tools.invoke',
       departmentId: 'dept-1',
-      payload: { toolId: 'memoryPublishing', args: { operation: 'check_authority' } },
+      payload: { skillId: 'share-memory', toolId: 'memoryPublishing', args: { operation: 'check_authority' } },
     }, { ...member, aiRole: 'COMPANY_ADMIN' });
 
     assert.equal(result.ok, true);
@@ -2002,7 +2100,7 @@ describe('GatewayDispatcher', () => {
 
     const skills = await dispatcher.dispatch({ op: 'skills.list', departmentId: 'dept-1' }, member);
     assert.equal(skills.ok, true);
-    assert.ok((skills.data as any).skills.some((skill: { id: string }) => skill.id === 'share-memory'));
+    assert.equal((skills.data as any).skills.some((skill: { id: string }) => skill.id === 'share-memory'), false);
   });
 
   it('keeps Share Memory discoverable and reports storage unavailable when Mem0 is disabled', async () => {
@@ -2040,11 +2138,11 @@ describe('GatewayDispatcher', () => {
 
     const skills = await dispatcher.dispatch({ op: 'skills.list' }, member);
     assert.equal(skills.ok, true);
-    assert.equal((skills.data as any).skills.some((skill: { id: string }) => skill.id === 'share-memory'), true);
+    assert.equal((skills.data as any).skills.some((skill: { id: string }) => skill.id === 'share-memory'), false);
 
     const authority = await dispatcher.dispatch({
       op: 'tools.invoke',
-      payload: { toolId: 'memoryPublishing', args: { operation: 'check_authority' } },
+      payload: { skillId: 'share-memory', toolId: 'memoryPublishing', args: { operation: 'check_authority' } },
     }, member);
     assert.equal(authority.ok, true);
     assert.deepEqual((authority.data as any).result, {
@@ -2072,7 +2170,11 @@ describe('GatewayDispatcher', () => {
     const dispatcher = new GatewayDispatcher({
       permissions,
       toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([]),
+      skillCatalog: makeSkillCatalog([{
+        id: 'recall-memory', slug: 'recall-memory', name: 'Recall Memory',
+        description: 'Recall scoped memory.', instructions: 'Use memoryRecall.',
+        toolIds: ['memoryRecall'], revision: 1,
+      }]),
       toolExecutor: new ToolExecutor({
         toolRegistry: registry,
         permissions,
@@ -2107,7 +2209,7 @@ describe('GatewayDispatcher', () => {
       // This generic gateway field is model-controlled; it must not narrow or
       // redirect recall away from the server-derived active memberships.
       departmentId: 'dept-model-supplied',
-      payload: { toolId: 'memoryRecall', args: { query: 'reporting convention', departmentPreferences: ['Sales'] } },
+      payload: { skillId: 'recall-memory', toolId: 'memoryRecall', args: { query: 'reporting convention', departmentPreferences: ['Sales'] } },
     }, member);
     assert.equal(recalled.ok, true);
     assert.deepEqual((recalled.data as any).result, {
@@ -2139,10 +2241,16 @@ describe('GatewayDispatcher', () => {
     let resolutions = 0;
     const permissions = makeScopedPermissionService(() => {
       resolutions++;
-      return resolutions === 1
+      return resolutions <= 2
         ? makeAllowedPerm('memoryPublishing', ['create'])
         : makeDeniedPerm();
     });
+    const memorySkill: CatalogSkill = {
+      ...allowedSkill,
+      id: 'memory-skill',
+      toolIds: ['memoryPublishing'],
+    };
+    const skillCatalog = makeSkillCatalog([memorySkill]);
     const toolExecutor = new ToolExecutor({
       toolRegistry: registry,
       permissions,
@@ -2152,9 +2260,12 @@ describe('GatewayDispatcher', () => {
     const dispatcher = new GatewayDispatcher({
       permissions,
       toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([]),
+      skillCatalog,
       toolExecutor,
-      localApprovalIntents: makeLocalApprovals(toolExecutor),
+      localApprovalIntents: makeLocalApprovals(toolExecutor, undefined, undefined, {
+        permissions,
+        skillCatalog,
+      }),
       logger: noopLogger,
     });
     const admin = { ...member, aiRole: 'COMPANY_ADMIN' };
@@ -2162,6 +2273,7 @@ describe('GatewayDispatcher', () => {
     const prepared = await dispatcher.dispatch({
       op: 'tools.prepare',
       payload: {
+        skillId: 'memory-skill',
         toolId: 'memoryPublishing',
         args: {
           operation: 'publish',
@@ -2179,7 +2291,7 @@ describe('GatewayDispatcher', () => {
 
     assert.equal(committed.ok, false);
     assert.equal(committed.status, 'permission_denied');
-    assert.equal(resolutions, 2);
+    assert.equal(resolutions, 4);
     assert.equal(writes.length, 0);
   });
 
@@ -2189,6 +2301,12 @@ describe('GatewayDispatcher', () => {
       mem0: { rememberExplicitBatch: async () => {} },
     }));
     const permissions = makePermissionService(makeAllowedPerm('memoryPublishing', ['create']));
+    const memorySkill: CatalogSkill = {
+      ...allowedSkill,
+      id: 'memory-skill',
+      toolIds: ['memoryPublishing'],
+    };
+    const skillCatalog = makeSkillCatalog([memorySkill]);
     const toolExecutor = new ToolExecutor({
       toolRegistry: registry,
       permissions,
@@ -2198,7 +2316,7 @@ describe('GatewayDispatcher', () => {
     const dispatcher = new GatewayDispatcher({
       permissions,
       toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([]),
+      skillCatalog,
       toolExecutor,
       localApprovalIntents: makeLocalApprovals(toolExecutor),
       logger: noopLogger,
@@ -2208,6 +2326,7 @@ describe('GatewayDispatcher', () => {
       op: 'tools.prepare',
       departmentId: 'dept-selected',
       payload: {
+        skillId: 'memory-skill',
         toolId: 'memoryPublishing',
         args: {
           operation: 'publish',
@@ -2259,10 +2378,10 @@ describe('GatewayDispatcher', () => {
     assert.equal(result.ok, true);
     const data = result.data as {
       nextStep: string;
-      skills: Array<{ id: string; score: number; toolIds: string[] }>;
+      skills: Array<{ id: string; score: number }>;
     };
     assert.match(data.nextStep, /skills\.get/);
-    assert.ok(data.skills.some((s) => s.id === 'allowed-skill' && s.score > 0));
+    assert.ok(data.skills.some((s) => s.id === 'work-router' && s.score > 0));
     assert.equal(data.skills.some((s) => s.id === 'blocked-skill'), false);
   });
 
@@ -2281,7 +2400,7 @@ describe('GatewayDispatcher', () => {
     const dispatcher = makeDispatcher();
     const result = await dispatcher.dispatch({
       op: 'tools.invoke',
-      payload: { toolId: 'fakeTool', args: { query: 'gateway' } },
+      payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'gateway' } },
     }, member);
 
     assert.equal(result.ok, true);
@@ -2309,7 +2428,7 @@ describe('GatewayDispatcher', () => {
     const dispatcher = new GatewayDispatcher({
       permissions,
       toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([]),
+      skillCatalog: makeSkillCatalog([allowedSkill]),
       toolExecutor,
       localApprovalIntents: makeLocalApprovals(toolExecutor),
       logger: noopLogger,
@@ -2317,7 +2436,7 @@ describe('GatewayDispatcher', () => {
 
     const bypass = await dispatcher.dispatch({
       op: 'tools.invoke',
-      payload: { toolId: 'fakeTool', args: { query: 'write' } },
+      payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'write' } },
     }, member);
     assert.equal(bypass.status, 'local_approval_required');
     assert.equal(bypass.ok, false);
@@ -2373,7 +2492,7 @@ describe('GatewayDispatcher', () => {
 
     const invoked = await dispatcher.dispatch({
       op: 'tools.invoke',
-      payload: { toolId: 'webSearch', args: { query: 'Divo gateway search', limit: 1 } },
+      payload: { skillId: 'research', toolId: 'webSearch', args: { query: 'Divo gateway search', limit: 1 } },
     }, member);
 
     assert.equal(invoked.ok, true);
@@ -2468,16 +2587,22 @@ describe('GatewayDispatcher', () => {
     ].map(([id, slug, name, toolId]) => ({
       id, slug, name, description: `${name} specialist`, instructions: `${name} recipe`, toolIds: [toolId], revision: 3,
     }));
+    const googleRouter: CatalogSkill = {
+      id: 'google-router-id', slug: 'google-workspace-router', name: 'Google Workspace Router',
+      description: 'Routes Google Workspace work.', instructions: 'Load exact Google product specialists.',
+      toolIds: [], revision: 1,
+    };
+    const visibleSkills = [googleRouter, ...specialists];
     const registry = new ToolRegistry();
     const dispatcher = new GatewayDispatcher({
       permissions: makePermissionService(googlePermission),
       toolRegistry: registry,
-      skillCatalog: makeSkillCatalog(specialists),
+      skillCatalog: makeSkillCatalog(visibleSkills),
       toolExecutor: new ToolExecutor({
         toolRegistry: registry, permissions: makePermissionService(googlePermission), logger: noopLogger,
         clock: { now: () => new Date(), nowMs: () => Date.now() },
       }),
-      skillAccessEnforcement: { listGrantedSkillIds: async () => new Set(specialists.map((skill) => skill.id)) },
+      skillAccessEnforcement: { listGrantedSkillIds: async () => new Set(visibleSkills.map((skill) => skill.id)) },
       logger: noopLogger,
     });
 
@@ -2489,11 +2614,16 @@ describe('GatewayDispatcher', () => {
     }, member);
 
     assert.equal(result.ok, true);
-    const plan = (result.data as { googleVendorOnboarding: { status: 'ready'; plan: { connection: { status: string }; phases: Array<{ skillId: string; requiredActions: string[]; skill?: { instructions: string } }> } } }).googleVendorOnboarding.plan;
+    const plan = (result.data as { googleVendorOnboarding: { status: 'ready'; plan: { parent: { id: string; instructions: string }; connection: { status: string }; phases: Array<{ skillId: string; requiredActions: string[]; skill?: { instructions: string } }> } } }).googleVendorOnboarding.plan;
+    assert.deepEqual(plan.parent, {
+      id: 'google-router-id',
+      name: 'Google Workspace Router',
+      description: 'Routes Google Workspace work.',
+      instructions: 'Load exact Google product specialists.',
+    });
     assert.deepEqual(plan.phases.map((phase) => phase.skillId), ['gmail-id', 'contacts-id', 'docs-id', 'sheets-id']);
     assert.deepEqual(plan.phases.map((phase) => phase.requiredActions), [['read'], ['read'], ['create'], ['create', 'update']]);
-    assert.equal(plan.phases[0]?.skill?.instructions, 'Gmail recipe');
-    assert.equal(plan.phases.slice(1).every((phase) => phase.skill === undefined), true);
+    assert.equal(plan.phases.every((phase) => phase.skill === undefined), true);
     assert.deepEqual(plan.connection, {
       status: 'google_workspace_connection_selection_required',
       message: 'Before the first executing phase, use connections.list to obtain one exact Google connectionId. Never choose a model default.',
@@ -2517,8 +2647,13 @@ describe('GatewayDispatcher', () => {
       id: `${service}-id`, slug: `google-${service}`, name: service, description: service,
       instructions: service, toolIds: [`google${service === 'gmail' ? 'Gmail' : service[0]!.toUpperCase() + service.slice(1)}`], revision: 1,
     })) as CatalogSkill[];
+    const googleRouter = {
+      id: 'google-router-id', slug: 'google-workspace-router', name: 'Google Workspace Router',
+      description: 'Routes Google Workspace work.', instructions: 'Load exact Google product specialists.',
+      toolIds: [], revision: 1,
+    } as CatalogSkill;
     const dispatcher = new GatewayDispatcher({
-      permissions: makePermissionService(insufficient), toolRegistry: new ToolRegistry(), skillCatalog: makeSkillCatalog(specialists),
+      permissions: makePermissionService(insufficient), toolRegistry: new ToolRegistry(), skillCatalog: makeSkillCatalog([googleRouter, ...specialists]),
       toolExecutor: new ToolExecutor({ toolRegistry: new ToolRegistry(), permissions: makePermissionService(insufficient), logger: noopLogger, clock: { now: () => new Date(), nowMs: () => Date.now() } }),
       logger: noopLogger,
     });
@@ -2551,16 +2686,22 @@ describe('GatewayDispatcher', () => {
     ].map(([id, slug, name, toolId]) => ({
       id, slug, name, description: `${name} specialist`, instructions: `${name} recipe`, toolIds: [toolId], revision: 3,
     }));
+    const googleRouter: CatalogSkill = {
+      id: 'google-router-id', slug: 'google-workspace-router', name: 'Google Workspace Router',
+      description: 'Routes Google Workspace work.', instructions: 'Load exact Google product specialists.',
+      toolIds: [], revision: 1,
+    };
+    const visibleSkills = [googleRouter, ...specialists];
     const registry = new ToolRegistry();
     const dispatcher = new GatewayDispatcher({
       permissions: makePermissionService(googlePermission),
       toolRegistry: registry,
-      skillCatalog: makeSkillCatalog(specialists),
+      skillCatalog: makeSkillCatalog(visibleSkills),
       toolExecutor: new ToolExecutor({
         toolRegistry: registry, permissions: makePermissionService(googlePermission), logger: noopLogger,
         clock: { now: () => new Date(), nowMs: () => Date.now() },
       }),
-      skillAccessEnforcement: { listGrantedSkillIds: async () => new Set(specialists.map((skill) => skill.id)) },
+      skillAccessEnforcement: { listGrantedSkillIds: async () => new Set(visibleSkills.map((skill) => skill.id)) },
       logger: noopLogger,
     });
 
@@ -2582,8 +2723,7 @@ describe('GatewayDispatcher', () => {
     assert.deepEqual(plan.phases.map((phase) => phase.requiredActions), [
       ['read'], ['read'], ['create'], ['create'],
     ]);
-    assert.equal(plan.phases[0]?.skill !== undefined, true);
-    assert.equal(plan.phases.slice(1).every((phase) => phase.skill === undefined), true);
+    assert.equal(plan.phases.every((phase) => phase.skill === undefined), true);
   });
 
   it('batch-preflights invocation args and permissions without execution or local approval intents', async () => {

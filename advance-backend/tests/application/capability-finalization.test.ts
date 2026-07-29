@@ -17,9 +17,11 @@ import {
   toolIdsForFamily,
 } from '../../src/domain/tools/tool-id';
 import {
+  buildHarnessTextMessage,
   parseEngineHarnessArgs,
   resolveHarnessOpenId,
   waitForDataExports,
+  waitForGoogleOAuthContinuation,
 } from '../../scripts/run-engine-harness';
 import {
   REGISTERED_TOOL_SEEDS,
@@ -167,6 +169,7 @@ describe('Lark engine harness controls', () => {
     assert.equal(defaults.model, 'flash');
     assert.equal(defaults.trace, true);
     assert.equal(defaults.freshContext, false);
+    assert.equal(defaults.oauthE2e, false);
     assert.equal(defaults.groupReplyMode, 'threaded');
     assert.equal(defaults.threadRootMessageId, undefined);
     assert.deepEqual(
@@ -192,6 +195,7 @@ describe('Lark engine harness controls', () => {
         fullDebug: false,
         freshContext: true,
         allowImpersonation: true,
+        oauthE2e: false,
         help: false,
       },
     );
@@ -225,6 +229,14 @@ describe('Lark engine harness controls', () => {
     assert.throws(
       () => parseEngineHarnessArgs(['--group', '--fresh-context', '--thread-root', 'om_root'], {}),
       /cannot be combined with --fresh-context/,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--group', '--oauth-e2e'], {}),
+      /requires a p2p Lark chat/,
+    );
+    assert.equal(
+      parseEngineHarnessArgs(['--oauth-e2e'], {}).oauthE2e,
+      true,
     );
     assert.throws(
       () => parseEngineHarnessArgs(['--chat-id', 'oc_untrusted'], {}),
@@ -269,6 +281,12 @@ describe('Lark engine harness controls', () => {
     );
   });
 
+  it('serializes Lark text messages using the adapter wire format', () => {
+    const message = JSON.parse(buildHarnessTextMessage('hello'));
+    assert.equal(message.msg_type, 'text');
+    assert.deepEqual(JSON.parse(message.content), { text: 'hello' });
+  });
+
   it('extends the export wait while row progress continues and rejects a stalled job', async () => {
     let now = 0;
     let polls = 0;
@@ -303,5 +321,55 @@ describe('Lark engine harness controls', () => {
       }),
       /no queue or row progress/i,
     );
+  });
+
+  it('monitors OAuth through one fresh continuation without holding the first run', async () => {
+    let reads = 0;
+    let clock = 0;
+    const progress: string[] = [];
+    const result = await waitForGoogleOAuthContinuation({
+      connectionAuthorizationIntent: {
+        findFirst: async () => {
+          reads += 1;
+          if (reads === 1) return null;
+          if (reads === 2) {
+            return {
+              id: 'intent-1',
+              status: 'pending',
+              continuationStatus: 'blocked',
+              continuationRunId: null,
+              failureCode: null,
+            };
+          }
+          return {
+            id: 'intent-1',
+            status: 'connected',
+            continuationStatus: 'completed',
+            continuationRunId: 'continuation-request-1',
+            failureCode: null,
+          };
+        },
+      },
+    }, {
+      companyId: 'company-1',
+      userId: 'user-1',
+      originalMessageId: 'om_original',
+    }, {
+      timeoutMs: 10_000,
+      pollMs: 100,
+      now: () => clock,
+      sleep: async ms => {
+        clock += ms;
+      },
+      onProgress: message => progress.push(message),
+    });
+
+    assert.deepEqual(result, {
+      intentId: 'intent-1',
+      continuationRunId: 'continuation-request-1',
+    });
+    assert.equal(reads, 3);
+    assert.match(progress[0] ?? '', /authorization=pending/);
+    assert.match(progress[1] ?? '', /continuation=completed/);
   });
 });

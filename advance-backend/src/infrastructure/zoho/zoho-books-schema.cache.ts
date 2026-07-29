@@ -1,3 +1,5 @@
+import { ZOHO_BOOKS_FIELDS } from '../../shared/zoho-books-row-contract';
+
 /**
  * Zoho Books field registry — static, global, zero runtime cost.
  *
@@ -214,7 +216,7 @@ export function injectSyntheticFields(
 ): Array<Record<string, unknown>> {
   return items.map(item => {
     const raw = item['currency_code'] ?? item['currency'] ?? '';
-    const currency = typeof raw === 'string' && raw.trim() ? raw.trim().toUpperCase() : 'INR';
+    const currency = typeof raw === 'string' && raw.trim() ? raw.trim().toUpperCase() : 'UNKNOWN';
 
     const amount  = Number(item[schema.primaryAmount] ?? 0);
     const balance = schema.balanceField
@@ -223,20 +225,27 @@ export function injectSyntheticFields(
 
     const result: Record<string, unknown> = {
       ...item,
-      _amount:   amount,
-      _total:    amount,
-      _balance:  balance,
-      _date:     String(item[schema.primaryDate] ?? ''),
-      _id:       String(item[schema.primaryId]   ?? ''),
-      _currency: currency,
+      [ZOHO_BOOKS_FIELDS.amount]:   amount,
+      [ZOHO_BOOKS_FIELDS.total]:    amount,
+      [ZOHO_BOOKS_FIELDS.balance]:  balance,
+      [ZOHO_BOOKS_FIELDS.date]:     String(item[schema.primaryDate] ?? ''),
+      [ZOHO_BOOKS_FIELDS.id]:       String(item[schema.primaryId]   ?? ''),
+      [ZOHO_BOOKS_FIELDS.status]:   schema.statusField ? String(item[schema.statusField] ?? '') : '',
+      [ZOHO_BOOKS_FIELDS.currency]: currency,
     };
 
     if (converter) {
-      result._amount_inr  = toBaseINR(item, amount, currency, schema.primaryAmount, converter);
-      result._total_inr   = result._amount_inr;
-      result._balance_inr = schema.balanceField
+      result[ZOHO_BOOKS_FIELDS.amountInr] = toBaseINR(
+        item,
+        amount,
+        currency,
+        schema.primaryAmount,
+        converter,
+      );
+      result[ZOHO_BOOKS_FIELDS.totalInr] = result[ZOHO_BOOKS_FIELDS.amountInr];
+      result[ZOHO_BOOKS_FIELDS.balanceInr] = schema.balanceField
         ? toBaseINR(item, balance, currency, schema.balanceField, converter)
-        : result._amount_inr;
+        : result[ZOHO_BOOKS_FIELDS.amountInr];
     }
 
     return result;
@@ -304,11 +313,14 @@ export function toSchemaHint(
         : 'equals _amount_inr',
       _date:        'primary date field',
       _id:          'primary record ID',
-      _currency:    'ISO currency code of this record (e.g. "INR", "USD")',
+      _status:      schema.statusField
+        ? `status from ${schema.statusField}`
+        : 'empty string (this module has no status field)',
+      _currency:    'ISO currency code (e.g. "INR", "USD"), or UNKNOWN when the Zoho list response omits it; never treat UNKNOWN as INR',
     },
     ...(sampleRecord ? { sampleFieldNames: Object.keys(sampleRecord).slice(0, 20) } : {}),
     currencyUtilities: {
-      note:          'PREFER using _amount_inr / _balance_inr / _total_inr for INR sums — they are pre-converted and guaranteed correct.',
+      note:          'PREFER using _amount_inr / _balance_inr / _total_inr for INR sums — they are pre-converted and guaranteed correct. _currency=UNKNOWN means Zoho omitted original-currency evidence from the list record.',
       toINR:         'toINR(amount, item._currency) — manual convert to INR. Only needed if computing a custom field not pre-converted.',
       fromINR:       'fromINR(amount, targetCode) — convert INR to target currency (e.g. for "show in USD")',
       convert:       'convert(amount, from, to) — convert between any two currencies',

@@ -13,7 +13,6 @@ import { createLarkDocTool } from '../../src/application/orchestration/tools/fam
 import { createLarkMeetingTool } from '../../src/application/orchestration/tools/families/lark-meeting.tool.ts';
 import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
 import { createLarkTaskTool } from '../../src/application/orchestration/tools/families/lark-task.tool.ts';
-import { createDefaultSkillRegistry } from '../../src/application/skills/index.ts';
 
 function operationOptions(schema: unknown): readonly string[] {
   type SchemaNode = {
@@ -45,10 +44,6 @@ describe('Lark system skill provisioning', () => {
       'larkTask',
     ]);
     assert.equal(LARK_SYSTEM_SKILLS.length, 9);
-  });
-
-  it('keeps Lark skills out of the legacy in-memory registry', () => {
-    assert.equal(createDefaultSkillRegistry().getById('lark'), null);
   });
 
   it('routes through a tool-free top-level skill before the exact family recipe', () => {

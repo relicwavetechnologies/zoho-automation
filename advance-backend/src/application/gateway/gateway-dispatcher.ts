@@ -34,6 +34,7 @@ import {
   teachContextGetPayloadSchema,
   skillsGetPayloadSchema,
   skillsSearchPayloadSchema,
+  toolInvocationPayloadSchema,
   toolsInvokePayloadSchema,
   toolsPreflightPayloadSchema,
   toolsCommitPayloadSchema,
@@ -317,12 +318,11 @@ export class GatewayDispatcher {
       ...(departmentId ? { departmentId } : {}),
       permission: discoveryPerm,
       ...(grantedSkillIds ? { grantedSkillIds } : {}),
-    })).map((skill) => ({
+    })).filter((skill) => skill.tags?.includes('router')).map((skill) => ({
       id: skill.id,
       slug: skill.slug,
       name: skill.name,
       description: skill.description,
-      toolIds: [...skill.toolIds],
       revision: skill.revision,
     }));
 
@@ -354,7 +354,7 @@ export class GatewayDispatcher {
 
     const discoveryPerm = withGatewayDiscoveryPermissions(perm);
     const grantedSkillIds = await this.grantedSkillIds(member);
-    const results = await this.deps.skillCatalog.searchVisible({
+    const results = await this.deps.skillCatalog.searchVisibleRouters({
       companyId: member.companyId,
       ...(departmentId ? { departmentId } : {}),
       permission: discoveryPerm,
@@ -369,20 +369,19 @@ export class GatewayDispatcher {
       queryLength: parsed.data.query.length,
       resultCount: results.length,
       registryRevision,
-      skillIds: results.map((result) => result.skill.id),
+      skillIds: results.map((result) => result.skillId),
     });
     return gatewaySuccess({
       query: parsed.data.query,
       registryRevision,
-      nextStep: 'Call skills.get with the selected skillId before invoking backend tools.',
+      nextStep: 'Load one exact router with skills.get, then load the specialist it identifies before invoking backend tools.',
       skills: results.map((result) => ({
-        id: result.skill.id,
-        slug: result.skill.slug,
-        name: result.skill.name,
-        description: result.skill.description,
+        id: result.skillId,
+        slug: result.slug,
+        name: result.name,
+        description: result.description,
         score: result.score,
-        toolIds: [...result.skill.toolIds],
-        revision: result.skill.revision,
+        matchedTerms: [...result.matchedTerms],
       })),
     });
   }
@@ -539,6 +538,7 @@ export class GatewayDispatcher {
       query: parsed.data.query,
       ...(parsed.data.variants ? { variants: parsed.data.variants } : {}),
       ...(parsed.data.limit ? { limit: parsed.data.limit } : {}),
+      routerSearchOnly: true,
     });
 
     this.recordSkillAudit(member, 'gateway.work.resolve', 'success', {
@@ -554,11 +554,7 @@ export class GatewayDispatcher {
       member,
       permission,
       registryRevision: resolution.registryRevision,
-      query: parsed.data.query,
-      toolIds: [
-        ...resolution.persona.linkedSkills.flatMap(candidate => candidate.skill.toolIds),
-        ...resolution.additionalSkills.flatMap(candidate => candidate.skill.toolIds),
-      ],
+      toolIds: [],
     });
     const googleVendorOnboarding = await this.resolveGoogleVendorOnboarding({
       member,
@@ -721,8 +717,29 @@ export class GatewayDispatcher {
         .join('; ');
       return gatewayFailure('bad_request', `Invalid tools.invoke payload — ${issues}`);
     }
+    if (!this.deps.toolRegistry.byId(asToolId(parsed.data.toolId))) {
+      return gatewayFailure('unknown_tool', `Unknown toolId: ${parsed.data.toolId}`);
+    }
+
+    const permission = await this.resolvePerm(member, departmentId);
+    if (!permission) return this.permissionDenied('Permission resolution failed');
+    const grantedSkillIds = await this.grantedSkillIds(member);
+    const authorized = await this.deps.skillCatalog.authorizesTool({
+      companyId: member.companyId,
+      ...(departmentId ? { departmentId } : {}),
+      permission: withGatewayDiscoveryPermissions(permission),
+      ...(grantedSkillIds ? { grantedSkillIds } : {}),
+      skillId: parsed.data.skillId,
+      toolId: parsed.data.toolId,
+    });
+    if (!authorized) {
+      return this.permissionDenied(
+        `Skill "${parsed.data.skillId}" does not authorize tool "${parsed.data.toolId}"`,
+      );
+    }
 
     this.deps.logger.info('gateway.tools.invoke', {
+      skillId: parsed.data.skillId,
       toolId: parsed.data.toolId,
       userId: member.userId,
       companyId: member.companyId,
@@ -748,7 +765,7 @@ export class GatewayDispatcher {
         return response;
       }
       const intent = await this.deps.localApprovalIntents.createIntentForPreparedInvocation(
-        input,
+        { ...input, skillId: parsed.data.skillId },
         prepared.data,
       );
       if (!intent.ok || !intent.data) {
@@ -814,10 +831,27 @@ export class GatewayDispatcher {
     if (!this.deps.localApprovalIntents) {
       return gatewayFailure('tool_error', 'Local approval intents are not configured');
     }
+    const permission = await this.resolvePerm(member, departmentId);
+    if (!permission) return this.permissionDenied('Permission resolution failed');
+    const grantedSkillIds = await this.grantedSkillIds(member);
+    const authorized = await this.deps.skillCatalog.authorizesTool({
+      companyId: member.companyId,
+      ...(departmentId ? { departmentId } : {}),
+      permission: withGatewayDiscoveryPermissions(permission),
+      ...(grantedSkillIds ? { grantedSkillIds } : {}),
+      skillId: parsed.data.skillId,
+      toolId: parsed.data.toolId,
+    });
+    if (!authorized) {
+      return this.permissionDenied(
+        `Skill "${parsed.data.skillId}" does not authorize tool "${parsed.data.toolId}"`,
+      );
+    }
 
     return this.deps.localApprovalIntents.prepare({
       member,
       ...(departmentId ? { departmentId } : {}),
+      skillId: parsed.data.skillId,
       toolId: parsed.data.toolId,
       args: parsed.data.args,
       ...(execution ? { execution } : {}),
@@ -862,6 +896,24 @@ export class GatewayDispatcher {
     }
     if (!this.deps.automationPlanService) {
       return gatewayFailure('tool_error', 'Automation plan approvals are not configured.');
+    }
+    const permission = await this.resolvePerm(member, departmentId);
+    if (!permission) return this.permissionDenied('Permission resolution failed');
+    const grantedSkillIds = await this.grantedSkillIds(member);
+    for (const invocation of parsed.data.invocations) {
+      const authorized = await this.deps.skillCatalog.authorizesTool({
+        companyId: member.companyId,
+        ...(departmentId ? { departmentId } : {}),
+        permission: withGatewayDiscoveryPermissions(permission),
+        ...(grantedSkillIds ? { grantedSkillIds } : {}),
+        skillId: invocation.skillId,
+        toolId: invocation.toolId,
+      });
+      if (!authorized) {
+        return this.permissionDenied(
+          `Skill "${invocation.skillId}" does not authorize tool "${invocation.toolId}"`,
+        );
+      }
     }
     return this.deps.automationPlanService.create({
       member,

@@ -1,24 +1,37 @@
+import { z } from 'zod';
 import type { CanonicalToolId } from '../../domain/tools/tool-id';
 import type { ZohoBooksModule } from '../../infrastructure/zoho/zoho-books-paginated.client';
 
 export const DATA_EXPORT_ROW_LIMIT = 5_000;
+const ZOHO_BOOKS_SOURCE_MODULES = [
+  'contacts', 'invoices', 'estimates', 'creditnotes', 'bills',
+  'salesorders', 'purchaseorders', 'customerpayments', 'vendorpayments',
+  'bankaccounts', 'banktransactions', 'expenses', 'items',
+] as const satisfies readonly ZohoBooksModule[];
 
-export type DataExportSource =
-  | {
-      readonly kind: 'airtable_records';
-      readonly connectionId: string;
-      readonly toolId: Extract<CanonicalToolId, 'airtableBase' | 'airtableRecords'>;
-      readonly nativeTool: 'list_records_for_table' | 'search_records';
-      readonly input: Readonly<Record<string, unknown>>;
-    }
-  | {
-      readonly kind: 'zoho_books';
-      readonly connectionId: string;
-      readonly module: ZohoBooksModule;
-      readonly organizationId?: string;
-      readonly filters?: Readonly<Record<string, unknown>>;
-      readonly query?: string;
-    };
+export const datasetSourceSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('airtable_records'),
+    connectionId: z.string().uuid(),
+    toolId: z.enum(['airtableBase', 'airtableRecords']),
+    nativeTool: z.enum(['list_records_for_table', 'search_records']),
+    input: z.record(z.unknown()),
+  }).strict(),
+  z.object({
+    kind: z.literal('zoho_books'),
+    connectionId: z.string().uuid(),
+    module: z.enum(ZOHO_BOOKS_SOURCE_MODULES),
+    organizationId: z.string().optional(),
+    filters: z.record(z.unknown()).optional(),
+    query: z.string().optional(),
+  }).strict(),
+]);
+
+export type DataExportSource = z.infer<typeof datasetSourceSchema>;
+
+export function datasetSourceToolId(source: DataExportSource): CanonicalToolId {
+  return source.kind === 'airtable_records' ? source.toolId : 'zohoBooks';
+}
 
 export interface DataExportTransform {
   /**
@@ -77,7 +90,7 @@ export interface DataExportSourceAdapter<Source extends DataExportSource = DataE
   read(source: Source, context: DataExportSourceContext): AsyncIterable<DataExportPage>;
 }
 
-export class DataExportSourceRegistry {
+export class DatasetSourceRegistry {
   private readonly adapters = new Map<DataExportSource['kind'], DataExportSourceAdapter>();
 
   register<Source extends DataExportSource>(adapter: DataExportSourceAdapter<Source>): void {
@@ -90,3 +103,6 @@ export class DataExportSourceRegistry {
     return adapter;
   }
 }
+
+/** @deprecated Use DatasetSourceRegistry. Kept for existing export wiring. */
+export class DataExportSourceRegistry extends DatasetSourceRegistry {}

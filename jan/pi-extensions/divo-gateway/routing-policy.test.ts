@@ -18,12 +18,11 @@ const ROUTER_SKILL = readFileSync(
 
 describe("Divo normal-session routing policy", () => {
 	it("routes an ordinary current-information comparison directly to webSearch", () => {
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /direct core capability/i);
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /call webSearch directly/i);
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /Do not call divo_skill_resolve/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /load the exact Web Search DB skill/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /then call webSearch/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /Do not run fuzzy discovery/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /cheapest.*do not by themselves/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /only when the user explicitly requests thorough/i);
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /If no exact recipe is identified.*without fuzzy skill discovery/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /call webSearch directly/i);
 		assert.doesNotMatch(
 			DIVO_COMPANY_PERSONA_PROMPT,
@@ -106,7 +105,7 @@ describe("Divo normal-session routing policy", () => {
 			/summaryForChat/i,
 		);
 		// Searching remains a direct capability; research words alone do not force an artifact.
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /call webSearch directly/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /then call webSearch/i);
 		assert.match(
 			DIVO_DIRECT_WEB_SEARCH_POLICY,
 			/do not by themselves make a request a specialized workflow/i,

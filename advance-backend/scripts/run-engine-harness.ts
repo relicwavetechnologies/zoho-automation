@@ -17,6 +17,7 @@
  *   pnpm tsx scripts/run-engine-harness.ts --group --thread-root om_x "follow-up prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --group --group-mode inline "your prompt"
  *   pnpm tsx scripts/run-engine-harness.ts --full-debug        # detailed latest-agent-run.log
+ *   pnpm tsx scripts/run-engine-harness.ts --oauth-e2e "read my latest Gmail"
  *
  * `--user` selects a DB-linked Lark identity by exact email, exact display
  * name, or open_id. It changes the authenticated principal, never exposes or
@@ -64,6 +65,7 @@ export interface EngineHarnessOptions {
   readonly fullDebug: boolean;
   readonly freshContext: boolean;
   readonly allowImpersonation: boolean;
+  readonly oauthE2e: boolean;
   readonly help: boolean;
 }
 
@@ -82,6 +84,7 @@ export function parseEngineHarnessArgs(
   let fullDebug = false;
   let freshContext = false;
   let allowImpersonation = false;
+  let oauthE2e = false;
   let help = false;
   const promptParts: string[] = [];
 
@@ -109,6 +112,10 @@ export function parseEngineHarnessArgs(
     }
     if (value === '--allow-impersonation') {
       allowImpersonation = true;
+      continue;
+    }
+    if (value === '--oauth-e2e') {
+      oauthE2e = true;
       continue;
     }
     if (value === '--group') {
@@ -175,6 +182,9 @@ export function parseEngineHarnessArgs(
   if (threadRootMessageId && freshContext) {
     throw new Error('--thread-root cannot be combined with --fresh-context');
   }
+  if (oauthE2e && chatType !== 'p2p') {
+    throw new Error('--oauth-e2e currently requires a p2p Lark chat');
+  }
   const resolvedChatId = explicitChatId
     ?? (chatType === 'group'
       ? GROUP_CHAT_ID
@@ -201,6 +211,7 @@ export function parseEngineHarnessArgs(
     fullDebug,
     freshContext,
     allowImpersonation,
+    oauthE2e,
     help,
   };
 }
@@ -245,6 +256,13 @@ export async function resolveHarnessOpenId(
   return matches[0]!.larkOpenId!;
 }
 
+export function buildHarnessTextMessage(text: string): string {
+  return JSON.stringify({
+    msg_type: 'text',
+    content: JSON.stringify({ text }),
+  });
+}
+
 type HarnessTrace = {
   id: string;
   status: string;
@@ -275,6 +293,88 @@ type HarnessTrace = {
 };
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+export async function waitForGoogleOAuthContinuation(
+  db: {
+    connectionAuthorizationIntent: {
+      findFirst(input: unknown): Promise<{
+        id: string;
+        status: string;
+        continuationStatus: string;
+        continuationRunId: string | null;
+        failureCode: string | null;
+      } | null>;
+    };
+  },
+  input: {
+    companyId: string;
+    userId: string;
+    originalMessageId: string;
+  },
+  options: {
+    timeoutMs?: number;
+    pollMs?: number;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    onProgress?: (message: string) => void;
+  } = {},
+): Promise<{ intentId: string; continuationRunId: string }> {
+  const timeoutMs = options.timeoutMs ?? 10 * 60_000;
+  const pollMs = options.pollMs ?? 1_000;
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? delay;
+  const onProgress = options.onProgress ?? console.log;
+  const deadline = now() + timeoutMs;
+  let lastState = '';
+
+  while (now() < deadline) {
+    const intent = await db.connectionAuthorizationIntent.findFirst({
+      where: {
+        companyId: input.companyId,
+        userId: input.userId,
+        originalMessageId: input.originalMessageId,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        status: true,
+        continuationStatus: true,
+        continuationRunId: true,
+        failureCode: true,
+      },
+    });
+    if (intent) {
+      const state = `${intent.status}:${intent.continuationStatus}:${intent.failureCode ?? ''}`;
+      if (state !== lastState) {
+        lastState = state;
+        onProgress(
+          `google oauth lifecycle: intent=${intent.id} authorization=${intent.status} continuation=${intent.continuationStatus}`,
+        );
+      }
+      if (
+        intent.status === 'connected'
+        && intent.continuationStatus === 'completed'
+        && intent.continuationRunId
+      ) {
+        return {
+          intentId: intent.id,
+          continuationRunId: intent.continuationRunId,
+        };
+      }
+      if (
+        intent.status === 'failed'
+        || intent.status === 'expired'
+        || intent.continuationStatus === 'failed'
+      ) {
+        throw new Error(
+          `Google OAuth E2E failed: ${intent.failureCode ?? `${intent.status}/${intent.continuationStatus}`}`,
+        );
+      }
+    }
+    await sleep(pollMs);
+  }
+  throw new Error('Google OAuth E2E timed out waiting for the fresh continuation run.');
+}
 
 export async function waitForDataExports(
   queue: {
@@ -470,7 +570,7 @@ function installGeminiSignatureTrace() {
 async function main() {
   const options = parseEngineHarnessArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro] [--fresh-context] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [--full-debug] [prompt]');
+    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro] [--fresh-context] [--oauth-e2e] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [--full-debug] [prompt]');
     return;
   }
   if (options.debugSigs) installGeminiSignatureTrace();
@@ -484,6 +584,7 @@ async function main() {
   console.log(`user selector: ${options.userSelector}`);
   console.log(`delivery chatId: ${options.chatId}`);
   console.log(`fresh context: ${options.freshContext}`);
+  console.log(`oauth e2e: ${options.oauthE2e}`);
   console.log(`prompt: ${JSON.stringify(options.prompt)}`);
   console.log(`persisted trace: ${options.trace}`);
   console.log(`full debug: ${options.fullDebug}\n`);
@@ -516,6 +617,26 @@ async function main() {
   console.log(`identity: ${identity.displayName ?? identity.email ?? userOpenId} (${userOpenId})`);
   console.log(`principal: companyId=${identity.companyId} userId=${identity.userId} role=${identity.aiRole} dept=${identity.activeDepartmentId ?? '∅'}\n`);
 
+  const oauthBinding = options.oauthE2e
+    ? await prisma.larkTenantBinding.findFirst({
+        where: { companyId: identity.companyId, isActive: true },
+        select: { larkTenantKey: true },
+      })
+    : null;
+  if (options.oauthE2e && !oauthBinding) {
+    throw new Error('No active Lark tenant binding exists for the OAuth E2E target.');
+  }
+  const oauthSeed = options.oauthE2e
+    ? await larkAdapter.sendToChatId(
+        options.chatId,
+        buildHarnessTextMessage(`🧪 Google OAuth E2E\n${options.prompt}`),
+      )
+    : null;
+  if (oauthSeed && !oauthSeed.ok) throw oauthSeed.error;
+  if (oauthSeed?.ok) {
+    console.log(`seeded OAuth E2E request message: ${oauthSeed.value}`);
+  }
+
   // ── 2. Build IncomingMessage + RunContext exactly like the webhook ────────
   let threadRootMessageId = options.threadRootMessageId;
   let seededThread = false;
@@ -526,10 +647,7 @@ async function main() {
   ) {
     const seed = await larkAdapter.sendToChatId(
       options.chatId,
-      JSON.stringify({
-        msg_type: 'text',
-        content: JSON.stringify({ text: `🧪 Divo engine harness\n${options.prompt}` }),
-      }),
+      buildHarnessTextMessage(`🧪 Divo engine harness\n${options.prompt}`),
     );
     if (!seed.ok) throw seed.error;
     threadRootMessageId = seed.value;
@@ -538,7 +656,9 @@ async function main() {
   }
 
   const now = new Date();
-  const messageId = seededThread
+  const messageId = oauthSeed?.ok
+    ? oauthSeed.value
+    : seededThread
     ? threadRootMessageId!
     : `om_harness_${randomUUID()}`;
   const traceId   = asCorrelationId(`${messageId}-${now.getTime()}`);
@@ -580,6 +700,19 @@ async function main() {
     userExternalId: userOpenId,
     chatId:         options.chatId,
     ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
+    ...(options.oauthE2e && oauthBinding
+      ? {
+          connectionAuthorization: {
+            larkOpenId: userOpenId,
+            larkTenantKey: oauthBinding.larkTenantKey,
+            chatId: options.chatId,
+            chatType: options.chatType,
+            originalMessageId: messageId,
+            replyInThread: false,
+            originalRequest: options.prompt,
+          },
+        }
+      : {}),
   };
 
   const conversation: ConversationHandle = {
@@ -674,6 +807,25 @@ async function main() {
       traceId: String(traceId),
       requestedModelId,
     });
+  }
+  if (options.oauthE2e) {
+    console.log('\nComplete the Connect Google card in Lark; this harness is now monitoring durable backend state.');
+    const continuation = await waitForGoogleOAuthContinuation(prisma, {
+      companyId: identity.companyId,
+      userId: identity.userId,
+      originalMessageId: messageId,
+    });
+    console.log(
+      `fresh continuation completed: intent=${continuation.intentId} requestId=${continuation.continuationRunId}`,
+    );
+    if (options.trace) {
+      await printPersistedTrace({
+        db: prisma,
+        requestId: continuation.continuationRunId,
+        traceId: continuation.continuationRunId,
+        requestedModelId: LARK_MODEL_IDS.flash,
+      });
+    }
   }
   if (options.fullDebug) {
     console.log(`full debug log: ${join(process.cwd(), 'latest-agent-run.log')}`);
