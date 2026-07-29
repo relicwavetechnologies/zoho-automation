@@ -81,6 +81,18 @@ const sharedAirtableAccount: AccessibleConnection = {
   connectedAt: new Date('2026-07-25T19:17:26.583Z'),
 };
 
+const gmailSkill = {
+  id: 'skill-gmail',
+  slug: 'gmail',
+  name: 'Gmail',
+  description: 'Read and send mail.',
+  instructions: 'Use googleGmail.',
+  toolIds: [GMAIL_TOOL_ID],
+  aliases: [],
+  tags: ['google', 'gmail'],
+  revision: 1,
+};
+
 function bootstrapService(
   connections: AccessibleConnection[],
   toolId = GMAIL_TOOL_ID,
@@ -103,16 +115,16 @@ function bootstrapService(
 function discoverSkillTool(workBootstrap?: WorkBootstrapService) {
   return createGovernedDiscoverSkillTool({
     skillCatalog: {
-      searchVisible: async () => [{
-        skill: {
-          id: 'skill-gmail',
-          slug: 'gmail',
-          name: 'Gmail',
-          description: 'Read and send mail.',
-          instructions: 'Use googleGmail.',
-          toolIds: [GMAIL_TOOL_ID],
-        },
+      searchVisibleRouters: async () => [{
+        skillId: gmailSkill.id,
+        slug: gmailSkill.slug,
+        name: gmailSkill.name,
+        description: gmailSkill.description,
+        score: 1,
+        matchedTerms: ['mail'],
       }],
+      getVisible: async ({ skillId }: { skillId: string }) =>
+        skillId === gmailSkill.id ? gmailSkill : null,
     } as never,
     companyId: 'company-1',
     userId: 'anish',
@@ -125,9 +137,12 @@ function discoverSkillTool(workBootstrap?: WorkBootstrapService) {
 }
 
 async function runDiscovery(tool: ReturnType<typeof discoverSkillTool>): Promise<string> {
-  return await (tool as unknown as {
+  const executable = tool as unknown as {
     execute: (input: unknown) => Promise<string>;
-  }).execute({ query: 'read my mail' });
+  };
+  const candidates = await executable.execute({ query: 'read my mail' });
+  assert.match(candidates, /skill-gmail/);
+  return executable.execute({ query: 'read my mail', skillId: gmailSkill.id });
 }
 
 describe('Lark discovery carries the same account context desktop gets', () => {

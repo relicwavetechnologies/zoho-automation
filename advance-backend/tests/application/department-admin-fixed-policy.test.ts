@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { DepartmentAdminService, memberTemplateGrants } from '../../src/application/departments/department-admin.service.ts';
+import { ZOHO_FINANCE_SYSTEM_SKILLS } from '../../src/application/skills/zoho-finance-system-skills.ts';
 
 const logger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, child() { return this; } } as any;
 
@@ -86,11 +87,10 @@ describe('DepartmentAdminService fixed policy', () => {
     const result = await service.createDepartment('company-1', 'actor-1', { name: 'Finance' });
 
     assert.equal(result.ok, true);
-    assert.deepEqual(createdSkillSlugs, [
-      'finance-ops-core',
-      'zoho-books-bill',
-      'zoho-bill-notify-accounts',
-    ]);
+    assert.deepEqual(
+      createdSkillSlugs,
+      ZOHO_FINANCE_SYSTEM_SKILLS.map(skill => skill.slug),
+    );
   });
 
   it('invalidates the exact department permission cache after membership changes', async () => {
