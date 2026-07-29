@@ -69,13 +69,13 @@ Use this recipe only for rules triggered by future Gmail arrivals.
 
 ## Before creation
 
-1. Make the deterministic match exact enough: sender, recipient, subject text, body text, attachment presence, or a combination. If the user refers to "that email" without enough detail, load \`google-gmail\` and inspect a bounded matching message first.
+1. Make the deterministic match exact enough: sender, recipient, subject text, body text, attachment presence, or a combination. The \`from\` field accepts only one exact mailbox address such as \`alerts@example.com\` or one exact domain such as \`@example.com\`; never convert a brand, display name, or loose word such as "Anthropic" into a sender criterion. If the user gives only a brand/name or refers to "that email", ask whether they mean every message from an exact domain or only a specific mail series, or load \`google-gmail\` and inspect a bounded matching message first. Ask whether subject narrowing is wanted; never silently add or omit it when that changes the stated scope.
 2. Ground the destination. Never invent an email address or Lark chat ID. For another Lark chat, load \`lark-messaging\`, list accessible chats, and use one exact returned chat ID after the user identifies it. Use \`current_lark_chat\` only for the current conversation.
 3. Reuse an exact user-owned Google \`connectionId\` from the current run. If none is available, call \`mailAutomations\`; it will send the Connect Google card and the current run must end. OAuth completion starts a fresh run with the original request.
 
 ## Tool contract
 
-- Create: \`{"operation":"create","connectionId":"<UUID when needed>","name":"<short label>","match":{"from":"alerts@example.com","subjectContains":"OTP"},"destination":{"type":"email","email":"person@company.com"}}\`
+- Create: \`{"operation":"create","connectionId":"<UUID when needed>","name":"<short label>","match":{"from":"alerts@example.com","subjectContains":"OTP"},"destination":{"type":"email","email":"person@company.com"}}\`. For every sender at a domain, use \`{"from":"@example.com"}\`.
 - Deliver to this Lark conversation: destination \`{"type":"current_lark_chat"}\`.
 - Deliver to another grounded chat: destination \`{"type":"lark_chat","chatId":"<exact listed ID>"}\`.
 - List: \`{"operation":"list","includeInactive":false}\`.

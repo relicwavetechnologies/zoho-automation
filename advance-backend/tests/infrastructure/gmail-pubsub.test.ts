@@ -213,6 +213,118 @@ describe('Gmail Pub/Sub ingestion', () => {
       });
     });
 
+    it('normalizes a safe numeric Gmail history ID before admission', async () => {
+      let signal: any;
+      const app = express();
+      app.use(express.json());
+      app.use(createGmailPubSubRoutes({
+        verifier: { verifyAuthorizationHeader: async () => {} },
+        expectedSubscription: 'projects/test/subscriptions/gmail',
+        mailOpsRepo: {
+          signalMailbox: async input => {
+            signal = input;
+            return { ok: true, value: 1 };
+          },
+        } as any,
+        logger: noopLogger,
+      }));
+      const numericServer = app.listen(0);
+      await new Promise(resolve => numericServer.once('listening', resolve));
+      const address = numericServer.address();
+      if (!address || typeof address === 'string') throw new Error('No test port.');
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/push`, {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer verified',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            subscription: 'projects/test/subscriptions/gmail',
+            message: {
+              messageId: 'pubsub-numeric',
+              data: Buffer.from(JSON.stringify({
+                emailAddress: 'USER@example.com',
+                historyId: 700,
+              })).toString('base64url'),
+            },
+          }),
+        });
+
+        assert.equal(response.status, 204);
+        assert.deepEqual(signal, {
+          mailboxEmail: 'user@example.com',
+          historyId: '700',
+          messageId: 'pubsub-numeric',
+        });
+      } finally {
+        numericServer.close();
+      }
+    });
+
+    it('logs safe field diagnostics when a Gmail history ID is unsafe', async () => {
+      const warnings: Array<{
+        event: string;
+        data?: Record<string, unknown>;
+      }> = [];
+      const logger = {
+        ...noopLogger,
+        warn: (event: string, data?: Record<string, unknown>) => {
+          warnings.push({ event, data });
+        },
+        child: function() { return this; },
+      };
+      const app = express();
+      app.use(express.json());
+      app.use(createGmailPubSubRoutes({
+        verifier: { verifyAuthorizationHeader: async () => {} },
+        expectedSubscription: 'projects/test/subscriptions/gmail',
+        mailOpsRepo: {
+          signalMailbox: async () => {
+            throw new Error('Unsafe history IDs must not be admitted.');
+          },
+        } as any,
+        logger: logger as any,
+      }));
+      const invalidServer = app.listen(0);
+      await new Promise(resolve => invalidServer.once('listening', resolve));
+      const address = invalidServer.address();
+      if (!address || typeof address === 'string') throw new Error('No test port.');
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/push`, {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer verified',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            subscription: 'projects/test/subscriptions/gmail',
+            message: {
+              messageId: 'pubsub-unsafe',
+              data: Buffer.from(JSON.stringify({
+                emailAddress: 'user@example.com',
+                historyId: Number.MAX_SAFE_INTEGER + 1,
+              })).toString('base64url'),
+            },
+          }),
+        });
+
+        assert.equal(response.status, 400);
+        assert.deepEqual(warnings, [{
+          event: 'gmail.pubsub.notification_rejected',
+          data: {
+            error: 'Invalid Gmail Pub/Sub notification.',
+            messageId: 'pubsub-unsafe',
+            reason: 'invalid_history_id',
+            emailAddressType: 'string',
+            historyIdType: 'number',
+          },
+        }]);
+      } finally {
+        invalidServer.close();
+      }
+    });
+
     it('does not ack when durable mailbox admission fails', async () => {
       const app = express();
       app.use(express.json());

@@ -5,6 +5,10 @@ import {
   MAIL_OPS_SYSTEM_SKILLS,
   provisionMailOpsPermissionsForExistingCompanies,
 } from '../../src/application/skills/mail-ops-system-skills.ts';
+import {
+  mailRuleMatchSchema,
+  mailRuleMatches,
+} from '../../src/application/mail-ops/mail-rule.matcher.ts';
 import { makeCtx } from './tool-test.helpers.ts';
 
 const connectionId = '11111111-1111-4111-8111-111111111111';
@@ -62,6 +66,33 @@ describe('mailAutomations tool', () => {
       chatId: 'oc_current',
     });
     assert.match(createInput.dedupeKey, /^mail-rule:/);
+  });
+
+  it('requires an exact sender address or domain and ignores display-name spoofing', () => {
+    assert.equal(mailRuleMatchSchema.safeParse({ from: 'anthropic' }).success, false);
+    assert.equal(mailRuleMatchSchema.safeParse({ from: '@anthropic.com' }).success, true);
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      {
+        from: 'Anthropic <notice@anthropic.com>',
+        to: 'user@example.com',
+        subject: 'Account notice',
+        snippet: '',
+        bodyText: '',
+        hasAttachment: false,
+      },
+    ), true);
+    assert.equal(mailRuleMatches(
+      { from: '@anthropic.com' },
+      {
+        from: '"support@anthropic.com" <attacker@evil.example>',
+        to: 'user@example.com',
+        subject: 'Account notice',
+        snippet: '',
+        bodyText: '',
+        hasAttachment: false,
+      },
+    ), false);
   });
 
   it('starts deferred OAuth and ends the run contract when no owned account exists', async () => {
@@ -266,6 +297,8 @@ describe('mailAutomations tool', () => {
     assert.match(mailOps.markdown, /do not invoke an LLM/i);
     assert.match(mailOps.markdown, /per-message approval/i);
     assert.match(mailOps.markdown, /does not retransmit attachments/i);
+    assert.match(mailOps.markdown, /never convert a brand, display name, or loose word/i);
+    assert.match(mailOps.markdown, /Ask whether subject narrowing is wanted/i);
   });
 
   it('grants every Mail Ops action to every existing department role once', async () => {

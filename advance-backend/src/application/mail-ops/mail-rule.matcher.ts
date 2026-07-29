@@ -6,8 +6,18 @@ import type {
   MailRuleMatch,
 } from './mail-ops.types';
 
+const senderCriterionSchema = z.string().trim().min(1).refine(
+  value =>
+    z.string().email().safeParse(value).success
+    || (
+      value.startsWith('@')
+      && z.string().email().safeParse(`mailbox${value}`).success
+    ),
+  'Sender must be one exact email address or an @domain.',
+);
+
 export const mailRuleMatchSchema = z.object({
-  from: z.string().trim().min(1).optional(),
+  from: senderCriterionSchema.optional(),
   to: z.string().trim().min(1).optional(),
   subjectContains: z.string().trim().min(1).optional(),
   bodyContains: z.string().trim().min(1).optional(),
@@ -64,7 +74,7 @@ export function mailRuleMatches(
   const includes = (actual: string, expected: string): boolean =>
     actual.toLocaleLowerCase().includes(expected.toLocaleLowerCase());
   return (
-    (!match.from || includes(message.from, match.from))
+    (!match.from || senderMatches(message.from, match.from))
     && (!match.to || includes(message.to, match.to))
     && (!match.subjectContains || includes(message.subject, match.subjectContains))
     && (!match.bodyContains || includes(message.bodyText, match.bodyContains))
@@ -73,4 +83,16 @@ export function mailRuleMatches(
       || message.hasAttachment === match.hasAttachment
     )
   );
+}
+
+function senderMatches(fromHeader: string, criterion: string): boolean {
+  const bracketedMailbox = fromHeader.match(/<\s*([^<>]+)\s*>/)?.[1];
+  const address = (bracketedMailbox ?? fromHeader).match(
+    /[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}/i,
+  )?.[0]?.toLocaleLowerCase();
+  if (!address) return false;
+  const expected = criterion.toLocaleLowerCase();
+  return expected.startsWith('@')
+    ? address.endsWith(expected)
+    : address === expected;
 }

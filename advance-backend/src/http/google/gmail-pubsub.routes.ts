@@ -13,9 +13,11 @@ export function createGmailPubSubRoutes(deps: {
   const log = deps.logger.child({ route: 'gmail-pubsub-push' });
 
   router.post('/push', async (req, res) => {
+    let messageId: string | undefined;
     try {
       await deps.verifier.verifyAuthorizationHeader(req.get('authorization'));
       const envelope = readEnvelope(req.body);
+      messageId = envelope.messageId;
       if (envelope.subscription !== deps.expectedSubscription) {
         res.status(403).json({ success: false });
         return;
@@ -35,6 +37,14 @@ export function createGmailPubSubRoutes(deps: {
     } catch (error) {
       log.warn('gmail.pubsub.notification_rejected', {
         error: error instanceof Error ? error.message : String(error),
+        ...(messageId ? { messageId } : {}),
+        ...(error instanceof InvalidGmailNotificationError
+          ? {
+              reason: error.reason,
+              emailAddressType: error.emailAddressType,
+              historyIdType: error.historyIdType,
+            }
+          : {}),
       });
       res.status(400).json({ success: false });
     }
@@ -69,6 +79,16 @@ function readEnvelope(value: unknown): {
   };
 }
 
+class InvalidGmailNotificationError extends Error {
+  constructor(
+    readonly reason: 'invalid_email_address' | 'invalid_history_id',
+    readonly emailAddressType: string,
+    readonly historyIdType: string,
+  ) {
+    super('Invalid Gmail Pub/Sub notification.');
+  }
+}
+
 function decodeNotification(value: string): {
   emailAddress: string;
   historyId: string;
@@ -76,16 +96,32 @@ function decodeNotification(value: string): {
   const decoded = JSON.parse(
     Buffer.from(value, 'base64url').toString('utf8'),
   ) as Record<string, unknown>;
-  if (
-    typeof decoded['emailAddress'] !== 'string'
-    || !decoded['emailAddress'].includes('@')
-    || typeof decoded['historyId'] !== 'string'
-    || !/^\d+$/.test(decoded['historyId'])
-  ) {
-    throw new Error('Invalid Gmail Pub/Sub notification.');
+  const emailAddress = decoded['emailAddress'];
+  const historyId = normalizeHistoryId(decoded['historyId']);
+  if (typeof emailAddress !== 'string' || !emailAddress.includes('@')) {
+    throw new InvalidGmailNotificationError(
+      'invalid_email_address',
+      typeof emailAddress,
+      typeof decoded['historyId'],
+    );
+  }
+  if (!historyId) {
+    throw new InvalidGmailNotificationError(
+      'invalid_history_id',
+      typeof emailAddress,
+      typeof decoded['historyId'],
+    );
   }
   return {
-    emailAddress: decoded['emailAddress'].trim().toLocaleLowerCase(),
-    historyId: decoded['historyId'],
+    emailAddress: emailAddress.trim().toLocaleLowerCase(),
+    historyId,
   };
+}
+
+function normalizeHistoryId(value: unknown): string | null {
+  if (typeof value === 'string' && /^\d+$/.test(value)) return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    return String(value);
+  }
+  return null;
 }
