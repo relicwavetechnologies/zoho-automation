@@ -403,6 +403,34 @@ describe('ToolExecutor', () => {
     });
   });
 
+  it('uses signed member channel provenance for permission and tool context', async () => {
+    const queries: PermissionQuery[] = [];
+    let executionChannel: string | undefined;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      execute: async (_args, ctx) => {
+        executionChannel = ctx.runContext.channel;
+        return ok({ result: 'done' });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makeScopedPermissionService(() => makeAllowedPerm('fakeTool', ['read']), queries),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member: { ...member, channel: 'lark' },
+      toolId: 'fakeTool',
+      args: { query: 'hello' },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(queries.map(query => query.channel), ['lark']);
+    assert.equal(executionChannel, 'lark');
+  });
+
   it('reports company and department skill-publishing authority for company admin in a department context', async () => {
     const registry = new ToolRegistry();
     const { prisma } = makeSkillPublishingPrisma();

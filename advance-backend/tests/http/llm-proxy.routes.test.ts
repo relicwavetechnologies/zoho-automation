@@ -15,7 +15,13 @@ const silent: Logger = {
  * The upstream call is stubbed at `fetch` — this route forwards with `fetch`
  * directly rather than through the AI SDK, so the request body is observable.
  */
-async function forwardedBody(clientModel: unknown): Promise<Record<string, unknown>> {
+async function forwardedBody(
+  clientModel: unknown,
+  options: {
+    locals?: Record<string, unknown>;
+    calls?: Array<{ method: string; input: Record<string, unknown> }>;
+  } = {},
+): Promise<Record<string, unknown>> {
   const originalFetch = globalThis.fetch;
   let captured: Record<string, unknown> = {};
 
@@ -38,8 +44,17 @@ async function forwardedBody(clientModel: unknown): Promise<Record<string, unkno
       } as any,
       service: {
         gate: async () => ({ allow: true }),
-        recordModelCall: async () => {},
-        recordAudit: async () => {},
+        ensureRun: async (input: Record<string, unknown>) => {
+          options.calls?.push({ method: 'ensureRun', input });
+          return 'run-1';
+        },
+        recordToolResults: async () => {},
+        recordModelCall: async (input: Record<string, unknown>) => {
+          options.calls?.push({ method: 'recordModelCall', input });
+        },
+        recordAudit: async (input: Record<string, unknown>) => {
+          options.calls?.push({ method: 'recordAudit', input });
+        },
       } as any,
       baseUrl: 'https://api.deepseek.example',
     });
@@ -58,7 +73,7 @@ async function forwardedBody(clientModel: unknown): Promise<Record<string, unkno
     let settle: () => void = () => {};
     const finished = new Promise<void>(resolve => { settle = resolve; });
     const res = {
-      locals: { companyId: 'co-1', userId: 'user-1' },
+      locals: options.locals ?? { companyId: 'co-1', userId: 'user-1' },
       status: () => res,
       json: () => { settle(); return res; },
       send: () => { settle(); return res; },
@@ -69,10 +84,7 @@ async function forwardedBody(clientModel: unknown): Promise<Record<string, unkno
       headersSent: false,
     } as unknown as Response & { locals: Record<string, unknown> };
 
-    await Promise.race([
-      Promise.resolve(handler(req, res, () => {})).then(() => finished),
-      finished,
-    ]);
+    await Promise.resolve(handler(req, res, () => {}));
     return captured;
   } finally {
     globalThis.fetch = originalFetch;
@@ -103,5 +115,24 @@ describe('LLM proxy model forwarding', () => {
     // Never forwards `undefined`: DeepSeek rejects a request with no model, and
     // the gate has already priced this call as the default.
     assert.equal(body['model'], 'deepseek-v4-flash');
+  });
+
+  it('attributes a runtime lease request to Lark through run, usage, and audit', async () => {
+    const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
+    await forwardedBody('deepseek-v4-flash', {
+      locals: {
+        companyId: 'co-1',
+        userId: 'user-1',
+        sessionId: 'session-1',
+        channel: 'lark',
+        runtimeThreadId: 'lark:chat-1',
+      },
+      calls,
+    });
+
+    assert.equal(calls.find(call => call.method === 'ensureRun')?.input['channel'], 'lark');
+    assert.equal(calls.find(call => call.method === 'recordModelCall')?.input['channel'], 'lark');
+    assert.equal(calls.find(call => call.method === 'recordModelCall')?.input['threadId'], 'lark:chat-1');
+    assert.equal(calls.find(call => call.method === 'recordAudit')?.input['channel'], 'lark');
   });
 });

@@ -59,6 +59,7 @@ import { ManagerTeachWorker } from './application/persona-learning/manager-teach
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
 import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ElevenLabsTranscriptionClient } from './infrastructure/ai/transcription/elevenlabs-transcription.client';
+import { LarkPiRuntimeService } from './application/runtime/lark-pi-runtime.service';
 
 export const createServer = (c: Container) => {
   const app = express();
@@ -84,10 +85,20 @@ export const createServer = (c: Container) => {
   const voiceFileClient = voiceTranscriber
     ? new LarkFileClient(c.env, c.logger)
     : undefined;
+  const larkPiRuntime = new LarkPiRuntimeService({
+    prisma: c.prisma,
+    logger: c.logger,
+    memberJwtSecret: c.env.MEMBER_JWT_SECRET,
+    backendUrl: c.env.BACKEND_PUBLIC_URL,
+    controllerUrl: c.env.PI_LARK_CONTROLLER_URL,
+    instanceId: c.env.PI_LARK_RUNTIME_INSTANCE_ID,
+    leaseTtlSeconds: c.env.PI_RUNTIME_LEASE_TTL_SECONDS,
+    runTimeoutMs: c.env.PI_LARK_RUN_TIMEOUT_MS,
+  });
 
   const larkWebhookDeps: LarkWebhookDeps = {
     adapter:               c.larkAdapter,
-    engine:                c.engine,
+    piRuntime:             larkPiRuntime,
     channelIdentityRepo:   c.channelIdentityRepo,
     conversationRepo:      c.conversationRepo,
     ingressReceiptRepo:    c.ingressReceiptRepo,
@@ -449,9 +460,15 @@ export const createServer = (c: Container) => {
     jwtSecret: c.env.MEMBER_JWT_SECRET,
     logger:    c.logger,
   });
+  const piRuntimeMemberAuth = createMemberAuthMiddleware({
+    prisma:    c.prisma,
+    jwtSecret: c.env.MEMBER_JWT_SECRET,
+    logger:    c.logger,
+    allowPiRuntimeLease: () => true,
+  });
   app.use(
     '/api/gateway',
-    memberAuth,
+    piRuntimeMemberAuth,
     createGatewayRoutes({
       dispatcher: c.gatewayDispatcher,
       logger:     c.logger,
@@ -569,7 +586,7 @@ export const createServer = (c: Container) => {
   // a run ID with the proxy and declare which source owns token accounting.
   app.use(
     '/api/desktop/trace',
-    memberAuth,
+    piRuntimeMemberAuth,
     createTraceIngestRoutes({
       prisma:         c.prisma,
       logger:         c.logger,
@@ -585,7 +602,7 @@ export const createServer = (c: Container) => {
   if (c.env.LLM_PROXY_ENABLED) {
     app.use(
       '/api/llm',
-      memberAuth,
+      piRuntimeMemberAuth,
       createLlmProxyRoutes({
         logger:  c.logger,
         store:   c.proxyKeyStore,

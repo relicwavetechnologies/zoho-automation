@@ -4,6 +4,12 @@ import type { GatewayDispatcher } from '../../application/gateway/gateway-dispat
 import type { GatewayMemberContext } from '../../application/gateway/gateway.types';
 import { gatewayFailure, gatewayRequestSchema } from '../../application/gateway/gateway.types';
 
+const PI_RUNTIME_BLOCKED_OPS = new Set([
+  'teach.learning.apply',
+  'tools.commit',
+  'automation.plan.create',
+]);
+
 export interface GatewayRoutesDeps {
   readonly dispatcher: GatewayDispatcher;
   readonly logger: Logger;
@@ -18,6 +24,7 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
     const userId = res.locals['userId'] as string | undefined;
     const aiRole = res.locals['aiRole'] as string | undefined;
     const sessionId = res.locals['sessionId'] as string | undefined;
+    const channel = res.locals['channel'] === 'lark' ? 'lark' : 'desktop';
 
     if (!companyId || !userId || !aiRole || !sessionId) {
       res.status(401).json(
@@ -34,11 +41,24 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
       res.status(400).json(gatewayFailure('bad_request', issues));
       return;
     }
+    if (
+      res.locals['isPiRuntimeLease'] === true
+      && PI_RUNTIME_BLOCKED_OPS.has(parsed.data.op)
+    ) {
+      res.status(403).json(
+        gatewayFailure(
+          'permission_denied',
+          'This company mutation requires an interactive approval flow that is not available to the Lark Pi runtime.',
+        ),
+      );
+      return;
+    }
 
     const member: GatewayMemberContext = {
       companyId,
       userId,
       aiRole,
+      channel,
       email: (res.locals['email'] as string | null | undefined) ?? null,
       larkOpenId: (res.locals['larkOpenId'] as string | null | undefined) ?? null,
       sessionId,

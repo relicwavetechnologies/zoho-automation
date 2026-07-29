@@ -740,7 +740,7 @@ export class ToolExecutor {
       companyId: asCompanyId(member.companyId),
       userId: asUserId(member.userId),
       companyRole: asCompanyRoleSlug(member.aiRole),
-      channel: 'desktop',
+      channel: member.channel ?? 'desktop',
     } as const;
 
     let permResult = await this.deps.permissions.resolve({
@@ -817,7 +817,7 @@ export class ToolExecutor {
       userId: asUserId(member.userId),
       companyRole: asCompanyRoleSlug(member.aiRole),
       ...(departmentId ? { departmentId: asDepartmentId(departmentId) } : {}),
-      channel: 'desktop',
+      channel: member.channel ?? 'desktop',
       ...(member.email ? { requesterEmail: member.email } : {}),
       ...(member.larkOpenId ? { userExternalId: member.larkOpenId } : {}),
       ...(departmentZohoReadScope ? { departmentZohoReadScope } : {}),

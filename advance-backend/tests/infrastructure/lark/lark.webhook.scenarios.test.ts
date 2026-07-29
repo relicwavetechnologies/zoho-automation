@@ -73,6 +73,7 @@ function createHarness(
     logger: noopLogger,
     botOpenId: 'ou_bot',
   });
+  adapter.sendFinalReply = async () => ok({ messageId: 'om_reply' });
   const receiptRepo = {
     accept: async (input: {
       tenantKey: string;
@@ -123,10 +124,10 @@ function createHarness(
   };
   const routeDeps = {
     adapter,
-    engine: {
+    piRuntime: {
       run: async (input: any) => {
         await runEngine(String(input.incoming.messageId), String(input.runContext.userId));
-        return ok({ finalReply: { kind: 'final', text: 'done', format: 'text' } });
+        return { text: 'done' };
       },
     } as any,
     channelIdentityRepo: {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { describe, it } from 'node:test';
 import type { Client } from '@larksuiteoapi/node-sdk';
 import { LarkApiError, LarkHttpClient } from '../../src/infrastructure/channels/lark/clients/lark-http.client.ts';
@@ -112,5 +113,43 @@ describe('LarkHttpClient SDK boundary', () => {
         return true;
       },
     );
+  });
+
+  it('does not let SDK transport failures print OAuth credentials', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(400, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ code: 99991663, msg: 'permission denied' }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const calls: unknown[][] = [];
+    const original = { log: console.log, warn: console.warn, error: console.error };
+    console.log = (...args: unknown[]) => { calls.push(args); };
+    console.warn = (...args: unknown[]) => { calls.push(args); };
+    console.error = (...args: unknown[]) => { calls.push(args); };
+
+    try {
+      const client = new LarkHttpClient({
+        appId: 'app',
+        appSecret: 'secret',
+        userToken: 'sensitive-user-access-token',
+        apiBaseUrl: `http://127.0.0.1:${address.port}`,
+      });
+      await assert.rejects(
+        () => client.request('GET', '/open-apis/calendar/v4/calendars/primary/events'),
+        LarkApiError,
+      );
+    } finally {
+      console.log = original.log;
+      console.warn = original.warn;
+      console.error = original.error;
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+    }
+
+    assert.deepEqual(calls, []);
   });
 });

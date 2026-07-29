@@ -82,11 +82,14 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const companyId = res.locals['companyId'] as string | undefined;
     const userId = res.locals['userId'] as string | undefined;
     if (!companyId || !userId) { res.status(401).json({ error: { message: 'Unauthenticated', type: 'auth' } }); return; }
+    const channel = res.locals['channel'] === 'lark' ? 'lark' : 'desktop';
+    const runtimeThreadId = res.locals['runtimeThreadId'] as string | undefined;
 
     const startedAt = Date.now();
     const body = (req.body ?? {}) as ChatBody;
     const threadTitleRequest = isThreadTitleRequest(body);
     const threadId = auxiliaryThreadId(body);
+    const attributedThreadId = runtimeThreadId ?? threadId;
     const auxiliaryAuditTarget = threadTitleRequest
       ? { agentTarget: THREAD_TITLE_AGENT_TARGET }
       : {};
@@ -107,7 +110,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       log.info('proxy.denied', { userId, model, reason: gate.reason });
       const httpStatus = gate.status ?? 403;
       res.status(httpStatus).json({ error: { message: gate.reason ?? 'Denied', type: 'guardrails' } });
-      void svc.recordAudit({ companyId, userId, model, decision: 'denied', reason: gate.reason ?? 'guardrails', httpStatus, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
+      void svc.recordAudit({ companyId, userId, model, channel, decision: 'denied', reason: gate.reason ?? 'guardrails', httpStatus, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
       return;
     }
 
@@ -116,7 +119,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     if (!resolved) {
       log.warn('proxy.no_key', { companyId });
       res.status(503).json({ error: { message: 'The AI proxy has no DeepSeek key configured. Add one in Guardrails.', type: 'not_configured' } });
-      void svc.recordAudit({ companyId, userId, model, decision: 'denied', reason: 'not_configured', httpStatus: 503, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
+      void svc.recordAudit({ companyId, userId, model, channel, decision: 'denied', reason: 'not_configured', httpStatus: 503, latencyMs: Date.now() - startedAt, ...auxiliaryAuditTarget });
       return;
     }
 
@@ -130,7 +133,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
         (req.header('x-divo-run') || (typeof body.divo_run_id === 'string' ? body.divo_run_id : '') ||
           req.header('session_id') || (res.locals['sessionId'] as string | undefined) || randomUUID());
       try {
-        executionId = await svc.ensureRun({ runId, companyId, userId });
+        executionId = await svc.ensureRun({ runId, companyId, userId, channel });
         if (!desktopOwnsTimeline) {
           await svc.recordToolResults(executionId, messages as never[]);
         }
@@ -176,7 +179,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     } catch (e) {
       log.error('proxy.upstream.unreachable', { error: String(e) });
       res.status(502).json({ error: { message: 'Upstream unreachable', type: 'upstream' } });
-      void svc.recordAudit({ companyId, userId, executionId, model, decision: 'denied', reason: 'upstream', httpStatus: 502, latencyMs: Date.now() - startedAt, keySource: resolved.source, ...auxiliaryAuditTarget });
+      void svc.recordAudit({ companyId, userId, executionId, model, channel, decision: 'denied', reason: 'upstream', httpStatus: 502, latencyMs: Date.now() - startedAt, keySource: resolved.source, ...auxiliaryAuditTarget });
       return;
     }
     if (upstream.ok) {
@@ -189,6 +192,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const audit = (ok: boolean, usage: DeepSeekUsage | null, responseModel?: string | null, reason?: string) =>
       void svc.recordAudit({
         companyId, userId, executionId,
+        channel,
         model: canonicalModel(responseModel ?? model),
         decision: ok ? 'allowed' : 'denied',
         reason: ok ? undefined : (reason ?? `upstream_${upstream.status}`),
@@ -211,8 +215,8 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
           provider: 'deepseek',
           usage,
           agentTarget: THREAD_TITLE_AGENT_TARGET,
-          channel: 'desktop',
-          ...(threadId ? { threadId } : {}),
+          channel,
+          ...(attributedThreadId ? { threadId: attributedThreadId } : {}),
         });
         return;
       }
@@ -225,6 +229,8 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
           model: served,
           provider: 'deepseek',
           usage,
+          channel,
+          ...(runtimeThreadId ? { threadId: runtimeThreadId } : {}),
           recordEvent: !desktopOwnsTimeline,
         });
       } catch (e) {

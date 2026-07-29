@@ -163,7 +163,7 @@ export class GatewayDispatcher {
       userId: asUserId(member.userId),
       companyRole: asCompanyRoleSlug(member.aiRole),
       ...(departmentId ? { departmentId: asDepartmentId(departmentId) } : {}),
-      channel: 'desktop',
+      channel: member.channel ?? 'desktop',
     });
 
     if (!result.ok) {

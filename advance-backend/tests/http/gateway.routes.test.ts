@@ -120,6 +120,75 @@ describe('createGatewayRoutes', () => {
     assert.deepEqual(body, expected);
   });
 
+  it('passes trusted Lark provenance to the dispatcher', async () => {
+    let dispatchedChannel: string | undefined;
+    const router = createGatewayRoutes({
+      dispatcher: {
+        dispatch: async (_request, member) => {
+          dispatchedChannel = member.channel;
+          return { ok: true, status: 'success', data: {} };
+        },
+      } as GatewayDispatcher,
+      logger: noopLogger,
+    });
+
+    const { status } = await callPost(router, {
+      body: { op: 'tools.list' },
+      locals: {
+        companyId: 'co-1',
+        userId: 'user-1',
+        aiRole: 'MEMBER',
+        sessionId: 'sess-1',
+        channel: 'lark',
+      },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(dispatchedChannel, 'lark');
+  });
+
+  it('blocks company-mutation operations from a Pi runtime lease', async () => {
+    let dispatchCount = 0;
+    const router = createGatewayRoutes({
+      dispatcher: {
+        dispatch: async () => {
+          dispatchCount += 1;
+          return { ok: true, status: 'success', data: {} };
+        },
+      } as GatewayDispatcher,
+      logger: noopLogger,
+    });
+    const locals = {
+      companyId: 'co-1',
+      userId: 'user-1',
+      aiRole: 'COMPANY_ADMIN',
+      sessionId: 'sess-1',
+      channel: 'lark',
+      isPiRuntimeLease: true,
+    };
+
+    for (const op of [
+      'teach.learning.apply',
+      'tools.commit',
+      'automation.plan.create',
+    ]) {
+      const { status, body } = await callPost(router, {
+        body: { op },
+        locals,
+      });
+      assert.equal(status, 403);
+      assert.equal(body.status, 'permission_denied');
+    }
+    assert.equal(dispatchCount, 0);
+
+    const allowed = await callPost(router, {
+      body: { op: 'tools.list' },
+      locals,
+    });
+    assert.equal(allowed.status, 200);
+    assert.equal(dispatchCount, 1);
+  });
+
   it('returns 500 when dispatcher throws', async () => {
     const router = createGatewayRoutes({
       dispatcher: {

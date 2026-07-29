@@ -14,6 +14,14 @@ import {
   type Client,
 } from '@larksuiteoapi/node-sdk';
 
+const silentSdkLogger = {
+  error: () => {},
+  warn: () => {},
+  info: () => {},
+  debug: () => {},
+  trace: () => {},
+};
+
 export interface LarkHttpClientDeps {
   appId: string;
   appSecret: string;
@@ -66,6 +74,9 @@ export class LarkHttpClient {
       appSecret: deps.appSecret,
       domain: deps.apiBaseUrl?.replace(/\/$/, '') || Domain.Lark,
       loggerLevel: LoggerLevel.warn,
+      // The SDK logs raw Axios errors, including Authorization headers.
+      // This wrapper converts failures into credential-free LarkApiError values.
+      logger: silentSdkLogger,
       source: 'divo',
     });
   }

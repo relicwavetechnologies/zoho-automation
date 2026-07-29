@@ -4,7 +4,10 @@ import {
   shouldStartLarkAgent,
   type LarkChannelAdapter,
 } from './lark.adapter';
-import type { OrchestrationEngine } from '../../../application/orchestration/engine/core';
+import {
+  LarkPiRuntimeError,
+  type LarkPiRuntimeService,
+} from '../../../application/runtime/lark-pi-runtime.service';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
 import type { ConversationRepoPort } from '../../persistence/conversation.repository';
 import type { Logger } from '../../../shared/logger';
@@ -112,7 +115,7 @@ import type { IngestionQueue } from '../../../application/ingestion/ingestion.qu
 
 export interface LarkWebhookDeps {
   adapter: LarkChannelAdapter;
-  engine: OrchestrationEngine;
+  piRuntime: Pick<LarkPiRuntimeService, 'run'>;
   channelIdentityRepo: ChannelIdentityRepoPort;
   conversationRepo: ConversationRepoPort;
   ingressReceiptRepo: IngressReceiptRepoPort;
@@ -567,7 +570,7 @@ export async function replayLarkMessageAfterLogin(
     const run = (adapter: LarkChannelAdapter, turnSignal: AbortSignal) =>
       processInBackground(
         incoming, rawEvent, { ...deps, adapter }, log,
-        deps.approvalGate, deps.knowledgeShareService, turnSignal,
+        deps.knowledgeShareService, turnSignal,
       );
 
     if (!deps.laneLeaseHolder) {
@@ -761,7 +764,6 @@ export async function processAcceptedLarkReceipt(
             },
           },
           requestLog,
-          deps.approvalGate,
           deps.knowledgeShareService,
           turnSignal,
         );
@@ -967,6 +969,86 @@ async function rethrowIfDeliveryNeedsRetry(
   throw error;
 }
 
+function runtimeThreadIdFor(incoming: IncomingMessage): string {
+  return String(conversationKeyForMessage({
+    chatId: String(incoming.chatId),
+    chatType: incoming.chatType,
+    messageId: String(incoming.messageId),
+    ...(incoming.threadId ? { threadId: String(incoming.threadId) } : {}),
+    ...(incoming.rootMessageId ? { rootMessageId: String(incoming.rootMessageId) } : {}),
+    userExternalId: incoming.userExternalId,
+    ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
+  }));
+}
+
+async function runPiAndDeliver(input: {
+  incoming: IncomingMessage;
+  runContext: Parameters<LarkPiRuntimeService['run']>[0]['runContext'];
+  conversation: ConversationHandle;
+  deps: {
+    adapter: LarkChannelAdapter;
+    piRuntime: Pick<LarkPiRuntimeService, 'run'>;
+    channelDeliveryRepo?: ChannelDeliveryRepoPort;
+    onRetryableDelivery?: () => Promise<void>;
+  };
+  log: Logger;
+  signal?: AbortSignal;
+}): Promise<string | null> {
+  const { incoming, runContext, conversation, deps, log, signal } = input;
+  const controller = new AbortController();
+  const runtimeSignal = signal
+    ? AbortSignal.any([signal, controller.signal])
+    : controller.signal;
+  const correlationId = String(incoming.traceId);
+  deps.adapter.registerAbortController(correlationId, controller, {
+    userId: String(runContext.userId),
+    companyId: String(runContext.companyId),
+    conversationKey: runtimeThreadIdFor(incoming),
+  });
+  let text: string;
+  try {
+    const result = await deps.piRuntime.run({
+      incoming,
+      runContext,
+      conversation,
+      threadId: runtimeThreadIdFor(incoming),
+      abortSignal: runtimeSignal,
+    });
+    text = result.text;
+  } catch (error) {
+    if (runtimeSignal.aborted) {
+      log.info('webhook.pi.interrupted', { correlationId });
+      return null;
+    }
+    const code = error instanceof LarkPiRuntimeError ? error.code : 'run_failed';
+    text = error instanceof LarkPiRuntimeError
+      ? error.userMessage
+      : 'Pi could not complete this request (run_failed). No fallback agent was run.';
+    log.error('webhook.pi.failed', {
+      code,
+      error: String(error),
+      correlationId: incoming.traceId,
+    });
+  } finally {
+    deps.adapter.cleanupAbortController(correlationId);
+  }
+
+  const delivered = await deps.adapter.sendFinalReply(conversation, {
+    kind: 'final',
+    text,
+    format: 'text',
+  });
+  if (!delivered.ok) {
+    log.error('webhook.pi.delivery_failed', {
+      error: delivered.error.message,
+      correlationId: incoming.traceId,
+    });
+    await rethrowIfDeliveryNeedsRetry(delivered.error, incoming, deps, log);
+    return null;
+  }
+  return text;
+}
+
 const LARK_OAUTH_NONCE_TTL_SECONDS = 600;
 
 function larkOAuthNonceKey(nonce: string): string {
@@ -1028,7 +1110,7 @@ async function processInBackground(
   rawEvent: Record<string, unknown>,
   deps: {
     adapter: LarkChannelAdapter;
-    engine: OrchestrationEngine;
+    piRuntime: Pick<LarkPiRuntimeService, 'run'>;
     channelIdentityRepo: ChannelIdentityRepoPort;
     conversationRepo: ConversationRepoPort;
     logger: Logger;
@@ -1046,7 +1128,6 @@ async function processInBackground(
     fetchParentMessage?: typeof fetchParentMessage;
   },
   log: Logger,
-  approvalGate?: ApprovalGateService,
   knowledgeShareService?: KnowledgeShareService,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -1357,18 +1438,14 @@ async function processInBackground(
       }),
       identity,
     );
-    const result = await deps.engine.run({
+    await runPiAndDeliver({
       incoming: voiceIncoming,
       runContext,
       conversation,
-      channelAdapter: deps.adapter,
-      ...(signal ? { abortSignal: signal } : {}),
-      ...(approvalGate ? { approvalGate } : {}),
+      deps,
+      log,
+      ...(signal ? { signal } : {}),
     });
-    if (!result.ok) {
-      log.error('webhook.engine.failed', { error: result.error.message, correlationId });
-      await rethrowIfDeliveryNeedsRetry(result.error, incoming, deps, log);
-    }
     return;
   }
 
@@ -1574,20 +1651,16 @@ async function processInBackground(
       ...(allImageUrls.length > 0 ? { imageUrls: allImageUrls } : {}),
     });
 
-    const result = await deps.engine.run({
-      incoming:       withLarkSenderName(enrichedIncoming, identity),
+    const replyText = await runPiAndDeliver({
+      incoming: withLarkSenderName(enrichedIncoming, identity),
       runContext,
       conversation,
-      channelAdapter: deps.adapter,
-      ...(signal ? { abortSignal: signal } : {}),
-      ...(approvalGate ? { approvalGate } : {}),
+      deps,
+      log,
+      ...(signal ? { signal } : {}),
     });
 
-    if (!result.ok) {
-      log.error('webhook.engine.failed', { error: result.error.message, correlationId });
-      await rethrowIfDeliveryNeedsRetry(result.error, incoming, deps, log);
-    }
-    await storeGroupAssistantSnapshot({ incoming, identity, deps, result, log });
+    await storeGroupAssistantSnapshot({ incoming, identity, deps, replyText, log });
     return;
   }
 
@@ -1706,22 +1779,17 @@ async function processInBackground(
     log,
   });
 
-  // ── Normal message → orchestration engine ─────────────────────────────────
-  const result = await deps.engine.run({
+  // ── Normal message → isolated Pi runtime ──────────────────────────────────
+  const replyText = await runPiAndDeliver({
     incoming: withLarkSenderName(effectiveIncoming, identity),
     runContext,
     conversation,
-    channelAdapter: deps.adapter,
-    ...(signal ? { abortSignal: signal } : {}),
-    ...(approvalGate ? { approvalGate } : {}),
+    deps,
+    log,
+    ...(signal ? { signal } : {}),
   });
 
-  if (!result.ok) {
-    log.error('webhook.engine.failed', { error: result.error.message, correlationId });
-    await rethrowIfDeliveryNeedsRetry(result.error, incoming, deps, log);
-  }
-
-  await storeGroupAssistantSnapshot({ incoming, identity, deps, result, log });
+  await storeGroupAssistantSnapshot({ incoming, identity, deps, replyText, log });
 }
 
 export async function bootstrapLarkFirstTouchIdentity(
@@ -2893,11 +2961,11 @@ async function storeGroupAssistantSnapshot(input: {
   incoming: IncomingMessage;
   identity: LarkResolvedIdentity;
   deps: { chatContextService?: LarkChatContextService };
-  result: Awaited<ReturnType<OrchestrationEngine['run']>>;
+  replyText: string | null;
   log: Logger;
 }): Promise<void> {
-  const { incoming, identity, deps, result, log } = input;
-  if (incoming.chatType !== 'group' || !deps.chatContextService || !result.ok) return;
+  const { incoming, identity, deps, replyText, log } = input;
+  if (incoming.chatType !== 'group' || !deps.chatContextService || !replyText) return;
 
   await deps.chatContextService.appendMessage({
     companyId: identity.companyId,
@@ -2906,7 +2974,7 @@ async function storeGroupAssistantSnapshot(input: {
     senderOpenId: 'divo-bot',
     senderName: 'Divo',
     role: 'assistant',
-    content: result.value.finalReply.text,
+    content: replyText,
     botMentioned: false,
   }).catch(e => log.warn('webhook.group_context.store_reply_failed', { error: String(e) }));
 }

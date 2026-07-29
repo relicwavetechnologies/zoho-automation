@@ -87,6 +87,14 @@ const EnvSchema = z.object({
   // format). Falls back to ZOHO_TOKEN_ENCRYPTION_KEY so no new secret is required to ship.
   PROXY_KEY_ENCRYPTION_KEY: z.string().optional(),
 
+  // ── Pi-only Lark runtime ─────────────────────────────────────────────────
+  // The controller remains private to the backend host. Only the Lark webhook
+  // is exposed through the public backend URL during local ngrok validation.
+  PI_LARK_CONTROLLER_URL: z.string().url().default('http://127.0.0.1:4317'),
+  PI_LARK_RUNTIME_INSTANCE_ID: z.string().min(1).default('pi-local-1'),
+  PI_RUNTIME_LEASE_TTL_SECONDS: positiveInt(3_600),
+  PI_LARK_RUN_TIMEOUT_MS: positiveInt(1_800_000),
+
   // ── Groq (intent classification + reranking) ──────────────────────────────
   GROQ_API_KEY:      z.string().optional(),
   GROQ_ROUTER_MODEL: z.string().default('llama-3.1-8b-instant'),

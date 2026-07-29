@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "source": "official Pi source with Divo-owned runtime layer",
+  "upstreamTag": "v0.80.3",
+  "upstreamCommit": "a23abe4a695df8b69b613f73e9fdda2a8af894d4",
+  "piCodingAgent": "0.80.3",
+  "piMcpAdapter": "2.11.0",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "thinkingLevel": "medium",
+  "extensions": [
+    "divo-llm",
+    "divo-gateway",
+    "divo-memory",
+    "divo-subagents",
+    "divo-artifact",
+    "divo-chat-history"
+  ],
+  "trustedSkills": [
+    "divo-gateway",
+    "divo-chat-history"
+  ],
+  "toolAllowlist": [
+    "read",
+    "write",
+    "edit",
+    "bash",
+    "divo_gateway",
+    "divo_skill_view",
+    "divo_skill_resolve",
+    "divo_memory_review",
+    "divo_teach_clarify",
+    "memory",
+    "divo_subagents",
+    "divo_artifact",
+    "divo_search_chats",
+    "divo_read_chat"
+  ]
+}

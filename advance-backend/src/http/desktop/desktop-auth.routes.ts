@@ -257,6 +257,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     prisma:    deps.prisma,
     jwtSecret: deps.memberJwtSecret,
     logger:    deps.logger,
+    allowPiRuntimeLease: req =>
+      req.method === 'GET'
+      && (req.path === '/me' || req.path === '/runtime-context'),
   });
 
   const callbackAllowlist = parseCallbackOriginAllowlist(deps.env?.BACKEND_PUBLIC_URL_ALLOWLIST);
@@ -954,6 +957,13 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         data: {
           userId, companyId,
           role: res.locals['aiRole'],
+          runtime: res.locals['channel'] === 'lark'
+            ? {
+                channel: 'lark',
+                instanceId: res.locals['runtimeInstanceId'],
+                threadId: res.locals['runtimeThreadId'],
+              }
+            : null,
           email: user?.email,
           name:  user?.name,
           departments,

@@ -47,6 +47,8 @@ services:
       REDIS_CACHE_URL: redis://divo-dev-redis-cache:6379/0
       REDIS_MEMORY_URL: redis://divo-dev-redis-memory:6379/0
       GOOGLE_WORKSPACE_MCP_URL: http://google-workspace-mcp:8000/mcp
+      PI_LARK_CONTROLLER_URL: http://divo-dev-pi-controller:4317
+      PI_LARK_RUNTIME_INSTANCE_ID: ${PI_LARK_RUNTIME_INSTANCE_ID:-pi-development-1}
     depends_on:
       divo-dev-postgres:
         condition: service_healthy
@@ -58,17 +60,50 @@ services:
         condition: service_healthy
       google-workspace-mcp:
         condition: service_healthy
+      divo-dev-pi-controller:
+        condition: service_healthy
     ports:
       - "127.0.0.1:${DIVO_DEV_BACKEND_PORT:-13001}:3001"
     restart: unless-stopped
     networks:
       - divo-dev-internal
+      - divo-dev-agent-control
     logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
       timeout: 5s
       start_period: 45s
+      retries: 5
+
+  divo-dev-pi-controller:
+    image: ${DIVO_DEV_PI_CONTROLLER_IMAGE:?DIVO_DEV_PI_CONTROLLER_IMAGE is required}
+    user: "0:0"
+    environment:
+      DIVO_CONTROLLER_HOST: 0.0.0.0
+      DIVO_CONTROLLER_PORT: 4317
+      DIVO_PI_IMAGE: ${DIVO_DEV_PI_IMAGE:?DIVO_DEV_PI_IMAGE is required}
+      DIVO_PI_ADD_HOST_GATEWAY: "false"
+      MAX_ACTIVE_RUNS: ${DIVO_DEV_PI_MAX_ACTIVE_RUNS:-2}
+      HOME: /tmp
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    networks:
+      - divo-dev-agent-control
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
       retries: 5
 
   google-workspace-mcp:
@@ -160,6 +195,8 @@ services:
 
 networks:
   divo-dev-internal:
+    driver: bridge
+  divo-dev-agent-control:
     driver: bridge
 
 volumes:

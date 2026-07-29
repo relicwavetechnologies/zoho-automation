@@ -284,6 +284,7 @@ describe('Lark engine harness controls', () => {
     assert.equal(defaults.trace, true);
     assert.equal(defaults.freshContext, false);
     assert.equal(defaults.oauthE2e, false);
+    assert.equal(defaults.deliverToLark, true);
     assert.equal(defaults.groupReplyMode, 'threaded');
     assert.equal(defaults.threadRootMessageId, undefined);
     assert.deepEqual(
@@ -310,6 +311,7 @@ describe('Lark engine harness controls', () => {
         freshContext: true,
         allowImpersonation: true,
         oauthE2e: false,
+        deliverToLark: true,
         help: false,
       },
     );
@@ -351,6 +353,18 @@ describe('Lark engine harness controls', () => {
     assert.equal(
       parseEngineHarnessArgs(['--oauth-e2e'], {}).oauthE2e,
       true,
+    );
+    assert.equal(
+      parseEngineHarnessArgs(['--no-delivery'], {}).deliverToLark,
+      false,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--no-delivery', '--oauth-e2e'], {}),
+      /cannot be combined/,
+    );
+    assert.throws(
+      () => parseEngineHarnessArgs(['--no-delivery', '--group'], {}),
+      /supports p2p/,
     );
     assert.throws(
       () => parseEngineHarnessArgs(['--chat-id', 'oc_untrusted'], {}),

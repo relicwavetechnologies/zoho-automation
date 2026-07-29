@@ -51,3 +51,27 @@ test('records a title completion without creating a visible execution run', asyn
   });
   assert.equal('executionRunId' in (data ?? {}), false);
 });
+
+test('creates Pi execution runs with their authenticated channel provenance', async () => {
+  let data: Record<string, unknown> | undefined;
+  const service = new LlmProxyService({
+    executionRun: {
+      findUnique: async () => null,
+      create: async (input: { data: Record<string, unknown> }) => {
+        data = input.data;
+        return { id: 'execution-1' };
+      },
+    },
+  } as any, logger);
+
+  const executionId = await service.ensureRun({
+    runId: 'run-1',
+    companyId: 'company-1',
+    userId: 'user-1',
+    channel: 'lark',
+  });
+
+  assert.equal(executionId, 'execution-1');
+  assert.equal(data?.['channel'], 'lark');
+  assert.equal(data?.['entrypoint'], 'pi');
+});

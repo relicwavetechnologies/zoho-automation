@@ -12,7 +12,7 @@ import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-
 import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
 import { ElevenLabsTranscriptionClient } from '../../../src/infrastructure/ai/transcription/elevenlabs-transcription.client.ts';
 import { err, ok } from '../../../src/shared/result.ts';
-import { ChannelError, OrchestrationError } from '../../../src/shared/errors.ts';
+import { ChannelError } from '../../../src/shared/errors.ts';
 import type { Logger } from '../../../src/shared/logger.ts';
 
 const noopLogger: Logger = {
@@ -244,16 +244,21 @@ async function runWebhook(body: unknown, options: {
     ...(options.untaggedPolicy ?? {}),
   } as any;
   const adapter = new LarkChannelAdapter({ env, logger: noopLogger, botOpenId: 'ou_bot' });
+  captureOutbound(adapter);
   options.setupAdapter?.(adapter);
   let queuedReceiptId: string | undefined;
   const routeDeps = {
     adapter,
-    engine: {
+    piRuntime: {
       run: async (input: unknown) => {
         order.push('engine');
         engineInputs.push(input);
-        if (options.engineRun) return options.engineRun(input);
-        return ok({ finalReply: { kind: 'final', text: 'done', format: 'text' } });
+        if (options.engineRun) {
+          const result = await options.engineRun(input) as any;
+          if (result?.ok === false) throw result.error;
+          return { text: result?.value?.finalReply?.text ?? result?.text ?? 'done' };
+        }
+        return { text: 'done' };
       },
     } as any,
     channelIdentityRepo: {
@@ -903,7 +908,7 @@ describe('Lark webhook admission', () => {
     assert.equal(result.engineInputs.length, 0);
   });
 
-  it('logs a background failure once and lets the next same-chat message run', async () => {
+  it('delivers an explicit Pi failure and lets the next same-chat message run', async () => {
     const serializer = new ChatMessageSerializer({ timeoutMs: 1_000 });
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
@@ -944,11 +949,16 @@ describe('Lark webhook admission', () => {
       await waitUntil(() => serializer.activeChats === 0, 'queued successor settled');
       await new Promise<void>(resolve => setImmediate(resolve));
       assert.equal(
-        first.logEvents.filter(entry => entry.event === 'webhook.background.failed').length,
+        first.logEvents.filter(entry => entry.event === 'webhook.pi.failed').length,
         1,
       );
+      assert.equal(first.logEvents.some(entry => entry.event === 'webhook.background.failed'), false);
       assert.equal(second.logEvents.some(entry => entry.event === 'webhook.background.completed'), true);
-      assert.match(String(firstError), /engine unavailable/);
+      assert.equal(firstError, undefined);
+      assert.match(
+        String((first.routeDeps.adapter as any).__finalReplies[0]),
+        /No fallback agent was run/i,
+      );
       assert.equal(calls, 2);
       assert.deepEqual(unhandled, []);
     } finally {
@@ -2867,20 +2877,18 @@ describe('Lark delivery resume', () => {
       }],
       engineRun: async () => {
         engineRuns += 1;
-        resumablePayload = finalReply;
-        const deliveryError = new ChannelError({
-          channel: 'lark',
-          stage: 'send_final',
-          reason: 'upstream_5xx',
-        });
-        return err(new OrchestrationError({
-          stage: 'compose',
-          reason: 'step_failed',
-          cause: deliveryError,
-        }));
+        return ok({ finalReply });
       },
       setupAdapter: adapter => {
         (adapter as any).sendFinalReply = async (_conversation: unknown, reply: unknown) => {
+          if (!resumablePayload) {
+            resumablePayload = finalReply;
+            return err(new ChannelError({
+              channel: 'lark',
+              stage: 'send_final',
+              reason: 'upstream_5xx',
+            }));
+          }
           delivered.push(reply);
           resumablePayload = null;
           return ok({ channel: 'lark', messageId: 'om_resent' });
@@ -2888,7 +2896,7 @@ describe('Lark delivery resume', () => {
       },
     });
 
-    await assert.rejects(() => result.processQueuedReceipt(), /orchestration failed/i);
+    await assert.rejects(() => result.processQueuedReceipt(), /channel lark error/i);
     await result.processQueuedReceipt();
 
     assert.equal(engineRuns, 1, 'tools were not re-run to resend the answer');

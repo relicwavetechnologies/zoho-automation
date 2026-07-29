@@ -1,0 +1,11 @@
+{
+  "name": "pi-divo-memory",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test memory-store.test.ts index.test.ts"
+  },
+  "devDependencies": {
+    "tsx": "4.22.1"
+  }
+}

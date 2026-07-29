@@ -11,17 +11,23 @@
  *   res.locals.larkOpenId (string | null)
  *   res.locals.sessionId  (string)
  *   res.locals.email      (string | null)
+ *   res.locals.channel    ("desktop" | "lark", trusted from the signed token)
  */
 
 import type { Request, Response, NextFunction } from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
+import {
+  isPiRuntimeLeaseClaims,
+  PI_RUNTIME_AUDIENCE,
+} from '../../application/runtime/pi-runtime-lease';
 
 export interface MemberAuthMiddlewareDeps {
   prisma:     PrismaClient;
   jwtSecret:  string;
   logger:     Logger;
+  allowPiRuntimeLease?: (req: Request) => boolean;
 }
 
 interface MemberJwtPayload {
@@ -30,6 +36,12 @@ interface MemberJwtPayload {
   companyId: string;
   role?:     string;
   exp?:      number;
+  aud?:      string;
+  channel?:  string;
+  instanceId?: string;
+  threadId?: string;
+  iat?:      number;
+  jti?:      string;
 }
 
 function verifyHs256Jwt(token: string, secret: string): MemberJwtPayload | null {
@@ -49,9 +61,13 @@ function verifyHs256Jwt(token: string, secret: string): MemberJwtPayload | null 
     return null;
   }
 
-  const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8')) as MemberJwtPayload;
-  if (payload.exp && Date.now() / 1000 > payload.exp) return null;
-  return payload;
+  try {
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8')) as MemberJwtPayload;
+    if (payload.exp && Date.now() / 1000 > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
 }
 
 export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
@@ -70,6 +86,19 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
       return;
     }
 
+    const hasRuntimeClaims = payload.aud !== undefined
+      || payload.instanceId !== undefined
+      || payload.threadId !== undefined
+      || payload.channel === 'lark';
+    if (hasRuntimeClaims && !isPiRuntimeLeaseClaims(payload as unknown as Record<string, unknown>)) {
+      res.status(401).json({ error: 'Invalid Pi runtime lease' });
+      return;
+    }
+    if (hasRuntimeClaims && !deps.allowPiRuntimeLease?.(req)) {
+      res.status(403).json({ error: 'Pi runtime lease is not allowed for this route' });
+      return;
+    }
+
     try {
       const session = await deps.prisma.memberSession.findUnique({
         where: { sessionId: payload.sessionId },
@@ -78,6 +107,13 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
 
       if (!session || session.revokedAt || new Date() > session.expiresAt) {
         res.status(401).json({ error: 'Session expired or revoked' });
+        return;
+      }
+      if (
+        session.userId !== payload.userId
+        || session.companyId !== payload.companyId
+      ) {
+        res.status(401).json({ error: 'Session identity mismatch' });
         return;
       }
 
@@ -106,6 +142,12 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
       res.locals['larkOpenId'] = session.larkOpenId ?? null;
       res.locals['sessionId']  = session.sessionId;
       res.locals['email']      = session.user?.email ?? null;
+      res.locals['channel']    = hasRuntimeClaims ? 'lark' : 'desktop';
+      res.locals['isPiRuntimeLease'] = hasRuntimeClaims;
+      if (payload.aud === PI_RUNTIME_AUDIENCE) {
+        res.locals['runtimeInstanceId'] = payload.instanceId;
+        res.locals['runtimeThreadId'] = payload.threadId;
+      }
       next();
     } catch (e) {
       deps.logger.error('member-auth.middleware.error', { error: String(e) });

@@ -192,6 +192,7 @@ export interface GatewayMemberContext {
   readonly companyId: string;
   readonly userId: string;
   readonly aiRole: string;
+  readonly channel?: 'desktop' | 'lark';
   readonly email: string | null;
   readonly larkOpenId: string | null;
   readonly sessionId: string;

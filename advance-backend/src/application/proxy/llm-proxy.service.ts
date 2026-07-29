@@ -138,12 +138,18 @@ export class LlmProxyService {
   }
 
   /** Find-or-create the ExecutionRun this completion belongs to. */
-  async ensureRun(input: { runId: string; companyId: string; userId: string; agentTarget?: string }): Promise<string> {
+  async ensureRun(input: {
+    runId: string;
+    companyId: string;
+    userId: string;
+    channel?: string;
+    agentTarget?: string;
+  }): Promise<string> {
     return this.repo.findOrCreateByRequestId({
       requestId:  input.runId,
       companyId:  input.companyId,
       userId:     input.userId,
-      channel:    'desktop',
+      channel:    input.channel ?? 'desktop',
       entrypoint: 'pi',
       ...(input.agentTarget ? { agentTarget: input.agentTarget } : {}),
     });
