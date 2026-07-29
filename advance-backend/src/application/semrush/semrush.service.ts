@@ -43,10 +43,13 @@ export class SemrushService {
     } catch (error) {
       if (!this.apiKeyWebhookUrl || !isCredentialFailure(error)) throw error;
       this.invalidateWebhookApiKey(apiKey);
-      const replacement = await this.resolveApiKey();
+      let replacement = await this.resolveApiKey();
       if (replacement === apiKey) {
         this.invalidateWebhookApiKey(replacement);
-        throw error;
+        const configured = this.apiKey?.trim();
+        if (!configured || configured === apiKey) throw error;
+        replacement = configured;
+        this.cachedWebhookApiKey = replacement;
       }
       try {
         data = await this.client.fetch({ apiKey: replacement, args });

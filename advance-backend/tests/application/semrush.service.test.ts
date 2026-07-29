@@ -146,6 +146,39 @@ describe('SemrushService', () => {
     assert.equal(providerCalls, 1);
   });
 
+  it('falls back to a distinct configured key when the webhook refresh returns the rejected key', async () => {
+    const providerKeys: string[] = [];
+    let webhookCalls = 0;
+    const service = new SemrushService(
+      {
+        fetch: async ({ apiKey }: { apiKey: string }) => {
+          providerKeys.push(apiKey);
+          if (apiKey === 'exhausted-webhook-key') {
+            throw new SemrushServiceError('provider_insufficient_units', 'Semrush reports insufficient API units.');
+          }
+          return { operation: 'domain_overview', status: 'complete', coverage: {}, rows: [{ Dn: 'example.com' }] };
+        },
+      } as any,
+      'working-static-key',
+      logger,
+      'https://keys.example.test/semrush',
+      async () => {
+        webhookCalls += 1;
+        return Response.json({ api_key: 'exhausted-webhook-key', status: 'active' });
+      },
+    );
+
+    await service.execute(args);
+    await service.execute(args);
+
+    assert.equal(webhookCalls, 2);
+    assert.deepEqual(providerKeys, [
+      'exhausted-webhook-key',
+      'working-static-key',
+      'working-static-key',
+    ]);
+  });
+
   it('invalidates a failed replacement so the next operation can fetch a newer key', async () => {
     const webhookKeys = ['expired-key', 'also-expired-key', 'working-key'];
     let webhookCalls = 0;
