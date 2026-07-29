@@ -159,10 +159,16 @@ describe('ConnectionAuthorizationRepository', () => {
       },
     } as any);
 
-    assert.deepEqual(await repo.claimCallback('already-used'), {
-      ok: true,
-      value: { outcome: 'already_consumed' },
-    });
+    assert.deepEqual(
+      await repo.claimCallback(
+        'already-used',
+        new Date('2026-07-29T05:00:00.000Z'),
+      ),
+      {
+        ok: true,
+        value: { outcome: 'already_consumed' },
+      },
+    );
   });
 
   it('expires a stale pending intent instead of exchanging its code', async () => {
