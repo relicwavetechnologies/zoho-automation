@@ -1474,13 +1474,21 @@ describe('LarkApprovalCardHandler', () => {
     assert.equal(result.handled, true);
     assert.ok(result.responseBody);
     assert.equal((result.responseBody as any).toast.type, 'success');
+    assert.equal((result.responseBody as any).card.type, 'raw');
+    assert.match((result.responseBody as any).card.data.header.title.content, /Approved by Abhishek Verma/);
+    assert.equal(
+      JSON.stringify((result.responseBody as any).card.data).includes('approval_decision'),
+      false,
+      'the callback card has no actionable approval buttons',
+    );
 
     // Approval atomically resolved
     const resolved = repo.store.get(approval.id)!;
     assert.equal(resolved.status, 'approved');
     assert.equal(resolved.approvedBy, MANAGER_OID);
 
-    // Card updated to show resolution
+    // The callback response updates immediately; PATCH remains async recovery.
+    await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(lark.updatedMessages.length, 1);
     assert.equal(lark.updatedMessages[0].messageId, 'msg-decision-1');
 
@@ -1757,6 +1765,7 @@ describe('LarkApprovalCardHandler', () => {
     assert.equal(result.handled, true);
     assert.match((result.responseBody as any).toast.content, /retry the exact desktop action/i);
     assert.equal(repo.store.get('approval-1')!.status, 'approved');
+    await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(lark.updatedMessages.length, 1);
 
     await new Promise(r => setTimeout(r, 50));

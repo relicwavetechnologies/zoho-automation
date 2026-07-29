@@ -154,11 +154,24 @@ export function buildApprovalResolutionCard(
   resolvedByName: string,
   resolvedAt: Date,
 ): string {
+  const card = buildApprovalResolutionCardData(decision, resolvedByName, resolvedAt);
+
+  return JSON.stringify({
+    msg_type: 'interactive',
+    card:     JSON.stringify(card),
+  });
+}
+
+export function buildApprovalResolutionCardData(
+  decision: 'approved' | 'rejected',
+  resolvedByName: string,
+  resolvedAt: Date,
+): Record<string, unknown> {
   const emoji   = decision === 'approved' ? '✅' : '❌';
   const label   = decision === 'approved' ? 'Approved' : 'Rejected';
   const timeStr = resolvedAt.toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
 
-  const card = {
+  return {
     config: { wide_screen_mode: true },
     header: {
       title: { tag: 'plain_text', content: `${emoji} ${label} by ${resolvedByName}` },
@@ -171,9 +184,4 @@ export function buildApprovalResolutionCard(
       },
     ],
   };
-
-  return JSON.stringify({
-    msg_type: 'interactive',
-    card:     JSON.stringify(card),
-  });
 }
