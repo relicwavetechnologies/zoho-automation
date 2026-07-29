@@ -74,6 +74,12 @@ function createHarness(
     botOpenId: 'ou_bot',
   });
   adapter.sendFinalReply = async () => ok({ messageId: 'om_reply' });
+  adapter.sendStatus = async () => ok({
+    channel: 'lark',
+    messageId: 'om_status',
+    correlationId: 'scenario-status',
+  } as any);
+  adapter.editStatus = async handle => ok(handle);
   const receiptRepo = {
     accept: async (input: {
       tenantKey: string;
