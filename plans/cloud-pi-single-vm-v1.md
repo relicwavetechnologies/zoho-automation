@@ -1,6 +1,6 @@
 # Cloud Pi in Per-User Docker Containers — Living Implementation Plan
 
-> **Status:** Local Lark/Pi proof complete; development deployment is in progress
+> **Status:** Development Pi stack deployed and proven through permanent Lark ingress
 >
 > **Owner:** Abhishek / Divo engineering
 >
@@ -3104,7 +3104,7 @@ Recovery options are:
 ### D-020 — Extend the existing development deployment with Pi
 
 - **Date:** 2026-07-30
-- **Status:** Code and local validation complete; CI deployment pending
+- **Status:** Deployed and proven through a real permanent-webhook Lark prompt
 - **Decision:** Deploy the current proven slice before adding further parity.
   Extend the existing `divo-development` Compose project instead of creating a
   second backend or replacing the active development stack.
@@ -3133,12 +3133,29 @@ Recovery options are:
   stale per-user containers are recreated when their immutable image changes,
   and the unnecessary `seccomp=unconfined` option was removed from the public
   backend.
-- **Development acceptance still required:** Push the `dev` commit, run the
-  manual deployment workflow, verify all existing services remain healthy,
-  verify exact image tags and controller reachability from the backend, then
-  point the Lark development webhook at
-  `https://app-dev.103.172.92.187.sslip.io/webhooks/lark/events` and complete
-  one real prompt.
+- **Development acceptance evidence:** CI run `30485226433` passed backend
+  typecheck and all `2508` backend tests, admin build, Pi tests, both image
+  builds, Compose validation, immutable GHCR publication, VM update, and its
+  automated HTTPS/controller smoke test. Independent read-only verification
+  found backend, admin, controller, Postgres, three Redis services, and Google
+  Workspace MCP healthy; the backend reached controller health `200` at
+  `0/2` active runs; the controller had no published port, a read-only root,
+  all capabilities dropped, and only its required Docker socket; and the
+  `1,586,140,550`-byte runtime image was present under the exact commit tag.
+  Non-Divo `oms-prod` and `vps` containers retained their original multi-day
+  uptimes. The public HTTPS route and a Lark URL-verification challenge both
+  returned `200`.
+- **Permanent Lark proof:** The development Lark app was moved from ngrok to
+  `https://app-dev.103.172.92.187.sslip.io/webhooks/lark/events`. Abhishek sent
+  `hi there divo`; the webhook acknowledged in `38 ms`, resolved the canonical
+  company/user/department and 26 governed tools, created isolated profile
+  `cloud-15769fedb76e745fee56`, started the exact immutable Pi image, used
+  DeepSeek only through the Divo LLM proxy, and delivered Pi's final answer
+  back to the same Lark DM. The first fresh-VM run completed in `35.399 s`,
+  including `1.225 s` final Lark delivery and about `2.6 s` model generation.
+  The runtime then stopped normally with exit `143`, `OOMKilled=false`; its
+  named workspace/auth volumes remained and controller capacity returned to
+  `0/2`. No AI SDK fallback ran.
 
 ---
 
@@ -3211,9 +3228,9 @@ Do these in order:
 14. `[ ]` Add persistent per-run metrics and the measured host-wide heavy-job
     admission policy, then run a staged `5 → 20 → 40 → 70` synthetic
     concurrency test.
-15. `[~]` Deploy the current Pi runtime/controller through the existing
-    development CI pipeline, verify the VPS, and move the Lark development
-    webhook from ngrok to the permanent development URL.
+15. `[x]` Deploy and verify the current Pi runtime/controller through the
+    existing development CI pipeline, move Lark from ngrok to the permanent
+    development webhook, and complete one real cloud prompt.
 16. `[ ]` Run Phase 8 gates before expanding beyond the two-user development
     pilot.
 
@@ -3248,6 +3265,15 @@ Do these in order:
 - Recorded successful local release validation and the required cold-review
   findings; the GitHub CI deployment and permanent development Lark webhook
   proof remain.
+- Deployed commit `4d4b506fe` through CI run `30485226433`; all automated
+  tests, image publication, VM update, and smoke checks passed.
+- Independently verified exact immutable images, private controller routing,
+  zero pre-start user runtimes, healthy HTTPS/Lark challenge handling, and
+  unchanged non-Divo container uptimes on the shared VM.
+- Completed the first permanent-webhook Lark turn on the development VM:
+  authenticated ingress, permission resolution, isolated container creation,
+  Divo-proxied DeepSeek generation, final Lark delivery, normal idle stop, and
+  durable named volumes all passed in `35.399 s` with no fallback or OOM.
 
 ### 2026-07-29
 
