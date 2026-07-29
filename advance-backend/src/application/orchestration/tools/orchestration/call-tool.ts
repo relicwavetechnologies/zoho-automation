@@ -50,11 +50,12 @@ export function createCallToolTool(
   const availableIds = registry.ids()
     .filter((toolId) => !allowedToolIds || allowedToolIds.has(String(toolId)))
     .join(', ');
-  const unresolvedAttempts = new Set<string>();
+  const unresolvedRecommendations = new Set<string>();
 
   return dynamicTool({
     description:
       `Execute any tool by ID. Route your action through this single tool instead of calling tools directly.\n` +
+      `Medium-priority recommendation: load the matching approved skill for extra context. It is not required when you already know the exact tool and arguments.\n` +
       `Available tools: ${availableIds}`,
     inputSchema: inputSchema as never,
     execute: async (input: unknown): Promise<string> => {
@@ -84,16 +85,19 @@ export function createCallToolTool(
           });
           return `${workContext.terminalFailure.status}: ${workContext.terminalFailure.message}`;
         }
-        const attemptKey = `${workContext.version}:${toolId}`;
-        if (unresolvedAttempts.has(attemptKey)) {
-          onDecision?.({ toolId, outcome: 'failure', status: 'routing_contract_violation' });
-          return `routing_contract_violation: Tool "${toolId}" was retried without any approved skill being loaded. `
-            + 'No tool was run. Do not retry or substitute another capability.';
+        const recommendationKey = `${workContext.version}:${toolId}`;
+        if (!unresolvedRecommendations.has(recommendationKey)) {
+          unresolvedRecommendations.add(recommendationKey);
+          adapterCtx.logger.warn('call_tool.skill_load_recommended', {
+            toolId,
+            severity: 'medium',
+          });
+          onDecision?.({
+            toolId,
+            outcome: 'success',
+            status: 'skill_load_recommended_medium',
+          });
         }
-        unresolvedAttempts.add(attemptKey);
-        onDecision?.({ toolId, outcome: 'failure', status: 'work_context_required' });
-        return `work_context_required: Tool "${toolId}" is not authorized in this run because no approved skill granting it has been loaded. `
-          + 'Load the exact router or specialist returned by resolve_work before retrying.';
       }
 
       adapterCtx.logger.info('call_tool.invoke', { toolId });

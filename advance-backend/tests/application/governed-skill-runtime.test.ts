@@ -688,10 +688,12 @@ describe('governed DB skill tools', () => {
     assert.equal(captured.perm, financePermission);
   });
 
-  it('flags only a repeated unresolved tool call without a skill-load state change', async () => {
+  it('recommends skill loading once per context while allowing unresolved tool calls', async () => {
     const registry = new ToolRegistry();
     registry.register(appTool('zohoBooks', 'Zoho Books schema'));
     let workContextVersion = 0;
+    let executions = 0;
+    const decisions: Array<{ outcome: string; status: string }> = [];
     let terminalFailure: {
       status: 'permission_denied' | 'routing_unavailable';
       message: string;
@@ -710,8 +712,18 @@ describe('governed DB skill tools', () => {
         clock: { now: () => new Date(), nowMs: () => Date.now() } as any,
       },
       new Set(['zohoBooks']),
-      undefined,
-      undefined,
+      event => decisions.push(event),
+      {
+        executeForRuntime: async () => {
+          executions += 1;
+          return {
+            status: 'success',
+            toolId: 'zohoBooks',
+            action: 'read',
+            result: { invoices: [] },
+          };
+        },
+      } as any,
       () => false,
       undefined,
       () => ({
@@ -724,21 +736,30 @@ describe('governed DB skill tools', () => {
       toolId: 'zohoBooks',
       args: { op: 'list_invoices' },
     });
-    assert.match(first, /^work_context_required:/);
+    assert.match(first, /"invoices":\[\]/);
 
     const repeated = await executeDynamic(tool, {
       toolId: 'zohoBooks',
       args: { op: 'list_invoices' },
     });
-    assert.match(repeated, /^routing_contract_violation:/);
-    assert.match(repeated, /retried without any approved skill being loaded/);
+    assert.match(repeated, /"invoices":\[\]/);
+    assert.equal(executions, 2);
+    assert.equal(
+      decisions.filter(event => event.status === 'skill_load_recommended_medium').length,
+      1,
+    );
 
     workContextVersion += 1;
     const afterSkillLoad = await executeDynamic(tool, {
       toolId: 'zohoBooks',
       args: { op: 'list_invoices' },
     });
-    assert.match(afterSkillLoad, /^work_context_required:/);
+    assert.match(afterSkillLoad, /"invoices":\[\]/);
+    assert.equal(executions, 3);
+    assert.equal(
+      decisions.filter(event => event.status === 'skill_load_recommended_medium').length,
+      2,
+    );
 
     terminalFailure = {
       status: 'permission_denied',
@@ -752,10 +773,12 @@ describe('governed DB skill tools', () => {
       denied,
       'permission_denied: You do not have access to the Finance department. No tool was run.',
     );
+    assert.equal(executions, 3);
   });
 
-  it('refuses governed execution until that exact tool has been resolved', async () => {
+  it('treats exact skill resolution as recommended context rather than authorization', async () => {
     let executed = false;
+    const decisions: Array<{ outcome: string; status: string }> = [];
     const resolvedToolIds = new Set<string>();
     let resolvedQuery = '';
     const currentRequest = `Create the launch document ${'with parent context '.repeat(120)}`;
@@ -774,7 +797,7 @@ describe('governed DB skill tools', () => {
         chatId: 'chat-1',
       },
       new Set(['larkDoc']),
-      undefined,
+      event => decisions.push(event),
       undefined,
       toolId => resolvedToolIds.has(toolId),
     );
@@ -801,10 +824,13 @@ describe('governed DB skill tools', () => {
       },
     });
 
-    const blocked = await executeDynamic(tool, { toolId: 'larkDoc', args: { op: 'create' } });
-    assert.match(blocked, /^work_context_required:/);
-    assert.match(blocked, /no approved skill granting it has been loaded/i);
-    assert.equal(executed, false);
+    const unresolved = await executeDynamic(tool, { toolId: 'larkDoc', args: { op: 'create' } });
+    assert.match(unresolved, /"created":true/);
+    assert.equal(executed, true);
+    assert.equal(
+      decisions.filter(event => event.status === 'skill_load_recommended_medium').length,
+      1,
+    );
 
     await executeDynamic(resolveTool, {
       variants: ['Load an unrelated recipe'],
@@ -814,6 +840,10 @@ describe('governed DB skill tools', () => {
     const allowed = await executeDynamic(tool, { toolId: 'larkDoc', args: { op: 'create' } });
     assert.match(allowed, /"created":true/);
     assert.equal(executed, true);
+    assert.equal(
+      decisions.filter(event => event.status === 'skill_load_recommended_medium').length,
+      1,
+    );
   });
 
   it('keeps Lark resolve_work router-only while preserving the raw request and bounded variants', async () => {
