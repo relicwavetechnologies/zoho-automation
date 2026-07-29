@@ -11,7 +11,28 @@ export interface LarkPiRuntimeInput {
   readonly conversation: ConversationHandle;
   readonly threadId: string;
   readonly abortSignal?: AbortSignal;
+  readonly onProgress?: (event: LarkPiProgressEvent) => Promise<void> | void;
 }
+
+export type LarkPiProgressEvent =
+  | {
+      readonly type: 'starting';
+      readonly stage: 'workspace' | 'container';
+      readonly label: string;
+    }
+  | { readonly type: 'ready' | 'thinking' | 'writing' }
+  | {
+      readonly type: 'tool_start';
+      readonly callId: string;
+      readonly toolName: string;
+      readonly toolId?: string;
+    }
+  | {
+      readonly type: 'tool_end';
+      readonly callId: string;
+      readonly toolName: string;
+      readonly isError: boolean;
+    };
 
 export class LarkPiRuntimeError extends Error {
   constructor(
@@ -83,7 +104,10 @@ export class LarkPiRuntimeService {
         `${this.deps.controllerUrl.replace(/\/+$/, '')}/v1/lark-runs`,
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/x-ndjson, application/json',
+          },
           body: JSON.stringify({
             backendUrl: this.deps.backendUrl,
             runtimeLease,
@@ -105,6 +129,10 @@ export class LarkPiRuntimeService {
         'Pi could not start this request (controller_unreachable). No fallback agent was run.',
         String(error),
       );
+    }
+
+    if (response.headers.get('content-type')?.includes('application/x-ndjson')) {
+      return this.readStream(response, input);
     }
 
     const body = await response.json().catch(() => null) as {
@@ -131,4 +159,123 @@ export class LarkPiRuntimeService {
     }
     return { text: body.text.trim() };
   }
+
+  private async readStream(
+    response: Response,
+    input: LarkPiRuntimeInput,
+  ): Promise<{ text: string }> {
+    if (!response.body) {
+      throw new LarkPiRuntimeError(
+        'empty_controller_stream',
+        'Pi completed without a usable answer (empty_controller_stream). No fallback agent was run.',
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    let streamError: { code: string; message?: string } | undefined;
+
+    const consume = async (line: string): Promise<void> => {
+      if (!line.trim()) return;
+      let event: unknown;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        throw new LarkPiRuntimeError(
+          'invalid_controller_stream',
+          'Pi could not complete this request (invalid_controller_stream). No fallback agent was run.',
+        );
+      }
+      if (!event || typeof event !== 'object') return;
+      const record = event as Record<string, unknown>;
+      if (record['type'] === 'progress') {
+        const progress = parseProgressEvent(record['progress']);
+        if (progress && input.onProgress) {
+          try {
+            await input.onProgress(progress);
+          } catch (error) {
+            this.log.warn('pi.progress.delivery_failed', {
+              error: String(error),
+              correlationId: input.incoming.traceId,
+              progressType: progress.type,
+            });
+          }
+        }
+        return;
+      }
+      if (record['type'] === 'result' && typeof record['text'] === 'string') {
+        text = record['text'].trim();
+        return;
+      }
+      const error = record['error'];
+      if (record['type'] === 'error' && error && typeof error === 'object') {
+        const value = error as Record<string, unknown>;
+        streamError = {
+          code: typeof value['code'] === 'string' ? value['code'] : 'run_failed',
+          ...(typeof value['message'] === 'string' ? { message: value['message'] } : {}),
+        };
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) await consume(line);
+      if (done) break;
+    }
+    await consume(buffer);
+
+    if (streamError) {
+      const userMessage = streamError.code === 'capacity_full' || streamError.code === 'user_busy'
+        ? streamError.message ?? 'Your Pi agent is busy. Please try again shortly.'
+        : `Pi could not complete this request (${streamError.code}). No fallback agent was run.`;
+      throw new LarkPiRuntimeError(streamError.code, userMessage, streamError.message);
+    }
+    if (!text) {
+      throw new LarkPiRuntimeError(
+        'empty_runtime_response',
+        'Pi completed without a usable answer (empty_runtime_response). No fallback agent was run.',
+      );
+    }
+    return { text };
+  }
+}
+
+function safeProgressString(value: unknown, maxLength = 120): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized ? normalized.slice(0, maxLength) : undefined;
+}
+
+function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const event = value as Record<string, unknown>;
+  const type = event['type'];
+  if (type === 'ready' || type === 'thinking' || type === 'writing') return { type };
+  if (type === 'starting') {
+    const stage = event['stage'];
+    const label = safeProgressString(event['label']);
+    if ((stage === 'workspace' || stage === 'container') && label) {
+      return { type, stage, label };
+    }
+    return undefined;
+  }
+  if (type === 'tool_start') {
+    const callId = safeProgressString(event['callId'], 100);
+    const toolName = safeProgressString(event['toolName'], 80);
+    const toolId = safeProgressString(event['toolId'], 80);
+    if (!callId || !toolName) return undefined;
+    return { type, callId, toolName, ...(toolId ? { toolId } : {}) };
+  }
+  if (type === 'tool_end') {
+    const callId = safeProgressString(event['callId'], 100);
+    const toolName = safeProgressString(event['toolName'], 80);
+    if (!callId || !toolName) return undefined;
+    return { type, callId, toolName, isError: event['isError'] === true };
+  }
+  return undefined;
 }

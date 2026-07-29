@@ -5,6 +5,7 @@ import {
 	createAdmissionController,
 	createControllerServer,
 } from "../local-rpc-server.mjs";
+import { projectRuntimeProgress } from "../local-rpc-controller.mjs";
 
 function deferred() {
 	let resolve;
@@ -13,6 +14,50 @@ function deferred() {
 	});
 	return { promise, resolve };
 }
+
+test("Pi events become sanitized progress events", () => {
+	assert.deepEqual(
+		projectRuntimeProgress({
+			type: "tool_execution_start",
+			toolCallId: "call-1",
+			toolName: "divo_gateway",
+			args: {
+				payload: {
+					toolId: "googleDrive",
+					token: "must-not-leak",
+				},
+			},
+		}),
+		{
+			type: "tool_start",
+			callId: "call-1",
+			toolName: "divo_gateway",
+			toolId: "googleDrive",
+		},
+	);
+	assert.deepEqual(
+		projectRuntimeProgress({
+			type: "tool_execution_end",
+			toolCallId: "call-1",
+			toolName: "divo_gateway",
+			result: { secret: "must-not-leak" },
+			isError: false,
+		}),
+		{
+			type: "tool_end",
+			callId: "call-1",
+			toolName: "divo_gateway",
+			isError: false,
+		},
+	);
+	assert.deepEqual(
+		projectRuntimeProgress({
+			type: "message_update",
+			assistantMessageEvent: { type: "text_delta", delta: "private answer text" },
+		}),
+		{ type: "writing" },
+	);
+});
 
 test("admission isolates profiles, rejects overload, and accepts a retry", async () => {
 	const gates = new Map();
@@ -130,6 +175,77 @@ test("Lark runs admit only the profile derived from a validated runtime lease", 
 	assert.equal(calls[1].runtime.profile, "cloud-derived");
 	assert.equal("approve" in calls[1], false);
 	assert.equal(calls[1].options.signal, undefined);
+});
+
+test("Lark runs stream progress and one final result as NDJSON", async (context) => {
+	const admission = createAdmissionController({
+		resolveLease: async ({ backendUrl, lease }) => ({
+			profile: "cloud-derived",
+			thread: "lark-derived",
+			backendUrl,
+			token: lease,
+			userId: "user-1",
+			companyId: "company-1",
+			instanceId: "pi-local-1",
+		}),
+		executeRuntime: async (_runtime, _message, { onProgress }) => {
+			onProgress({ type: "ready" });
+			onProgress({
+				type: "tool_start",
+				callId: "call-1",
+				toolName: "bash",
+			});
+			onProgress({
+				type: "tool_end",
+				callId: "call-1",
+				toolName: "bash",
+				isError: false,
+			});
+			return { text: "Finished" };
+		},
+	});
+	const { server } = createControllerServer({ admission });
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	context.after(() => server.close());
+	const { port } = server.address();
+	const response = await fetch(`http://127.0.0.1:${port}/v1/lark-runs`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			accept: "application/x-ndjson",
+		},
+		body: JSON.stringify({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "work",
+		}),
+	});
+
+	assert.match(response.headers.get("content-type"), /application\/x-ndjson/);
+	const events = (await response.text())
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line));
+	assert.deepEqual(events, [
+		{ type: "progress", progress: { type: "ready" } },
+		{
+			type: "progress",
+			progress: { type: "tool_start", callId: "call-1", toolName: "bash" },
+		},
+		{
+			type: "progress",
+			progress: {
+				type: "tool_end",
+				callId: "call-1",
+				toolName: "bash",
+				isError: false,
+			},
+		},
+		{ type: "result", text: "Finished" },
+	]);
 });
 
 test("disconnecting a Lark request aborts its admitted runtime", async (context) => {

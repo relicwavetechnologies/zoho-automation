@@ -501,10 +501,64 @@ async function clearBootstrap(volume) {
 	await runVolumeCommand(volume, "rm -f /run/divo-auth/bootstrap.json");
 }
 
+function progressToolId(toolName, args) {
+	const direct = args?.toolId;
+	const nested = args?.payload?.toolId;
+	const value = typeof direct === "string" ? direct : typeof nested === "string" ? nested : undefined;
+	if (!value || !/^[A-Za-z0-9._-]{1,80}$/.test(value)) return undefined;
+	return toolName === "divo_gateway" || toolName === "call_tool" ? value : undefined;
+}
+
+export function projectRuntimeProgress(event) {
+	if (!event || typeof event !== "object") return undefined;
+	if (event.type === "agent_start" || event.type === "turn_start") {
+		return { type: "thinking" };
+	}
+	if (event.type === "tool_execution_start") {
+		const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
+		const toolId = progressToolId(toolName, event.args);
+		return {
+			type: "tool_start",
+			callId: String(event.toolCallId ?? ""),
+			toolName,
+			...(toolId ? { toolId } : {}),
+		};
+	}
+	if (event.type === "tool_execution_end") {
+		return {
+			type: "tool_end",
+			callId: String(event.toolCallId ?? ""),
+			toolName: typeof event.toolName === "string" ? event.toolName : "tool",
+			isError: event.isError === true,
+		};
+	}
+	if (
+		event.type === "message_update"
+		&& event.assistantMessageEvent?.type === "text_delta"
+	) {
+		return { type: "writing" };
+	}
+	return undefined;
+}
+
+function emitRuntimeProgress(onProgress, event) {
+	if (!onProgress) return;
+	try {
+		const result = onProgress(event);
+		if (result && typeof result.catch === "function") {
+			void result.catch(() => {});
+		}
+	} catch {
+		// Status delivery must never interrupt the agent run.
+	}
+}
+
 export class JsonlRpc {
-	constructor(child, answerRequest) {
+	constructor(child, answerRequest, onProgress) {
 		this.child = child;
 		this.answerRequest = answerRequest;
+		this.onProgress = onProgress;
+		this.writingStarted = false;
 		this.nextId = 0;
 		this.pending = new Map();
 		this.waiters = new Map();
@@ -538,6 +592,11 @@ export class JsonlRpc {
 		const waiters = this.waiters.get(value.type) ?? [];
 		this.waiters.delete(value.type);
 		for (const waiter of waiters) waiter(value);
+		const progress = projectRuntimeProgress(value);
+		if (progress && !(progress.type === "writing" && this.writingStarted)) {
+			if (progress.type === "writing") this.writingStarted = true;
+			emitRuntimeProgress(this.onProgress, progress);
+		}
 		if (value.type === "extension_ui_request") {
 			void this.answerRequest(value, (response) => this.write(response));
 		}
@@ -699,8 +758,14 @@ async function runPrompt({
 	departmentId,
 	answerRequest,
 	signal,
+	onProgress,
 }) {
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
+	emitRuntimeProgress(onProgress, {
+		type: "starting",
+		stage: "workspace",
+		label: "Preparing your secure workspace…",
+	});
 	const resources = await ensureRuntime(profile);
 	const bootstrap = {
 		backendUrl: backendUrlForContainer(backendUrl),
@@ -712,6 +777,11 @@ async function runPrompt({
 		departmentId,
 	};
 	await writeBootstrap(resources.authVolume, bootstrap);
+	emitRuntimeProgress(onProgress, {
+		type: "starting",
+		stage: "container",
+		label: "Starting your Pi agent…",
+	});
 	const startedAt = Date.now();
 	const child = spawn("docker", ["start", "--attach", "--interactive", resources.container], {
 		stdio: ["pipe", "pipe", "pipe"],
@@ -725,11 +795,12 @@ async function runPrompt({
 	signal?.addEventListener("abort", abort, { once: true });
 	try {
 		await waitUntilRunning(resources.container);
-		const rpc = new JsonlRpc(child, answerRequest);
+		const rpc = new JsonlRpc(child, answerRequest, onProgress);
 		const state = await rpc.send({ type: "get_state" }, 90_000);
 		console.error(
 			`Ready ${profile}/${thread} in ${Date.now() - startedAt}ms (session ${state.sessionId})`,
 		);
+		emitRuntimeProgress(onProgress, { type: "ready" });
 		const completed = rpc.waitFor("agent_end");
 		await rpc.send({ type: "prompt", message }, 90_000);
 		await completed;
@@ -812,6 +883,7 @@ export async function promptWithRuntimeLease(runtime, message, options = {}) {
 		message,
 		answerRequest: createHeadlessExtensionResponder(),
 		signal: options.signal,
+		onProgress: options.onProgress,
 	});
 }
 

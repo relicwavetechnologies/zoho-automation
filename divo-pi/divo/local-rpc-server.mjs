@@ -92,10 +92,15 @@ export function createAdmissionController({
 			if (thread !== undefined) validateThread(thread);
 			return admit(profile, () => execute(profile, normalizedMessage, { thread, approve }));
 		},
-		async runRuntime({ backendUrl, runtimeLease, message, signal }) {
+		async runRuntime({ backendUrl, runtimeLease, message, signal, onProgress }) {
 			const normalizedMessage = validateMessage(message);
 			const runtime = await resolveLease({ backendUrl, lease: runtimeLease });
-			return admit(runtime.profile, () => executeRuntime(runtime, normalizedMessage, { signal }));
+			return admit(runtime.profile, () =>
+				executeRuntime(runtime, normalizedMessage, {
+					signal,
+					...(onProgress ? { onProgress } : {}),
+				}),
+			);
 		},
 	};
 }
@@ -123,6 +128,11 @@ function sendJson(response, statusCode, value, headers = {}) {
 	response.end(`${JSON.stringify(value)}\n`);
 }
 
+function sendNdjson(response, value) {
+	if (response.destroyed || response.writableEnded) return;
+	response.write(`${JSON.stringify(value)}\n`);
+}
+
 export function createControllerServer(options = {}) {
 	const admission =
 		options.admission ??
@@ -147,6 +157,7 @@ export function createControllerServer(options = {}) {
 			});
 			return;
 		}
+		let streaming = false;
 		try {
 			const body = await readJson(request);
 			const controller = new AbortController();
@@ -154,6 +165,26 @@ export function createControllerServer(options = {}) {
 			response.once("close", () => {
 				if (!response.writableEnded) controller.abort();
 			});
+			if (
+				isLarkRun
+				&& String(request.headers.accept ?? "").includes("application/x-ndjson")
+			) {
+				streaming = true;
+				response.writeHead(200, {
+					"content-type": "application/x-ndjson; charset=utf-8",
+					"cache-control": "no-store",
+					connection: "keep-alive",
+				});
+				const result = await admission.runRuntime({
+					...body,
+					signal: controller.signal,
+					onProgress: (progress) =>
+						sendNdjson(response, { type: "progress", progress }),
+				});
+				sendNdjson(response, { type: "result", text: result.text });
+				response.end();
+				return;
+			}
 			const result = isLarkRun
 				? await admission.runRuntime({ ...body, signal: controller.signal })
 				: await admission.run(body);
@@ -168,6 +199,11 @@ export function createControllerServer(options = {}) {
 			};
 			if (error.retryAfterSeconds) {
 				payload.error.retryAfterSeconds = error.retryAfterSeconds;
+			}
+			if (streaming) {
+				sendNdjson(response, { type: "error", ...payload });
+				response.end();
+				return;
 			}
 			sendJson(
 				response,

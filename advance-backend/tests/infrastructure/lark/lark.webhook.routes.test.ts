@@ -5,8 +5,10 @@ import {
   createLarkWebhookRoutes,
   processAcceptedLarkReceipt,
   replayLarkMessageAfterLogin,
+  runPiAndDeliver,
   type LarkWebhookDeps,
 } from '../../../src/infrastructure/channels/lark/lark.webhook.routes.ts';
+import { LarkPiRuntimeError } from '../../../src/application/runtime/lark-pi-runtime.service.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
 import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
 import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
@@ -908,6 +910,119 @@ describe('Lark webhook admission', () => {
     assert.equal(result.engineInputs.length, 0);
   });
 
+  it('streams cloud Pi progress through the status card before final delivery', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      rootId: null,
+      parentId: null,
+      text: 'token=must-not-render Create a report from Drive',
+    }), {
+      engineRun: async (input: unknown) => {
+        const onProgress = (input as any).onProgress;
+        await onProgress({ type: 'ready' });
+        await onProgress({
+          type: 'tool_start',
+          callId: 'call-1',
+          toolName: 'divo_gateway',
+          toolId: 'googleDrive',
+        });
+        await onProgress({
+          type: 'tool_end',
+          callId: 'call-1',
+          toolName: 'divo_gateway',
+          isError: false,
+        });
+        await onProgress({ type: 'writing' });
+        return { text: 'Report complete' };
+      },
+    });
+
+    const adapter = result.routeDeps.adapter as any;
+    assert.ok(adapter.__statusUpdates.length >= 5);
+    assert.equal(adapter.__outboundOrder[0], 'status');
+    assert.equal(adapter.__outboundOrder.at(-1), 'final');
+    assert.deepEqual(adapter.__finalReplies, ['Report complete']);
+    assert.deepEqual(
+      adapter.__statusUpdates.map((update: any) => update.timeline.state),
+      ['thinking', 'thinking', 'working', 'working', 'writing', 'writing'],
+    );
+    const toolUpdate = adapter.__statusUpdates.find(
+      (update: any) => update.timeline.ledger?.[0]?.status === 'running',
+    );
+    assert.deepEqual(toolUpdate.timeline.ledger, [{
+      label: 'Google',
+      count: 1,
+      outcome: 'In progress',
+      status: 'running',
+    }]);
+    assert.doesNotMatch(
+      JSON.stringify(adapter.__statusUpdates),
+      /token|secret|must-not-render|args|result/i,
+    );
+  });
+
+  it('delivers a harness-visible Pi failure before rethrowing it', async () => {
+    const finalReplies: string[] = [];
+    const failure = new LarkPiRuntimeError(
+      'capacity_full',
+      'All Pi slots are busy. Please retry.',
+    );
+    const adapter = {
+      registerAbortController() {},
+      cleanupAbortController() {},
+      sendStatus: async (conversation: any) => ok({
+        channel: 'lark',
+        messageId: 'om_status',
+        correlationId: conversation.correlationId,
+      }),
+      editStatus: async (handle: any) => ok(handle),
+      sendFinalReply: async (_conversation: unknown, reply: { text: string }) => {
+        finalReplies.push(reply.text);
+        return ok({ channel: 'lark', messageId: 'om_status' });
+      },
+    };
+
+    await assert.rejects(
+      runPiAndDeliver({
+        incoming: {
+          channel: 'lark',
+          messageId: 'om_1',
+          chatId: 'oc_1',
+          chatType: 'p2p',
+          userExternalId: 'ou_sender',
+          text: 'Do the work',
+          attachments: [],
+          timestamp: new Date().toISOString(),
+          traceId: 'trace-1',
+          mentions: [],
+          mentionsSelf: true,
+          raw: {},
+        } as any,
+        runContext: {
+          companyId: 'company-1',
+          userId: 'user-1',
+          companyRole: 'MEMBER',
+          channel: 'lark',
+        } as any,
+        conversation: {
+          channel: 'lark',
+          chatId: 'oc_1',
+          correlationId: 'trace-1',
+        } as any,
+        deps: {
+          adapter: adapter as any,
+          piRuntime: {
+            run: async () => { throw failure; },
+          },
+        },
+        log: noopLogger,
+        rethrowRuntimeFailureAfterDelivery: true,
+      }),
+      error => error === failure,
+    );
+    assert.deepEqual(finalReplies, ['All Pi slots are busy. Please retry.']);
+  });
+
   it('delivers an explicit Pi failure and lets the next same-chat message run', async () => {
     const serializer = new ChatMessageSerializer({ timeoutMs: 1_000 });
     const unhandled: unknown[] = [];
@@ -1186,6 +1301,22 @@ function captureOutbound(adapter: any): void {
   adapter.__sentCards = [];
   adapter.__sentCardDeliveries = [];
   adapter.__finalReplies = [];
+  adapter.__statusUpdates = [];
+  adapter.__outboundOrder = [];
+  adapter.sendStatus = async (_conversation: unknown, update: unknown) => {
+    adapter.__statusUpdates.push(update);
+    adapter.__outboundOrder.push('status');
+    return ok({
+      channel: 'lark',
+      messageId: 'om_status',
+      correlationId: 'om_1-1700000000000',
+    });
+  };
+  adapter.editStatus = async (handle: unknown, update: unknown) => {
+    adapter.__statusUpdates.push(update);
+    adapter.__outboundOrder.push('status');
+    return ok(handle);
+  };
   adapter.sendToChatId = async (
     _chatId: string,
     text: string,
@@ -1209,6 +1340,7 @@ function captureOutbound(adapter: any): void {
   };
   adapter.sendFinalReply = async (_conversation: unknown, reply: { text: string }) => {
     adapter.__finalReplies.push(reply.text);
+    adapter.__outboundOrder.push('final');
     return ok({ messageId: 'om_reply' });
   };
 }

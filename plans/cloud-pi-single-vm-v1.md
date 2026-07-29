@@ -62,7 +62,7 @@ A phase is complete only when all of the following are true:
 | 1 | One containerized Pi runtime starts, stops, and resumes a session | `[ ]` Not started |
 | 2 | Per-user volumes preserve workspace and sessions across replacement | `[ ]` Not started |
 | 3 | Cloud Pi authenticates through the existing Divo Gateway | `[ ]` Not started |
-| 4 | Authenticated Lark turns route only to Pi and fail visibly | `[~]` Code complete; live Lark proof pending |
+| 4 | Authenticated Lark turns route only to Pi and fail visibly | `[~]` Status/final delivery proven; forced-failure and group proof pending |
 | 5 | Bounded per-user container pool works safely | `[ ]` Not started |
 | 6 | Docker host is provisioned, hardened, backed up, and observable | `[ ]` Not started |
 | 7 | Crash recovery, checkpoints, retries, and idempotency are proven | `[ ]` Not started |
@@ -1714,11 +1714,11 @@ _Record commands and results here when run._
 
 ## Phase 4 — Route authenticated Lark text turns only to cloud Pi
 
-> **Status:** `[~]` Code complete; live Lark proof pending
+> **Status:** `[~]` Live Lark CRUD/terminal proof complete; broader parity pending
 >
 > **Estimated effort:** 1–2 engineering days
 >
-> **Primary blocker:** Normalizing Pi events into the current Lark output flow.
+> **Primary blocker:** Forced-failure visibility and separate group-thread proof.
 
 ### Objective
 
@@ -1747,6 +1747,10 @@ trusted identity and channel context are established.
       run, token usage, and proxy audit.
 - [x] Add a fail-closed policy for an unavailable Pi host.
 - [x] Ensure the AI SDK runtime receives zero calls for Pi failures.
+- [x] Stream sanitized Pi lifecycle/tool progress through the existing Lark
+      status coordinator and card builder.
+- [x] Keep one status card updated in place, then replace it with the final
+      answer or a visible stopped/error result.
 
 ### Required failure rule
 
@@ -1767,7 +1771,9 @@ governed mutation may already have executed.
 ### Live verification
 
 - [x] Lark DM to Pi returns a response.
-- [ ] Follow-up continues the same Pi session.
+- [x] Follow-up continues the same Pi session.
+- [x] A live long-running turn visibly advances through status phases and
+      replaces the same card with its final answer.
 - [ ] A separate group thread gets a separate Pi session.
 - [ ] A forced Pi failure is visible in Lark and the diagnostic trace.
 
@@ -1785,6 +1791,22 @@ governed mutation may already have executed.
 - `npm run divo:test` passed `22/22` standalone Pi/controller tests, including
   controller disconnect-to-runtime cancellation.
 - Node syntax checks and scoped `git diff --check` passed.
+- The controller now streams only normalized lifecycle/tool identifiers over
+  NDJSON; raw tool arguments, results, answer deltas, and credentials are not
+  forwarded to Lark.
+- The existing Lark status coordinator remains the sole renderer: it
+  throttles/deduplicates edits, emits heartbeats for long quiet periods, and
+  replaces the status card with the final reply.
+- The focused controller, runtime-service, and Lark webhook suites pass,
+  including streamed progress sanitization, event order, capacity errors, and
+  final-card delivery.
+- The local cloud-Pi harness completed a real `45.576 s` DM run with workspace
+  write/read, Python terminal execution, and a read-only Lark Gateway call.
+  Lark created status message
+  `om_x100b6992d2fdd8a0e2ca3d6e1a430a1`, repeatedly edited that same card
+  through progress and heartbeat updates, and finalized it in place with
+  `STATUS CARD LIVE PASS`. The controller returned to `activeRuns: 0` and the
+  user container stopped normally.
 - A fresh GPT-5.6 Terra cold review found one P1: Linux `/proc` can expose the
   launch-time runtime lease after the environment is scrubbed.
 - The P1 is fixed at the backend boundary. Runtime leases are now denied by
@@ -1820,6 +1842,17 @@ governed mutation may already have executed.
   linked to that execution, both record `channel: lark` and `agentTarget: pi`,
   and report `13,294` cache-miss input tokens, `4,352` cache-hit tokens, and
   `22` output tokens.
+- A second real Divo-profile Lark turn proved durable workspace and session
+  reuse plus local file CRUD and terminal execution. Pi recreated three files,
+  ran `find` and `sha256sum`, and returned an all-pass report to the same DM.
+  The run completed in `38.321 s`, including `1.122 s` final delivery; observed
+  runtime usage was about `256 MiB` and one CPU core. The runtime then stopped
+  normally with exit `143`.
+- **Open safety finding:** When the requested test directory already existed,
+  Pi chose `rm -rf /data/workspace/cloud-e2e` before recreating it even though
+  the prompt did not authorize deletion. Only disposable test data was
+  affected, but production acceptance now requires a destructive-filesystem
+  approval/deny policy rather than relying on model judgment.
 
 ---
 
@@ -3035,11 +3068,11 @@ Recovery options are:
   - auto-confirm only Bash/edit/write operations inside the requester's
     isolated container workspace; never auto-confirm a backend-created Divo
     company mutation intent.
-- **Deliberately deferred UX:** Rich status cards, token streaming, detailed
-  tool timelines, artifact cards, and Pi-authored progress narration are not
-  required for this first proof. Pi should eventually own semantic progress
-  events, while the backend remains the owner of Lark message/card rendering,
-  credentials, delivery reservation, idempotency, and retries.
+- **Status UX boundary:** Pi now owns normalized lifecycle/tool progress
+  events, while the backend remains the sole owner of Lark message/card
+  rendering, credentials, delivery reservation, idempotency, and retries.
+  Token streaming, raw tool payloads/results, detailed timelines, and
+  Pi-authored free-form progress narration remain deliberately excluded.
 - **Failure contract:** Controller, authentication, Gateway, model, tool, or Pi
   failures are recorded and returned explicitly. They never invoke the current
   AI SDK agent. Queue recovery may retry before Pi admission; after admission,
@@ -3274,6 +3307,28 @@ Do these in order:
   authenticated ingress, permission resolution, isolated container creation,
   Divo-proxied DeepSeek generation, final Lark delivery, normal idle stop, and
   durable named volumes all passed in `35.399 s` with no fallback or OOM.
+- Added sanitized controller-to-backend progress streaming and connected it to
+  the existing Lark status coordinator/card builder. One card now advances
+  through startup, thinking, tool work, and writing, then becomes the final
+  answer; raw arguments, results, answer deltas, and credentials are excluded.
+- Removed prompt-derived status titles after cold review found that enriched
+  attachment/OCR context could otherwise be echoed into the live card. Status
+  cards now render only fixed phases and sanitized tool-family labels.
+- Updated the local cloud-Pi harness to invoke the same production
+  status/final-card flow when Lark delivery is enabled; `--no-delivery` remains
+  a direct local-only runtime test.
+- Kept harness results truthful: a Pi failure is rendered visibly in Lark
+  through the production error-card path and is then rethrown so the harness
+  exits non-zero instead of reporting a false live-test success.
+- Proved the production status/final card flow in Abhishek's real Lark DM with
+  a `45.576 s` multi-tool run. One card ID survived all edits and finalization,
+  the result reported every requested operation as passing, controller
+  admission returned to zero, and the isolated user container stopped.
+- Live-reviewed three Card 2.0 status UX prototypes: Calm Pulse, compact
+  Mission Control, and Agent Journal. All three visual directions were
+  rejected, so their prototype-only script was deliberately not retained.
+  Production keeps the existing compact status renderer until a replacement
+  design is approved.
 
 ### 2026-07-29
 

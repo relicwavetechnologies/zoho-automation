@@ -6,6 +6,7 @@ import {
 } from './lark.adapter';
 import {
   LarkPiRuntimeError,
+  type LarkPiProgressEvent,
   type LarkPiRuntimeService,
 } from '../../../application/runtime/lark-pi-runtime.service';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
@@ -41,7 +42,10 @@ import {
   asUserId,
 } from '../../../shared/ids';
 import { asCompanyRoleSlug } from '../../../domain/permissions/company-role';
-import type { ConversationHandle } from '../../../application/channels/channel.adapter';
+import type {
+  ConversationHandle,
+  StatusHandle,
+} from '../../../application/channels/channel.adapter';
 import type { IncomingMessage } from '../../../domain/channel/incoming-message';
 import {
   verifyLarkWebhookRequest,
@@ -69,7 +73,11 @@ import type {
   ChannelDeliveryRepoPort,
   ResumableDelivery,
 } from '../../persistence/channel-delivery.repository';
-import type { FinalReply } from '../../../domain/channel/outbound';
+import type {
+  ChannelLedgerRow,
+  ChannelRunState,
+  FinalReply,
+} from '../../../domain/channel/outbound';
 import {
   isUntaggedGroupMessage,
   mayPrepareAttachment,
@@ -981,7 +989,33 @@ function runtimeThreadIdFor(incoming: IncomingMessage): string {
   }));
 }
 
-async function runPiAndDeliver(input: {
+function piToolStatus(toolName: string, toolId?: string): {
+  label: string;
+  liveLabel: string;
+} {
+  const id = toolId ?? toolName;
+  if (/^lark/i.test(id)) return { label: 'Lark', liveLabel: 'Working in Lark…' };
+  if (/^google/i.test(id)) return { label: 'Google', liveLabel: 'Working in Google…' };
+  if (/^zoho/i.test(id)) return { label: 'Zoho', liveLabel: 'Working in Zoho…' };
+  if (/^airtable/i.test(id)) return { label: 'Airtable', liveLabel: 'Working in Airtable…' };
+  if (id === 'webSearch') return { label: 'Web', liveLabel: 'Searching the web…' };
+  if (toolName === 'bash') return { label: 'Terminal', liveLabel: 'Running a terminal command…' };
+  if (toolName === 'read') return { label: 'Files', liveLabel: 'Reading files…' };
+  if (toolName === 'write') return { label: 'Files', liveLabel: 'Writing files…' };
+  if (toolName === 'edit') return { label: 'Files', liveLabel: 'Editing files…' };
+  if (toolName === 'divo_subagents') {
+    return { label: 'Subagents', liveLabel: 'Running a subagent…' };
+  }
+  if (toolName === 'divo_artifact') {
+    return { label: 'Artifact', liveLabel: 'Preparing an artifact…' };
+  }
+  if (toolName === 'divo_gateway') {
+    return { label: 'Divo', liveLabel: 'Using a company capability…' };
+  }
+  return { label: 'Tool', liveLabel: 'Running a tool…' };
+}
+
+export async function runPiAndDeliver(input: {
   incoming: IncomingMessage;
   runContext: Parameters<LarkPiRuntimeService['run']>[0]['runContext'];
   conversation: ConversationHandle;
@@ -993,6 +1027,7 @@ async function runPiAndDeliver(input: {
   };
   log: Logger;
   signal?: AbortSignal;
+  rethrowRuntimeFailureAfterDelivery?: boolean;
 }): Promise<string | null> {
   const { incoming, runContext, conversation, deps, log, signal } = input;
   const controller = new AbortController();
@@ -1005,38 +1040,123 @@ async function runPiAndDeliver(input: {
     companyId: String(runContext.companyId),
     conversationKey: runtimeThreadIdFor(incoming),
   });
+  const startedAtMs = Date.now();
+  const ledger = new Map<string, ChannelLedgerRow>();
+  let statusHandle: StatusHandle | null = null;
+  let phase = 'Starting';
+  let state: ChannelRunState = 'thinking';
+  let liveLabel = 'Preparing your secure workspace…';
+  let actionCount = 0;
+
+  const publishStatus = async (): Promise<void> => {
+    const update = {
+      kind: 'status' as const,
+      terminal: false,
+      timeline: {
+        phase,
+        state,
+        liveLabel,
+        actionCount,
+        startedAtMs,
+        ...(ledger.size > 0 ? { ledger: [...ledger.values()] } : {}),
+      },
+    };
+    const result = statusHandle
+      ? await deps.adapter.editStatus(statusHandle, update)
+      : await deps.adapter.sendStatus(conversation, update);
+    if (result.ok) {
+      statusHandle = result.value;
+    } else {
+      log.warn('webhook.pi.status_failed', {
+        error: result.error.message,
+        correlationId,
+      });
+    }
+  };
+
+  const reportProgress = async (event: LarkPiProgressEvent): Promise<void> => {
+    if (event.type === 'starting') {
+      phase = 'Starting';
+      state = 'thinking';
+      liveLabel = event.label;
+    } else if (event.type === 'ready' || event.type === 'thinking') {
+      phase = 'Thinking';
+      state = 'thinking';
+      liveLabel = 'Understanding your request…';
+    } else if (event.type === 'tool_start') {
+      const tool = piToolStatus(event.toolName, event.toolId);
+      phase = 'Working';
+      state = 'working';
+      liveLabel = tool.liveLabel;
+      actionCount += 1;
+      ledger.set(event.callId, {
+        label: tool.label,
+        count: 1,
+        outcome: 'In progress',
+        status: 'running',
+      });
+    } else if (event.type === 'tool_end') {
+      const current = ledger.get(event.callId);
+      if (current) {
+        ledger.set(event.callId, {
+          ...current,
+          outcome: event.isError ? 'Failed' : 'Done',
+          status: event.isError ? 'failed' : 'done',
+        });
+      }
+      phase = 'Working';
+      state = 'working';
+      liveLabel = event.isError ? 'A step failed; checking what can continue…' : 'Continuing…';
+    } else {
+      phase = 'Writing';
+      state = 'writing';
+      liveLabel = 'Preparing your response…';
+    }
+    await publishStatus();
+  };
+
   let text: string;
+  let runtimeFailure: unknown;
   try {
+    await publishStatus();
     const result = await deps.piRuntime.run({
       incoming,
       runContext,
       conversation,
       threadId: runtimeThreadIdFor(incoming),
       abortSignal: runtimeSignal,
+      onProgress: reportProgress,
     });
     text = result.text;
   } catch (error) {
+    runtimeFailure = error;
     if (runtimeSignal.aborted) {
       log.info('webhook.pi.interrupted', { correlationId });
-      return null;
+      text = 'Stopped. I did not continue this request.';
+    } else {
+      const code = error instanceof LarkPiRuntimeError ? error.code : 'run_failed';
+      text = error instanceof LarkPiRuntimeError
+        ? error.userMessage
+        : 'Pi could not complete this request (run_failed). No fallback agent was run.';
+      log.error('webhook.pi.failed', {
+        code,
+        error: String(error),
+        correlationId: incoming.traceId,
+      });
     }
-    const code = error instanceof LarkPiRuntimeError ? error.code : 'run_failed';
-    text = error instanceof LarkPiRuntimeError
-      ? error.userMessage
-      : 'Pi could not complete this request (run_failed). No fallback agent was run.';
-    log.error('webhook.pi.failed', {
-      code,
-      error: String(error),
-      correlationId: incoming.traceId,
-    });
   } finally {
     deps.adapter.cleanupAbortController(correlationId);
   }
 
+  phase = 'Writing';
+  state = 'writing';
+  liveLabel = 'Preparing your response…';
+  await publishStatus();
+
   const delivered = await deps.adapter.sendFinalReply(conversation, {
     kind: 'final',
     text,
-    format: 'text',
+    format: 'markdown',
   });
   if (!delivered.ok) {
     log.error('webhook.pi.delivery_failed', {
@@ -1045,6 +1165,9 @@ async function runPiAndDeliver(input: {
     });
     await rethrowIfDeliveryNeedsRetry(delivered.error, incoming, deps, log);
     return null;
+  }
+  if (input.rethrowRuntimeFailureAfterDelivery && runtimeFailure) {
+    throw runtimeFailure;
   }
   return text;
 }
