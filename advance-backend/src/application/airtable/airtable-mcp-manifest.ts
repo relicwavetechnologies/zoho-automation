@@ -100,6 +100,7 @@ const DISCOVERY_OPERATIONS: readonly AirtableOperationDefinition[] = [
   { nativeTool: 'list_workspaces', action: 'read' },
   { nativeTool: 'search_bases', action: 'read' },
   { nativeTool: 'list_tables_for_base', action: 'read' },
+  { nativeTool: 'list_fields_for_table', action: 'read' },
   { nativeTool: 'get_table_schema', action: 'read' },
   { nativeTool: 'list_views_for_table', action: 'read' },
 ];

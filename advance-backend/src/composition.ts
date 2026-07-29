@@ -1771,7 +1771,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
   for (const tool of createAirtableMcpTools({
     getConnection: getAirtableMcpConnection,
-    exportQueue: dataExportQueue,
   })) {
     toolRegistry.register(tool);
   }

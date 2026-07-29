@@ -20,6 +20,8 @@ import {
 
 const INLINE_RESULT_LIMIT = 50;
 const SOURCE_ROW_LIMIT = 100_000;
+const RAW_AIRTABLE_ROW_ACCESS =
+  /\brow\s*(?:(?:\?\.|\.)\s*(?:fields|cellValuesByFieldId)\b|(?:\?\.)?\s*\[\s*(['"])(?:fields|cellValuesByFieldId)\1\s*\])/;
 
 const DirectSchema = z.object({
   script: z.string().min(1).max(20_000).describe(
@@ -58,6 +60,18 @@ const SourceSchema = z.object({
     }
     aliases.add(alias);
   });
+  if (
+    value.sources.some(({ source }) => source.kind === 'airtable_records')
+    && RAW_AIRTABLE_ROW_ACCESS.test(value.program.reduce)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['program', 'reduce'],
+      message:
+        'Airtable source rows are flattened by field name. Read row["Status"]; '
+        + 'row.fields and row.cellValuesByFieldId are unavailable.',
+    });
+  }
 });
 
 const Schema = z.union([DirectSchema, SourceSchema]);
@@ -102,6 +116,7 @@ export const createDataProcessorTool = (deps?: {
     'program.reduce: JS body receiving state, row, index, source, args. Return the next state for every row.',
     'program.finalize: optional JS body receiving state, meta, args. Return the compact answer. Without it, state is returned.',
     'meta.sources[alias] contains kind, pagesRead, recordsRead, complete. Never describe a result as exact when complete is false.',
+    'Airtable source rows are flattened objects keyed by field name plus "Record ID". Read row["Status"]; row.fields and row.cellValuesByFieldId are rejected before pagination.',
     ZOHO_BOOKS_ROW_CONTRACT,
     ZOHO_BOOKS_OUTSTANDING_RULE,
     'Source mode is read-only. The member must have dataProcessor read access and read access to every source tool.',

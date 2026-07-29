@@ -67,10 +67,16 @@ describe('DepartmentAdminService fixed policy', () => {
       departmentToolPermission: { createMany: async () => ({ count: 1 }) },
       skill: {
         findFirst: async () => null,
+        findMany: async () => [],
         create: async ({ data }: any) => {
           createdSkillSlugs.push(data.slug);
           return { ...data, revision: 1, createdBy: null, updatedBy: null };
         },
+      },
+      skillRoute: {
+        deleteMany: async () => ({ count: 0 }),
+        updateMany: async () => ({ count: 0 }),
+        createMany: async () => ({ count: 1 }),
       },
       skillVersion: { upsert: async () => ({}) },
       skillRegistryRevision: { upsert: async () => ({}) },

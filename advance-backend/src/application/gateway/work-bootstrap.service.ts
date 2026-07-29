@@ -13,6 +13,7 @@ import {
   isCanonicalToolId,
   toolFamiliesForQuery,
   toolIdsForFamily,
+  type ToolFamily,
 } from '../../domain/tools/tool-id';
 import { withWorkDiscoveryPermissions } from './work-resolution.service';
 import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
@@ -78,6 +79,7 @@ export class WorkBootstrapService {
     readonly registryRevision: number;
     readonly query?: string;
     readonly toolIds: readonly string[];
+    readonly providerFamilies?: readonly ToolFamily[];
     readonly abortSignal?: AbortSignal;
   }): Promise<WorkBootstrap> {
     input.abortSignal?.throwIfAborted();
@@ -101,7 +103,11 @@ export class WorkBootstrapService {
         argsSchema: serializeToolArgsSchema(tool.argsSchema, { $refStrategy: 'none' }),
       }));
 
-    const providers = connectionProvidersForToolIds(tools.map(tool => String(tool.id)));
+    const providers = new Set(connectionProvidersForToolIds(tools.map(tool => String(tool.id))));
+    for (const family of input.providerFamilies ?? []) {
+      const provider = TOOL_FAMILY_DEFINITIONS[family].connectionProvider;
+      if (provider) providers.add(provider);
+    }
     const advisories: WorkBootstrapAdvisory[] = [];
     if (tools.length > 0) {
       advisories.push({
@@ -112,14 +118,14 @@ export class WorkBootstrapService {
     }
 
     const connections: AccessibleConnection[] = [];
-    if (providers.length > 0 && !this.deps.connectionRegistry) {
+    if (providers.size > 0 && !this.deps.connectionRegistry) {
       advisories.push({
         code: 'connection_registry_unavailable',
         level: 'required',
         instruction: 'Connected-account discovery is unavailable. Do not guess a connection ID.',
       });
     } else if (this.deps.connectionRegistry) {
-      const results = await Promise.all(providers.map(async provider => ({
+      const results = await Promise.all([...providers].map(async provider => ({
         provider,
         result: await this.listAccessibleConnections(input, provider),
       })));

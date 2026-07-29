@@ -4,6 +4,7 @@ import type { PermissionResult } from '../../../permissions/permission.types';
 import type { WorkResolutionService, WorkResolution } from '../../../gateway/work-resolution.service';
 import type { WorkBootstrapService } from '../../../gateway/work-bootstrap.service';
 import { renderWorkBootstrapBrief } from './work-bootstrap-brief';
+import { GOVERNED_ROUTER_CANDIDATE_LIMIT } from '../../../skills/skill-catalog.service';
 
 const inputSchema = z.object({
   query: z.string().trim().min(3).max(2_000)
@@ -78,6 +79,7 @@ export function createResolveGovernedWorkTool(input: {
           query,
           ...(variants ? { variants } : {}),
           ...(input.routerSearchOnly ? { routerSearchOnly: true } : {}),
+          ...(input.routerSearchOnly ? { limit: GOVERNED_ROUTER_CANDIDATE_LIMIT } : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         });
         input.abortSignal?.throwIfAborted();
@@ -129,6 +131,15 @@ async function buildBootstrapBrief(input: {
       registryRevision: input.resolution.registryRevision,
       query: input.query,
       toolIds,
+      ...(input.resolution.routerCandidates
+        ? {
+            providerFamilies: [
+              ...new Set(input.resolution.routerCandidates.flatMap(
+                candidate => candidate.providerFamilies,
+              )),
+            ],
+          }
+        : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     });
     return renderWorkBootstrapBrief(bootstrap);
@@ -171,8 +182,16 @@ function formatWorkResolution(resolution: WorkResolution, hasCanonicalBootstrap:
     }
     lines.push(
       'Choose one exact router, reject all candidates, or ask one concise clarification. '
-      + 'Load a chosen router with discover_skill using only its exact skillId.',
+      + 'Load a chosen router with discover_skill using only its exact skillId. '
+      + 'The router then returns approved specialist IDs; load the matching specialist before calling any tool.',
     );
+    if (hasCanonicalBootstrap) {
+      lines.push(
+        'For a provider-neutral request, treat the connected-account availability below as soft evidence, not a capability filter. '
+        + 'Prefer stronger request and routing-metadata matches. A disconnected provider remains a valid capability '
+        + 'that may require the user to connect or share an account.',
+      );
+    }
   }
   if (selected.length > 0) {
     lines.push('', '## Approved recipes');

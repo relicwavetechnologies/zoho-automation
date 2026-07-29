@@ -209,6 +209,26 @@ describe('dataProcessor governed sources', () => {
     assert.match(result.error.message, /airtableRecords.*read/i);
   });
 
+  it('rejects raw Airtable preview paths before source pagination', () => {
+    const tool = createDataProcessorTool({ sources: new DatasetSourceRegistry() });
+    for (const reduce of [
+      'return row.cellValuesByFieldId.Status;',
+      'return row["fields"].Status;',
+      'return row?.fields?.Status;',
+      'return row?.["cellValuesByFieldId"]?.Status;',
+    ]) {
+      const parsed = tool.argsSchema.safeParse({
+        sources: [{ alias: 'airtable', source: airtableSource }],
+        program: { reduce },
+      });
+      assert.equal(parsed.success, false);
+      assert.match(
+        parsed.success ? '' : parsed.error.message,
+        /flattened by field name.*row\.fields.*row\.cellValuesByFieldId/i,
+      );
+    }
+  });
+
   it('marks a source incomplete when the governed row boundary is reached', async () => {
     const registry = new DatasetSourceRegistry();
     registry.register({

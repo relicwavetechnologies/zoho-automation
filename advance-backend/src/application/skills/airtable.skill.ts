@@ -10,7 +10,8 @@ const AIRTABLE_CONNECTION_METHOD = `DIVO-GOVERNED AIRTABLE CONNECTION:
 const AIRTABLE_ID_DISCIPLINE = `IDENTIFIER DISCIPLINE:
 - Airtable IDs have fixed prefixes: bases are app..., tables tbl..., fields fld..., records rec..., views viw....
 - Never invent, guess, or reconstruct an ID, and never pass a user-facing name where an ID is required.
-- Resolve IDs first: search_bases or list_bases for a base, list_tables_for_base or get_table_schema for tables and fields, list_records_for_table or search_records for records.
+- Resolve IDs first: search_bases or list_bases for a base, list_tables_for_base for tables, list_fields_for_table for the complete field ID/name index of one table, get_table_schema for detailed selected-field schemas, and list_records_for_table or search_records for records.
+- get_table_schema input is { baseId, tables: [{ tableId, fieldIds: ["fld..."] }] }. Resolve field IDs with list_fields_for_table first; never guess this shape.
 - Some operations accept a table or field NAME as well as an ID. Table names resolve case-insensitively; field names resolve case-SENSITIVELY. When a name has failed once, resolve the ID and use it.
 - To act on specific records, filter or search for them first and use the returned record IDs. Never assume a record ID from context.`;
 
@@ -57,6 +58,7 @@ ${AIRTABLE_WRITE_SAFETY}
 
 ANALYSIS:
 - Airtable returns raw rows; it does not aggregate. For totals, grouping, ratios, or cross-table joins, pull the needed rows with narrow fieldIds and compute with dataProcessor.
+- In dataProcessor source mode, each Airtable row is flattened: fields are top-level keys by field name plus "Record ID". Read row["Status"], not row.fields or row.cellValuesByFieldId.
 - Never estimate a number you did not compute, and never present a partial page as a complete total.
 
 OUTPUT:

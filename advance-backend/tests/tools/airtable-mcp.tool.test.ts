@@ -18,11 +18,11 @@ import {
 } from '../../src/application/airtable/airtable-mcp-manifest.ts';
 import type { ToolActionGroup } from '../../src/domain/permissions/tool-action-group.ts';
 import { TOOL_SUPPORTED_ACTIONS } from '../../src/domain/tools/tool-id.ts';
-import { asToolId } from '../../src/shared/ids.ts';
 import {
   compactAirtableMcpResult,
   unwrapAirtableMcpResult,
 } from '../../src/infrastructure/airtable/airtable-mcp.client.ts';
+import { createDataProcessorTool } from '../../src/application/orchestration/tools/families/data-processor.tool.ts';
 
 const unavailableTools = () => createAirtableMcpTools({
   getConnection: async () => ({ status: 'unavailable' as const }),
@@ -79,7 +79,7 @@ describe('airtable manifest', () => {
 
   it('keeps read-only discovery available to the records tool', () => {
     // Records work is impossible without resolving a baseId and tableId first.
-    for (const nativeTool of ['list_bases', 'list_tables_for_base', 'get_table_schema']) {
+    for (const nativeTool of ['list_bases', 'list_tables_for_base', 'list_fields_for_table', 'get_table_schema']) {
       assert.equal(airtableOperationFor('airtableRecords', nativeTool)?.action, 'read');
     }
   });
@@ -177,23 +177,6 @@ describe('airtableRecords permissionCheck', () => {
     assert.equal(result.ok, false);
   });
 
-  it('requires dataExport:create before a complete export can be queued', () => {
-    const denied = tool.permissionCheck(
-      { op: 'call', nativeTool: 'list_records_for_table', input: {}, exportAll: true } as any,
-      makeAllowedPerm('airtableRecords', ['read']),
-    );
-    const allowedPerm = makeAllowedPerm('airtableRecords', ['read']);
-    allowedPerm.allowedToolIds.add(asToolId('dataExport'));
-    allowedPerm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-    const allowed = tool.permissionCheck(
-      { op: 'call', nativeTool: 'list_records_for_table', input: {}, exportAll: true } as any,
-      allowedPerm,
-    );
-
-    assert.equal(denied.ok, false);
-    assert.equal(!denied.ok && denied.error.payload.toolId, 'dataExport');
-    assert.equal(allowed.ok, true);
-  });
 });
 
 describe('airtable args schema', () => {
@@ -339,36 +322,14 @@ describe('airtable execute', () => {
     assert.equal(value.data.hasMore, true);
   });
 
-  it('queues a complete Lark export without putting credentials or records in the job', async () => {
-    const jobs: unknown[] = [];
-    let providerRead = false;
+  it('rejects the retired inline export path before resolving a connection', async () => {
+    let resolved = false;
     const [records] = createAirtableMcpTools({
-      exportQueue: {
-        enqueue: async payload => {
-          jobs.push(payload);
-          return 'atx_job';
-        },
+      getConnection: async () => {
+        resolved = true;
+        return { status: 'unavailable' as const };
       },
-      getConnection: async () => ({
-        status: 'resolved' as const,
-        connection: {
-          client: {
-            describeTool: async () => ({ name: 'list_records_for_table', inputSchema: { type: 'object' } }),
-            callTool: async () => {
-              providerRead = true;
-              return { records: [] };
-            },
-          },
-        },
-      }),
     });
-    const ctx = makeCtx('airtableRecords', ['read'], {
-      chatId: 'oc_test',
-      requestId: 'om_test',
-      traceId: 'trace_test',
-    });
-    ctx.perm.allowedToolIds.add(asToolId('dataExport'));
-    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
     const result = await records!.execute(
       {
         op: 'call',
@@ -377,19 +338,71 @@ describe('airtable execute', () => {
         input: { baseId: 'app1', tableId: 'tbl1' },
         exportAll: true,
       } as any,
-      ctx,
+      makeCtx('airtableRecords', ['read']),
     );
 
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error.message : '', /dataProcessor.*dataExport.*explicitly requested/i);
+    assert.equal(resolved, false);
+  });
+
+  it('lists the complete field ID/name index through the backend adapter', async () => {
+    let providerCalled = false;
+    const [records] = createAirtableMcpTools({
+      getConnection: async () => ({
+        status: 'resolved' as const,
+        connection: {
+          client: {
+            describeTool: async () => null,
+            callTool: async () => {
+              providerCalled = true;
+              return {};
+            },
+            listFieldNamesForTable: async () => new Map([
+              ['fld1', 'Name'],
+              ['fld2', 'Status'],
+            ]),
+          },
+        },
+      }),
+    });
+    const result = await records!.execute({
+      op: 'call',
+      nativeTool: 'list_fields_for_table',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      input: { baseId: 'app1', tableId: 'tbl1' },
+    } as any, makeCtx('airtableRecords', ['read']));
+
     assert.equal(result.ok, true);
-    assert.equal(result.ok && result.value.exportQueued, true);
-    assert.equal(result.ok && result.value.exportJobId, 'atx_job');
-    assert.match(result.ok ? result.value.message : '', /5,000-row cap/i);
-    assert.match(result.ok ? result.value.message : '', /not be described as complete/i);
-    assert.equal(providerRead, false, 'interactive execution must not fetch the full dataset');
-    assert.equal(jobs.length, 1);
-    const serialized = JSON.stringify(jobs[0]);
-    assert.doesNotMatch(serialized, /accessToken|refreshToken|apiKey|credential/i);
-    assert.match(serialized, /"chatId":"oc_test"/);
+    assert.deepEqual(result.ok && result.value.data, {
+      fields: [{ id: 'fld1', name: 'Name' }, { id: 'fld2', name: 'Status' }],
+      fieldCount: 2,
+    });
+    assert.equal(providerCalled, false);
+  });
+
+  it('fails closed when field discovery cannot resolve the table', async () => {
+    const [records] = createAirtableMcpTools({
+      getConnection: async () => ({
+        status: 'resolved' as const,
+        connection: {
+          client: {
+            describeTool: async () => null,
+            callTool: async () => ({}),
+            listFieldNamesForTable: async () => new Map(),
+          },
+        },
+      }),
+    });
+    const result = await records!.execute({
+      op: 'call',
+      nativeTool: 'list_fields_for_table',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      input: { baseId: 'app1', tableId: 'tbl-missing' },
+    } as any, makeCtx('airtableRecords', ['read']));
+
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error.message : '', /No Airtable fields found.*list_tables_for_base/);
   });
 
   it('converts an upstream throw into a tool error instead of propagating it', async () => {
@@ -431,6 +444,12 @@ describe('airtable tool family shape', () => {
 });
 
 describe('Airtable MCP model-facing results', () => {
+  it('documents the canonical flattened Airtable row shape for source calculations', () => {
+    const docs = createDataProcessorTool().parameterDocs;
+    assert.match(docs, /flattened objects keyed by field name/i);
+    assert.match(docs, /row\["Status"\]/);
+  });
+
   it('unwraps a single JSON text result', () => {
     assert.deepEqual(
       unwrapAirtableMcpResult({

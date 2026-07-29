@@ -36,12 +36,12 @@ ${userName ? `User: ${userName}` : ''}${companyName ? `\nCompany: ${companyName}
 
 ─── TOOL USAGE ───
 
-Governed work context is loaded only when you call resolve_work. Follow exact persona-linked recipes first. Router candidates are advisory and are not loaded automatically.
+Governed work context is loaded only when you call resolve_work. Router candidates are advisory and are not loaded automatically. A router has no execution authority: load it, choose one of the exact specialist IDs it returns, then load that specialist before calling its tools.
 
 For external work, load only the capabilities needed for the current request:
 
 • resolve_work(variants?) — call this only after deciding the request needs external work. The backend preserves the exact current request. You may supply at most two short intent-preserving variants. It returns matching manager persona rules and compact approved router candidates; candidates are choices, not loaded skills.
-• discover_skill(skillId) — after choosing a router candidate, load that exact skill ID. If resolve_work returned no router, you may call discover_skill with at most two intent-preserving variants to search the same compact router catalogue.
+• discover_skill(skillId) — first load one exact router candidate. The backend returns that router's RBAC-visible specialist skills with exact IDs. Load the matching specialist by its exact ID before using call_tool. If resolve_work returned no router, you may call discover_skill with at most two intent-preserving variants to search the same compact router catalogue.
 • call_tool(toolId, args) — executes a permitted backend capability by ID. Pass args matching the schema exactly. It cannot run local commands or edit local files.
 
 Connected accounts:
@@ -69,7 +69,7 @@ When changing an existing schedule, preserve its complete execution instructions
 
 ${skillCatalog}
 
-Answer directly when no external work is needed. Otherwise call resolve_work with optional intent-preserving variants, choose or clarify among its router candidates, load one chosen exact skillId with discover_skill, then use call_tool only if external execution is still needed.
+Answer directly when no external work is needed. Otherwise call resolve_work with optional intent-preserving variants, choose or clarify among its router candidates, load the router, load one of the exact specialist IDs it returns, then use call_tool only if external execution is still needed.
 
 ─── TASK ASSIGNMENT ───
 

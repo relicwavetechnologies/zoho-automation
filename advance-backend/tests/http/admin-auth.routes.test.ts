@@ -45,6 +45,8 @@ describe('admin auth company signup provisioning', () => {
     const expectedSkill = buildShareMemorySystemSkill(companyId);
     let capturedUpsert: any = null;
     const createdSkillSlugs: string[] = [];
+    const createdSkills = new Map<string, { id: string; slug: string }>();
+    const createdRoutes: Array<{ routerSkillId: string; targetSkillId: string }> = [];
     const tx = {
       user: {
         create: async ({ data }: any) => ({ id: 'user-1', ...data }),
@@ -54,8 +56,11 @@ describe('admin auth company signup provisioning', () => {
       },
       skill: {
         findFirst: async () => null,
+        findMany: async ({ where }: any) =>
+          [...createdSkills.values()].filter(skill => where.slug.in.includes(skill.slug)),
         create: async ({ data }: any) => {
           createdSkillSlugs.push(data.slug);
+          createdSkills.set(data.id, { id: data.id, slug: data.slug });
           return {
             ...data,
             revision: data.revision ?? 1,
@@ -66,7 +71,22 @@ describe('admin auth company signup provisioning', () => {
         update: async ({ data }: any) => ({ ...data }),
         upsert: async (args: any) => {
           capturedUpsert = args;
+          createdSkills.set(args.create.id, {
+            id: args.create.id,
+            slug: args.create.slug,
+          });
           return { ...args.create, revision: 1, createdBy: null, updatedBy: null };
+        },
+      },
+      skillRoute: {
+        deleteMany: async () => ({ count: 0 }),
+        updateMany: async () => ({ count: 0 }),
+        createMany: async ({ data }: any) => {
+          createdRoutes.push(...data.map((route: any) => ({
+            routerSkillId: route.routerSkillId,
+            targetSkillId: route.targetSkillId,
+          })));
+          return { count: data.length };
         },
       },
       skillFolder: {
@@ -140,6 +160,12 @@ describe('admin auth company signup provisioning', () => {
     ]) {
       assert(createdSkillSlugs.includes(slug), `missing signup system skill: ${slug}`);
     }
+    const skillIdBySlug = new Map(
+      [...createdSkills.values()].map(skill => [skill.slug, skill.id]),
+    );
+    assert(createdRoutes.some(route =>
+      route.routerSkillId === skillIdBySlug.get('research-router')
+      && route.targetSkillId === skillIdBySlug.get('divo-semrush-seo-research')));
     assert.equal(auditRecords.length, 1);
   });
 });

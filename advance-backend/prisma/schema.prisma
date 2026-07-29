@@ -1084,6 +1084,8 @@ model Skill {
   aliases            SkillAlias[]
   capabilities       SkillCapability[]
   accessGrants       SkillAccessGrant[]
+  outgoingRoutes     SkillRoute[]                 @relation("SkillRouteRouter")
+  incomingRoutes     SkillRoute[]                 @relation("SkillRouteTarget")
   personaLinks       ManagerPersonaSkillLink[]
   learningProvenance ManagerLearningProvenance[]
 
@@ -1091,6 +1093,23 @@ model Skill {
   @@index([departmentId, status, sortOrder])
   @@index([folderId, status, sortOrder])
   @@index([companyId, scope, slug])
+}
+
+// Structured router -> specialist edges. Runtime discovery returns only
+// targets that independently pass skill grants and tool RBAC.
+model SkillRoute {
+  routerSkillId String
+  routerSkill   Skill    @relation("SkillRouteRouter", fields: [routerSkillId], references: [id], onDelete: Cascade)
+  targetSkillId String
+  targetSkill   Skill    @relation("SkillRouteTarget", fields: [targetSkillId], references: [id], onDelete: Cascade)
+  source        String   @default("manual") // 'system' | 'manual'
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@id([routerSkillId, targetSkillId])
+  @@index([routerSkillId, sortOrder])
+  @@index([targetSkillId])
 }
 
 // Folder rows are the source of truth for the admin tree. Skills remain

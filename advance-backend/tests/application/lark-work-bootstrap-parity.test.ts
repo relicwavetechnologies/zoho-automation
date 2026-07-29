@@ -276,6 +276,33 @@ describe('Lark work resolution carries the same account context desktop gets', (
   });
 });
 
+describe('provider-neutral router bootstrap', () => {
+  it('loads connection availability without loading every candidate tool contract', async () => {
+    const service = bootstrapService(
+      [sharedAirtableAccount],
+      AIRTABLE_TOOL_ID,
+      'airtable',
+    );
+
+    const bootstrap = await service.build({
+      companyId: 'company-1',
+      userId: 'user-1',
+      permission: permissionFor(AIRTABLE_TOOL_ID),
+      registryRevision: 1,
+      query: 'How many customer queries are in each status?',
+      toolIds: [],
+      providerFamilies: ['airtable', 'aitable'],
+    });
+
+    assert.deepEqual(bootstrap.tools, []);
+    assert.equal(bootstrap.connections.length, 1);
+    assert.equal(bootstrap.connections[0]?.provider, 'airtable');
+    assert.ok(bootstrap.advisories.some(
+      advisory => advisory.code === 'connection_required' && advisory.provider === 'aitable',
+    ));
+  });
+});
+
 describe('canonical family routing metadata', () => {
   it('reconciles capabilities before both local and production startup', () => {
     const packageJson = JSON.parse(

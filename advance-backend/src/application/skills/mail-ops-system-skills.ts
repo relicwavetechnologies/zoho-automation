@@ -88,6 +88,18 @@ If \`mailAutomations\` returns \`mail_ops_configuration_required\`, stop and rep
   },
 ] as const satisfies readonly DivoProductivitySystemSkillDefinition[];
 
+export async function provisionMailOpsSystemSkills(
+  db: Parameters<typeof provisionDivoProductivitySystemSkill>[0],
+  companyId: string,
+): Promise<{ created: number; updated: number; existing: number; skipped: number }> {
+  const totals = { created: 0, updated: 0, existing: 0, skipped: 0 };
+  for (const definition of MAIL_OPS_SYSTEM_SKILLS) {
+    const result = await provisionDivoProductivitySystemSkill(db, companyId, definition);
+    totals[result.outcome] += 1;
+  }
+  return totals;
+}
+
 export async function provisionMailOpsSkillsForExistingCompanies(
   db: Pick<
     PrismaClient,
@@ -115,14 +127,11 @@ export async function provisionMailOpsSkillsForExistingCompanies(
     skipped: 0,
   };
   for (const company of companies) {
-    for (const definition of MAIL_OPS_SYSTEM_SKILLS) {
-      const result = await provisionDivoProductivitySystemSkill(
-        db,
-        company.id,
-        definition,
-      );
-      totals[result.outcome] += 1;
-    }
+    const result = await provisionMailOpsSystemSkills(db, company.id);
+    totals.created += result.created;
+    totals.updated += result.updated;
+    totals.existing += result.existing;
+    totals.skipped += result.skipped;
   }
   return totals;
 }

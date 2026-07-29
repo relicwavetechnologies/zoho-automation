@@ -14,6 +14,7 @@ import {
   provisionMailOpsSkillsForExistingCompanies,
 } from '../src/application/skills/mail-ops-system-skills';
 import { provisionScheduleDivoWorkForExistingCompanies } from '../src/application/skills/scheduled-work-system-skill';
+import { provisionSystemSkillRoutesForExistingCompanies } from '../src/application/skills/system-skill-routes';
 
 export async function provisionConnectedProviderSkillsForExistingCompanies(prisma: PrismaClient) {
   const totals = { companies: 0, created: 0, updated: 0, existing: 0, skipped: 0 };
@@ -41,10 +42,11 @@ export async function reconcileCapabilities(prisma: PrismaClient) {
     scheduling: await provisionScheduleDivoWorkForExistingCompanies(prisma),
     mailOps: await provisionMailOpsSkillsForExistingCompanies(prisma),
   };
+  const skillRoutes = await provisionSystemSkillRoutesForExistingCompanies(prisma);
   const permissions = {
     mailOps: await provisionMailOpsPermissionsForExistingCompanies(prisma),
   };
-  return { registeredTools, skills, permissions };
+  return { registeredTools, skills, skillRoutes, permissions };
 }
 
 async function main() {

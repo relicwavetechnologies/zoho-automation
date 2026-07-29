@@ -1,6 +1,10 @@
 import { dynamicTool } from 'ai';
 import { z } from 'zod';
-import type { CatalogSkill, SkillCatalogService } from '../../../skills/skill-catalog.service';
+import {
+  GOVERNED_ROUTER_CANDIDATE_LIMIT,
+  type CatalogSkill,
+  type SkillCatalogService,
+} from '../../../skills/skill-catalog.service';
 import type { PermissionResult } from '../../../permissions/permission.types';
 import type { Tool as AppTool } from '../tool.contract';
 import type { WorkBootstrapService } from '../../../gateway/work-bootstrap.service';
@@ -78,7 +82,7 @@ export function createGovernedDiscoverSkillTool(context: GovernedSkillDiscoveryC
     }).strict().describe('The server preserves the exact current request. Do not supply or replace its query.');
 
   return dynamicTool({
-    description: 'Search compact approved router cards, then load one exact approved router or specialist and its permitted tool schema.',
+    description: 'Search approved router cards, load one router, then load one of its exact RBAC-visible specialist targets and permitted tool schema.',
     inputSchema: runtimeInputSchema as never,
     execute: async (input: unknown): Promise<string> => {
       const parsed = runtimeInputSchema.safeParse(input);
@@ -103,7 +107,7 @@ export function createGovernedDiscoverSkillTool(context: GovernedSkillDiscoveryC
           includeGrantedDepartments: true,
           query,
           ...(parsed.data.variants ? { variants: parsed.data.variants } : {}),
-          limit: 3,
+          limit: GOVERNED_ROUTER_CANDIDATE_LIMIT,
         });
         if (candidates.length === 0) {
           context.onDiscovery?.({ query, outcome: 'failure' });
@@ -194,6 +198,16 @@ export function createGovernedDiscoverSkillTool(context: GovernedSkillDiscoveryC
         }
       }
 
+      const routeTargets = selected.tags.includes('router')
+        ? await context.skillCatalog.listVisibleRouteTargets({
+            companyId: context.companyId,
+            ...(activeDepartmentId ? { departmentId: activeDepartmentId } : {}),
+            permission: activePermission,
+            grantedSkillIds: context.grantedSkillIds,
+            includeGrantedDepartments: true,
+            routerSkillId: selected.id,
+          })
+        : [];
       const toolDocs = selected.toolIds.flatMap((toolId) => {
         if (!activePermission.allowedToolIds.has(asToolId(toolId))) return [];
         const tool = permittedTools.get(toolId);
@@ -212,6 +226,24 @@ export function createGovernedDiscoverSkillTool(context: GovernedSkillDiscoveryC
         permission: activePermission,
         ...(activeDepartmentId ? { departmentId: activeDepartmentId } : {}),
       });
+
+      if (selected.tags.includes('router')) {
+        return [
+          `[Approved router loaded: ${selected.name}]`,
+          `## Routing instructions\n${selected.instructions}`,
+          routeTargets.length > 0
+            ? [
+                '## Approved specialist skills',
+                ...routeTargets.map(target =>
+                  `- ${target.id} — ${target.slug} — ${target.name}: ${target.description}`),
+                'This instruction-only router loaded successfully. It does not execute a provider tool itself '
+                  + 'and does not mean the capability is unavailable.',
+                'Choose the specialist that matches the request, then load it with discover_skill using only its exact ID. '
+                  + 'This router authorizes no executable tool by itself.',
+              ].join('\n')
+            : '## Approved specialist skills\nNo RBAC-visible specialist is linked to this router. No tool is authorized.',
+        ].join('\n\n');
+      }
 
       let brief = '';
       if (context.workBootstrap && context.userId && selected.toolIds.length > 0) {

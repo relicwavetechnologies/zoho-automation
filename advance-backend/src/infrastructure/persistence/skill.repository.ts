@@ -44,6 +44,14 @@ export interface SkillRepoPort {
     abortSignal?: AbortSignal;
   }): Promise<Result<SkillRow | null, InfraError>>;
 
+  listRouteTargets(input: {
+    companyId: string;
+    departmentId?: string;
+    additionalDepartmentSkillIds?: readonly string[];
+    routerSkillId: string;
+    abortSignal?: AbortSignal;
+  }): Promise<Result<SkillRow[], InfraError>>;
+
   registryRevision(
     companyId: string,
     abortSignal?: AbortSignal,
@@ -173,6 +181,42 @@ export class SkillRepository implements SkillRepoPort {
       return ok(row ? toSkillRow(row) : null);
     } catch (e) {
       return err(wrapInfra('prisma', 'skill.findById', e));
+    }
+  }
+
+  async listRouteTargets(input: {
+    companyId: string;
+    departmentId?: string;
+    additionalDepartmentSkillIds?: readonly string[];
+    routerSkillId: string;
+    abortSignal?: AbortSignal;
+  }): Promise<Result<SkillRow[], InfraError>> {
+    try {
+      input.abortSignal?.throwIfAborted();
+      const rows = await this.db.skillRoute.findMany({
+        where: {
+          routerSkillId: input.routerSkillId,
+          routerSkill: {
+            companyId: input.companyId,
+            status: 'active',
+          },
+          targetSkill: {
+            companyId: input.companyId,
+            status: 'active',
+            AND: [
+              visibilityWhere(input.departmentId, input.additionalDepartmentSkillIds),
+            ],
+          },
+        },
+        select: {
+          targetSkill: { select: SELECT },
+        },
+        orderBy: [{ sortOrder: 'asc' }, { targetSkill: { sortOrder: 'asc' } }],
+      });
+      input.abortSignal?.throwIfAborted();
+      return ok(rows.map(row => toSkillRow(row.targetSkill)));
+    } catch (e) {
+      return err(wrapInfra('prisma', 'skill.list_route_targets', e));
     }
   }
 

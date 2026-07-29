@@ -7,11 +7,6 @@ import { PermissionError, ToolError } from '../../../../shared/errors';
 import type { ToolActionGroup } from '../../../../domain/permissions/tool-action-group';
 import { TOOL_SUPPORTED_ACTIONS } from '../../../../domain/tools/tool-id';
 import { asToolId } from '../../../../shared/ids';
-import type { DataExportQueue } from '../../../data-export/data-export.queue';
-import {
-  DATA_EXPORT_ROW_LIMIT,
-  type DataExportJobPayload,
-} from '../../../data-export/data-export.types';
 import {
   AIRTABLE_MCP_AUTH_CONTRACT,
   AIRTABLE_PRODUCTS,
@@ -46,8 +41,6 @@ const ResultSchema = z.object({
   nativeTool: z.string(),
   data: z.unknown().optional(),
   message: z.string().optional(),
-  exportQueued: z.boolean().optional(),
-  exportJobId: z.string().optional(),
 });
 export type AirtableMcpToolResult = z.infer<typeof ResultSchema>;
 
@@ -56,6 +49,24 @@ const RECORD_READ_OPERATIONS = new Set(['list_records_for_table', 'search_record
 const RECORD_PREVIEW_LIMIT = 10;
 const RECORD_PREVIEW_MAX_BYTES = 24_000;
 const RECORD_PREVIEW_MAX_FIELD_BYTES = 2_000;
+const LIST_FIELDS_TOOL = 'list_fields_for_table';
+const ListFieldsInputSchema = z.object({
+  baseId: z.string().min(1),
+  tableId: z.string().min(1),
+}).strict();
+const LIST_FIELDS_DESCRIPTION: AirtableMcpToolDescription = {
+  name: LIST_FIELDS_TOOL,
+  description: 'List every field ID and name for one Airtable table before selecting fields or requesting detailed schemas.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      baseId: { type: 'string' },
+      tableId: { type: 'string' },
+    },
+    required: ['baseId', 'tableId'],
+    additionalProperties: false,
+  },
+};
 
 export interface AirtableMcpToolDescription {
   readonly name: string;
@@ -113,7 +124,6 @@ export type ResolveAirtableMcpConnection = (input: {
 
 export function createAirtableMcpTools(deps: {
   readonly getConnection: ResolveAirtableMcpConnection;
-  readonly exportQueue?: Pick<DataExportQueue, 'enqueue'>;
 }): Tool<AirtableMcpArgs, AirtableMcpToolResult>[] {
   return AIRTABLE_PRODUCTS.map((product) => createProductTool(product, deps));
 }
@@ -138,7 +148,6 @@ function createProductTool(
   product: AirtableProductDefinition,
   deps: {
     readonly getConnection: ResolveAirtableMcpConnection;
-    readonly exportQueue?: Pick<DataExportQueue, 'enqueue'>;
   },
 ): Tool<AirtableMcpArgs, AirtableMcpToolResult> {
   const supportedActions = new Set<ToolActionGroup>(
@@ -158,7 +167,8 @@ function createProductTool(
       'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent; input may be omitted for describe.',
       `nativeTool: one of ${nativeToolNames.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${AIRTABLE_MCP_AUTH_CONTRACT.agentGuidance}`,
-      `Record reads are capped to a byte-safe preview. For a governed artifact of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows, set top-level exportAll=true; disclose this cap whenever the user asks for more or every row.`,
+      'Record reads are capped to a byte-safe preview. Use dataProcessor source mode for exact totals over complete record sets.',
+      'Inline exportAll is retired and rejected. Load the Data Work Router and use dataExport only when the member explicitly requests a file, sheet, CSV, or export artifact.',
     ].join(' '),
 
     permissionCheck(args, permission) {
@@ -184,12 +194,6 @@ function createProductTool(
       if (missing) {
         return err(new PermissionError({ toolId: product.toolId, action: missing, reason: 'not_allowed' }));
       }
-      if (
-        args.exportAll
-        && !permission.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')
-      ) {
-        return err(new PermissionError({ toolId: 'dataExport', action: 'create', reason: 'not_allowed' }));
-      }
       // Report the operation's own action group so approval gating, audit rows
       // and the approval card all describe the write the member actually asked
       // for rather than an escalation implied by one input flag.
@@ -197,15 +201,16 @@ function createProductTool(
     },
 
     async preflight(args, ctx) {
+      if (args.exportAll) return inlineExportRetired(product.toolId);
       const resolved = await resolveForRequest(product, deps, args, ctx);
       if (!resolved.ok) return resolved;
       const { operation, action, connection } = resolved.value;
 
       try {
-        const description = await connection.client.describeTool(args.nativeTool);
+        const description = await describeOperation(connection.client, args.nativeTool);
         if (!description) return missingNativeTool(product, args.nativeTool);
         if (args.op === 'call') {
-          const issue = validateNativeInput(description.inputSchema, args.nativeTool, args.input ?? {});
+          const issue = validateOperationInput(description.inputSchema, args.nativeTool, args.input ?? {});
           if (issue) return badArgs(product.toolId, issue);
         }
         return ok({
@@ -222,6 +227,7 @@ function createProductTool(
     },
 
     async execute(args, ctx): Promise<Result<AirtableMcpToolResult, ToolError>> {
+      if (args.exportAll) return inlineExportRetired(product.toolId);
       const resolved = await resolveForRequest(product, deps, args, ctx);
       if (!resolved.ok) {
         // A pending account choice is a normal, recoverable turn — surface the
@@ -244,58 +250,39 @@ function createProductTool(
       try {
         if (args.op === 'describe') {
           ctx.onProgress?.(`Loading ${product.name} operation schema…`);
-          const description = await connection.client.describeTool(args.nativeTool);
+          const description = await describeOperation(connection.client, args.nativeTool);
           if (!description) return missingNativeTool(product, args.nativeTool);
           return ok({ success: true, nativeTool: args.nativeTool, data: description });
         }
 
         ctx.onProgress?.(`${progressVerb(action)} ${product.name}…`);
-        if (args.exportAll) {
-          if (!ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
-            return err(new ToolError({
-              toolId: 'dataExport',
-              reason: 'permission_denied',
-              message: `Governed Airtable exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows are not permitted for this member`,
-            }));
+        if (args.nativeTool === LIST_FIELDS_TOOL) {
+          const parsed = ListFieldsInputSchema.safeParse(args.input ?? {});
+          if (!parsed.success) {
+            return badArgs(product.toolId, parsed.error.errors
+              .map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+              .join('; '));
           }
-          if (!RECORD_READ_OPERATIONS.has(args.nativeTool)) {
-            return badArgs(product.toolId, 'exportAll is supported only for Airtable record list/search operations');
+          const fields = await connection.client.listFieldNamesForTable?.(
+            parsed.data.baseId,
+            parsed.data.tableId,
+            ctx.abortSignal,
+          );
+          if (!fields || fields.size === 0) {
+            return badArgs(
+              product.toolId,
+              `No Airtable fields found for table ${parsed.data.tableId}. Resolve the table ID with list_tables_for_base and try again.`,
+            );
           }
-          if (
-            deps.exportQueue
-            && ctx.runContext.channel === 'lark'
-            && ctx.runContext.chatId
-            && args.connectionId
-          ) {
-            const payload: DataExportJobPayload = {
-              companyId: ctx.runContext.companyId,
-              userId: ctx.runContext.userId,
-              ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
-              source: {
-                kind: 'airtable_records',
-                connectionId: args.connectionId,
-                toolId: product.toolId as 'airtableBase' | 'airtableRecords',
-                nativeTool: args.nativeTool as 'list_records_for_table' | 'search_records',
-                input: args.input ?? {},
-              },
-              destination: {
-                format: 'auto',
-                title: `Airtable ${String(args.input?.['tableId'] ?? 'records')} export`,
-              },
-              chatId: ctx.runContext.chatId,
-              requestId: ctx.runContext.requestId ?? ctx.correlationId,
-              ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
-            };
-            const exportJobId = await deps.exportQueue.enqueue(payload);
-            return ok({
-              success: true,
-              nativeTool: args.nativeTool,
-              exportQueued: true,
-              exportJobId,
-              message: `Airtable export queued through dataExport with the current ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')}-row cap. I will deliver the verified invoker-only Google reader link to this Lark chat. If more rows exist, they will be omitted and the result will not be described as complete.`,
-            });
-          }
-          return badArgs(product.toolId, `Governed exports of up to ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows require a Lark chat so dataExport can deliver the verified Google artifact`);
+          return ok({
+            success: true,
+            nativeTool: args.nativeTool,
+            data: {
+              fields: [...fields].map(([id, name]) => ({ id, name })),
+              fieldCount: fields.size,
+            },
+            message: `${product.name} field index completed`,
+          });
         }
 
         const nativeInput = RECORD_READ_OPERATIONS.has(args.nativeTool)
@@ -314,7 +301,7 @@ function createProductTool(
           nativeTool: args.nativeTool,
           data: modelData,
           message: RECORD_READ_OPERATIONS.has(args.nativeTool)
-            ? `${product.name} preview completed. Set top-level exportAll=true on this same call for a governed invoker-only export capped at ${DATA_EXPORT_ROW_LIMIT.toLocaleString('en-IN')} rows.`
+            ? `${product.name} preview completed. Use dataProcessor source mode for exact complete-data calculations.`
             : `${product.name} operation completed`,
         });
       } catch (cause) {
@@ -447,6 +434,38 @@ function validateNativeInput(
   const validate = nativeSchemaValidator.compile(inputSchema as object);
   if (validate(input)) return undefined;
   return `Invalid native input for ${nativeTool} — ${nativeSchemaValidator.errorsText(validate.errors)}`;
+}
+
+function validateOperationInput(
+  inputSchema: unknown,
+  nativeTool: string,
+  input: Readonly<Record<string, unknown>>,
+): string | undefined {
+  if (nativeTool === LIST_FIELDS_TOOL) {
+    const parsed = ListFieldsInputSchema.safeParse(input);
+    return parsed.success
+      ? undefined
+      : parsed.error.errors
+        .map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+        .join('; ');
+  }
+  return validateNativeInput(inputSchema, nativeTool, input);
+}
+
+async function describeOperation(
+  client: AirtableMcpPort,
+  nativeTool: string,
+): Promise<AirtableMcpToolDescription | null> {
+  return nativeTool === LIST_FIELDS_TOOL
+    ? LIST_FIELDS_DESCRIPTION
+    : client.describeTool(nativeTool);
+}
+
+function inlineExportRetired(toolId: string): Result<never, ToolError> {
+  return badArgs(
+    toolId,
+    'Inline exportAll is unsupported. Use dataProcessor for calculations. Use dataExport only when the member explicitly requested a file, sheet, CSV, or export artifact.',
+  );
 }
 
 function missingNativeTool(

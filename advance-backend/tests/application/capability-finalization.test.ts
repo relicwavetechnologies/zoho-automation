@@ -7,6 +7,10 @@ import {
   buildDivoProductivitySystemSkill,
   provisionDivoProductivitySystemSkill,
 } from '../../src/application/skills/divo-productivity-system-skills';
+import {
+  provisionSystemSkillRoutes,
+  SYSTEM_SKILL_ROUTE_SEEDS,
+} from '../../src/application/skills/system-skill-routes';
 import { connectionProvidersForToolIds } from '../../src/application/gateway/work-bootstrap.service';
 import {
   CANONICAL_TOOL_IDS,
@@ -158,6 +162,116 @@ describe('capability catalogue reconciliation', () => {
 
     assert.deepEqual(result, { id: winner.id, outcome: 'existing' });
     assert.equal(finds, 2);
+  });
+
+  it('preserves a manual router edge when system reconciliation seeds the same pair', async () => {
+    const allSlugs = [...new Set(SYSTEM_SKILL_ROUTE_SEEDS.flatMap(
+      seed => [seed.routerSlug, ...seed.targetSlugs],
+    ))];
+    const skills = new Map(allSlugs.map(slug => [slug, {
+      id: `skill:${slug}`,
+      companyId: 'company-1',
+      departmentId: null,
+      folderId: 'folder-1',
+      scope: 'global',
+      name: slug,
+      slug,
+      summary: '',
+      markdown: '',
+      toolIds: [],
+      tags: [],
+      status: 'active',
+      isSystem: true,
+      sortOrder: 0,
+      revision: 1,
+      createdBy: null,
+      updatedBy: null,
+      aliases: [],
+    }]));
+    const aliases = new Map<string, string[]>();
+    const routes = new Map<string, { source: string; sortOrder: number }>([[
+      'skill:airtable-router|skill:airtable-core',
+      { source: 'manual', sortOrder: 99 },
+    ]]);
+    const db = {
+      skillFolder: { findFirst: async () => ({ id: 'folder-1' }) },
+      skill: {
+        findFirst: async ({ where }: any) => {
+          const row = skills.get(where.slug);
+          return row
+            ? { ...row, aliases: (aliases.get(row.id) ?? []).map(alias => ({ alias })) }
+            : null;
+        },
+        findMany: async ({ where }: any) =>
+          where.slug.in.flatMap((slug: string) => {
+            const row = skills.get(slug);
+            return row ? [{ id: row.id, slug: row.slug }] : [];
+          }),
+        update: async ({ where, data }: any) => {
+          const row = [...skills.values()].find(candidate => candidate.id === where.id)!;
+          const next = {
+            ...row,
+            ...data,
+            revision: row.revision + 1,
+            aliases: (aliases.get(row.id) ?? []).map(alias => ({ alias })),
+          };
+          skills.set(row.slug, next);
+          return next;
+        },
+      },
+      skillVersion: { upsert: async () => ({}) },
+      skillRegistryRevision: { upsert: async () => ({}) },
+      skillAccessGrant: { upsert: async () => ({}) },
+      skillAlias: {
+        deleteMany: async () => ({ count: 0 }),
+        createMany: async ({ data }: any) => {
+          if (data[0]) aliases.set(data[0].skillId, data.map((row: any) => row.alias).sort());
+          return { count: data.length };
+        },
+      },
+      skillRoute: {
+        deleteMany: async ({ where }: any) => {
+          let count = 0;
+          for (const [key, route] of routes) {
+            const [routerSkillId, targetSkillId] = key.split('|');
+            if (
+              routerSkillId === where.routerSkillId
+              && route.source === where.source
+              && (!where.targetSkillId?.notIn || !where.targetSkillId.notIn.includes(targetSkillId))
+            ) {
+              routes.delete(key);
+              count += 1;
+            }
+          }
+          return { count };
+        },
+        updateMany: async ({ where, data }: any) => {
+          const key = `${where.routerSkillId}|${where.targetSkillId}`;
+          const route = routes.get(key);
+          if (!route || route.source !== where.source) return { count: 0 };
+          routes.set(key, { ...route, ...data });
+          return { count: 1 };
+        },
+        createMany: async ({ data }: any) => {
+          let count = 0;
+          for (const route of data) {
+            const key = `${route.routerSkillId}|${route.targetSkillId}`;
+            if (routes.has(key)) continue;
+            routes.set(key, { source: route.source, sortOrder: route.sortOrder });
+            count += 1;
+          }
+          return { count };
+        },
+      },
+    } as never;
+
+    await provisionSystemSkillRoutes(db, 'company-1');
+    await provisionSystemSkillRoutes(db, 'company-1');
+
+    assert.deepEqual(routes.get('skill:airtable-router|skill:airtable-core'), {
+      source: 'manual',
+      sortOrder: 99,
+    });
   });
 });
 

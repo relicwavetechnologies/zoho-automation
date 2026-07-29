@@ -194,6 +194,41 @@ describe('SkillRepository', () => {
       assert.ok(Array.isArray(captured.where.AND[1].OR));
     });
   });
+
+  describe('listRouteTargets()', () => {
+    it('keeps router and specialist in the same company and applies department visibility', async () => {
+      let captured: any = null;
+      const prisma = {
+        skillRoute: {
+          findMany: async (args: any) => {
+            captured = args;
+            return [{ targetSkill: fakeRow({ id: 'specialist-1' }) }];
+          },
+        },
+      } as any;
+      const repo = new SkillRepository(prisma);
+
+      const result = await repo.listRouteTargets({
+        companyId: 'co-1',
+        departmentId: 'dept-1',
+        routerSkillId: 'router-1',
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal((result as any).value[0].id, 'specialist-1');
+      assert.deepEqual(captured.where.routerSkill, {
+        companyId: 'co-1',
+        status: 'active',
+      });
+      assert.equal(captured.where.targetSkill.companyId, 'co-1');
+      assert.deepEqual(captured.where.targetSkill.AND[0], {
+        OR: [
+          { scope: { in: ['company', 'global'] }, departmentId: null },
+          { scope: 'department', departmentId: 'dept-1' },
+        ],
+      });
+    });
+  });
 });
 
 // ─── SkillsService ────────────────────────────────────────────────────────────
@@ -207,6 +242,8 @@ describe('SkillsService', () => {
         list:     async () => ok([]),
         search:   async () => ok([row]),
         findById: async () => ok(null),
+        listRouteTargets: async () => ok([]),
+        registryRevision: async () => ok(1),
       };
       const svc = new SkillsService({ repo, logger: noopLogger });
       const results = await svc.search({ companyId: 'co-1', query: 'pto', limit: 5 });
@@ -222,6 +259,8 @@ describe('SkillsService', () => {
         list:     async () => ok([]),
         search:   async () => ok([row]),
         findById: async () => ok(null),
+        listRouteTargets: async () => ok([]),
+        registryRevision: async () => ok(1),
       };
       const svc = new SkillsService({ repo, logger: noopLogger });
       const results = await svc.search({ companyId: 'co-1', query: 'pto', limit: 5 });
@@ -236,6 +275,8 @@ describe('SkillsService', () => {
         list:     async () => ok([]),
         search:   async () => ok([]),
         findById: async () => ok(null),
+        listRouteTargets: async () => ok([]),
+        registryRevision: async () => ok(1),
       };
       const svc = new SkillsService({ repo, logger: noopLogger });
       const results = await svc.search({ companyId: 'co-1', query: 'nothing', limit: 5 });
@@ -248,6 +289,8 @@ describe('SkillsService', () => {
         list:     async () => ok([]),
         search:   async () => err(infraErr),
         findById: async () => ok(null),
+        listRouteTargets: async () => ok([]),
+        registryRevision: async () => ok(1),
       };
       const svc = new SkillsService({ repo, logger: noopLogger });
       const results = await svc.search({ companyId: 'co-1', query: 'pto', limit: 5 });
@@ -261,6 +304,8 @@ describe('SkillsService', () => {
         list:     async () => ok([]),
         search:   async () => ok([]),
         findById: async () => ok(row),
+        listRouteTargets: async () => ok([]),
+        registryRevision: async () => ok(1),
       };
       const svc = new SkillsService({ repo, logger: noopLogger });
       const result = await svc.readById({ companyId: 'co-1', skillId: 'skill-1' });
@@ -274,6 +319,8 @@ describe('SkillsService', () => {
         list:     async () => ok([]),
         search:   async () => ok([]),
         findById: async () => ok(null),
+        listRouteTargets: async () => ok([]),
+        registryRevision: async () => ok(1),
       };
       const svc = new SkillsService({ repo, logger: noopLogger });
       const result = await svc.readById({ companyId: 'co-1', skillId: 'missing' });
@@ -286,6 +333,8 @@ describe('SkillsService', () => {
         list:     async () => ok([]),
         search:   async () => ok([]),
         findById: async () => err(infraErr),
+        listRouteTargets: async () => ok([]),
+        registryRevision: async () => ok(1),
       };
       const svc = new SkillsService({ repo, logger: noopLogger });
       const result = await svc.readById({ companyId: 'co-1', skillId: 'x' });

@@ -35,6 +35,7 @@ export interface RouterSkillCandidate {
   readonly name: string;
   readonly description: string;
   readonly departmentId?: string;
+  readonly providerFamilies: readonly ToolFamily[];
   readonly score: number;
   readonly matchedTerms: readonly string[];
 }
@@ -43,6 +44,8 @@ export interface SkillCatalogServiceDeps {
   readonly repo: SkillRepoPort;
   readonly logger: Logger;
 }
+
+export const GOVERNED_ROUTER_CANDIDATE_LIMIT = 12;
 
 export class SkillCatalogService {
   private readonly log: Logger;
@@ -122,9 +125,14 @@ export class SkillCatalogService {
     variants?: readonly string[];
     limit: number;
   }): Promise<RouterSkillCandidate[]> {
-    const queries = [input.query, ...(input.variants ?? []).slice(0, 2)]
-      .map((query) => analyzeQuery(query))
-      .filter((query) => query.tokens.size > 0);
+    const originalQuery = analyzeQuery(input.query);
+    const queries = [
+      originalQuery,
+      ...(input.variants ?? [])
+        .slice(0, 2)
+        .map((query) => analyzeQuery(query))
+        .filter((query) => introducesNoProvider(query, originalQuery)),
+    ].filter((query) => query.tokens.size > 0);
     if (queries.length === 0) return [];
 
     const result = await this.deps.repo.list({
@@ -141,15 +149,35 @@ export class SkillCatalogService {
       return [];
     }
 
-    const ranked = result.value
+    const routers = result.value
       .filter((row) => this.isLanguageSafe(row))
       .map((row) => ({ row, skill: toCatalogSkill(row) }))
       .filter(({ skill }) => skill.tags.includes('router'))
+      .filter(({ skill }) =>
+        originalQuery.explicitFamilies.size === 0
+        || [...originalQuery.explicitFamilies].some(family =>
+          routerProviderFamilies(skill).has(family)));
+    const scored = routers
       .map(({ row, skill }) => ({ row, candidate: scoreRouterCandidate(skill, queries) }))
-      .filter(({ candidate }) => candidate.score > 0)
       .sort((a, b) => b.candidate.score - a.candidate.score
         || a.candidate.name.localeCompare(b.candidate.name));
+    const ranked = scored.filter(({ candidate }) => candidate.score > 0);
 
+    // Provider-neutral business nouns rarely identify where the member stores
+    // the data. Return compact approved router cards instead of making the
+    // model invent a provider when there is genuinely no lexical match.
+    // A stronger inaccessible match still fails closed instead of silently
+    // substituting a weaker router. Explicit provider requests remain strict.
+    if (originalQuery.explicitFamilies.size === 0) {
+      if (ranked[0] && !this.isVisible(ranked[0].row, input.permission, input.grantedSkillIds)) {
+        return [];
+      }
+      const fallback = scored.filter(({ candidate }) => candidate.score === 0);
+      return [...ranked, ...fallback]
+        .filter(({ row }) => this.isVisible(row, input.permission, input.grantedSkillIds))
+        .map(({ candidate }) => candidate)
+        .slice(0, input.limit);
+    }
     if (!ranked[0] || !this.isVisible(ranked[0].row, input.permission, input.grantedSkillIds)) {
       return [];
     }
@@ -191,6 +219,39 @@ export class SkillCatalogService {
       return null;
     }
     return toCatalogSkill(result.value);
+  }
+
+  async listVisibleRouteTargets(input: {
+    companyId: string;
+    departmentId?: string;
+    permission: PermissionResult;
+    grantedSkillIds?: ReadonlySet<string>;
+    includeGrantedDepartments?: boolean;
+    routerSkillId: string;
+    abortSignal?: AbortSignal;
+  }): Promise<CatalogSkill[]> {
+    input.abortSignal?.throwIfAborted();
+    const result = await this.deps.repo.listRouteTargets({
+      companyId: input.companyId,
+      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
+      ...(input.includeGrantedDepartments && input.grantedSkillIds
+        ? { additionalDepartmentSkillIds: [...input.grantedSkillIds] }
+        : {}),
+      routerSkillId: input.routerSkillId,
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    });
+    input.abortSignal?.throwIfAborted();
+    if (!result.ok) {
+      this.log.warn('skills.catalog.route_targets.failed', {
+        companyId: input.companyId,
+        routerSkillId: input.routerSkillId,
+        error: result.error.message,
+      });
+      return [];
+    }
+    return result.value
+      .filter(row => this.isVisible(row, input.permission, input.grantedSkillIds))
+      .map(toCatalogSkill);
   }
 
   async authorizesTool(input: {
@@ -291,6 +352,9 @@ const SCORE_STOP_WORDS = new Set([
   'a', 'an', 'and', 'for', 'from', 'in', 'into', 'my', 'of', 'on', 'please',
   'return', 'the', 'then', 'to', 'using', 'with',
 ]);
+const ROUTER_GENERIC_TOKENS = new Set([
+  'count', 'counts', 'exact', 'give', 'many', 'overall', 'status', 'statuses', 'total',
+]);
 
 const CONTACT_ENTITY_TOKENS = new Set([
   'address', 'colleague', 'colleagues', 'contact', 'contacts', 'coworker',
@@ -351,6 +415,10 @@ function includesExactPhrase(normalizedText: string, normalizedPhrase: string): 
   return ` ${normalizedText} `.includes(` ${normalizedPhrase} `);
 }
 
+function introducesNoProvider(candidate: AnalyzedQuery, original: AnalyzedQuery): boolean {
+  return [...candidate.explicitFamilies].every((family) => original.explicitFamilies.has(family));
+}
+
 function scoreSkill(skill: CatalogSkill, query: AnalyzedQuery): number {
   const identityTokens = new Set(tokenize([
     skill.id,
@@ -404,6 +472,18 @@ function skillProviderFamilies(skill: CatalogSkill): ReadonlySet<ToolFamily> {
   return families;
 }
 
+function routerProviderFamilies(skill: CatalogSkill): ReadonlySet<ToolFamily> {
+  const families = new Set(skillProviderFamilies(skill));
+  const identity = analyzeQuery([
+    skill.slug,
+    skill.name,
+    ...skill.tags,
+    ...skill.aliases,
+  ].join(' '));
+  for (const family of identity.explicitFamilies) families.add(family);
+  return families;
+}
+
 function scoreRouterCandidate(
   skill: CatalogSkill,
   queries: readonly AnalyzedQuery[],
@@ -421,6 +501,7 @@ function scoreRouterCandidate(
   queries.forEach((query, queryIndex) => {
     const weight = queryIndex === 0 ? 2 : 1;
     for (const word of query.tokens) {
+      if (ROUTER_GENERIC_TOKENS.has(word)) continue;
       const termScore = identityTokens.has(word)
         ? 5
         : aliasTokens.has(word)
@@ -448,6 +529,7 @@ function scoreRouterCandidate(
     name: skill.name,
     description: skill.description,
     ...(skill.departmentId ? { departmentId: skill.departmentId } : {}),
+    providerFamilies: [...routerProviderFamilies(skill)].sort(),
     score,
     matchedTerms: [...matchedTerms].sort(),
   };
