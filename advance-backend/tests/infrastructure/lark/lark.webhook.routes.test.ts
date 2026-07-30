@@ -1075,6 +1075,78 @@ describe('Lark webhook admission', () => {
     );
   });
 
+  it('nests subagents under the step that spawned them, and keeps the checklist after it', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      rootId: null,
+      parentId: null,
+      text: 'Build the Monday report',
+    }), {
+      engineRun: async (input: unknown) => {
+        const onProgress = (input as any).onProgress;
+        await onProgress({ type: 'tool_start', callId: 'call-todo', toolName: 'divo_todos' });
+        await onProgress({
+          type: 'tool_end',
+          callId: 'call-todo',
+          toolName: 'divo_todos',
+          isError: false,
+          todos: [
+            { title: 'Pull the deals', status: 'done' },
+            { title: 'Draft the summary', status: 'running' },
+            { title: 'Post it', status: 'pending' },
+          ],
+        });
+        await onProgress({ type: 'tool_start', callId: 'call-sub', toolName: 'divo_subagents' });
+        await onProgress({
+          type: 'tool_progress',
+          callId: 'call-sub',
+          toolName: 'divo_subagents',
+          children: [
+            { label: 'scout', status: 'running', detail: 'reading the export' },
+            { label: 'reviewer', status: 'done', detail: 'checked totals' },
+          ],
+        });
+        return { text: 'Report complete' };
+      },
+    });
+
+    const adapter = result.routeDeps.adapter as any;
+    const last = adapter.__statusUpdates.at(-1).timeline;
+
+    const subagentRow = last.ledger.find((row: any) => row.label === 'Subagents');
+    assert.deepEqual(subagentRow.children, [
+      { label: 'scout', count: 1, status: 'running', outcome: 'reading the export' },
+      { label: 'reviewer', count: 1, status: 'done', outcome: 'checked totals' },
+    ]);
+
+    // The checklist belongs to the run, not to the call that declared it, so it
+    // must outlive that tool call — which ended two events ago.
+    assert.equal(last.declared.done, 1);
+    assert.equal(last.declared.total, 3);
+    assert.equal(last.declared.current, 'Draft the summary');
+    assert.equal(last.declared.items.length, 3);
+  });
+
+  it('names an unmapped tool instead of collapsing it to "Tool"', async () => {
+    const result = await runWebhook(makeEvent({
+      chatType: 'p2p',
+      rootId: null,
+      parentId: null,
+      text: 'Check something',
+    }), {
+      engineRun: async (input: unknown) => {
+        await (input as any).onProgress({
+          type: 'tool_start', callId: 'call-x', toolName: 'divo_skill_view',
+        });
+        return { text: 'done' };
+      },
+    });
+
+    const adapter = result.routeDeps.adapter as any;
+    const row = adapter.__statusUpdates.at(-1).timeline.ledger[0];
+    assert.equal(row.label, 'Skill view');
+  });
+
   it('delivers a harness-visible Pi failure before rethrowing it', async () => {
     const finalReplies: string[] = [];
     const failure = new LarkPiRuntimeError(

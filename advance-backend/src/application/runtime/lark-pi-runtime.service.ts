@@ -69,6 +69,32 @@ export interface LarkPiRuntimeInput {
   readonly onProgress?: (event: LarkPiProgressEvent) => Promise<void> | void;
 }
 
+/** A step's status, in the vocabulary the status card renders. */
+export type LarkPiStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+
+/** One subagent working under a tool call. */
+export interface LarkPiProgressChild {
+  readonly label: string;
+  readonly status: LarkPiStepStatus;
+  readonly detail?: string;
+}
+
+/** One line of the checklist the run declared. */
+export interface LarkPiProgressTodo {
+  readonly title: string;
+  readonly status: LarkPiStepStatus;
+}
+
+/**
+ * What a tool reported about the work underneath it. Both arrive as tool
+ * details from the container, so they travel on the same events rather than
+ * each earning a channel of its own.
+ */
+interface LarkPiProgressDetail {
+  readonly children?: readonly LarkPiProgressChild[];
+  readonly todos?: readonly LarkPiProgressTodo[];
+}
+
 export type LarkPiProgressEvent =
   | {
       readonly type: 'starting';
@@ -82,12 +108,17 @@ export type LarkPiProgressEvent =
       readonly toolName: string;
       readonly toolId?: string;
     }
-  | {
+  | ({
+      readonly type: 'tool_progress';
+      readonly callId: string;
+      readonly toolName: string;
+    } & LarkPiProgressDetail)
+  | ({
       readonly type: 'tool_end';
       readonly callId: string;
       readonly toolName: string;
       readonly isError: boolean;
-    };
+    } & LarkPiProgressDetail);
 
 export class LarkPiRuntimeError extends Error {
   constructor(
@@ -505,6 +536,56 @@ function safeProgressString(value: unknown, maxLength = 120): string | undefined
   return normalized ? normalized.slice(0, maxLength) : undefined;
 }
 
+const STEP_STATUSES: ReadonlySet<string> = new Set([
+  'pending', 'running', 'done', 'failed', 'skipped',
+]);
+
+const MAX_PROGRESS_CHILDREN = 8;
+const MAX_PROGRESS_TODOS = 12;
+
+function safeStepStatus(value: unknown, fallback: LarkPiStepStatus): LarkPiStepStatus {
+  return typeof value === 'string' && STEP_STATUSES.has(value)
+    ? value as LarkPiStepStatus
+    : fallback;
+}
+
+/**
+ * The container is trusted to run the user's work, not to decide what the
+ * status card says, so its detail arrays are re-validated and capped here the
+ * same way every other field crossing this boundary is.
+ */
+function safeProgressDetail(event: Record<string, unknown>): LarkPiProgressDetail {
+  const rawChildren = event['children'];
+  const children = Array.isArray(rawChildren)
+    ? rawChildren.slice(0, MAX_PROGRESS_CHILDREN).flatMap((entry): LarkPiProgressChild[] => {
+        const row = entry as Record<string, unknown> | null;
+        const label = safeProgressString(row?.['label'], 80);
+        if (!label) return [];
+        const detail = safeProgressString(row?.['detail'], 80);
+        return [{
+          label,
+          status: safeStepStatus(row?.['status'], 'running'),
+          ...(detail ? { detail } : {}),
+        }];
+      })
+    : [];
+
+  const rawTodos = event['todos'];
+  const todos = Array.isArray(rawTodos)
+    ? rawTodos.slice(0, MAX_PROGRESS_TODOS).flatMap((entry): LarkPiProgressTodo[] => {
+        const row = entry as Record<string, unknown> | null;
+        const title = safeProgressString(row?.['title'], 80);
+        if (!title) return [];
+        return [{ title, status: safeStepStatus(row?.['status'], 'pending') }];
+      })
+    : [];
+
+  return {
+    ...(children.length > 0 ? { children } : {}),
+    ...(todos.length > 0 ? { todos } : {}),
+  };
+}
+
 function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const event = value as Record<string, unknown>;
@@ -525,11 +606,24 @@ function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
     if (!callId || !toolName) return undefined;
     return { type, callId, toolName, ...(toolId ? { toolId } : {}) };
   }
+  if (type === 'tool_progress') {
+    const callId = safeProgressString(event['callId'], 100);
+    const toolName = safeProgressString(event['toolName'], 80);
+    if (!callId || !toolName) return undefined;
+    const detail = safeProgressDetail(event);
+    // A progress event with nothing to show is a redraw for no reason.
+    if (!detail.children && !detail.todos) return undefined;
+    return { type, callId, toolName, ...detail };
+  }
   if (type === 'tool_end') {
     const callId = safeProgressString(event['callId'], 100);
     const toolName = safeProgressString(event['toolName'], 80);
     if (!callId || !toolName) return undefined;
-    return { type, callId, toolName, isError: event['isError'] === true };
+    return {
+      type, callId, toolName,
+      isError: event['isError'] === true,
+      ...safeProgressDetail(event),
+    };
   }
   return undefined;
 }

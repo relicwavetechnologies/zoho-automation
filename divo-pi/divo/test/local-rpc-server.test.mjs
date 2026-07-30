@@ -15,6 +15,109 @@ function deferred() {
 	return { promise, resolve };
 }
 
+test("subagent children ride the details the extension already streams", () => {
+	const update = projectRuntimeProgress({
+		type: "tool_execution_update",
+		toolCallId: "call-9",
+		toolName: "divo_subagents",
+		partialResult: {
+			details: {
+				parentToolCallId: "call-9",
+				children: [
+					{ role: "scout", task: "read the pipeline export", state: "running", finalOutput: "must-not-leak" },
+					{ role: "reviewer", task: "check last week's numbers", state: "completed" },
+				],
+			},
+		},
+	});
+
+	assert.deepEqual(update, {
+		type: "tool_progress",
+		callId: "call-9",
+		toolName: "divo_subagents",
+		children: [
+			{ label: "scout", status: "running", detail: "read the pipeline export" },
+			{ label: "reviewer", status: "done", detail: "check last week's numbers" },
+		],
+	});
+	// A child's output is the run's internals; the card is shown in a chat window.
+	assert.doesNotMatch(JSON.stringify(update), /must-not-leak/);
+});
+
+// A run that ends between the last update and completion would otherwise leave
+// children stuck running underneath a parent already marked done.
+test("the final tool result settles every child at once", () => {
+	assert.deepEqual(
+		projectRuntimeProgress({
+			type: "tool_execution_end",
+			toolCallId: "call-9",
+			toolName: "divo_subagents",
+			isError: false,
+			result: {
+				details: {
+					children: [
+						{ role: "scout", task: "read the export", state: "completed" },
+						{ role: "reviewer", task: "check totals", state: "failed" },
+					],
+				},
+			},
+		}),
+		{
+			type: "tool_end",
+			callId: "call-9",
+			toolName: "divo_subagents",
+			isError: false,
+			children: [
+				{ label: "scout", status: "done", detail: "read the export" },
+				{ label: "reviewer", status: "failed", detail: "check totals" },
+			],
+		},
+	);
+});
+
+test("a declared checklist rides the same details", () => {
+	assert.deepEqual(
+		projectRuntimeProgress({
+			type: "tool_execution_end",
+			toolCallId: "call-3",
+			toolName: "divo_todos",
+			isError: false,
+			result: {
+				details: {
+					items: [
+						{ title: "Pull the deals", status: "done" },
+						{ title: "Draft the summary", status: "running" },
+					],
+				},
+			},
+		}),
+		{
+			type: "tool_end",
+			callId: "call-3",
+			toolName: "divo_todos",
+			isError: false,
+			todos: [
+				{ title: "Pull the deals", status: "done" },
+				{ title: "Draft the summary", status: "running" },
+			],
+		},
+	);
+});
+
+// Most tools stream partial stdout, which the card has no use for; redrawing
+// the status bubble for each chunk would rate-limit the run's real updates out.
+test("a tool streaming plain output produces no progress event", () => {
+	assert.equal(
+		projectRuntimeProgress({
+			type: "tool_execution_update",
+			toolCallId: "call-4",
+			toolName: "bash",
+			partialResult: { content: [{ type: "text", text: "half the output" }], details: { truncation: null } },
+		}),
+		undefined,
+	);
+});
+
 test("Pi events become sanitized progress events", () => {
 	assert.deepEqual(
 		projectRuntimeProgress({

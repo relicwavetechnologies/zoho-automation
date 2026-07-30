@@ -81,7 +81,9 @@ import type {
   ResumableDelivery,
 } from '../../persistence/channel-delivery.repository';
 import type {
+  ChannelDeclaredPlan,
   ChannelLedgerRow,
+  ChannelPlanStepStatus,
   ChannelRunState,
   FinalReply,
 } from '../../../domain/channel/outbound';
@@ -1167,6 +1169,50 @@ export async function runPiAndDeliver(input: {
   let state: ChannelRunState = 'thinking';
   let liveLabel = 'Getting things ready…';
   let actionCount = 0;
+  let declared: ChannelDeclaredPlan | undefined;
+
+  /**
+   * A tool that reported work underneath itself: subagents become children of
+   * the row that spawned them, and a declared checklist becomes the run's plan.
+   *
+   * The checklist is the run's, not the call's, so it outlives the tool call
+   * that declared it — otherwise the plan would vanish the moment the tool
+   * returned, which is exactly when the user starts wanting it.
+   */
+  const applyProgressDetail = (
+    callId: string,
+    detail: {
+      readonly children?: readonly { label: string; status: ChannelPlanStepStatus; detail?: string }[];
+      readonly todos?: readonly { title: string; status: ChannelPlanStepStatus }[];
+    },
+  ): void => {
+    if (detail.children?.length) {
+      const current = ledger.get(callId);
+      if (current) {
+        ledger.set(callId, {
+          ...current,
+          children: detail.children.map(child => ({
+            label: child.label,
+            count: 1,
+            status: child.status,
+            ...(child.detail ? { outcome: child.detail } : {}),
+          })),
+        });
+      }
+    }
+    if (detail.todos?.length) {
+      const items = detail.todos.map(todo => ({ title: todo.title, status: todo.status }));
+      const settled = items.filter(i => i.status === 'done' || i.status === 'skipped').length;
+      const current = items.find(i => i.status === 'running')?.title;
+      const next = items.find(i => i.status === 'pending')?.title;
+      declared = {
+        done: settled,
+        total: items.length,
+        ...(current ? { current } : next ? { next } : {}),
+        items,
+      };
+    }
+  };
 
   const publishStatus = async (): Promise<void> => {
     const update = {
@@ -1179,6 +1225,7 @@ export async function runPiAndDeliver(input: {
         actionCount,
         startedAtMs,
         ...(ledger.size > 0 ? { ledger: [...ledger.values()] } : {}),
+        ...(declared ? { declared } : {}),
       },
     };
     const result = statusHandle
@@ -1213,7 +1260,12 @@ export async function runPiAndDeliver(input: {
       // and "In progress" beside a ● is the restatement the card is built to
       // avoid. The field is for what a step produced, which is not known yet.
       ledger.set(event.callId, { label: tool.label, count: 1, status: 'running' });
+    } else if (event.type === 'tool_progress') {
+      applyProgressDetail(event.callId, event);
+      phase = 'Working';
+      state = 'working';
     } else if (event.type === 'tool_end') {
+      applyProgressDetail(event.callId, event);
       const current = ledger.get(event.callId);
       if (current) {
         ledger.set(event.callId, {

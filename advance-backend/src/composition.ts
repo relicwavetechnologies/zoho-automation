@@ -120,7 +120,6 @@ import { ToolRegistry } from './application/tools/tool-registry';
 import { DepartmentAdminService } from './application/departments/department-admin.service';
 import { DesktopDepartmentManagementService } from './application/desktop/desktop-department-management.service';
 import { ChatMessageSerializer } from './application/channels/chat-message-serializer';
-import { SupervisorTodoRepository } from './infrastructure/persistence/supervisor-todo.repository';
 
 // Document RAG
 import { DataExportQueue } from './application/data-export/data-export.queue';
@@ -1537,7 +1536,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     auditService,
     logger: logger.child({ service: 'desktop-department-management' }),
   });
-  const todoRepo      = new SupervisorTodoRepository(prisma);
   const workResolution = new WorkResolutionService({
     skillCatalog,
     skillAccessEnforcement,

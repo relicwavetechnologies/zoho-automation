@@ -14,7 +14,8 @@
     "divo-memory",
     "divo-subagents",
     "divo-artifact",
-    "divo-chat-history"
+    "divo-chat-history",
+    "divo-todos"
   ],
   "trustedSkills": [
     "divo-gateway",
@@ -33,6 +34,7 @@
     "memory",
     "divo_subagents",
     "divo_artifact",
+    "divo_todos",
     "divo_search_chats",
     "divo_read_chat"
   ]

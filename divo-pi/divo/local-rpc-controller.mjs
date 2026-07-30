@@ -866,6 +866,75 @@ function progressToolId(toolName, args) {
 	return toolName === "divo_gateway" || toolName === "call_tool" ? value : undefined;
 }
 
+const PROGRESS_LABEL_MAX = 80;
+const PROGRESS_CHILDREN_MAX = 8;
+const PROGRESS_TODOS_MAX = 12;
+
+function progressLabel(value) {
+	if (typeof value !== "string") return undefined;
+	const flat = value.replace(/\s+/g, " ").trim();
+	if (!flat) return undefined;
+	return flat.length > PROGRESS_LABEL_MAX ? `${flat.slice(0, PROGRESS_LABEL_MAX - 1)}…` : flat;
+}
+
+/** Pi child states, in the vocabulary the status card renders. */
+const CHILD_STATE_STATUS = {
+	queued: "pending",
+	running: "running",
+	completed: "done",
+	failed: "failed",
+	cancelled: "skipped",
+};
+
+/**
+ * Subagent children, from the details `divo_subagents` already streams.
+ *
+ * Only the role, the task and the state cross this boundary. A child's output,
+ * usage and event log are the run's internals, and the status card is shown in
+ * a chat window — anything forwarded here is something a bystander may read.
+ */
+function progressChildren(details) {
+	const children = details?.children;
+	if (!Array.isArray(children) || children.length === 0) return undefined;
+	const rows = children.slice(0, PROGRESS_CHILDREN_MAX).flatMap((child) => {
+		const label = progressLabel(child?.role);
+		if (!label) return [];
+		const status = CHILD_STATE_STATUS[child?.state] ?? "running";
+		const detail = progressLabel(child?.task);
+		return [{ label, status, ...(detail ? { detail } : {}) }];
+	});
+	return rows.length > 0 ? rows : undefined;
+}
+
+/** The checklist `divo_todos` declared, if this tool call was that one. */
+function progressTodos(details) {
+	const items = details?.items;
+	if (!Array.isArray(items) || items.length === 0) return undefined;
+	const rows = items.slice(0, PROGRESS_TODOS_MAX).flatMap((item) => {
+		const title = progressLabel(item?.title);
+		if (!title) return [];
+		const status = typeof item?.status === "string" ? item.status : "pending";
+		return [{ title, status }];
+	});
+	return rows.length > 0 ? rows : undefined;
+}
+
+/**
+ * What a tool's own details say about the work underneath it.
+ *
+ * Both extensions that have something to show already stream it as tool
+ * details, so neither needs a transport of its own — the shape of the details
+ * decides which it is.
+ */
+function progressDetail(details) {
+	if (!details || typeof details !== "object") return undefined;
+	const children = progressChildren(details);
+	if (children) return { children };
+	const todos = progressTodos(details);
+	if (todos) return { todos };
+	return undefined;
+}
+
 export function projectRuntimeProgress(event) {
 	if (!event || typeof event !== "object") return undefined;
 	if (event.type === "agent_start" || event.type === "turn_start") {
@@ -881,12 +950,28 @@ export function projectRuntimeProgress(event) {
 			...(toolId ? { toolId } : {}),
 		};
 	}
+	if (event.type === "tool_execution_update") {
+		// Most tools stream partial stdout, which the card has no use for. Only a
+		// call that describes structured work underneath itself is worth a redraw.
+		const detail = progressDetail(event.partialResult?.details);
+		if (!detail) return undefined;
+		return {
+			type: "tool_progress",
+			callId: String(event.toolCallId ?? ""),
+			toolName: typeof event.toolName === "string" ? event.toolName : "tool",
+			...detail,
+		};
+	}
 	if (event.type === "tool_execution_end") {
+		// The final details settle every child at once: a run that ended between
+		// the last update and here would otherwise leave children stuck running
+		// under a parent already marked done.
 		return {
 			type: "tool_end",
 			callId: String(event.toolCallId ?? ""),
 			toolName: typeof event.toolName === "string" ? event.toolName : "tool",
 			isError: event.isError === true,
+			...(progressDetail(event.result?.details) ?? {}),
 		};
 	}
 	if (
