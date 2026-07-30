@@ -110,17 +110,6 @@ export type ModelCatalogEntry = {
   supportsThinking?: boolean;
 };
 
-export type SetMappingInput = {
-  channelType: "lark" | "desktop";
-  channelIdentifier: string;
-  agentDefinitionId: string;
-};
-
-export type RemoveMappingInput = {
-  channelType: string;
-  channelIdentifier: string;
-};
-
 export const agentsApi = {
   /**
    * The governed tool catalogue. Named for its historical client, but it is not
@@ -128,15 +117,6 @@ export const agentsApi = {
    */
   toolRegistry: <T = any>(token?: string) =>
     api.get<T[]>("/api/admin/tool-registry", token),
-};
-
-export const channelMappingsApi = {
-  list: <T = any>(token?: string) =>
-    api.get<T[]>("/api/channel-mappings", token),
-  set: (body: SetMappingInput, token?: string) =>
-    api.post("/api/channel-mappings", body, token),
-  remove: (body: RemoveMappingInput, token?: string) =>
-    api.delete("/api/channel-mappings", body, token),
 };
 
 
