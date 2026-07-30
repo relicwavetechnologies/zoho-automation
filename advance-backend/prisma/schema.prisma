@@ -35,15 +35,6 @@ enum ScheduledWorkflowRunStatus {
   blocked
 }
 
-enum TaskStatus {
-  pending
-  running
-  hitl
-  done
-  failed
-  cancelled
-}
-
 enum UserMemoryKind {
   identity
   response_style
@@ -201,8 +192,6 @@ model User {
   departmentUserToolOverrides        DepartmentUserToolOverride[]
   createdDepartmentAgentConfigs      DepartmentAgentConfig[]         @relation("DepartmentAgentConfigCreatedBy")
   updatedDepartmentAgentConfigs      DepartmentAgentConfig[]         @relation("DepartmentAgentConfigUpdatedBy")
-  createdCompanyPromptProfiles       CompanyPromptProfile[]          @relation("CompanyPromptProfileCreatedBy")
-  updatedCompanyPromptProfiles       CompanyPromptProfile[]          @relation("CompanyPromptProfileUpdatedBy")
   createdZohoConnectionProfiles      ZohoConnectionProfile[]         @relation("ZohoConnectionProfileCreatedBy")
   updatedZohoConnectionProfiles      ZohoConnectionProfile[]         @relation("ZohoConnectionProfileUpdatedBy")
   departmentToolPermissionsUpdated   DepartmentToolPermission[]      @relation("DepartmentToolPermissionUpdatedBy")
@@ -242,7 +231,6 @@ model Company {
   gatewayDedicatedAccountId       String?                           @map("gateway_dedicated_account_id")
   defaultAiProvider               String                            @default("google") @map("default_ai_provider")
   defaultAiModel                  String                            @default("gemini-3.1-flash-lite") @map("default_ai_model")
-  promptProfile                   CompanyPromptProfile?
   departments                     Department[]
   skills                          Skill[]
   skillFolders                    SkillFolder[]
@@ -283,10 +271,7 @@ model Company {
   outboundArtifacts               OutboundArtifact[]
   userMemoryItems                 UserMemoryItem[]
   userMemoryProfiles              UserMemoryProfile[]
-  taskRuns                        TaskRun[]
   userDepartmentPreferences       UserDepartmentPreference[]
-  agentDefinitions                AgentDefinition[]
-  channelAgentMappings            ChannelAgentMapping[]
   personaLearningEvidences        PersonaLearningEvidence[]
   personaLearningCandidates       PersonaLearningCandidate[]
   managerPersonaTrees             ManagerPersonaTree[]
@@ -316,70 +301,6 @@ model RegisteredTool {
   updatedAt     DateTime @updatedAt
 }
 
-model AgentDefinition {
-  id                    String                @id @default(cuid())
-  companyId             String
-  company               Company               @relation(fields: [companyId], references: [id])
-  name                  String
-  slug                  String
-  description           String?
-  capabilityDescription String?
-  systemPrompt          String
-  hookId                String?
-  maxSteps              Int                   @default(8)
-  temperature           Float                 @default(0)
-  isRootAgent           Boolean               @default(false)
-  isActive              Boolean               @default(true)
-  toolIds               String[]
-  modelId               String?
-  provider              String?
-  parentId              String?
-  parent                AgentDefinition?      @relation("AgentChildren", fields: [parentId], references: [id])
-  children              AgentDefinition[]     @relation("AgentChildren")
-  channelMappings       ChannelAgentMapping[]
-  createdAt             DateTime              @default(now())
-  updatedAt             DateTime              @updatedAt
-
-  @@unique([companyId, name])
-  @@unique([companyId, slug])
-}
-
-model ChannelAgentMapping {
-  id                String          @id @default(cuid())
-  companyId         String
-  company           Company         @relation(fields: [companyId], references: [id])
-  channelType       String
-  channelIdentifier String
-  agentDefinitionId String
-  agentDefinition   AgentDefinition @relation(fields: [agentDefinitionId], references: [id])
-  isActive          Boolean         @default(true)
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
-
-  @@unique([companyId, channelType, channelIdentifier])
-}
-
-model CompanyPromptProfile {
-  id                 String   @id @default(uuid())
-  companyId          String   @unique
-  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  companyContext     String
-  systemsOfRecord    String
-  businessRules      String
-  communicationStyle String
-  formattingDefaults String
-  restrictedClaims   String
-  isActive           Boolean  @default(true)
-  createdBy          String
-  createdByUser      User     @relation("CompanyPromptProfileCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
-  updatedBy          String
-  updatedByUser      User     @relation("CompanyPromptProfileUpdatedBy", fields: [updatedBy], references: [id], onDelete: Restrict)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-
-  @@index([companyId, isActive])
-}
-
 model UserDepartmentPreference {
   id                 String   @id @default(uuid())
   companyId          String
@@ -392,27 +313,6 @@ model UserDepartmentPreference {
 
   @@unique([companyId, userId])
   @@index([userId, companyId])
-}
-
-model TaskRun {
-  id              String     @id @default(cuid())
-  companyId       String
-  company         Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  conversationKey String
-  channel         String
-  status          TaskStatus @default(pending)
-  inputMessage    Json
-  currentStep     String?
-  failureReason   String?
-  requeueCount    Int        @default(0)
-  lastHeartbeatAt DateTime?
-  completedAt     DateTime?
-  failedAt        DateTime?
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-
-  @@index([companyId, conversationKey, status])
-  @@index([status, createdAt])
 }
 
 model UserMemoryItem {
@@ -2266,7 +2166,6 @@ model RuntimeConversation {
   messages               RuntimeConversationMessage[]
   runs                   RuntimeRun[]
   approvals              RuntimeApproval[]
-  parityReports          RuntimeShadowParityReport[]
 
   @@unique([companyId, channel, channelConversationKey])
   @@index([companyId, updatedAt])
@@ -2323,8 +2222,6 @@ model RuntimeRun {
   updatedAt      DateTime                     @updatedAt
   messages       RuntimeConversationMessage[]
   approvals      RuntimeApproval[]
-  snapshots      RuntimeSnapshot[]
-  parityReports  RuntimeShadowParityReport[]
 
   @@index([conversationId, startedAt])
   @@index([parentRunId])
@@ -2366,39 +2263,6 @@ model RuntimeApproval {
   @@index([status, createdAt])
   @@index([externalActionId])
   @@index([idempotencyKey])
-}
-
-model RuntimeSnapshot {
-  id        String     @id @default(uuid())
-  runId     String
-  run       RuntimeRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  stepIndex Int
-  nodeName  String
-  stateJson Json
-  createdAt DateTime   @default(now())
-
-  @@index([runId, createdAt])
-  @@index([runId, stepIndex])
-}
-
-model RuntimeShadowParityReport {
-  id               String               @id @default(uuid())
-  conversationId   String?
-  conversation     RuntimeConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  runId            String?
-  run              RuntimeRun?          @relation(fields: [runId], references: [id], onDelete: SetNull)
-  channel          String
-  baselineEngine   String
-  candidateEngine  String
-  baselineSummary  String?
-  candidateSummary String?
-  diffSummary      String?
-  metricsJson      Json?
-  createdAt        DateTime             @default(now())
-
-  @@index([conversationId, createdAt])
-  @@index([runId, createdAt])
-  @@index([channel, createdAt])
 }
 
 model MemberTokenPolicy {
@@ -2475,20 +2339,3 @@ model ProxyRequestLog {
   @@index([companyId, channel, createdAt])
 }
 
-model SupervisorTodo {
-  id        String   @id @default(cuid())
-  companyId String
-  userId    String
-  channel   String
-  chatId    String
-  threadId  String?
-  title     String
-  status    String   @default("pending") // pending | in_progress | done | cancelled
-  position  Int
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  expiresAt DateTime
-
-  @@index([companyId, userId, chatId, status])
-  @@index([expiresAt])
-}
