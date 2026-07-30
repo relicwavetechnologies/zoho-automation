@@ -46,6 +46,7 @@ function approvedRow(
 function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
   const registry = new ToolRegistry();
   const executed: unknown[] = [];
+  let resumedRunContext: any;
   registry.register({
     id: asToolId('larkDoc'),
     family: 'lark',
@@ -54,8 +55,9 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
     resultSchema: z.unknown(),
     description: 'Create a Lark document',
     permissionCheck: () => ok('create'),
-    execute: async (args: unknown) => {
+    execute: async (args: unknown, ctx: any) => {
       executed.push(args);
+      resumedRunContext = ctx?.runContext;
       return ok({ documentUrl: 'https://example.test/doc-1' });
     },
   } as any);
@@ -125,10 +127,43 @@ function makeExecutableResumer(row: unknown, channelIdentityRepo: unknown) {
     finalConversations,
     getResumedChatId: () => resumedChatId,
     getResumedExecution: () => resumedExecution,
+    getResumedRunContext: () => resumedRunContext,
   };
 }
 
 describe('ApprovalResumerService', () => {
+  it('replays a scheduled run\'s delivery rules into the approved execution', async () => {
+    // Approval is checked before a tool runs, so a scheduled run reaches the
+    // gate with its delivery guards untested. The context is rebuilt here from
+    // stored metadata rather than from the session, which is revoked by the
+    // time an approval comes back — so without replaying this, approving a
+    // scheduled run's message would deliver it where the run itself could not.
+    const identity = {
+      resolveByLarkTenantIdentity: async () => ok({
+        userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'lark',
+        larkOpenId: 'ou-user-1', activeDepartmentId: 'dept-1',
+      }),
+    };
+
+    const scheduled = makeExecutableResumer(
+      approvedRow('approved', { deliveryMode: 'scheduled_runtime_delivery' }),
+      identity,
+    );
+    await scheduled.service.resume('approval-1', 'approved');
+    assert.equal(
+      scheduled.getResumedRunContext()?.deliveryMode,
+      'scheduled_runtime_delivery',
+    );
+
+    // An ordinary interactive approval must not inherit it. Assert the tool ran
+    // at all first: otherwise a resume that never executed reads as "no
+    // restriction" and this passes for the wrong reason.
+    const interactive = makeExecutableResumer(approvedRow('approved'), identity);
+    await interactive.service.resume('approval-1', 'approved');
+    assert.ok(interactive.getResumedRunContext(), 'the approved tool must execute');
+    assert.equal(interactive.getResumedRunContext()?.deliveryMode, undefined);
+  });
+
   it('executes the stored approved tool call without re-entering the agent loop', async () => {
     let resolvedTenantKey: string | undefined;
     const execution = {

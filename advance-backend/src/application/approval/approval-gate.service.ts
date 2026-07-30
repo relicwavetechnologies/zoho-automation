@@ -166,6 +166,12 @@ export class ApprovalGateService {
           sourceChatId,
           replyToMessageId:       runContext.replyToMessageId ?? null,
           replyInThread:          runContext.replyInThread ?? null,
+          // Carried so the approved action executes under the same delivery
+          // rules as the run that asked for it. Approval is checked before a
+          // tool runs, so a scheduled run reaches this point with its guards
+          // untested; rebuilding the context later without this would let the
+          // approved call deliver where the run itself may not.
+          deliveryMode:           runContext.deliveryMode ?? null,
           resolvedManagerOpenId:  manager.larkOpenId,
           resolvedManagerUserId:  manager.userId,
           resolvedManagerName:    manager.displayName,

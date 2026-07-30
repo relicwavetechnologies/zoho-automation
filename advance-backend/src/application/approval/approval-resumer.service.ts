@@ -84,6 +84,9 @@ export class ApprovalResumerService {
     const replyInThread = typeof meta['replyInThread'] === 'boolean'
       ? meta['replyInThread']
       : undefined;
+    const deliveryMode = meta['deliveryMode'] === 'scheduled_runtime_delivery'
+      ? 'scheduled_runtime_delivery' as const
+      : undefined;
     const approvalOrigin = asNonEmptyString(meta['approvalOrigin']);
     const execution = asExecutionContext(meta['execution']);
     const approvalCompanyId = asNonEmptyString(approval.companyId);
@@ -191,6 +194,9 @@ export class ApprovalResumerService {
         ? { userExternalId: requesterLarkOpenId ?? identity.larkOpenId }
         : {}),
       ...(identity.email ? { requesterEmail: identity.email } : {}),
+      // Replayed from the request, not re-derived: the session that ran the
+      // scheduled work is revoked by the time an approval comes back.
+      ...(deliveryMode ? { deliveryMode } : {}),
       ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
       ...(permissionResult.value.department?.zohoReadScope
         ? { departmentZohoReadScope: permissionResult.value.department.zohoReadScope }

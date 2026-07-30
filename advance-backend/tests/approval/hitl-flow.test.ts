@@ -506,6 +506,32 @@ describe('ApprovalGateService', () => {
     assert.equal(lark.sentCards[0].openId, owner.larkOpenId);
   });
 
+  it('records a scheduled run\'s delivery restriction on the approval', async () => {
+    // The gate is evaluated before the tool runs, so a scheduled run reaches it
+    // with its delivery guards untested. This is the only record of that
+    // restriction by the time an approval comes back: the session the run acted
+    // under is revoked, so nothing can re-derive it later.
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+
+    await gate.check({
+      toolId: String(TOOL_ID),
+      action: 'send',
+      args: { op: 'send', to: ['boss@company.com'], subject: 'Q2 Report' },
+      perm: makePermission(),
+      runContext: makeRunContext({ deliveryMode: 'scheduled_runtime_delivery' }),
+      chatId: CHAT_ID,
+      argsSummary: 'Send email to boss@company.com: Q2 Report',
+    });
+
+    const approval = [...repo.store.values()][0];
+    assert.equal(
+      (approval.metadataJson as any).deliveryMode,
+      'scheduled_runtime_delivery',
+    );
+  });
+
   it('sends and tags a cloud Pi approval card for non-read action', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
@@ -543,6 +569,8 @@ describe('ApprovalGateService', () => {
     assert.equal((approval.metadataJson as any).sourceChatId, CHAT_ID);
     assert.equal((approval.metadataJson as any).replyToMessageId, 'om_request');
     assert.equal((approval.metadataJson as any).replyInThread, true);
+    // An ordinary interactive request carries no delivery restriction.
+    assert.equal((approval.metadataJson as any).deliveryMode, null);
 
     // Card sent to manager
     assert.equal(lark.sentCards.length, 1);
