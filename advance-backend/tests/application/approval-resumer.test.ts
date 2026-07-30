@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import { ApprovalResumerService } from '../../src/application/approval/approval-resumer.service.ts';
 import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
-import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
+import { ToolRegistry } from '../../src/application/tools/tool-registry.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 import { ok } from '../../src/shared/result.ts';
 

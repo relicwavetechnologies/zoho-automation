@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import { z } from 'zod';
-import type { GoogleWorkspaceMcpToolDescription } from '../../application/orchestration/tools/families/google-workspace-mcp.tool';
+import type { GoogleWorkspaceMcpToolDescription } from '../../application/tools/families/google-workspace-mcp.tool';
 import { GOOGLE_SHEETS_DATA_VALIDATION_OPERATION } from '../../application/google/google-workspace-mcp-manifest';
 
 export { GOOGLE_SHEETS_DATA_VALIDATION_OPERATION };

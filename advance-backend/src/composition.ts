@@ -38,7 +38,7 @@ import { LarkChatContextService } from './application/chat-context/lark-chat-con
 import { LarkChannelAdapter } from './infrastructure/channels/lark/lark.adapter';
 import { LarkPeopleResolver } from './infrastructure/channels/lark/lark-people.resolver';
 import { LarkTaskClient } from './infrastructure/channels/lark/clients/lark-task.client';
-import type { LarkUserTokenResolution } from './application/orchestration/tools/families/lark-user-connection';
+import type { LarkUserTokenResolution } from './application/tools/families/lark-user-connection';
 import { LarkToolMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
 import { LarkContactsClient } from './infrastructure/channels/lark/clients/lark-contacts.client';
 import { LarkCalendarClient } from './infrastructure/channels/lark/clients/lark-calendar.client';
@@ -46,7 +46,6 @@ import { LarkMeetingClient } from './infrastructure/channels/lark/clients/lark-m
 import { LarkDocClient } from './infrastructure/channels/lark/clients/lark-doc.client';
 import { LarkBaseClient } from './infrastructure/channels/lark/clients/lark-base.client';
 import { LarkApprovalClient } from './infrastructure/channels/lark/clients/lark-approval.client';
-import { createEmbeddingService } from './infrastructure/ai/embedding/embedding.service';
 import { SerperClient } from './infrastructure/ai/search/serper.client';
 import { LarkOAuthService } from './infrastructure/lark/lark-oauth.service';
 import { GoogleOAuthService } from './infrastructure/google/google-oauth.service';
@@ -65,7 +64,7 @@ import { IntegrationConnectionRepository } from './infrastructure/persistence/in
 import { ConnectionAuthorizationRepository } from './infrastructure/persistence/connection-authorization.repository';
 import { ChannelDeliveryRepository } from './infrastructure/persistence/channel-delivery.repository';
 import { ExecutionLaneLeaseRepository } from './infrastructure/persistence/execution-lane-lease.repository';
-import { LaneLeaseHolder } from './application/orchestration/lane-lease.holder';
+import { LaneLeaseHolder } from './application/channels/lane-lease.holder';
 import { BusyLaneNotices } from './infrastructure/channels/lark/lark-busy-notice';
 import { randomUUID } from 'node:crypto';
 import {
@@ -115,7 +114,7 @@ import { SkillRegistryAdminService } from './application/skills/skill-registry-a
 import { PermissionServiceImpl } from './application/permissions/permission.service';
 import type { PermissionService } from './application/permissions/permission.service';
 import { ChannelAdapterRegistry } from './application/channels/channel.adapter';
-import { ToolRegistry } from './application/orchestration/tools/tool-registry';
+import { ToolRegistry } from './application/tools/tool-registry';
 import { HistoryService } from './application/orchestration/engine/history';
 import { OrchestrationEngine } from './application/orchestration/engine/core';
 import { ConversationSummarizer } from './application/orchestration/engine/conversation-summarizer';
@@ -123,12 +122,10 @@ import { ConversationSummarizer } from './application/orchestration/engine/conve
 import { AgentDefinitionRepository } from './infrastructure/persistence/agent-definition.repository';
 import { ChannelMappingRepository } from './infrastructure/persistence/channel-mapping.repository';
 import { AgentAdminService } from './application/agents/agent-admin.service';
-import { AgentCatalogService } from './application/agents/agent-catalog.service';
-import { AgentCatalogCache } from './application/agents/agent-catalog.cache';
 import { DepartmentAdminService } from './application/departments/department-admin.service';
 import { DesktopDepartmentManagementService } from './application/desktop/desktop-department-management.service';
 import { AgentResolver } from './application/orchestration/agents/agent-resolver';
-import { ChatMessageSerializer } from './application/orchestration/chat-message-serializer';
+import { ChatMessageSerializer } from './application/channels/chat-message-serializer';
 import { SupervisorAgent } from './application/orchestration/agents/supervisor';
 import { SupervisorTodoRepository } from './infrastructure/persistence/supervisor-todo.repository';
 
@@ -174,35 +171,34 @@ import { Mem0Service } from './application/memory/mem0.service';
 import { LarkMemoryReviewService } from './application/memory/lark-memory-review.service';
 
 // Tools
-import { createLarkTaskTool } from './application/orchestration/tools/families/lark-task.tool';
-import { createLarkMessagingTool } from './application/orchestration/tools/families/lark-messaging.tool';
-import { createLarkContactsTool } from './application/orchestration/tools/families/lark-contacts.tool';
-import { createLarkCalendarTool } from './application/orchestration/tools/families/lark-calendar.tool';
-import { createLarkMeetingTool } from './application/orchestration/tools/families/lark-meeting.tool';
-import { createLarkDocTool } from './application/orchestration/tools/families/lark-doc.tool';
-import { createLarkBaseTool } from './application/orchestration/tools/families/lark-base.tool';
-import { createLarkApprovalTool } from './application/orchestration/tools/families/lark-approval.tool';
-import { createGoogleWorkspaceMcpTools } from './application/orchestration/tools/families/google-workspace-mcp.tool';
-import { createCanvaDesignTool } from './application/orchestration/tools/families/canva-design.tool';
+import { createLarkTaskTool } from './application/tools/families/lark-task.tool';
+import { createLarkMessagingTool } from './application/tools/families/lark-messaging.tool';
+import { createLarkContactsTool } from './application/tools/families/lark-contacts.tool';
+import { createLarkCalendarTool } from './application/tools/families/lark-calendar.tool';
+import { createLarkMeetingTool } from './application/tools/families/lark-meeting.tool';
+import { createLarkDocTool } from './application/tools/families/lark-doc.tool';
+import { createLarkBaseTool } from './application/tools/families/lark-base.tool';
+import { createLarkApprovalTool } from './application/tools/families/lark-approval.tool';
+import { createGoogleWorkspaceMcpTools } from './application/tools/families/google-workspace-mcp.tool';
+import { createCanvaDesignTool } from './application/tools/families/canva-design.tool';
 import {
   createAirtableMcpTools,
   type ResolveAirtableMcpConnection,
-} from './application/orchestration/tools/families/airtable-mcp.tool';
-import { createAitableTools } from './application/orchestration/tools/families/aitable.tool';
+} from './application/tools/families/airtable-mcp.tool';
+import { createAitableTools } from './application/tools/families/aitable.tool';
 import { hasAirtableScopeGroups } from './application/airtable/airtable-mcp-manifest';
-import { createZohoCrmTool } from './application/orchestration/tools/families/zoho-crm.tool';
-import { createZohoBooksTool } from './application/orchestration/tools/families/zoho-books.tool';
-import { createWebSearchTool } from './application/orchestration/tools/families/web-search.tool';
-import { createSkillPublishingTool } from './application/orchestration/tools/families/skill-publishing.tool';
-import { createMemoryPublishingTool } from './application/orchestration/tools/families/memory-publishing.tool';
-import { createMemoryRecallTool } from './application/orchestration/tools/families/memory-recall.tool';
-import { createDataProcessorTool } from './application/orchestration/tools/families/data-processor.tool';
-import { createDataExportTool } from './application/orchestration/tools/families/data-export.tool';
-import { createRunCommandTool } from './application/orchestration/tools/families/run-command.tool';
-import { createScheduledWorkflowsTool } from './application/orchestration/tools/families/scheduled-workflows.tool';
-import { createMailAutomationsTool } from './application/orchestration/tools/families/mail-automations.tool';
-import { createSemrushTool } from './application/orchestration/tools/families/semrush.tool';
-import { createOmsSiteDataTool } from './application/orchestration/tools/families/oms-site-data.tool';
+import { createZohoCrmTool } from './application/tools/families/zoho-crm.tool';
+import { createZohoBooksTool } from './application/tools/families/zoho-books.tool';
+import { createWebSearchTool } from './application/tools/families/web-search.tool';
+import { createSkillPublishingTool } from './application/tools/families/skill-publishing.tool';
+import { createMemoryPublishingTool } from './application/tools/families/memory-publishing.tool';
+import { createMemoryRecallTool } from './application/tools/families/memory-recall.tool';
+import { createDataExportTool } from './application/tools/families/data-export.tool';
+import { createRunCommandTool } from './application/tools/families/run-command.tool';
+import { createScheduledWorkflowsTool } from './application/tools/families/scheduled-workflows.tool';
+import { createMailAutomationsTool } from './application/tools/families/mail-automations.tool';
+import { createSemrushTool } from './application/tools/families/semrush.tool';
+import { createOmsSiteDataTool } from './application/tools/families/oms-site-data.tool';
 import { ScheduledDesktopChannelAdapter } from './infrastructure/channels/desktop/scheduled-desktop.adapter';
 import { ScheduledLarkDmChannelAdapter } from './infrastructure/channels/lark/scheduled-lark-dm.adapter';
 import { LarkMessagingClient } from './infrastructure/channels/lark/clients/lark-messaging.client';
@@ -284,7 +280,6 @@ export interface Container {
   skillRegistryAdminService: SkillRegistryAdminService;
   // Agent admin CRUD
   agentAdminService:      AgentAdminService;
-  agentCatalogCache:      AgentCatalogCache;
   departmentAdminService: DepartmentAdminService;
   desktopDepartmentManagementService: DesktopDepartmentManagementService;
   // Lark user OAuth
@@ -688,7 +683,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const larkApprovalClient = new LarkApprovalClient(larkClientDeps);
 
   // ── AI / search infrastructure ────────────────────────────────────────────
-  const embeddingService    = createEmbeddingService(env, logger.child({ service: 'embedding' }));
   const serperClient        = new SerperClient({
     apiKey:    env.SERPER_API_KEY ?? '',
     timeoutMs: env.SERPER_TIMEOUT_MS,
@@ -1713,7 +1707,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   toolRegistry.register(createSkillPublishingTool({ prisma }));
   toolRegistry.register(createMemoryPublishingTool({ mem0: mem0Service }));
   toolRegistry.register(createMemoryRecallTool({ mem0: mem0Service, departmentRepo: deptRepo }));
-  toolRegistry.register(createDataProcessorTool({ sources: dataExportSources }));
   toolRegistry.register(createDataExportTool({ queue: dataExportQueue }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,
@@ -1740,8 +1733,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   const agentDefRepo       = new AgentDefinitionRepository(prisma);
   const channelMappingRepo = new ChannelMappingRepository(prisma);
   const agentResolver = new AgentResolver(agentDefRepo, cache, logger.child({ service: 'agent-resolver' }));
-  const agentCatalogService = new AgentCatalogService(agentDefRepo, logger.child({ service: 'agent-catalog' }));
-  const agentCatalogCache = new AgentCatalogCache(agentCatalogService, logger.child({ service: 'agent-catalog-cache' }));
   const agentAdminService  = new AgentAdminService({
     agentDefRepo,
     channelMappingRepo,
@@ -1749,7 +1740,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     logger: logger.child({ service: 'agent-admin' }),
     invalidateAgentCache: async (companyId: string) => {
       await agentResolver.invalidate(companyId);
-      agentCatalogCache.invalidate(companyId);
     },
   });
   const departmentAdminService = new DepartmentAdminService({
@@ -1798,12 +1788,10 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     defaultModel: { provider: primaryProvider, modelId: primaryModelId },
     resolveModel,
     agentResolver,
-    agentCatalogCache,
     todoRepo,
     prisma,
     logger:        logger.child({ service: 'supervisor' }),
     clock:         systemClock,
-    dynamicGraphEnabled: env.DYNAMIC_GRAPH_ENABLED,
     supervisorTimeoutMs: env.SUPERVISOR_TIMEOUT_MS,
     toolRegistry,
     skillCatalog,
@@ -1977,7 +1965,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
   });
   companySerperService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
   companyOmsSiteDataService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
-  embeddingService.bindExhaustionNotifier(apiKeyExhaustionNotifier);
   const disableManagerSelfBypass = env.NODE_ENV !== 'production' && env.DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS;
   if (disableManagerSelfBypass) {
     logger.warn('approval.gate.manager_self_bypass_disabled_for_test');
@@ -2117,7 +2104,6 @@ export async function buildContainer(env: TypedEnv): Promise<Container> {
     skillRegistryAdminService,
     // Agent admin CRUD
     agentAdminService,
-    agentCatalogCache,
     departmentAdminService,
     desktopDepartmentManagementService,
     // Lark user OAuth

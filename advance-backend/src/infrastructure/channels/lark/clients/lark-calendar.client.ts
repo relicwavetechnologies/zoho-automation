@@ -1,4 +1,4 @@
-import type { LarkCalendarClientPort } from '../../../../application/orchestration/tools/families/lark-calendar.tool';
+import type { LarkCalendarClientPort } from '../../../../application/tools/families/lark-calendar.tool';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type EventRecord = Record<string, unknown>;

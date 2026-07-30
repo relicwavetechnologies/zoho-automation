@@ -68,7 +68,6 @@ const EnvSchema = z.object({
   ELEVEN_LABS_API_KEY:   z.string().min(1).optional(),
   GATEWAY_BASE_URL:      z.string().default(''),
   GATEWAY_ADMIN_API_KEY: z.string().optional(),
-  OPENAI_ROUTER_MODEL:   z.string().default('gpt-4o-mini'),
   OPENAI_TEMPERATURE:    positiveNum(0.1),
 
   // ── DeepSeek ──────────────────────────────────────────────────────────────
@@ -97,23 +96,9 @@ const EnvSchema = z.object({
   PI_RUNTIME_LEASE_TTL_SECONDS: positiveInt(3_600),
   PI_LARK_RUN_TIMEOUT_MS: positiveInt(1_800_000),
 
-  // ── Groq (intent classification + reranking) ──────────────────────────────
-  GROQ_API_KEY:      z.string().optional(),
-  GROQ_ROUTER_MODEL: z.string().default('llama-3.1-8b-instant'),
-
   // ── Gemini ────────────────────────────────────────────────────────────────
   GEMINI_API_KEY:                   z.string().optional(),
   GOOGLE_GENERATIVE_AI_API_KEY:     z.string().optional(),
-  GEMINI_EMBEDDING_MODEL:           z.string().default('gemini-embedding-001'),
-  GEMINI_MULTIMODAL_EMBEDDING_MODEL: z.string().default('gemini-embedding-2-preview'),
-
-  // ── Embeddings ────────────────────────────────────────────────────────────
-  EMBEDDING_PROVIDER:    z.enum(['openai', 'gemini', 'fallback']).default('gemini'),
-  OPENAI_EMBEDDING_MODEL: z.enum([
-    'text-embedding-3-small',
-    'text-embedding-3-large',
-    'text-embedding-ada-002',
-  ]).default('text-embedding-3-small'),
 
   // ── Lark ──────────────────────────────────────────────────────────────────
   LARK_API_BASE_URL:   z.string().default('https://open.larksuite.com'),
@@ -302,15 +287,6 @@ const EnvSchema = z.object({
   // Non-production only. Forces manager-owned actions through the approval card
   // path so the Lark approval loop can be smoke-tested with one user.
   DIVO_HITL_TEST_DISABLE_MANAGER_SELF_BYPASS: booleanStr.default('false'),
-
-  // ── LangSmith tracing (optional) ──────────────────────────────────────────
-  LANGSMITH_TRACING:  booleanStr.default('false'),
-  LANGSMITH_API_KEY:  z.string().optional(),
-  LANGSMITH_PROJECT:  z.string().optional(),
-  LANGSMITH_ENDPOINT: z.string().default('https://api.smith.langchain.com'),
-
-  // ── Dynamic agent graph cutover ───────────────────────────────────────────
-  DYNAMIC_GRAPH_ENABLED: booleanStr.default('false'),
 
   // Set to 0 to disable supervisor timeout (useful for local dev with slow models).
   // Active timeouts are clamped so an older 5-minute deployment value cannot

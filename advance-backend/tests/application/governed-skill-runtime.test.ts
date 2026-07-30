@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { z } from 'zod';
-import { createGovernedDiscoverSkillTool } from '../../src/application/orchestration/tools/orchestration/discover-governed-skill.ts';
-import { createCallToolTool } from '../../src/application/orchestration/tools/orchestration/call-tool.ts';
-import { createResolveGovernedWorkTool } from '../../src/application/orchestration/tools/orchestration/resolve-governed-work.ts';
-import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
+import { createGovernedDiscoverSkillTool } from '../../src/application/orchestration/supervisor-tools/discover-governed-skill.ts';
+import { createCallToolTool } from '../../src/application/orchestration/supervisor-tools/call-tool.ts';
+import { createResolveGovernedWorkTool } from '../../src/application/orchestration/supervisor-tools/resolve-governed-work.ts';
+import { ToolRegistry } from '../../src/application/tools/tool-registry.ts';
 import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
 import { WorkResolutionService } from '../../src/application/gateway/work-resolution.service.ts';
 import { buildBrainSystemPrompt } from '../../src/application/orchestration/brain-prompt.ts';
@@ -300,7 +300,7 @@ describe('governed DB skill tools', () => {
     const financeSpecialist = row(
       'finance-ops-core',
       'finance',
-      ['zohoBooks', 'documentRag'],
+      ['zohoBooks'],
       ['finance', 'zoho'],
       'Reads Zoho invoices.',
     );

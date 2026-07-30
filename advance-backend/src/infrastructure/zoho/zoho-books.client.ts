@@ -7,7 +7,7 @@
  * API base: https://www.zohoapis.com/books/v3
  */
 
-import type { ZohoBooksClientPort } from '../../application/orchestration/tools/families/zoho-books.tool';
+import type { ZohoBooksClientPort } from '../../application/tools/families/zoho-books.tool';
 
 /** Root API domain — the `/books/v3` path is appended only here. */
 const DEFAULT_API_ROOT = 'https://www.zohoapis.com';

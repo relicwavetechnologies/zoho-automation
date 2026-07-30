@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { renderWorkBootstrapBrief } from '../../src/application/orchestration/tools/orchestration/work-bootstrap-brief';
+import { renderWorkBootstrapBrief } from '../../src/application/orchestration/supervisor-tools/work-bootstrap-brief';
 import type { WorkBootstrap } from '../../src/application/gateway/work-bootstrap.service';
 
 function bootstrap(overrides: Partial<WorkBootstrap> = {}): WorkBootstrap {

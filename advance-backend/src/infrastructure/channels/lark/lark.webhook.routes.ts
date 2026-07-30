@@ -20,8 +20,8 @@ import type {
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
 import type { LarkMemoryReviewService } from '../../../application/memory/lark-memory-review.service';
-import type { ChatMessageSerializer } from '../../../application/orchestration/chat-message-serializer';
-import type { LaneLeaseHolder } from '../../../application/orchestration/lane-lease.holder';
+import type { ChatMessageSerializer } from '../../../application/channels/chat-message-serializer';
+import type { LaneLeaseHolder } from '../../../application/channels/lane-lease.holder';
 import { fenceFinalReplies } from './lark-lane-fence';
 import { BusyLaneNotices, BUSY_NOTICE_TEXT } from './lark-busy-notice';
 import {

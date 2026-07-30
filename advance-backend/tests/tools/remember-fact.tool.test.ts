@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { asCompanyId, asDepartmentId, asUserId } from '../../src/shared/ids.ts';
-import { createRememberFactTool } from '../../src/application/orchestration/tools/orchestration/remember-fact.tool.ts';
+import { createRememberFactTool } from '../../src/application/orchestration/supervisor-tools/remember-fact.tool.ts';
 import type { MemoryScope } from '../../src/application/memory/mem0.service.ts';
 
 class StubMem0 {

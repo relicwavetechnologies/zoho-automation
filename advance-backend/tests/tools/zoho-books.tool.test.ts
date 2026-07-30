@@ -5,13 +5,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAllowedPerm, makeCtx } from './tool-test.helpers.ts';
-import { createZohoBooksTool, type ZohoBooksClientPort } from '../../src/application/orchestration/tools/families/zoho-books.tool.ts';
+import { createZohoBooksTool, type ZohoBooksClientPort } from '../../src/application/tools/families/zoho-books.tool.ts';
 import type { ZohoFinanceOps } from '../../src/application/zoho/zoho-finance-ops.ts';
 import { mapZohoError } from '../../src/application/zoho/zoho-error.utils.ts';
 import { formatAmount, formatDate } from '../../src/application/zoho/zoho-format.utils.ts';
 import { normalizeStatus, parseDateFilter } from '../../src/application/zoho/zoho-filter.utils.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
-import { arrayToCsv } from '../../src/application/orchestration/tools/shared/sandbox-runner.ts';
+import { arrayToCsv } from '../../src/application/tools/shared/sandbox-runner.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 
 const fakeSimpleClient: ZohoBooksClientPort = {

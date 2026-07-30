@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { LaneLeaseHolder } from '../../src/application/orchestration/lane-lease.holder.ts';
+import { LaneLeaseHolder } from '../../src/application/channels/lane-lease.holder.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import { wrapInfra } from '../../src/shared/errors.ts';
 import type { Logger } from '../../src/shared/logger.ts';

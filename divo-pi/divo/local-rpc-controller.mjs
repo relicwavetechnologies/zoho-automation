@@ -20,6 +20,9 @@ const PROFILE_ROOT = path.join(os.homedir(), ".divo-pi", "profiles");
 const RESOURCE_PREFIX = "divo-pi-local";
 const RPC_TIMEOUT_MS = 30_000;
 const KEYCHAIN_TIMEOUT_MS = 15_000;
+export const RUNTIME_IDLE_TIMEOUT_MS = 10 * 60_000;
+export const RUNTIME_STOP_RETRY_MS = 30_000;
+const RUNTIME_CONTAINER_MODE = "exec-v1";
 let tokenReadTail = Promise.resolve();
 
 /**
@@ -215,6 +218,8 @@ export function buildContainerCreateArgs(
 		`dev.divo.profile=${profile}`,
 		"--label",
 		`dev.divo.volume=${resources.volume}`,
+		"--label",
+		`dev.divo.runtime-mode=${RUNTIME_CONTAINER_MODE}`,
 		"--network",
 		resources.network,
 		...(addHostGateway
@@ -240,6 +245,8 @@ export function buildContainerCreateArgs(
 		"--stop-timeout",
 		"15",
 		image,
+		"sleep",
+		"infinity",
 	];
 }
 
@@ -252,7 +259,10 @@ export function backendUrlForContainer(value) {
 }
 
 export function runtimeContainerNeedsReplacement(container, image = IMAGE) {
-	return container?.Config?.Image !== image;
+	return (
+		container?.Config?.Image !== image ||
+		container?.Config?.Labels?.["dev.divo.runtime-mode"] !== RUNTIME_CONTAINER_MODE
+	);
 }
 
 export function assertPinnedProfile(metadata, session) {
@@ -889,9 +899,9 @@ export class JsonlRpc {
 			const error = new Error(
 				`Docker attach exited ${signal ? `with ${signal}` : `with code ${code}`}`,
 			);
-			for (const pending of this.pending.values()) pending.reject(error);
-			this.pending.clear();
+			this.rejectAll(error);
 		});
+		child.once("error", (error) => this.rejectAll(error));
 	}
 
 	handleLine(line) {
@@ -912,7 +922,7 @@ export class JsonlRpc {
 		}
 		const waiters = this.waiters.get(value.type) ?? [];
 		this.waiters.delete(value.type);
-		for (const waiter of waiters) waiter(value);
+		for (const waiter of waiters) waiter.resolve(value);
 		const progress = projectRuntimeProgress(value);
 		if (progress && !(progress.type === "writing" && this.writingStarted)) {
 			if (progress.type === "writing") this.writingStarted = true;
@@ -929,6 +939,10 @@ export class JsonlRpc {
 			pending.reject(error);
 		}
 		this.pending.clear();
+		for (const waiters of this.waiters.values()) {
+			for (const waiter of waiters) waiter.reject(error);
+		}
+		this.waiters.clear();
 	}
 
 	write(value) {
@@ -948,9 +962,9 @@ export class JsonlRpc {
 	}
 
 	waitFor(type) {
-		return new Promise((resolve) => {
+		return new Promise((resolve, reject) => {
 			const waiters = this.waiters.get(type) ?? [];
-			waiters.push(resolve);
+			waiters.push({ resolve, reject });
 			this.waiters.set(type, waiters);
 		});
 	}
@@ -1048,6 +1062,137 @@ async function stopOwnedContainer(profile) {
 	if (container.State.Running) await docker(["stop", resources.container]);
 }
 
+export function createIdleContainerScheduler({
+	stop,
+	idleTimeoutMs = RUNTIME_IDLE_TIMEOUT_MS,
+	retryDelayMs = RUNTIME_STOP_RETRY_MS,
+	setTimer = setTimeout,
+	clearTimer = clearTimeout,
+	onError = (error) => console.error(`[Pi] Failed to stop idle container: ${error.message}`),
+}) {
+	const timers = new Map();
+	const stopping = new Map();
+	const trackedProfiles = new Set();
+	let shuttingDown = false;
+
+	const schedule = (profile, delay) => {
+		if (shuttingDown) return;
+		const previous = timers.get(profile);
+		if (previous) clearTimer(previous);
+		const timer = setTimer(() => stopAfterIdle(profile), delay);
+		timer.unref?.();
+		timers.set(profile, timer);
+		trackedProfiles.add(profile);
+	};
+
+	const stopAfterIdle = (profile) => {
+		timers.delete(profile);
+		const work = Promise.resolve().then(() => stop(profile));
+		stopping.set(profile, work);
+		void work.then(
+			() => {
+				if (stopping.get(profile) === work) stopping.delete(profile);
+				trackedProfiles.delete(profile);
+			},
+			(error) => {
+				if (stopping.get(profile) === work) stopping.delete(profile);
+				onError(error);
+				schedule(profile, retryDelayMs);
+			},
+		);
+	};
+
+	const cancel = async (profile) => {
+		while (true) {
+			const timer = timers.get(profile);
+			if (timer) {
+				clearTimer(timer);
+				timers.delete(profile);
+			}
+			const work = stopping.get(profile);
+			if (!work) break;
+			await work.catch(() => {});
+		}
+		trackedProfiles.delete(profile);
+	};
+
+	return {
+		async activate(profile) {
+			await cancel(profile);
+		},
+		keepWarm(profile) {
+			schedule(profile, idleTimeoutMs);
+		},
+		async stopNow(profile) {
+			await cancel(profile);
+			try {
+				await stop(profile);
+			} catch (error) {
+				onError(error);
+				schedule(profile, retryDelayMs);
+				throw error;
+			}
+		},
+		async shutdown() {
+			shuttingDown = true;
+			const profiles = [...trackedProfiles];
+			for (const timer of timers.values()) clearTimer(timer);
+			timers.clear();
+			await Promise.allSettled(stopping.values());
+			await Promise.all(profiles.map(profile => stop(profile)));
+			trackedProfiles.clear();
+		},
+	};
+}
+
+const idleContainers = createIdleContainerScheduler({ stop: stopOwnedContainer });
+
+export async function shutdownWarmContainers() {
+	await idleContainers.shutdown();
+}
+
+export async function finalizeRuntimeLifecycle({
+	profile,
+	resources,
+	bootstrapAttempted,
+	completedSuccessfully,
+	runError,
+	abortStop,
+}, {
+	clearBootstrapFn = clearBootstrap,
+	scheduler = idleContainers,
+	onCleanupError = (error) => console.error(
+		`[Pi] ${error.message}: ${error.errors.map(String).join("; ")}`,
+	),
+} = {}) {
+	const cleanupErrors = [];
+	if (bootstrapAttempted) {
+		try {
+			await clearBootstrapFn(resources.authVolume);
+		} catch (error) {
+			cleanupErrors.push(error);
+		}
+	}
+	const abortError = await abortStop;
+	if (abortError) cleanupErrors.push(abortError);
+	if (completedSuccessfully && cleanupErrors.length === 0) {
+		scheduler.keepWarm(profile);
+	} else {
+		try {
+			await scheduler.stopNow(profile);
+		} catch (error) {
+			cleanupErrors.push(error);
+		}
+	}
+	if (cleanupErrors.length === 0) return;
+	const cleanupError = new AggregateError(
+		cleanupErrors,
+		`Divo runtime cleanup failed for profile "${profile}"`,
+	);
+	if (runError) onCleanupError(cleanupError);
+	else throw cleanupError;
+}
+
 export async function reconcileOwnedContainers() {
 	const result = await docker([
 		"ps",
@@ -1083,12 +1228,7 @@ async function runPrompt({
 	onProgress,
 }) {
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
-	emitRuntimeProgress(onProgress, {
-		type: "starting",
-		stage: "workspace",
-		label: "Preparing your secure workspace…",
-	});
-	const resources = await ensureRuntime(profile);
+	let resources = resourcesFor(profile);
 	const bootstrap = {
 		backendUrl: backendUrlForContainer(backendUrl),
 		token,
@@ -1098,25 +1238,53 @@ async function runPrompt({
 		companyId,
 		departmentId,
 	};
-	await writeBootstrap(resources.authVolume, bootstrap);
+	await idleContainers.activate(profile);
 	emitRuntimeProgress(onProgress, {
 		type: "starting",
-		stage: "container",
-		label: "Starting your Pi agent…",
+		stage: "workspace",
+		label: "Preparing your secure workspace…",
 	});
-	const startedAt = Date.now();
-	const child = spawn("docker", ["start", "--attach", "--interactive", resources.container], {
-		stdio: ["pipe", "pipe", "pipe"],
-	});
-	child.stderr.pipe(process.stderr);
+	let abortStop;
+	let bootstrapAttempted = false;
+	let child;
+	let completedSuccessfully = false;
+	let runError;
 	const abort = () => {
-		void stopOwnedContainer(profile).catch((error) => {
-			console.error(`[Pi] Failed to stop interrupted container: ${error.message}`);
-		});
+		abortStop = stopOwnedContainer(profile).then(
+			() => undefined,
+			(error) => error,
+		);
 	};
 	signal?.addEventListener("abort", abort, { once: true });
+	if (signal?.aborted) abort();
 	try {
+		resources = await ensureRuntime(profile);
+		if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
+		bootstrapAttempted = true;
+		await writeBootstrap(resources.authVolume, bootstrap);
+		emitRuntimeProgress(onProgress, {
+			type: "starting",
+			stage: "container",
+			label: "Starting Divo…",
+		});
+		const startedAt = Date.now();
+		const container = await inspectOwnedContainer(profile);
+		if (!container.State.Running) await docker(["start", resources.container]);
 		await waitUntilRunning(resources.container);
+		child = spawn("docker", [
+			"exec",
+			"--interactive",
+			resources.container,
+			"node",
+			"divo/container-entry.mjs",
+		], {
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		child.stderr.pipe(process.stderr);
+		const exited = new Promise((resolve) => {
+			child.once("error", (error) => resolve({ error }));
+			child.once("exit", (code, terminationSignal) => resolve({ code, terminationSignal }));
+		});
 		const rpc = new JsonlRpc(child, answerRequest, onProgress);
 		const state = await rpc.send({ type: "get_state" }, 90_000);
 		console.error(
@@ -1140,11 +1308,30 @@ async function runPrompt({
 		console.error(`Runtime stats: ${stats.stdout.trim()}`);
 		const text = result?.text ?? "";
 		console.log(text);
+		child.stdin.end();
+		const outcome = await exited;
+		if (outcome.error) throw outcome.error;
+		if (outcome.code !== 0) {
+			throw new Error(
+				`Divo runtime exited ${outcome.terminationSignal ? `with ${outcome.terminationSignal}` : `with code ${outcome.code}`}`,
+			);
+		}
+		completedSuccessfully = true;
 		return { profile, thread, text };
+	} catch (error) {
+		runError = error;
+		throw error;
 	} finally {
 		signal?.removeEventListener("abort", abort);
-		await clearBootstrap(resources.authVolume);
-		await stopOwnedContainer(profile);
+		if (child && !child.stdin.destroyed) child.stdin.end();
+		await finalizeRuntimeLifecycle({
+			profile,
+			resources,
+			bootstrapAttempted,
+			completedSuccessfully,
+			runError,
+			abortStop,
+		});
 	}
 }
 
@@ -1265,7 +1452,7 @@ export async function main(argv = process.argv.slice(2)) {
 		return prompt(profile, rest.join(" "), options);
 	}
 	if (command === "status") return status(profile);
-	if (command === "stop") return stopOwnedContainer(validateProfileName(profile));
+	if (command === "stop") return idleContainers.stopNow(validateProfileName(profile));
 	throw new Error(
 		[
 			"Usage:",

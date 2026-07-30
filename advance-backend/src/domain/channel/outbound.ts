@@ -108,4 +108,3 @@ export interface FinalReply {
   readonly executionTrace?: string;
 }
 
-export type OutboundEvent = StatusUpdate | FinalReply;

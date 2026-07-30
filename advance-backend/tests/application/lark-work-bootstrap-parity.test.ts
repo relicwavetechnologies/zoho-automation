@@ -3,10 +3,10 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { z } from 'zod';
 import { WorkBootstrapService } from '../../src/application/gateway/work-bootstrap.service';
-import { createGovernedDiscoverSkillTool } from '../../src/application/orchestration/tools/orchestration/discover-governed-skill';
-import { createResolveGovernedWorkTool } from '../../src/application/orchestration/tools/orchestration/resolve-governed-work';
-import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry';
-import { createAirtableMcpTools } from '../../src/application/orchestration/tools/families/airtable-mcp.tool';
+import { createGovernedDiscoverSkillTool } from '../../src/application/orchestration/supervisor-tools/discover-governed-skill';
+import { createResolveGovernedWorkTool } from '../../src/application/orchestration/supervisor-tools/resolve-governed-work';
+import { ToolRegistry } from '../../src/application/tools/tool-registry';
+import { createAirtableMcpTools } from '../../src/application/tools/families/airtable-mcp.tool';
 import {
   TOOL_FAMILY_DEFINITIONS,
   TOOL_FAMILY_IDS,
@@ -17,7 +17,7 @@ import { asToolId } from '../../src/shared/ids';
 import { ok } from '../../src/shared/result';
 import type { PermissionResult } from '../../src/application/permissions/permission.types';
 import type { AccessibleConnection } from '../../src/application/connections/connection-registry.port';
-import type { Tool } from '../../src/application/orchestration/tools/tool.contract';
+import type { Tool } from '../../src/application/tools/tool.contract';
 
 const GMAIL_TOOL_ID = 'googleGmail';
 const AIRTABLE_TOOL_ID = 'airtableRecords';

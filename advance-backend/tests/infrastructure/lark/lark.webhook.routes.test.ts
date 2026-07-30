@@ -11,7 +11,7 @@ import {
 import { LarkPiRuntimeError } from '../../../src/application/runtime/lark-pi-runtime.service.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
 import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
-import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
+import { ChatMessageSerializer } from '../../../src/application/channels/chat-message-serializer.ts';
 import { ElevenLabsTranscriptionClient } from '../../../src/infrastructure/ai/transcription/elevenlabs-transcription.client.ts';
 import { err, ok } from '../../../src/shared/result.ts';
 import { ChannelError } from '../../../src/shared/errors.ts';

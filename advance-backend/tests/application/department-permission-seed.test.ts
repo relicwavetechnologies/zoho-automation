@@ -41,7 +41,7 @@ describe('memberTemplateGrants', () => {
       }
     }
 
-    assert.ok(keys.has('dataProcessor:read'));
+    assert.ok(keys.has('dataExport:create'));
     assert.ok(!keys.has('larkBase:read'));
     assert.ok(!keys.has('larkApproval:read'));
   });

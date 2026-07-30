@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createScheduledWorkflowsTool } from '../../src/application/orchestration/tools/families/scheduled-workflows.tool.ts';
+import { createScheduledWorkflowsTool } from '../../src/application/tools/families/scheduled-workflows.tool.ts';
 import { asDepartmentId } from '../../src/shared/ids.ts';
 import { makeCtx } from './tool-test.helpers.ts';
 

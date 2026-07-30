@@ -23,7 +23,7 @@ import {
 } from '../../src/shared/ids.ts';
 import { asCompanyRoleSlug } from '../../src/domain/permissions/company-role.ts';
 import type { PermissionResult } from '../../src/application/permissions/permission.types.ts';
-import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
+import type { Tool } from '../../src/application/tools/tool.contract.ts';
 import type { ChannelAdapter, ConversationHandle, StatusHandle } from '../../src/application/channels/channel.adapter.ts';
 import type { IncomingMessage } from '../../src/domain/channel/incoming-message.ts';
 

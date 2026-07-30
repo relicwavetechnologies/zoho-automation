@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import type { PrismaClient } from '../../generated/prisma';
 import type { OrchestrationEngine } from '../../application/orchestration/engine/core';
-import type { ChatMessageSerializer } from '../../application/orchestration/chat-message-serializer';
+import type { ChatMessageSerializer } from '../../application/channels/chat-message-serializer';
 import type { ApprovalGateService } from '../../application/approval/approval-gate.service';
 import { createAirnoteAuthMiddleware } from './airnote-auth.middleware';
 import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.service';

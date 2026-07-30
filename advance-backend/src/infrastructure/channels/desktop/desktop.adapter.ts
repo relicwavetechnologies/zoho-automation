@@ -11,7 +11,7 @@ import type {
   TerminalBridge,
   TerminalExecRequest,
   ExecResult,
-} from '../../../application/orchestration/tools/shared/terminal-bridge';
+} from './terminal-bridge';
 
 export interface DesktopChatStartPayload {
   readonly type: 'chat.start';

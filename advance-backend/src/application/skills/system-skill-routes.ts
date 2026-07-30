@@ -14,6 +14,7 @@ import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from './google-workspace-system-skills
 import { LARK_SYSTEM_SKILLS } from './lark-system-skills';
 import { MAIL_OPS_SYSTEM_SKILLS } from './mail-ops-system-skills';
 import { DIVO_OMS_SITE_DATA_SYSTEM_SKILL } from './oms-site-data-system-skill';
+import { DIVO_LOCAL_PYTHON_SKILL_SLUG } from './divo-local-python-system-skill';
 import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from './scheduled-work-system-skill';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from './semrush-system-skill';
 import { SHARE_MEMORY_SKILL_SLUG } from './share-memory-system-skill';
@@ -67,20 +68,29 @@ AITable and Airtable are different products. Never route an Airtable request her
   {
     slug: 'data-router',
     name: 'Data Work Router',
-    summary: 'Routes bounded data processing separately from governed complete-data exports.',
+    summary: 'Routes data work between a scripted workflow, a governed export, and reading a file already in the workspace.',
     markdown: `# Data Work Router
 
 Choose the exact approved specialist returned by this router.
 
-- Calculate, group, filter, reshape, or format data → \`data-processing\`.
-- Produce a CSV, Google Sheet, or governed complete-data artifact → \`secure-data-export\`.
-- Analyse a file already in the workspace, or one too large to hold in
-  context → \`${READ_FILES_SKILL_SLUG}\`.
+- Fetch, calculate, group, join, reshape, or move data between connected
+  products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script, run it,
+  edit and rerun it. This is the data path, whatever the row count.
+- Produce a CSV, Google Sheet, or governed complete-data artifact →
+  \`secure-data-export\`.
+- Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
+
+Size does not change the route. A source that paginates past what fits in
+context is written to a file and queried there, inside the scripted workflow —
+never carried through the conversation.
 
 Never treat this router as permission to process or export data. Load the specialist first.`,
     toolIds: [],
-    tags: ['data', 'router', 'processing', 'analysis', 'export'],
-    aliases: ['data processing', 'calculate data', 'analyze rows', 'export data', 'csv export'],
+    tags: ['data', 'router', 'processing', 'analysis', 'export', 'python'],
+    aliases: [
+      'data processing', 'calculate data', 'analyze rows', 'export data', 'csv export',
+      'move data', 'transfer records', 'sync between tools', 'python workflow',
+    ],
     sortOrder: 5,
   },
   {
@@ -161,21 +171,6 @@ Do not route transient task state, secrets, or unconfirmed assistant inference t
     sortOrder: 9,
   },
   {
-    slug: 'data-processing',
-    name: 'Bounded Data Processing',
-    summary: 'Transform and analyze governed datasets with deterministic calculations.',
-    markdown: `# Bounded Data Processing
-
-Use \`dataProcessor\` for exact transformations and calculations over data already present or a governed source.
-Preserve exact values, keep currencies separate, and require complete source pagination before calling a result complete.
-Use \`secure-data-export\` instead when the user explicitly requests a file, CSV, Google Sheet, or export artifact.
-Use \`${READ_FILES_SKILL_SLUG}\` instead when the data is a file in the workspace, or when the row count is too large to hold in context — that path queries the file on disk rather than carrying rows through the model.`,
-    toolIds: ['dataProcessor'],
-    tags: ['data', 'processing', 'transform', 'analysis', 'csv'],
-    aliases: ['process data', 'calculate rows', 'group records', 'transform dataset'],
-    sortOrder: 20,
-  },
-  {
     slug: 'web-search',
     name: 'Web Search',
     summary: 'Search current public information, verify exact facts, and cite relevant URLs.',
@@ -229,7 +224,11 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
   },
   {
     routerSlug: 'data-router',
-    targetSlugs: ['data-processing', DATA_EXPORT_SYSTEM_SKILL.slug, READ_FILES_SKILL_SLUG],
+    targetSlugs: [
+      DIVO_LOCAL_PYTHON_SKILL_SLUG,
+      DATA_EXPORT_SYSTEM_SKILL.slug,
+      READ_FILES_SKILL_SLUG,
+    ],
   },
   {
     routerSlug: 'files-router',
@@ -253,20 +252,28 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
   },
 ] as const;
 
-export const SEEDED_EXECUTABLE_SYSTEM_SKILL_SLUGS = [
+/**
+ * Every seeded skill a router could reach, tools or not. `unroutedSeededSystemSkillSlugs`
+ * checks against this rather than the tool-bearing subset.
+ */
+export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = [
   ...LARK_SYSTEM_SKILLS,
   ...GOOGLE_WORKSPACE_SYSTEM_SKILLS,
   ...CONNECTED_PROVIDER_SYSTEM_SKILLS,
   ...ZOHO_FINANCE_SYSTEM_SKILLS,
   ...MAIL_OPS_SYSTEM_SKILLS,
+  ...FILES_AND_DOCUMENTS_SYSTEM_SKILLS,
   DATA_EXPORT_SYSTEM_SKILL,
   DIVO_SEMRUSH_SYSTEM_SKILL,
   DIVO_OMS_SITE_DATA_SYSTEM_SKILL,
   ...ROUTING_SYSTEM_SKILLS,
 ]
-  .filter(skill => skill.toolIds.length > 0)
   .map(skill => skill.slug)
-  .concat(SCHEDULE_DIVO_WORK_SKILL_SLUG, SHARE_MEMORY_SKILL_SLUG);
+  .concat(
+    SCHEDULE_DIVO_WORK_SKILL_SLUG,
+    SHARE_MEMORY_SKILL_SLUG,
+    DIVO_LOCAL_PYTHON_SKILL_SLUG,
+  );
 
 type SystemSkillRouteStore = Pick<
   Prisma.TransactionClient,
@@ -377,9 +384,18 @@ export async function provisionSystemSkillRoutesForExistingCompanies(
   };
 }
 
+/**
+ * Seeded skills that no router points at.
+ *
+ * Deliberately not limited to skills that carry tools. An instruction-only
+ * recipe is exactly the kind that goes unnoticed: it provisions cleanly, shows
+ * up in the registry, and is still unreachable router-first. That is how
+ * `divo-python-automation` — the scripted-workflow path — sat unrouted.
+ */
 export function unroutedSeededSystemSkillSlugs(): string[] {
   const routed = new Set(SYSTEM_SKILL_ROUTE_SEEDS.flatMap(seed => seed.targetSlugs));
-  return [...new Set(SEEDED_EXECUTABLE_SYSTEM_SKILL_SLUGS)]
-    .filter(slug => !routed.has(slug))
+  const routers = new Set(SYSTEM_SKILL_ROUTE_SEEDS.map(seed => seed.routerSlug));
+  return [...new Set(ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS)]
+    .filter(slug => !routed.has(slug) && !routers.has(slug))
     .sort();
 }

@@ -11,6 +11,7 @@ import {
 	reconcileOwnedContainers,
 	resolveRuntimeLease,
 	resolveStagedAttachments,
+	shutdownWarmContainers,
 	stageRuntimeFile,
 	validateAttachmentFileId,
 	validateAttachmentRequestId,
@@ -399,9 +400,21 @@ export async function main() {
 	console.error(
 		`Divo controller listening on http://${host}:${port} (capacity ${maxActiveRuns}, reconciled ${reconciled.length})`,
 	);
-	const close = () => server.close();
-	process.once("SIGINT", close);
-	process.once("SIGTERM", close);
+	let closing = false;
+	const close = async () => {
+		if (closing) return;
+		closing = true;
+		await new Promise((resolve) => server.close(resolve));
+		await shutdownWarmContainers();
+	};
+	const requestClose = () => {
+		void close().catch((error) => {
+			console.error(`[divo-controller-server] shutdown failed: ${error.message}`);
+			process.exitCode = 1;
+		});
+	};
+	process.once("SIGINT", requestClose);
+	process.once("SIGTERM", requestClose);
 }
 
 const isMain =

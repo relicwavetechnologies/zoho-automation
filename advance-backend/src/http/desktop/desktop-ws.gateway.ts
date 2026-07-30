@@ -4,13 +4,13 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { OrchestrationEngine } from '../../application/orchestration/engine/core';
-import type { ChatMessageSerializer } from '../../application/orchestration/chat-message-serializer';
+import type { ChatMessageSerializer } from '../../application/channels/chat-message-serializer';
 import type { ApprovalGateService } from '../../application/approval/approval-gate.service';
 import { DesktopChannelAdapter, type DesktopChatStartPayload } from '../../infrastructure/channels/desktop/desktop.adapter';
 import type { ConversationHandle } from '../../application/channels/channel.adapter';
 import { asChatId, asCompanyId, asCorrelationId, asDepartmentId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
-import { terminalRegistry, type ExecResult } from '../../application/orchestration/tools/shared/terminal-bridge';
+import { terminalRegistry, type ExecResult } from '../../infrastructure/channels/desktop/terminal-bridge';
 import type { Logger } from '../../shared/logger';
 
 export interface DesktopWsGatewayDeps {

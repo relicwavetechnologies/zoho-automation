@@ -5,14 +5,14 @@ import {
   provisionLarkSystemSkills,
 } from '../../src/application/skills/lark-system-skills.ts';
 import { larkSkillCjkFields } from '../../src/application/skills/lark-skill-language-policy.ts';
-import { createLarkApprovalTool } from '../../src/application/orchestration/tools/families/lark-approval.tool.ts';
-import { createLarkBaseTool } from '../../src/application/orchestration/tools/families/lark-base.tool.ts';
-import { createLarkCalendarTool } from '../../src/application/orchestration/tools/families/lark-calendar.tool.ts';
-import { createLarkContactsTool } from '../../src/application/orchestration/tools/families/lark-contacts.tool.ts';
-import { createLarkDocTool } from '../../src/application/orchestration/tools/families/lark-doc.tool.ts';
-import { createLarkMeetingTool } from '../../src/application/orchestration/tools/families/lark-meeting.tool.ts';
-import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
-import { createLarkTaskTool } from '../../src/application/orchestration/tools/families/lark-task.tool.ts';
+import { createLarkApprovalTool } from '../../src/application/tools/families/lark-approval.tool.ts';
+import { createLarkBaseTool } from '../../src/application/tools/families/lark-base.tool.ts';
+import { createLarkCalendarTool } from '../../src/application/tools/families/lark-calendar.tool.ts';
+import { createLarkContactsTool } from '../../src/application/tools/families/lark-contacts.tool.ts';
+import { createLarkDocTool } from '../../src/application/tools/families/lark-doc.tool.ts';
+import { createLarkMeetingTool } from '../../src/application/tools/families/lark-meeting.tool.ts';
+import { createLarkMessagingTool } from '../../src/application/tools/families/lark-messaging.tool.ts';
+import { createLarkTaskTool } from '../../src/application/tools/families/lark-task.tool.ts';
 
 function operationOptions(schema: unknown): readonly string[] {
   type SchemaNode = {

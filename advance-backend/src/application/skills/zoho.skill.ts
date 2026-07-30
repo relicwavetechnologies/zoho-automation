@@ -16,7 +16,7 @@ export const financeOpsCoreSkill: Skill = {
   id: 'finance-ops-core',
   name: 'Finance Ops Core',
   description: 'Route broad finance questions, unpaid invoices, recent payments, overdue reports, tax summaries, and safe read-only finance summaries across Zoho Books and Zoho CRM. Delegates operational workflows to specialist skills.',
-  toolIds: ['zohoBooks', 'zohoCrm', 'documentRag', 'dataProcessor'],
+  toolIds: ['zohoBooks', 'zohoCrm'],
   instructions: `${ZOHO_CONNECTION_METHOD}
 
 ROLE:
@@ -31,7 +31,7 @@ ROUTING:
 - Bills / expenses / bank transactions -> zohoBooks op="list_bills", "list_expenses", "list_bank_transactions", or "search_transactions".
 - Tax summary -> zohoBooks op="get_tax_summary".
 - Customer, lead, contact, account, deal, or case relationship context -> zohoCrm read ops: "search_text", "search", "get", "list", or CRM report ops.
-- Uploaded finance documents used as evidence -> use documentRag/dataProcessor only to extract or analyze; verify final financial truth in Zoho before claiming it.
+- Finance documents sent in chat are already saved in the workspace and listed under [ATTACHED_FILES]; read them from there to extract or analyze, then verify final financial truth in Zoho before claiming it.
 
 WRITE SAFETY:
 - Stay read-only when the user says "don't change anything".
@@ -80,16 +80,16 @@ export const zohoBooksReadAnalysisSkill: Skill = {
   id: 'zoho-books-read-analysis',
   name: 'Zoho Books Read and Analysis',
   description: 'Read, aggregate, and verify Zoho Books data without side effects, including complete paginated finance calculations.',
-  toolIds: ['zohoBooks', 'dataProcessor'],
+  toolIds: ['zohoBooks'],
   instructions: `${ZOHO_CONNECTION_METHOD}
 
 READ ROUTING:
 - Bounded lookup or preview -> use the matching zohoBooks read operation with narrow filters.
 - Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.
 - Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.
-- Exact whole-account or potentially large aggregate -> use dataProcessor source mode with kind="zoho_books"; do not start with zohoBooks script mode because script mode is capped at 4,000 records.
+- Exact whole-account or potentially large aggregate -> use the scripted workflow: fetch pages through divo-local, write them to a file, and aggregate over that file. Do not start with zohoBooks script mode; it is capped at 4,000 records, and pulling pages into context to add them up is how totals silently come out short.
 - Aging/overdue report -> use zohoBooks op="build_overdue_report".
-- Require dataProcessor complete=true before describing a source-backed result as exact.
+- Before describing a total as exact, reconcile it: every source page accounted for, and the row count you computed over stated alongside the figure.
 - Zoho customer-payment list rows may omit original currency. When _currency is UNKNOWN, do not call it INR or produce an original-currency breakdown. _amount_inr remains safe when populated from Zoho bcy_amount; otherwise state that original-currency analysis requires stronger evidence.
 
 ROW CONTRACT:
@@ -105,7 +105,7 @@ OUTPUT:
 
 const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:
 - Use this workflow when the user asks to record, create, or enter a vendor bill/invoice in Zoho Books, especially with a PDF invoice.
-- Extract invoice data from the attached/source PDF before writing: invoice or bill number, date, vendor name, GSTIN/PAN/address, line items, tax breakdown, total, and IRN when present. Use documentRag/dataProcessor if the source text needs extraction before Zoho writes.
+- Extract invoice data from the attached/source PDF before writing: invoice or bill number, date, vendor name, GSTIN/PAN/address, line items, tax breakdown, total, and IRN when present. The PDF is already in the workspace at the path given in [ATTACHED_FILES]; open and read it before any Zoho write.
 - Treat the source invoice/bill number as the unique Zoho Books bill_number.
 - Never create a second bill with the same normalized bill_number. Search existing bills first with zohoBooks op="list_bills" using searchQuery/date/vendor filters where possible; accept only exact normalized bill_number matches.
 - If an existing bill is found, do not create another bill and do not record another payment. Check attachment metadata. Attach the PDF only if it is missing; if attachment state cannot be verified, stop and report the risk.
@@ -123,14 +123,14 @@ export const zohoBooksBillSkill: Skill = {
   id: 'zoho-books-bill',
   name: 'Zoho Books Bill Recording',
   description: 'Record vendor bills in Zoho Books from PDF invoices with duplicate checks, GST handling, PDF attachment, and optional payment routing.',
-  toolIds: ['zohoCrm', 'zohoBooks', 'documentRag', 'dataProcessor'],
+  toolIds: ['zohoCrm', 'zohoBooks'],
   instructions: `${ZOHO_CONNECTION_METHOD}
 
 ${ZOHO_BOOKS_BILL_WORKFLOW}
 
 TOOL MAPPING:
 - Use zohoBooks for bill lookup, contact/vendor lookup, account/tax discovery, bill creation, attachment-aware verification where supported, and payment recording.
-- Use documentRag or dataProcessor before Zoho writes when the source is an image/PDF and text extraction is needed.
+- When the source is an image or PDF, read it from its workspace path first; never write to Zoho from a filename or an assumed value.
 - Use zohoCrm only when the user explicitly needs CRM-side context for the bill workflow.
 
 AUDIT / VERIFICATION HONESTY:
@@ -143,7 +143,7 @@ export const zohoBillNotifyAccountsSkill: Skill = {
   id: 'zoho-bill-notify-accounts',
   name: 'Zoho Bill Notify Accounts',
   description: 'Create or update a Zoho Books vendor bill from a PDF invoice, then notify the Core Accounts Lark group with an audit summary and source PDF.',
-  toolIds: ['zohoCrm', 'zohoBooks', 'documentRag', 'dataProcessor', 'larkMessaging'],
+  toolIds: ['zohoCrm', 'zohoBooks', 'larkMessaging'],
   instructions: `${ZOHO_CONNECTION_METHOD}
 
 DEPENDENCY:

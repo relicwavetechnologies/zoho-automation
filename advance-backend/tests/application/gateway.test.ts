@@ -11,12 +11,12 @@ import {
   InMemoryApprovalIntentRepository,
   LocalApprovalIntentService,
 } from '../../src/application/gateway/local-approval-intent.service.ts';
-import { ToolRegistry } from '../../src/application/orchestration/tools/tool-registry.ts';
-import type { Tool } from '../../src/application/orchestration/tools/tool.contract.ts';
-import { createWebSearchTool } from '../../src/application/orchestration/tools/families/web-search.tool.ts';
-import { createSkillPublishingTool } from '../../src/application/orchestration/tools/families/skill-publishing.tool.ts';
-import { createMemoryPublishingTool } from '../../src/application/orchestration/tools/families/memory-publishing.tool.ts';
-import { createMemoryRecallTool } from '../../src/application/orchestration/tools/families/memory-recall.tool.ts';
+import { ToolRegistry } from '../../src/application/tools/tool-registry.ts';
+import type { Tool } from '../../src/application/tools/tool.contract.ts';
+import { createWebSearchTool } from '../../src/application/tools/families/web-search.tool.ts';
+import { createSkillPublishingTool } from '../../src/application/tools/families/skill-publishing.tool.ts';
+import { createMemoryPublishingTool } from '../../src/application/tools/families/memory-publishing.tool.ts';
+import { createMemoryRecallTool } from '../../src/application/tools/families/memory-recall.tool.ts';
 import type { CatalogSkill, SkillCatalogService } from '../../src/application/skills/skill-catalog.service.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import { PermissionError, ToolError } from '../../src/shared/errors.ts';

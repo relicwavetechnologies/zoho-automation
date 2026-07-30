@@ -7,7 +7,7 @@
  * API base: https://www.zohoapis.com/crm/v6
  */
 
-import type { ZohoCrmClientPort } from '../../application/orchestration/tools/families/zoho-crm.tool';
+import type { ZohoCrmClientPort } from '../../application/tools/families/zoho-crm.tool';
 
 const DEFAULT_CRM_BASE = 'https://www.zohoapis.com/crm/v6';
 

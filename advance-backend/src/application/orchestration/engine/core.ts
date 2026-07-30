@@ -8,7 +8,7 @@ import type { FinalReply } from '../../../domain/channel/outbound';
 import type { RunContext } from '../../../domain/orchestration/run-context';
 import type { PermissionService } from '../../permissions/permission.service';
 import type { PermissionQuery } from '../../permissions/permission.types';
-import type { ToolRegistry } from '../tools/tool-registry';
+import type { ToolRegistry } from '../../tools/tool-registry';
 import type { HistoryService } from './history';
 import type { ConversationHandle } from '../../channels/channel.adapter';
 import type { ChannelAdapter } from '../../channels/channel.adapter';

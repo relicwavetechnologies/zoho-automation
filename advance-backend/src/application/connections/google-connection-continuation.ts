@@ -1,6 +1,6 @@
 import { Queue, Worker, type Job } from 'bullmq';
 import type { ConversationHandle } from '../channels/channel.adapter';
-import type { LaneLeaseHolder } from '../orchestration/lane-lease.holder';
+import type { LaneLeaseHolder } from '../channels/lane-lease.holder';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';

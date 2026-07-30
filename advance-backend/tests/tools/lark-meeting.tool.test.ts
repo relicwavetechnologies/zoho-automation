@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createLarkMeetingTool } from '../../src/application/orchestration/tools/families/lark-meeting.tool.ts';
+import { createLarkMeetingTool } from '../../src/application/tools/families/lark-meeting.tool.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
 
 const meeting = { id: 'meeting-1', topic: 'Launch review' };

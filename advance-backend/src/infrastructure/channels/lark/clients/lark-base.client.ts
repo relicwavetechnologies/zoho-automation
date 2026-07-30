@@ -1,4 +1,4 @@
-import type { LarkBaseClientPort } from '../../../../application/orchestration/tools/families/lark-base.tool';
+import type { LarkBaseClientPort } from '../../../../application/tools/families/lark-base.tool';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type RecordData = Record<string, unknown>;

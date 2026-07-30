@@ -172,10 +172,6 @@ jobs:
              DIVO_ENV_FILE=.env.production.local \
              DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
-             docker compose --env-file .env.production.local run --rm --no-deps divo-backend pnpm seed:dynamic-agents && \
-             DIVO_ENV_FILE=.env.production.local \
-             DIVO_BACKEND_IMAGE='${BACKEND_IMAGE}' \
-             DIVO_ADMIN_IMAGE='${ADMIN_IMAGE}' \
              docker compose --env-file .env.production.local up -d --no-build --remove-orphans"
 
       - name: Smoke test

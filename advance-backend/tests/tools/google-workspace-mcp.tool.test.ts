@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import {
   createGoogleWorkspaceMcpTools,
   type GoogleWorkspaceMcpPort,
-} from '../../src/application/orchestration/tools/families/google-workspace-mcp.tool';
+} from '../../src/application/tools/families/google-workspace-mcp.tool';
 import {
   GOOGLE_WORKSPACE_PRODUCTS,
   GOOGLE_WORKSPACE_TOOL_IDS,

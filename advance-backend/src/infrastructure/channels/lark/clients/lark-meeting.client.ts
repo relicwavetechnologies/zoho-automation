@@ -1,4 +1,4 @@
-import type { LarkMeetingClientPort } from '../../../../application/orchestration/tools/families/lark-meeting.tool';
+import type { LarkMeetingClientPort } from '../../../../application/tools/families/lark-meeting.tool';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type LarkRecord = Record<string, unknown>;

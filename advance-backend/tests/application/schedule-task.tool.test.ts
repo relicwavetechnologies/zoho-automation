@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createScheduleTaskTool } from '../../src/application/orchestration/tools/orchestration/schedule-task.tool';
+import { createScheduleTaskTool } from '../../src/application/orchestration/supervisor-tools/schedule-task.tool';
 
 async function executeDynamic(tool: unknown, input: unknown): Promise<string> {
   return (tool as any).execute(input, { toolCallId: 'call-1', messages: [] });

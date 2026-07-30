@@ -6,7 +6,7 @@ import type {
   LarkCopyableDriveFileType,
   LarkDriveFileType,
   LarkMovableDriveFileType,
-} from '../../../../application/orchestration/tools/families/lark-doc.tool';
+} from '../../../../application/tools/families/lark-doc.tool';
 import { LarkApiError, LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type DocRecord = Record<string, unknown>;

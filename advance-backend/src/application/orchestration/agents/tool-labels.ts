@@ -50,8 +50,6 @@ const LABELS: Record<string, ToolLabels> = {
   zohoBooks:         { verb: 'Reading Zoho Books…',  called: 'Reading Zoho Books',    done: 'Books',      past: 'Read Books'      },
   zohoCrm:           { verb: 'Reading Zoho CRM…',    called: 'Reading Zoho CRM',      done: 'CRM',        past: 'Read CRM'        },
   webSearch:         { verb: 'Searching web…',        called: 'Searching web',          done: 'Web',        past: 'Searched web'    },
-  contextSearch:     { verb: 'Searching context…',   called: 'Searching context',     done: 'Context',    past: 'Searched'        },
-  documentRag:       { verb: 'Reading documents…',   called: 'Reading documents',     done: 'Documents',  past: 'Read documents'  },
 };
 
 const FALLBACK: ToolLabels = { verb: 'Working…', called: 'Working', done: 'Done', past: 'Done' };

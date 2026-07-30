@@ -2,7 +2,7 @@ import {
   GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
   GOOGLE_WORKSPACE_NATIVE_TOOLS,
 } from '../../application/google/google-workspace-mcp-manifest';
-import type { GoogleWorkspaceMcpToolDescription } from '../../application/orchestration/tools/families/google-workspace-mcp.tool';
+import type { GoogleWorkspaceMcpToolDescription } from '../../application/tools/families/google-workspace-mcp.tool';
 
 const REVIEWED_NATIVE_TOOLS = new Set<string>(GOOGLE_WORKSPACE_NATIVE_TOOLS);
 

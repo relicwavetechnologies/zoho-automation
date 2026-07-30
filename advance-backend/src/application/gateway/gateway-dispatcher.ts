@@ -1,4 +1,4 @@
-import type { ToolRegistry } from '../orchestration/tools/tool-registry';
+import type { ToolRegistry } from '../tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
 import type { PermissionResult } from '../permissions/permission.types';
 import type { SkillCatalogService } from '../skills/skill-catalog.service';

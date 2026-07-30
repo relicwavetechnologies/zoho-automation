@@ -5,7 +5,7 @@ import {
   provisionShareMemoryForExistingCompanies,
 } from '../../src/application/skills/share-memory-provisioning.ts';
 import { LarkMemoryReviewService } from '../../src/application/memory/lark-memory-review.service.ts';
-import { buildArgsSummary } from '../../src/application/orchestration/tools/ai-sdk-adapter.ts';
+import { buildArgsSummary } from '../../src/application/gateway/args-summary.ts';
 import { asCompanyId, asUserId } from '../../src/shared/ids.ts';
 import { asCompanyRoleSlug } from '../../src/domain/permissions/company-role.ts';
 

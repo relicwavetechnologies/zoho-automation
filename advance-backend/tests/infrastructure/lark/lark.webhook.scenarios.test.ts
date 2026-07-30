@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Request, Response } from 'express';
-import { ChatMessageSerializer } from '../../../src/application/orchestration/chat-message-serializer.ts';
+import { ChatMessageSerializer } from '../../../src/application/channels/chat-message-serializer.ts';
 import { LarkIngressWorker } from '../../../src/application/lark-ingress/lark-ingress.worker.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
 import {
@@ -262,7 +262,12 @@ describe('Lark webhook scenarios', () => {
     assert.ok(events.includes('end:message-1'));
   });
 
-  it('keeps top-level requests from the same group requester FIFO', async () => {
+  it('lets two top-level requests from one person run as the separate threads they are', async () => {
+    // A top-level group message is the root of the thread it starts, so two of
+    // them are two conversations, not two turns of one. Serialising them would
+    // make the second person's unrelated question wait behind the first's long
+    // run. What must stay ordered is a thread against its own seed, which
+    // `uses the root message as the threaded seed lane` covers.
     const events: string[] = [];
     let releaseFirst: (() => void) | undefined;
     const harness = createHarness(async messageId => {
@@ -286,15 +291,16 @@ describe('Lark webhook scenarios', () => {
       senderOpenId: 'sender-1',
     }));
 
-    await waitFor(() => events.includes('start:message-1'));
-    assert.deepEqual(events, ['start:message-1']);
+    await waitFor(() => events.includes('end:message-2'));
+    assert.ok(
+      !events.includes('end:message-1'),
+      'the second thread must not be blocked behind the first still running',
+    );
 
     releaseFirst?.();
     await harness.waitForIdle();
-    assert.deepEqual(events, [
-      'start:message-1',
+    assert.deepEqual(events.filter(e => e.startsWith('end:')).sort(), [
       'end:message-1',
-      'start:message-2',
       'end:message-2',
     ]);
   });

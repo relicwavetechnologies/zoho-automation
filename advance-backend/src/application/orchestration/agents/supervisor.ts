@@ -1,15 +1,18 @@
 /**
- * SupervisorAgent — the single orchestration brain.
+ * SupervisorAgent — the executor for scheduled workflows.
  *
- * Uses Vercel AI SDK streamText with:
- *   - 4 agent dispatcher tools (larkAgent, googleAgent, zohoAgent, contextAgent)
- *   - 5 orchestration tools (manageTodos, scheduleTask, list/cancel/run)
+ * Every interactive turn runs in the Pi container. What is left here is the one
+ * path Pi cannot serve yet: a scheduled workflow has no signed-in member, so it
+ * cannot mint a runtime lease, and it runs on this Vercel AI SDK `streamText`
+ * loop instead. When scheduled runs move to Pi, this whole file goes with them.
  *
- * The supervisor's own LLM response IS the final reply — no separate synthesis step.
- * Domain agents (runners) each call their own LLM with filtered real tools.
+ * There is exactly one route through it — governed skill routing over the DB
+ * skill registry (`resolve_work` → `discover_skill` → `call_tool`), plus the
+ * todo and scheduling tools. The legacy per-vendor dispatchers and the LangGraph
+ * path were deleted; do not reintroduce a second way to answer a turn.
  *
- * Status card is edited at tool-call boundaries (not token-by-token).
- * Final accumulated text replaces the status card via sendFinalReply.
+ * The supervisor's own LLM response IS the final reply — no synthesis step.
+ * Status card is edited at tool-call boundaries, then replaced by sendFinalReply.
  */
 
 import { streamText, stepCountIs, dynamicTool } from 'ai';
@@ -42,32 +45,24 @@ import type { PermissionService } from '../../permissions/permission.service';
 import type { RunContext } from '../../../domain/orchestration/run-context';
 import { asDepartmentId } from '../../../shared/ids';
 import type { ConversationWindow } from '../../../domain/conversation/turn';
-import type { Tool as AppTool } from '../tools/tool.contract';
+import type { Tool as AppTool } from '../../tools/tool.contract';
 import type { StatusChannel } from '../engine/status-channel';
 import type { OrchestrationTracer } from '../../observability/orchestration-tracer';
 import type { SupervisorTodoRepository } from '../../../infrastructure/persistence/supervisor-todo.repository';
 import type { PrismaClient } from '../../../generated/prisma';
 import type { AgentDefinitionView } from '../../../infrastructure/persistence/agent-definition.repository';
 import type { AgentResolver } from './agent-resolver';
-import type { AgentCatalogCache } from '../../agents/agent-catalog.cache';
-import { toDescriptor } from '../../agents/agent-catalog.service';
 import type { ApprovalGateService } from '../../approval/approval-gate.service';
-import { buildSupervisorSystemPrompt } from './supervisor.prompt';
 import type { RunStatusAggregator } from '../run-status.aggregator';
-import { runLarkAgent } from '../agent-runners/lark.runner';
-import { runGoogleAgent } from '../agent-runners/google.runner';
-import { runZohoAgent } from '../agent-runners/zoho.runner';
-import { createManageTodosTool } from '../tools/orchestration/manage-todos.tool';
-import { createScheduleTaskTool } from '../tools/orchestration/schedule-task.tool';
-import { createListScheduledTasksTool } from '../tools/orchestration/list-scheduled-tasks.tool';
-import { createCancelScheduledTaskTool } from '../tools/orchestration/cancel-scheduled-task.tool';
-import { createRunScheduledNowTool } from '../tools/orchestration/run-scheduled-now.tool';
-import { createRememberFactTool } from '../tools/orchestration/remember-fact.tool';
-import { buildCapabilitiesForAgent } from '../agent-runners/dynamic/agent-as-tool';
-import { buildDynamicSupervisorGraph, type DynamicSupervisorGraph } from '../graphs/dynamic-supervisor.graph';
+import { createManageTodosTool } from '../supervisor-tools/manage-todos.tool';
+import { createScheduleTaskTool } from '../supervisor-tools/schedule-task.tool';
+import { createListScheduledTasksTool } from '../supervisor-tools/list-scheduled-tasks.tool';
+import { createCancelScheduledTaskTool } from '../supervisor-tools/cancel-scheduled-task.tool';
+import { createRunScheduledNowTool } from '../supervisor-tools/run-scheduled-now.tool';
+import { createRememberFactTool } from '../supervisor-tools/remember-fact.tool';
 import type { Mem0Service } from '../../memory/mem0.service';
 import { buildToolFinishedPayload, isErrorOutput } from '../agent-runners/tool-trace';
-import { debugSupervisorEntry, debugGraphInvoke, debugGraphOutput } from '../../../shared/debug-run-log';
+import { debugSupervisorEntry } from '../../../shared/debug-run-log';
 import {
   formatGroupContextReference,
   GROUP_CONTEXT_TRUST_POLICY,
@@ -78,9 +73,9 @@ import type { SkillAccessEnforcementPort } from '../../skills/skill-access.port'
 import { WorkResolutionService } from '../../gateway/work-resolution.service';
 import type { ToolExecutor } from '../../gateway/tool-executor';
 import { buildBrainSystemPrompt } from '../brain-prompt';
-import { createGovernedDiscoverSkillTool } from '../tools/orchestration/discover-governed-skill';
-import { createCallToolTool } from '../tools/orchestration/call-tool';
-import { createResolveGovernedWorkTool } from '../tools/orchestration/resolve-governed-work';
+import { createGovernedDiscoverSkillTool } from '../supervisor-tools/discover-governed-skill';
+import { createCallToolTool } from '../supervisor-tools/call-tool';
+import { createResolveGovernedWorkTool } from '../supervisor-tools/resolve-governed-work';
 import type { AuditService } from '../../observability/audit.service';
 import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from '../../skills/scheduled-work-system-skill';
 import { SHARE_MEMORY_SKILL_SLUG } from '../../skills/share-memory-system-skill';
@@ -159,27 +154,6 @@ export interface SupervisorOutput {
   toolResults: Array<{ toolName: string; output: string }>;
 }
 
-interface DynamicGraphRunInput {
-  readonly userMessage: string;
-  readonly history: ConversationWindow;
-  readonly perm: PermissionResult;
-  readonly runContext: RunContext;
-  readonly permittedTools: ReadonlyArray<AppTool<unknown, unknown>>;
-  readonly approvalGate?: ApprovalGateService;
-  readonly memoryContext?: string;
-  readonly conversationSummary?: string;
-  readonly groupContext?: string;
-  readonly groupContextSystemHeader?: string;
-  readonly inlineImageUrls?: readonly string[];
-  readonly mem0?: Mem0Service;
-  readonly chatId?: string;
-  readonly tracer?: OrchestrationTracer;
-  readonly statusChannel?: StatusChannel;
-  readonly aggregator?: RunStatusAggregator;
-  readonly model?: LanguageModel;
-  readonly resolveModel?: SupervisorDeps['resolveModel'];
-}
-
 // ─── Deps ────────────────────────────────────────────────────────────────────
 
 export interface SupervisorDeps {
@@ -195,21 +169,18 @@ export interface SupervisorDeps {
     agentSlug?: string;
   }) => Promise<LanguageModel> | LanguageModel;
   agentResolver:     AgentResolver;
-  agentCatalogCache?: AgentCatalogCache;
   todoRepo:          SupervisorTodoRepository;
   prisma:            PrismaClient;
   logger:            Logger;
   clock:             Clock;
   geminiApiKey?: string;
-  dynamicGraphEnabled?: boolean;
-  dynamicSupervisorGraph?: DynamicSupervisorGraph;
   supervisorTimeoutMs?: number;
   mem0?: Mem0Service;
-  toolRegistry?: import('../tools/tool-registry').ToolRegistry;
+  toolRegistry: import('../../tools/tool-registry').ToolRegistry;
   /** DB-backed company skill catalogue used by governed server channels. */
-  skillCatalog?: SkillCatalogService;
+  skillCatalog: SkillCatalogService;
   /** Explicit company/user/department/role skill grant resolver. */
-  skillAccessEnforcement?: SkillAccessEnforcementPort;
+  skillAccessEnforcement: SkillAccessEnforcementPort;
   /** Shared desktop/Lark resolver for persona rules and company skill recipes. */
   workResolution?: WorkResolutionService;
   /** Shared desktop/Lark discovery context: accessible accounts and native contracts. */
@@ -243,19 +214,18 @@ export class SupervisorAgent {
     const { agentResolver, todoRepo, prisma, logger, clock } = this.deps;
     const model = input.model ?? this.deps.model;
     const resolveModel = input.resolveModel ?? this.deps.resolveModel;
-    const useGovernedLarkRuntime = channelType === 'lark'
-      && !!this.deps.skillCatalog
+    // Governed routing is not Lark-specific: it needs the skill catalog, the
+    // access enforcement and the tool registry, none of which know a channel.
+    // Gating it on `lark` sent scheduled desktop-delivery runs down the legacy
+    // dispatchers instead, which is the only reason those still executed.
+    const useGovernedLarkRuntime = !!this.deps.skillCatalog
       && !!this.deps.skillAccessEnforcement
       && !!this.deps.toolRegistry;
 
     const log = logger.child({ service: 'supervisor', userId: runContext.userId });
 
     debugSupervisorEntry({
-      path: useGovernedLarkRuntime
-        ? 'governed_lark'
-        : (this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) ? 'dynamic_graph' : 'legacy',
-      dynamicGraphEnabled: !!this.deps.dynamicGraphEnabled,
-      hasAgentCatalogCache: !!this.deps.agentCatalogCache,
+      path: 'governed_lark',
       hasMem0: !!this.deps.mem0,
       hasApprovalGate: !!approvalGate,
       hasMemoryContext: !!memoryContext,
@@ -263,54 +233,6 @@ export class SupervisorAgent {
       historyTurnCount: history.turns.length,
       permittedToolCount: permittedTools.length,
     });
-
-    if (!useGovernedLarkRuntime && this.deps.dynamicGraphEnabled && this.deps.agentCatalogCache) {
-      const graphResult = await this.runDynamicGraph({
-        userMessage,
-        history,
-        perm,
-        runContext,
-        permittedTools,
-        chatId: chatId ?? String(channelId),
-        ...(approvalGate ? { approvalGate } : {}),
-        ...(memoryContext ? { memoryContext } : {}),
-        ...(groupContext ? { groupContext } : {}),
-        ...(groupContextSystemHeader ? { groupContextSystemHeader } : {}),
-        ...(inlineImageUrls?.length ? { inlineImageUrls } : {}),
-        ...(this.deps.mem0 ? { mem0: this.deps.mem0 } : {}),
-        ...(tracer ? { tracer } : {}),
-        statusChannel,
-        aggregator,
-        ...(input.model ? { model: input.model } : {}),
-        ...(input.resolveModel ? { resolveModel: input.resolveModel } : {}),
-      });
-
-      if (graphResult.ok) {
-        tracer?.emit({
-          phase: 'synthesis', eventType: 'synthesis_complete',
-          actorType: 'synthesis', title: 'Response synthesized',
-          status: 'success',
-          payload: {
-            replyLength: graphResult.value.finalText.length,
-            replyPreview: graphResult.value.finalText.slice(0, 500),
-          },
-        });
-
-        return ok({
-          finalReply: {
-            kind: 'final',
-            text: graphResult.value.finalText,
-            format: 'markdown',
-          },
-          toolsCalled: graphResult.value.toolsCalled,
-          toolResults: graphResult.value.toolResults,
-        });
-      }
-
-      log.warn('supervisor.dynamic_graph.failed_falling_back', {
-        error: graphResult.error.message,
-      });
-    }
 
     // ── 1. Resolve optional AgentDefinition for custom system prompt ──────────
     let agentDef: AgentDefinitionView | null = null;
@@ -370,26 +292,21 @@ export class SupervisorAgent {
         .map((skill) => `- ${skill.slug} — ${skill.name}: ${skill.description}`)
         .join('\n')
       : '- No routers are currently approved for this member.';
-    const systemPrompt = useGovernedLarkRuntime
-      ? buildBrainSystemPrompt({
-        skillCatalog: governedSkillCatalog,
-        currentDateTime: new Intl.DateTimeFormat('en-GB', {
-          timeZone: 'Asia/Kolkata',
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: false,
-        }).format(clock.now()),
-      })
-      : buildSupervisorSystemPrompt(
-        agentDef?.systemPrompt,
-        perm.department?.systemPrompt,
-      );
+    const systemPrompt = buildBrainSystemPrompt({
+      skillCatalog: governedSkillCatalog,
+      currentDateTime: new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(clock.now()),
+    });
     let fullSystemPrompt = systemPrompt;
-    if (useGovernedLarkRuntime && (agentDef?.systemPrompt || perm.department?.systemPrompt)) {
+    if ((agentDef?.systemPrompt || perm.department?.systemPrompt)) {
       fullSystemPrompt += [
         agentDef?.systemPrompt ? `\n\nAGENT CONTEXT:\n${agentDef.systemPrompt}` : '',
         perm.department?.systemPrompt ? `\n\nDEPARTMENT CONTEXT:\n${perm.department.systemPrompt}` : '',
@@ -414,22 +331,6 @@ export class SupervisorAgent {
       { role: 'user' as const, content: userMessage },
     ];
 
-    // ── 3. Build agent runner context (shared across all dispatchers) ─────────
-    const { geminiApiKey } = this.deps;
-    const agentCtx = {
-      model,
-      ...(resolveModel ? { resolveModel } : {}),
-      allTools: permittedTools,
-      perm,
-      runContext,
-      logger,
-      clock,
-      ...(tracer ? { tracer } : {}),
-      ...(approvalGate    ? { approvalGate }    : {}),
-      ...(geminiApiKey    ? { geminiApiKey }    : {}),
-      ...(groupContext    ? { groupContext }    : {}),
-      chatId: chatId ?? String(channelId),
-    };
 
     // ── 4. Wire supervisor tools ──────────────────────────────────────────────
     // Each tool() call uses an explicit Zod schema declared inline. We cast the
@@ -437,37 +338,6 @@ export class SupervisorAgent {
     // streamText (otherwise TS OOMs on AI SDK v6's distributive ToolSet types).
     const taskSchema = z.object({ task: z.string() });
 
-    const legacyAgentTools = {
-      larkAgent: dynamicTool({
-        description: 'Execute Lark workspace operations: tasks, calendar events, messages, docs, Lark Base tables, approvals.',
-        inputSchema: taskSchema as never,
-        execute: async (input: unknown): Promise<string> => {
-          const { task } = input as { task: string };
-          log.info('supervisor.dispatch.lark', { task: task.slice(0, 100) });
-          return runLarkAgent({ task }, agentCtx);
-        },
-      }),
-
-      googleAgent: dynamicTool({
-        description: 'Execute governed Google Workspace operations across Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, and Apps Script.',
-        inputSchema: taskSchema as never,
-        execute: async (input: unknown): Promise<string> => {
-          const { task } = input as { task: string };
-          log.info('supervisor.dispatch.google', { task: task.slice(0, 100) });
-          return runGoogleAgent({ task }, agentCtx);
-        },
-      }),
-
-      zohoAgent: dynamicTool({
-        description: 'Execute Zoho operations. Prefix task with "CRM:" for contacts/leads/deals or "BOOKS:" for invoices/bills/payments.',
-        inputSchema: taskSchema as never,
-        execute: async (input: unknown): Promise<string> => {
-          const { task } = input as { task: string };
-          log.info('supervisor.dispatch.zoho', { task: task.slice(0, 100) });
-          return runZohoAgent({ task }, agentCtx);
-        },
-      }),
-    } as unknown as ToolSet;
 
     const schedulingSkillResolution = { loaded: false };
     const shareMemorySkillResolution = { loaded: false };
@@ -673,28 +543,16 @@ export class SupervisorAgent {
       } as unknown as ToolSet
       : {} as ToolSet;
 
-    let dynamicCapabilities = {} as ToolSet;
-    if (!useGovernedLarkRuntime && agentDef && this.deps.agentCatalogCache) {
-      const allAgents = await this.deps.agentCatalogCache.getForCompany(String(runContext.companyId));
-      log.info('supervisor.catalog.loaded', { agentCount: allAgents.length, slugs: allAgents.map(a => a.slug) });
-      const rootAgent = allAgents.find(agent => agent.id === agentDef.id) ?? toDescriptor(agentDef);
-      dynamicCapabilities = buildCapabilitiesForAgent(rootAgent, allAgents, agentCtx);
-      log.info('supervisor.capabilities.built', { dynamicToolNames: Object.keys(dynamicCapabilities) });
-    }
 
-    const hasDynamicCapabilities = Object.keys(dynamicCapabilities).length > 0;
     const supervisorTools = {
-      ...(useGovernedLarkRuntime
-        ? governedSkillTools
-        : hasDynamicCapabilities ? dynamicCapabilities : legacyAgentTools),
+      ...governedSkillTools,
       ...orchestrationTools,
     } as unknown as ToolSet;
 
     log.info('supervisor.tools.resolved', {
-      mode: useGovernedLarkRuntime ? 'governed_db_skills' : hasDynamicCapabilities ? 'dynamic' : 'legacy',
       toolNames: Object.keys(supervisorTools),
       totalTools: Object.keys(supervisorTools).length,
-      visibleSkillCount: useGovernedLarkRuntime ? visibleSkills.length : undefined,
+      visibleSkillCount: visibleSkills.length,
     });
 
     // ── 5. Stream the supervisor LLM ──────────────────────────────────────────
@@ -1004,123 +862,4 @@ export class SupervisorAgent {
     return ok({ finalReply, toolsCalled, toolResults });
   }
 
-  private async runDynamicGraph(input: DynamicGraphRunInput): Promise<Result<{ finalText: string; toolsCalled: string[]; toolResults: Array<{ toolName: string; output: string }> }, OrchestrationError>> {
-    if (!this.deps.agentCatalogCache) {
-      return err(new OrchestrationError({
-        stage: 'plan',
-        reason: 'llm_invalid_output',
-        message: 'Dynamic graph requested without an agent catalog cache.',
-      }));
-    }
-
-    const graph = (!input.model && !input.resolveModel ? this.deps.dynamicSupervisorGraph : undefined) ?? buildDynamicSupervisorGraph({
-      model: input.model ?? this.deps.model,
-      ...(this.deps.defaultModel ? { defaultModel: this.deps.defaultModel } : {}),
-      ...((input.resolveModel ?? this.deps.resolveModel) ? { resolveModel: (input.resolveModel ?? this.deps.resolveModel)! } : {}),
-      agentCatalogCache: this.deps.agentCatalogCache,
-      todoRepo: this.deps.todoRepo,
-      prisma: this.deps.prisma,
-      logger: this.deps.logger.child({ service: 'dynamic-supervisor-graph' }),
-      clock: this.deps.clock,
-      ...(this.deps.geminiApiKey ? { geminiApiKey: this.deps.geminiApiKey } : {}),
-      ...(input.mem0 ? { mem0: input.mem0 } : {}),
-      ...(input.tracer ? { tracer: input.tracer } : {}),
-      ...(input.statusChannel ? { statusChannel: input.statusChannel } : {}),
-      ...(input.aggregator ? { aggregator: input.aggregator } : {}),
-    });
-
-    const memoryContext = input.memoryContext ?? '';
-    const groupContext = input.groupContext ?? '';
-
-    input.tracer?.emit({
-      phase: 'plan', eventType: 'supervisor_started',
-      actorType: 'supervisor', title: 'Dynamic supervisor graph started',
-      status: 'info',
-      payload: { toolCount: input.permittedTools.length },
-    });
-
-    const graphConversationHistory = input.history.turns
-      .filter(turn => turn.role === 'user' || turn.role === 'assistant')
-      .map(turn => ({
-        role: turn.role as 'user' | 'assistant',
-        content: turn.content,
-      }));
-
-    debugGraphInvoke({
-      userMessage: input.userMessage,
-      conversationHistory: graphConversationHistory,
-      companyId: String(input.runContext.companyId),
-      memoryContext,
-      groupContext,
-      chatId: input.chatId ?? null,
-      permittedToolCount: input.permittedTools.length,
-    });
-
-    const output = await graph.invoke({
-      userMessage: input.userMessage,
-      conversationHistory: graphConversationHistory,
-      companyId: String(input.runContext.companyId),
-      perm: input.perm,
-      runContext: input.runContext,
-      permittedTools: input.permittedTools,
-      chatId: input.chatId ?? null,
-      memoryContext,
-      ...(input.conversationSummary ? { conversationSummary: input.conversationSummary } : {}),
-      ...(input.groupContext ? { groupContext: input.groupContext } : {}),
-      ...(input.inlineImageUrls?.length ? { inlineImageUrls: input.inlineImageUrls } : {}),
-      ...(input.approvalGate ? { approvalGate: input.approvalGate } : {}),
-    } as any);
-
-    debugGraphOutput({
-      status: output.status,
-      supervisorResult: output.supervisorResult,
-      toolCallsMade: output.toolCallsMade ?? [],
-      error: output.error,
-    });
-
-    if (output.status === 'error') {
-      input.tracer?.emit({
-        phase: 'error', eventType: 'run_failed',
-        actorType: 'supervisor', title: 'Dynamic supervisor graph failed',
-        status: 'error',
-        payload: { stage: 'plan', reason: output.error ?? 'unknown' },
-      });
-      return err(new OrchestrationError({
-        stage: 'plan',
-        reason: 'llm_invalid_output',
-        message: output.error ?? output.supervisorResult ?? 'Dynamic supervisor graph failed.',
-      }));
-    }
-
-    const finalText = (output.supervisorResult ?? 'Done.').trim() || 'Done.';
-    if (isInternalHistoryMarker(finalText)) {
-      input.tracer?.emit({
-        phase: 'error', eventType: 'run_failed', actorType: 'supervisor',
-        title: 'Internal history marker rejected', status: 'error',
-        payload: { stage: 'synthesis', reason: 'internal_history_marker' },
-      });
-      return err(new OrchestrationError({
-        stage: 'synthesize',
-        reason: 'llm_invalid_output',
-        message: 'Supervisor returned internal conversation metadata instead of a user response.',
-      }));
-    }
-    input.tracer?.emit({
-      phase: 'complete', eventType: 'supervisor_complete',
-      actorType: 'supervisor', title: 'Dynamic supervisor graph complete',
-      status: 'success',
-      payload: {
-        toolsCalled: output.toolCallsMade,
-        replyLength: finalText.length,
-        replyPreview: finalText.slice(0, 500),
-        supervisorTextEmpty: finalText === 'Done.',
-      },
-    });
-
-    return ok({
-      finalText,
-      toolsCalled: output.toolCallsMade,
-      toolResults: output.toolResults ?? [],
-    });
-  }
 }

@@ -64,7 +64,7 @@ A phase is complete only when all of the following are true:
 | 3 | Cloud Pi authenticates through the existing Divo Gateway | `[ ]` Not started |
 | 4 | Authenticated Lark turns route only to Pi and fail visibly | `[~]` Status/final delivery proven; forced-failure and group proof pending |
 | 4A | Mature cloud-agent behavior is reproduced Pi-natively and the AI SDK agent is retired | `[~]` Behavior inventory complete; implementation pending |
-| 5 | Bounded per-user container pool works safely | `[ ]` Not started |
+| 5 | Bounded per-user container pool works safely | `[~]` 10-minute warm lifecycle implemented; FIFO and bounded warm-pool policy pending |
 | 6 | Docker host is provisioned, hardened, backed up, and observable | `[ ]` Not started |
 | 7 | Crash recovery, checkpoints, retries, and idempotency are proven | `[ ]` Not started |
 | 8 | Load, latency, memory, and security gates pass | `[ ]` Not started |
@@ -1493,7 +1493,7 @@ Post-delete verification:
 
 ## Phase 1 — Prove one containerized headless Pi runtime
 
-> **Status:** `[ ]` Not started
+> **Status:** `[~]` In progress — safe 10-minute warm lifecycle implemented
 >
 > **Estimated effort:** 2–4 engineering days
 >
@@ -2151,7 +2151,8 @@ recorded as a continuation failure instead of being reported as completed.
 >
 > **Estimated effort:** 2–3 engineering days
 >
-> **Primary blocker:** Proven lifecycle signal for safe idle reclamation.
+> **Primary blocker:** FIFO admission and a bounded warm-container policy for
+> larger rollouts.
 
 ### Objective
 
@@ -2164,7 +2165,7 @@ without collision, starvation, or unbounded memory growth.
 Running-container capacity: 8
 Per-user mutating concurrency: 1
 Maximum queued turns: bounded and observable
-Idle TTL: 20 minutes
+Idle TTL: 10 minutes
 Admission: FIFO plus existing per-conversation serialization and per-user lock
 Reclamation: oldest safely idle container first
 ```
@@ -2172,16 +2173,17 @@ Reclamation: oldest safely idle container first
 ### Tasks
 
 - [ ] Implement per-user container state.
-- [ ] Implement a controller-owned per-user execution lock.
-- [ ] Implement host-wide running-container admission.
+- [x] Implement a controller-owned per-user execution lock.
+- [x] Implement host-wide active-run admission.
 - [ ] Implement FIFO admission.
-- [ ] Reuse an already running container for the same user.
-- [ ] Start a stopped container only below capacity.
-- [ ] Reclaim only a proven-idle container.
+- [x] Reuse an already running container for the same user.
+- [x] Stop a successfully idle container after 10 minutes.
+- [x] Stop failed and aborted runtimes immediately.
+- [ ] Bound the number of warm, non-executing containers.
 - [ ] Never stop an active or approval-pending container.
 - [ ] Queue when all containers are non-reclaimable.
 - [ ] Propagate cancellation while queued.
-- [ ] Propagate cancellation while running.
+- [x] Propagate cancellation while running.
 - [ ] Apply container and Pi startup timeouts.
 - [ ] Apply per-turn timeout.
 - [ ] Add graceful Pi/container shutdown.
@@ -2189,9 +2191,9 @@ Reclamation: oldest safely idle container first
 - [ ] Clean run-specific scratch data.
 - [ ] Revoke/rotate user token at safe lifecycle boundaries.
 - [ ] Reconcile running/stopped containers after controller restart.
-- [ ] Recreate containers when the pinned image or hardening template changes.
-- [ ] Preserve the user volume during every recreate operation.
-- [ ] Implement container-pool drain for deployments.
+- [x] Recreate containers when the pinned image or hardening template changes.
+- [x] Preserve the user volume during every recreate operation.
+- [x] Drain warm containers when the controller shuts down.
 - [ ] Implement health and readiness state.
 - [ ] Expose pool metrics without exposing prompts or tokens.
 - [ ] Make capacity configurable within tested limits.
@@ -3509,6 +3511,28 @@ Recovery options are:
   inspection identified the remaining live AI SDK callers, and every retained
   backend authority has a focused test surface.
 
+### D-022 — Keep the container warm, restart Pi per turn
+
+- **Date:** 2026-07-30
+- **Status:** Implemented locally; deployment proof pending
+- **Decision:** After a successful turn, keep the user's hardened Docker
+  container running for ten minutes. Run a fresh Pi RPC process for every
+  request inside that container and reopen the correct durable thread session.
+- **Reason:** Reusing the container removes repeat Docker startup. Reusing the
+  exact Pi process would also reuse its original runtime lease, run ID, run
+  directory, thread binding and status callbacks.
+- **Failure rule:** Failed or aborted runs stop the container immediately. A
+  controller shutdown drains all containers it kept warm.
+- **Template rule:** Existing one-shot containers are recreated once with the
+  new exec-based runtime template; their named user volumes remain intact.
+- **Shared-context boundary:** Per-user Pi sessions remain private. Shared Lark
+  group history must be hydrated by the backend rather than by mounting one
+  writable JSONL session into multiple containers. See
+  `plans/cloud-pi-context-and-warm-containers.md`.
+- **Confidence:** `92%`; focused controller, server and container-entry tests
+  pass `24/24`, and the full Divo runtime suite passes `60/60`. A two-turn live
+  Docker/Lark proof remains required.
+
 ---
 
 ## 15. Deferred backlog
@@ -3600,6 +3624,16 @@ Do these in order:
 
 ### 2026-07-30
 
+- Implemented D-022: successful user containers now remain running for a
+  resettable 10-minute idle window, while every request starts a fresh Pi RPC
+  process with its own lease, run ID and thread binding. Failures/aborts stop
+  immediately, controller shutdown drains warm containers, and old one-shot
+  templates are replaced without deleting user volumes. Cold-review cleanup
+  and retry findings are fixed; focused lifecycle tests pass `24/24` and the
+  full Divo runtime suite passes `60/60`.
+- Added the simple visual explainer
+  `plans/cloud-pi-context-and-warm-containers.md`, separating warm lifecycle,
+  per-user concurrency and shared Lark group-context hydration.
 - Added Phase 4A and D-021: extract mature behavior from the legacy cloud
   agent, implement it through isolated Pi, then delete the AI SDK agent after
   parity rather than deleting first or retaining it as fallback.

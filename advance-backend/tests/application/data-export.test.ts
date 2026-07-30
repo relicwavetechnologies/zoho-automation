@@ -21,7 +21,7 @@ import {
 import { GOOGLE_SCOPE } from '../../src/domain/google/google-workspace-scope.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 import { noopLogger } from '../tools/tool-test.helpers.ts';
-import { createDataExportTool } from '../../src/application/orchestration/tools/families/data-export.tool.ts';
+import { createDataExportTool } from '../../src/application/tools/families/data-export.tool.ts';
 import { recoverCompletedExport } from '../../src/application/data-export/google-workspace-export.sink.ts';
 import { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 

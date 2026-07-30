@@ -13,4 +13,3 @@ export interface StepResult {
   readonly durationMs: number;
 }
 
-export type StepError = ToolError | OrchestrationError | PermissionError;

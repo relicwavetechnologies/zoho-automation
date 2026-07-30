@@ -41,7 +41,7 @@ export const airtableCoreSkill: Skill = {
   id: 'airtable-core',
   name: 'Airtable Core',
   description: 'Read, search, create, update, upsert, and delete Airtable records and comments across bases and tables, with schema-aware filtering and safe batch writes.',
-  toolIds: ['airtableRecords', 'dataProcessor'],
+  toolIds: ['airtableRecords'],
   instructions: `${AIRTABLE_CONNECTION_METHOD}
 
 ROLE:
@@ -57,8 +57,8 @@ ${AIRTABLE_READ_CRAFT}
 ${AIRTABLE_WRITE_SAFETY}
 
 ANALYSIS:
-- Airtable returns raw rows; it does not aggregate. For totals, grouping, ratios, or cross-table joins, pull the needed rows with narrow fieldIds and compute with dataProcessor.
-- In dataProcessor source mode, each Airtable row is flattened: fields are top-level keys by field name plus "Record ID". Read row["Status"], not row.fields or row.cellValuesByFieldId.
+- Airtable returns raw rows; it does not aggregate. For totals, grouping, ratios, or cross-table joins, pull the needed rows with narrow fieldIds in a scripted workflow, write them to a file, and compute over that file.
+- Each Airtable row arrives with its fields nested. Flatten once when writing the file, then read plain column names; deciding row-by-row whether to reach for row.fields or row.cellValuesByFieldId is where these scripts go wrong.
 - Never estimate a number you did not compute, and never present a partial page as a complete total.
 
 OUTPUT:

@@ -1,10 +1,10 @@
-import type { ToolRegistry } from '../orchestration/tools/tool-registry';
+import type { ToolRegistry } from '../tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
 import type { PermissionResult } from '../permissions/permission.types';
 import type { ApprovalGateService } from '../approval/approval-gate.service';
-import { buildArgsSummary } from '../orchestration/tools/ai-sdk-adapter';
-import type { ToolExecutionContext } from '../orchestration/tools/tool.contract';
-import type { Tool } from '../orchestration/tools/tool.contract';
+import { buildArgsSummary } from './args-summary';
+import type { ToolExecutionContext } from '../tools/tool.contract';
+import type { Tool } from '../tools/tool.contract';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import type { Logger } from '../../shared/logger';
 import type { Clock } from '../../shared/clock';

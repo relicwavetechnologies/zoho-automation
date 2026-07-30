@@ -1,4 +1,4 @@
-import type { LarkTaskClientPort } from '../../../../application/orchestration/tools/families/lark-task.tool';
+import type { LarkTaskClientPort } from '../../../../application/tools/families/lark-task.tool';
 import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
 
 type TaskRecord = Record<string, unknown>;

@@ -6,7 +6,11 @@ import {
 	approveHeadlessWorkspaceAction,
 	backendUrlForContainer,
 	buildContainerCreateArgs,
+	createIdleContainerScheduler,
+	finalizeRuntimeLifecycle,
 	loadToken,
+	RUNTIME_IDLE_TIMEOUT_MS,
+	RUNTIME_STOP_RETRY_MS,
 	resourcesFor,
 	runtimeIdentityNames,
 	runtimeContainerNeedsReplacement,
@@ -68,6 +72,8 @@ test("container creation is hardened and contains no member secret", () => {
 	);
 	assert.match(serialized, /--network divo-pi-local-abhishek/);
 	assert.match(serialized, /--add-host host\.docker\.internal:host-gateway/);
+	assert.match(serialized, /dev\.divo\.runtime-mode=exec-v1/);
+	assert.match(serialized, /divo-pi:test sleep infinity$/);
 	assert.doesNotMatch(serialized, /token|password|secret/i);
 });
 
@@ -80,7 +86,10 @@ test("cloud container creation can remove the host gateway route", () => {
 
 test("a runtime container is replaced only when its image changes", () => {
 	const container = {
-		Config: { Image: "ghcr.io/relicwavetechnologies/divo-pi:dev-old" },
+		Config: {
+			Image: "ghcr.io/relicwavetechnologies/divo-pi:dev-old",
+			Labels: { "dev.divo.runtime-mode": "exec-v1" },
+		},
 	};
 	assert.equal(
 		runtimeContainerNeedsReplacement(
@@ -96,6 +105,125 @@ test("a runtime container is replaced only when its image changes", () => {
 		),
 		false,
 	);
+	assert.equal(
+		runtimeContainerNeedsReplacement({
+			Config: {
+				Image: "ghcr.io/relicwavetechnologies/divo-pi:dev-old",
+				Labels: {},
+			},
+		}, "ghcr.io/relicwavetechnologies/divo-pi:dev-old"),
+		true,
+	);
+});
+
+test("a successful runtime stays warm for ten minutes and cancellation wins the race", async () => {
+	let scheduled;
+	let releaseStop;
+	const stopped = [];
+	const scheduler = createIdleContainerScheduler({
+		stop: async (profile) => {
+			stopped.push(profile);
+			await new Promise((resolve) => {
+				releaseStop = resolve;
+			});
+		},
+		setTimer: (callback, delay) => {
+			scheduled = { callback, delay, cancelled: false, unref() {} };
+			return scheduled;
+		},
+		clearTimer: (timer) => {
+			timer.cancelled = true;
+		},
+	});
+
+	scheduler.keepWarm("abhishek");
+	assert.equal(scheduled.delay, RUNTIME_IDLE_TIMEOUT_MS);
+	await scheduler.activate("abhishek");
+	assert.equal(scheduled.cancelled, true);
+	assert.deepEqual(stopped, []);
+
+	scheduler.keepWarm("abhishek");
+	scheduled.callback();
+	const activated = scheduler.activate("abhishek");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(stopped, ["abhishek"]);
+	releaseStop();
+	await activated;
+});
+
+test("a failed idle stop remains tracked and retries", async () => {
+	const scheduled = [];
+	let attempts = 0;
+	const scheduler = createIdleContainerScheduler({
+		stop: async () => {
+			attempts += 1;
+			if (attempts === 1) throw new Error("docker unavailable");
+		},
+		setTimer: (callback, delay) => {
+			const timer = { callback, delay, unref() {} };
+			scheduled.push(timer);
+			return timer;
+		},
+		clearTimer: () => {},
+		onError: () => {},
+	});
+
+	scheduler.keepWarm("abhishek");
+	scheduled[0].callback();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(attempts, 1);
+	assert.equal(scheduled[1].delay, RUNTIME_STOP_RETRY_MS);
+
+	scheduled[1].callback();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(attempts, 2);
+	await scheduler.shutdown();
+	assert.equal(attempts, 2);
+});
+
+test("credential cleanup failure stops the container instead of keeping it warm", async () => {
+	const calls = [];
+	const scheduler = {
+		keepWarm: () => calls.push("warm"),
+		stopNow: async () => calls.push("stop"),
+	};
+
+	await assert.rejects(
+		finalizeRuntimeLifecycle({
+			profile: "abhishek",
+			resources: { authVolume: "auth-volume" },
+			bootstrapAttempted: true,
+			completedSuccessfully: true,
+		}, {
+			clearBootstrapFn: async () => {
+				calls.push("clear");
+				throw new Error("clear failed");
+			},
+			scheduler,
+		}),
+		AggregateError,
+	);
+	assert.deepEqual(calls, ["clear", "stop"]);
+});
+
+test("a startup failure stops the container even before bootstrap is written", async () => {
+	const calls = [];
+	const runError = new Error("docker start failed");
+	await finalizeRuntimeLifecycle({
+		profile: "abhishek",
+		resources: { authVolume: "auth-volume" },
+		bootstrapAttempted: false,
+		completedSuccessfully: false,
+		runError,
+	}, {
+		clearBootstrapFn: async () => calls.push("clear"),
+		scheduler: {
+			keepWarm: () => calls.push("warm"),
+			stopNow: async () => calls.push("stop"),
+		},
+		onCleanupError: () => calls.push("cleanup-error"),
+	});
+	assert.deepEqual(calls, ["stop"]);
 });
 
 test("loopback backend URLs are translated only for the container", () => {

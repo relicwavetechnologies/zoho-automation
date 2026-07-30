@@ -17,7 +17,7 @@ import {
   usesLockedCurrentChatDelivery,
   buildScheduledExecutionPrompt,
 } from '../../src/application/scheduling/scheduled-workflow.service.ts';
-import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
+import { createLarkMessagingTool } from '../../src/application/tools/families/lark-messaging.tool.ts';
 import { makeCtx } from '../tools/tool-test.helpers.ts';
 
 const LOCKED_CHAT = 'oc_4da3c8e6a6a2b9eb29a2aea24fd17e50';

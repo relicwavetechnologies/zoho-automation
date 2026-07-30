@@ -1,4 +1,6 @@
 import type { Prisma, PrismaClient } from '../../generated/prisma';
+import { DEPENDENCY_TIERS, SCRIPTS } from './bundled-file-scripts';
+import { DIVO_LOCAL_PYTHON_SKILL_SLUG } from './divo-local-python-system-skill';
 import {
   provisionDivoProductivitySkillForExistingCompanies,
   provisionDivoProductivitySystemSkill,
@@ -22,29 +24,6 @@ import {
 
 export const READ_FILES_SKILL_SLUG = 'read-understand-files';
 export const CREATE_FILES_SKILL_SLUG = 'create-edit-files';
-
-/** Where the bundled helper scripts sit inside the runtime container. */
-const SCRIPTS = '$DIVO_BUNDLED_SKILLS_DIR/files-and-documents/scripts';
-
-const DEPENDENCY_TIERS = `## Dependencies install on demand
-
-Nothing is preinstalled. Each tier builds a virtualenv under \`DIVO_HOME\`,
-which sits on the user's persistent volume — so a tier installs once per user
-and is instant on every later run. Install the smallest tier that does the job;
-tiers do not include each other.
-
-\`\`\`bash
-python3 ${SCRIPTS}/ensure_deps.py light      # PDF and text
-python3 ${SCRIPTS}/ensure_deps.py office     # Word, PowerPoint, Excel
-python3 ${SCRIPTS}/ensure_deps.py image      # image inspection and OCR
-python3 ${SCRIPTS}/ensure_deps.py dataset    # CSV/Parquet/JSON too large for context
-\`\`\`
-
-Run a helper through the managed interpreter in one command:
-
-\`\`\`bash
-python3 ${SCRIPTS}/ensure_deps.py light --quiet -- ${SCRIPTS}/extract_pymupdf.py report.pdf --markdown
-\`\`\``;
 
 export const READ_FILES_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: READ_FILES_SKILL_SLUG,
@@ -126,25 +105,11 @@ UI bug — Tesseract returns disconnected words and misses the point. Describe
 what is structurally visible and ask for the underlying data rather than
 guessing at the picture.
 
-## Datasets too large to open
+## A file too large to open
 
-A 200,000-row export will not fit in context and does not need to. Use the
-\`dataset\` tier and query the file where it lies:
-
-\`\`\`python
-import duckdb
-duckdb.sql("SELECT region, count(*) n, sum(amount) FROM 'export.csv' GROUP BY region").show()
-\`\`\`
-
-DuckDB reads CSV, Parquet, and newline-delimited JSON directly — no load step
-and no memory ceiling proportional to the file. \`polars\` handles pivots,
-joins, and reshaping that are awkward as SQL.
-
-- Never read a large file into context to "have a look". Query it.
-- Always report the row count you computed over, so a filter that silently
-  matched nothing is visible instead of looking like a real answer.
-- If the user wants more rows than are reasonable to show, write a file and say
-  where it is. Do not paginate a dataset through the conversation.
+If the file will not fit in context — a large CSV, Parquet, or JSON export —
+this is not the skill for it. Load \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\` and query
+the file on disk from a script. Do not read it here to "have a look".
 
 ## Output and honesty
 

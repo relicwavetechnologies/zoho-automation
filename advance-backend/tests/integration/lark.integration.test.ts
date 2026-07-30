@@ -25,11 +25,11 @@ import { LarkDocClient }           from '../../src/infrastructure/channels/lark/
 import { LarkToolMessagingClient } from '../../src/infrastructure/channels/lark/clients/lark-messaging.client.ts';
 import { LarkBaseClient }          from '../../src/infrastructure/channels/lark/clients/lark-base.client.ts';
 
-import { createLarkTaskTool }      from '../../src/application/orchestration/tools/families/lark-task.tool.ts';
-import { createLarkCalendarTool }  from '../../src/application/orchestration/tools/families/lark-calendar.tool.ts';
-import { createLarkDocTool }       from '../../src/application/orchestration/tools/families/lark-doc.tool.ts';
-import { createLarkMessagingTool } from '../../src/application/orchestration/tools/families/lark-messaging.tool.ts';
-import { createLarkBaseTool }      from '../../src/application/orchestration/tools/families/lark-base.tool.ts';
+import { createLarkTaskTool }      from '../../src/application/tools/families/lark-task.tool.ts';
+import { createLarkCalendarTool }  from '../../src/application/tools/families/lark-calendar.tool.ts';
+import { createLarkDocTool }       from '../../src/application/tools/families/lark-doc.tool.ts';
+import { createLarkMessagingTool } from '../../src/application/tools/families/lark-messaging.tool.ts';
+import { createLarkBaseTool }      from '../../src/application/tools/families/lark-base.tool.ts';
 
 const LARK_APP_ID     = process.env['LARK_APP_ID'];
 const LARK_APP_SECRET = process.env['LARK_APP_SECRET'];

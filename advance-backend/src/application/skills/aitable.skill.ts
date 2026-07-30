@@ -52,7 +52,7 @@ export const aitableDatasheetsSkill: Skill = {
   name: 'AITable Datasheets',
   description:
     'Browse AITable workspaces and datasheets, and read, create, update or delete records, with schema-aware writes and safe batching.',
-  toolIds: ['aitableDatasheets', 'dataProcessor'],
+  toolIds: ['aitableDatasheets'],
   instructions: `${AITABLE_CONNECTION_METHOD}
 
 ${AITABLE_ID_DISCIPLINE}

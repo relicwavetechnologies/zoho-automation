@@ -32,7 +32,7 @@ function fakeRow(overrides: Partial<SkillRow> = {}): SkillRow {
     name:         'PTO Policy',
     summary:      'How PTO works',
     markdown:     '# PTO Policy\n\nYou get 20 days.',
-    toolIds:      ['contextSearch'],
+    toolIds:      ['webSearch'],
     scope:        'company',
     status:       'active',
     tags:         ['hr', 'pto'],

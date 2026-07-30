@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from '../../generated/prisma';
+import { DEPENDENCY_TIERS } from './bundled-file-scripts';
 import {
   provisionDivoProductivitySkillForExistingCompanies,
   provisionDivoProductivitySystemSkill,
@@ -21,11 +22,46 @@ Use this recipe when one coherent workflow materially benefits from Python for
 bounded pagination, parsing, transformation, grouping, deduplication, joining,
 or several related destination writes.
 
+This is also how data of any size is processed. There is no separate in-backend
+calculation tool: the container is a real machine with a real terminal, so a
+script that fetches, computes, and writes is both more capable and easier to
+correct than a reducer submitted as an argument. Write the file, run it, read
+the error, edit that same file, run it again.
+
 Python is ordinary local execution. The agent creates a persistent source file,
 runs it through Bash, edits that same file after an error, and reruns the same
 command. Connected company calls go through the credential-free
 \`divo-local\` client, so backend RBAC, connection policy, approvals, schemas,
 audit, credentials, and rate limits remain authoritative.
+
+## The workspace already holds the inputs
+
+Files sent in this conversation were written into the workspace before you were
+asked about them, and are listed with absolute paths in the \`[ATTACHED_FILES]\`
+block at the top of the request. A script reads them from there. Files from
+earlier turns are still under \`.divo/inbox\`.
+
+The workspace lives on this user's own persistent volume, so a file written by
+an earlier run is still there for a later one. Never ask for a file to be sent
+again because a previous run ended.
+
+${DEPENDENCY_TIERS}
+
+## Data too large to hold
+
+Never carry a record set through model context to inspect it, and never print
+rows to decide what to do next. Write what you fetched to a file in
+\`DIVO_RUN_DIR\` as JSONL or Parquet, then query that file:
+
+\`\`\`python
+import duckdb
+duckdb.sql("SELECT region, count(*) n, sum(amount) FROM 'rows.jsonl' GROUP BY region").show()
+\`\`\`
+
+DuckDB reads CSV, Parquet, and newline-delimited JSON off disk with no load
+step, so a source that paginates past any in-memory limit is still answerable.
+Report the aggregate and the row count you computed over — a filter that
+silently matched nothing must be visible rather than look like a real answer.
 
 ## Choose the right path
 
@@ -49,7 +85,8 @@ including when an older conversation or cached recipe mentions it.
    says it is missing. Never mutate data to discover a response shape.
 2. Use the \`write\` tool once to create
    \`<DIVO_RUN_DIR>/<descriptive-workflow>.py\`. Put non-secret input, output,
-   and \`checkpoint.json\` beside it.
+   and \`checkpoint.json\` beside it. Anything the user should receive goes to
+   \`DIVO_ARTIFACTS_DIR\` instead; \`DIVO_RUN_DIR\` is not delivered.
 3. Use Bash to run the file with
    \`python3 <absolute-DIVO_RUN_DIR>/<descriptive-workflow>.py\`.
 4. When Python or a provider contract fails, inspect the structured response,

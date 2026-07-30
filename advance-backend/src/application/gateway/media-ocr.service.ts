@@ -1,3 +1,15 @@
+/**
+ * `media.image_ocr` — the desktop image path.
+ *
+ * This deliberately coexists with the container's `image_ops.py ocr`, and the
+ * two are not duplicates of each other: desktop sends image *bytes* over the
+ * gateway and has no workspace to write them to, while a Lark attachment is
+ * already staged as a *file* under `.divo/inbox` and is read in the container
+ * by the file-work skill. Same job, two different starting points.
+ *
+ * Do not collapse them without first giving desktop a workspace.
+ */
+
 import { z } from 'zod';
 import type { TypedEnv } from '../../config/env';
 import type { Logger } from '../../shared/logger';

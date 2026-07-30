@@ -9,7 +9,7 @@ import type { ToolActionPermissionRepoPort } from '../../infrastructure/persiste
 import type { ToolPermissionRepoPort } from '../../infrastructure/persistence/tool-permission.repository';
 import type { CompanyRoleRepoPort, CompanyRoleRow } from '../../infrastructure/persistence/company-role.repository';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
-import type { ToolRegistry } from '../orchestration/tools/tool-registry';
+import type { ToolRegistry } from '../tools/tool-registry';
 import type { Logger } from '../../shared/logger';
 
 const COMPANY_ROLES = ['MEMBER', 'COMPANY_ADMIN', 'SUPER_ADMIN'] as const;

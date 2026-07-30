@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createCanvaDesignTool } from '../../src/application/orchestration/tools/families/canva-design.tool.ts';
+import { createCanvaDesignTool } from '../../src/application/tools/families/canva-design.tool.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
 
 describe('canvaDesign tool', () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { createMailAutomationsTool } from '../../src/application/orchestration/tools/families/mail-automations.tool.ts';
+import { createMailAutomationsTool } from '../../src/application/tools/families/mail-automations.tool.ts';
 import {
   MAIL_OPS_SYSTEM_SKILLS,
   provisionMailOpsPermissionsForExistingCompanies,

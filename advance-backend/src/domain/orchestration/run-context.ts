@@ -50,7 +50,7 @@ export interface RunContext {
   readonly mentionedLarkOpenIds?: ReadonlyArray<string>;
   /**
    * Approval grants issued by a manager.
-   * The gate in ai-sdk-adapter checks this list before sending a new approval request.
+   * The approval gate checks this list before sending a new approval request.
    * A grant is valid only when argsHash matches the tool call args.
    */
   readonly approvalGrants?: ReadonlyArray<ApprovalGrant>;

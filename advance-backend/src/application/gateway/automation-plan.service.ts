@@ -18,7 +18,7 @@ import type { ToolExecutor, PreflightedToolInvocation } from './tool-executor';
 import type { SkillCatalogService } from '../skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../skills/skill-access.port';
 import { withWorkDiscoveryPermissions } from './work-resolution.service';
-import { buildArgsSummary } from '../orchestration/tools/ai-sdk-adapter';
+import { buildArgsSummary } from './args-summary';
 import { z } from 'zod';
 import {
   approvalDeliveryFailedCheckpoint,
